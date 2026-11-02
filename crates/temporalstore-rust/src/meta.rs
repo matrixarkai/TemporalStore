@@ -1525,21 +1525,16 @@ impl LocalMetaMutationLog {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        // BYTES, NOT A STRING. `read_to_string` refuses a file containing any byte sequence that
-        // is not valid UTF-8, so the moment one framed record is present it would fail the whole
-        // load with an IO error -- before framing, codecs or torn tails came into it at all. That
-        // makes reading as bytes a PREREQUISITE for a binary record, not a tidy-up beside one.
+        // BYTES, NOT A STRING: a framed record's payload is not required to be valid UTF-8, and
+        // `read_to_string` would refuse the whole file for one such record.
         let data = fs::read(&self.path)?;
         let mut mutations = Vec::new();
-        // Where the last record that parsed ends. This is the only point the file can be safely
-        // cut back to.
+        // Where the last record that parsed ends. The only point the file may be cut back to.
         let mut good_end = 0usize;
         let mut offset = 0usize;
         // Held rather than returned: a record that does not parse is only a torn tail if nothing
         // follows it. Anything following turns it into an error.
         let mut unparsed: Option<(usize, String)> = None;
-        // Counted, not derived from a byte offset, so the message names the same thing the old
-        // line-numbered message did.
         let mut number = 0usize;
 
         while offset < data.len() {
@@ -1551,61 +1546,54 @@ impl LocalMetaMutationLog {
                 continue;
             }
 
-            let (consumed, parsed) = match read_meta_log_record(&data[offset..]) {
-                MetaLogRead::Framed { consumed, payload } => {
-                    (consumed, decode_meta_log_payload(payload))
-                }
-                MetaLogRead::Line { consumed, text } => {
-                    if text.trim().is_empty() {
-                        offset += consumed;
-                        good_end = good_end.max(offset);
-                        continue;
-                    }
-                    (
-                        consumed,
-                        serde_json::from_str::<MetaMutationRecord>(text)
-                            .map_err(|err| err.to_string()),
-                    )
-                }
-                // NOT ENOUGH BYTES LEFT TO BE A WHOLE RECORD. With a length prefix this is
-                // ARITHMETIC rather than a parse failure: the header is short, or the header
-                // declared more payload than the file holds. Either way it is a torn tail.
-                MetaLogRead::Torn { why } => {
-                    // A TORN TAIL *AFTER* A RECORD THAT DID NOT PARSE PUTS THAT RECORD IN THE
-                    // MIDDLE. Overwriting the held failure here would turn an acknowledged record
-                    // that cannot be read into a silent truncation, which is exactly the case
-                    // property 3 exists to refuse.
+            let (consumed, payload) = match crate::log_framing::next_frame(&data[offset..]) {
+                // A WHOLE RECORD whose checksum matched, or an unframed line ending at its
+                // newline. `next_frame` reads all four shapes this log can hold.
+                Ok(Some(frame)) => frame,
+
+                // TORN TAIL. `Ok(None)` is "what remains is shorter than the record it declares"
+                // -- torn mid-varint, torn before the checksum, fewer payload bytes than
+                // declared, or a final line with no terminator. A writer returns only once a sync
+                // covering its bytes completed, so an unacknowledged fragment was never promised
+                // to anyone: it is dropped and REMOVED, not refused.
+                Ok(None) => {
                     if let Some((bad_number, message)) = unparsed.take() {
-                        return Err(io::Error::other(format!(
-                            "meta mutation log {}: record {} does not parse and more bytes \
-                             follow it, so it is not a torn tail: {}",
-                            self.path.display(),
-                            bad_number + 1,
-                            message
-                        )));
+                        return Err(Self::middle_failure(&self.path, bad_number, &message));
                     }
-                    unparsed = Some((number, why));
+                    unparsed = Some((
+                        number,
+                        "the last record is shorter than it declares, so its write did not finish"
+                            .to_string(),
+                    ));
                     break;
+                }
+
+                // COMMITTED CORRUPTION, AND IT NEVER TRUNCATES.
+                //
+                // A record whose bytes are all present and whose checksum does not match was
+                // WRITTEN COMPLETELY and therefore acknowledged. Property 3 exists to refuse
+                // discarding such a record, and that applies wherever it sits -- so this is a
+                // hard error rather than a tail, and the file is left intact for an operator.
+                //
+                // DECIDING BY POSITION IS NOT AVAILABLE HERE, which is worth stating because it
+                // is the obvious design. To know whether valid records follow a bad one, you must
+                // step over it by its declared length -- the very field a corrupt record gives
+                // you no reason to trust. A SHORT record is the acknowledgement test that works,
+                // and that is `Ok(None)` above; a checksum failure is not a shortness test.
+                Err(err) => {
+                    return Err(Self::damaged_record(&self.path, number, &err.0));
                 }
             };
 
-            // A record that did not parse is held: if anything follows it, that is an error, not
-            // a torn tail.
             if let Some((bad_number, message)) = unparsed.take() {
-                return Err(io::Error::other(format!(
-                    "meta mutation log {}: record {} does not parse and more records follow it, \
-                     so it is not a torn tail: {}",
-                    self.path.display(),
-                    bad_number + 1,
-                    message
-                )));
+                return Err(Self::middle_failure(&self.path, bad_number, &message));
             }
 
             offset += consumed;
             number += 1;
-            match parsed {
-                Ok(parsed) => {
-                    mutations.push(parsed);
+            match decode_meta_log_payload(payload) {
+                Ok(record) => {
+                    mutations.push(record);
                     good_end = offset;
                 }
                 Err(message) => unparsed = Some((number - 1, message)),
@@ -1632,143 +1620,98 @@ impl LocalMetaMutationLog {
         Ok(mutations)
     }
 
+    fn middle_failure(path: &Path, number: usize, message: &str) -> io::Error {
+        io::Error::other(format!(
+            "meta mutation log {}: record {} does not parse and more records follow it, so it is \
+             not a torn tail: {}",
+            path.display(),
+            number + 1,
+            message
+        ))
+    }
+
+    fn damaged_record(path: &Path, number: usize, message: &str) -> io::Error {
+        io::Error::other(format!(
+            "meta mutation log {}: record {} is complete but its checksum does not match, so it \
+             was written whole and then damaged. It was acknowledged, so it is not dropped: {}",
+            path.display(),
+            number + 1,
+            message
+        ))
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
 }
 
-/// THE FIRST BYTE OF A FRAMED META-LOG RECORD.
+/// THE META LOG'S RECORD FRAME IS [`crate::log_framing`]'S, NOT ITS OWN.
 ///
-/// The log is newline-delimited JSON today, and every record begins with `{`. This byte is not a
-/// brace, not JSON whitespace and not valid JSON in any position, so one byte tells a framed
-/// record from a line without ambiguity -- which is what lets BOTH live in one file. That matters
-/// because an existing log holds lines, and anything appended after an upgrade lands after them:
-/// a reader that could only do one of the two could not read a file that had seen both builds.
-const META_LOG_FRAME_MAGIC: u8 = 0x01;
-
-/// A framed record whose payload is the same JSON the line format carries.
-const META_LOG_FRAME_CODEC_JSON: u8 = 1;
-
-/// Header width: magic, codec, then a four-byte big-endian payload length. The same length shape
-/// the shared WAL frame uses, rather than a second convention.
-const META_LOG_FRAME_HEADER: usize = 1 + 1 + 4;
-
-/// WHY A LENGTH PREFIX AND NOT A CONTAINER BYTE ALONE.
+/// THIS REPLACES A WORSE REIMPLEMENTATION. The first version of this framing hand-rolled a
+/// magic byte, a `u32` big-endian length and no checksum. Everything it was reaching for already
+/// existed one module away, and in a better form:
 ///
-/// A container byte is enough for a single object fetched whole by key. It is NOT enough for a
-/// SEQUENCE, and this log is a sequence, for two reasons that are both load-bearing here:
+///   * the binary frame is `[0xB3][varint length][CRC32C, four bytes little-endian][payload]`,
+///     and `0xB3` was chosen precisely so no earlier record shape can begin with it -- the text
+///     frames start with `#`, and an unframed record is a JSON document starting with `{`;
+///   * a VARINT length rather than a fixed four bytes, so a small record does not pay for a
+///     large one;
+///   * a CHECKSUM, which a length alone cannot substitute for -- see the policy below;
+///   * and little-endian, which is what the frame's own checksum already used.
 ///
-/// 1. A BINARY PAYLOAD CONTAINS 0x0A FREELY. The reader used to split on `'\n'`, so any binary
-///    record whose bytes happened to include a newline would be cut in half -- intermittently, by
-///    payload content, which is the worst failure signature available and one that looks correct
-///    in review.
-/// 2. THE NEWLINE CARRIES THE TORN-TAIL PROTOCOL, not just separation. Recovery has to find the
-///    END of the last whole record to compute the truncation point. Without a length there is no
-///    way to find the next boundary, so a partial record at the end cannot be told from a corrupt
-///    record in the middle -- and those two have opposite remedies.
+/// THE BYTE ORDER, PRECISELY, because the first version justified itself wrongly in both
+/// directions. The shared store's WAL frame really is `u32` BIG-endian, so matching it was not an
+/// invention. But the local WAL's length is a `u16` LITTLE-endian field inside a fixed block
+/// footer, so there was never one house convention to match. The frame here is the only structure
+/// that is actually the same thing -- a length-prefixed, checksummed record in a log that also
+/// holds JSON lines -- and it is little-endian. Matching the structure beats matching a number
+/// that happens to be four bytes wide somewhere else.
 ///
-/// A length restores every property and sharpens one: a short record is detected by ARITHMETIC
-/// rather than by a failed parse, and a torn HEADER (fewer bytes left than the header needs) is
-/// itself a clean torn-tail signal.
-#[derive(Debug)]
-enum MetaLogRead<'a> {
-    Framed { consumed: usize, payload: &'a [u8] },
-    Line { consumed: usize, text: &'a str },
-    Torn { why: String },
-}
+/// WHY A CHECKSUM IS NOT OPTIONAL ONCE THE PAYLOAD IS BINARY. Newline framing could always
+/// resync by scanning for the next `\n`. A length prefix cannot, and the fallback -- scanning for
+/// the magic byte -- works only while every payload is JSON text, because a JSON payload cannot
+/// contain a raw control byte. The moment a payload is protobuf, the magic byte appears inside
+/// payloads freely and is no longer a boundary. A checksum is what lets a reader say "this frame
+/// is not valid" without needing to trust the length field to find the next one.
+///
+/// `next_frame` reads all four shapes this file can hold -- the binary frame, the two text
+/// frames, and a bare JSON line -- so lines and frames coexist without a second decision point.
+/// Its contract is the one `load` is built on: `Ok(None)` is a torn tail, and `Err` is a complete
+/// record whose checksum failed.
 
-/// Read one record from the front of `rest`, as either shape.
+/// Marks a framed payload as binary rather than text, using the same one-byte convention
+/// `log_framing` already defines for exactly this question.
 ///
-/// THE ONLY PLACE THAT DECIDES which shape a record is, so the two cannot be told apart two
-/// different ways.
-fn read_meta_log_record(rest: &[u8]) -> MetaLogRead<'_> {
-    if rest.first() == Some(&META_LOG_FRAME_MAGIC) {
-        if rest.len() < META_LOG_FRAME_HEADER {
-            return MetaLogRead::Torn {
-                why: format!(
-                    "a framed record needs {META_LOG_FRAME_HEADER} header bytes and only {} \
-                     remain, so the header itself is torn",
-                    rest.len()
-                ),
-            };
-        }
-        let codec = rest[1];
-        let length = u32::from_be_bytes([rest[2], rest[3], rest[4], rest[5]]) as usize;
-        let total = META_LOG_FRAME_HEADER + length;
-        if rest.len() < total {
-            return MetaLogRead::Torn {
-                why: format!(
-                    "a framed record declared {length} payload bytes but only {} remain",
-                    rest.len() - META_LOG_FRAME_HEADER
-                ),
-            };
-        }
-        if codec != META_LOG_FRAME_CODEC_JSON {
-            // NOT a torn tail and NOT skipped. A codec this build does not know is a record
-            // written by a NEWER build, and the length told us exactly where it ends -- so the
-            // honest answer is to say so by number rather than to guess at the payload or to
-            // silently drop a record somebody's metaserver acknowledged.
-            return MetaLogRead::Framed {
-                consumed: total,
-                payload: &[],
-            };
-        }
-        return MetaLogRead::Framed {
-            consumed: total,
-            payload: &rest[META_LOG_FRAME_HEADER..total],
-        };
-    }
-
-    // The line shape. An unterminated final line is a torn tail: the writer appends the newline
-    // after the record, so a line with no newline is a record whose write did not finish.
-    match rest.iter().position(|byte| *byte == b'\n') {
-        Some(nl) => match std::str::from_utf8(&rest[..nl]) {
-            Ok(text) => MetaLogRead::Line {
-                consumed: nl + 1,
-                text,
-            },
-            Err(err) => MetaLogRead::Torn {
-                why: format!("a line record is not valid text: {err}"),
-            },
-        },
-        None => MetaLogRead::Torn {
-            why: "the last line record has no terminator, so its write did not finish"
-                .to_string(),
-        },
-    }
-}
+/// A payload that does not begin with it is the JSON the line format carries, which is what every
+/// record on disk is today.
+const META_PAYLOAD_BINARY: u8 = crate::log_framing::BINARY_PAYLOAD_MAGIC;
 
 /// Decode a framed record's payload.
 ///
-/// Only the JSON codec is decoded here. A framed record carrying any other codec arrives with an
-/// empty payload from [`read_meta_log_record`] and is reported as unreadable BY NAME -- the
-/// length let the reader step over it cleanly, so it is a held parse failure like any other and
-/// records after it are still an error.
+/// Only the JSON shape is decoded. A binary payload arrives with its length and checksum already
+/// verified by the frame, so it is reported BY NAME as written by a newer build rather than
+/// guessed at -- and because the frame bounded it, the reader stepped over it cleanly rather than
+/// losing its place.
 fn decode_meta_log_payload(payload: &[u8]) -> Result<MetaMutationRecord, String> {
-    if payload.is_empty() {
+    if payload.first() == Some(&META_PAYLOAD_BINARY) {
         return Err(
-            "a framed record carries a codec this build does not read; it was written by a newer \
-             build"
+            "the record carries a binary payload this build does not decode; it was written by a \
+             newer build"
                 .to_string(),
         );
     }
     serde_json::from_slice::<MetaMutationRecord>(payload).map_err(|err| err.to_string())
 }
 
-/// Frame one record for the log. Test-only in this change, because nothing writes frames yet.
+/// Frame one record for the log. Test-only, because nothing writes frames yet.
 ///
 /// The WRITER still appends lines. Reader first: the format has to be readable before anything
-/// emits it, and a frame encoder with no production caller would be dead code inviting a writer
-/// flip that no reader on disk can follow.
+/// emits it, and the whole point of correcting the frame now is that no frame has ever reached
+/// disk -- so this is a change to an unused encoder rather than a migration of live data.
 #[cfg(test)]
 fn frame_meta_log_record(record: &MetaMutationRecord) -> io::Result<Vec<u8>> {
     let payload = serde_json::to_vec(record).map_err(io::Error::other)?;
-    let mut out = Vec::with_capacity(META_LOG_FRAME_HEADER + payload.len());
-    out.push(META_LOG_FRAME_MAGIC);
-    out.push(META_LOG_FRAME_CODEC_JSON);
-    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    out.extend_from_slice(&payload);
-    Ok(out)
+    Ok(crate::log_framing::encode_frame(&payload))
 }
 
 /// Service counters, held outside the metadata lock.
@@ -5915,14 +5858,13 @@ mod tests {
 
     /// A FRAMED RECORD IS MEASURED, NOT SCANNED FOR A NEWLINE.
     ///
-    /// THIS IS THE WHOLE REASON THE FRAMING CHANGED. The reader used to split the file on `'\n'`,
-    /// and a binary payload contains 0x0A freely -- so a record whose bytes happened to include a
-    /// newline would be cut in half, intermittently, by payload content. That is the worst failure
-    /// signature available and it looks correct in review.
+    /// THIS IS WHY THE FRAMING CHANGED AT ALL. A reader that split the file on `'\n'` cuts any
+    /// record whose payload contains 0x0A in half -- intermittently, by payload content, which is
+    /// the worst failure signature available and looks correct in review.
     ///
-    /// Asserted on the scanner directly and with a payload that DOES contain 0x0A, because the
-    /// JSON codec escapes newlines and so could never produce the byte that breaks it. Testing it
-    /// only through the JSON codec would be testing the one case that cannot fail.
+    /// Asserted with a payload that DOES contain newlines, because the JSON codec escapes them
+    /// and so could never produce the byte that breaks it. Testing only through that codec would
+    /// be testing the one case that cannot fail.
     #[test]
     fn a_framed_record_is_consumed_by_its_length_not_by_a_newline() {
         let payload: Vec<u8> = vec![b'a', b'\n', b'b', b'\n', b'\n', b'c'];
@@ -5930,25 +5872,19 @@ mod tests {
             payload.contains(&b'\n'),
             "the payload must contain the byte that used to split a record"
         );
-        let mut framed = vec![META_LOG_FRAME_MAGIC, META_LOG_FRAME_CODEC_JSON];
-        framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-        framed.extend_from_slice(&payload);
+        let mut bytes = crate::log_framing::encode_frame(&payload);
+        let framed_len = bytes.len();
         // A second record after it, so a scanner that stopped at the first newline would land in
-        // the middle of this one rather than at its start.
-        let tail = b"TAIL".to_vec();
-        framed.extend_from_slice(&tail);
+        // the middle of this rather than at its start.
+        bytes.extend_from_slice(b"TAIL");
 
-        match read_meta_log_record(&framed) {
-            MetaLogRead::Framed { consumed, payload: got } => {
-                assert_eq!(
-                    consumed,
-                    META_LOG_FRAME_HEADER + payload.len(),
-                    "the record must be consumed by its declared length"
-                );
+        match crate::log_framing::next_frame(&bytes) {
+            Ok(Some((consumed, got))) => {
+                assert_eq!(consumed, framed_len, "the record must be consumed by its length");
                 assert_eq!(got, payload.as_slice(), "the payload must survive its newlines");
                 assert_eq!(
-                    &framed[consumed..],
-                    tail.as_slice(),
+                    &bytes[consumed..],
+                    b"TAIL",
                     "the scan must resume exactly after the framed record"
                 );
             }
@@ -5966,7 +5902,6 @@ mod tests {
         let path = dir.path().join("meta.log");
         let log = LocalMetaMutationLog::new(&path).unwrap();
 
-        // Two records through the real writer, which still appends lines.
         log.append(&namespace_mutation("line-a"), 11).unwrap();
         log.append(&namespace_mutation("line-b"), 22).unwrap();
         let after_lines = std::fs::read(&path).unwrap();
@@ -5976,7 +5911,6 @@ mod tests {
             "the shipped writer must still be writing lines"
         );
 
-        // Then two framed records appended behind them, as a later build would.
         let mut bytes = after_lines;
         bytes.extend_from_slice(&frame_meta_log_record(&record_of("framed-c", 33)).unwrap());
         bytes.extend_from_slice(&frame_meta_log_record(&record_of("framed-d", 44)).unwrap());
@@ -5998,43 +5932,36 @@ mod tests {
             vec![11, 22, 33, 44],
             "the time must travel with each record in both shapes"
         );
-        // Nothing was torn, so nothing was cut.
         assert_eq!(std::fs::metadata(&path).unwrap().len() as usize, bytes.len());
     }
 
-    /// TORN TAIL, ALL THREE WAYS, AND EACH ONE IS DROPPED *AND REMOVED*.
+    /// TORN TAIL, ALL THREE WAYS, EACH DROPPED *AND REMOVED*.
     ///
-    /// Four properties are being held here, and each is a silent-data-loss path if dropped:
-    ///  1. a partial record at the END is dropped, not refused -- it was never acknowledged,
-    ///     because a writer returns only once a sync covering its bytes completed;
-    ///  2. the fragment is REMOVED, not skipped, because appends write at the end and a fragment
-    ///     left in place would be spliced onto the front of the next record, which would then be
-    ///     the last line and so be dropped on the NEXT restart -- silently losing a write that
-    ///     WAS acknowledged;
-    ///  3. a record that does not parse with records AFTER it stays a hard error (asserted in its
-    ///     own arm below);
+    /// Four properties are held here, and each is a silent-data-loss path if dropped:
+    ///  1. a partial record at the END is dropped, not refused -- it was never acknowledged;
+    ///  2. the fragment is REMOVED, because appends write at the end and a fragment left in place
+    ///     would splice onto the next record, which would then be the last one and be dropped on
+    ///     the NEXT restart -- silently losing a write that WAS acknowledged;
+    ///  3. a record that does not parse with records AFTER it stays a hard error, and a complete
+    ///     record with a bad checksum is never truncated at all (its own arms, below);
     ///  4. the cut is followed by a barrier and an fsync.
     ///
-    /// With a length prefix, (1) is now ARITHMETIC rather than a failed parse, and it has two
-    /// distinct shapes -- a torn HEADER and a torn BODY -- which a container byte alone could not
-    /// tell apart from a corrupt record. Both are covered, alongside the unterminated line the
-    /// old format could produce.
+    /// With a length prefix, (1) is detected by the frame rather than by a failed parse, and it
+    /// has three distinct shapes: torn mid-header, fewer payload bytes than declared, and the
+    /// unterminated line the old format produced. All three are covered.
     #[test]
     fn every_shape_of_torn_tail_is_dropped_and_cut_back_to_a_record_boundary() {
         let good = {
-            let mut bytes = Vec::new();
-            bytes.extend_from_slice(&frame_meta_log_record(&record_of("kept-a", 1)).unwrap());
+            let mut bytes = frame_meta_log_record(&record_of("kept-a", 1)).unwrap();
             bytes.extend_from_slice(&frame_meta_log_record(&record_of("kept-b", 2)).unwrap());
             bytes
         };
-
-        // A whole framed record, truncated three different ways.
         let whole = frame_meta_log_record(&record_of("torn", 3)).unwrap();
         let cases: Vec<(&str, Vec<u8>)> = vec![
-            // (a) torn HEADER: fewer bytes than the header needs.
+            // (a) torn inside the header, before the checksum is complete.
             ("torn header", whole[..3].to_vec()),
-            // (b) torn BODY: the header is whole and declares more payload than remains.
-            ("torn body", whole[..whole.len() - 4].to_vec()),
+            // (b) the header is whole and declares more payload than remains.
+            ("torn payload", whole[..whole.len() - 4].to_vec()),
             // (c) an unterminated line, which is what the old format's torn tail looked like.
             (
                 "unterminated line",
@@ -6059,17 +5986,11 @@ mod tests {
                 2,
                 "{name}: the two acknowledged records must survive, got {loaded:?}"
             );
-
-            // PROPERTY 2: the fragment is GONE, not merely skipped. Cutting to the end of the
-            // last whole record is what makes the next append start on a boundary.
             assert_eq!(
                 std::fs::metadata(&path).unwrap().len() as usize,
                 good.len(),
                 "{name}: the file was not cut back to the last whole record"
             );
-
-            // And the proof that it matters: appending after the cut and reloading finds every
-            // record. Left in place, the fragment would splice onto this append.
             log.append(&namespace_mutation("after-the-cut"), 4).unwrap();
             let again = log.load().unwrap();
             assert_eq!(
@@ -6080,30 +6001,28 @@ mod tests {
         }
     }
 
-    /// PROPERTY 3: THE MIDDLE IS NOT THE TAIL.
+    /// PROPERTY 3, FIRST HALF: THE MIDDLE IS NOT THE TAIL.
     ///
-    /// A record that does not parse with records after it is an ERROR, deliberately: those later
-    /// records were acknowledged, and stopping there would discard them silently. The tail is
-    /// expected; the middle is not. Asserted in both shapes, because the framing change gave the
-    /// reader a second way to reach the same decision.
+    /// A record that does not parse with records after it is an ERROR: those later records were
+    /// acknowledged, and stopping there would discard them silently.
     #[test]
     fn a_record_that_does_not_parse_with_records_after_it_is_still_an_error() {
         let mut checked = 0;
         for (name, bad) in [
-            ("a corrupt line", b"{\"at_ms\":1,\"not_a_mutation\":true}\n".to_vec()),
-            ("a framed record with an unknown codec", {
-                let payload = b"{}".to_vec();
-                let mut f = vec![META_LOG_FRAME_MAGIC, 99u8];
-                f.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-                f.extend_from_slice(&payload);
-                f
+            (
+                "a corrupt line",
+                b"{\"at_ms\":1,\"not_a_mutation\":true}\n".to_vec(),
+            ),
+            ("a framed record with a binary payload", {
+                let mut payload = vec![crate::log_framing::BINARY_PAYLOAD_MAGIC];
+                payload.extend_from_slice(b"\x08\x01");
+                crate::log_framing::encode_frame(&payload)
             }),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("meta.log");
             let mut bytes = frame_meta_log_record(&record_of("first", 1)).unwrap();
             bytes.extend_from_slice(&bad);
-            // The record AFTER the bad one is what turns it from a tail into an error.
             bytes.extend_from_slice(&frame_meta_log_record(&record_of("last", 2)).unwrap());
             std::fs::write(&path, &bytes).unwrap();
 
@@ -6115,8 +6034,6 @@ mod tests {
                 err.to_string().contains("not a torn tail"),
                 "{name}: the refusal must say why: {err}"
             );
-            // Nothing was cut: a middle failure is not a tail, so the file is left alone for an
-            // operator to look at rather than quietly shortened.
             assert_eq!(
                 std::fs::metadata(&path).unwrap().len() as usize,
                 bytes.len(),
@@ -6125,6 +6042,63 @@ mod tests {
             checked += 1;
         }
         assert_eq!(checked, 2, "both shapes of middle failure are covered");
+    }
+
+    /// PROPERTY 3, SECOND HALF: A COMPLETE RECORD WITH A BAD CHECKSUM IS NEVER TRUNCATED.
+    ///
+    /// THIS IS WHAT THE CHECKSUM BUYS, and it is the case a length alone cannot judge. A corrupt
+    /// length field is indistinguishable from a torn tail: too large and the bytes run out, which
+    /// is exactly what an interrupted append looks like -- so a reader with only a length would
+    /// truncate, discarding every good record sitting behind the bad one.
+    ///
+    /// The checksum separates the two. A record whose bytes are ALL PRESENT and whose checksum
+    /// fails was written completely, and therefore acknowledged, so dropping it is the data loss
+    /// property 3 forbids. It is refused wherever it sits -- including as the last record, which
+    /// is why this arm puts it there, the position a tail-truncating reader would have eaten.
+    ///
+    /// Deciding by position is not available: to learn whether records follow a bad one you must
+    /// step over it by its declared length, which is the one field a failed checksum gives you no
+    /// reason to trust. Shortness is the acknowledgement test that works, and that is the torn
+    /// tail above.
+    #[test]
+    fn a_complete_record_with_a_bad_checksum_is_refused_and_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("meta.log");
+
+        let good = frame_meta_log_record(&record_of("kept", 1)).unwrap();
+        let mut damaged = frame_meta_log_record(&record_of("damaged", 2)).unwrap();
+        // Flip a bit in the PAYLOAD, leaving the length intact: the record stays complete and
+        // only its checksum disagrees.
+        let last = damaged.len() - 1;
+        damaged[last] ^= 0b0000_0001;
+
+        let mut bytes = good.clone();
+        bytes.extend_from_slice(&damaged);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let log = LocalMetaMutationLog::new(&path).unwrap();
+        let err = log
+            .load()
+            .expect_err("a complete record with a bad checksum must be refused");
+        assert!(
+            err.to_string().contains("checksum does not match"),
+            "the refusal must name the checksum: {err}"
+        );
+        // AND THE FILE IS INTACT. A tail-truncating reader would have cut this record away.
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len() as usize,
+            bytes.len(),
+            "a damaged record must not be truncated away"
+        );
+
+        // CONTROL: the same file without the damage loads both records, so the refusal above is
+        // attributable to the flipped bit and not to the fixture.
+        let clean = dir.path().join("clean.log");
+        let mut ok_bytes = good;
+        ok_bytes.extend_from_slice(&frame_meta_log_record(&record_of("damaged", 2)).unwrap());
+        std::fs::write(&clean, &ok_bytes).unwrap();
+        let ok_log = LocalMetaMutationLog::new(&clean).unwrap();
+        assert_eq!(ok_log.load().unwrap().len(), 2, "the undamaged control must load");
     }
 
     #[test]
