@@ -10451,8 +10451,8 @@ fn the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible() 
     );
     for stage in &cycle.stages {
         eprintln!(
-            "    {:<26} {:>9} us  {:>5} ms",
-            stage.stage, stage.duration_us, stage.duration_ms
+            "    {:<26} {:>9} us  {:>5} ms  walk_entries={}",
+            stage.stage, stage.duration_us, stage.duration_ms, stage.walk.live_block_entries
         );
     }
 
@@ -10474,6 +10474,32 @@ fn the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible() 
         "every one of the {} stage rows reports 0 us. The millisecond rows sum to {total_ms} ms on          this round, which is exactly the case this field exists for: if the round took measurable          time, at least one stage must be able to say so",
         cycle.stages.len()
     );
+
+    // AND WHICH STAGES SURVEY THE SHARD ON A ROUND WITH NOTHING TO DO.
+    //
+    // The walk counter is deterministic where the clock is not -- the same fixture gives the same
+    // entry count on every run, so this is assertable where a duration is not. Measured on this
+    // fixture: `plan` walks the shard once, `reclaim_wal` five times and
+    // `merged_dump_load_policy` about six, for ~12 whole-shard walks on an IDLE round, while the
+    // seven stages below walk NOTHING.
+    //
+    // Pinned as the invariant rather than as the total: these seven must not start surveying the
+    // shard. The three that do are the round's whole cost and bringing them down is its own
+    // change; a pin on the TOTAL would have to be edited by that change and would therefore guard
+    // nothing in the meantime.
+    for stage in &cycle.stages {
+        if matches!(
+            stage.stage.as_str(),
+            "plan" | "reclaim_wal" | "merged_dump_load_policy"
+        ) {
+            continue;
+        }
+        assert_eq!(
+            stage.walk.live_block_entries, 0,
+            "stage `{}` walked {} live-block entries on a round with nothing to reclaim. Only the              lifecycle plan and the two stages built on it survey the shard; a stage that starts              doing so turns an idle round into another whole-shard pass",
+            stage.stage, stage.walk.live_block_entries
+        );
+    }
 }
 
 /// A COLD RELOAD, not a synthetic apply loop: a fresh engine rebuilds the shard from disk.
