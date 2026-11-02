@@ -190,6 +190,14 @@ jobs:
       #     while the guard beside it, which asserts `Default`, stayed green
       #   - and those shipped values are non-zero, which the equality above cannot say on its
       #     own: if every bound went to 0 in `Default` too, both sides would agree
+      #   - the metadata log's RECOVERY PROTOCOL. The log is a SEQUENCE, so its framing carries
+      #     torn-tail recovery and not just separation: a partial record at the end is dropped
+      #     and REMOVED (left in place it splices onto the next append, which then reads as the
+      #     torn tail and is dropped on the following restart -- silently losing a write that WAS
+      #     acknowledged), while a record that does not parse with records AFTER it is a hard
+      #     error, because those were acknowledged too. Four arms, one per property, plus the
+      #     0x0A invariant: a binary payload contains newlines freely, and the reader used to
+      #     split on them.
       #   - the durable command encoding: the four guards below say which write commands reach
       #     the shared WAL as protobuf and which still reach it as JSON. They were pinned
       #     NOWHERE until now, so they ran only in the advisory step above -- and that step is
@@ -225,6 +233,10 @@ jobs:
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
             shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
+            meta::tests::a_framed_record_is_consumed_by_its_length_not_by_a_newline \
+            meta::tests::the_log_reads_lines_and_framed_records_from_one_file \
+            meta::tests::every_shape_of_torn_tail_is_dropped_and_cut_back_to_a_record_boundary \
+            meta::tests::a_record_that_does_not_parse_with_records_after_it_is_still_an_error \
             shared_store::tests::the_widened_object_readers_accept_both_shapes \
             shared_store::tests::the_object_writer_is_json_until_asked_and_the_reader_never_cares \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
