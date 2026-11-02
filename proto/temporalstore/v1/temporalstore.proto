@@ -264,6 +264,11 @@ message Command {
     FeatureAppendWithPolicy feature_append_with_policy = 42;
     SeenCheck seen_check = 43;
     StringSetConditional string_set_conditional = 44;
+    ContextResourceBlobBegin context_resource_blob_begin = 45;
+    ContextResourceBlobAppend context_resource_blob_append = 46;
+    ContextResourceBlobCommit context_resource_blob_commit = 47;
+    ContextResourceBlobPut context_resource_blob_put = 48;
+    ContextResourceBlobSweep context_resource_blob_sweep = 49;
   }
 }
 
@@ -378,6 +383,16 @@ message ControlStateQuery {
   uint64 end_ms = 4;
 }
 
+// A PROJECTION FOR A CLIENT, NOT THE DURABLE NODE. DO NOT RE-UNIFY THE TWO.
+//
+// Four fields against the fifteen the stored node carries. That is correct here -- a caller asked
+// for these and the rest were never part of the question -- and it is why this message must never
+// be used to WRITE a node: the conversion fills the absent fields with zeros and an empty vector,
+// and on disk a fabricated 0 is indistinguishable from a real one. `node_id` is also a STRING that
+// the Rust side hashes one-way, so the durable identity cannot be recovered from it.
+//
+// The durable record has its own message. Two jobs, two messages: widening this one would change
+// the request/response contract, which is a different surface from the log.
 message ContextNode {
   string node_id = 1;
   string model = 2;
@@ -955,4 +970,44 @@ message StringSetConditional {
   StringSetCondition condition = 4;
   bool return_old = 5;
   bool keep_ttl = 6;
+}
+
+// ===========================================================================================
+// The resource-blob writes. All five are scalars, bytes and a repeated hash list -- the
+// payload became `bytes` when it stopped being a base64 string, so nothing here carries the
+// 33% inflation a string field would have preserved into the binary format.
+//
+// They are mapped individually rather than as a set. The commit point is the RESOURCE RECORD
+// that carries the returned URI, not the Commit command, so a blob with no record is garbage
+// the sweep collects -- an expected state, not a corrupt one. The upload token is an opaque
+// string that round-trips identically under either codec, so a mixed-codec
+// begin/append/commit sequence still matches up.
+// ===========================================================================================
+
+message ContextResourceBlobBegin {
+  uint64 tenant_hash = 1;
+}
+
+message ContextResourceBlobAppend {
+  uint64 tenant_hash = 1;
+  string upload_token = 2;
+  bytes payload = 3;
+}
+
+message ContextResourceBlobCommit {
+  uint64 tenant_hash = 1;
+  string upload_token = 2;
+}
+
+message ContextResourceBlobPut {
+  uint64 tenant_hash = 1;
+  bytes payload = 2;
+}
+
+message ContextResourceBlobSweep {
+  uint64 tenant_hash = 1;
+  // Packed by default. It reads as a SET, so order is not load-bearing here -- unlike the
+  // snapshot manifest's checksum list, where the published digest folds it in order.
+  repeated uint64 referenced_content_hashes = 2;
+  uint64 min_age_ms = 3;
 }

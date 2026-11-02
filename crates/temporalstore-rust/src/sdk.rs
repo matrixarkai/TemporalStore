@@ -553,6 +553,37 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 keep_ttl: command.keep_ttl,
             }
         }
+        v1::command::Kind::ContextResourceBlobBegin(command) => {
+            types::Command::ContextResourceBlobBegin {
+                tenant_hash: command.tenant_hash,
+            }
+        }
+        v1::command::Kind::ContextResourceBlobAppend(command) => {
+            types::Command::ContextResourceBlobAppend {
+                tenant_hash: command.tenant_hash,
+                upload_token: command.upload_token,
+                payload: command.payload,
+            }
+        }
+        v1::command::Kind::ContextResourceBlobCommit(command) => {
+            types::Command::ContextResourceBlobCommit {
+                tenant_hash: command.tenant_hash,
+                upload_token: command.upload_token,
+            }
+        }
+        v1::command::Kind::ContextResourceBlobPut(command) => {
+            types::Command::ContextResourceBlobPut {
+                tenant_hash: command.tenant_hash,
+                payload: command.payload,
+            }
+        }
+        v1::command::Kind::ContextResourceBlobSweep(command) => {
+            types::Command::ContextResourceBlobSweep {
+                tenant_hash: command.tenant_hash,
+                referenced_content_hashes: command.referenced_content_hashes,
+                min_age_ms: command.min_age_ms,
+            }
+        }
     })
 }
 
