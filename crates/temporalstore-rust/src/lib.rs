@@ -37,6 +37,7 @@ pub mod snapshot_probe;
 #[global_allocator]
 static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
+pub mod binary_safe_name;
 pub mod bytes_serde;
 pub mod block_store;
 pub mod checksum;
