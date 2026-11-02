@@ -1,5 +1,22 @@
 # TemporalStore — Python SDK
 
+> **This page describes a package that is no longer in this repository.**
+>
+> The `temporalstore` Python package, its `examples/` directory and
+> `tools/test_temporalstore_features.py` were all removed by
+> *"The Python moves out: this repository becomes the Rust engine"* (#2195).
+> This repository now ships the Rust engine, the proxy and the data node; the
+> Python client lives in the `matrixark` repository. Every `PYTHONPATH`,
+> `import temporalstore` and example path below therefore refers to files that
+> are not here, and is kept only as a record of the surface that moved.
+>
+> **If you are looking for a Python entry point into TemporalStore today:**
+> talk to the data node's command surface over HTTP — `POST /execute` and
+> `POST /batch_execute` with a `Command` document — which is what
+> `integrations/feast/feast_temporalstore_command/client.py` does in about a
+> hundred lines of standard library, and `sdk/proxy/openapi.yaml` describes for
+> the proxy's `/ProxyService/*` endpoints.
+
 A small, dependency-optional Python client for TemporalStore. Talks to the
 proxy over HTTP/JSON; no build step required.
 

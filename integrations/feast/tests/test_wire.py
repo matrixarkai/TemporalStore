@@ -35,18 +35,43 @@ def test_the_wire_layer_imports_without_feast_or_pydantic():
     failing at import. ``__init__`` resolves the public names lazily (PEP 562) so that cannot
     happen silently again. A test that merely imported ``wire`` would not catch it, because the
     package ``__init__`` runs first either way -- so this asserts on ``sys.modules``.
+
+    ASSERTED IN A SUBPROCESS, AND THAT IS THE WHOLE POINT. An in-process check of
+    ``sys.modules`` reports on the process it runs in, not on this package: anything else
+    sharing the interpreter that already imported Feast makes the assertion fail no matter how
+    lazy ``__init__`` is, and in an environment without Feast it passes whether ``__init__`` is
+    lazy or not. It is therefore false in exactly the runs that matter and vacuous in the rest.
+    Measured: run in-process by the directory's runner under an interpreter that has Feast
+    installed, the in-process form failed while the package was behaving correctly. A fresh
+    interpreter is the only process whose ``sys.modules`` is evidence about this import.
     """
+    import os
+    import subprocess
     import sys
 
-    import feast_temporalstore  # noqa: F401  -- the package __init__ is what is under test
-    import feast_temporalstore.wire  # noqa: F401
-
-    for heavy in ("feast", "pydantic"):
-        assert heavy not in sys.modules, (
-            f"importing feast_temporalstore pulled in {heavy!r}. The package __init__ must resolve "
-            "its public names lazily, or the encoding's tests stop being runnable without Feast's "
-            "whole stack installed."
-        )
+    package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = (
+        "import sys;"
+        "import feast_temporalstore as m;"
+        "import feast_temporalstore.wire;"
+        "assert m.__getattr__ is not None;"
+        "heavy = sorted(n for n in sys.modules"
+        " if n == 'feast' or n.startswith('feast.') or n == 'pydantic');"
+        "print(','.join(heavy));"
+        "sys.exit(1 if heavy else 0)"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PYTHONPATH=package_parent),
+    )
+    assert completed.returncode == 0, (
+        "importing feast_temporalstore pulled in "
+        f"{completed.stdout.strip() or completed.stderr.strip()}. The package __init__ must "
+        "resolve its public names lazily, or the encoding's tests stop being runnable without "
+        "Feast's whole stack installed."
+    )
 
 
 def test_a_key_of_arbitrary_bytes_survives_the_round_trip():

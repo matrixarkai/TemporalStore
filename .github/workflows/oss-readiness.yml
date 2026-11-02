@@ -52,6 +52,32 @@ jobs:
       - name: Refuse retired object-store naming
         run: python tools/validate_legacy_object_store_names.py
 
+      # An orphan source file is as green as a correct one. `py_compile tools/*.py`
+      # above covers tools/ and nothing else, so the two Feast provider packages --
+      # Python that SHIPS TO USERS -- were compiled by no job at all, and the wire
+      # tests were bare pytest-style functions with no runner, so no job executed
+      # them even in principle. Measured when they were first run: one of them
+      # asserted on `sys.modules` IN-PROCESS, which is false in any process that
+      # has imported Feast and vacuous in any that has not.
+      #
+      # The suite runs here WITHOUT Feast installed, and that is the point: both
+      # client tiers are pure standard library and must stay that way, so the
+      # import tests assert that importing either package does not drag Feast in.
+      # The runner asserts how many tests EXECUTED -- not how many were collected --
+      # because `unittest` collects a `skipUnless` class either way, so a tier that
+      # silently stops running would otherwise report a green run of skips.
+      - name: Byte-compile and test the Feast integrations
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            integrations/feast/run_tests.py \
+            integrations/feast/feast_temporalstore/*.py \
+            integrations/feast/feast_temporalstore_command/*.py \
+            integrations/feast/feast_temporalstore_command/tests/*.py \
+            integrations/feast/tests/*.py \
+            integrations/feast/benchmarks/*.py
+          python integrations/feast/run_tests.py
+
       - name: Nothing claims the project is closed
         run: |
           set -euo pipefail
