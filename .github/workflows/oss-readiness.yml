@@ -49,6 +49,21 @@ jobs:
       # Green and unwired is the same protection as absent. This guard sat in tools/ running
       # nowhere, and it was red on main -- one false positive on the English phrase "byte STORED"
       # -- so wiring it would have broken the build and nobody did.
+      # An orphan source file is as green as a correct one. `py_compile tools/*.py`
+      # above covers tools/ and nothing else, so this package -- which is Python
+      # that ships to users -- was compiled by no job at all until this step.
+      # The suite runs here WITHOUT Feast installed, which is the point: its
+      # client tier is pure standard library and must stay that way, and the
+      # import test asserts that importing the package does not drag Feast in.
+      # The runner asserts how many tests EXECUTED, so a tier that silently
+      # stops running fails instead of reporting a green run of skips.
+      - name: Byte-compile and test the Feast integration
+        run: |
+          set -euo pipefail
+          python -m py_compile             integrations/feast/feast_temporalstore_command/*.py             integrations/feast/feast_temporalstore_command/tests/*.py             integrations/feast/benchmarks/*.py
+          cd integrations/feast
+          PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_online_store.py
+
       - name: Refuse retired object-store naming
         run: python tools/validate_legacy_object_store_names.py
 

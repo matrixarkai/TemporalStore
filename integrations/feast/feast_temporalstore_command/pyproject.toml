@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feast-temporalstore-command"
+version = "0.1.0"
+description = "Feast online store backed by TemporalStore, over its native command surface"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "MatrixArkAI" }]
+keywords = ["feast", "feature-store", "temporalstore", "online-store"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+]
+# The transport is `http.client` from the standard library, so the only
+# dependency is Feast itself.
+dependencies = ["feast>=0.40"]
+
+[project.urls]
+Homepage = "https://github.com/matrixarkai/TemporalStore"
+Repository = "https://github.com/matrixarkai/TemporalStore"
+
+[tool.setuptools]
+packages = ["feast_temporalstore_command"]
