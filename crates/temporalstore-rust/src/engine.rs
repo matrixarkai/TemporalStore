@@ -6046,7 +6046,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // AND DROPPING AN ENTRY THE LOOKUP DOES NOT HOLD IS A NO-OP, so the branch is not replaced
         // by a condition -- it is replaced by nothing.
         debug_assert!(
-            !shard.bucket_index.names_no_object_pages()
+            !shard.bucket_index.names_no_object_blocks()
                 || !shard
                     .bucket_index
                     .bucket_map
@@ -6064,7 +6064,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
-    if shard.bucket_index.names_no_object_pages() {
+    if shard.bucket_index.names_no_object_blocks() {
         return shard.bucket_index.bucket_map.keys().copied().collect();
     }
     let mut buckets = BTreeSet::new();
@@ -6235,7 +6235,7 @@ fn mark_bucket_index_block_deleted_recording(
     // refs is the lowest-numbered bucket holding a live block of it, asserted against the walk on
     // every debug run for as long as the blocks carried a key to walk by. There is no second source
     // to compare against now, so the claim is spent rather than weakened.
-    let target_buckets = if shard.bucket_index.names_no_object_pages() {
+    let target_buckets = if shard.bucket_index.names_no_object_blocks() {
         shard
             .bucket_index
             .bucket_map
@@ -7024,7 +7024,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     // sites rather than by a type -- there is no door that installs AND files -- and that is filed
     // as its own design change rather than carried by a width step.
     debug_assert!(
-        !shard.bucket_index.names_no_object_pages()
+        !shard.bucket_index.names_no_object_blocks()
             || !shard
                 .bucket_index
                 .bucket_map
@@ -7749,12 +7749,12 @@ fn object_manager_stats(
 ) -> ObjectManagerStats {
     if !shard.bucket_index.bucket_map.is_empty() {
         let (bucket_object_count, bucket_block_ref_count, bucket_dirty_object_count) =
-            if !shard.bucket_index.names_no_object_pages() {
+            if !shard.bucket_index.names_no_object_blocks() {
                 (
                     // The map is keyed by OBJECT now, so its length is the object count directly.
                     // It used to be the length of a second map kept alongside this one, which is
                     // the question that stopped that map from simply being deleted.
-                    shard.bucket_index.objects_naming_pages(),
+                    shard.bucket_index.objects_naming_blocks(),
                     // Maintained incrementally; the walk is the fallback for an index that has
                     // been deserialized but not yet rebuilt. This runs on the heartbeat timer
                     // under the shard read lock, so walking here shows up as write contention.
@@ -7869,7 +7869,7 @@ fn object_manager_stats(
                 .values()
                 .map(|slot| slot.owned_element_count())
                 .sum::<usize>();
-        let dirty_bucket_count = if !shard.bucket_index.names_no_object_pages() {
+        let dirty_bucket_count = if !shard.bucket_index.names_no_object_blocks() {
             // COUNTED BEFORE ANY SET IS BUILT, because in two cases the set cannot change the
             // answer and building it is the whole allocation of this function.
             //
