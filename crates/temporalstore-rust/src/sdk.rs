@@ -632,6 +632,26 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 },
             }
         }
+        v1::command::Kind::ContextUpsertNode(command) => {
+            // Refused rather than defaulted: an upsert with no node would file a record of all
+            // zeros, and a fabricated zero on disk cannot be told from a real one.
+            let node = command
+                .node
+                .ok_or_else(|| TonicStatus::invalid_argument("context node record missing"))?;
+            types::Command::ContextUpsertNode {
+                tenant_hash: command.tenant_hash,
+                node: Box::new(context_node_record_from_proto(node)),
+            }
+        }
+        v1::command::Kind::ContextSetNodeEmbedding(command) => {
+            types::Command::ContextSetNodeEmbedding {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                model_hash: command.model_hash,
+                vector: command.vector,
+                updated_at_ms: command.updated_at_ms,
+            }
+        }
         v1::command::Kind::ContextWriteIndexRef(command) => {
             let index_ref = command
                 .index_ref
@@ -650,6 +670,56 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             }
         }
     })
+}
+
+/// THE DURABLE NODE, RUST TO WIRE. ALL FIFTEEN FIELDS.
+///
+/// NOT `sdk_context_node_to_types`, which converts the four-field CLIENT projection and
+/// fabricates the rest. This one is field for field, including the three the JSON form no longer
+/// writes -- `status`, `l1_ref`, `raw_metadata_ref` are `skip_serializing` but still read for
+/// legacy inputs, and the WAL's contract is to reproduce the COMMAND rather than to re-apply the
+/// JSON form's write policy.
+///
+/// Both vectors keep their own model hash. A vector read under the wrong encoder yields no error,
+/// only a cosine across two vector spaces, so the hash is the check and dropping it disarms it.
+pub(crate) fn context_node_record_to_proto(node: &types::ContextNode) -> v1::ContextNodeRecord {
+    v1::ContextNodeRecord {
+        node_hash: node.node_hash,
+        parent_hash: node.parent_hash,
+        kind: node.kind,
+        canonical_name: node.canonical_name.clone(),
+        l0: node.l0.clone(),
+        status: node.status,
+        last_event_time_ms: node.last_event_time_ms,
+        l1_ref: node.l1_ref.clone(),
+        raw_metadata_ref: node.raw_metadata_ref.clone(),
+        vector: node.vector.clone(),
+        embedding_model_hash: node.embedding_model_hash,
+        embedding_updated_at_ms: node.embedding_updated_at_ms,
+        summary_vector: node.summary_vector.clone(),
+        summary_vector_valid_from_ms: node.summary_vector_valid_from_ms,
+        summary_vector_model_hash: node.summary_vector_model_hash,
+    }
+}
+
+pub(crate) fn context_node_record_from_proto(node: v1::ContextNodeRecord) -> types::ContextNode {
+    types::ContextNode {
+        node_hash: node.node_hash,
+        parent_hash: node.parent_hash,
+        kind: node.kind,
+        canonical_name: node.canonical_name,
+        l0: node.l0,
+        status: node.status,
+        last_event_time_ms: node.last_event_time_ms,
+        l1_ref: node.l1_ref,
+        raw_metadata_ref: node.raw_metadata_ref,
+        vector: node.vector,
+        embedding_model_hash: node.embedding_model_hash,
+        embedding_updated_at_ms: node.embedding_updated_at_ms,
+        summary_vector: node.summary_vector,
+        summary_vector_valid_from_ms: node.summary_vector_valid_from_ms,
+        summary_vector_model_hash: node.summary_vector_model_hash,
+    }
 }
 
 pub(crate) fn string_set_condition_to_proto(
