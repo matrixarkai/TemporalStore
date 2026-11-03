@@ -233,6 +233,8 @@ jobs:
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
             shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::the_node_and_embedding_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::an_upsert_with_no_node_record_is_refused \
             shared_store::tests::the_scalar_context_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_absent_nested_context_record_is_refused \
             shared_store::tests::the_resource_blob_writes_are_framed_as_protobuf_and_round_trip \

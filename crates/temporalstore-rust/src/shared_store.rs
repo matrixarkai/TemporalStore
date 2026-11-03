@@ -4184,6 +4184,26 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 event_id_hash: index_ref.event_id_hash,
             }),
         }),
+        Command::ContextUpsertNode { tenant_hash, node } => {
+            v1::command::Kind::ContextUpsertNode(v1::ContextUpsertNode {
+                tenant_hash: *tenant_hash,
+                node: Some(sdk::context_node_record_to_proto(node)),
+            })
+        }
+        Command::ContextSetNodeEmbedding {
+            tenant_hash,
+            node_hash,
+            model_hash,
+            vector,
+            updated_at_ms,
+        } => v1::command::Kind::ContextSetNodeEmbedding(v1::ContextSetNodeEmbedding {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            // The guard travels with the vector. No quantisation on the way through.
+            model_hash: *model_hash,
+            vector: vector.clone(),
+            updated_at_ms: *updated_at_ms,
+        }),
         _ => return None,
     };
     Some(v1::Command { kind: Some(kind) })
@@ -11147,9 +11167,7 @@ mod tests {
 /// covering one requires deleting its name here, in the same change. So the work left is visible
 /// in the tree instead of in a plan, and progress cannot be undone quietly.
 const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
-    "ContextSetNodeEmbedding",
     "ContextUpsertEntity",
-    "ContextUpsertNode",
     "ContextUpsertSummary",
     "ContextWriteCompressionEvent",
     "ContextWriteEvent",
@@ -11916,6 +11934,191 @@ fn an_absent_nested_context_record_is_refused() {
     assert!(
         sdk::sdk_command_to_types(ok).is_ok(),
         "a present child ref must still decode"
+    );
+}
+
+/// THE DURABLE NODE WRITE AND THE EMBEDDING WRITE, DRIVEN THROUGH THE REAL FRAME.
+///
+/// THE FIXTURE SETS EVERY ONE OF THE FIFTEEN FIELDS TO A DISTINCT NON-ZERO VALUE. That is the
+/// point of this arm rather than a convenience: the mistake it exists to catch is reusing the
+/// four-field client projection, whose conversion FABRICATES the other eleven as zeros and an
+/// empty vector. A fixture with defaults in those fields would round-trip cleanly through a
+/// lossy mapping and prove nothing.
+///
+/// THREE SEPARATE MODEL-HASH GUARDS ARE ASSERTED INDIVIDUALLY. A vector read under the wrong
+/// encoder produces no length error and no complaint, only a cosine taken across two vector
+/// spaces -- so each of `embedding_model_hash`, `summary_vector_model_hash` and the embedding
+/// write's own `model_hash` is checked by itself, with a DIFFERENT value, so one shared field or
+/// one dropped field cannot pass.
+#[test]
+fn the_node_and_embedding_writes_are_framed_as_protobuf_and_round_trip() {
+    use crate::types::ContextNode;
+
+    // Every field distinct and non-zero. The two vectors differ, and so do their model hashes.
+    let node = ContextNode {
+        node_hash: 101,
+        parent_hash: 102,
+        kind: 3,
+        canonical_name: "canonical".into(),
+        l0: "level zero text".into(),
+        status: 4,
+        last_event_time_ms: 105,
+        l1_ref: "l1-ref".into(),
+        raw_metadata_ref: "raw-ref".into(),
+        vector: vec![0.5, -0.25, 1.0],
+        embedding_model_hash: 901,
+        embedding_updated_at_ms: 106,
+        summary_vector: vec![-1.0, 0.125],
+        summary_vector_valid_from_ms: 107,
+        summary_vector_model_hash: 902,
+    };
+    // DENOMINATOR: a field left at its default would make the round trip below pass against a
+    // mapping that dropped it, which is exactly how reusing the client projection would look.
+    assert_ne!(node.status, 0, "the deprecated fields must be non-zero in this fixture");
+    assert_ne!(node.embedding_model_hash, node.summary_vector_model_hash,
+        "the two encoder guards must differ, or one shared field would pass");
+    assert_ne!(node.vector, node.summary_vector,
+        "the two vectors must differ, or a mapping that swapped them would pass");
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ContextUpsertNode",
+            Command::ContextUpsertNode {
+                tenant_hash: 7,
+                node: Box::new(node.clone()),
+            },
+        ),
+        (
+            "ContextSetNodeEmbedding",
+            Command::ContextSetNodeEmbedding {
+                tenant_hash: 7,
+                node_hash: 101,
+                model_hash: 903,
+                vector: vec![0.0, 2.5, -3.75],
+                updated_at_ms: 108,
+            },
+        ),
+        (
+            "ContextSetNodeEmbedding (empty vector)",
+            Command::ContextSetNodeEmbedding {
+                tenant_hash: 7,
+                node_hash: 101,
+                // A zero model hash is what a record written before the guard existed carries,
+                // and it must survive as zero rather than being refused or invented.
+                model_hash: 0,
+                vector: Vec::new(),
+                updated_at_ms: 109,
+            },
+        ),
+    ];
+    assert_eq!(cases.len(), 3, "three cases over the two commands this batch mapped");
+
+    for (name, command) in cases {
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+
+    // ---- AND THE FIELD-BY-FIELD CHECK, so a failure names WHICH field was lost rather than
+    // ---- only that the commands differed.
+    let proto = sdk::context_node_record_to_proto(&node);
+    let back = sdk::context_node_record_from_proto(proto);
+    assert_eq!(back.node_hash, node.node_hash);
+    assert_eq!(back.parent_hash, node.parent_hash);
+    assert_eq!(back.kind, node.kind);
+    assert_eq!(back.canonical_name, node.canonical_name);
+    assert_eq!(back.l0, node.l0);
+    assert_eq!(back.status, node.status, "a deprecated-but-read field was dropped");
+    assert_eq!(back.last_event_time_ms, node.last_event_time_ms);
+    assert_eq!(back.l1_ref, node.l1_ref, "a deprecated-but-read field was dropped");
+    assert_eq!(
+        back.raw_metadata_ref, node.raw_metadata_ref,
+        "a deprecated-but-read field was dropped"
+    );
+    assert_eq!(back.vector, node.vector);
+    assert_eq!(
+        back.embedding_model_hash, node.embedding_model_hash,
+        "the encoder guard for `vector` was lost, which disarms the wrong-model check"
+    );
+    assert_eq!(back.embedding_updated_at_ms, node.embedding_updated_at_ms);
+    assert_eq!(back.summary_vector, node.summary_vector);
+    assert_eq!(
+        back.summary_vector_valid_from_ms, node.summary_vector_valid_from_ms,
+        "without this the summary-vector copy cannot be told to be the right one"
+    );
+    assert_eq!(
+        back.summary_vector_model_hash, node.summary_vector_model_hash,
+        "the encoder guard for `summary_vector` was lost, which disarms the wrong-model check"
+    );
+}
+
+/// AN UPSERT WITH NO NODE RECORD IS REFUSED, NOT DEFAULTED.
+///
+/// The record is a message field and therefore optional on the wire. Defaulting would file a node
+/// of all zeros -- node hash zero, no vector, and crucially a model hash of zero that reads as
+/// "no encoder recorded" rather than as an error. That is the fabricated-zero shape the durable
+/// record exists to avoid.
+#[test]
+fn an_upsert_with_no_node_record_is_refused() {
+    let missing = v1::Command {
+        kind: Some(v1::command::Kind::ContextUpsertNode(v1::ContextUpsertNode {
+            tenant_hash: 7,
+            node: None,
+        })),
+    };
+    let err = sdk::sdk_command_to_types(missing)
+        .expect_err("an absent node record must be refused, not defaulted");
+    assert!(
+        err.message().contains("node record missing"),
+        "the refusal must name what was missing: {}",
+        err.message()
+    );
+
+    // CONTROL: a present record still decodes, so the refusal is not the decoder refusing all.
+    let present = v1::Command {
+        kind: Some(v1::command::Kind::ContextUpsertNode(v1::ContextUpsertNode {
+            tenant_hash: 7,
+            node: Some(v1::ContextNodeRecord {
+                node_hash: 101,
+                ..Default::default()
+            }),
+        })),
+    };
+    assert!(
+        sdk::sdk_command_to_types(present).is_ok(),
+        "a present node record must still decode"
     );
 }
 
