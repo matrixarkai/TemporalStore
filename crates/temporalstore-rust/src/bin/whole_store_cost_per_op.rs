@@ -49,11 +49,39 @@ fn tree_bytes(root: &std::path::Path) -> u64 {
     total
 }
 
+/// Bytes per top-level directory under `root`, so a delta can be attributed to a leg rather than
+/// landing in one undifferentiated total. Enumerated from the filesystem rather than from a list of
+/// names, because the names are the engine's business and a hardcoded list silently omits a leg the
+/// engine adds later -- which is how a census starts missing a row.
+fn legs(root: &std::path::Path) -> std::collections::BTreeMap<String, u64> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(meta) = entry.metadata() else { continue };
+        let bytes = if meta.is_dir() {
+            tree_bytes(&entry.path())
+        } else {
+            meta.len()
+        };
+        *out.entry(name).or_insert(0) += bytes;
+    }
+    out
+}
+
 fn padded(prefix: &str, index: usize, width: usize) -> String {
     let mut s = format!("{prefix}{index}");
-    // Fixed width, so the payload total is ops * width and a reader can check the arithmetic.
+    // Fixed width, so the total is ops * width and a reader can check the arithmetic -- but the
+    // FILLER VARIES. Padding with one repeated character made a container model's member
+    // compressible, and a container model stores its member, so the same artefact that broke the
+    // value payload broke these too.
+    let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut n = index.wrapping_mul(2_654_435_761);
     while s.len() < width {
-        s.push('x');
+        n = n.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        s.push(alphabet[(n >> 16) % alphabet.len()] as char);
     }
     s.truncate(width);
     s
@@ -109,7 +137,31 @@ fn main() {
 
     // Measured AFTER load and config, so the figure is the cost of the WRITES.
     let before = tree_bytes(&dir);
-    let value = vec![b'v'; value_bytes];
+    let legs_before = legs(&dir);
+    // INCOMPRESSIBLE AND DETERMINISTIC. A repeated byte made every figure a compression
+    // measurement -- `bytes/op` fell as the payload grew and the envelope went negative, which a
+    // real cost cannot do. splitmix64 over the index gives bytes with no exploitable structure
+    // while keeping the run reproducible, so a re-run compares against this one.
+    // WSC_PAYLOAD=identical reproduces the ORIGINAL fixture -- one repeated byte, maximally
+    // compressible -- so the published figure can be reproduced and compared against the
+    // incompressible arm BY THE SAME BINARY. Across two builds the build itself is uncontrolled.
+    let identical_payload = std::env::var("WSC_PAYLOAD").as_deref() == Ok("identical");
+    let value: Vec<u8> = if identical_payload {
+        vec![b'v'; value_bytes]
+    } else {
+        let mut out = Vec::with_capacity(value_bytes);
+        let mut z: u64 = 0x9E37_79B9_7F4A_7C15;
+        while out.len() < value_bytes {
+            z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut x = z;
+            x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            x ^= x >> 31;
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+        out.truncate(value_bytes);
+        out
+    };
     let mut accepted = 0usize;
     let started = std::time::Instant::now();
     let mut last_key = String::new();
@@ -118,7 +170,10 @@ fn main() {
         last_key = key.clone();
         // A container model keeps ONE key and varies the member; a scalar model varies the key.
         let (key, member) = if one_container {
-            ("container".to_string(), padded("m", index, key_bytes))
+            // THE MEMBER CARRIES THE PAYLOAD. A container model stores its member and never
+            // touches `value`, so a member of `key_bytes` stored 16 bytes where string stored
+            // 80 -- and the two were then compared as if they had stored the same thing.
+            ("container".to_string(), padded("m", index, value_bytes))
         } else {
             (key, String::new())
         };
@@ -176,7 +231,7 @@ fn main() {
     // ARRIVAL, PROVEN. A success code is not evidence the bytes are stored.
     // ARRIVAL PER MODEL. A container model proves its MEMBER COUNT, because a per-member write
     // that silently collapsed onto one member would still return ok and still grow the directory.
-    let last_member = padded("m", ops - 1, key_bytes);
+    let last_member = padded("m", ops - 1, value_bytes);
     let served = match model {
         "hash" => matches!(
             engine
@@ -256,15 +311,42 @@ fn main() {
     println!("key bytes          {key_bytes}");
     println!("value bytes        {value_bytes}");
     println!("denominator        sum of file lengths under the WHOLE data dir (cache+blocks+indexes+log)");
+    println!(
+        "record compression TS_WAL_COMPRESS_RECORDS={}   (a compressible payload makes this a codec measurement)",
+        std::env::var("TS_WAL_COMPRESS_RECORDS").unwrap_or_else(|_| "<unset: default>".to_string())
+    );
+    println!(
+        "payload shape      {}   (identical = the original maximally-compressible fixture)",
+        if identical_payload { "identical" } else { "random" }
+    );
     println!("bytes before       {before}");
     println!("bytes after        {after}");
     println!("bytes delta        {grew}");
     println!("bytes per op       {:.1}", grew as f64 / ops.max(1) as f64);
-    println!("user bytes per op  {}", key_bytes + value_bytes);
+    // WHAT THIS MODEL ACTUALLY STORED, not a constant. `key_bytes + value_bytes` was reported for
+    // every model, but a container model stores its member and never touches `value`; the
+    // difference was being read as an envelope.
+    let user_bytes = match model {
+        "string" => key_bytes + value_bytes,
+        "hash" => key_bytes + 1 + value_bytes, // field is "f"
+        "set" | "list" => "container".len() + value_bytes,
+        "zset" => "container".len() + value_bytes + 8, // score
+        "feature" => "container".len() + 8 + value_bytes, // timestamp
+        _ => key_bytes + value_bytes,
+    };
+    println!("user bytes per op  {user_bytes}   (what this model stores, not key+value)");
     println!(
         "envelope per op    {:.1}",
-        grew as f64 / ops.max(1) as f64 - (key_bytes + value_bytes) as f64
+        grew as f64 / ops.max(1) as f64 - user_bytes as f64
     );
+    for (name, after_bytes) in legs(&dir) {
+        let before_bytes = legs_before.get(&name).copied().unwrap_or(0);
+        let d = after_bytes.saturating_sub(before_bytes);
+        println!(
+            "leg {name:<12} {d:>10} B   {:>8.1} B/op",
+            d as f64 / ops.max(1) as f64
+        );
+    }
     println!("accepted           {accepted}/{ops}");
     println!("read-back exact    {served}");
     println!("wall time          {:.3} s", elapsed.as_secs_f64());
