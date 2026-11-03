@@ -584,7 +584,142 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 min_age_ms: command.min_age_ms,
             }
         }
+        v1::command::Kind::ContextMarkEmbeddingDirty(command) => {
+            types::Command::ContextMarkEmbeddingDirty {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                event_time_ms: command.event_time_ms,
+                reason: command.reason,
+                propagate_depth: command.propagate_depth,
+                clear: command.clear,
+            }
+        }
+        v1::command::Kind::ContextMarkSummaryDirty(command) => {
+            types::Command::ContextMarkSummaryDirty {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                event_time_ms: command.event_time_ms,
+                reason: command.reason,
+                propagate_depth: command.propagate_depth,
+            }
+        }
+        v1::command::Kind::ContextCompressEvents(command) => {
+            types::Command::ContextCompressEvents {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                source_start_ms: command.source_start_ms,
+                source_end_ms: command.source_end_ms,
+                compressed_time_ms: command.compressed_time_ms,
+                // Absent stays absent: "no cap" must not arrive as a cap of zero.
+                max_source_events: command.max_source_events.map(|count| count as usize),
+                min_confidence: command.min_confidence,
+                min_importance: command.min_importance,
+            }
+        }
+        v1::command::Kind::ContextUpsertChildRef(command) => {
+            // A nested message is always optional on the wire, so an absent one is REFUSED by
+            // name. The write has no meaning without the record it is upserting, and defaulting
+            // it would file a child ref of all zeros.
+            let child_ref = command
+                .child_ref
+                .ok_or_else(|| TonicStatus::invalid_argument("context child ref missing"))?;
+            types::Command::ContextUpsertChildRef {
+                tenant_hash: command.tenant_hash,
+                child_ref: types::ContextChildRef {
+                    parent_hash: child_ref.parent_hash,
+                    child_hash: child_ref.child_hash,
+                    updated_at_ms: child_ref.updated_at_ms,
+                },
+            }
+        }
+        v1::command::Kind::ContextUpsertNode(command) => {
+            // Refused rather than defaulted: an upsert with no node would file a record of all
+            // zeros, and a fabricated zero on disk cannot be told from a real one.
+            let node = command
+                .node
+                .ok_or_else(|| TonicStatus::invalid_argument("context node record missing"))?;
+            types::Command::ContextUpsertNode {
+                tenant_hash: command.tenant_hash,
+                node: Box::new(context_node_record_from_proto(node)),
+            }
+        }
+        v1::command::Kind::ContextSetNodeEmbedding(command) => {
+            types::Command::ContextSetNodeEmbedding {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                model_hash: command.model_hash,
+                vector: command.vector,
+                updated_at_ms: command.updated_at_ms,
+            }
+        }
+        v1::command::Kind::ContextWriteIndexRef(command) => {
+            let index_ref = command
+                .index_ref
+                .ok_or_else(|| TonicStatus::invalid_argument("context index ref missing"))?;
+            types::Command::ContextWriteIndexRef {
+                tenant_hash: command.tenant_hash,
+                index_name: command.index_name,
+                index_value_hash: command.index_value_hash,
+                scope_hash: command.scope_hash,
+                event_time_ms: command.event_time_ms,
+                index_ref: types::ContextIndexRef {
+                    primary_node_hash: index_ref.primary_node_hash,
+                    primary_event_time_ms: index_ref.primary_event_time_ms,
+                    event_id_hash: index_ref.event_id_hash,
+                },
+            }
+        }
     })
+}
+
+/// THE DURABLE NODE, RUST TO WIRE. ALL FIFTEEN FIELDS.
+///
+/// NOT `sdk_context_node_to_types`, which converts the four-field CLIENT projection and
+/// fabricates the rest. This one is field for field, including the three the JSON form no longer
+/// writes -- `status`, `l1_ref`, `raw_metadata_ref` are `skip_serializing` but still read for
+/// legacy inputs, and the WAL's contract is to reproduce the COMMAND rather than to re-apply the
+/// JSON form's write policy.
+///
+/// Both vectors keep their own model hash. A vector read under the wrong encoder yields no error,
+/// only a cosine across two vector spaces, so the hash is the check and dropping it disarms it.
+pub(crate) fn context_node_record_to_proto(node: &types::ContextNode) -> v1::ContextNodeRecord {
+    v1::ContextNodeRecord {
+        node_hash: node.node_hash,
+        parent_hash: node.parent_hash,
+        kind: node.kind,
+        canonical_name: node.canonical_name.clone(),
+        l0: node.l0.clone(),
+        status: node.status,
+        last_event_time_ms: node.last_event_time_ms,
+        l1_ref: node.l1_ref.clone(),
+        raw_metadata_ref: node.raw_metadata_ref.clone(),
+        vector: node.vector.clone(),
+        embedding_model_hash: node.embedding_model_hash,
+        embedding_updated_at_ms: node.embedding_updated_at_ms,
+        summary_vector: node.summary_vector.clone(),
+        summary_vector_valid_from_ms: node.summary_vector_valid_from_ms,
+        summary_vector_model_hash: node.summary_vector_model_hash,
+    }
+}
+
+pub(crate) fn context_node_record_from_proto(node: v1::ContextNodeRecord) -> types::ContextNode {
+    types::ContextNode {
+        node_hash: node.node_hash,
+        parent_hash: node.parent_hash,
+        kind: node.kind,
+        canonical_name: node.canonical_name,
+        l0: node.l0,
+        status: node.status,
+        last_event_time_ms: node.last_event_time_ms,
+        l1_ref: node.l1_ref,
+        raw_metadata_ref: node.raw_metadata_ref,
+        vector: node.vector,
+        embedding_model_hash: node.embedding_model_hash,
+        embedding_updated_at_ms: node.embedding_updated_at_ms,
+        summary_vector: node.summary_vector,
+        summary_vector_valid_from_ms: node.summary_vector_valid_from_ms,
+        summary_vector_model_hash: node.summary_vector_model_hash,
+    }
 }
 
 pub(crate) fn string_set_condition_to_proto(

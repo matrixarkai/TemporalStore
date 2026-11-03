@@ -54,6 +54,19 @@ logger = logging.getLogger(__name__)
 # an encoded row key.
 _REGISTRY_PREFIX = "ts:feast:rows:"
 
+_NO_VECTOR_SEARCH = (
+    "TemporalStore's online store does not serve vector or document retrieval. It "
+    "stores a feature row as a hash of serialized values addressed by entity key, "
+    "and keeps no embedding index, so there is nothing to search by distance and no "
+    "cheap way to synthesise one at query time. "
+    "`retrieve_online_documents` and `retrieve_online_documents_v2` are therefore "
+    "refused HERE, deliberately, rather than inherited from Feast's base class: an "
+    "inherited NotImplementedError names an abstract method and leaves a reader "
+    "wondering whether the integration is unfinished. This one is finished, and this "
+    "query is out of scope for it. Use an online store with a vector index for "
+    "document retrieval, and this one for key-addressed feature serving."
+)
+
 
 class TemporalStoreOnlineStoreConfig(FeastConfigBaseModel):
     """Configuration for the TemporalStore online store."""
@@ -230,6 +243,33 @@ class TemporalStoreOnlineStore(OnlineStore):
     ) -> None:
         for table in tables:
             self._drop_view(config, table)
+
+    # ---- vector retrieval, refused by name ----------------------------------------
+
+    def retrieve_online_documents(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        requested_features: List[str],
+        embedding: List[float],
+        top_k: int,
+        distance_metric: Optional[str] = None,
+    ) -> List[Any]:
+        raise NotImplementedError(_NO_VECTOR_SEARCH)
+
+    def retrieve_online_documents_v2(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        requested_features: List[str],
+        embedding: Optional[List[float]],
+        top_k: int,
+        distance_metric: Optional[str] = None,
+        query_string: Optional[str] = None,
+        filters: Optional[Any] = None,
+        include_feature_view_version_metadata: bool = False,
+    ) -> List[Any]:
+        raise NotImplementedError(_NO_VECTOR_SEARCH)
 
     def _drop_view(self, config: RepoConfig, table: FeatureView) -> None:
         """Remove one view's fields from every row it wrote, and the row when nothing is left.

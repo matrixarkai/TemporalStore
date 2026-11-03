@@ -269,6 +269,13 @@ message Command {
     ContextResourceBlobCommit context_resource_blob_commit = 47;
     ContextResourceBlobPut context_resource_blob_put = 48;
     ContextResourceBlobSweep context_resource_blob_sweep = 49;
+    ContextMarkEmbeddingDirty context_mark_embedding_dirty = 50;
+    ContextMarkSummaryDirty context_mark_summary_dirty = 51;
+    ContextCompressEvents context_compress_events = 52;
+    ContextUpsertChildRef context_upsert_child_ref = 53;
+    ContextWriteIndexRef context_write_index_ref = 54;
+    ContextUpsertNode context_upsert_node = 55;
+    ContextSetNodeEmbedding context_set_node_embedding = 56;
   }
 }
 
@@ -1010,4 +1017,143 @@ message ContextResourceBlobSweep {
   // snapshot manifest's checksum list, where the published digest folds it in order.
   repeated uint64 referenced_content_hashes = 2;
   uint64 min_age_ms = 3;
+}
+
+// ===========================================================================================
+// The context graph writes that carry only scalars or a small record.
+//
+// The node, the event and the four larger records are separate changes: they bring their own
+// nested messages, and the durable node needs a COMPLETE message of its own rather than the
+// four-field client projection above.
+// ===========================================================================================
+
+message ContextChildRef {
+  uint64 parent_hash = 1;
+  uint64 child_hash = 2;
+  uint64 updated_at_ms = 3;
+}
+
+message ContextIndexRef {
+  uint64 primary_node_hash = 1;
+  uint64 primary_event_time_ms = 2;
+  uint64 event_id_hash = 3;
+}
+
+message ContextMarkEmbeddingDirty {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  uint64 event_time_ms = 3;
+  uint32 reason = 4;
+  uint32 propagate_depth = 5;
+  // `clear` flips the mark off rather than on, so a dropped field is not a smaller version of
+  // the same write -- it is the opposite one. A plain bool, matching the Rust default of false.
+  bool clear = 6;
+}
+
+message ContextMarkSummaryDirty {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  uint64 event_time_ms = 3;
+  uint32 reason = 4;
+  uint32 propagate_depth = 5;
+}
+
+message ContextCompressEvents {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  uint64 source_start_ms = 3;
+  uint64 source_end_ms = 4;
+  uint64 compressed_time_ms = 5;
+  // EXPLICIT PRESENCE, because absent and zero are different requests: absent is "no cap on how
+  // many source events to fold", zero is a cap of none at all. Collapsing them onto a zero
+  // default would turn an uncapped compaction into one that folds nothing, or the reverse.
+  optional uint64 max_source_events = 6;
+  // Plain floats: the Rust fields default to 0.0, so absent decoding to 0.0 is the same value a
+  // record written without them already replays with.
+  float min_confidence = 7;
+  float min_importance = 8;
+}
+
+message ContextUpsertChildRef {
+  uint64 tenant_hash = 1;
+  ContextChildRef child_ref = 2;
+}
+
+message ContextWriteIndexRef {
+  uint64 tenant_hash = 1;
+  string index_name = 2;
+  uint64 index_value_hash = 3;
+  uint64 scope_hash = 4;
+  uint64 event_time_ms = 5;
+  ContextIndexRef index_ref = 6;
+}
+
+// ===========================================================================================
+// THE DURABLE CONTEXT NODE. ITS OWN COMPLETE MESSAGE, NOT THE CLIENT PROJECTION.
+//
+// `ContextNode` above is four fields and is marked a projection for a reason: the conversion
+// into it fabricates the absent ones, and on disk a fabricated 0 cannot be told from a real
+// one. `node_id` there is also a string that the Rust side hashes one way, so the durable
+// identity could not be recovered from a record written through it. Two jobs, two messages.
+//
+// ALL FIFTEEN FIELDS ARE CARRIED, INCLUDING THREE THE JSON FORM NO LONGER WRITES.
+// `status`, `l1_ref` and `raw_metadata_ref` are `#[serde(default, skip_serializing)]` --
+// deprecated, still READ for legacy inputs, never written. They are carried here anyway,
+// because this record's contract is to reproduce the COMMAND, not to re-apply the JSON form's
+// write policy. Dropping a field the command still holds would be a silent loss on replay,
+// and the round-trip assertion on this message is written to catch exactly that.
+//
+// THREE SEPARATE MODEL-HASH GUARDS, AND NONE OF THEM IS OPTIONAL-WITH-A-DEFAULT.
+// A vector read under the wrong encoder produces no length error and no complaint -- just a
+// cosine taken across two vector spaces. So each vector carries the encoder that produced it:
+//
+//   * `embedding_model_hash` for `vector`;
+//   * `summary_vector_model_hash` for `summary_vector`, which is a COPY of the owning
+//     summary's vector and can have been written by a different encoder -- a re-embed replaces
+//     one without touching the other, so one shared field would let the copy skip the check;
+//   * and `ContextSetNodeEmbedding.model_hash` on the write that sets a vector.
+//
+// Dropping or defaulting any of the three does not lose a datum: it disarms the check. They are
+// plain scalars whose zero means "absent" exactly as the Rust defaults do, which is what every
+// record written before they existed already replays with.
+//
+// `vector` and `summary_vector` are `repeated float` -- packed by default, and NOT quantised.
+// Int8 quantisation is a separately gated decision with its own quality bar; folding it into a
+// format port would hide a measurable quality change inside a change whose claim is "same
+// values, different encoding".
+message ContextNodeRecord {
+  uint64 node_hash = 1;
+  uint64 parent_hash = 2;
+  uint32 kind = 3;
+  string canonical_name = 4;
+  string l0 = 5;
+  // Deprecated in the JSON form (read, never written); carried so the command round-trips.
+  uint32 status = 6;
+  uint64 last_event_time_ms = 7;
+  // Deprecated in the JSON form; carried for the same reason.
+  string l1_ref = 8;
+  // Deprecated in the JSON form; carried for the same reason.
+  string raw_metadata_ref = 9;
+  repeated float vector = 10;
+  uint64 embedding_model_hash = 11;
+  uint64 embedding_updated_at_ms = 12;
+  repeated float summary_vector = 13;
+  uint64 summary_vector_valid_from_ms = 14;
+  uint64 summary_vector_model_hash = 15;
+}
+
+message ContextUpsertNode {
+  uint64 tenant_hash = 1;
+  // The Rust field is boxed, which is a layout choice -- the variant caps the enum's width --
+  // and serialises identically to the unboxed field, so it is transparent to both codecs.
+  ContextNodeRecord node = 2;
+}
+
+message ContextSetNodeEmbedding {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  // The guard, beside the vector it describes. See ContextNodeRecord above.
+  uint64 model_hash = 3;
+  repeated float vector = 4;
+  uint64 updated_at_ms = 5;
 }

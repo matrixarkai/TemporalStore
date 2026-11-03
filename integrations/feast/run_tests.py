@@ -52,7 +52,7 @@ except Exception:
 # put the wire floor at 9 against a real 7, and the floor refused the run --
 # which is the behaviour wanted, on the wrong value.
 WIRE_FLOOR = 7
-COMMAND_FLOOR_WITH_FEAST = 25
+COMMAND_FLOOR_WITH_FEAST = 28
 COMMAND_FLOOR_WITHOUT_FEAST = 12
 
 
