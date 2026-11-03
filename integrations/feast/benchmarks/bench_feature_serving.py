@@ -115,7 +115,34 @@ class ArmResult:
 
 
 def load_average() -> float:
+    """Raw 1-minute load average. REPORTED, never gated on -- see io_pressure.
+
+    Measured on this host: 10,206 with 21 GB of 24 GB available, no oom-kill in
+    dmesg, /proc/pressure/io some avg10 at 5% and ZERO tasks in uninterruptible
+    sleep. The kernel counts the hypervisor's per-call relay helpers, of which a
+    long session accumulates hundreds. A threshold on this number is a coin
+    flip, so it is printed for context and nothing decides on it.
+    """
     return os.getloadavg()[0]
+
+
+def io_pressure() -> float:
+    """Percentage of the last 10s in which at least one task stalled on I/O.
+
+    This is the contention signal that means what it says, and it is what
+    --max-io-pressure gates on. Absent (no PSI) reads as 0.0 rather than as a
+    failure, because a kernel without pressure accounting is not a loaded box.
+    """
+    try:
+        with open("/proc/pressure/io") as handle:
+            for line in handle:
+                if line.startswith("some "):
+                    for field in line.split():
+                        if field.startswith("avg10="):
+                            return float(field.split("=", 1)[1])
+    except OSError:
+        return 0.0
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +158,17 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "type": "redis",
             "redis_type": "redis",
             "connection_string": args.redis,
+        }
+    if arm == "redis_aof":
+        # The SAME Feast online-store type as `redis`: the difference is entirely
+        # in how the server it points at was started, which is why the address is
+        # a separate flag rather than a mode on one. Keeping the arm separate
+        # means both can run in ONE process, so the durable and non-durable
+        # figures share a control and a payload assertion.
+        return {
+            "type": "redis",
+            "redis_type": "redis",
+            "connection_string": args.redis_aof,
         }
     if arm == "postgres":
         host, port = args.postgres.split(":")
@@ -197,6 +235,11 @@ ARM_METADATA = {
     "sqlite": ("SQLite", "file on the run directory, default rollback journal", "in-process"),
     "sqlite_control": ("SQLite (control re-run)", "file on the run directory, default rollback journal", "in-process"),
     "redis": ("Redis (Valkey 8)", "no persistence: --save '' --appendonly no", "RESP, pipelined"),
+    # The durability string is filled in at run time from the server's OWN
+    # `CONFIG GET appendfsync`, not from what we intended to pass -- a flag that
+    # silently failed to apply would otherwise be reported as a durability
+    # promise the server never made.
+    "redis_aof": ("Redis (Valkey 8) durable", "appendonly yes, appendfsync <probed>", "RESP, pipelined"),
     "postgres": ("PostgreSQL 16", "default synchronous_commit=on, PGDATA on tmpfs", "libpq"),
     "ts_async": ("TemporalStore", "async commit (async_storage=true)", "HTTP /batch_execute, 1 round trip"),
     "ts_sync": ("TemporalStore", "durable commit (async_storage=false)", "HTTP /batch_execute, 1 round trip"),
@@ -324,6 +367,27 @@ def run_arm(
     from feast.repo_config import RepoConfig as _RepoConfig  # noqa: F401
 
     label, durability, transport = ARM_METADATA[arm]
+    if arm == "redis_aof":
+        # Probed, not assumed. `appendonly` and `appendfsync` are both read back,
+        # and a server that is NOT in fact appending refuses the run rather than
+        # being reported as durable -- the whole point of this arm is the promise.
+        import redis as _redis_probe
+
+        _host, _, _port = args.redis_aof.rpartition(":")
+        _client = _redis_probe.Redis(host=_host, port=int(_port))
+        _appendonly = (_client.config_get("appendonly") or {}).get("appendonly", "?")
+        _appendfsync = (_client.config_get("appendfsync") or {}).get("appendfsync", "?")
+        if isinstance(_appendonly, bytes):
+            _appendonly = _appendonly.decode()
+        if isinstance(_appendfsync, bytes):
+            _appendfsync = _appendfsync.decode()
+        if _appendonly != "yes":
+            raise SystemExit(
+                f"the redis_aof arm points at {args.redis_aof}, which reports "
+                f"appendonly={_appendonly!r}. That server is not durable, so this "
+                f"arm would measure the non-durable one twice."
+            )
+        durability = f"appendonly {_appendonly}, appendfsync {_appendfsync}"
     print(f"\n=== arm {arm} ({label}) payload={payload} ===")
 
     repo_dir = os.path.join(args.run_dir, f"{arm}_{payload}")
@@ -614,8 +678,10 @@ def render(results: List[ArmResult], args: argparse.Namespace, provisional: bool
     if provisional:
         lines.append("")
         lines.append(
-            f"**PROVISIONAL** -- peak 1-minute load exceeded --max-load "
-            f"({args.max_load}). These figures measure the host, not the stores."
+            f"**PROVISIONAL** -- peak I/O pressure {peak_io_pressure:.1f}% exceeded "
+            f"--max-io-pressure ({args.max_io_pressure}%). These figures measure "
+            f"the host, not the stores. (Peak loadavg was {peak_load:.0f}, which is "
+            f"not a load signal on this host and did not decide this.)"
         )
     return "\n".join(lines)
 
@@ -635,6 +701,7 @@ def main() -> int:
     parser.add_argument("--batch", type=int, default=10)
     parser.add_argument("--write-batch", type=int, default=500)
     parser.add_argument("--redis", default="127.0.0.1:6380")
+    parser.add_argument("--redis-aof", default="127.0.0.1:6381")
     parser.add_argument("--postgres", default="127.0.0.1:55432")
     parser.add_argument("--postgres-db", default="feast")
     parser.add_argument("--postgres-user", default="feast")
@@ -645,6 +712,9 @@ def main() -> int:
     parser.add_argument("--shard-id", type=int, default=1)
     parser.add_argument("--run-dir", default="/dev/shm/feast_bench")
     parser.add_argument("--max-load", type=float, default=16.0)
+    # The gate that actually decides. --max-load is kept so an existing caller
+    # does not break, but it no longer votes: see load_average's docstring.
+    parser.add_argument("--max-io-pressure", type=float, default=25.0)
     parser.add_argument("--control-tolerance", type=float, default=0.25)
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
@@ -653,9 +723,14 @@ def main() -> int:
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     payloads = [p.strip() for p in args.payloads.split(",") if p.strip()]
 
-    print(f"load at start: {load_average():.1f}  (--max-load {args.max_load})")
+    print(
+        f"io pressure at start: {io_pressure():.2f}%  "
+        f"(--max-io-pressure {args.max_io_pressure}%); "
+        f"loadavg {load_average():.0f} (reported, not gated)"
+    )
     results: List[ArmResult] = []
     peak_load = load_average()
+    peak_io_pressure = io_pressure()
 
     for payload in payloads:
         expected_payload_bytes: Optional[int] = None
@@ -663,6 +738,7 @@ def main() -> int:
             result = run_arm(arm, args, payload, expected_payload_bytes)
             expected_payload_bytes = result.payload_bytes_per_row
             results.append(result)
+            peak_io_pressure = max(peak_io_pressure, io_pressure())
             peak_load = max(
                 peak_load,
                 result.cold.load_after,
@@ -713,7 +789,9 @@ def main() -> int:
             "comparison in this run is usable"
         )
 
-    provisional = peak_load > args.max_load
+    # Decided on I/O pressure, not on loadavg, for the reason in load_average's
+    # docstring. `peak_load` is still carried and printed.
+    provisional = peak_io_pressure > args.max_io_pressure
     table = render(results, args, provisional)
     print(table)
     if control_void:
