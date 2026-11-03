@@ -396,40 +396,59 @@ bug.
 
 ## Two operational findings that bear on readiness, not on QPS
 
-### `/server/info` walks every object, under the shard read lock
+### A liveness probe that reports healthy while every data operation is blocked
 
-Observed repeatedly: at roughly 100,000 records `GET /server/info` exceeds 30 s
-while `GET /health` answers in 16 ms, and a concurrent `HashMultiGet` on the
-same node times out. For an operator those two facts together are
-indistinguishable from a hung server, which makes it a readiness problem
-independently of any latency number.
+**This replaces an earlier claim in this document that `/server/info` walks
+every object under the shard read lock. That claim was wrong, and the
+measurement is below.** It is corrected rather than amended because a wrong
+attribution left standing beside a correction is still one someone will quote.
 
-What it walks, read from the source rather than inferred.
-`/server/info` calls `engine.loaded_shard_stats()` → `shard_stats(shard_id)`
-(`engine/engine_persistence.rs:1027`), which takes `self.shards.read()` and
-then calls three things:
+The observation was real: at roughly 100,000 records `GET /server/info` exceeded
+30 s. What was wrong was the cause. The stall co-occurred with a `HashMultiGet`
+timing out on the same node at the same moment — the node was **saturated by a
+hot-key write storm**, and everything needing the shard lock queued behind it.
+`/health` takes no shard lock and touches no shard state, so it kept answering
+**200 in 1.0 ms** throughout.
 
-* `block_store.stats()` — a struct copy, cheap.
-* `block_store.slab_summary()` — summarises every slab under the block-store
-  mutex.
-* `object_manager_stats(state, start_bucket, end_bucket)` (`engine.rs:7745`) —
-  and this is the walk. `block_ref_count` comes from
-  `bucket_index.object_component_block_refs`, an **incrementally maintained**
-  figure, but when it is `None` the fallback is
-  `object_block_lookup.values().map(BlockRefs::len).sum()`: one pass over every
-  object in the shard, summing each one's block-ref list.
+That is the finding, and it is worse than a slow endpoint: an operator cannot
+distinguish a saturated node from a healthy one, and an orchestrator watching
+`/health` will neither restart it nor take it out of rotation. **The honest
+statement is that the health endpoint reports process liveness, not shard
+serviceability.**
 
-The code already names the consequence — its own comment reads that this "runs
-on the heartbeat timer under the shard read lock, so walking here shows up as
-write contention." That is exactly the measured symptom: the shard held 80,000
-objects and 780,000 block refs, `/health` touches none of it and stayed
-instant, and a write needing the write lock could not get in.
+**It does not live on the status path.** No change to `/server/info` or
+`shard_stats` would move it; it lives wherever one key's writes are allowed to
+monopolise the shard lock. That matters for whoever fixes it, so it is stated
+rather than implied.
 
-So the lever is not to make the walk faster; it is that an operator-facing
-status endpoint should not take the fallback at all. Either keep
-`object_component_block_refs` populated across the paths that currently leave
-it `None`, or have `/server/info` report the incremental figure and omit the
-derived one rather than computing it on demand.
+#### The measurement that refuted the original attribution
+
+Release build, fresh shard, p50 over seven calls, key count and ref count varied
+independently so a walk over either would show:
+
+| shard | `/server/info` p50 | `/health` |
+|---|---:|---:|
+| empty | 1.8 ms | 1.0 ms |
+| 20,000 keys / 20,000 refs | 1.8 ms | 1.1 ms |
+| 22,000 keys / 40,000 refs | 1.7 ms | 0.9 ms |
+| 42,000 keys / 60,000 refs | 2.7 ms | 1.4 ms |
+
+Three code-reading diagnoses, each wrong, recorded so they are not re-derived:
+
+1. **The `object_component_block_refs` fallback walk is unreachable.** The field
+   is `Some(0)` from birth — the type's own hand-written `Default` states it and
+   explains why — and nothing anywhere assigns `None`. Removing the
+   `unwrap_or_else` would change no behaviour.
+2. **The WAL full-file scan really was the dominant cost, and is already
+   fixed.** `wal.rs` records it at **771,062 of 776,311 bytes, 99.3%**, of one
+   `shard_stats` read, and `stats_without_rescan` exists for it and **is
+   wired**, at `engine_persistence.rs:1352`.
+3. **The thirteen per-map sums do not move the figure** at these sizes.
+
+The transferable lesson: **a code comment that predicts a symptom is not
+evidence that the symptom has that cause.** The comment in
+`object_manager_stats` predicts write contention from walking under the read
+lock, accurately — and was still the wrong attribution for what was observed.
 
 ### Teardown's cost is the delete command, not the batching or the set read
 
@@ -459,6 +478,38 @@ two runs differ in host load and in what the hot tracking set had done to the
 shard, so the right reading is that per-key delete cost itself grows with the
 shard, and a single-point measurement of it is not a rate. Anyone optimising
 this should start at `CommonDelete`, not at the batching.
+
+#### Answered: each delete batch does work proportional to the WHOLE shard
+
+The measurement was the one written down here as open: **the same 2,000 deletes,
+once on a shard holding only those 2,000 and once on a shard holding 20,000
+filler keys as well, varying nothing else.** Release build, fresh shard each
+time, batch 512, host load 3.4 with no compiler running.
+
+| the shard holds | 2,000 deletes | per key | per-batch profile |
+|---|---:|---:|---|
+| just those 2,000 keys | 4.48 s | **2.24 ms** | 2.28 s then 0.18 s — front-loaded |
+| those plus 20,000 filler | 138.34 s | **69.17 ms** | 37.20 s … 29.60 s, max 37.52 s — flat and high |
+
+**31x the per-key cost for identical deletes, with only the shard's size
+changed.** Delete cost scales with what the shard holds, not with the batch and
+not with the number of keys being deleted.
+
+**And the per-batch profile changes shape, which corrects the earlier reading
+here.** On the small shard the cost is front-loaded — 2.28 s then 0.18 s — which
+is what the 4,000-key run showed and what was described as "something is paid
+once rather than per key". On the large shard it is **flat and high**: every
+batch pays 30–37 s. So the front-loading was a small-shard artefact, and at
+scale each batch pays the shard-size cost afresh. Over N/512 batches that is
+work proportional to (keys deleted x shard size), which is why the totals looked
+quadratic and why 7.50 ms/key at 4,000 keys did not extrapolate to the 103
+ms/key implied at 20,000.
+
+That narrows the search for whoever optimises it: **look for what a
+`CommonDelete` batch touches that is proportional to the resident shard rather
+than to the keys in the batch** — a scan, a rebuild, or a structure rewritten
+once per batch. It is not the batching (already bounded at 512), not the
+`SetMembers` read (0% of teardown), and not the tracking-set drop (0%).
 
 ## A note on the shard a read is answered from
 

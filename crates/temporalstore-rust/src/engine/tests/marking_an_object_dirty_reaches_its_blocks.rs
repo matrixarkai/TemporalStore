@@ -37,6 +37,21 @@
 //! were the fixtures in this module, each writing into `bucket_map` directly with no filing
 //! anywhere in the process.
 //!
+//! # AND SINCE THE BLOCK REFS WERE FOLDED INTO THE SLOT THERE ARE TWO HOMES, NOT ONE
+//!
+//! The paragraph above says the push "can only find blocks through the object lookup". That was
+//! true when it was written and is false now: an object WITH A SLOT ROW carries its refs ON that
+//! row, and the lookup holds nothing for it. A push that asks only the lookup therefore marks
+//! nothing at all for every kind that has rows -- the object goes dirty and its blocks stay clean,
+//! which is exactly the silent wrong answer this module exists to prevent, arriving by a route the
+//! module did not yet know about.
+//!
+//! BOTH ARMS ARE LOAD-BEARING and the lookup one is not a fallback: the four container kinds keep
+//! their refs in the lookup, because their rows live in `RecordedMap` and are not `ObjectSlot`s at
+//! all. [`marking_an_object_dirty_reaches_blocks_its_row_holds_the_refs_for`] is the arm that holds
+//! the row half, and its denominator asserts the lookup is EMPTY for the object -- otherwise a
+//! lookup-only walk would pass it and the arm would be measuring nothing.
+//!
 //! AND A CENSUS MAKES THAT STRUCTURAL. All nine production sites that install a block into a
 //! bucket's map file it in the same enclosing function; the only non-filing doors have no callers
 //! at all or none outside tests. So a live block cannot be resident unfiled in production, the
@@ -113,6 +128,23 @@ fn a_shard_holding_one_filed_clean_block(object_key: &str) -> (ShardState, u32) 
             .bucket_index
             .insert_object_block_lookup(routing_bucket, *handle, &key, block);
     }
+    (shard, routing_bucket)
+}
+
+/// A shard whose object keeps its ref ON ITS SLOT ROW, with the lookup holding nothing for it.
+///
+/// PRODUCTION'S OWN ORDER, which is the only reason this is reachable: the first block of an object
+/// is filed BEFORE its row exists -- the address being installed is where the block landed -- so
+/// the ref goes to the lookup first, and the door that creates the row ADOPTS what the lookup holds
+/// for it. `set_string_address` is that door, and `adopt_refs_into_slot` is the move. The end state
+/// is a row carrying the ref and an empty lookup, which is what every kind with rows looks like
+/// after its first write.
+fn a_shard_whose_row_holds_the_only_ref(object_key: &str) -> (ShardState, u32) {
+    let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_block(object_key);
+    shard.set_string_address(
+        Arc::from(object_key),
+        &crate::block_store::ElementEntry::default(),
+    );
     (shard, routing_bucket)
 }
 
@@ -500,5 +532,51 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
          is not wired to the fold it is named for. Every figure this probe prints is then a dead \
          measurement rather than a cheap one -- which is exactly the fault this control was added \
          to catch, and it caught it once already on `REFRESH_FLAGS`."
+    );
+}
+
+/// THE MARK REACHES A BLOCK WHOSE REF LIVES ON THE OBJECT'S ROW, NOT IN THE LOOKUP.
+///
+/// `push_object_dirty_onto_its_existing_blocks` bound `object_block_lookup` alone and walked it per
+/// kind. That was the whole answer while every object's refs lived there; since the block refs were
+/// folded into the slot, an object with a row carries them on the row and the lookup holds nothing
+/// for it -- so the walk found no refs, marked no blocks, and left the object dirty with its blocks
+/// clean. The bucket predicate reads only `block.dirty`, so it then answers false for a dirty
+/// object: a silent wrong answer, not a failure.
+///
+/// THE DENOMINATOR IS THE GUARD. A fixture whose ref is still in the lookup passes under a
+/// lookup-only walk, so this asserts the lookup is EMPTY for the object and the ROW holds the ref
+/// before it marks anything. Without those two the arm would be measuring the lookup arm twice.
+#[test]
+fn marking_an_object_dirty_reaches_blocks_its_row_holds_the_refs_for() {
+    const KEY: &str = "row-held-object";
+    let (mut shard, routing_bucket) = a_shard_whose_row_holds_the_only_ref(KEY);
+
+    assert!(
+        shard
+            .bucket_index
+            .object_block_lookup
+            .get("string", KEY)
+            .is_none(),
+        "denominator: the lookup still names this object, so a lookup-only walk would reach its          blocks and this arm would pass without ever asking the row"
+    );
+    assert!(
+        shard
+            .strings()
+            .get(KEY)
+            .and_then(|slot| slot.refs())
+            .is_some(),
+        "denominator: the row carries no refs, so the row arm has nothing to find and this arm          would pass however the walk is written"
+    );
+    assert!(
+        !any_block_dirty(&shard, routing_bucket),
+        "the fixture block must start clean, or `dirty afterwards` is true of a fixture that was          dirty all along"
+    );
+
+    mark_object_dirty(&mut shard, KEY, 0, WHOLE_RANGE_END);
+
+    assert!(
+        any_block_dirty(&shard, routing_bucket),
+        "the mark must reach a block whose ref lives on the object's ROW: since the fold that is          where every kind with slot rows keeps them, and a walk asking only `object_block_lookup`          leaves the object dirty while its blocks stay clean"
     );
 }
