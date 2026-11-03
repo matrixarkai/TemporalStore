@@ -540,13 +540,37 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             members = client.execute({"kind": "set_members", "key": set_key}).get(
                 "members"
             ) or []
+            # DELETE THIS VIEW'S FIELDS, NOT THE WHOLE ROW. The layout is one
+            # hash per (project, entity key), SHARED BY EVERY FEATURE VIEW in
+            # the project -- the view appears only in the FIELD names. So a
+            # `CommonDelete` on the row removed every other view's features for
+            # that entity too, and the caller asked for one view to be torn
+            # down.
+            #
+            # This is Feast's own issue #2150, and its universal suite has a
+            # test for exactly it -- `test_online_store_cleanup`, which
+            # registers two views over a shared `driver` entity, deletes one,
+            # and requires the other's features to survive. That test is gated
+            # `@pytest.mark.universal_online_stores(only=["redis"])`, so it
+            # never ran against this store and the defect was not caught by it.
+            #
+            # The fields are derivable rather than discovered: a write puts
+            # `"{view}:{feature}"` for each feature plus one `"_ts:{view}"`, so
+            # the view's own schema names them. It costs F+1 `HashDelete`
+            # commands per row instead of one `CommonDelete`, which is the
+            # price of not destroying a neighbour's data.
+            fields = [
+                _feature_field(view_name, feature.name) for feature in table.features
+            ] + [_ts_field(view_name)]
             commands: List[Dict[str, Any]] = []
             for member in members:
                 raw = decode_bytes(member)
                 if raw is None:
                     continue
-                commands.append(
-                    {"kind": "common_delete", "key": raw.decode("utf-8")}
+                row_key = raw.decode("utf-8")
+                commands.extend(
+                    {"kind": "hash_delete", "key": row_key, "field": field}
+                    for field in fields
                 )
             # The tracking set is dropped LAST, and only after every key it
             # named is gone. If a chunk fails partway, the set still lists the
@@ -559,9 +583,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 deleted += len(chunk)
             client.batch_execute([{"kind": "common_delete", "key": set_key}])
             logger.info(
-                "temporalstore: tore down view=%s keys=%d in %d round trip(s) "
-                "of at most %d",
+                "temporalstore: tore down view=%s rows=%d fields=%d in %d round "
+                "trip(s) of at most %d",
                 view_name,
+                len(members),
                 deleted,
                 (len(commands) + batch_size - 1) // batch_size + 1,
                 batch_size,

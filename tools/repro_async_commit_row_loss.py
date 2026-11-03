@@ -3,6 +3,46 @@
 # Copyright 2026 MatrixArkAI
 """Reproduce: with async commit, a hot set write makes earlier hash writes vanish.
 
+================================================================================
+TWO PRECONDITIONS. REPRODUCE AT THE WRONG SHAPE AND YOU WILL CONCLUDE IT IS
+FIXED. Both were found by a run that reported no loss, and both are the defaults
+below -- change either and the loss disappears while the defect is still there.
+
+  1. THE FAILING WORKLOAD MUST BE THE FIRST THING ON THE SHARD. Run as the
+     third cell, after two others had each left 20,000 rows, the identical
+     workload lost NOTHING. Start the node on empty data directories; this
+     script refuses a non-empty shard rather than reporting a clean run on one.
+
+  2. THE OBJECT FOOTPRINT MUST MATCH. Short keys with one-byte values did not
+     reproduce. It reproduced only once each key was the width a serialized
+     entity key produces -- 62 hex characters plus a project -- and each row
+     carried ELEVEN field slots. The loss tracks what the shard holds against
+     its cache memory budget, so a smaller row is a DIFFERENT EXPERIMENT, not a
+     simpler one.
+================================================================================
+
+WHAT HAS BEEN RULED OUT, so nobody spends a run repeating it:
+
+  * NOT a visibility delay. A 20-second pause does not bring the values back,
+    and this script re-reads and reports that separately.
+  * NOT the Feast integration. This file loads no Feast module; the provider's
+    `track_keys_for_teardown` option is only the workload that reaches it.
+  * NOT that option alone, and NOT entity count alone. On a fresh project,
+    20,000 entities read back complete with the flag on AND off. It is the
+    INTERACTION, and the grid below runs all three combinations.
+  * NOT the status endpoint. `/server/info` measures 1.8-2.7 ms from an empty
+    shard up to 42,000 keys; when it stalled it was blocked behind this same
+    write storm rather than walking anything.
+
+WHERE TO LOOK. The surviving rows are the LAST written -- 4,000 of 20,000, the
+final eight batches of 500 -- so what is lost is older dirty objects not yet
+persisted when the hot-key writes drove the shard past its cache budget. The
+suspect path is whatever drops or evicts a dirty object under memory pressure
+while `async_storage=true` defers persistence, and the missing guarantee is that
+an object acknowledged to a client is either persisted or still resident.
+`total_records` is incremented for rows whose content is gone, so whatever
+maintains that count is not the same thing that holds the content.
+
 NO FEAST, NO CLIENT LIBRARY, NO THIRD-PARTY PACKAGE. This drives the data
 node's own command surface with the standard library only, so the defect cannot
 be read as something a Python integration does to itself. Every command here is
