@@ -12162,6 +12162,64 @@ fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_fo
 /// -- which does, as `HashTable` -- is in `Cargo.lock` only transitively. So the arena is a
 /// DEPENDENCY decision rather than a layout change, and that is the gate the refusal rests on.
 ///
+/// # MEASURED 2026-11-02: OPENING THIS GATE COSTS NOTHING, SO THE GATE IS NOT THE DEPENDENCY
+///
+/// The paragraph above frames the arena as a DEPENDENCY decision. `Cargo.lock` says otherwise.
+/// `hashbrown 0.17.1` is ALREADY compiled and linked into the RUNTIME library, through
+/// `temporalstore-rust -> tonic 0.12.3 -> h2 0.4.20 -> indexmap 2.14.2`: `tonic` is a plain
+/// dependency and its `transport` feature pulls hyper and h2. That is a RUNTIME path, not a
+/// build-time one -- the build-time path is `petgraph -> indexmap` via `tonic-build`, and only
+/// version-qualified edges tell the two apart. The lock also holds `hashbrown 0.12.3` by way of
+/// `tower 0.4.13 -> indexmap 1.9.3`, which is too old to carry `HashTable` and is not the one
+/// that matters.
+///
+/// So declaring it is free, PROVIDED the declaration turns defaults off:
+///
+///     hashbrown = { version = "0.17", default-features = false }   adds NOTHING
+///     hashbrown = "0.17"                                           adds foldhash + allocator-api2
+///
+/// `foldhash` and `allocator-api2` are ABSENT from the lock, and that absence is what establishes
+/// that `indexmap` builds hashbrown with defaults OFF -- an enabled optional dependency would
+/// appear there. Cargo unifies semver-compatible requirements, so a `"0.17"` requirement resolves
+/// to the SAME 0.17.1 already locked: nothing new is downloaded, compiled or audited. Licence
+/// `MIT OR Apache-2.0`, an obligation already incurred because the code is already linked. MSRV
+/// `1.85.0`, under the 1.88.0 this repository's gating job pins. And no feature gates
+/// `HashTable` -- `raw-entry` gates the DEPRECATED RawEntry API, not this one -- so
+/// `default-features = false` still carries it. It is the right shape by construction, too:
+/// `HashTable` holds no hasher and takes a caller-supplied hash, which is exactly why a span can
+/// key it while being unable to `Borrow<str>`.
+///
+/// # THE ASSERTION BELOW IS UNCHANGED AND STILL CORRECT. WHAT CHANGES IS WHAT ITS RED MEANS
+///
+/// hashbrown is not a direct dependency today, so this still passes, and it must still go red the
+/// day one is declared. But that red no longer means "a supply-chain decision has been taken".
+/// It means the FREE half of the gate has been taken and the expensive half is what remains: 188
+/// `ModelKey` sites losing `Borrow<str>`, arena compaction under the shard lock at `(1+r)x` live
+/// characters, and only half the slot saving reachable while `object_block_lookup` is a
+/// `BTreeMap` with no comparator hook.
+///
+/// That last one is NOT lifted by folding the refs into the slot, which is the inference to avoid
+/// here: the lookup reads 0.0 B/key on the published arm only because that corpus is STRINGS and
+/// strings have slot rows, which is a property of the CORPUS and not of the structure. It stays
+/// the ref home for every `hash`, `set`, `zset` and `list` object, whose rows live in
+/// `RecordedMap` and are not `ObjectSlot`s at all. Lifting it needs those kinds migrated onto
+/// rows until the lookup's population reaches zero, which the ~76% consolidation crossover gates
+/// -- a PARTIAL migration costs more than none.
+///
+/// **So the arena is a REFACTOR decision, which inverts the framing above.** And it does NOT
+/// reach 4.0x by itself: it takes 20.6 B/key of the 25.0 needed, and the remaining 4.4 has no
+/// identified source.
+///
+/// The slot's `many` field looks like the obvious closer at 9.14 B/key and **must not be summed
+/// with it.** The arithmetic would be sound -- the two are disjoint rows of one census -- but the
+/// 8 bytes are not spendable: `many` has a durable form (`e` of `ObjectSlotWire`) whose
+/// `OwnedElementTenancy` witness is exactly what distinguishes "rebuild this" from "the rows are
+/// gone" for the consolidated-map migration, so deleting it leaves that distinction nowhere to
+/// live. Removing it would also need a kind-dependent row shape, which is the thing
+/// `objects: BTreeMap<StoredModelKind, HashMap<ModelKey, ObjectSlot>>` exists to avoid. It is
+/// priced headroom, pinned as a tripwire by `what_the_slots_owned_element_headroom_costs`
+/// precisely so that nobody spends it.
+///
 /// A gate stated in prose does not fail when it opens. This reads the manifest. If `hashbrown`
 /// ever becomes a direct dependency, the raw-entry table is in reach and the arena lever priced by
 /// `what_an_arena_for_the_key_characters_would_save` is constructible, so this goes red and says so.
@@ -12172,7 +12230,9 @@ fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_fo
 ///
 /// rust-internal: reads this crate's own manifest, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency -- --exact
+/// A BARE NAME WITH `--exact` MATCHES NOTHING AND STILL EXITS 0, so the path is spelled in full:
+///
+///   cargo test -p temporalstore-rust --lib engine::tests::index_bytes_per_key::the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency -- --exact
 #[test]
 fn the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
