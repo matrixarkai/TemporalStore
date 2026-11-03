@@ -320,53 +320,79 @@ impl ObjectStore for MatrixObjectHttpStore {
         key: &str,
         bytes: Bytes,
     ) -> Result<AppendBlobReceipt, ObjectStoreError> {
-        // THE OFFSET IS A CONDITION, NOT A DESTINATION. The server appends at the end or
-        // refuses, so the offset sent is what this client believes the end to be. A refusal
-        // means that belief was wrong and has to surface -- never be retried at a new offset,
-        // because then it is the caller's own bookkeeping that is wrong.
-        let start_offset = self.object_length_blocking(key)?;
+        // THE OFFSET IS A CONDITION, AND LOSING ON IT IS NORMAL UNDER CONCURRENCY.
+        //
+        // Appending takes two round trips -- learn the end, then write at it -- and those are
+        // not one atomic step, so two writers against the same object can read the same end
+        // and one of them loses with a 412. The server is right to refuse: it appends where it
+        // was told or not at all, because a write that silently landed elsewhere would leave
+        // the caller's own offsets describing bytes that are not there.
+        //
+        // So the loser re-reads the end and tries again, which is what S3 prescribes for a
+        // rejected write offset. That is safe for exactly one reason: **the receipt reports
+        // where the bytes LANDED, not where this call first intended to put them.** The WAL's
+        // offset index is built from the receipt, so a retried append records its true
+        // position and a reader finds its bytes. Reporting the originally intended offset
+        // after retrying somewhere else is the thing that would corrupt it.
+        //
+        // Bounded, and the bound is reported rather than looped past: a writer that keeps
+        // losing is contention worth seeing, not something to spin on for ever.
+        const APPEND_ATTEMPTS: usize = 8;
         let bytes_written = bytes.len() as u64;
-        let response = self.send(
-            "PUT",
-            &self.object_target(key),
-            &[("x-amz-write-offset-bytes", start_offset.to_string())],
-            bytes.as_ref(),
-        )?;
-        match response.status {
-            200 | 201 | 204 => {}
-            status => return Err(response.failure(status, key)),
+        let mut last_conflict: Option<ObjectStoreError> = None;
+
+        for _ in 0..APPEND_ATTEMPTS {
+            let start_offset = self.object_length_blocking(key)?;
+            let response = self.send(
+                "PUT",
+                &self.object_target(key),
+                &[("x-amz-write-offset-bytes", start_offset.to_string())],
+                bytes.as_ref(),
+            )?;
+            match response.status {
+                200 | 201 | 204 => {
+                    // The server reports what the object is NOW. Deriving it from
+                    // start + written would paper over a server that appended somewhere else,
+                    // which is the one thing the receipt exists to rule out.
+                    let object_length = response
+                        .header("x-amz-object-size")
+                        .and_then(|value| value.trim().parse::<u64>().ok())
+                        .ok_or_else(|| {
+                            ObjectStoreError::Http(format!(
+                                "{key}: the append gave no usable x-amz-object-size, so where                                  the bytes landed is unknown"
+                            ))
+                        })?;
+                    let end_offset = start_offset.saturating_add(bytes_written);
+                    if object_length != end_offset {
+                        return Err(ObjectStoreError::Http(format!(
+                            "{key}: appended {bytes_written} bytes at {start_offset}, so the                              object should be {end_offset} bytes and the server reports                              {object_length}"
+                        )));
+                    }
+                    return Ok(AppendBlobReceipt {
+                        key: key.to_string(),
+                        start_offset,
+                        end_offset,
+                        bytes_written,
+                        object_length,
+                        // NOT KNOWABLE OVER THE WIRE, and reported as absent rather than
+                        // guessed -- exactly as `FileObjectStore` reports them. These describe
+                        // where a chunk-backed store physically put the bytes, and an S3 door
+                        // says nothing about that.
+                        physical_slab_count: 0,
+                        first_physical_offset: None,
+                    });
+                }
+                // Someone else appended between the two round trips. Re-read and try again.
+                412 => last_conflict = Some(response.failure(412, key)),
+                status => return Err(response.failure(status, key)),
+            }
         }
-        // The server reports what the object is NOW. Deriving it from start + written instead
-        // would paper over a server that appended somewhere else, which is the one thing the
-        // receipt exists to rule out.
-        let object_length = response
-            .header("x-amz-object-size")
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .ok_or_else(|| {
-                ObjectStoreError::Http(format!(
-                    "{key}: the append gave no usable x-amz-object-size, so where the bytes \
-                     landed is unknown"
-                ))
-            })?;
-        let end_offset = start_offset.saturating_add(bytes_written);
-        if object_length != end_offset {
-            return Err(ObjectStoreError::Http(format!(
-                "{key}: appended {bytes_written} bytes at {start_offset}, so the object should \
-                 be {end_offset} bytes and the server reports {object_length}"
-            )));
-        }
-        Ok(AppendBlobReceipt {
-            key: key.to_string(),
-            start_offset,
-            end_offset,
-            bytes_written,
-            object_length,
-            // NOT KNOWABLE OVER THE WIRE, and reported as absent rather than guessed -- exactly
-            // as `FileObjectStore` reports them. These describe where a chunk-backed store
-            // physically put the bytes, and an S3 door says nothing about that.
-            physical_slab_count: 0,
-            first_physical_offset: None,
-        })
+
+        Err(last_conflict.unwrap_or_else(|| {
+            ObjectStoreError::Http(format!(
+                "{key}: gave up appending after {APPEND_ATTEMPTS} attempts"
+            ))
+        }))
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
