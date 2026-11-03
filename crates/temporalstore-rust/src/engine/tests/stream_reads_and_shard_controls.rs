@@ -2279,7 +2279,15 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.bucket_index.bucket_map.is_empty());
-        shard.strings_mut().clear();
+        // THE THIRD FIXTURE OF THE SAME SHAPE, and the only one of the three that was red before
+        // the fold's ref loss was found rather than because of it. `hashes` and `sets` keep their
+        // refs in the LOOKUP -- they have no `ObjectSlot` rows -- so clearing those two drops
+        // nothing, and it is the strings clear alone that un-names this object's blocks.
+        let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
+        assert!(
+            surrendered > 0,
+            "denominator: no string row carried refs, so clearing the rows is not the missing              secondary view this test means to simulate"
+        );
         shard.hashes.clear_for_test();
         shard.sets.clear_for_test();
     }
@@ -2452,7 +2460,11 @@ fn cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared() 
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.bucket_index.bucket_map.is_empty());
-        shard.strings_mut().clear();
+        let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
+        assert!(
+            surrendered > 0,
+            "denominator: no string row carried refs, so clearing the rows is not the eviction              this test means to simulate"
+        );
     }
     let _ = engine
         .cache()
@@ -2506,7 +2518,11 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     let mut damaged =
         crate::engine::decode_index_bytes(&std::fs::read(&index_path).expect("index file"))
             .expect("served index decodes");
-    damaged.strings_mut().clear();
+    let surrendered = clear_string_rows_keeping_their_blocks_named(&mut damaged);
+    assert!(
+        surrendered > 0,
+        "denominator: no string row carried refs, so this fixture is not injecting the damage it          describes and would pass however the clear is written"
+    );
     std::fs::write(&index_path, crate::engine::encode_index_bytes(&damaged)).unwrap();
 
     let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
@@ -3360,4 +3376,61 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
         !partial.end_of_stream,
         "four bytes of an eight-byte window is not the end of that window"
     );
+}
+
+/// Empty every string row the way a damaged index or an evicted model map would, WITHOUT leaving
+/// this object's blocks named by nothing.
+///
+/// # WHY A PLAIN `strings_mut().clear()` IS NOT THAT DAMAGE ANY MORE
+///
+/// Two fixtures here injected their fault with `strings_mut().clear()`, which meant "drop the
+/// addresses" while a row WAS an address. Since the block refs were folded into the slot a string
+/// row IS the ref home, so emptying the map leaves every live block named by NEITHER home -- and
+/// `serialize_block_index` refuses such an index as unwritable.
+///
+/// MEASURED rather than reasoned: the panic in
+/// `recovery_reconciles_model_views_from_bucket_index_authority` is raised by the fixture's OWN
+/// `encode_index_bytes` on the line after the clear. Its backtrace is two frames --
+/// `encode_index_bytes` called directly by the test -- so the failure is not in the recovery the
+/// test is named for.
+///
+/// AN OBJECT WITH NO ROW KEEPS ITS REFS IN THE LOOKUP: that is what the lookup is for, and
+/// `insert_object_block_lookup` says so for every kind whose rows are not `ObjectSlot`s. So the
+/// refs are surrendered there first and the rows then go -- rows gone, blocks still named, index
+/// writable, which is the damage both fixtures mean to inject.
+///
+/// THE SAME CORRECTION `take_string_address` ALREADY RECORDS: it notes that a MOVE leaving a row
+/// naming no blocks is why `bucket_dump_manifest_rejects_object_lifecycle_mismatch` went red, and
+/// "why that test now moves the slot instead". The fixture is corrected, not the invariant.
+///
+/// Hands back how many objects it moved so a caller can assert its own denominator instead of
+/// passing over an empty set.
+fn clear_string_rows_keeping_their_blocks_named(
+    shard: &mut crate::engine::state::ShardState,
+) -> usize {
+    // THE KIND'S SPELLING COMES FROM THE ENUM, not from a literal here: the lookup is keyed by the
+    // stored name, and a fixture spelling it by hand files under a kind nothing reads.
+    let model: std::sync::Arc<str> = std::sync::Arc::from(
+        crate::engine::storage_bucket_internals::StoredModelKind::String.as_str(),
+    );
+    // COLLECTED FIRST, because the refs borrow the rows and the lookup is about to be written.
+    let surrendered: Vec<(std::sync::Arc<str>, Vec<crate::engine::state::BlockLookupRef>)> = shard
+        .strings()
+        .iter()
+        .filter_map(|(key, slot)| {
+            slot.refs()
+                .map(|refs| (std::sync::Arc::clone(key), refs.iter().cloned().collect()))
+        })
+        .collect();
+    let moved = surrendered.len();
+    for (object_key, refs) in surrendered {
+        for block_ref in refs {
+            shard
+                .bucket_index
+                .object_block_lookup
+                .file(&model, &object_key, block_ref);
+        }
+    }
+    shard.strings_mut().clear();
+    moved
 }
