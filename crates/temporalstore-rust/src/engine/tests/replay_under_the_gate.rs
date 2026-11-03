@@ -116,7 +116,7 @@ fn resident_members(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(KEY)
         .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
         .unwrap_or_default()
@@ -447,7 +447,7 @@ fn resident_hash_fields(engine: &TemporalEngine) -> BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .hashes
+        .bucket_index.hashes
         .get(HASH_KEY)
         .map(|fields| fields.iter().map(|(name, _)| name.to_string()).collect())
         .unwrap_or_default()

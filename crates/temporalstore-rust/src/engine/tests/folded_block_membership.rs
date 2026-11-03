@@ -170,7 +170,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     // about either, whereas the resident map is maintained by the command path and the blocks by the
     // append path. Two artefacts that can disagree.
     let served: BTreeSet<Vec<u8>> = shard
-        .sets
+        .bucket_index.sets
         .get("folded")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();

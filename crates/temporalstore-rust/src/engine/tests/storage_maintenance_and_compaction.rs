@@ -1575,7 +1575,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
         let shard = shards.get(&1).expect("loaded shard");
         let string_address = shard.string_address("k").expect("string address");
         let hash_address = shard
-            .hashes
+            .bucket_index.hashes
             .get("h")
             .and_then(|fields| fields.get("f"))
             .expect("hash address");
@@ -2681,7 +2681,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
     let shard = shards.get(&1).expect("loaded shard");
     let string_address = shard.string_address("k").expect("string address");
     let hash_address = shard
-        .hashes
+        .bucket_index.hashes
         .get("h")
         .and_then(|fields| fields.get("f"))
         .expect("hash address");
@@ -3625,13 +3625,13 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     // come back as the SAME state and not a plausible one, and a length check alone would pass an
     // image whose addresses had all moved.
     assert_eq!(
-        decoded.hashes.len(),
+        decoded.bucket_index.hashes.len(),
         shard.bucket_index.hashes.len(),
         "the decoded image holds a different number of hash keys"
     );
     for (key, fields) in &shard.bucket_index.hashes {
         let got = decoded
-            .hashes
+            .bucket_index.hashes
             .get(key)
             .unwrap_or_else(|| panic!("hash key {key} did not survive the round trip"));
         assert_eq!(
@@ -3968,7 +3968,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
             for node_hash in 1..=count {
                 let key = super::context::context_node_key(tenant, node_hash);
                 let address = shard
-                    .hashes
+                    .bucket_index.hashes
                     .get(&key)
                     .and_then(|fields| fields.values().next())
                     .or_else(|| shard.context_nodes().get(key.as_str()));
@@ -3997,7 +3997,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
             for node_hash in 1..=count {
                 let key = super::context::context_node_key(tenant, node_hash);
                 if let Some(address) = shard
-                    .hashes
+                    .bucket_index.hashes
                     .get(&key)
                     .and_then(|fields| fields.values().next())
                     .or_else(|| shard.context_nodes().get(key.as_str()))
@@ -4107,7 +4107,7 @@ fn how_scattered_are_node_extents_after_a_real_ingest() {
         for node_hash in &node_hashes {
             let key = super::context::context_node_key(tenant, *node_hash);
             if let Some(address) = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .and_then(|fields| fields.values().next())
                 .or_else(|| shard.context_nodes().get(key.as_str()))
@@ -5824,7 +5824,7 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("loaded shard");
     let (object_key, address) = shard
-        .hashes
+        .bucket_index.hashes
         .iter()
         .find_map(|(key, fields)| {
             fields

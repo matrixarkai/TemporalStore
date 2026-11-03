@@ -288,7 +288,7 @@ fn resident_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(key)
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default()
@@ -610,7 +610,7 @@ fn build_divergence(
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 is loaded");
         shard
-            .sets
+            .bucket_index.sets
             .get(key)
             .expect("the seeded key is in the resident map")
             .clone()
@@ -697,10 +697,10 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
 
         // The load path's input: the durable map as an index snapshot predating the removals.
         shard
-            .sets
+            .bucket_index.sets
             .insert_elements_for_test(&ghost.key, ghost.persisted_before_removal.clone());
         shard
-            .sets
+            .bucket_index.sets
             .insert_elements_for_test(&control.key, control.persisted_before_removal.clone());
 
         let live_blocks: usize = shard
@@ -730,7 +730,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         let mut rows: Vec<(&str, BTreeSet<Vec<u8>>)> = Vec::new();
         for divergence in [&ghost, &control] {
             let in_map = shard
-                .sets
+                .bucket_index.sets
                 .get(&divergence.key)
                 .map(|members| members.keys().cloned().collect::<BTreeSet<_>>())
                 .unwrap_or_default();
@@ -1092,7 +1092,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     // A block address that is in NO bucket: an offset far past anything this fixture wrote, on a
     // slab id nothing uses. This is the shape of a persisted entry whose block has been removed.
     let live_control_address = shard
-        .sets
+        .bucket_index.sets
         .get("s")
         .and_then(|members| members.values().next())
         .cloned()
@@ -1122,17 +1122,17 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
 
     // The stale-snapshot entries: one subject per merged kind, beside each kind's real element.
     shard
-        .sets
+        .bucket_index.sets
         .elements_mut_for_test("s")
         .expect("set key")
         .insert(b"set-subject".to_vec(), dead_address.clone());
     shard
-        .zsets
+        .bucket_index.zsets
         .elements_mut_for_test("z")
         .expect("zset key")
         .insert(b"zset-subject".to_vec(), (9, dead_address.clone()));
     shard
-        .lists
+        .bucket_index.lists
         .elements_mut_for_test("l")
         .expect("list key")
         .insert(i64::MAX - 3, dead_address.clone());
@@ -1144,17 +1144,17 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     );
 
     let set_members: BTreeSet<Vec<u8>> = shard
-        .sets
+        .bucket_index.sets
         .get("s")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
     let zset_members: BTreeSet<Vec<u8>> = shard
-        .zsets
+        .bucket_index.zsets
         .get("z")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
     let list_seqs: BTreeSet<i64> = shard
-        .lists
+        .bucket_index.lists
         .get("l")
         .map(|entries| entries.keys().copied().collect())
         .unwrap_or_default();

@@ -736,7 +736,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let removed = shard
-            .zsets
+            .bucket_index.zsets
             .elements_mut_for_test("fb-zset")
             .expect("the zset is present")
             .remove(b"fb-two".as_slice());
@@ -1100,7 +1100,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
     // arm non-vacuous did exactly that. An absent key IS zero fields, so it is folded into the
     // field set and the assertion under test is the one that speaks.
     let field_names: std::collections::BTreeSet<String> = shard
-        .hashes
+        .bucket_index.hashes
         .get("un-hash")
         .map(|fields| fields.keys().map(|name| name.to_string()).collect())
         .unwrap_or_default();
@@ -1299,7 +1299,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let removed = shard
-            .zsets
+            .bucket_index.zsets
             .elements_mut_for_test("mt-zset")
             .expect("the zset is present")
             .remove(empty.as_slice());
@@ -1594,7 +1594,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let address = shard
-        .sets
+        .bucket_index.sets
         .get("seed")
         .and_then(|members| members.get(b"seed-member".as_slice()))
         .cloned()
@@ -1636,12 +1636,12 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
     super::fold_carried_container_elements(shard, &blob);
 
     let folded_set = shard
-        .sets
+        .bucket_index.sets
         .get("folded")
         .and_then(|members| members.get(member.as_slice()))
         .cloned();
     let folded_zset = shard
-        .zsets
+        .bucket_index.zsets
         .get("folded")
         .and_then(|members| members.get(member.as_slice()))
         .cloned();
@@ -1746,7 +1746,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let live_address = shard
-        .sets
+        .bucket_index.sets
         .get("res-seed")
         .and_then(|members| members.get(b"res-seed-member".as_slice()))
         .cloned()
@@ -1789,7 +1789,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
     super::fold_carried_container_elements(shard, &blob);
 
     let restored: Vec<Vec<u8>> = shard
-        .sets
+        .bucket_index.sets
         .get("res")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
@@ -1860,7 +1860,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let address = shard
-        .sets
+        .bucket_index.sets
         .get("carry-ttl")
         .and_then(|members| members.get(b"ttl-member".as_slice()))
         .cloned()
@@ -1911,7 +1911,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     // And it did do its own job.
     assert!(
         shard
-            .sets
+            .bucket_index.sets
             .get("carry-ttl")
             .is_some_and(|members| members.contains_key(b"another-member".as_slice())),
         "the carry did not restore its own element, so arm one may be passing because nothing ran"

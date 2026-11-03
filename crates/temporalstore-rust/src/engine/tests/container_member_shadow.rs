@@ -214,7 +214,7 @@ fn model_members(engine: &TemporalEngine, key: &str) -> BTreeMap<Vec<u8>, u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     shard
-        .zsets
+        .bucket_index.zsets
         .get(key)
         .map(|members| {
             members

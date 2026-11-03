@@ -91,7 +91,7 @@ fn both_sources(
         let shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let durable: std::collections::BTreeSet<String> = shard
-            .hashes
+            .bucket_index.hashes
             .get(key)
             .map(|fields| fields.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default();

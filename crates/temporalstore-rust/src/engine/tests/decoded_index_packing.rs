@@ -208,7 +208,7 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
             "{label}: the feature series must come back entry for entry"
         );
         assert_eq!(
-            shard.bucket_index.lists, decoded.lists,
+            shard.bucket_index.lists, decoded.bucket_index.lists,
             "{label}: the list series must come back entry for entry"
         );
         assert_eq!(
@@ -220,11 +220,11 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
             "{label}: the expiry map must come back entry for entry"
         );
         assert_eq!(
-            shard.bucket_index.sets, decoded.sets,
+            shard.bucket_index.sets, decoded.bucket_index.sets,
             "{label}: the set members must come back entry for entry"
         );
         assert_eq!(
-            shard.bucket_index.zsets, decoded.zsets,
+            shard.bucket_index.zsets, decoded.bucket_index.zsets,
             "{label}: the zset members must come back entry for entry"
         );
         // THE STORED BYTES DO NOT MOVE, as bytes rather than as a sentence. A repack changes

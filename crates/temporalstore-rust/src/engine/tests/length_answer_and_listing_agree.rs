@@ -787,7 +787,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let fields = shard
-            .hashes
+            .bucket_index.hashes
             .elements_mut_for_test(KEY)
             .expect("the fixture's hash is in the container");
         let removed = fields.remove("field-0");

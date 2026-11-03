@@ -241,7 +241,7 @@ fn resident_fields(engine: &TemporalEngine, key: &str) -> std::collections::BTre
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .hashes
+        .bucket_index.hashes
         .get(key)
         .map(|fields| fields.keys().map(|name| name.to_string()).collect())
         .unwrap_or_default()

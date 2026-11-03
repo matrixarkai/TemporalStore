@@ -1012,7 +1012,7 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
         // COPY ONE: the outer model map's own owned key text.
         let model_keys = shard.bucket_index.hashes.len();
         let model_key_bytes: usize = shard
-            .hashes
+            .bucket_index.hashes
             .keys()
             .map(|k| k.len() + std::mem::size_of::<String>())
             .sum();
@@ -1298,7 +1298,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let pairs: Vec<Vec<(String, ElementEntry)>> = shard
-                .hashes
+                .bucket_index.hashes
                 .values()
                 .map(|fields| {
                     fields
@@ -1308,7 +1308,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
                 })
                 .collect();
             let set_pairs: Vec<Vec<(Vec<u8>, ElementEntry)>> = shard
-                .sets
+                .bucket_index.sets
                 .values()
                 .map(|members| {
                     members
@@ -1765,7 +1765,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
             );
         }
         shard
-            .hashes
+            .bucket_index.hashes
             .insert_elements_for_test(&format!("wide:hash:{h}"), entry);
     }
 

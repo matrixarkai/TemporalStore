@@ -2588,7 +2588,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
             let mut member_at: std::collections::BTreeMap<(u64, u64, u64), Vec<u8>> =
                 std::collections::BTreeMap::new();
             for (member, address) in shard
-                .sets
+                .bucket_index.sets
                 .get("eo-set-order")
                 .expect("the fixture's set is resident")
                 .iter()
@@ -2940,7 +2940,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
         let removed = shard
-            .zsets
+            .bucket_index.zsets
             .elements_mut_for_test("eo-fold")
             .expect("the zset is present")
             .remove(doomed.as_slice());

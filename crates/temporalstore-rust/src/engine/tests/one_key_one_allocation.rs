@@ -828,7 +828,7 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let unsorted: Vec<String> = shard
-            .hashes
+            .bucket_index.hashes
             .iter()
             .filter(|(_, fields)| !fields.is_sorted_by_field())
             .map(|(key, _)| key.to_string())

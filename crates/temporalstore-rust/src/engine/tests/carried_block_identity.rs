@@ -1138,7 +1138,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
                 })
                 .count();
             let recovered: BTreeSet<String> = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .map(|fields| fields.keys().map(|name| name.to_string()).collect())
                 .unwrap_or_default();

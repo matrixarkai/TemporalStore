@@ -631,7 +631,7 @@ fn occupied_blocks(engine: &TemporalEngine, model_id: &str, object_key: &str) ->
     let shard = shards.get(&1).expect("shard 1 loaded");
     let blocks: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
         "hash" => shard
-            .hashes
+            .bucket_index.hashes
             .get(object_key)
             .map(|fields| {
                 fields

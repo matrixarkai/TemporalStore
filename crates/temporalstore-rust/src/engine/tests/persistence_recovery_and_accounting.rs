@@ -14018,7 +14018,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     }
     // And the context keys the model map holds, so the two can be compared.
     let context_keys_in_model = shard
-        .hashes
+        .bucket_index.hashes
         .keys()
         .filter(|key| key.contains("ctx") || key.contains("context"))
         .count();

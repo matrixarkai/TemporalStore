@@ -974,7 +974,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let empty_fields = shard
-            .hashes
+            .bucket_index.hashes
             .get(empty_key)
             .expect("the empty-named hash is present after two writes");
         assert_eq!(
@@ -993,7 +993,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             )
             .clone();
         let nameless_fields = shard
-            .hashes
+            .bucket_index.hashes
             .get(nameless_key)
             .expect("the nameless-block key is present after one write");
         assert_eq!(

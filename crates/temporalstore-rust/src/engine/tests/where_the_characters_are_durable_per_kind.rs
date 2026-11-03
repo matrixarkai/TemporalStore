@@ -161,14 +161,14 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     shard
         .set_string_address(key_for("string", &suffix).as_str().into(), &address());
     shard
-        .hashes
+        .bucket_index.hashes
         .insert_element_for_test(
             &key_for("hash", suffix),
             std::sync::Arc::from("field-a"),
             address(),
         );
     shard
-        .sets
+        .bucket_index.sets
         .insert_element_for_test(&key_for("set", suffix), b"member-a".to_vec(), address());
     shard.bucket_index.zsets.insert_element_for_test(
         &key_for("zset", suffix),
@@ -176,7 +176,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
         (7, address()),
     );
     shard
-        .lists
+        .bucket_index.lists
         .insert_element_for_test(&key_for("list", suffix), 1i64, address());
 
     let mut series = BTreeMap::new();

@@ -753,7 +753,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         shard
-            .sets
+            .bucket_index.sets
             .get(&key)
             .expect("the seeded key is in the resident map")
             .clone()
@@ -806,7 +806,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         shard
-            .sets
+            .bucket_index.sets
             .insert_elements_for_test(&key, persisted_before_removal);
 
         let live_blocks: usize = shard
@@ -845,7 +845,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         println!("  index walk pairs carrying a member name: {named}");
 
         shard
-            .sets
+            .bucket_index.sets
             .get(&key)
             .map(|members| members.keys().cloned().collect())
             .unwrap_or_default()

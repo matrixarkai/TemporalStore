@@ -8618,7 +8618,7 @@ mod release_refusal_guards {
         let key = key_routing_to("hash-kind-key", 7);
         let held = address(7, 64);
         shard
-            .hashes
+            .bucket_index.hashes
             .insert_element_for_test(&key, std::sync::Arc::from("field"), held.clone());
         install_block(&mut shard, 7, &key, block(&key, "hash", Some("field"), held));
 
@@ -8797,7 +8797,7 @@ mod release_refusal_guards {
         let kind_key = key_routing_to("batch-kind", 4);
         let held = address(4, 64);
         shard
-            .hashes
+            .bucket_index.hashes
             .insert_element_for_test(&kind_key, std::sync::Arc::from("field"), held.clone());
         install_block(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
         shard.set_string_address(std::sync::Arc::from(disagreement_key.as_str()), &address(5, 4_096));
@@ -9328,16 +9328,16 @@ mod model_kind_registry_guards {
             "the string map did not hand back the address this fixture filed: the row narrowed it,              so every kind below is being compared against an address the store does not hold",
         );
         shard
-            .hashes
+            .bucket_index.hashes
             .insert_elements_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());
         shard
-            .zsets
+            .bucket_index.zsets
             .insert_elements_for_test("z", BTreeMap::from([(vec![1u8], (9u64, at.clone()))]));
         shard
-            .lists
+            .bucket_index.lists
             .insert_elements_for_test("l", BTreeMap::from([(0i64, at.clone())]));
         shard
-            .sets
+            .bucket_index.sets
             .insert_elements_for_test("t", BTreeMap::from([(vec![2u8], at.clone())]));
         shard
             .features_mut()

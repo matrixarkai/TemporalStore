@@ -1603,7 +1603,12 @@ impl Serialize for CoreIndex {
         // field: the move compiled clean with these four absent, and every index write would have
         // dropped every container object on the floor with nothing failing. That is the shape of
         // `moving a durable field into a rebuilt struct is silent data loss`, and the compiler
-        // cannot see it, which is why `an_index_round_trip_keeps_every_container_map` exists.
+        // cannot see it. TWO GUARDS DO, both in `what_the_core_index_puts_on_the_wire`:
+        // `every_field_of_the_core_index_declares_whether_it_reaches_the_wire` destructures
+        // `CoreIndex` exhaustively and pins the encoded KEY SET, so a field left out of this
+        // encoder fails by name rather than narrowing the wire in silence, and
+        // `an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one` compares what
+        // came back against what went in, so a field written under the wrong codec fails too.
         //
         // SAME SPELLINGS AS AT THE TOP LEVEL, and `RecordedMap`'s own `Serialize` dispatches to
         // each kind's codec, so each map's bytes are what they were -- only the parent moved.

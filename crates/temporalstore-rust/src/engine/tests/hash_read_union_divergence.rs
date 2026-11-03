@@ -394,7 +394,7 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let fields_of = shard
-            .hashes
+            .bucket_index.hashes
             .elements_mut_for_test(PLANTED_KEY)
             .expect("the container holds the seeded object");
         assert!(
