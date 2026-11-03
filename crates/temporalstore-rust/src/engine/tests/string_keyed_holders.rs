@@ -151,10 +151,10 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     );
     // `RecordedMap` keeps its map private and exposes only `keys()`, so this is the one way to
     // ask the question from outside that module.
-    record("hashes", shard.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record("sets", shard.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record("zsets", shard.zsets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record("lists", shard.lists.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("hashes", shard.bucket_index.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("sets", shard.bucket_index.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("zsets", shard.bucket_index.zsets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("lists", shard.bucket_index.lists.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
 
     // FIVE MORE OBJECT-KEYED TABLES. This walk's COVERAGE decides whether the key-character
     // lever is worth taking, and it had been compared against the wrong denominator: the
@@ -520,8 +520,8 @@ fn distinct_addresses_per_raw_key(
     note(shard.strings().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.control_state().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    note(shard.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    note(shard.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.bucket_index.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.bucket_index.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     held.into_iter().map(|(text, addresses)| (text, addresses.len())).collect()
 }
 

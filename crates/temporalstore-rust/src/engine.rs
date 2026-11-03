@@ -1658,7 +1658,7 @@ impl TemporalEngine {
                     FastPathRead::Hash {
                         key: key.as_str(),
                         fields: shard
-                            .hashes
+                            .bucket_index.hashes
                             .get(key)
                             .map(|fields| {
                                 fields
@@ -1731,7 +1731,7 @@ impl TemporalEngine {
                 // cache cannot answer at all.
                 //
                 // THE SIBLING ARM ALREADY DOES THIS, which is why it is not a new rule. The
-                // `FastPathRead::Hash` arm below takes its fields from `shard.hashes` and
+                // `FastPathRead::Hash` arm below takes its fields from `shard.bucket_index.hashes` and
                 // `filter_map`s over them, so an absent hash makes no cache call whatever. This is
                 // the string arm being brought level with the one beside it.
                 let Some(address) = address else {
@@ -2970,7 +2970,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// which rebuilds the map through the ordinary write path.
 ///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 30;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 31;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3662,7 +3662,7 @@ fn command_upsert_components(
         // push and its LAST for a right one. That is why this needs shard state and the other
         // arms do not.
         Command::ListPush { key, left, .. } => {
-            let seq = shard.lists.get(key).and_then(|list| {
+            let seq = shard.bucket_index.lists.get(key).and_then(|list| {
                 if *left {
                     list.keys().next().copied()
                 } else {
@@ -3694,7 +3694,7 @@ fn collect_upsert_index_items(
     for (kind, object_key, component) in components {
         let address = match (*kind, component) {
             ("hash", Some(field)) => shard
-                .hashes
+                .bucket_index.hashes
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
@@ -3732,7 +3732,7 @@ fn collect_upsert_index_items(
                 .ok()
                 .and_then(|member| {
                     shard
-                        .zsets
+                        .bucket_index.zsets
                         .get(object_key)
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
@@ -3746,7 +3746,7 @@ fn collect_upsert_index_items(
                 .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
                 .and_then(|seq| {
                     shard
-                        .lists
+                        .bucket_index.lists
                         .get(object_key)
                         .and_then(|entries| entries.get(&seq))
                         .cloned()
@@ -3755,7 +3755,7 @@ fn collect_upsert_index_items(
                 .ok()
                 .and_then(|member| {
                     shard
-                        .sets
+                        .bucket_index.sets
                         .get(object_key)
                         .and_then(|members| members.get(&member))
                         .cloned()
@@ -4100,7 +4100,7 @@ fn command_touched_container_elements(
         // landed, so this reads it back exactly as `command_upsert_components` does: post-apply the
         // pushed element is the list's FIRST entry for a left push and its LAST for a right one.
         Command::ListPush { key, left, .. } => shard
-            .lists
+            .bucket_index.lists
             .get(key)
             .and_then(|list| {
                 if *left {
@@ -4154,25 +4154,25 @@ fn capture_container_element_states(
     for element in touched {
         let carried = match element {
             TouchedContainerElement::Set { key, member } => shard
-                .sets
+                .bucket_index.sets
                 .get(key)
                 .and_then(|members| members.get(member))
                 .and_then(|address| serde_json::to_value((member, address)).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[0], value)),
             TouchedContainerElement::ZSet { key, member } => shard
-                .zsets
+                .bucket_index.zsets
                 .get(key)
                 .and_then(|members| members.get(member))
                 .and_then(|scored| serde_json::to_value((member, scored)).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[1], value)),
             TouchedContainerElement::List { key, sequence } => shard
-                .lists
+                .bucket_index.lists
                 .get(key)
                 .and_then(|entries| entries.get(sequence))
                 .and_then(|address| serde_json::to_value((sequence, address)).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[2], value)),
             TouchedContainerElement::Hash { key, field } => shard
-                .hashes
+                .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.get(field))
                 .and_then(|address| serde_json::to_value((field, address)).ok())
@@ -4559,7 +4559,7 @@ fn merge_container_elements<M>(
 /// the fold never wrote these maps at all.
 ///
 /// THAT MERGE NOW ASKS THE SAME QUESTION THIS FUNCTION DOES, so a per-record carry would no longer
-/// be handed back: the carry lands in `shard.sets`, which the reconcile then takes as its PERSISTED
+/// be handed back: the carry lands in `shard.bucket_index.sets`, which the reconcile then takes as its PERSISTED
 /// input and filters on whether each element's block is still there. So this is no longer the only
 /// guard against that particular resurrection. It is still the right shape and is not relaxed: the
 /// ordering argument above is about which answer this function computes, not about who catches it
@@ -4600,25 +4600,25 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
             continue;
         };
         let before = skipped;
-        shard.sets.fold_carried_elements(
+        shard.bucket_index.sets.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[0]),
             &live,
             &mut skipped,
         );
-        shard.zsets.fold_carried_elements(
+        shard.bucket_index.zsets.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[1]),
             &live,
             &mut skipped,
         );
-        shard.lists.fold_carried_elements(
+        shard.bucket_index.lists.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[2]),
             &live,
             &mut skipped,
         );
-        shard.hashes.fold_carried_elements(
+        shard.bucket_index.hashes.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[3]),
             &live,
@@ -4986,7 +4986,7 @@ fn fold_delta_block_items(
                 // model map". It was wrong about which record recovery reads, and the row has no
                 // such field now. The model maps come back from two places, neither of them this
                 // row: `apply_outcome_item` installs elements from `wal::WalOutcomeItem::component`,
-                // which is the WAL's own record of the write; and `shard.hashes`, `sets`, `zsets`
+                // which is the WAL's own record of the write; and `shard.bucket_index.hashes`, `sets`, `zsets`
                 // and `lists` carry `#[serde(default)]` and come back from the index snapshot
                 // directly. What a FOLD needs arrives beside these items in the record's own
                 // `key_states` blobs -- `CARRIED_CONTAINER_FIELDS` carries the member bytes, the
@@ -6533,28 +6533,28 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         &mut visited,
         shard.strings().values().map(|address| address.block_slab_id()),
     );
-    for fields in shard.hashes.values() {
+    for fields in shard.bucket_index.hashes.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
             fields.values().map(|address| address.block_slab_id()),
         );
     }
-    for members in shard.sets.values() {
+    for members in shard.bucket_index.sets.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
             members.values().map(|address| address.block_slab_id()),
         );
     }
-    for elements in shard.lists.values() {
+    for elements in shard.bucket_index.lists.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
             elements.values().map(|address| address.block_slab_id()),
         );
     }
-    for members in shard.zsets.values() {
+    for members in shard.bucket_index.zsets.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
@@ -6904,10 +6904,10 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
     });
     bucket_index_exists
         || shard.strings().contains_key(key)
-        || shard.hashes.contains_key(key)
-        || shard.sets.contains_key(key)
-        || shard.lists.contains_key(key)
-        || shard.zsets.contains_key(key)
+        || shard.bucket_index.hashes.contains_key(key)
+        || shard.bucket_index.sets.contains_key(key)
+        || shard.bucket_index.lists.contains_key(key)
+        || shard.bucket_index.zsets.contains_key(key)
         || shard.buckets.contains_key(key)
         || shard.seen.contains_key(key)
         || shard.features().contains_key(key)
@@ -7836,10 +7836,10 @@ fn object_manager_stats(
                 (0, live_blocks, 0)
             };
         let secondary_object_count = shard.strings().len()
-            + shard.hashes.len()
-            + shard.sets.len()
-            + shard.lists.len()
-            + shard.zsets.len()
+            + shard.bucket_index.hashes.len()
+            + shard.bucket_index.sets.len()
+            + shard.bucket_index.lists.len()
+            + shard.bucket_index.zsets.len()
             + shard.features().len()
             + shard.control_state().len()
             + shard.control_state_changes.len()
@@ -7857,10 +7857,10 @@ fn object_manager_stats(
         let object_count = bucket_object_count.max(secondary_object_count);
         let dirty_object_count = bucket_dirty_object_count.max(shard.dirty_objects.len());
         let secondary_block_ref_count = shard.strings().len()
-            + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
-            + shard.sets.values().map(BTreeMap::len).sum::<usize>()
-            + shard.lists.values().map(BTreeMap::len).sum::<usize>()
-            + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.bucket_index.hashes.values().map(|fields| fields.len()).sum::<usize>()
+            + shard.bucket_index.sets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.bucket_index.lists.values().map(BTreeMap::len).sum::<usize>()
+            + shard.bucket_index.zsets.values().map(BTreeMap::len).sum::<usize>()
             + shard.features().values().map(|series| series.len()).sum::<usize>()
             + shard.context_nodes().len()
             + shard
@@ -7986,10 +7986,10 @@ fn object_manager_stats(
     }
 
     let object_count = shard.strings().len()
-        + shard.hashes.len()
-        + shard.sets.len()
-        + shard.lists.len()
-        + shard.zsets.len()
+        + shard.bucket_index.hashes.len()
+        + shard.bucket_index.sets.len()
+        + shard.bucket_index.lists.len()
+        + shard.bucket_index.zsets.len()
         + shard.features().len()
         + shard.control_state().len()
         + shard.context_nodes().len()
@@ -8004,10 +8004,10 @@ fn object_manager_stats(
         + shard.context_summaries().len()
         + shard.context_compressions().len();
     let block_ref_count = shard.strings().len()
-        + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
-        + shard.sets.values().map(BTreeMap::len).sum::<usize>()
-        + shard.lists.values().map(BTreeMap::len).sum::<usize>()
-        + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.bucket_index.hashes.values().map(|fields| fields.len()).sum::<usize>()
+        + shard.bucket_index.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.bucket_index.lists.values().map(BTreeMap::len).sum::<usize>()
+        + shard.bucket_index.zsets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features().values().map(|series| series.len()).sum::<usize>()
         + shard.context_nodes().len()
         + shard

@@ -1465,12 +1465,12 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
     shard.set_string_address(
         "string".into(), &ElementEntry::from_parts(7, 0, 1, None, None),
     );
-    shard.hashes.insert_element_for_test(
+    shard.bucket_index.hashes.insert_element_for_test(
         "hash",
         std::sync::Arc::from("field"),
         ElementEntry::from_parts(8, 0, 1, None, None),
     );
-    shard.sets.insert_element_for_test(
+    shard.bucket_index.sets.insert_element_for_test(
         "set",
         b"member".to_vec(),
         ElementEntry::from_parts(9, 0, 1, None, None),
@@ -3593,7 +3593,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
             std::sync::Arc::from(format!("object-{i}").as_str()), &ElementEntry::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
     }
-    shard.hashes.insert_element_for_test(
+    shard.bucket_index.hashes.insert_element_for_test(
         "hash-object",
         std::sync::Arc::from("component"),
         ElementEntry::from_parts(9, 1, 2, None, None),
@@ -3626,10 +3626,10 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     // image whose addresses had all moved.
     assert_eq!(
         decoded.hashes.len(),
-        shard.hashes.len(),
+        shard.bucket_index.hashes.len(),
         "the decoded image holds a different number of hash keys"
     );
-    for (key, fields) in &shard.hashes {
+    for (key, fields) in &shard.bucket_index.hashes {
         let got = decoded
             .hashes
             .get(key)
@@ -3649,7 +3649,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     }
     // THE DENOMINATOR. Every assertion above is satisfied by two empty maps.
     assert!(
-        !shard.hashes.is_empty(),
+        !shard.bucket_index.hashes.is_empty(),
         "the shard under test must actually have hashes, or the assertions above prove nothing"
     );
     assert_eq!(decoded.applied_wal_sequence, shard.applied_wal_sequence);
@@ -4618,7 +4618,7 @@ fn which_write_primitive_grows_with_the_store() {
 /// at ~197. The append primitives underneath both are flat, no rebuild fires, and every counted
 /// bucket walk is flat -- so the cost is in the maintenance that succeeds, not in the write and not
 /// in a fallback. The two arms differ in which branch of `sync_context_blocks_for_object` they take:
-/// a node's block is filed under `shard.hashes` and goes through `upsert_bucket_index_block_with`, a
+/// a node's block is filed under `shard.bucket_index.hashes` and goes through `upsert_bucket_index_block_with`, a
 /// summary is a timestamped series and goes through `sync_bucket_index_object_blocks`.
 ///
 /// Calling maintenance directly, on the same grown stores, one key of each kind, decides it.
@@ -4826,8 +4826,8 @@ fn where_a_record_is_kept() {
 
     let rows: Vec<(&str, usize)> = vec![
         ("strings", shard.strings().len()),
-        ("hashes", shard.hashes.len()),
-        ("sets", shard.sets.len()),
+        ("hashes", shard.bucket_index.hashes.len()),
+        ("sets", shard.bucket_index.sets.len()),
         ("expires_at_ms", shard.expires_at_ms().len()),
         ("seen", shard.seen.len()),
         ("wal_resident_pages", shard.wal_resident_blocks.len()),
@@ -7562,10 +7562,10 @@ fn where_a_record_is_kept_everywhere() {
 
     let rows: Vec<(&str, usize)> = vec![
         ("strings", shard.strings().len()),
-        ("hashes", shard.hashes.len()),
-        ("sets", shard.sets.len()),
-        ("zsets", shard.zsets.len()),
-        ("lists", shard.lists.len()),
+        ("hashes", shard.bucket_index.hashes.len()),
+        ("sets", shard.bucket_index.sets.len()),
+        ("zsets", shard.bucket_index.zsets.len()),
+        ("lists", shard.bucket_index.lists.len()),
         ("seen", shard.seen.len()),
         ("buckets", shard.buckets.len()),
         ("expires_at_ms", shard.expires_at_ms().len()),

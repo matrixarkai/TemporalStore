@@ -1474,7 +1474,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // AND THE TOMBSTONE ENTRIES, WHICH THE MODEL MAPS CANNOT RE-DERIVE.
     //
     // This function rebuilds every bucket from `collect_model_live_block_entries`, and those maps hold
-    // only LIVE elements -- a removed one is gone from `shard.sets` by construction. So a rebuild
+    // only LIVE elements -- a removed one is gone from `shard.bucket_index.sets` by construction. So a rebuild
     // produces one entry per live element and NONE for a removal, and the entry that keeps a removal's
     // tombstone block reachable is erased by any round that rebuilds. `compact_shard_blocks` calls this
     // directly, twice, and `promote_model_maps_to_bucket_index_authority` calls it as well; so before
@@ -1955,14 +1955,14 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
         .map(|entry| super::live_block_key(&entry.address))
         .collect();
     // MERGED, NOT ASSIGNED, AND THE `is_empty` GATE WENT WITH THE ASSIGNMENT. While `hashes` was
-    // `skip_serializing` there was nothing in `shard.hashes` to protect, so overwriting it whenever
+    // `skip_serializing` there was nothing in `shard.bucket_index.hashes` to protect, so overwriting it whenever
     // the index said anything was harmless and the gate only avoided clearing it to empty. It is
     // durable now, so a wholesale assignment here would discard exactly the elements this function's
     // own header warns about discarding -- a field whose block the index cannot NAME is a field the
     // durable map is now the only record of. The merge keeps it; the live-address filter still drops
     // a durable element whose block the settled index does not hold.
     let mut resurrections_refused = 0usize;
-    shard.hashes.reconcile_from_durable(
+    shard.bucket_index.hashes.reconcile_from_durable(
         hashes,
         &live_blocks_by_address,
         &mut resurrections_refused,
@@ -2816,10 +2816,10 @@ pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
 /// on the first non-empty map; never clones.
 pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
     !shard.strings().is_empty()
-        || !shard.hashes.is_empty()
-        || !shard.sets.is_empty()
-        || !shard.lists.is_empty()
-        || !shard.zsets.is_empty()
+        || !shard.bucket_index.hashes.is_empty()
+        || !shard.bucket_index.sets.is_empty()
+        || !shard.bucket_index.lists.is_empty()
+        || !shard.bucket_index.zsets.is_empty()
         || !shard.features().is_empty()
         || !shard.control_state_blocks().is_empty()
         || !shard.context_nodes().is_empty()
@@ -2918,7 +2918,7 @@ pub(super) fn sync_blocks_for_written_components(
         // `collect_upsert_index_items` does, so the block filed here is the block a reload serves.
         let address = match (*kind, component.as_deref()) {
             ("hash", Some(field)) => shard
-                .hashes
+                .bucket_index.hashes
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
@@ -3066,7 +3066,7 @@ pub(super) fn sync_context_blocks_for_object(
         }
     }
 
-    // A context node's block lives in `shard.hashes` under a single field, so the rebuild derives
+    // A context node's block lives in `shard.bucket_index.hashes` under a single field, so the rebuild derives
     // it as kind "hash" with that field as the component -- a different shape from the kinds
     // above, which carry no component. It is filed here the same way the rebuild would file it.
     //
@@ -3080,11 +3080,11 @@ pub(super) fn sync_context_blocks_for_object(
     // Those differ once the filter can empty the list, and answering the second question would
     // report an already-synced object as uncovered -- which sends the caller into a full rebuild.
     let had_hash_blocks = shard
-        .hashes
+        .bucket_index.hashes
         .get(object_key)
         .is_some_and(|fields| !fields.is_empty());
     let hash_fields: Vec<(super::hash_field_map::FieldName, ElementEntry)> = shard
-        .hashes
+        .bucket_index.hashes
         .get(object_key)
         .map(|fields| {
             fields
@@ -3700,7 +3700,7 @@ fn visit_model_live_blocks(
         let hash_names_a_block = index_entry_names_a_block(ModelKind::Hash.as_str());
         let zset_names_a_block = index_entry_names_a_block(ModelKind::Zset.as_str());
         let list_names_a_block = index_entry_names_a_block(ModelKind::List.as_str());
-        for (key, fields) in &shard.hashes {
+        for (key, fields) in &shard.bucket_index.hashes {
             if hash_names_a_block {
                 emit_one_entry_a_block(ModelKind::Hash, key, fields.values(), &accept, &mut emit);
             } else {
@@ -3716,7 +3716,7 @@ fn visit_model_live_blocks(
                 }
             }
         }
-        for (key, members) in &shard.zsets {
+        for (key, members) in &shard.bucket_index.zsets {
             if zset_names_a_block {
                 // THIS IS THE BRANCH THAT RUNS, and the note here used to say the opposite.
                 //
@@ -3766,7 +3766,7 @@ fn visit_model_live_blocks(
                 }
             }
         }
-        for (key, elements) in &shard.lists {
+        for (key, elements) in &shard.bucket_index.lists {
             if list_names_a_block {
                 // AND THE GATED ARM DROPS A `format!` PER ELEMENT. The ungated arm below renders
                 // a biased sequence word to sixteen hex digits, once per element on every walk,
@@ -3810,7 +3810,7 @@ fn visit_model_live_blocks(
         // behaviour: this walk is deliberately careful not to build a `String` for a block the
         // caller will discard, so the gated arm's bookkeeping is created only when it is used.
         let set_names_a_block = index_entry_names_a_block(ModelKind::Set.as_str());
-        for (key, members) in &shard.sets {
+        for (key, members) in &shard.bucket_index.sets {
             if set_names_a_block {
                 // The dedup, and the note explaining why it is correctness and not bookkeeping,
                 // both live on `emit_one_entry_a_block` now -- shared with the zset and list arms.
@@ -4163,7 +4163,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///
 ///   * `zset` -- ITS COMPONENT IS NOT A NAME, IT IS THE SCORE. A zset component is
 ///     `{biased_score:016x}{hex(member)}`, so the entry's name is the only copy of an element's
-///     score outside `shard.zsets`. Dropping it DELETES DATA rather than a label: a member whose
+///     score outside `shard.bucket_index.zsets`. Dropping it DELETES DATA rather than a label: a member whose
 ///     durable entry a fold has not delivered cannot be rebuilt from its block at all, measured as
 ///     `Some(3.0)` written and `None` served. And a RESCORE is an in-place rewrite from this
 ///     function's side -- the old element key is tombstoned while its live entry is not superseded
@@ -4178,14 +4178,14 @@ pub(super) struct ObjectDeletionFiled(());
 ///     present field unreachable: `HashGet` answers MISSING for a field that is there,
 ///     `HashIncrBy` reads that miss as `unwrap_or_default()` and restarts the counter at zero,
 ///     `HashLen` counts entries and so reports the BLOCK count, and `HashGetAll` survives only
-///     because it already serves the union with `shard.hashes`. Hash is also the one container
+///     because it already serves the union with `shard.bucket_index.hashes`. Hash is also the one container
 ///     kind that rewrites an element IN PLACE -- `HashSet` on an existing field keeps the
 ///     component and takes a new address -- which is the shape the paragraph below says an
 ///     address-keyed predicate mishandles. Converting hash means first moving those four readers
-///     onto `shard.hashes`.
+///     onto `shard.bucket_index.hashes`.
 ///
 /// `list` IS THE ONE THAT CONVERTS, and it converts because its component carries nothing the
-/// engine reads back out of the entry. The sequence that orders a list lives in `shard.lists`,
+/// engine reads back out of the entry. The sequence that orders a list lives in `shard.bucket_index.lists`,
 /// which is keyed BY that sequence, and both list readers (`ListLen`, `ListRange`) read the
 /// resident map. `list` also has no `LSET`, `LINSERT` or `LREM`, so it never rewrites an element in
 /// place and the two-live-entries shape cannot arise for it.
@@ -4197,7 +4197,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///
 /// The two paragraphs above each name a prerequisite, and BOTH have since landed: a zset component
 /// is `hex::encode(member)` with the score on the WAL outcome's `value` slot, and hash's four
-/// index-by-component readers answer from `shard.hashes`. So the flip was attempted again with
+/// index-by-component readers answer from `shard.bucket_index.hashes`. So the flip was attempted again with
 /// both in hand. IT WAS REFUSED AGAIN, ON MEASUREMENT, and the prerequisites are not what is left
 /// over -- what refuses it now is a THIRD obstacle that neither paragraph above is about and that
 /// the prerequisites could not have addressed.
@@ -4386,7 +4386,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///   * `carried_block_identity` x2 -- both recover a hash field's name FROM THE ENTRY. "key h0
 ///     recovered 0 of 25 field names after a reload" is the collapse; the module's subject is
 ///     whether the name is independently recoverable, and under the collapse it is recoverable from
-///     the BLOCK's own frame and from `shard.hashes`, not from the entry.
+///     the BLOCK's own frame and from `shard.bucket_index.hashes`, not from the entry.
 ///   * `container_member_shadow` x3 -- its zset block walk does
 ///     `.expect("a zset block is named by its component")`. The redundancy it measures between a
 ///     component and the block payload is what the collapse DELETED, so two arms are measuring a
@@ -4421,7 +4421,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// SO IT IS THIS BRANCH'S OWN RED AND IT IS A RESTATEMENT, not an inheritance to be stepped around.
 /// Its message says `HashGetAll` "serves the union of the two and this change does not touch it" --
 /// and this change DOES touch it: the fourth consumer moved above is `Command::HashGetAll`, whose
-/// index half now answers from `shard.hashes`. With the container a strict subset of the index the
+/// index half now answers from `shard.bucket_index.hashes`. With the container a strict subset of the index the
 /// listing therefore follows the CONTAINER (5) where the arm pins it to the INDEX (6). The source
 /// moved; the assertion names the old source. An ancestor that is not your base cannot establish
 /// that a red is inherited.
@@ -6635,7 +6635,7 @@ pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -
         .map(|address| crate::wal_record::is_wal_resident(address.block_slab_id()))
         .unwrap_or(false)
         || shard
-            .hashes
+            .bucket_index.hashes
             .get(object_key)
             .map(|fields| {
                 fields
@@ -7062,7 +7062,7 @@ pub(super) fn reconcile_timestamped_series_membership_in_place<K, S>(
 /// So a member removed after the last base-index write is GONE from the block index and PRESENT in
 /// the persisted map, and this function used to hand it back. #2017 drove exactly that: resident map
 /// 2 members, live block index 1. It is the reason a set listing could not be served from
-/// `shard.sets`.
+/// `shard.bucket_index.sets`.
 ///
 /// THE QUESTION ASKED IS #2005's, AND IT IS ASKED OF THE OTHER INPUT NOW. #2005 fixed a resurrection
 /// on this same function from the CARRY side -- `fold_carried_container_elements` applies the delta
@@ -7260,7 +7260,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             // printed; it is "an entry cannot carry an element name at all".
             //
             // SO THE DERIVED VIEW FOR THESE KINDS IS EMPTY, AND THE DURABLE MAPS ARE THE SOLE
-            // SOURCE. All four of `shard.hashes`, `shard.sets`, `shard.zsets` and `shard.lists`
+            // SOURCE. All four of `shard.bucket_index.hashes`, `shard.bucket_index.sets`, `shard.bucket_index.zsets` and `shard.bucket_index.lists`
             // carry `#[serde(default)]`, so all four are written and read back; the version stamp
             // refuses an index written before the collapse, so there is no older index whose names
             // would have been the only copy. This is what the `durable_outranks_derived` arms are
@@ -7494,7 +7494,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         }
     }
     // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into a component
-    // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map
+    // name. These three used to read `shard.bucket_index.zsets = zsets;` and so on, which throws a DURABLE map
     // away in favour of a view rebuilt by parsing those names: a store written with one score came
     // back with another when only the name was changed, and the persisted map -- which
     // `zset_index_serde` writes as (member, (score, address)) -- had no say.
@@ -7526,23 +7526,23 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // Running the merge with an empty derived view is safe here for the reason the filter is safe at
     // all: it drops only a persisted element whose address matches no live block in the finished
     // index. That trusts the index exactly as far as this function already trusts it two arms up,
-    // where `shard.strings = strings` and `shard.hashes = hashes` assign the derived view WHOLESALE.
+    // where `shard.strings = strings` and `shard.bucket_index.hashes = hashes` assign the derived view WHOLESALE.
     {
-        shard.lists.reconcile_from_durable(
+        shard.bucket_index.lists.reconcile_from_durable(
             lists,
             &live_blocks_by_address,
             &mut resurrections_refused,
         );
     }
     {
-        shard.zsets.reconcile_from_durable(
+        shard.bucket_index.zsets.reconcile_from_durable(
             zsets,
             &live_blocks_by_address,
             &mut resurrections_refused,
         );
     }
     {
-        shard.sets.reconcile_from_durable(
+        shard.bucket_index.sets.reconcile_from_durable(
             sets,
             &live_blocks_by_address,
             &mut resurrections_refused,
@@ -7557,7 +7557,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // describes for the other three -- a skipped merge leaves the deserialized persisted map
     // standing WHOLE and unfiltered.
     {
-        shard.hashes.reconcile_from_durable(
+        shard.bucket_index.hashes.reconcile_from_durable(
             hashes,
             &live_blocks_by_address,
             &mut resurrections_refused,

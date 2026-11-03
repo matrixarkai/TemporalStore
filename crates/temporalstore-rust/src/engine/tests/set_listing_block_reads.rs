@@ -33,7 +33,7 @@
 //! block read past the cache is noted (`note_block_read`).
 //!
 //! THE CONTROL IS THE ZSET, and it is a control that can fail. A zset's listing answers from
-//! `shard.zsets` and reads no block at all, so it must report 0.00 reads per member WHILE STILL
+//! `shard.bucket_index.zsets` and reads no block at all, so it must report 0.00 reads per member WHILE STILL
 //! RETURNING MEMBERS -- the returned bytes are asserted non-zero, because a listing over an empty
 //! key reads zero blocks too and would pass a weaker assertion without exercising anything.
 //!
@@ -58,12 +58,12 @@
 //! trade an answer storage vouches for against one nothing does, and it would give up the element
 //! check as well as the byte one. It is measured here and not taken.
 //!
-//! ## Serving from `shard.sets`
+//! ## Serving from `shard.bucket_index.sets`
 //!
 //! The members ARE the keys of that map, resident and ordered, and walking them would read no block.
 //! `the_resident_set_map_and_the_live_block_index_are_not_the_same_population` drove why that was
 //! refused: `reconcile_secondary_views_from_bucket_index` installs
-//! `shard.sets = fill_absent_elements(derived, persisted)`, whose documented job is to KEEP EVERY
+//! `shard.bucket_index.sets = fill_absent_elements(derived, persisted)`, whose documented job is to KEEP EVERY
 //! DURABLE ELEMENT THE DERIVED VIEW COULD NOT PRODUCE, and it kept them without asking whether the
 //! block each named was still there. The map held members the block index did not, and a listing served
 //! from it would have returned them. `durable_outranks_derived`'s
@@ -240,7 +240,7 @@ fn block_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
 /// ONE BLOCK READ PER MEMBER FOR A SET LISTING, AND NONE FOR A ZSET'S.
 ///
 /// The headline. `SetMembers` walks the block index and reads a block per entry; `ZSetRange` answers
-/// out of `shard.zsets` and reads nothing. Both arms return members, and both return-populations
+/// out of `shard.bucket_index.zsets` and reads nothing. Both arms return members, and both return-populations
 /// are asserted non-zero, so the zero row is a measured zero and not an unexercised one.
 ///
 /// THE LISTING MUST BE COLD. `SetMembers` is wrapped in `cached_response`, which stores the whole
@@ -365,7 +365,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
             assert_eq!(
                 0, zset_reads,
                 "the zset listing for {zset_key} performed {zset_reads} block reads. A zset answers \
-                 from `shard.zsets` and must read no block at all"
+                 from `shard.bucket_index.zsets` and must read no block at all"
             );
 
             let per = set_reads as f64 / population as f64;
@@ -677,7 +677,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 ///
 /// # WHY THIS IS RESTATED AND NOT RE-GOLDENED
 ///
-/// This arm compared `shard.sets` against a member population DECODED OUT OF THE COMPONENT each
+/// This arm compared `shard.bucket_index.sets` against a member population DECODED OUT OF THE COMPONENT each
 /// block is filed under. That population no longer exists.
 /// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
 /// of its return paths -- the lookup arm, the released arm and the bucket walk -- so the walk hands
@@ -686,7 +686,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 /// AND THE DERIVED SIDE OF THIS MERGE IS NOW EMPTY, which is the fact that makes the rest of it
 /// matter. `reconcile_secondary_views_from_bucket_index` builds `derived` from the live block index,
 /// and rebuilding a set's members from there needs the component the entry no longer carries.
-/// Measured by handing the merge an EMPTY persisted map: `shard.sets` came back empty, so nothing
+/// Measured by handing the merge an EMPTY persisted map: `shard.bucket_index.sets` came back empty, so nothing
 /// in it came from the derived side. The resident set map is therefore wholly the durable
 /// snapshot's now, and the address test in `fill_absent_elements` is the only filter standing
 /// between a stale snapshot and the map a reader trusts.
@@ -714,7 +714,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 /// ever taught to ask about the ELEMENT the arm goes red and says so.
 ///
 /// THE REFUSAL THIS MODULE EXISTS FOR IS THEREFORE RE-ESTABLISHED ON FRESH GROUNDS, and it is
-/// stronger than it was: a listing served from `shard.sets` would hand back a member the store was
+/// stronger than it was: a listing served from `shard.bucket_index.sets` would hand back a member the store was
 /// told to forget, and the only reason the store does not is that the listing is not served from
 /// there. Both halves are asserted, because the divergence alone does not say which side is right.
 ///
@@ -893,7 +893,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         !served.contains(&removed),
         "the store SERVED a member it was told to forget. This is the defect the refusal exists to \
          prevent: the resident map holds the removed member, so anything answering out of \
-         `shard.sets` returns it"
+         `shard.bucket_index.sets` returns it"
     );
     assert_ne!(
         in_map, served,
@@ -903,7 +903,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     );
     println!(
         "  => the resident map over-reports by {}, and the refusal stands: a listing served from \
-         `shard.sets` would hand back a removed member",
+         `shard.bucket_index.sets` would hand back a removed member",
         in_map.len() - served.len()
     );
 }

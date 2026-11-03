@@ -650,7 +650,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     // THIS WAS A VACUOUS ASSERTION AND IT PASSED. It counted entries in [`blocks_of`] whose
     // component ended in `6d32` -- the hex of `m2` -- and [`blocks_of`]'s component column had
     // become a hardcoded `None`, so the filter matched nothing and the count was 0 for a reason
-    // that had nothing to do with m2. Asked of `shard.zsets` it is a real question.
+    // that had nothing to do with m2. Asked of `shard.bucket_index.zsets` it is a real question.
     let m2_component = crate::engine::execute_on_shard::zset_component(b"m2");
     assert!(
         ordinal_for_component(&engine, "zset", key, &m2_component).is_none(),

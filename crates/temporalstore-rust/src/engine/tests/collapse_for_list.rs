@@ -23,7 +23,7 @@
 //!     rather than merely unnamed.
 //!
 //! `list` is the one that converts, and it converts because its component carries no data the
-//! engine reads back: the sequence that orders a list lives in `shard.lists`, which is keyed BY
+//! engine reads back: the sequence that orders a list lives in `shard.bucket_index.lists`, which is keyed BY
 //! that sequence, and every list reader (`ListLen`, `ListRange`) reads the resident map. `list`
 //! also has no `LSET`, `LINSERT` or `LREM`, so it never rewrites an element in place and the
 //! two-live-entries shape cannot arise for it.
@@ -302,7 +302,7 @@ fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse
         );
     }
     // AND IN ORDER. A list's component is its sequence, which is the ORDER -- so this is the
-    // property that would be lost if the order lived in the entry rather than in `shard.lists`.
+    // property that would be lost if the order lived in the entry rather than in `shard.bucket_index.lists`.
     let expected: Vec<Vec<u8>> = (0..ELEMENTS).map(element_bytes).collect();
     assert_eq!(
         expected, listed,
@@ -615,7 +615,7 @@ fn the_projection_collapses_every_container_kind() {
 ///
 /// This was `the_shared_predicate_names_set_and_list_but_not_hash_or_zset` and its two `!` arms
 /// carried the reasons hash and zset were held out. Both reasons were discharged -- hash's four
-/// index-by-component readers now answer from `shard.hashes`, and a zset component is the member
+/// index-by-component readers now answer from `shard.bucket_index.hashes`, and a zset component is the member
 /// in hex with the score on the outcome's `value` slot -- so the assertions are turned over rather
 /// than deleted, and the kinds that are STILL out are asserted positively below so the set cannot
 /// be widened past the containers by accident. The old name itself asserted the false claim, which
@@ -807,7 +807,7 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
 ///
 /// This was written while hash was held out, to record a measured "before" for the step that moves
 /// those readers rather than a claim about one. The step has landed: they answer from
-/// `shard.hashes` instead of resolving through the index by component, and hash is in the
+/// `shard.bucket_index.hashes` instead of resolving through the index by component, and hash is in the
 /// collapsed set -- so the SAME assertions now say something stronger than they were written to
 /// say. They are what shows a hash field is still reachable when its entry carries no element
 /// name, which is the one thing the collapse could have broken for this kind.
@@ -856,7 +856,7 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
             value,
             "HashGet lost field {index} over a COLLAPSED hash. It used to resolve through \
              `bucket_index_block_address`, which required `block.component == Some(field)` on \
-             every branch; it answers from `shard.hashes` now, and this is what shows a present \
+             every branch; it answers from `shard.bucket_index.hashes` now, and this is what shows a present \
              field is still reachable when its entry carries no element name"
         );
     }
@@ -867,7 +867,7 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
 /// # WHAT THIS ARM USED TO SAY, AND WHY IT IS WORTH KEEPING INVERTED
 ///
 /// It said a zset entry's name IS the score: a component was `{biased_score:016x}{hex(member)}`,
-/// so the index's name for an element was the only copy of its score outside `shard.zsets`, which
+/// so the index's name for an element was the only copy of its score outside `shard.bucket_index.zsets`, which
 /// made dropping it a data deletion rather than a renaming. That was the refusal that held zset
 /// out of the collapsed set, and it was discharged by moving the score onto the WAL outcome's
 /// `value` slot.
@@ -931,7 +931,7 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     assert!(
         !rendered.contains(&score_hex),
         "the zset component renderer spelled the score back into the name: {rendered} contains \
-         {score_hex}. The score rides the WAL outcome's `value` slot and `shard.zsets` now, so a \
+         {score_hex}. The score rides the WAL outcome's `value` slot and `shard.bucket_index.zsets` now, so a \
          score in a rendered name is the data the collapse deletes being put back where it will \
          be dropped"
     );

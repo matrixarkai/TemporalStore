@@ -897,7 +897,7 @@ impl TemporalEngine {
                     .collect::<Vec<_>>();
                 publish_targets.extend(
                     shard
-                        .hashes
+                        .bucket_index.hashes
                         .iter()
                         .flat_map(|(key, fields)| {
                             fields.iter().filter_map(move |(field, address)| {
@@ -926,7 +926,7 @@ impl TemporalEngine {
                             ));
                         }
                     }
-                    if let Some(fields) = shard.hashes.get(key) {
+                    if let Some(fields) = shard.bucket_index.hashes.get(key) {
                         publish_targets.extend(fields.iter().filter_map(|(field, address)| {
                             crate::wal_record::is_wal_resident(address.block_slab_id()).then(|| {
                                 (
@@ -1049,7 +1049,7 @@ impl TemporalEngine {
                         shard.set_string_address(stored, &published);
                     }
                     PublishTarget::Hash { key, field } => {
-                        let current = shard.hashes.get(&key).and_then(|fields| fields.get(&field));
+                        let current = shard.bucket_index.hashes.get(&key).and_then(|fields| fields.get(&field));
                         if current != Some(&original) {
                             continue;
                         }

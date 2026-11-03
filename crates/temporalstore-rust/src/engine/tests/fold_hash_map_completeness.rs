@@ -141,7 +141,7 @@ fn both_sources(
 /// readable today whether the durable map received it or not, and a test asserting 'readable
 /// through the served path' would go green while proving nothing about the map."
 ///
-/// `HashGetAll`'s index half answers from `shard.hashes` now -- it was one of the four consumers
+/// `HashGetAll`'s index half answers from `shard.bucket_index.hashes` now -- it was one of the four consumers
 /// that had to move before the element name could come off the entry -- so "readable through the
 /// served path" and "in the durable map" have become the SAME statement. That is why this module
 /// still does not make that assertion: it would now be circular rather than merely weak, which is
@@ -150,11 +150,11 @@ fn both_sources(
 /// THE DEPENDENCY ON THE MAP EXISTS NOW -- IT WAS CREATED BY REMOVING THE ELEMENT NAME. This read
 /// "DOES NOT EXIST YET ... Today the entry carries the field name and the map is a second copy.
 /// Take `component` off the entry -- 16 of the 56 bytes a resident entry weighs -- and
-/// `HashGetAll` has nowhere left to read a name FROM except `shard.hashes`. So the order is not
+/// `HashGetAll` has nowhere left to read a name FROM except `shard.bucket_index.hashes`. So the order is not
 /// 'reroute the readers, then remove the field'. It is: prove the map is complete FIRST, because
 /// the removal is what makes the map load-bearing. This module is that proof, or its refutation."
 ///
-/// The entry went from 56 bytes to 40, `HashGetAll` answers from `shard.hashes`, and the map IS
+/// The entry went from 56 bytes to 40, `HashGetAll` answers from `shard.bucket_index.hashes`, and the map IS
 /// load-bearing. So this module is no longer the proof that clears a step -- it is the standing
 /// guard on a map the engine now depends on, and its second source had to move off the entry with
 /// everything else. See `both_sources` for where it moved and why the pair is stronger for it.

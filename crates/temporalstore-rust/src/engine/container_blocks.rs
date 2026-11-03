@@ -651,7 +651,7 @@ pub(super) fn component_from_element_key(
             // THE SCORE IS NO LONGER SPELLED HERE. `BlockIndex.component` is what this render
             // feeds, and the score term was 16 of its bytes with the member carrying the rest --
             // the one thing stopping zset from collapsing to one index entry a block the way set
-            // and list already have. The resident map (`shard.zsets`) is the score's only copy
+            // and list already have. The resident map (`shard.bucket_index.zsets`) is the score's only copy
             // now; a reader that wants it reads that map, not this string. See
             // `element_key_from_component`'s mirror of this cut for what it costs on the way
             // back, and `select_container_element` for why nothing here needed to change to stay

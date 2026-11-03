@@ -414,7 +414,7 @@ fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
 // Neither fires, for the SAME reason the set case does not: both components are derived from the
 // COMMAND, not from the index entry. `command_upsert_components`'s `HashSet`/`HashMultiSet`/
 // `HashIncrBy` arms (`engine.rs`) take the field straight off the `Command`, and
-// `collect_upsert_index_items`'s `"hash"` arm resolves the address from `shard.hashes` -- the
+// `collect_upsert_index_items`'s `"hash"` arm resolves the address from `shard.bucket_index.hashes` -- the
 // resident map, not the bucket index. So the struct field and the record field are, again, two
 // different things that share a name, and collapsing the index entry's component does not reach
 // either record.

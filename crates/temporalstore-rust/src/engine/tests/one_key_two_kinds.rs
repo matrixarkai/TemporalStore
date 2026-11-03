@@ -6,7 +6,7 @@
 //! # WHY THIS IS A DRIVEN TEST AND NOT A READ OF THE MAPS
 //!
 //! The resident maps are the layer that DESCRIBES what a shard holds. The command handler is the
-//! layer that DECIDES what a shard is allowed to hold. `shard.strings` and `shard.hashes` being
+//! layer that DECIDES what a shard is allowed to hold. `shard.strings` and `shard.bucket_index.hashes` being
 //! separate maps says nothing about whether a client can populate both under one key -- a handler
 //! that refused the second write would leave exactly the same two maps in the tree. Reading the
 //! first layer and concluding about the second is how this question gets answered wrongly, so the
@@ -158,7 +158,7 @@ fn a_hash_write_lands_on_a_key_that_already_holds_a_string() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     assert!(shard.strings().contains_key("foo"));
-    assert!(shard.hashes.contains_key("foo"));
+    assert!(shard.bucket_index.hashes.contains_key("foo"));
 }
 
 /// The same question in the other order, because a one-directional check cannot tell an
@@ -215,7 +215,7 @@ fn the_membership_sum_does_not_count_either_kind() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     assert!(shard.strings().contains_key("baz"));
-    assert!(shard.hashes.contains_key("baz"));
+    assert!(shard.bucket_index.hashes.contains_key("baz"));
     assert_eq!(
         super::super::key_membership_size(shard, "baz"),
         0,

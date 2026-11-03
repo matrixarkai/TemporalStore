@@ -191,7 +191,7 @@
 //!
 //! ```text
 //!     list    AN ORDINAL ALREADY EXISTS AND IS ALREADY PERSISTED. The component IS
-//!             `format!("{:016x}", biased_seq)` and `shard.lists` is keyed by the `i64` itself. The
+//!             `format!("{:016x}", biased_seq)` and `shard.bucket_index.lists` is keyed by the `i64` itself. The
 //!             only thing left to change is the SPELLING -- sixteen characters for eight bytes -- and
 //!             that is not an ordinal proposal, it is #1976's fixed-width one with a narrower field.
 //!     hash    REFUTED OUTRIGHT AND NOT ON PERFORMANCE. The component is the CALLER'S field name.
@@ -228,8 +228,8 @@
 //! `the_component_ordering_property_is_consumed_by_the_set_listing` classifies every consumer: the three
 //! reconcile arms decode each component and insert into a `BTreeMap` keyed by the MEMBER BYTES or the
 //! `i64` SEQUENCE, so order is re-established by the map rather than inherited from the walk; range
-//! reads use `shard.zsets` (keyed by member, "derived per query -- V1 accepts the per-range sort") and
-//! `shard.lists` (keyed by the `i64`); and the three readers that do sort by component need only a
+//! reads use `shard.bucket_index.zsets` (keyed by member, "derived per query -- V1 accepts the per-range sort") and
+//! `shard.bucket_index.lists` (keyed by the `i64`); and the three readers that do sort by component need only a
 //! TOTAL order, which an ordinal has. Of the three callers of
 //! `bucket_index_component_block_addresses`, `SetMembers` discards the component, `HashLen` reads
 //! `len()`, and `HashGetAll` keeps a field name an ordinal never touches.
@@ -508,10 +508,10 @@ fn durable_element_count(engine: &TemporalEngine, kind: &str, key: &str) -> usiz
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     match kind {
-        "zset" => shard.zsets.get(key).map_or(0, |members| members.len()),
-        "set" => shard.sets.get(key).map_or(0, |members| members.len()),
-        "list" => shard.lists.get(key).map_or(0, |entries| entries.len()),
-        "hash" => shard.hashes.get(key).map_or(0, |fields| fields.len()),
+        "zset" => shard.bucket_index.zsets.get(key).map_or(0, |members| members.len()),
+        "set" => shard.bucket_index.sets.get(key).map_or(0, |members| members.len()),
+        "list" => shard.bucket_index.lists.get(key).map_or(0, |entries| entries.len()),
+        "hash" => shard.bucket_index.hashes.get(key).map_or(0, |fields| fields.len()),
         other => panic!("no durable map is claimed for kind {other}"),
     }
 }
@@ -1443,7 +1443,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 /// sites with kinds string/hash/hash: #1985 established it and the mandate for that work said to
 /// confirm it from the source text rather than inherit it. Two of the three were the hash point
 /// reads, and they MOVED -- taking the element name off the entry required `HashGet` and
-/// `HashIncrBy` to answer from `shard.hashes`, because a nameless entry made a present field
+/// `HashIncrBy` to answer from `shard.bucket_index.hashes`, because a nameless entry made a present field
 /// unreachable through the index and `HashIncrBy` read that miss as `unwrap_or_default()` and
 /// restarted the counter at zero.
 ///
@@ -1488,7 +1488,7 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
     assert_eq!(
         read_sites, 1,
         "read_bucket_index_value has {read_sites} call sites in execute_on_shard.rs, not one. It \
-         had three -- string/hash/hash -- until the two hash point reads moved to `shard.hashes`; \
+         had three -- string/hash/hash -- until the two hash point reads moved to `shard.bucket_index.hashes`; \
          a count above one here means a reader came back to the index and the kind list below says \
          which"
     );
@@ -1513,7 +1513,7 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
     // The component-blind whole-object reader takes no component and its caller has none to give.
     //
     // THIS WAS THREE CALLERS -- hash twice, set once -- AND IT IS ONE. The remaining one is
-    // `HashGetAll`'s divergence-observing half, which reads the index beside `shard.hashes` so a
+    // `HashGetAll`'s divergence-observing half, which reads the index beside `shard.bucket_index.hashes` so a
     // disagreement is OBSERVED rather than suffered. That it is down to one is the same movement
     // as the two point reads above, counted at a different door.
     let blind_sites = execute.matches("bucket_index_component_block_addresses(").count();
@@ -2396,8 +2396,8 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 ///     sole source. The order is still re-established by the map rather than inherited from a walk,
 ///     and now it could not be inherited from one even if a reader wanted to.
 ///   * **RANGE READS USE THE DURABLE MAPS.** `zset_members_in_score_range` and `zset_ordered_members`
-///     read `shard.zsets`, which is keyed by MEMBER and not by score -- `engine_storage_state.rs` says so directly:
-///     "is derived per query -- V1 accepts the per-range sort". `ListRange` reads `shard.lists`, keyed
+///     read `shard.bucket_index.zsets`, which is keyed by MEMBER and not by score -- `engine_storage_state.rs` says so directly:
+///     "is derived per query -- V1 accepts the per-range sort". `ListRange` reads `shard.bucket_index.lists`, keyed
 ///     by the `i64` itself. Neither touches a component.
 ///   * **THE THREE READERS THAT DO SORT BY COMPONENT NEED ONLY A TOTAL ORDER.**
 ///     `bucket_index_component_block_addresses` sorts before returning;
@@ -2439,7 +2439,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same defaulting
     // the production readers were fixed to stop doing. With no element name on an entry it yielded
     // ten empty members, so the instrument failed and not the read. It is read off the walk's
-    // ADDRESS order joined through `shard.sets` now; see the re-attribution at the walk itself.
+    // ADDRESS order joined through `shard.bucket_index.sets` now; see the re-attribution at the walk itself.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
     let internals = std::fs::read_to_string(root.join("storage_bucket_internals.rs"))
         .expect("storage_bucket_internals.rs is readable");
@@ -2518,7 +2518,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // RANGE READS use the durable maps, not the component.
     assert!(
         execute.contains("let mut ordered: Vec<(Vec<u8>, u64)> = shard\n        .zsets"),
-        "zset_members_in_score_range no longer reads shard.zsets; if it has started walking the \
+        "zset_members_in_score_range no longer reads shard.bucket_index.zsets; if it has started walking the \
          bucket index, component order IS load-bearing"
     );
 
@@ -2579,7 +2579,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // WHAT THE DOOR STILL GIVES IS THE ORDER, which is the only thing this comparison is about.
         // `bucket_index_component_block_addresses` returns the object's blocks sorted, and
         // `SetMembers` is built by walking exactly that. So the walk is taken as its ADDRESS
-        // sequence and each address is turned back into its member through `shard.sets` -- the same
+        // sequence and each address is turned back into its member through `shard.bucket_index.sets` -- the same
         // address join the engine makes on the write path. The property is unchanged: the listing
         // INHERITS this order and imposes none of its own.
         let walked: Vec<Vec<u8>> = {
@@ -2742,7 +2742,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 
     println!(
         "\n  [component order] 2 write-arm claims still in the tree; 3 reconcile arms re-key by the \
-         DECODED value; range reads use shard.zsets / shard.lists; 3 component-sorting readers need \
+         DECODED value; range reads use shard.bucket_index.zsets / shard.bucket_index.lists; 3 component-sorting readers need \
          only a total order; SetMembers discards the component and HashLen reads len()\n  \
          [component order] {} list elements came back in order across a reload",
         reloaded.len()
@@ -2823,7 +2823,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // This bounded `apply_key_states` on `"\n/// Set or clear one key's entry"` -- the doc comment
     // of the item that FOLLOWED it. That is not a property of `apply_key_states`, and when items
     // were later added between the two the window silently grew to span them, so
-    // `folded.contains("shard.sets")` started answering about a different function. A window that
+    // `folded.contains("shard.bucket_index.sets")` started answering about a different function. A window that
     // widens on its own is worse than a red test, so it is bounded on itself now.
     let window = |needle: &str| -> String {
         let start = engine_src
@@ -2872,7 +2872,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // because an element may only be restored once the whole fold has finished: a fold replays a
     // suffix of the log and can add an element and then take its block away again, and applying per
     // record would leave it in the durable map for `fill_absent_elements` to serve after a delete.
-    for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
+    for container in ["shard.bucket_index.sets", "shard.bucket_index.zsets", "shard.bucket_index.lists", "shard.bucket_index.hashes"] {
         assert!(
             !folded.contains(container),
             "apply_key_states now writes {container} directly. The carry must be applied AFTER the \
@@ -2889,7 +2889,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // component its block was filed under. Inverted rather than deleted, because what has to keep
     // holding is that the fold DOES carry them.
     let carried = window("fn fold_carried_container_elements(");
-    for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
+    for container in ["shard.bucket_index.sets", "shard.bucket_index.zsets", "shard.bucket_index.lists", "shard.bucket_index.hashes"] {
         assert!(
             carried.contains(container),
             "the fold no longer restores {container}. The carry that lifted this stop condition has \

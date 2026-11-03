@@ -435,7 +435,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     // THE COMPLEMENTARY CONTROL, and without it the result above is unreadable: if the filter
     // never fires at all, "survives" says nothing about why. A second orphan gets an address for a
     // block NOTHING holds, so the only live-set lookup that can decide it must fail.
-    shard.hashes.replay_install_element(
+    shard.bucket_index.hashes.replay_install_element(
         "orphan-dead-block",
         std::sync::Arc::from("meta"),
         crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None),

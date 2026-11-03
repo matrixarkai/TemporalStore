@@ -208,7 +208,7 @@ pub(super) fn bucket_index_block_address(
                 // `block.component.as_deref() == component` against entries whose component was
                 // already `None` for every kind, so the answer does not move: a point lookup BY
                 // component found nothing here before this change and finds nothing now -- hash's
-                // four such readers were moved onto `shard.hashes` for exactly that reason -- and
+                // four such readers were moved onto `shard.bucket_index.hashes` for exactly that reason -- and
                 // a lookup with no component still resolves the kinds that converge on the object
                 // key.
                 && component.is_none()

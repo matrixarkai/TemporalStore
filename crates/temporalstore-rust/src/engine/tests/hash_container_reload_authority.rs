@@ -257,7 +257,7 @@ fn a_containers_resident_map_still_holds_its_elements_after_a_reload() {
     assert!(
         holes.is_empty(),
         "A CONTAINER'S RESIDENT MAP DID NOT SURVIVE A RELOAD, which is the property a reroute of \
-         HashLen to `shard.hashes` would depend on:\n  {}",
+         HashLen to `shard.bucket_index.hashes` would depend on:\n  {}",
         holes.join("\n  ")
     );
     assert_eq!(

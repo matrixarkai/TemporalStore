@@ -20,7 +20,7 @@
 //! WHAT IS STILL BLOCKED, AND WHY THIS MODULE IS NOT DELETED. A second copy of the name is a
 //! PRECONDITION for the entry dropping it, not the whole of it. The entry's component is still what
 //! `bucket_index_component_block_addresses` walks, still what `HashGetAll` returns as the field name,
-//! and still what the load path derives `shard.hashes` from. Removing it needs the load path to
+//! and still what the load path derives `shard.bucket_index.hashes` from. Removing it needs the load path to
 //! rebuild those maps out of the blocks instead, which is a later stage and is not started here. The
 //! pricing below is the prize for that stage and is kept for it.
 //!
@@ -41,7 +41,7 @@
 //!
 //! # THE STOP CONDITION, IN ONE LINE, AS IT STOOD
 //!
-//! For a HASH the component is the caller's field name, `shard.hashes` is `skip_serializing`, and
+//! For a HASH the component is the caller's field name, `shard.bucket_index.hashes` is `skip_serializing`, and
 //! `Command::HashGetAll` RETURNS THE COMPONENT AS THE FIELD NAME. So the component was not a second
 //! copy of a hash field name. It was the only one, on the live read path and across a reload alike.
 //!
@@ -82,7 +82,7 @@
 //!
 //! And behind that, `rebuild_unserialized_model_maps_from_bucket_index` and the big derive's hash arm
 //! both took the field name from `entry.component.unwrap_or_default()`, and the derive ASSIGNS
-//! `shard.hashes = hashes` wholesale -- unlike the three arms below it, which merge, because those
+//! `shard.bucket_index.hashes = hashes` wholesale -- unlike the three arms below it, which merge, because those
 //! three have a durable map to merge with and the hash has none.
 //!
 //! BOTH OF THOSE TWO NOW SKIP AND COUNT instead of defaulting, which is test 4 in this module. The
@@ -101,7 +101,7 @@
 //!
 //! # WHAT WOULD ACTUALLY UNBLOCK IT, NAMED PRECISELY
 //!
-//! One prerequisite, not a family of them: `shard.hashes` would have to become DURABLE -- the
+//! One prerequisite, not a family of them: `shard.bucket_index.hashes` would have to become DURABLE -- the
 //! `skip_serializing` on `engine/engine_storage_state.rs` removed -- and `HashGetAll`/`HashLen` moved onto that
 //! map instead of onto `bucket_index_component_block_addresses`. That is a MOVE rather than a
 //! duplication: the field names it would start writing are the same characters the component writes
@@ -298,14 +298,14 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     // what said so -- a first draft of this restatement asserted zero for both and the hash
     // measured ONE.
     //
-    // WHY THE HASH NAME IS STILL THERE: `shard.hashes` is DURABLE now, `#[serde(default)]` rather
+    // WHY THE HASH NAME IS STILL THERE: `shard.bucket_index.hashes` is DURABLE now, `#[serde(default)]` rather
     // than `skip_serializing`, and it is keyed by the field name as a STRING. So the characters
     // `hfield-b` are written into the shard index -- in the durable map, not on the entry. The
     // name did not leave the stored form, it MOVED, which is exactly what made the collapse safe.
     // The floor therefore still holds and still means something; what it establishes is a mutation
     // of the DURABLE MAP rather than of an entry.
     //
-    // WHY THE ZSET MEMBER IS NOT: `shard.zsets` is keyed by the member's RAW BYTES, and this swap
+    // WHY THE ZSET MEMBER IS NOT: `shard.bucket_index.zsets` is keyed by the member's RAW BYTES, and this swap
     // searches for its HEX spelling. Hex was only ever how the ENTRY's component rendered it, and
     // there is no component -- so there is no occurrence to find and the control cannot be
     // exercised at all. That subject is structurally unrepresentable rather than merely absent,
@@ -314,14 +314,14 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     assert!(
         hash_swaps > 0,
         "the hash field name was not found in the served index, so this test swapped NOTHING and \
-         its assertions below would pass on an unmutated store. `shard.hashes` is durable and \
+         its assertions below would pass on an unmutated store. `shard.bucket_index.hashes` is durable and \
          keyed by the field name, so the characters must be in there -- a zero here means the hash \
          map has stopped being written and the collapse has lost the copy that makes it safe"
     );
     assert_eq!(
         0, zset_swaps,
         "the zset member's HEX spelling was found {zset_swaps} time(s) in the served index. \
-         `shard.zsets` is keyed by raw member bytes and the entry carries no component, so hex is \
+         `shard.bucket_index.zsets` is keyed by raw member bytes and the entry carries no component, so hex is \
          not a spelling the stored form uses any more -- a nonzero count means a hex rendering of \
          a member has come back into the index, which is the third copy this change removed"
     );
@@ -451,7 +451,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
             String::from_utf8_lossy(&bytes).to_string()
         }
         other => panic!(
-            "the zset member did not answer. Its identity lives in `shard.zsets` and in its \
+            "the zset member did not answer. Its identity lives in `shard.bucket_index.zsets` and in its \
              block's own item key -- the index names it nowhere -- so a miss here means one of \
              those two stopped holding it: {other:?}"
         ),
@@ -1102,7 +1102,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // THE COUNTS, TAKEN BEFORE ANY DERIVE RUNS, as a BEFORE/AFTER pair rather than as an absolute,
     // because the absolute is a property of the block index this test builds and the claim is about
     // the DELTA. Under `container_index_files_one_entry_a_page` the two commands no longer read the
-    // same structure -- `HashLen` counts the fields in `shard.hashes`, `HashGetAll` serves the
+    // same structure -- `HashLen` counts the fields in `shard.bucket_index.hashes`, `HashGetAll` serves the
     // union of that map and the block index -- so the pair spans BOTH sources the derive touches,
     // which is what makes a zero delta worth asserting over a derive that rebuilds one of them.
     let hash_len_before = hash_len_of(&engine, nameless_key);
@@ -1131,10 +1131,10 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
              over nothing"
         );
 
-        // `shard.hashes` is the map both arms rebuild, so clear it first: left populated, a stale
+        // `shard.bucket_index.hashes` is the map both arms rebuild, so clear it first: left populated, a stale
         // entry could supply the very field the derive is supposed to produce and the assertions
         // below would pass on the fixture's own leftovers.
-        shard.hashes.clear_for_test();
+        shard.bucket_index.hashes.clear_for_test();
         match arm {
             "reconcile_secondary_views" => {
                 crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
@@ -1163,12 +1163,12 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         // handled, and the durable `hashes` map (`#[serde(default)]`) is the sole source.
         //
         // ASSERTED AS THE EMPTINESS, which is what keeps this a live guard. The fixture clears
-        // `shard.hashes` immediately before the derive, so anything in the map afterwards was
+        // `shard.bucket_index.hashes` immediately before the derive, so anything in the map afterwards was
         // MINTED by the derive. A change that re-introduced a derivation -- defaulting or not --
         // populates this map and reddens here, which is the one thing that could put the phantom
         // `""` field back.
-        let nameless_after = shard.hashes.get(nameless_key);
-        let empty_after = shard.hashes.get(empty_key);
+        let nameless_after = shard.bucket_index.hashes.get(nameless_key);
+        let empty_after = shard.bucket_index.hashes.get(empty_key);
         assert!(
             nameless_after.is_none_or(|fields| fields.is_empty()),
             "[{arm}] the derive minted {} field(s) for `{nameless_key}` out of an index that names \
@@ -1220,7 +1220,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     //
     // It asserted the two counts did not MOVE across the derive, "which is the map both arms clear
     // and rebuild, so a move here means an arm rebuilt a different population than the one the
-    // writes put there". Each arm above calls `shard.hashes.clear_for_test()` immediately before
+    // writes put there". Each arm above calls `shard.bucket_index.hashes.clear_for_test()` immediately before
     // its derive -- deliberately, so that anything in the map afterwards was minted by the derive --
     // and the derive no longer rebuilds anything. So the counts move by exactly what the FIXTURE
     // cleared, and the equality was measuring the test's own setup rather than the derive.
@@ -1236,14 +1236,14 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     assert!(
         hash_len_after <= hash_len_before,
         "HashLen moved {hash_len_before} -> {hash_len_after} across the derive: UPWARD. It counts \
-         the fields in `shard.hashes`, the map each arm clears before deriving, so a rise means \
+         the fields in `shard.bucket_index.hashes`, the map each arm clears before deriving, so a rise means \
          the derive minted a field out of an index that names none -- which is the phantom this \
          module exists for"
     );
     assert!(
         listed_after <= listed_before,
         "HashGetAll's listing moved {listed_before} -> {listed_after} across the derive: UPWARD. \
-         It serves the union of `shard.hashes` and the block index, so a rise means one of the two \
+         It serves the union of `shard.bucket_index.hashes` and the block index, so a rise means one of the two \
          gained an element the writes did not put there"
     );
     assert_eq!(
@@ -1260,7 +1260,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // "a count of zero would satisfy both equalities above". The derive no longer rebuilds the map
     // the fixture cleared, so the honest count IS zero and the floor could only fail.
     //
-    // THE DISCRIMINATOR IS SHARPER WITHOUT IT. `HashLen` reads `shard.hashes`, which this test
+    // THE DISCRIMINATOR IS SHARPER WITHOUT IT. `HashLen` reads `shard.bucket_index.hashes`, which this test
     // emptied; the block index still holds TWO live hash entries for this key, the named block and
     // the nameless one leg B filed. So `HashLen` answering 0 against 2 indexed blocks is positive
     // proof it reads the MAP and not the index -- which is exactly what this section was built to
@@ -1295,7 +1295,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     );
     println!(
         "[counts after] HashLen={hash_len_after} (was {hash_len_before}), HashGetAll listed \
-         {listed_after} (was {listed_before}). HashLen reads the CLEARED `shard.hashes` and \
+         {listed_after} (was {listed_before}). HashLen reads the CLEARED `shard.bucket_index.hashes` and \
          answers {hash_len_after} against {indexed_blocks_after} live block entries in the index, so \
          the gap names the structure it read rather than being a coincidence"
     );

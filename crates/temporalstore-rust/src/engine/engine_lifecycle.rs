@@ -1560,7 +1560,7 @@ impl TemporalEngine {
         append_series_shape(&mut out, "context_child", shard.context_children());
         append_series_shape(&mut out, "context_summary", shard.context_summaries());
         append_series_shape(&mut out, "context_compression", shard.context_compressions());
-        let mut hashes: Vec<_> = shard.hashes.iter().collect();
+        let mut hashes: Vec<_> = shard.bucket_index.hashes.iter().collect();
         hashes.sort_by(|left, right| left.0.cmp(right.0));
         for (key, fields) in hashes {
             // NO SORT, and no `Vec` to sort. The field map keeps its entries in field order, so
@@ -1572,7 +1572,7 @@ impl TemporalEngine {
             // ordered -- and this walk now matches it.
             //
             // WHAT THIS IS NOT: a production saving. `index_shape_for_test` is a test-only shape
-            // helper, and it is the ONLY reader of `shard.hashes` that sorted the fields on every
+            // helper, and it is the ONLY reader of `shard.bucket_index.hashes` that sorted the fields on every
             // call. So "an ordered container removes a per-call sort" is true here and nowhere on a
             // serving path, which is worth writing down rather than leaving to be inferred from the
             // fact that a sort was removed.
@@ -1583,7 +1583,7 @@ impl TemporalEngine {
                 ));
             }
         }
-        let mut sets: Vec<_> = shard.sets.iter().collect();
+        let mut sets: Vec<_> = shard.bucket_index.sets.iter().collect();
         sets.sort_by(|left, right| left.0.cmp(right.0));
         for (key, members) in sets {
             for (member, address) in members {
@@ -1593,7 +1593,7 @@ impl TemporalEngine {
                 ));
             }
         }
-        let mut lists: Vec<_> = shard.lists.iter().collect();
+        let mut lists: Vec<_> = shard.bucket_index.lists.iter().collect();
         lists.sort_by(|left, right| left.0.cmp(right.0));
         for (key, elements) in lists {
             for (sequence, address) in elements {
@@ -1603,7 +1603,7 @@ impl TemporalEngine {
                 ));
             }
         }
-        let mut zsets: Vec<_> = shard.zsets.iter().collect();
+        let mut zsets: Vec<_> = shard.bucket_index.zsets.iter().collect();
         zsets.sort_by(|left, right| left.0.cmp(right.0));
         for (key, members) in zsets {
             for (member, (score, address)) in members {
@@ -1969,7 +1969,7 @@ impl TemporalEngine {
                         // carries a `&str`. One allocation on a replay removal, which is the honest
                         // cost of the element type being the key rather than a borrow of it.
                         shard
-                            .hashes
+                            .bucket_index.hashes
                             .replay_remove_element(
                                 &item.object_key,
                                 &std::sync::Arc::from(&field[..]),
@@ -1979,7 +1979,7 @@ impl TemporalEngine {
                         let Ok(member) = hex::decode(encoded) else {
                             return false;
                         };
-                        shard.sets.replay_remove_element(&item.object_key, &member);
+                        shard.bucket_index.sets.replay_remove_element(&item.object_key, &member);
                     }
                     ("list", Some(encoded)) => {
                         let Ok(biased) = u64::from_str_radix(encoded, 16) else {
@@ -1987,7 +1987,7 @@ impl TemporalEngine {
                         };
                         let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
                         shard
-                            .lists
+                            .bucket_index.lists
                             .replay_remove_element(&item.object_key, &sequence);
                     }
                     // THE SCORE HALF IS GONE FROM THIS STRING -- a removal never needed it for
@@ -1998,7 +1998,7 @@ impl TemporalEngine {
                             return false;
                         };
                         shard
-                            .zsets
+                            .bucket_index.zsets
                             .replay_remove_element(&item.object_key, &member);
                     }
                     // A component-keyed kind with no component names nothing to remove.
@@ -2453,7 +2453,7 @@ impl TemporalEngine {
                 // conflating the two is what made a whole route look like it had no durable
                 // source.
                 shard
-                    .hashes
+                    .bucket_index.hashes
                     .replay_install_element(
                         &item.object_key,
                         std::sync::Arc::from(&field[..]),
@@ -2707,7 +2707,7 @@ impl TemporalEngine {
         for slot in shard.strings().values() {
             check(&slot.address());
         }
-        for fields in shard.hashes.values() {
+        for fields in shard.bucket_index.hashes.values() {
             for address in fields.values() {
                 check(address);
             }

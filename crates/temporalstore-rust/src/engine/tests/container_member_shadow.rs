@@ -34,7 +34,7 @@
 //!      map, so the redundancy is a byte-level fact and not an inference from the call site.
 //!
 //!   2. NO ZSET READ RESOLVES THROUGH THE BLOCK INDEX. `ZSetScore` takes the score out of
-//!      `shard.zsets`, `ZSetCard` takes `len()`, `ZSetRange` orders the same map's keys.
+//!      `shard.bucket_index.zsets`, `ZSetCard` takes `len()`, `ZSetRange` orders the same map's keys.
 //!      `bucket_index_component_block_addresses` -- the door a container read goes through -- is
 //!      called for `"hash"` and `"set"` and for nothing else.
 //!      `a_zset_read_examines_no_page_index_entries_and_a_hash_read_does` counts it with
@@ -44,7 +44,7 @@
 //!   3. INDEX-LOG REPLAY REBUILDS THE MEMBER AND THE SCORE FROM THE COMPONENT NAME. The `"zset"`
 //!      arm of `apply_outcome_item` (`lifecycle.rs`) splits the component at sixteen, parses the
 //!      score with `u64::from_str_radix` and the member with `hex::decode`, and inserts the pair
-//!      into `shard.zsets`. It never reads the block. So the shadow is not dead weight everywhere:
+//!      into `shard.bucket_index.zsets`. It never reads the block. So the shadow is not dead weight everywhere:
 //!      it is the SOURCE OF TRUTH for one of the three recovery routes, and that is the reader
 //!      that pins it.
 //!
@@ -580,7 +580,7 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 ///
 /// "A ZSET ELEMENT PAGE HOLDS EXACTLY WHAT ITS COMPONENT NAME ALREADY SPELLS." The write path
 /// stores the member as the block and named the block with the same member in hex, so this decoded
-/// every component in a seeded shard back to a member and asserted the set against `shard.zsets`'s
+/// every component in a seeded shard back to a member and asserted the set against `shard.bucket_index.zsets`'s
 /// own members -- "the payload is a second copy", as a byte-level fact about a real shard. It had
 /// already been restated once, when the component stopped spelling `(score, member)`.
 ///
@@ -594,7 +594,7 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 ///
 /// # WHAT IT ASSERTS INSTEAD, AND WHY THAT IS NOT A WEAKER CLAIM
 ///
-/// The member's identity lives in exactly two places now: `shard.zsets`, and the block's own item
+/// The member's identity lives in exactly two places now: `shard.bucket_index.zsets`, and the block's own item
 /// key -- written by `container_blocks::element_key_from_component` precisely so a block is
 /// interpretable without the entry that names it. That key is the ONLY copy outside the model map,
 /// which makes a codec that does not round-trip a LOSS rather than a mislabelling. So the round
@@ -629,13 +629,13 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     // THE COMPONENT DECODE IS GONE, AND SO IS THE REDUNDANCY IT MEASURED.
     //
     // This walked every block, ran `hex::decode(&block.component)`, asserted the result was
-    // `MEMBER_WIDTH` bytes, and collected the members per key to compare against `shard.zsets`.
+    // `MEMBER_WIDTH` bytes, and collected the members per key to compare against `shard.bucket_index.zsets`.
     // An index entry has no component, so there is nothing to decode -- and the thing the loop
     // proved, that the entry's name was a SECOND COPY of the member, is not a fact that has become
     // false: it has become unrepresentable. There is no second copy because there is no name.
     //
     // WHAT REPLACES IT IS A ROUND TRIP, not a corrected number. The member's identity now lives in
-    // exactly two places: `shard.zsets` and the block's own item key, written by
+    // exactly two places: `shard.bucket_index.zsets` and the block's own item key, written by
     // `container_blocks::element_key_from_component` so a block is interpretable without the entry
     // that names it. That codec is what the identity passes through, it is the thing a change can
     // still break, and the round trip is what catches the class this campaign has been bitten by:
@@ -717,7 +717,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
             assert_eq!(
                 component, back,
                 "{key}: the member does not survive the block key it is written into. That key is \
-                 the ONLY copy of the member outside `shard.zsets` now -- the entry carries none -- \
+                 the ONLY copy of the member outside `shard.bucket_index.zsets` now -- the entry carries none -- \
                  so a codec that does not round-trip loses the element rather than mislabelling it"
             );
         }
@@ -779,7 +779,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 ///
 /// This is the answer to "what would packing cost the read path" for a zset, and it is zero:
 /// nothing on the zset read path resolves a member through the block index, so there is no per-member
-/// addressing to lose. `ZSetScore` reads the score straight out of `shard.zsets`, `ZSetCard` reads
+/// addressing to lose. `ZSetScore` reads the score straight out of `shard.bucket_index.zsets`, `ZSetCard` reads
 /// `len()`, `ZSetRange` orders the same map's keys.
 ///
 /// COUNT, DO NOT TIME. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_block`, the one
@@ -791,7 +791,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 /// This test was named `..._and_a_hash_read_does`, and its control was the hash POINT read: a
 /// `HashGet` resolved a field through `bucket_index_component_block_addresses` into the block index,
 /// so it MUST be non-zero and an instrument reading zero on both arms would be measuring nothing.
-/// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.hashes` and hands
+/// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.bucket_index.hashes` and hands
 /// the address it holds to `read_block_bytes`, which consults the cache, the WAL-resident redirect
 /// and the block store -- and none of those enters `find_block`. So the control read ZERO and this
 /// test refused itself, which is the instrument working: the arm that was supposed to prove the
