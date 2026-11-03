@@ -688,6 +688,82 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertTrue(any("key-space scan" in line for line in logs.output))
 
 
+@unittest.skipUnless(FEAST_AVAILABLE, "feast is not installed")
+class AdvertisedCapabilityTest(unittest.TestCase):
+    """What the store TELLS Feast it can do, against what it actually implements.
+
+    Feast does not discover an optional capability by probing for the method. It
+    reads `async_supported` and branches: `feature_server` takes the async read
+    path only when `.online.read` is true and the async write path only when
+    `.online.write` is true. So an implemented-but-unadvertised method is never
+    called, and an advertised-but-unimplemented one sends Feast into a base method
+    that raises. Both failures are silent in ordinary testing -- the first looks
+    like working code, the second surfaces only under async serving -- so the
+    agreement between the two is what these tests pin.
+    """
+
+    def _store(self):
+        from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+
+        return TemporalStoreCommandOnlineStore()
+
+    def test_the_store_advertises_the_async_support_it_implements(self):
+        advertised = self._store().async_supported
+        self.assertTrue(
+            advertised.read,
+            "async reads are implemented but not advertised, so Feast's serving "
+            "path will never call them",
+        )
+        self.assertTrue(
+            advertised.write,
+            "async writes are implemented but not advertised, so Feast's serving "
+            "path will never call them",
+        )
+
+    def test_the_advertisement_matches_what_the_class_implements(self):
+        from feast.infra.online_stores.online_store import OnlineStore
+        from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+
+        advertised = self._store().async_supported
+        pairs = (("read", "online_read_async"), ("write", "online_write_batch_async"))
+        for flag, method in pairs:
+            overridden = getattr(
+                TemporalStoreCommandOnlineStore, method
+            ) is not getattr(OnlineStore, method)
+            self.assertEqual(
+                getattr(advertised, flag),
+                overridden,
+                "async_supported.{flag} is {adv} while {method} is {state} on this "
+                "class. Advertising what is not implemented sends Feast into a "
+                "raising base method; implementing what is not advertised leaves the "
+                "work unreachable.".format(
+                    flag=flag,
+                    adv=getattr(advertised, flag),
+                    method=method,
+                    state="overridden" if overridden else "inherited",
+                ),
+            )
+
+    def test_vector_retrieval_is_refused_by_this_store_and_not_by_the_base_class(self):
+        from feast.infra.online_stores.online_store import OnlineStore
+        from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+
+        store = self._store()
+        for name in ("retrieve_online_documents", "retrieve_online_documents_v2"):
+            self.assertIsNot(
+                getattr(TemporalStoreCommandOnlineStore, name),
+                getattr(OnlineStore, name),
+                "{} must be refused here, so the message names this store and the "
+                "reason, rather than inherited so it names an abstract "
+                "method".format(name),
+            )
+        with self.assertRaises(NotImplementedError) as caught:
+            store.retrieve_online_documents(None, None, [], [0.0], 1)
+        self.assertIn("no embedding index", str(caught.exception))
+        with self.assertRaises(NotImplementedError) as caught:
+            store.retrieve_online_documents_v2(None, None, [], [0.0], 1)
+        self.assertIn("no embedding index", str(caught.exception))
+
 # The suite is pinned by name in CI, and a filter that matches nothing exits 0.
 # These floors are on the number of tests that actually EXECUTED -- collected
 # minus skipped -- because `loadTestsFromModule` collects a class decorated with
@@ -695,7 +771,7 @@ class OnlineStoreTest(unittest.TestCase):
 # Feast from a run without it, and cannot tell either from a run where the whole
 # Feast tier silently stopped executing.
 MINIMUM_EXECUTED_WITHOUT_FEAST = 12
-MINIMUM_EXECUTED_WITH_FEAST = 25
+MINIMUM_EXECUTED_WITH_FEAST = 28
 
 
 def main() -> int:

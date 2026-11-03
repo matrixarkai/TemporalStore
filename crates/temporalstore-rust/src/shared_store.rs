@@ -4239,6 +4239,135 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// A forwarding `ObjectStore` wrapper must not drop a DEFAULTED trait method.
+    ///
+    /// `ObjectStore` gives six of its methods a default body, and two of those defaults
+    /// REFUSE: `append_blob` returns `Unsupported` and `compare_and_swap` returns
+    /// `ConditionFailed`. A wrapper enum that forwards only the methods it happens to
+    /// need therefore compiles clean, with no warning of any kind, and then refuses at
+    /// run time -- reporting that the store "does not implement append_blob" when the
+    /// store underneath implements it perfectly well. `FileObjectStore` does.
+    ///
+    /// That is what `ScaleObjectStore` in `scale_harness` did: it forwarded eight
+    /// methods and dropped three, and because the shared store's protobuf WAL path
+    /// appends unconditionally, `scale_harness --compare-shared-store` could not
+    /// succeed against ANY backend it offers. Nothing failed to build and no test
+    /// covered it, so the flag shipped unrunnable.
+    ///
+    /// The defaulted set is read out of the trait rather than written down here, so
+    /// adding a new defaulted method tightens this guard instead of escaping it.
+    #[test]
+    fn a_forwarding_object_store_wrapper_cannot_drop_a_defaulted_method() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let trait_src =
+            std::fs::read_to_string(manifest.join("../temporalstore-snapshot/src/object_store.rs"))
+                .expect("the ObjectStore trait source");
+
+        let start = trait_src
+            .find("pub trait ObjectStore")
+            .expect("the trait declaration");
+        let body = &trait_src[start..];
+        let body_end = body.find("\n}\n").expect("the trait's closing brace");
+        let body = &body[..body_end];
+
+        // Chunk the trait body by METHOD START, not by indentation. Splitting on a
+        // 4-space indent cannot work here: a multi-line signature's continuation lines
+        // are indented 8 spaces, so such a split fires on their first 4 and truncates
+        // every wrapped signature at its opening paren -- which silently dropped the
+        // three methods this guard exists to protect. Mark each `fn` at method indent
+        // and take each chunk up to the next mark, so a signature may wrap freely.
+        let mut starts: Vec<(usize, usize)> = Vec::new();
+        for marker in ["
+    async fn ", "
+    fn "] {
+            let mut from = 0usize;
+            while let Some(found) = body[from..].find(marker) {
+                let at = from + found;
+                starts.push((at, at + marker.len()));
+                from = at + marker.len();
+            }
+        }
+        starts.sort_unstable();
+
+        // A REQUIRED method's signature ends in `;`, a DEFAULTED one's in `{`; inside a
+        // whole-method chunk the signature's terminator is whichever comes first.
+        let mut required: Vec<String> = Vec::new();
+        let mut defaulted: Vec<String> = Vec::new();
+        for (index, (_, decl_at)) in starts.iter().enumerate() {
+            let chunk_end = starts
+                .get(index + 1)
+                .map(|(next, _)| *next)
+                .unwrap_or(body.len());
+            let chunk = &body[*decl_at..chunk_end];
+            let Some(paren) = chunk.find('(') else { continue };
+            let name = chunk[..paren].trim();
+            if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            match (chunk.find(';'), chunk.find('{')) {
+                (Some(semi), Some(brace)) if semi < brace => required.push(name.to_string()),
+                (Some(_), None) => required.push(name.to_string()),
+                (_, Some(_)) => defaulted.push(name.to_string()),
+                _ => {}
+            }
+        }
+
+        assert!(
+            defaulted.len() >= 5,
+            "the scan found only {} defaulted methods ({defaulted:?}) -- it has stopped \
+             parsing the trait, so it would pass against any wrapper",
+            defaulted.len()
+        );
+        assert!(
+            required.len() >= 3,
+            "the scan found only {} required methods ({required:?}) -- control dimension failed",
+            required.len()
+        );
+        assert!(
+            defaulted.iter().any(|m| m == "append_blob"),
+            "append_blob is no longer seen as defaulted; this guard's premise moved: {defaulted:?}"
+        );
+
+        let harness = std::fs::read_to_string(manifest.join("src/bin/scale_harness.rs"))
+            .expect("the scale harness source");
+        let impl_at = harness
+            .find("impl ObjectStore for ScaleObjectStore {")
+            .expect("the wrapper's ObjectStore impl");
+        let rest = &harness[impl_at..];
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (i, ch) in rest.char_indices() {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    end = i + 1;
+                    break;
+                }
+            }
+        }
+        let block = &rest[..end];
+        assert!(
+            block.len() > 500,
+            "the wrapper impl block scanned to {} bytes -- the brace match failed",
+            block.len()
+        );
+
+        let missing: Vec<&String> = defaulted
+            .iter()
+            .filter(|m| !block.contains(&format!("fn {m}(")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "ScaleObjectStore drops {} defaulted ObjectStore method(s): {missing:?}. Each \
+             falls back to the trait's default, and the defaults for append_blob and \
+             compare_and_swap REFUSE -- so the wrapper reports a capability the inner \
+             store may well have as missing. Forward them.",
+            missing.len()
+        );
+    }
+
     use std::path::Path;
     use std::sync::Arc;
 

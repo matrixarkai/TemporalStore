@@ -1520,7 +1520,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // filing to be the whole story. The ref total goes back to the zero a fresh index carries, for
     // the same reason: `insert_object_block_lookup` counts up from it, and a total carried over
     // from the emptied map would count blocks twice.
-    shard.bucket_index.clear_object_pages();
+    shard.bucket_index.clear_object_blocks();
     shard.bucket_index.object_component_block_refs = Some(0);
     // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
     // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
@@ -2472,7 +2472,7 @@ pub(super) fn release_bucket_blocks(
     // `refuse` is a set of counters with no ordering, and `released_buckets` is still pushed in
     // candidate order.
     let mut derived: Option<BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>>> = None;
-    let lookup_established = !shard.bucket_index.names_no_object_pages();
+    let lookup_established = !shard.bucket_index.names_no_object_blocks();
     // The shard's own range, for the per-block routing term below.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     // Iterated by reference rather than consumed, because the derivation below is handed the same
@@ -5133,7 +5133,7 @@ fn upsert_bucket_index_block_inner(
     // Buckets whose blocks this upsert disturbs. Collected while the bucket borrows are live and
     // recorded once they end, so the per-write refresh can skip the rest of the shard.
     let mut touched_buckets: Vec<u32> = Vec::new();
-    let lookup_enabled = !shard.bucket_index.names_no_object_pages();
+    let lookup_enabled = !shard.bucket_index.names_no_object_blocks();
     // CONVERGE ON THE BLOCK WHEN THE BLOCK IS THE IDENTITY, AND ON THE SLOT WHEN THE ELEMENT IS.
     //
     // The slot-wide removal is right while an entry's identity is its element: a new filing for
@@ -5520,7 +5520,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // CoreIndex` starts it at `Some(0)` and the decoder assigns `Some(0)` before it files. It is
     // kept in the expression because the claim belongs where the condition is read, not because
     // it can still be true.
-    let lookup_can_target = !(shard.bucket_index.names_no_object_pages()
+    let lookup_can_target = !(shard.bucket_index.names_no_object_blocks()
         || shard.bucket_index.object_component_block_refs.is_none());
     // Components whose blocks this call drops, so the lookup can be corrected for exactly those
     // instead of being rebuilt from every block in the shard.

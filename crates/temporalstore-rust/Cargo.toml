@@ -22,7 +22,7 @@ base64 = "0.22"
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
 matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "5434cd2000251c5813209cd76171770aba1c1afd", features = ["rocksdb-ssd"] }
-matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "5e1ce6c2406fe2a3e3250e267c8d767e8914757d", optional = true }
+matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "ae89af9b61179d78697b6a93b516933796fe82bb", optional = true }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }

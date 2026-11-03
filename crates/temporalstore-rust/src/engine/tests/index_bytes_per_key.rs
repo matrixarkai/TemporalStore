@@ -12358,7 +12358,7 @@ const _: () = assert!(
 ///
 /// rust-internal: measures this crate's own layout, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib what_the_one_word_handle_costs_in_the_allocation -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::index_bytes_per_key::what_the_one_word_handle_costs_in_the_allocation -- --exact --nocapture
 #[test]
 fn what_the_one_word_handle_costs_in_the_allocation() {
     use crate::engine::object_record::ObjectSlot;
@@ -12462,7 +12462,7 @@ fn what_the_one_word_handle_costs_in_the_allocation() {
 ///
 /// rust-internal: measures this crate's own layout, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib what_keying_the_block_list_by_address_would_cost -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::index_bytes_per_key::what_keying_the_block_list_by_address_would_cost -- --exact --nocapture
 #[test]
 fn what_keying_the_block_list_by_address_would_cost() {
     use crate::block_store::ElementEntry;
