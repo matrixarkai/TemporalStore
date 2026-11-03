@@ -2165,7 +2165,7 @@ fn released_model_kind_is_addressable(kind: &str) -> bool {
 ///
 /// # THE SPELLINGS ARE THE WRITE PATH'S, AND AN UNREADABLE ONE ANSWERS FALSE
 ///
-/// `hex::encode` for a set member and for a zset member, base sixteen for a list's biased
+/// `member_component` for a set member and for a zset member, base sixteen for a list's biased
 /// sequence, the field itself for a hash -- each the same rendering the write path files. A name
 /// this cannot parse answers FALSE rather than defaulting to element zero or to the empty member:
 /// an unreadable name names nothing, which is the rule every arm of the derived view already
@@ -3530,7 +3530,7 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
 /// `accept` is given the OBJECT KEY AND THE ADDRESS, and the key is what a routing-bucket filter
 /// needs now that a block's bucket is `block_routing_bucket(object_key, ..)` rather than a field on
 /// the address. Everything owned is still built after it: several arms compose their component with
-/// `format!` or `hex::encode`, and a `LiveBlockEntry` costs four allocations -- an owned key and an
+/// `format!` or `member_component`, and a `LiveBlockEntry` costs four allocations -- an owned key and an
 /// owned kind, each built as a `String` and then copied into an `Arc<str>`. None of that runs for a
 /// block the caller is not going to keep.
 ///
@@ -3760,7 +3760,8 @@ fn visit_model_live_blocks(
                         // single member at a time). `_biased` stays bound and unused rather than
                         // dropped from the pattern, so a future reader finds the score sitting
                         // right beside the render that no longer spells it.
-                        let component = hex::encode(member);
+                        let component =
+                            crate::engine::execute_on_shard::zset_component(member);
                         emit(ModelKind::Zset, KeyRef::Shared(key), Some(component.as_str()), address);
                     }
                 }
@@ -3790,7 +3791,8 @@ fn visit_model_live_blocks(
         // compaction sweep. So changing how a container is FILED anywhere else is undone before the
         // sweep returns, and changing it HERE is the whole change.
         //
-        // UNDER THE GATE THE BLOCK ID IS THE IDENTITY. A set's component is `hex::encode(member)`,
+        // UNDER THE GATE THE BLOCK ID IS THE IDENTITY. A set's component is
+        // `set_component(member)`,
         // and it exists only because the entry is per-element: something has to tell two entries of
         // one object apart. One entry per BLOCK needs no such name -- the block already carries each
         // element's key in its payload, written there by `container_blocks` precisely so a block is
@@ -3818,7 +3820,8 @@ fn visit_model_live_blocks(
             } else {
                 for (member, address) in members.iter() {
                     if accept(key, address) {
-                        let component = hex::encode(member);
+                        let component =
+                            crate::engine::execute_on_shard::set_component(member);
                         emit(ModelKind::Set, KeyRef::Shared(key), Some(component.as_str()), address);
                     }
                 }
@@ -4196,7 +4199,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// # BOTH REFUSALS WERE RE-DRIVEN WITH THAT WORK DONE, AND BOTH STILL REFUSE
 ///
 /// The two paragraphs above each name a prerequisite, and BOTH have since landed: a zset component
-/// is `hex::encode(member)` with the score on the WAL outcome's `value` slot, and hash's four
+/// is `member_component(member)` with the score on the WAL outcome's `value` slot, and hash's four
 /// index-by-component readers answer from `shard.hashes`. So the flip was attempted again with
 /// both in hand. IT WAS REFUSED AGAIN, ON MEASUREMENT, and the prerequisites are not what is left
 /// over -- what refuses it now is a THIRD obstacle that neither paragraph above is about and that

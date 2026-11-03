@@ -1079,7 +1079,16 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     // exactly the defect the shared helper exists to prevent, and it would show only here.
     let stored: [(&str, &str, String); 4] = [
         ("hash", "hash-key", fields[0].0.clone()),
-        ("set", "set-key", hex::encode(&members[0])),
+        (
+            "set",
+            "set-key",
+            // BY THE ENGINE'S OWN FUNCTION, for the reason the zset arm below already gives. This
+            // was a hand-written `hex::encode` and it went stale the moment the set writers
+            // flipped: the fixture asked for a component no write site files any more, so the
+            // lookup found no block and the test failed on a missing block rather than on the
+            // spelling it is about.
+            crate::engine::execute_on_shard::set_component(&members[0]),
+        ),
         (
             "zset",
             "zset-key",

@@ -383,7 +383,9 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
 
     // THE TWO SOURCES MUST DISAGREE, OR THIS ARM PROVES NOTHING.
     let stated = components_the_blocks_still_state(&engine, "listing/removed");
-    let victim_component = hex::encode(&victim);
+    // BY THE ENGINE'S OWN FUNCTION: a hand-written `hex::encode` names a component no set write
+    // site files any more, so the removal below would be recorded against nothing.
+    let victim_component = crate::engine::execute_on_shard::set_component(&victim);
     assert!(
         stated.contains(&victim_component),
         "the blocks no longer state the removed member as present, so the payload and the entries \

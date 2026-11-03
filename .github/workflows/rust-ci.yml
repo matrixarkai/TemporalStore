@@ -368,8 +368,9 @@ jobs:
             engine::container_blocks::member_component_tests::the_new_spelling_charges_one_byte_a_member_byte_where_hex_charges_two \
             engine::container_blocks::member_component_tests::the_two_new_spelling_bytes_are_four_and_five_and_round_trip \
             engine::container_blocks::member_component_tests::the_new_variants_render_a_component_the_same_pair_parses_back \
-            engine::container_blocks::member_component_tests::no_kind_maps_to_a_new_spelling_yet_so_no_writer_can_emit_one \
-            engine::container_blocks::member_component_tests::a_stored_set_and_zset_block_is_found_by_a_component_in_either_spelling \
+            engine::container_blocks::member_component_tests::every_kind_maps_to_the_spelling_its_writers_emit \
+            engine::container_blocks::member_component_tests::a_block_written_before_the_flip_is_found_by_a_component_in_either_spelling \
+            engine::container_blocks::member_component_tests::a_write_after_the_flip_frames_rather_than_falling_back_to_a_bare_value \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \

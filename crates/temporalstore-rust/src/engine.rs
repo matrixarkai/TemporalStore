@@ -3655,7 +3655,11 @@ fn command_upsert_components(
             Some(crate::engine::execute_on_shard::zset_component(member)),
         )]),
         Command::SetAdd { key, member } => {
-            Some(vec![("set", key.clone(), Some(hex::encode(member)))])
+            Some(vec![(
+                "set",
+                key.clone(),
+                Some(crate::engine::execute_on_shard::set_component(member)),
+            )])
         }
         // A push files its block under its sequence number, which is only knowable once the
         // write has landed: post-apply the pushed element is the list's FIRST entry for a left
@@ -3726,8 +3730,9 @@ fn collect_upsert_index_items(
                         .and_then(|series| series.get(at))
                         .cloned()
                 }),
-            // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
-            // -- so the member the map is keyed by is recoverable from the whole of it.
+            // `zset_component` is `member_component(member)` -- one tag byte then the member,
+            // with the score long since off this string -- so the member the map is keyed by is
+            // recoverable from the whole of it, in EITHER spelling, by `member_from_component`.
             ("zset", Some(component)) => container_blocks::member_from_component(component)
                 .and_then(|member| {
                     shard
@@ -3736,7 +3741,7 @@ fn collect_upsert_index_items(
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
                 }),
-            // `hex::encode(member)` is the component a set add files its block under, so
+            // `set_component(member)` is the component a set add files its block under, so
             // the member the map is keyed by is recoverable from the component itself.
             // `{biased:016x}` of the entry's sequence, so the key the list map is keyed by
             // is recoverable from the component it was filed under.
@@ -3815,7 +3820,10 @@ fn collect_upsert_index_items(
 /// keep restating the whole object until the component is carried out of the arm.
 fn command_removed_component(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
-        Command::SetRemove { member, .. } => Some(("set", Some(hex::encode(member)))),
+        Command::SetRemove { member, .. } => Some((
+            "set",
+            Some(crate::engine::execute_on_shard::set_component(member)),
+        )),
         Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
         _ => None,
     }
@@ -4055,8 +4063,9 @@ impl TouchedContainerElement {
 ///
 /// THE IDENTITY COMES FROM THE COMMAND, NOT FROM THE COMPONENT, and that is the difference between
 /// this and `command_upsert_components` beside it. That function answers the same question in the
-/// block index's vocabulary and spells each element as a component -- `hex::encode(member)` for a
-/// set, sixteen hex digits of score followed by the member for a zset. Recovering the member back
+/// block index's vocabulary and spells each element as a component -- `member_component(member)`
+/// for a set and for a zset alike, the score having left the zset string. Recovering the member
+/// back
 /// out of one of those is what the reconcile does, and it is precisely the dependency this removes:
 /// here the member is the `Vec<u8>` the caller asked to store.
 ///

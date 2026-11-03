@@ -1716,7 +1716,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 key,
                 routing_bucket,
                 addresses.iter_mut().map(|(member, address)| ContainerElementRef {
-                    // A set member's component is `hex::encode(member)`, so the member IS the key.
+                    // A set member's component renders the member and nothing else, in whichever
+                    // spelling it was filed under, so the member IS the key.
                     key: member.clone(),
                     address,
                 }),
