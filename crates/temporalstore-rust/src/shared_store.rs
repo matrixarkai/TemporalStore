@@ -1387,11 +1387,20 @@ where
 
         // Completeness barrier: every slab the served index actually references must be covered by
         // an uploaded slab before the manifest is written, so a restore never resolves a live block
-        // to a slab that is absent from the checkpoint. The synthetic in-memory hot-block slab
-        // (u64::MAX) is folded into the exported index, not a durable slab, so it is excluded.
-        const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;
+        // to a slab that is absent from the checkpoint. A SYNTHETIC address is folded into the
+        // exported index rather than a durable slab, so it is excluded.
+        //
+        // ASK `is_wal_resident`, DO NOT RESTATE THE SENTINEL. This skipped a local
+        // `const HOT_BLOCK_SLAB_ID: u64 = u64::MAX`, and the engine's sentinel is
+        // `u32::MAX as u64` -- it moved to the top of the 32-bit range (see the note on
+        // `wal_record::WAL_LOG_SLAB_ID`) and this copy did not move with it. So the exclusion
+        // matched NOTHING: every live hot block fell through to the check below and failed the
+        // barrier with `CheckpointSlabNotDurable`, which refuses a checkpoint that is in fact
+        // complete. A second home for a constant is wrong even when it agrees, because only one
+        // of the two gets updated; `is_wal_resident` is the one home, and it answers for BOTH
+        // synthetic sentinels -- `WAL_LOG_SLAB_ID` was equally unskipped here.
         for referenced in engine.live_block_slab_ids(shard_id) {
-            if referenced == HOT_BLOCK_SLAB_ID {
+            if crate::wal_record::is_wal_resident(referenced) {
                 continue;
             }
             if !uploaded_slab_ids.contains(&referenced) {

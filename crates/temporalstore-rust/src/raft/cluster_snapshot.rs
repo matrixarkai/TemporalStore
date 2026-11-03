@@ -1576,7 +1576,7 @@ fn install_targets(inner: &RaftClusterInner, snapshot_index: u64) -> Vec<RaftNod
 ///
 /// Two things keep this from ever shipping less than the index can address. The live set is
 /// INTERSECTED with what the store actually holds, so a synthetic address that is not a slab
-/// file (`HOT_BLOCK_SLAB_ID`, the un-spilled hot-block sentinel, is `u64::MAX`) cannot turn a
+/// file (`HOT_BLOCK_SLAB_ID`, the un-spilled hot-block sentinel, is `u32::MAX as u64`) cannot turn a
 /// readable store into an aborted image. And an empty live set means the shard is not loaded
 /// here and the index came off disk, leaving nothing to scope by, so the whole store is carried
 /// exactly as before.
