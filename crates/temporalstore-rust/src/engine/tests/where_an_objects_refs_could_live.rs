@@ -360,7 +360,7 @@ fn whether_a_slot_row_exists_when_its_page_is_filed() {
 ///
 /// rust-internal: measures this crate's own layout, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib whether_a_niche_can_take_the_refs_union_to_sixteen -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::where_an_objects_refs_could_live::whether_a_niche_can_take_the_refs_union_to_sixteen -- --exact --nocapture
 #[test]
 fn whether_a_niche_can_take_the_refs_union_to_sixteen() {
     use crate::engine::state::{BlockLookupRef, BlockRefs};
