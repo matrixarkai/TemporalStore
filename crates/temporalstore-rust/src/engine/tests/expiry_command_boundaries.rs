@@ -69,7 +69,7 @@ fn index_state(engine: &TemporalEngine, key: &str) -> (usize, bool) {
         // BOTH HOMES. An object's refs live in its slot row where it has one, so counting the
         // lookup alone reads ZERO for a shard of strings -- which is what this helper did, and the
         // denominator below went to 0 while the writes were registering perfectly well.
-        shard.bucket_index.objects_naming_pages(),
+        shard.bucket_index.objects_naming_blocks(),
         shard.bucket_index.bucket_map.contains_key(&bucket),
     )
 }
