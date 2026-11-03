@@ -384,6 +384,98 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// `execute_on_shard`, `stream_batch_methods` and the two replay paths in `lifecycle` -- passes
 /// `Some(..)`, so the `Option` is a shape shared with the filer rather than a case this function
 /// has.
+/// THIS OBJECT'S BLOCK REFS, IF ITS ROW HOLDS THEM -- the third home, beside the slot and the
+/// lookup.
+///
+/// # WHY A KIND STRING AND NOT A TYPE PARAMETER
+///
+/// Every reader of refs has a `&str` kind in hand, not a `K`: they come from an index entry, a
+/// dump manifest row or a command, and none of them is generic. So the dispatch has to happen
+/// somewhere, and here is the only place that knows which `ShardState` field each kind's rows live
+/// in. The alternative -- making the readers generic -- would mean threading `K` through
+/// `block_refs_for`'s thirteen call sites, several of which handle several kinds in one loop.
+///
+/// A kind with no `RecordedMap` answers `None`, which is correct rather than a fallback: `string`,
+/// `control_state` and `feature` keep their refs on an `ObjectSlot` and the slot home answers for
+/// them.
+pub(super) fn row_refs<'a>(
+    shard: &'a ShardState,
+    kind: &str,
+    object_key: &str,
+) -> Option<&'a crate::engine::state::BlockRefs> {
+    if kind == HashKind::KIND {
+        shard.hashes.refs(object_key)
+    } else if kind == SetKind::KIND {
+        shard.sets.refs(object_key)
+    } else if kind == ZSetKind::KIND {
+        shard.zsets.refs(object_key)
+    } else if kind == ListKind::KIND {
+        shard.lists.refs(object_key)
+    } else {
+        None
+    }
+}
+
+// =============================================================================================
+// THE ADOPTION IS NOT WIRED, AND THE REASON IS A REMOVAL PATH THAT CANNOT REACH A ROW.
+//
+// The seam is established and correct: `install_element` below files the block first and creates
+// the row second, so the adoption belongs immediately after that install -- exactly where the slot
+// kinds call `CoreIndex::adopt_refs_into_slot`. The row, the three-home reader
+// (`state::object_block_refs`) and `merge_refs` are all in place and tested.
+//
+// WHAT STOPS IT: two paths that drop refs cannot see a `RecordedMap` row, and enabling the
+// adoption on top of them would leave refs naming dead blocks.
+//
+//   * `CoreIndex::prune_refs_to_the_pages_the_index_holds`, reached only from
+//     `CoreIndex::install_reconstructed(&mut self, rebuilt: CoreIndex)`. That door REPLACES the
+//     whole index. A `RecordedMap` is a sibling of `bucket_index`, so row refs survive a
+//     reconstruct unconditionally -- including refs the reconstruct just invalidated. This is the
+//     same shape as the defect where an install replaced a slot row and dropped its refs, and it
+//     is the half of it nothing would report.
+//   * `fold_delta_block_items`, reached from `fold_index_log_deltas`, which operates on a
+//     standalone `CoreIndex` with no `ShardState` in scope at all.
+//
+// So the order is: give those two paths a way to reach the rows, THEN wire the adoption. Doing it
+// the other way round trades a duplicated ref for an unreadable or stale one, which is worse.
+//
+// AND THE ROW IS NOT FREE UNTIL THE ADOPTION LANDS. `Option<BlockRefs>` is paid on every row of
+// these four kinds, so this branch is a footprint REGRESSION in isolation and must not be merged
+// on its own. It is committed as groundwork on a branch, not proposed.
+//
+// `DO NOT BUILD A MECHANISM WITH NO CONSUMER` is the standing rule and this is the documented
+// exception to it: the function is kept rather than deleted because the blocking reason is
+// specific, external to this module, and written down here -- not because a consumer is assumed.
+// =============================================================================================
+
+/// MOVE THIS OBJECT'S REFS OUT OF THE LOOKUP AND ONTO ITS ROW.
+///
+/// The counterpart of [`CoreIndex::adopt_refs_into_slot`] for the four kinds whose rows are not
+/// `ObjectSlot`s, and it exists for the same reason that one does: a first write files its block
+/// BEFORE the element naming it is installed, because the filer runs first and the row is created
+/// by the install. So at filing time there is no row, the refs go to the lookup, and this is what
+/// moves them once the row exists.
+///
+/// NOT CALLED YET -- see the block above for the two removal paths that have to be able to reach a
+/// row first.
+#[allow(dead_code)]
+pub(super) fn adopt_refs_into_row<K: RecordedKind>(shard: &mut ShardState, object_key: &str) -> bool {
+    if !K::resident(shard).contains_key(object_key) {
+        return false;
+    }
+    let Some(adopted) = shard
+        .bucket_index
+        .object_block_lookup
+        .remove(K::KIND, object_key)
+    else {
+        return false;
+    };
+    // MERGED RATHER THAN REPLACED, which is the rule `adopt_refs_into_slot` states at its own
+    // merge: an overwrite can have filed a block into the row already, so replacing would drop it
+    // -- one block of an object going missing with no error anywhere.
+    K::resident(shard).merge_refs(object_key, adopted)
+}
+
 pub(super) fn install_element<K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -434,6 +526,7 @@ pub(super) fn install_element<K: RecordedKind>(
         element,
         value,
     });
+    // THE ADOPTION BELONGS HERE AND IS DELIBERATELY NOT CALLED YET. See `adopt_refs_into_row`.
 }
 
 /// The same, for a record that is a STAGED OUTCOME and no bucket-index entry.
@@ -699,6 +792,33 @@ impl<K: RecordedKind> RecordedMap<K> {
         object_key: &str,
     ) -> Option<crate::engine::state::BlockRefs> {
         self.entries.get_mut(object_key)?.refs.take()
+    }
+
+    /// MERGE refs onto this object's row, or install them when it carries none.
+    ///
+    /// MERGED AND NOT ASSIGNED, for the reason `CoreIndex::adopt_refs_into_slot` gives at its own
+    /// merge: an overwrite can have filed a block into the row already, so assigning would drop
+    /// it, which is one block of an object going missing with nothing raised anywhere.
+    ///
+    /// Answers whether there was a row to merge onto. `false` is a real answer, not a failure --
+    /// see `set_refs`.
+    pub(super) fn merge_refs(
+        &mut self,
+        object_key: &str,
+        adopted: crate::engine::state::BlockRefs,
+    ) -> bool {
+        let Some(row) = self.entries.get_mut(object_key) else {
+            return false;
+        };
+        match row.refs.as_mut() {
+            Some(existing) => {
+                for block_ref in adopted.iter() {
+                    existing.insert(block_ref.clone());
+                }
+            }
+            None => row.refs = Some(adopted),
+        }
+        true
     }
 
     /// HOW MANY ROWS CARRY REFS, which is what a probe needs to tell a populated row apart from a

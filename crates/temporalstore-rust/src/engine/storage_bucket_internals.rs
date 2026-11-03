@@ -2551,11 +2551,7 @@ pub(super) fn release_bucket_blocks(
         let lookup_is_local = !lookup_established
             || bucket.block_index.iter().all(|(handle, block)| {
                 names.get(handle).is_some_and(|beside| {
-                    shard
-                        .bucket_index
-                        // `None`: the lookup files every block of an object under one nameless
-                        // slot, which is the slot an entry has always been filed in here.
-                        .block_refs_for(block.model_id().as_str(), beside, None)
+                    crate::engine::state::block_refs_for(shard, block.model_id().as_str(), beside, None)
                         .map(|refs| {
                             refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket)
                         })
@@ -4725,9 +4721,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
     // against the key. The old predicate retained a deleted block of the object and removed the
     // live ones, and the lookup names exactly the live ones -- so the set it hands back IS the set
     // that predicate removed.
-    let targets: Vec<(u32, u64)> = shard
-        .bucket_index
-        .object_block_refs(model_id.as_str(), object_key)
+    let targets: Vec<(u32, u64)> = crate::engine::state::object_block_refs(shard, model_id.as_str(), object_key)
         .map(|refs| {
             refs.iter()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
@@ -5175,9 +5169,7 @@ fn upsert_bucket_index_block_inner(
     // mark in #2239.
     let superseded: Option<Vec<crate::engine::state::BlockLookupRef>> = if names_a_block {
         let mine = if lookup_enabled {
-            shard
-                .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+            crate::engine::state::block_refs_for(shard, entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
                 .map(|block_refs| {
                     block_refs
                         .iter()
@@ -5227,9 +5219,7 @@ fn upsert_bucket_index_block_inner(
         // of those blocks -- so the list is read, not discarded, and copying it is the price of
         // handing it to a loop that mutates the index it came from.
         let all = if lookup_enabled {
-            shard
-                .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+            crate::engine::state::block_refs_for(shard, entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
                 .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
         } else {
             None
@@ -5263,9 +5253,7 @@ fn upsert_bucket_index_block_inner(
         // in a bucket this key would not derive today. That is why the loop reads
         // `block_ref.routing_bucket` per ref, and why this answers per bucket too.
         let buckets_still_holding: Vec<u32> = if lookup_enabled {
-            shard
-                .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+            crate::engine::state::block_refs_for(shard, entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
                 .map(|refs| refs.iter().map(|block_ref| block_ref.routing_bucket).collect())
                 .unwrap_or_default()
         } else {
@@ -5551,9 +5539,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             .copied()
             .collect::<BTreeSet<_>>()
     } else {
-        shard
-            .bucket_index
-            .object_block_refs(kind, object_key)
+        crate::engine::state::object_block_refs(shard, kind, object_key)
             .map(|block_refs| {
                 block_refs
                     .iter()
@@ -6665,7 +6651,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     // the bucket dirty on a published object.
     let mut live_targets: Vec<(u32, u64)> = Vec::new();
     for kind in super::storage_model_kinds() {
-        if let Some(refs) = shard.bucket_index.object_block_refs(kind, object_key) {
+        if let Some(refs) = crate::engine::state::object_block_refs(shard, kind, object_key) {
             live_targets.extend(
                 refs.iter()
                     .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key)),

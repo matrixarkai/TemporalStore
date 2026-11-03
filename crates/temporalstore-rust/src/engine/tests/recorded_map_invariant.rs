@@ -187,6 +187,32 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "RecordedElement",
         "RecordedElementRemoval",
         "RecordedObjectRemoval",
+        // A READ ACROSS ALL FOUR KINDS, dispatching on a kind STRING. `row_refs` answers "does this
+        // object's row hold block refs", and it exists here rather than beside the other refs
+        // readers because this is the only module that knows which `ShardState` field each kind's
+        // rows live in. `&ShardState`, borrows out, no mutation.
+        "row_refs",
+        //
+        // `adopt_refs_into_row` MUTATES TWO MAPS WITHOUT A RECORD, and it is NOT CALLED.
+        //
+        // What it would do: take an object's refs out of `CoreIndex::object_block_lookup` and merge
+        // them onto its row, which is the counterpart of `CoreIndex::adopt_refs_into_slot` for the
+        // kinds whose rows are not `ObjectSlot`s. Both maps it touches hold DERIVED state -- refs
+        // are absent from the stored bytes and re-filed by the load path -- so there is no durable
+        // statement for a record to be consistent with, which is the same ground `set_refs` and
+        // `take_refs` stand on below.
+        //
+        // It cannot add or drop a key in either map: it returns `false` unless the row already
+        // exists, and removing a lookup entry is what the lookup's own removal doors do.
+        //
+        // WHY IT IS HERE WHILE UNCALLED, against the standing rule not to build a mechanism with no
+        // consumer: the blocking reason is specific, external to this module and written at the
+        // function -- `CoreIndex::install_reconstructed` replaces the whole index, and a
+        // `RecordedMap` is a sibling of `bucket_index`, so row refs would survive a reconstruct
+        // that invalidated them. Wiring this before that door can reach a row trades a duplicated
+        // ref for a stale one. If this entry is still uncalled when that is fixed, delete it rather
+        // than leave it.
+        "adopt_refs_into_row",
         // THE OPERATIONS, written once for every kind.
         "install_element",
         "install_element_staged_only",
@@ -258,6 +284,13 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "refs",
         "set_refs",
         "take_refs",
+        // ALSO MUTATES WITHOUT A RECORD, on the same ground as `set_refs` and `take_refs`:
+        // derived state, no durable statement to be consistent with, and it cannot add or drop a
+        // key -- it answers `false` when there is no row rather than creating one. It MERGES rather
+        // than assigns, which is the rule `CoreIndex::adopt_refs_into_slot` states at its own
+        // merge: an overwrite can have filed a block into the row already, so assigning would drop
+        // it, and that is one block of an object going missing with nothing raised.
+        "merge_refs",
         "rows_with_refs",
         // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
         // CLONE of an address the map already holds -- the block an element is moving off, which the
