@@ -7051,13 +7051,40 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     // one allocation sized by the entries held.
     //
     // The walk itself is unchanged: the same refs, in the same order, marking the same blocks.
+    // BOTH REF HOMES ARE ASKED, AND ASKING ONLY THE LOOKUP MADE THIS WALK SILENTLY PARTIAL.
+    //
+    // This bound `lookup` alone and iterated it per kind. That was the whole of the answer while
+    // every object's refs lived in `object_block_lookup` -- and since the block refs were folded
+    // into the slot, an object WITH A ROW carries them on the row instead, and the lookup holds
+    // nothing for it. So for every kind that has rows this walk found no refs and marked no
+    // blocks: the object went dirty, its blocks stayed clean, and the bucket predicate -- which
+    // reads only `block.dirty` -- answered false for a dirty object. A silent wrong answer, which
+    // is the exact failure this module's header says it exists to prevent.
+    //
+    // WHICH KINDS THAT IS, rather than a guess: every kind whose rows are `ObjectSlot`s, so
+    // `string`, `control_state`, the context kinds and the series kinds. The four container kinds
+    // keep their refs in the lookup, because their rows live in `RecordedMap` and are not
+    // `ObjectSlot`s at all -- so the lookup arm below is still load-bearing and is not a fallback.
+    //
+    // THREE DISJOINT FIELDS, NAMED SEPARATELY, which is what lets the row be read while the
+    // buckets are held mutably. The comment below already explains why this cannot go through a
+    // `&self` method such as `block_refs_for`: that borrows the whole index and collides with the
+    // mutable borrow of `bucket_map` however disjoint the fields really are. Naming a third field
+    // costs nothing the first two did not already establish.
     let index = &mut shard.bucket_index;
+    let objects = &index.objects;
     let lookup = &index.object_block_lookup;
     let buckets = &mut index.bucket_map;
     for kind in storage_model_kinds() {
-        let Some(entry) = lookup.get(kind, object_key) else {
-            continue;
-        };
+        // THE ROW FIRST, THEN THE LOOKUP, and the two are chained rather than chosen between: an
+        // object can legitimately have refs in both while its row is being adopted into, and
+        // taking only the first non-empty home would drop the other's blocks.
+        let from_row = storage_bucket_internals::StoredModelKind::from_stored_name(kind)
+            .and_then(|stored| objects.get(&stored))
+            .and_then(|table| table.get(object_key))
+            .and_then(|slot| slot.refs());
+        let from_lookup = lookup.get(kind, object_key);
+        for entry in from_row.into_iter().chain(from_lookup) {
         for block_ref in entry.iter() {
             let Some(mut bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
                 continue;
@@ -7065,6 +7092,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
             if let Some(block) = bucket.block_index.get_mut(&block_ref.block_ref_key) {
                 block.set_dirty(true);
             }
+        }
         }
     }
 }
