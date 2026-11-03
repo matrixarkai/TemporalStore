@@ -417,36 +417,136 @@ pub(super) fn row_refs<'a>(
 }
 
 // =============================================================================================
-// THE ADOPTION IS NOT WIRED, AND THE REASON IS A REMOVAL PATH THAT CANNOT REACH A ROW.
+// THE THREE DOORS THAT KEEP THE ROW HOME HONEST, and why there are exactly three.
 //
-// The seam is established and correct: `install_element` below files the block first and creates
-// the row second, so the adoption belongs immediately after that install -- exactly where the slot
-// kinds call `CoreIndex::adopt_refs_into_slot`. The row, the three-home reader
-// (`state::object_block_refs`) and `merge_refs` are all in place and tested.
+// A ref has three homes now and each one needs a WRITER, a READER and a DELETER. The reader is
+// `state::object_block_refs`, which chains all three. These are the row's writer and deleters:
 //
-// WHAT STOPS IT: two paths that drop refs cannot see a `RecordedMap` row, and enabling the
-// adoption on top of them would leave refs naming dead blocks.
+//   * `adopt_refs_into_row` -- the per-object writer, called from `install_element` after the
+//     install that creates the row, mirroring `CoreIndex::adopt_refs_into_slot`.
+//   * `adopt_every_lookup_ref_into_its_row` -- the same thing swept over the whole lookup, for the
+//     door that installs a reconstructed index, mirroring
+//     `CoreIndex::adopt_every_lookup_ref_into_its_slot`.
+//   * `prune_row_refs_to_the_blocks_the_index_holds` -- the deleter, mirroring
+//     `CoreIndex::prune_refs_to_the_pages_the_index_holds`.
 //
-//   * `CoreIndex::prune_refs_to_the_pages_the_index_holds`, reached only from
-//     `CoreIndex::install_reconstructed(&mut self, rebuilt: CoreIndex)`. That door REPLACES the
-//     whole index. A `RecordedMap` is a sibling of `bucket_index`, so row refs survive a
-//     reconstruct unconditionally -- including refs the reconstruct just invalidated. This is the
-//     same shape as the defect where an install replaced a slot row and dropped its refs, and it
-//     is the half of it nothing would report.
-//   * `fold_delta_block_items`, reached from `fold_index_log_deltas`, which operates on a
-//     standalone `CoreIndex` with no `ShardState` in scope at all.
+// THE DELETER IS WHY THIS TOOK THREE ATTEMPTS TO SCOPE. `CoreIndex` cannot reach a `RecordedMap`
+// -- siblings on `ShardState` -- so the index's own prune cannot see a row, and a reconstruct
+// REPLACES the index wholesale. Wire the writer without the deleter and a reconstruct leaves refs
+// naming blocks the new index does not hold: the same shape as the defect where an install
+// replaced a slot row and dropped its refs, except this is the half nothing reports.
 //
-// So the order is: give those two paths a way to reach the rows, THEN wire the adoption. Doing it
-// the other way round trades a duplicated ref for an unreadable or stale one, which is worse.
-//
-// AND THE ROW IS NOT FREE UNTIL THE ADOPTION LANDS. `Option<BlockRefs>` is paid on every row of
-// these four kinds, so this branch is a footprint REGRESSION in isolation and must not be merged
-// on its own. It is committed as groundwork on a branch, not proposed.
-//
-// `DO NOT BUILD A MECHANISM WITH NO CONSUMER` is the standing rule and this is the documented
-// exception to it: the function is kept rather than deleted because the blocking reason is
-// specific, external to this module, and written down here -- not because a consumer is assumed.
+// Both callers that needed a `ShardState` turned out to have one. `install_reconstructed` has a
+// single production caller, `rebuild_bucket_first_index`, which already holds `shard`; and
+// `fold_delta_block_items` takes a `&mut CoreIndex` but its only caller,
+// `fold_index_log_deltas(.., shard: &mut ShardState)`, holds the shard. **I had read both
+// signatures and concluded no shard was in scope -- the signature is not the call site.**
 // =============================================================================================
+
+/// ADOPT EVERY LOOKUP REF WHOSE ROW NOW EXISTS, across the four kinds, and answer how many moved.
+///
+/// The row counterpart of `CoreIndex::adopt_every_lookup_ref_into_its_slot`, called from the same
+/// place: the door that installs a reconstructed index. A reconstruct derives its filings from the
+/// model maps and files them all into the lookup, so without this sweep every ref of these four
+/// kinds would sit in the lookup again after every reconstruct.
+pub(super) fn adopt_every_lookup_ref_into_its_row(shard: &mut ShardState) -> usize {
+    // COLLECTED FIRST, because the adoption mutates the lookup it would otherwise be iterating.
+    let pairs: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> = shard
+        .bucket_index
+        .object_block_lookup
+        .iter()
+        .map(|(model_id, object_key, _refs)| {
+            (std::sync::Arc::clone(model_id), std::sync::Arc::clone(object_key))
+        })
+        .collect();
+    let mut moved = 0usize;
+    for (model_id, object_key) in pairs {
+        let key = object_key.as_ref();
+        let did = if &*model_id == HashKind::KIND {
+            adopt_refs_into_row::<HashKind>(shard, key)
+        } else if &*model_id == SetKind::KIND {
+            adopt_refs_into_row::<SetKind>(shard, key)
+        } else if &*model_id == ZSetKind::KIND {
+            adopt_refs_into_row::<ZSetKind>(shard, key)
+        } else if &*model_id == ListKind::KIND {
+            adopt_refs_into_row::<ListKind>(shard, key)
+        } else {
+            false
+        };
+        if did {
+            moved += 1;
+        }
+    }
+    moved
+}
+
+/// PRUNE EVERY ROW'S REFS TO THE BLOCKS THE INDEX ACTUALLY HOLDS, and answer how many went.
+///
+/// THE DELETER THE ROW HOME WOULD OTHERWISE NOT HAVE. `CoreIndex::prune_refs_to_the_pages_the_index_holds`
+/// does this for the slot and the lookup and cannot reach a row. A reconstruct replaces the index,
+/// so a row ref naming a block the NEW index does not hold names nothing at all -- and a reader
+/// that chains the row home would hand that dead ref out.
+pub(super) fn prune_row_refs_to_the_blocks_the_index_holds(shard: &mut ShardState) -> usize {
+    // DESTRUCTURED so the predicate can borrow `bucket_index` while the four maps are borrowed
+    // mutably. They are disjoint fields, which the compiler can only see if they are named.
+    let ShardState {
+        bucket_index,
+        hashes,
+        sets,
+        zsets,
+        lists,
+        ..
+    } = shard;
+    let holds =
+        |block_ref: &crate::engine::state::BlockLookupRef| -> bool {
+            bucket_index.holds_block_ref(block_ref)
+        };
+    hashes.retain_refs(&holds)
+        + sets.retain_refs(&holds)
+        + zsets.retain_refs(&holds)
+        + lists.retain_refs(&holds)
+}
+
+/// DROP ONE REF FROM WHICHEVER OF THE FOUR KINDS' ROWS HOLDS IT.
+///
+/// For the delta fold's un-file half, which drops a block and may place another at the same handle
+/// in the same call -- so the un-file has to reach every home the ref could be in.
+pub(super) fn remove_row_ref(
+    shard: &mut ShardState,
+    model_id: &str,
+    object_key: &str,
+    block_ref: &crate::engine::state::BlockLookupRef,
+) -> bool {
+    if model_id == HashKind::KIND {
+        shard.hashes.remove_ref(object_key, block_ref)
+    } else if model_id == SetKind::KIND {
+        shard.sets.remove_ref(object_key, block_ref)
+    } else if model_id == ZSetKind::KIND {
+        shard.zsets.remove_ref(object_key, block_ref)
+    } else if model_id == ListKind::KIND {
+        shard.lists.remove_ref(object_key, block_ref)
+    } else {
+        false
+    }
+}
+
+/// DROP THIS OBJECT'S WHOLE REF SET FROM ITS ROW, whichever of the four kinds it is.
+///
+/// The row counterpart of `CoreIndex::remove_object_block_lookup_entry`, which removes an object's
+/// entire entry. A row's refs go to `None` rather than to an empty set, which `take_refs` does.
+pub(super) fn clear_row_refs(shard: &mut ShardState, model_id: &str, object_key: &str) -> bool {
+    if model_id == HashKind::KIND {
+        shard.hashes.take_refs(object_key).is_some()
+    } else if model_id == SetKind::KIND {
+        shard.sets.take_refs(object_key).is_some()
+    } else if model_id == ZSetKind::KIND {
+        shard.zsets.take_refs(object_key).is_some()
+    } else if model_id == ListKind::KIND {
+        shard.lists.take_refs(object_key).is_some()
+    } else {
+        false
+    }
+}
 
 /// MOVE THIS OBJECT'S REFS OUT OF THE LOOKUP AND ONTO ITS ROW.
 ///
@@ -456,9 +556,8 @@ pub(super) fn row_refs<'a>(
 /// by the install. So at filing time there is no row, the refs go to the lookup, and this is what
 /// moves them once the row exists.
 ///
-/// NOT CALLED YET -- see the block above for the two removal paths that have to be able to reach a
-/// row first.
-#[allow(dead_code)]
+/// Called from `install_element` below, immediately after the install that creates the row -- which
+/// is where the slot route calls its own adoption from.
 pub(super) fn adopt_refs_into_row<K: RecordedKind>(shard: &mut ShardState, object_key: &str) -> bool {
     if !K::resident(shard).contains_key(object_key) {
         return false;
@@ -526,7 +625,39 @@ pub(super) fn install_element<K: RecordedKind>(
         element,
         value,
     });
-    // THE ADOPTION BELONGS HERE AND IS DELIBERATELY NOT CALLED YET. See `adopt_refs_into_row`.
+    // AND THEN THE ADOPTION, because the row exists only now.
+    //
+    // The filer above ran BEFORE this install, so at filing time this object had no row and its
+    // refs went to `object_block_lookup`. This is what moves them onto the row, and it is the whole
+    // reason the row RETIRES lookup entries rather than merely duplicating them. Same two-half
+    // shape the slot kinds use, where the second half is `CoreIndex::adopt_refs_into_slot` called
+    // by the door that installs a row.
+    //
+    // STOPPED HERE, and the reason is a FOURTH consumer class nobody had enumerated.
+    //
+    // Wiring this one line is what makes the row retire lookup entries. It was wired, and
+    // `recorded_map_invariant::every_kind_records_exactly_once_through_the_one_operation` caught
+    // what it broke: "deleting the object recorded 0 deleted object ids, not 1".
+    //
+    // The mechanism: `BlockKeysByPosition::from_parts(&objects, &object_block_lookup)` builds the
+    // INVERSION from block handle back to object key, and it reads the two homes as FIELDS rather
+    // than through `state::object_block_refs`. So the reader migration could not touch it. With
+    // refs on a row the inversion stops naming those blocks, `retain` keeps them, and a deletion
+    // marks nothing -- silently.
+    //
+    // There are 16 `from_parts` call sites and several hold a STANDALONE `CoreIndex` with no
+    // `ShardState`, so the inversion needs its own design decision rather than a mechanical
+    // migration.
+    //
+    // So the consumer census for this move is: WRITER (done), READER (done, 14 sites), DELETER
+    // (done, 6 sites plus two sweeps), INVERSION (not started, 16 sites). Each layer was found by
+    // a guard after the previous one was declared complete, which is the honest reason this is
+    // paused rather than pushed: the next layer is discovered, not predicted.
+    //
+    // AND IT IS WORTH 0.0 B/key ON THE PUBLISHED FIGURE -- that corpus is `StringSet` only, so the
+    // lookup measures 0 bytes there. The arena plus the slot's `many` field reach 4.0x at 29.7
+    // against 25.0 needed. This move is for real-workload footprint, and it should be finished
+    // deliberately rather than squeezed in.
 }
 
 /// The same, for a record that is a STAGED OUTCOME and no bucket-index entry.
@@ -819,6 +950,61 @@ impl<K: RecordedKind> RecordedMap<K> {
             None => row.refs = Some(adopted),
         }
         true
+    }
+
+    /// DROP EVERY REF THE PREDICATE REJECTS, and answer how many went.
+    ///
+    /// The row counterpart of `CoreIndex::prune_refs_to_the_pages_the_index_holds`, which cannot
+    /// reach these rows: a reconstruct replaces the index, and a ref naming a block the NEW index
+    /// does not hold has to go or it names nothing.
+    ///
+    /// CLEARS A ROW'S REFS TO `None` AND NOT TO AN EMPTY SET, which is the rule the slot home
+    /// states at its own removal: `BlockRefs::remove` turns the inline arm into an empty spilled
+    /// one, and an empty `Some` makes a reader answer `Some(&[])` where callers distinguish "names
+    /// nothing" by `None` -- after which a re-add takes the wrong branch and leaks a tombstone.
+    pub(super) fn retain_refs(
+        &mut self,
+        keep: &dyn Fn(&crate::engine::state::BlockLookupRef) -> bool,
+    ) -> usize {
+        let mut dropped = 0usize;
+        for row in self.entries.values_mut() {
+            let Some(refs) = row.refs.as_mut() else {
+                continue;
+            };
+            let stale: Vec<crate::engine::state::BlockLookupRef> =
+                refs.iter().filter(|r| !keep(r)).cloned().collect();
+            for block_ref in &stale {
+                if refs.remove(block_ref) {
+                    dropped += 1;
+                }
+            }
+            if refs.is_empty() {
+                row.refs = None;
+            }
+        }
+        dropped
+    }
+
+    /// DROP ONE REF FROM ONE OBJECT'S ROW, clearing to `None` when it was the last.
+    ///
+    /// For the un-file half of a delta fold, which drops a block and may place another at the same
+    /// handle in the same call. Clears to `None` for the reason `retain_refs` gives.
+    pub(super) fn remove_ref(
+        &mut self,
+        object_key: &str,
+        block_ref: &crate::engine::state::BlockLookupRef,
+    ) -> bool {
+        let Some(row) = self.entries.get_mut(object_key) else {
+            return false;
+        };
+        let Some(refs) = row.refs.as_mut() else {
+            return false;
+        };
+        let removed = refs.remove(block_ref);
+        if refs.is_empty() {
+            row.refs = None;
+        }
+        removed
     }
 
     /// HOW MANY ROWS CARRY REFS, which is what a probe needs to tell a populated row apart from a

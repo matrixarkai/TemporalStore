@@ -193,6 +193,32 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // rows live in. `&ShardState`, borrows out, no mutation.
         "row_refs",
         //
+        // THE NEXT FOUR ARE THE ROW HOME'S SWEEPS AND ITS DELETERS. All four MUTATE WITHOUT A
+        // RECORD and all four are on the same ground as `set_refs`: what they touch is DERIVED
+        // state -- refs are absent from the stored bytes and re-filed by the load path -- so there
+        // is no durable statement for a record to be consistent with. None can add or drop a KEY.
+        //
+        //   * `adopt_every_lookup_ref_into_its_row` -- the whole-lookup sweep, mirroring
+        //     `CoreIndex::adopt_every_lookup_ref_into_its_slot`, for the door that installs a
+        //     reconstructed index.
+        //   * `prune_row_refs_to_the_blocks_the_index_holds` -- the DELETER, mirroring
+        //     `CoreIndex::prune_refs_to_the_pages_the_index_holds`, which cannot reach a row.
+        //     Without it a reconstruct leaves row refs naming blocks the new index does not hold.
+        //   * `remove_row_ref` / `clear_row_refs` -- one ref and a whole set, so the removal doors
+        //     can span every home the reader spans. A deleter narrower than its reader is how a
+        //     ref outlives its block.
+        //
+        // THEY ARE REACHED but the WRITER they exist for is not, so today they only ever run over
+        // rows whose refs are `None`. That is deliberate and is explained at `adopt_refs_into_row`
+        // below: the inversion `BlockKeysByPosition::from_parts` reads the ref homes as FIELDS, has
+        // never heard of a row, and an enabled adoption made an object deletion mark nothing --
+        // caught by `every_kind_records_exactly_once_through_the_one_operation`, which is green
+        // again with the writer off.
+        "adopt_every_lookup_ref_into_its_row",
+        "prune_row_refs_to_the_blocks_the_index_holds",
+        "remove_row_ref",
+        "clear_row_refs",
+        //
         // `adopt_refs_into_row` MUTATES TWO MAPS WITHOUT A RECORD, and it is NOT CALLED.
         //
         // What it would do: take an object's refs out of `CoreIndex::object_block_lookup` and merge
@@ -291,6 +317,13 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // merge: an overwrite can have filed a block into the row already, so assigning would drop
         // it, and that is one block of an object going missing with nothing raised.
         "merge_refs",
+        // THE TWO PER-MAP DELETERS the sweeps above are built from. Same ground again: derived
+        // state, no key added or dropped. Both clear a row's refs to `None` rather than to an
+        // empty set, which is the rule the slot home states at its own removal -- an empty `Some`
+        // makes a reader answer `Some(&[])` where callers distinguish "names nothing" by `None`,
+        // after which a re-add takes the wrong branch and leaks a tombstone.
+        "retain_refs",
+        "remove_ref",
         "rows_with_refs",
         // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
         // CLONE of an address the map already holds -- the block an element is moving off, which the

@@ -6384,9 +6384,7 @@ fn mark_bucket_index_block_deleted_recording(
         // has always maintained the lookup. The whole-object deleter above still rebuilds; it
         // drops every component of a key at once, so the entry-at-a-time inverse does not apply
         // to it unchanged.
-        shard
-            .bucket_index
-            .remove_object_block_lookup_entry(model_id, key, component);
+        crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, model_id, key, component);
     }
     // THE ENTRY THAT KEEPS THE TOMBSTONE BLOCK REACHABLE, filed after the drop above rather than
     // instead of it -- see this function's doc comment on why the two halves of the slab-live

@@ -2602,7 +2602,7 @@ pub(super) fn release_bucket_blocks(
         let block_count = dropped.len();
         if lookup_established {
             for (model_id, object_key) in &dropped {
-                shard.bucket_index.remove_object_block_lookup_entry(
+                crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, 
                     model_id.as_str(),
                     object_key,
                     // `None` -- the slot the lookup filed every block of this object under. The
@@ -5195,7 +5195,7 @@ fn upsert_bucket_index_block_inner(
         match mine {
             Some(mine) => {
                 for block_ref in &mine {
-                    shard.bucket_index.remove_object_block_lookup_ref(
+                    crate::engine::state::remove_object_block_lookup_ref_from_shard(shard, 
                         entry.kind.as_str(),
                         &entry.object_key,
                         filed.as_deref(),
@@ -5205,7 +5205,7 @@ fn upsert_bucket_index_block_inner(
                 Some(mine)
             }
             None => {
-                shard.bucket_index.remove_object_block_lookup_entry(
+                crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, 
                     entry.kind.as_str(),
                     &entry.object_key,
                     filed.as_deref(),
@@ -5224,7 +5224,7 @@ fn upsert_bucket_index_block_inner(
         } else {
             None
         };
-        shard.bucket_index.remove_object_block_lookup_entry(
+        crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, 
             entry.kind.as_str(),
             &entry.object_key,
             filed.as_deref(),
@@ -5610,7 +5610,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     {
         // Only this object's own entries were dropped above, so only they need correcting.
         for component in &removed_components {
-            shard.bucket_index.remove_object_block_lookup_entry(
+            crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, 
                 kind,
                 object_key,
                 component.as_deref(),
@@ -6949,7 +6949,10 @@ pub(super) fn rebuild_bucket_first_index(
     // struct now, so a wholesale assignment discards every object in the shard -- measured as a
     // `SET` then `EXPIRE` leaving `strings` empty. The installer carries the rows across and
     // re-homes this reconstruct's own filings into them.
-    shard.bucket_index.install_reconstructed(bucket_index);
+    // THROUGH THE SHARD-LEVEL DOOR, because the install's own two sweeps cannot reach a
+    // `RecordedMap` row and a reconstruct would otherwise leave row refs naming blocks the new
+    // index does not hold. See `state::install_reconstructed_into_shard`.
+    let _ = crate::engine::state::install_reconstructed_into_shard(shard, bucket_index);
     // The local index charged every block it filed, and it arrived empty, so the tally travelled
     // here with it and is already right. Same reason as `rebuild_bucket_block_ownership`: a walk to
     // confirm it is the walk being removed.
