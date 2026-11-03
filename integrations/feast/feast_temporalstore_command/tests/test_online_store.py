@@ -519,26 +519,101 @@ class OnlineStoreTest(unittest.TestCase):
         self.store.teardown(self.config, [self.view], [self.entity])
         self.assertEqual(client.sent[0][0], "/execute")
         self.assertEqual(client.sent[0][1]["command"]["kind"], "set_members")
-        deleted_keys = []
+        field_deletes, key_deletes = [], []
         for path, document in client.sent[1:]:
             self.assertEqual(path, "/batch_execute")
             for command in document["commands"]:
-                self.assertEqual(command["kind"], "common_delete")
-                deleted_keys.append(command["key"])
+                if command["kind"] == "hash_delete":
+                    field_deletes.append((command["key"], command["field"]))
+                elif command["kind"] == "common_delete":
+                    key_deletes.append(command["key"])
+                else:
+                    self.fail(f"unexpected command {command['kind']}")
+
+        # THE ROWS ARE NOT DELETED, THEIR FIELDS ARE. The row is shared by every
+        # view in the project, so dropping it would take the neighbours' features
+        # with it.
         self.assertEqual(
-            set(deleted_keys),
-            written | {set_key},
-            "teardown must delete every tracked key AND the tracking set",
+            {key for key, _ in field_deletes},
+            written,
+            "every tracked row must have its fields removed",
         )
-        # The set is dropped LAST: while any key it names still exists, the set
-        # is the only thing that names it, so a run that failed partway can be
-        # repeated. Dropping it first would strand the survivors.
-        self.assertEqual(deleted_keys[-1], set_key)
         self.assertEqual(
-            len(deleted_keys),
-            len(written) + 1,
-            "no key may be deleted twice",
+            {field for _, field in field_deletes},
+            {"stats:trips", "_ts:stats"},
+            "exactly this view's feature fields and its timestamp field",
         )
+        # The tracking set is the ONLY thing deleted as a whole key, and it is
+        # dropped LAST: while any row it names still holds this view's fields,
+        # the set is the only thing that names them, so a run that failed
+        # partway can be repeated.
+        self.assertEqual(key_deletes, [set_key])
+        last_path, last_document = client.sent[-1]
+        self.assertEqual(
+            last_document["commands"][-1],
+            {"kind": "common_delete", "key": set_key},
+        )
+        self.assertEqual(
+            len(field_deletes),
+            len(written) * 2,
+            "one delete per (row, field), no field twice",
+        )
+
+    def test_tearing_down_one_view_leaves_another_views_fields_on_a_shared_row(self):
+        """FEAST ISSUE #2150, WHICH THIS LAYOUT IS EXPOSED TO BY CONSTRUCTION.
+
+        There is one hash per (project, entity key) and EVERY feature view in
+        the project writes into it -- the view appears only in the field names.
+        So a teardown that deleted the row would delete every other view's
+        features for that entity, which is the bug Feast's own
+        `test_online_store_cleanup` exists to catch. That test is gated
+        `universal_online_stores(only=["redis"])`, so it never ran against this
+        store; this is the local equivalent.
+
+        Asserted on the FIELD NAMES in the emitted commands, because that is
+        where the view lives -- a row-level assertion cannot tell the two views
+        apart at all.
+        """
+        from feast import Field, FeatureView
+        from feast.types import Int64
+
+        other = FeatureView(
+            name="other_stats",
+            entities=[self.entity],
+            schema=[Field(name="miles", dtype=Int64)],
+            source=self.view.batch_source,
+        )
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.track_keys_for_teardown = True
+        written_key = "somerow:proj"
+        client = self._install(
+            [
+                ok({"kind": "members", "members": [list(written_key.encode())]}),
+            ]
+        )
+        self.store.teardown(self.config, [self.view], [self.entity])
+
+        touched = []
+        for _path, document in client.sent[1:]:
+            touched.extend(document["commands"])
+
+        # DENOMINATOR: it really did emit deletes for the one tracked row.
+        self.assertTrue(touched, "teardown emitted nothing")
+        self.assertNotIn(
+            "common_delete",
+            [c["kind"] for c in touched if c.get("key") == written_key],
+            "the shared row must NOT be deleted as a whole key -- that is the "
+            "defect: it would take every other view's fields with it",
+        )
+        fields = {c["field"] for c in touched if c["kind"] == "hash_delete"}
+        self.assertEqual(fields, {"stats:trips", "_ts:stats"})
+        for field in fields:
+            self.assertFalse(
+                field.startswith(f"{other.name}:") or field == f"_ts:{other.name}",
+                f"teardown of 'stats' touched a field belonging to "
+                f"'{other.name}': {field}",
+            )
 
     def test_teardown_bounds_its_batches_instead_of_sending_one_per_key_count(self):
         """THE REQUEST SIZE MUST NOT BE A PROPERTY OF THE DATA.
@@ -597,11 +672,18 @@ class OnlineStoreTest(unittest.TestCase):
             f"teardown sent a {largest}-command batch against a bound of 16; "
             f"the request size is still a property of the data",
         )
-        deleted = [c["key"] for b in batches for c in b]
+        commands = [c for b in batches for c in b]
         set_key = self.store._teardown_set_key(self.config, "stats")
-        self.assertEqual(set(deleted), written | {set_key})
-        self.assertEqual(len(deleted), rows + 1, "no key may be deleted twice")
-        self.assertEqual(deleted[-1], set_key, "the tracking set is dropped last")
+        field_deletes = [c for c in commands if c["kind"] == "hash_delete"]
+        key_deletes = [c for c in commands if c["kind"] == "common_delete"]
+        # One hash_delete per (row, field): this view has one feature plus its
+        # timestamp field, so two per row. The bound still has to hold over a
+        # command count that is now a MULTIPLE of the row count, which is the
+        # harder case for it.
+        self.assertEqual(len(field_deletes), rows * 2)
+        self.assertEqual({c["key"] for c in field_deletes}, written)
+        self.assertEqual([c["key"] for c in key_deletes], [set_key])
+        self.assertEqual(commands[-1], {"kind": "common_delete", "key": set_key})
 
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.
@@ -771,7 +853,7 @@ class AdvertisedCapabilityTest(unittest.TestCase):
 # Feast from a run without it, and cannot tell either from a run where the whole
 # Feast tier silently stopped executing.
 MINIMUM_EXECUTED_WITHOUT_FEAST = 12
-MINIMUM_EXECUTED_WITH_FEAST = 28
+MINIMUM_EXECUTED_WITH_FEAST = 29
 
 
 def main() -> int:
