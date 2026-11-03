@@ -2823,7 +2823,11 @@ reload into a {reloaded_resident} B index, with {ABSENT} absent in both"
 #[test]
 fn the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_clock() {
     const KEYS: usize = 4_000;
-    const BATCH: usize = 16;
+    // Eight, not sixteen: a shard holds at most 1,024 routing buckets, and the ceiling is
+    // `samples * batch * scan_turns`. At the shipped sixteen samples and four turns a batch of
+    // sixteen puts the ceiling at 1,024, which no store can exceed, so the regime check below
+    // could never hold.
+    const BATCH: usize = 8;
 
     let sampler = crate::engine::evict_sampler_config();
     let min_scan = sampler.samples * BATCH;

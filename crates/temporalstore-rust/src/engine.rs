@@ -5439,8 +5439,16 @@ pub(crate) fn evict_sampler_config() -> eviction_sampler::EvictionSamplerConfig 
             .unwrap_or(default)
     }
     eviction_sampler::EvictionSamplerConfig {
-        samples: parse("TS_EVICT_SAMPLES", 5),
+        // Sixteen buckets looked at per wanted victim. A shard holds at most 1,024 routing buckets,
+        // so a larger sample count is bounded by the shard rather than by the store, and more
+        // candidates per victim means colder victims.
+        samples: parse("TS_EVICT_SAMPLES", 16),
         pool_size: parse("TS_EVICT_POOL_SIZE", 64),
+        // NOT 1. The ceiling `samples * batch_limit * scan_turns` has to sit well above the
+        // minimum scan `samples * batch_limit`, because the pass keeps walking past the minimum
+        // while the buckets it holds are in use; with one turn the two coincide and the pass ranks
+        // whatever the lowest-numbered window happens to hold. Pinned by
+        // `a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted`.
         scan_turns: parse("TS_EVICT_SCAN_TURNS", 4),
     }
 }
