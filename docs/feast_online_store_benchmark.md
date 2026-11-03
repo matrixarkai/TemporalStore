@@ -479,19 +479,37 @@ shard, so the right reading is that per-key delete cost itself grows with the
 shard, and a single-point measurement of it is not a rate. Anyone optimising
 this should start at `CommonDelete`, not at the batching.
 
-#### The open question, and the exact measurement that answers it
+#### Answered: each delete batch does work proportional to the WHOLE shard
 
-What is **not** known is why the per-key cost rises with the shard: 7.50 ms/key
-at 4,000 keys against 103 ms/key implied by the 20,000-key run. A single point
-is not a rate, and the two runs differed in host load as well as in size, so
-neither figure extrapolates.
+The measurement was the one written down here as open: **the same 2,000 deletes,
+once on a shard holding only those 2,000 and once on a shard holding 20,000
+filler keys as well, varying nothing else.** Release build, fresh shard each
+time, batch 512, host load 3.4 with no compiler running.
 
-The measurement that settles it, written down so nobody re-derives the design:
-**delete the same 2,000 keys twice — once on a shard holding only those 2,000,
-and once on a shard holding 20,000 filler keys as well — varying nothing else.**
-If per-key delete cost rises with the filler, it scales with what the shard
-holds rather than with the batch, and the search narrows to whatever a delete
-does that touches the rest of the shard. This run was not completed.
+| the shard holds | 2,000 deletes | per key | per-batch profile |
+|---|---:|---:|---|
+| just those 2,000 keys | 4.48 s | **2.24 ms** | 2.28 s then 0.18 s — front-loaded |
+| those plus 20,000 filler | 138.34 s | **69.17 ms** | 37.20 s … 29.60 s, max 37.52 s — flat and high |
+
+**31x the per-key cost for identical deletes, with only the shard's size
+changed.** Delete cost scales with what the shard holds, not with the batch and
+not with the number of keys being deleted.
+
+**And the per-batch profile changes shape, which corrects the earlier reading
+here.** On the small shard the cost is front-loaded — 2.28 s then 0.18 s — which
+is what the 4,000-key run showed and what was described as "something is paid
+once rather than per key". On the large shard it is **flat and high**: every
+batch pays 30–37 s. So the front-loading was a small-shard artefact, and at
+scale each batch pays the shard-size cost afresh. Over N/512 batches that is
+work proportional to (keys deleted x shard size), which is why the totals looked
+quadratic and why 7.50 ms/key at 4,000 keys did not extrapolate to the 103
+ms/key implied at 20,000.
+
+That narrows the search for whoever optimises it: **look for what a
+`CommonDelete` batch touches that is proportional to the resident shard rather
+than to the keys in the batch** — a scan, a rebuild, or a structure rewritten
+once per batch. It is not the batching (already bounded at 512), not the
+`SetMembers` read (0% of teardown), and not the tracking-set drop (0%).
 
 ## A note on the shard a read is answered from
 
