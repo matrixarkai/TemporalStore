@@ -1976,7 +1976,9 @@ impl TemporalEngine {
                             );
                     }
                     ("set", Some(encoded)) => {
-                        let Ok(member) = hex::decode(encoded) else {
+                        let Some(member) =
+                            super::container_blocks::member_from_component(encoded)
+                        else {
                             return false;
                         };
                         shard.sets.replay_remove_element(&item.object_key, &member);
@@ -1994,7 +1996,9 @@ impl TemporalEngine {
                     // anything beyond finding the member to drop, which is still all this arm
                     // does.
                     ("zset", Some(encoded)) => {
-                        let Ok(member) = hex::decode(encoded) else {
+                        let Some(member) =
+                            super::container_blocks::member_from_component(encoded)
+                        else {
                             return false;
                         };
                         shard
@@ -2162,7 +2166,8 @@ impl TemporalEngine {
                     return false;
                 };
                 for component in members {
-                    let Ok(member) = hex::decode(component) else {
+                    let Some(member) = super::container_blocks::member_from_component(component)
+                    else {
                         return false;
                     };
                     let component = component.clone();
@@ -2245,7 +2250,8 @@ impl TemporalEngine {
                     return false;
                 };
                 for component in members {
-                    let Ok(member) = hex::decode(component) else {
+                    let Some(member) = super::container_blocks::member_from_component(component)
+                    else {
                         return false;
                     };
                     let component = component.clone();

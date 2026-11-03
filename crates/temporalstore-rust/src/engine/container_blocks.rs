@@ -122,6 +122,18 @@ pub(super) enum ElementKeySpelling {
     /// The component is sixteen hex characters of the key's eight bytes read big-endian, and the
     /// key is exactly eight bytes. A list sequence.
     BiasedWord,
+    /// The component is the key spelled by [`member_component`]. A set member, on a block written
+    /// after the spelling moved off hex.
+    ///
+    /// WHY A NEW VARIANT RATHER THAN A REDEFINITION OF `Hex`: this byte is written INTO the block,
+    /// so that the block is interpretable without the entry that names it. Redefining `Hex` would
+    /// silently reinterpret every block already on disk. A new number leaves them alone and lets
+    /// one store hold both spellings at once, which is what reading across the change requires.
+    Name,
+    /// As [`ElementKeySpelling::Name`] for the component and as
+    /// [`ElementKeySpelling::ScoreThenMember`] for the key: eight bytes of biased score then the
+    /// member, with only the member spelled into the component. A zset member.
+    ScoreThenMemberName,
 }
 
 impl ElementKeySpelling {
@@ -131,6 +143,8 @@ impl ElementKeySpelling {
             ElementKeySpelling::Hex => 1,
             ElementKeySpelling::ScoreThenMember => 2,
             ElementKeySpelling::BiasedWord => 3,
+            ElementKeySpelling::Name => 4,
+            ElementKeySpelling::ScoreThenMemberName => 5,
         }
     }
 
@@ -140,6 +154,8 @@ impl ElementKeySpelling {
             1 => Some(ElementKeySpelling::Hex),
             2 => Some(ElementKeySpelling::ScoreThenMember),
             3 => Some(ElementKeySpelling::BiasedWord),
+            4 => Some(ElementKeySpelling::Name),
+            5 => Some(ElementKeySpelling::ScoreThenMemberName),
             _ => None,
         }
     }
@@ -592,12 +608,15 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
         Key(Vec<u8>),
         Member(Vec<u8>),
     }
-    let wanted = if spelling == ElementKeySpelling::ScoreThenMember {
-        match hex::decode(component) {
-            Ok(member) => Wanted::Member(member),
-            // Not hex at all, so no item's member suffix can equal it. An answer, not a
-            // corruption -- the same shape the exact-key arm below answers in.
-            Err(_) => return ContainerElementRead::Absent,
+    let wanted = if matches!(
+        spelling,
+        ElementKeySpelling::ScoreThenMember | ElementKeySpelling::ScoreThenMemberName
+    ) {
+        match member_from_component(component) {
+            Some(member) => Wanted::Member(member),
+            // Not a component in either spelling, so no item's member suffix can equal it. An
+            // answer, not a corruption -- the same shape the exact-key arm below answers in.
+            None => return ContainerElementRead::Absent,
         }
     } else {
         match element_key_from_component(spelling, component) {
@@ -635,6 +654,54 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
     ContainerElementRead::Absent
 }
 
+/// Spell a container member as an index component, without doubling it.
+///
+/// `hex::encode` charges TWO bytes for every member byte. This charges one byte plus the member's
+/// own text when the member is text, and one byte plus the binary-safe name encoding otherwise --
+/// so a text member travels at 1.0x plus a constant instead of 2.0x. The component is the term
+/// that scales with member width, so this moves the RATE, not a fixed overhead.
+///
+/// # THE LEADING TAG IS WHAT MAKES THE TWO SPELLINGS TELLABLE APART, AND IT IS NOT DECORATION
+///
+/// [`crate::binary_safe_name::encode_name`] returns text UNCHANGED when the member is text that
+/// does not already begin with the tag. That is what makes it cheap, and it is also exactly why it
+/// cannot be used bare here: the member `b"abcd"` would spell `"abcd"`, which is ALSO VALID HEX,
+/// for the two bytes `[0xab, 0xcd]`. An index component carries no spelling byte -- unlike a
+/// block, which does -- so a reader holding only the string could not tell which of those two a
+/// stored component meant, and would hand back the wrong member without failing.
+///
+/// One unconditional tag in front settles it, because `hex::encode` emits only `[0-9a-f]` and can
+/// never produce a leading tag. [`member_from_component`] dispatches on precisely that, and
+/// `encoding_is_injective_over_every_two_byte_name` is what holds up the half inside the tag.
+pub(super) fn member_component(member: &[u8]) -> String {
+    let encoded = crate::binary_safe_name::encode_name(member);
+    let mut out = String::with_capacity(1 + encoded.len());
+    out.push(crate::binary_safe_name::BINARY_TAG as char);
+    out.push_str(&encoded);
+    out
+}
+
+/// A container member from its index component, in EITHER spelling.
+///
+/// This is the reader half of the move off hex, and it is the half that has to land first. A
+/// component written by [`member_component`] and a component written by `hex::encode` both decode
+/// here, which is what lets one store hold blocks from either side of the change. `None` where the
+/// component is neither, which is the same answer every arm of the derived view already gives an
+/// unreadable name: it names nothing, so nothing is found.
+///
+/// NOTHING EMITS THE TAGGED SPELLING YET. The set and zset write sites still file `hex::encode`,
+/// and [`ElementKeySpelling::for_kind`] still answers `Hex` and `ScoreThenMember`, so no block can
+/// carry byte 4 or 5 and no component can begin with the tag. The tagged branch is therefore
+/// unreachable on today's data BY CONSTRUCTION -- which is the whole purpose of landing it on its
+/// own, because `frame_header` turns a spelling byte it does not know into `Corrupt` rather than
+/// into an absence. Every reader has to accept a spelling before any writer is allowed to emit it.
+pub(super) fn member_from_component(component: &str) -> Option<Vec<u8>> {
+    match component.strip_prefix(crate::binary_safe_name::BINARY_TAG as char) {
+        Some(tail) => crate::binary_safe_name::decode_name(tail).ok(),
+        None => hex::decode(component).ok(),
+    }
+}
+
 /// The index component a page key spells.
 ///
 /// Inverse of [`element_key_from_component`]. `None` where the key cannot spell one at all -- a
@@ -665,6 +732,14 @@ pub(super) fn component_from_element_key(
             let biased = u64::from_be_bytes(key.try_into().ok()?);
             Some(format!("{biased:016x}"))
         }
+        // A SET MEMBER IS UNORDERED, so nothing reads this component for its order and the choice
+        // of spelling is free: the only readers of a set component decode it back to the member.
+        ElementKeySpelling::Name => Some(member_component(key)),
+        // The score is not spelled here, for the same reason the hex pair above stopped spelling
+        // it: the resident map is its only copy, and the ordered readers sort from that map. So
+        // this component, like its hex predecessor, carries the member and nothing else -- which
+        // is why there is no component ORDER question for zset either.
+        ElementKeySpelling::ScoreThenMemberName => Some(member_component(key.get(8..)?)),
     }
 }
 
@@ -679,8 +754,12 @@ pub(super) fn element_key_from_component(
 ) -> Option<Vec<u8>> {
     match spelling {
         ElementKeySpelling::Utf8 => Some(component.as_bytes().to_vec()),
-        ElementKeySpelling::Hex => hex::decode(component).ok(),
-        ElementKeySpelling::ScoreThenMember => {
+        // BOTH SPELLINGS, for `Hex` as well as for `Name`. A hex component is what every block on
+        // disk today is filed under; a tagged one is what a later writer will file. Accepting both
+        // in the one arm is what makes the two interchangeable for a reader, and it cannot widen
+        // what `Hex` accepts by accident, because a hex string never begins with the tag.
+        ElementKeySpelling::Hex | ElementKeySpelling::Name => member_from_component(component),
+        ElementKeySpelling::ScoreThenMember | ElementKeySpelling::ScoreThenMemberName => {
             // LOSSY BY DESIGN, IN THIS ONE ARM ONLY. The component used to be the score and the
             // member both; it is the member alone now, so this direction cannot recover the score
             // that named a PRE-EXISTING block -- there is no score left in the input to recover.
@@ -697,7 +776,7 @@ pub(super) fn element_key_from_component(
             // decodes the member once and compares the key's member suffix only, blind to
             // whatever sits in the first eight bytes, old real score or new placeholder alike.
             // `component_from_element_key`, the other direction, never reads them back either.
-            let member = hex::decode(component).ok()?;
+            let member = member_from_component(component)?;
             let mut key = Vec::with_capacity(8 + member.len());
             key.extend_from_slice(&[0u8; 8]);
             key.extend_from_slice(&member);
@@ -826,6 +905,160 @@ pub(super) fn tombstone_block(kind: &str, component: &str) -> Option<Vec<u8>> {
         None => {
             UNFRAMED_CONTAINER_REMOVALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod member_component_tests {
+    use super::*;
+
+    /// Every component on disk today is hex, so the reader has to keep meaning what it meant.
+    #[test]
+    fn a_hex_component_still_decodes_to_the_member_it_always_did() {
+        for member in [
+            Vec::new(),
+            b"a".to_vec(),
+            b"member".to_vec(),
+            vec![0x00, 0xff, crate::binary_safe_name::BINARY_TAG],
+        ] {
+            assert_eq!(
+                member_from_component(&hex::encode(&member)),
+                Some(member.clone()),
+                "the hex spelling of {member:?} stopped decoding"
+            );
+        }
+        assert_eq!(member_from_component("not hex at all"), None);
+    }
+
+    /// THE AMBIGUITY THE TAG EXISTS FOR. `encode_name` leaves plain text alone, so an UNTAGGED
+    /// component for the member `b"abcd"` would be the string `"abcd"` -- which is also valid hex
+    /// for two entirely different bytes. Both readings have to stay reachable and distinct.
+    #[test]
+    fn a_member_whose_text_is_valid_hex_is_not_confused_with_the_bytes_that_hex_spells() {
+        let member = b"abcd".to_vec();
+        let component = member_component(&member);
+        assert_ne!(
+            component, "abcd",
+            "an untagged component would be indistinguishable from hex"
+        );
+        assert_eq!(member_from_component(&component), Some(member));
+        assert_eq!(member_from_component("abcd"), Some(vec![0xab, 0xcd]));
+    }
+
+    #[test]
+    fn the_new_spelling_round_trips_a_text_a_tag_leading_and_a_non_utf8_member() {
+        for member in [
+            b"plain".to_vec(),
+            vec![crate::binary_safe_name::BINARY_TAG, b'x'],
+            vec![0xff, 0xfe, 0x00],
+            Vec::new(),
+        ] {
+            let component = member_component(&member);
+            assert!(component.starts_with(crate::binary_safe_name::BINARY_TAG as char));
+            assert_eq!(
+                member_from_component(&component),
+                Some(member.clone()),
+                "{member:?} did not survive the tagged spelling"
+            );
+        }
+    }
+
+    /// THE RATE, not the fixed term: the component is the only term that scales with member width,
+    /// and hex charges two of its bytes for one of the member's.
+    #[test]
+    fn the_new_spelling_charges_one_byte_a_member_byte_where_hex_charges_two() {
+        let member = vec![b'm'; 64];
+        assert_eq!(hex::encode(&member).len(), 128);
+        assert_eq!(member_component(&member).len(), 65);
+    }
+
+    #[test]
+    fn the_two_new_spelling_bytes_are_four_and_five_and_round_trip() {
+        for spelling in [
+            ElementKeySpelling::Utf8,
+            ElementKeySpelling::Hex,
+            ElementKeySpelling::ScoreThenMember,
+            ElementKeySpelling::BiasedWord,
+            ElementKeySpelling::Name,
+            ElementKeySpelling::ScoreThenMemberName,
+        ] {
+            assert_eq!(
+                ElementKeySpelling::from_byte(spelling.to_byte()),
+                Some(spelling),
+                "{spelling:?} does not survive its own byte"
+            );
+        }
+        assert_eq!(ElementKeySpelling::Name.to_byte(), 4);
+        assert_eq!(ElementKeySpelling::ScoreThenMemberName.to_byte(), 5);
+        assert_eq!(ElementKeySpelling::from_byte(6), None);
+    }
+
+    #[test]
+    fn the_new_variants_render_a_component_the_same_pair_parses_back() {
+        let member = b"a member spelled in characters".to_vec();
+
+        let rendered = component_from_element_key(ElementKeySpelling::Name, &member)
+            .expect("a set member always spells a component");
+        assert_eq!(
+            element_key_from_component(ElementKeySpelling::Name, &rendered),
+            Some(member.clone())
+        );
+
+        let mut key = 7u64.to_be_bytes().to_vec();
+        key.extend_from_slice(&member);
+        let rendered = component_from_element_key(ElementKeySpelling::ScoreThenMemberName, &key)
+            .expect("a zset member always spells a component");
+        // The score comes back as the PLACEHOLDER, exactly as the hex pair's does, because the
+        // component never carried it. See `element_key_from_component`'s own argument for why.
+        let mut placeholder = vec![0u8; 8];
+        placeholder.extend_from_slice(&member);
+        assert_eq!(
+            element_key_from_component(ElementKeySpelling::ScoreThenMemberName, &rendered),
+            Some(placeholder)
+        );
+    }
+
+    /// THIS CHANGE IS THE READER HALF AND THIS IS WHAT PINS IT TO THAT. No kind maps to a new
+    /// spelling, so no write site can put byte 4 or 5 into a block. Flipping a writer means
+    /// changing this function, and this guard is what makes that a deliberate act.
+    #[test]
+    fn no_kind_maps_to_a_new_spelling_yet_so_no_writer_can_emit_one() {
+        assert_eq!(
+            ElementKeySpelling::for_kind("hash"),
+            Some(ElementKeySpelling::Utf8)
+        );
+        assert_eq!(
+            ElementKeySpelling::for_kind("set"),
+            Some(ElementKeySpelling::Hex)
+        );
+        assert_eq!(
+            ElementKeySpelling::for_kind("zset"),
+            Some(ElementKeySpelling::ScoreThenMember)
+        );
+        assert_eq!(
+            ElementKeySpelling::for_kind("list"),
+            Some(ElementKeySpelling::BiasedWord)
+        );
+    }
+
+    /// END TO END THROUGH THE READ FUNNEL, on a block written the way every block on disk is
+    /// written today, asked for in both spellings. The member is `b"abcd"` on purpose: it is the
+    /// case where the two spellings are confusable if the tag is dropped.
+    #[test]
+    fn a_stored_set_and_zset_block_is_found_by_a_component_in_either_spelling() {
+        let member = b"abcd".to_vec();
+        let value = b"v".to_vec();
+        for kind in ["set", "zset"] {
+            let hex_component = hex::encode(&member);
+            let block = encode_single_element_block(kind, &hex_component, &value)
+                .expect("the kind has an element key and the component is its own spelling");
+            for component in [hex_component.clone(), member_component(&member)] {
+                match select_container_element(&block, &component) {
+                    ContainerElementRead::Found(found) => assert_eq!(found, value),
+                    other => panic!("{kind} block missed {component:?}: {other:?}"),
+                }
+            }
         }
     }
 }

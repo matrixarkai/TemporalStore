@@ -8664,11 +8664,11 @@ pub(super) fn resident_component_address<'a>(
     match model_id {
         "hash" => shard.hashes.get(object_key)?.get(component),
         "set" => {
-            let member = hex::decode(component).ok()?;
+            let member = super::container_blocks::member_from_component(component)?;
             shard.sets.get(object_key)?.get(&member)
         }
         "zset" => {
-            let member = hex::decode(component).ok()?;
+            let member = super::container_blocks::member_from_component(component)?;
             shard
                 .zsets
                 .get(object_key)?

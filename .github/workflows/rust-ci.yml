@@ -362,6 +362,14 @@ jobs:
             engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
             engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             engine::tests::the_consolidated_object_map::installing_a_control_state_block_keeps_the_rows_block_refs \
+            engine::container_blocks::member_component_tests::a_hex_component_still_decodes_to_the_member_it_always_did \
+            engine::container_blocks::member_component_tests::a_member_whose_text_is_valid_hex_is_not_confused_with_the_bytes_that_hex_spells \
+            engine::container_blocks::member_component_tests::the_new_spelling_round_trips_a_text_a_tag_leading_and_a_non_utf8_member \
+            engine::container_blocks::member_component_tests::the_new_spelling_charges_one_byte_a_member_byte_where_hex_charges_two \
+            engine::container_blocks::member_component_tests::the_two_new_spelling_bytes_are_four_and_five_and_round_trip \
+            engine::container_blocks::member_component_tests::the_new_variants_render_a_component_the_same_pair_parses_back \
+            engine::container_blocks::member_component_tests::no_kind_maps_to_a_new_spelling_yet_so_no_writer_can_emit_one \
+            engine::container_blocks::member_component_tests::a_stored_set_and_zset_block_is_found_by_a_component_in_either_spelling \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
