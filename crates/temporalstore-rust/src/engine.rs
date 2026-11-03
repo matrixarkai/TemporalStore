@@ -3728,8 +3728,7 @@ fn collect_upsert_index_items(
                 }),
             // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
             // -- so the member the map is keyed by is recoverable from the whole of it.
-            ("zset", Some(component)) => hex::decode(component)
-                .ok()
+            ("zset", Some(component)) => container_blocks::member_from_component(component)
                 .and_then(|member| {
                     shard
                         .zsets
@@ -3751,8 +3750,7 @@ fn collect_upsert_index_items(
                         .and_then(|entries| entries.get(&seq))
                         .cloned()
                 }),
-            ("set", Some(component)) => hex::decode(component)
-                .ok()
+            ("set", Some(component)) => container_blocks::member_from_component(component)
                 .and_then(|member| {
                     shard
                         .sets
