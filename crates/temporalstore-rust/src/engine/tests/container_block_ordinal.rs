@@ -776,7 +776,12 @@ fn deletion_still_finds_its_element_by_component() {
     assert_eq!(before.len(), 4, "the seed wrote {} blocks, not 4", before.len());
 
     let doomed = &members[2];
-    let doomed_component = hex::encode(doomed);
+    // BY THE ENGINE'S OWN FUNCTION. Spelled `hex::encode` by hand, this kept finding its element
+    // -- a lookup resolves a component back to its member and a hex one still decodes -- but the
+    // TOMBSTONE records the component the write path files, which is the tagged spelling now. So
+    // the live-set half of this test passed and the blocks half failed, which is precisely the
+    // split the tombstone assertion was added to catch.
+    let doomed_component = crate::engine::execute_on_shard::set_component(doomed);
     assert!(
         ordinal_for_component(&engine, "set", key, &doomed_component).is_some(),
         "the member about to be deleted has no block, so the delete below would prove nothing"

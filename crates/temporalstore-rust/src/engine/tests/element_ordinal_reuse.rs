@@ -1389,27 +1389,31 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 
     // set and zset: the member's content, twice over -- once in the name, once in a persisted map.
     //
-    // RESTATED FOR ZSET: it used to be the member's hex with a sixteen-character score prefix
-    // ahead of it, so this arm checked `ends_with` and a `16 +` length. The score left the
-    // component, so a zset's is now EQUAL to a set's -- both are exactly `hex::encode(member)`,
-    // nothing ahead of it and nothing after.
+    // RESTATED TWICE NOW. The score left the component first, which made a zset component EQUAL
+    // to a set one -- both were exactly `hex::encode(member)`. Then the spelling left hex: both
+    // are `member_component(member)`, one tag byte and the member, so the content is still
+    // restated once in the name and once in the persisted map and that is still the finding. What
+    // changed is the PRICE of the restatement, from two bytes a member byte to one.
     let set_component = one_component("set", "eo-k-set");
-    assert_eq!(
-        set_component, member_hex,
-        "a set component is not the member's hex"
-    );
     let zset_component = one_component("zset", "eo-k-zset");
     assert_eq!(
-        zset_component, member_hex,
-        "a zset component is not exactly the member's hex any more: {zset_component}"
+        set_component, zset_component,
+        "set and zset must spell one member the same way"
+    );
+    assert_ne!(
+        set_component, member_hex,
+        "a set component is STILL the member's hex -- the writer flip did not reach this path"
+    );
+    assert!(
+        set_component.len() < member_hex.len(),
+        "a component of {} characters is not shorter than the {} hex charged",
+        set_component.len(),
+        member_hex.len()
     );
     assert_eq!(
-        zset_component.len(),
-        member_hex.len(),
-        "a zset component is {} characters, not the {} member characters alone -- the score \
-         should have left this string entirely",
-        zset_component.len(),
-        member_hex.len()
+        crate::engine::container_blocks::member_from_component(&set_component),
+        hex::decode(&member_hex).ok(),
+        "the component no longer names the member it is filed for"
     );
 
     assert_eq!(
@@ -1425,9 +1429,9 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 
     println!(
         "\n  list  {list_component}  ALREADY an ordinal ({} chars)\n  hash  {hash_component}  the \
-         CALLER's field name -- an ordinal destroys it\n  set   {set_component}  the member's hex, \
-         and the durable map holds the member too\n  zset  {zset_component}  the member's hex alone \
-         now, and the durable map holds the member AND the score",
+         CALLER's field name -- an ordinal destroys it\n  set   {set_component}  the member once, \
+         and the durable map holds the member too\n  zset  {zset_component}  the member once as \
+         well, and the durable map holds the member AND the score",
         list_component.len()
     );
 }
@@ -1614,8 +1618,11 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
     }
     rows.push(("zset", zset_total, zset_hits));
 
-    // set: the member's hex and nothing else. Well-formed as an ordinal for every EIGHT-byte
-    // member, which is an ordinary member length.
+    // set: the member spelled once, behind a tag. NOT well-formed as an ordinal at any member
+    // length, because the tag is not a hex digit -- see the assertions below for why that is the
+    // finding rather than a hole in the fixture. Spelled by the engine's own function and no
+    // longer by a hand-written `hex::encode`, which is what made this row keep measuring a
+    // spelling no set write site files any more.
     let mut set_total = 0usize;
     let mut set_hits = 0usize;
     for element in 0..NAMES {
@@ -1624,7 +1631,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
         } else {
             format!("member-{element}").into_bytes()
         };
-        let name = hex::encode(&member);
+        let name = crate::engine::execute_on_shard::set_component(&member);
         set_total += 1;
         if parses_as_ordinal(&name).is_some() {
             set_hits += 1;
@@ -1650,19 +1657,34 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
         "EVERY list name should mis-parse. There is no fixed point: a name equals its own ordinal \
          only where `seq - i64::MIN == seq`, which no value satisfies. {list_hits} of {NAMES} did."
     );
-    assert!(
-        zset_hits > 0,
-        "the zset row measured ZERO mis-parses over {NAMES} names. RESTATED since the score left \
-         the component: an empty member no longer collides (it spells the empty string, not a \
-         sixteen-character score), so this now rests on the same mechanism as the `set` row --\
-         `member-{{element}}` is eight bytes, and so sixteen hex characters, for every single-digit \
-         `element` -- and zero here means that stopped happening too"
+    // THE ASSERTION INVERTED, AND THIS IS THE SECOND TIME. It first read `zset_hits > 0` because
+    // an empty member spelled a score-shaped sixteen characters; when the score left the
+    // component that mechanism went and the row was re-attributed to the other one -- an
+    // EIGHT-byte member spells sixteen hex characters, and `member-{element}` is eight bytes for
+    // every single-digit element. The spelling flip removes THAT mechanism too, and this time not
+    // by accident: a component now begins with `BINARY_TAG`, which is not an ASCII hex digit, so
+    // `parses_as_ordinal` can never accept one at ANY member width or content.
+    //
+    // SO THE COLLISION CLASS IS GONE BY CONSTRUCTION, NOT MERELY UNOBSERVED, and that is a
+    // correctness result the byte measurement does not show. An element ordinal and a component
+    // can no longer be confused for one another in either direction. Zero is therefore the
+    // REQUIRED answer and a nonzero one means a writer is filing untagged components again.
+    assert_eq!(
+        0, zset_hits,
+        "{zset_hits} of {NAMES} zset names parse as a sixteen-character ordinal. A tagged \
+         component cannot: its first byte is BINARY_TAG, which is not a hex digit. A nonzero \
+         count means some write site is still filing an untagged component"
     );
-    assert!(
-        set_hits > 0,
-        "the set row measured ZERO mis-parses over {NAMES} names; an eight-byte member spells \
-         sixteen hexadecimal characters and is an ordinary member length"
+    assert_eq!(
+        0, set_hits,
+        "{set_hits} of {NAMES} set names parse as a sixteen-character ordinal, for the same \
+         reason the zset row states"
     );
+    // AND THE CONTROL ABOVE IS WHAT KEEPS THIS FROM BEING AN INSTRUMENT THAT REPORTS ZERO
+    // BECAUSE IT STOPPED LOOKING. `list` did not flip -- its component is still sixteen hex
+    // characters -- and the `list_hits == NAMES` assertion a few lines up already requires every
+    // one of them to mis-parse. Two zeroes here with a full count there is the tag working; three
+    // zeroes would be the fixture broken.
 }
 
 // =================================================================================================

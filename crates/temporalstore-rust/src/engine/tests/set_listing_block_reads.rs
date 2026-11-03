@@ -9,7 +9,7 @@
 //!
 //! ```text
 //!     sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>   the member IS the map key
-//!     component = hex::encode(&member)                          the member again, two chars a byte
+//!     component = member_component(&member)                     the member again, one char a byte
 //!     append_value_of_object(.., &member, ..)                   the member again, as the payload
 //! ```
 //!
@@ -22,7 +22,8 @@
 //!
 //! `Command::SetMembers` walks `bucket_index_component_block_addresses(shard, "set", &key)` and
 //! reads ONE BLOCK PER MEMBER to build its answer. The pairs it walks carry the component, and a
-//! set's component IS `hex::encode(&member)` -- so every member the response returns was already
+//! set's component IS the member spelled once by `member_component` -- so every member the
+//! response returns was already
 //! present, spelled in hex, in the tuple being iterated. `a_set_listing_reads_one_page_per_member`
 //! counts the reads; `every_member_a_set_listing_returns_is_already_spelled_by_its_component`
 //! proves the redundancy at byte level over a seeded shard rather than inferring it from the call
@@ -215,7 +216,14 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
                             spelling, &item.key,
                         )
                     {
-                        if let Ok(member) = hex::decode(&component) {
+                        // BY THE SHARED READER, not `hex::decode`. This hand-written decode was a
+                        // second implementation of the component encoding, and it stopped
+                        // agreeing with the write path the moment set and zset filed a tagged
+                        // component: the payload members came back empty and the equality below
+                        // failed against a listing that was perfectly correct.
+                        if let Some(member) =
+                            crate::engine::container_blocks::member_from_component(&component)
+                        {
                             stated.insert(member);
                         }
                     }
@@ -594,8 +602,8 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         assert_eq!(
             from_payload, from_blocks,
             "the members decoded from the BLOCK PAYLOAD differ from the members the listing \
-             returns for {key}. The element key an item is filed under is the member in hex, so \
-             these are the same bytes twice -- and since the entry stopped naming its element, the \
+             returns for {key}. The element key an item is filed under IS the member, so these \
+             are the same bytes twice -- and since the entry stopped naming its element, the \
              payload is where that redundancy now lives"
         );
 

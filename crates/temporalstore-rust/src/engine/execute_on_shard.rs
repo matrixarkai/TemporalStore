@@ -1399,7 +1399,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetAdd { key, member } => {
             remove_if_expired(shard, &key);
-            let member_component = hex::encode(&member);
+            let member_component = set_component(&member);
             let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -2276,7 +2276,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let member_component = hex::encode(&member);
+            let member_component = set_component(&member);
             // REMOVING THE LAST MEMBER REMOVES THE KEY, as it does for the other three container
             // kinds. `record_exists_exact` ORs `shard.sets.contains_key(key)` in beside its
             // bucket-index answer, so an empty member map left under a live key is a key that
@@ -5225,7 +5225,7 @@ pub(super) fn zset_score_string(biased: u64) -> String {
     }
 }
 
-/// The persisted component: the member alone, hex encoded.
+/// The persisted component: the member alone, spelled ONCE.
 ///
 /// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
 /// it bought was never built on: every zset serving arm that returns members in score order
@@ -5235,8 +5235,25 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 /// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
 /// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
 /// WAL outcome's `value` field -- it is simply no longer spelled into this string.
+/// WAS `hex::encode(member)`, WHICH CHARGED TWO BYTES PER MEMBER BYTE. The component is the term
+/// that scales with member width, so that doubling was the member-width RATE of a zset write and
+/// not a fixed overhead on it. [`super::container_blocks::member_component`] charges one byte plus
+/// the member, and the tag it puts in front is what keeps the two spellings tellable apart on a
+/// string that carries no spelling byte of its own.
 pub(super) fn zset_component(member: &[u8]) -> String {
-    hex::encode(member)
+    super::container_blocks::member_component(member)
+}
+
+/// The persisted component for a SET member: the member alone, spelled ONCE.
+///
+/// Sibling of [`zset_component`], and the same rendering as it -- a set component and a zset
+/// component have been the same shape since the score came off the zset string. They stay two
+/// names because the two kinds reach this from different arms, so a per-kind divergence has
+/// somewhere to land, and because what this replaces was `hex::encode` spelled INLINE at five
+/// separate set write sites. A spelling decided at each site is a spelling that can be flipped at
+/// four of them and missed at the fifth.
+pub(super) fn set_component(member: &[u8]) -> String {
+    super::container_blocks::member_component(member)
 }
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.
