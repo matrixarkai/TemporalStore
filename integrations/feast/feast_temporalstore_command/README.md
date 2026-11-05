@@ -37,6 +37,8 @@ online_store:
   host: 127.0.0.1
   port: 17102
   shard_id: 1
+  max_batch_commands: 512
+  max_batch_request_bytes: 4194304
   skip_dedup: false          # see "Writes" below
   key_ttl_seconds: null      # see "Teardown" below
   write_feature_history: false
@@ -57,8 +59,8 @@ to want. It costs three things this one does not:
    serve, so it needs `metaserver` + `datanode` + `proxy` behind it.
 2. **One HTTP round trip per Redis command.** `serve_redis_proxy` issues one
    `/execute` per command it decodes, so a pipelined `HMGET` over N entities
-   becomes N sequential round trips. This package issues **one**
-   `/batch_execute` for the whole entity list, whatever N is.
+   becomes N sequential round trips. This package groups entity reads into
+   bounded `/batch_execute` requests.
 3. **A byte-encoding workaround.** Feast's Redis store names a hash field by
    the 4-byte little-endian murmur3 of `"{view}:{feature}"` — arbitrary bytes.
    A hash field on the command surface is a `String`, so this package uses the
@@ -84,8 +86,8 @@ footprint ratio without knowing.
 
 ## Reads
 
-`online_read` over N entity keys is **one** `/batch_execute` carrying N
-`HashMultiGet` commands. The answers are positional; a short answer is refused
+`online_read` over N entity keys uses ordered `/batch_execute` requests bounded
+by command count and encoded request bytes. The answers are positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
 
@@ -94,16 +96,16 @@ empty values.
 
 ## Writes
 
-`online_write_batch` is one `/batch_execute` of `HashMultiSet` commands, plus
-one extra batched read first unless `skip_dedup` is set:
+`online_write_batch` uses bounded `/batch_execute` requests for `HashMultiSet`
+commands, plus a batched timestamp read first unless `skip_dedup` is set:
 
 * **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then
-  write only the rows whose event time is newer. Two round trips for the whole
-  call, not two per row. This is what stops an out-of-order materialization
+  write only the rows whose event time is newer. The number of round trips is
+  bounded by batch size, not by the number of rows. This stops an out-of-order materialization
   moving a feature backwards, and it also deduplicates *within* the call, so
   two rows sharing an entity key keep the newer one regardless of which was
   queued last.
-* **`skip_dedup: true`** — one round trip. Right for an initial load or an
+* **`skip_dedup: true`** — skips the timestamp read. Right for an initial load or an
   append-only pipeline whose rows arrive in order.
 
 ### `write_feature_history`

@@ -87,11 +87,17 @@ class TemporalStoreClient:
         port: int = 17102,
         shard_id: int = 1,
         timeout_seconds: float = 10.0,
+        max_batch_commands: int = 512,
+        max_batch_request_bytes: int = 4 * 1024 * 1024,
     ) -> None:
+        if max_batch_commands < 1 or max_batch_request_bytes < 1:
+            raise ValueError("batch limits must be positive")
         self.host = host
         self.port = port
         self.shard_id = shard_id
         self.timeout_seconds = timeout_seconds
+        self.max_batch_commands = max_batch_commands
+        self.max_batch_request_bytes = max_batch_request_bytes
         self._local = threading.local()
         # EVERY connection this client ever opened, not just this thread's.
         # `threading.local` is the right place to KEEP a connection and the
@@ -201,7 +207,7 @@ class TemporalStoreClient:
         )
 
     def batch_execute(self, commands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Run a list of commands in one round trip, in order.
+        """Run commands in bounded, ordered batches.
 
         Returns one ``CommandResponse`` per command, positionally aligned with
         ``commands``. An empty list is answered without a round trip: the node
@@ -209,6 +215,28 @@ class TemporalStoreClient:
         """
         if not commands:
             return []
+        results: List[Dict[str, Any]] = []
+        chunk: List[Dict[str, Any]] = []
+        chunk_bytes = 0
+        for command in commands:
+            # Count encoded bytes, not Python object sizes: large serialized
+            # feature values dominate the HTTP body. A single oversized value
+            # remains one command and is left for the server to accept or reject.
+            command_bytes = len(json.dumps(command, separators=(",", ":")).encode("utf-8"))
+            if chunk and (
+                len(chunk) >= self.max_batch_commands
+                or chunk_bytes + command_bytes + 1 > self.max_batch_request_bytes
+            ):
+                results.extend(self._batch_once(chunk))
+                chunk = []
+                chunk_bytes = 0
+            chunk.append(command)
+            chunk_bytes += command_bytes + 1
+        if chunk:
+            results.extend(self._batch_once(chunk))
+        return results
+
+    def _batch_once(self, commands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         document = {"shard_id": self.shard_id, "commands": commands}
         envelope = self._post("/batch_execute", document)
         status = envelope.get("status") or {}

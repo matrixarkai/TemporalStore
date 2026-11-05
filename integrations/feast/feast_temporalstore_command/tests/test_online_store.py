@@ -123,6 +123,32 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertEqual(client.batch_execute([]), [])
         self.assertEqual(client.sent, [])
 
+    def test_large_batch_is_split_without_reordering_commands(self):
+        client = RecordingClient(
+            [
+                {"status": {"ok": True}, "responses": [ok({"index": i}) for i in indexes]}
+                for indexes in ([0, 1], [2, 3], [4])
+            ]
+        )
+        client.max_batch_commands = 2
+        commands = [{"kind": "hash_multi_get", "key": str(i), "fields": ["f"]} for i in range(5)]
+        self.assertEqual([answer["index"] for answer in client.batch_execute(commands)], list(range(5)))
+        self.assertEqual([len(document["commands"]) for _, document in client.sent], [2, 2, 1])
+        self.assertEqual(
+            [command["key"] for _, document in client.sent for command in document["commands"]],
+            [str(i) for i in range(5)],
+        )
+
+    def test_encoded_byte_limit_splits_large_feature_values(self):
+        client = RecordingClient()
+        client.max_batch_request_bytes = 180
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["sequence", "x" * 100]]}
+            for i in range(3)
+        ]
+        self.assertEqual(len(client.batch_execute(commands)), 3)
+        self.assertEqual([len(document["commands"]) for _, document in client.sent], [1, 1, 1])
+
     def test_the_command_document_is_json_serialisable_as_sent(self):
         client = RecordingClient()
         client.execute(
@@ -288,6 +314,8 @@ class OnlineStoreTest(unittest.TestCase):
             self.config.online_store.port,
             self.config.online_store.shard_id,
             self.config.online_store.timeout_seconds,
+            self.config.online_store.max_batch_commands,
+            self.config.online_store.max_batch_request_bytes,
         )
         return client
 
