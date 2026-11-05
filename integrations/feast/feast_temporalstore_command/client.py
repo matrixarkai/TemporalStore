@@ -14,14 +14,9 @@ so they are stated here rather than discovered later:
 * **Request payloads are base64.** ``HashMultiSet.entries`` carries a
   ``bytes_serde`` annotation, so values go out as base64 strings -- a flat
   1.33x on the bytes, whatever they are.
-* **Response payloads are decimal arrays.** ``CommandResponse::Values`` and
-  ``CommandResponse::HashEntries`` carry no such annotation, so a byte comes
-  back as the characters ``104,`` -- two to four characters each, averaging
-  about 3.8x for the protobuf-serialized values Feast stores. A read's wire
-  cost is therefore roughly 4x its payload, and that is the transport, not the
-  engine. :func:`decode_bytes` accepts both shapes because the decoder on the
-  far side does, so a server that gains the annotation later needs no change
-  here.
+* **Response payloads are base64.** ``CommandResponse::Values`` uses the same
+  flat 1.33x encoding as requests. :func:`decode_bytes` also accepts the older
+  decimal-array shape so clients can read responses from either node version.
 """
 
 from __future__ import annotations

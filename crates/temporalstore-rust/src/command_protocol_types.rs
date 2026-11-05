@@ -2507,6 +2507,65 @@ pub(crate) mod cached_payload_bytes {
     }
 }
 
+/// Compact JSON bytes inside a list of optional values while retaining binary
+/// byte strings for non-human-readable serializers. The reader accepts both
+/// the encoded string and the older integer-array shape.
+mod response_values {
+    use serde::ser::SerializeSeq;
+
+    struct Encoded<'a>(&'a [u8]);
+
+    impl serde::Serialize for Encoded<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            crate::bytes_serde::serialize(self.0, serializer)
+        }
+    }
+
+    struct Binary<'a>(&'a [u8]);
+
+    impl serde::Serialize for Binary<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_bytes(self.0)
+        }
+    }
+
+    pub fn serialize<S: serde::Serializer>(
+        values: &[Option<Vec<u8>>],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let human_readable = serializer.is_human_readable();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            match value {
+                Some(bytes) if human_readable => seq.serialize_element(&Some(Encoded(bytes)))?,
+                Some(bytes) => seq.serialize_element(&Some(Binary(bytes)))?,
+                None => seq.serialize_element(&Option::<Encoded<'_>>::None)?,
+            }
+        }
+        seq.end()
+    }
+
+    struct Decoded(Vec<u8>);
+
+    impl<'de> serde::Deserialize<'de> for Decoded {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer
+                .deserialize_any(crate::bytes_serde::EitherShape)
+                .map(Decoded)
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Option<Vec<u8>>>, D::Error> {
+        let values = <Vec<Option<Decoded>> as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(values
+            .into_iter()
+            .map(|value| value.map(|decoded| decoded.0))
+            .collect())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CommandResponse {
@@ -2537,6 +2596,7 @@ pub enum CommandResponse {
         members: Vec<Vec<u8>>,
     },
     Values {
+        #[serde(with = "response_values")]
         values: Vec<Option<Vec<u8>>>,
     },
     HashEntries {
@@ -2820,6 +2880,33 @@ pub struct BatchExecuteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_use_compact_json_bytes_and_accept_integer_arrays() {
+        let response = CommandResponse::Values {
+            values: vec![Some(vec![0, 255]), None],
+        };
+        let encoded = serde_json::to_value(&response).unwrap();
+        assert_eq!(encoded["values"][0], "AP8=");
+        assert!(encoded["values"][1].is_null());
+        assert_eq!(serde_json::from_value::<CommandResponse>(encoded).unwrap(), response);
+
+        let older = serde_json::json!({
+            "kind": "values",
+            "values": [[0, 255], null]
+        });
+        assert_eq!(serde_json::from_value::<CommandResponse>(older).unwrap(), response);
+    }
+
+    #[test]
+    fn values_remain_binary_in_msgpack() {
+        let response = CommandResponse::Values {
+            values: vec![Some(vec![0, 255]), None],
+        };
+        let encoded = rmp_serde::to_vec_named(&response).unwrap();
+        assert!(!encoded.windows(4).any(|window| window == b"AP8="));
+        assert_eq!(rmp_serde::from_slice::<CommandResponse>(&encoded).unwrap(), response);
+    }
 
     /// A RECORD WRITTEN IN THE OLD SHAPE STILL REPLAYS, BYTE FOR BYTE.
     ///
