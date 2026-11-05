@@ -465,6 +465,43 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         count: Optional[int] = None,
     ) -> int:
         """Query a history window; numeric aggregates require scalar integer values."""
+        return self.query_feature_aggregates(
+            config,
+            table,
+            [(entity_key, feature_name, start_ms, end_ms, aggregator, count)],
+        )[0]
+
+    def query_feature_aggregates(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        queries: Sequence[
+            Tuple[EntityKeyProto, str, int, int, str, Optional[int]]
+        ],
+    ) -> List[int]:
+        """Query many history windows through bounded ordered batches."""
+        commands = [
+            self._feature_aggregate_command(config, table, *query) for query in queries
+        ]
+        answers = self._get_client(config).batch_execute(commands)
+        values = []
+        for answer in answers:
+            if answer.get("kind") != "aggregate":
+                raise ValueError("unexpected feature aggregate response")
+            values.append(int(answer["value"]))
+        return values
+
+    def _feature_aggregate_command(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        entity_key: EntityKeyProto,
+        feature_name: str,
+        start_ms: int,
+        end_ms: int,
+        aggregator: str,
+        count: Optional[int],
+    ) -> Dict[str, Any]:
         online_config = config.online_store
         assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
         if not online_config.write_feature_history:
@@ -489,19 +526,14 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             if name in ("count", "events")
             else self._aggregate_key(config, view_name, entity_key, feature_name)
         )
-        answer = self._get_client(config).execute(
-            {
-                "kind": "feature_agg_query",
-                "key": key,
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "aggregator": name,
-                "count": count,
-            }
-        )
-        if answer.get("kind") != "aggregate":
-            raise ValueError("unexpected feature aggregate response")
-        return int(answer["value"])
+        return {
+            "kind": "feature_agg_query",
+            "key": key,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "aggregator": name,
+            "count": count,
+        }
 
     @staticmethod
     def _teardown_set_key(config: RepoConfig, view_name: str) -> str:

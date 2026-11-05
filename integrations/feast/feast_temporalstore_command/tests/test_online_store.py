@@ -656,8 +656,14 @@ class OnlineStoreTest(unittest.TestCase):
         self.config.online_store.write_feature_history = True
         client = self._install(
             [
-                ok({"kind": "aggregate", "value": 13}),
-                ok({"kind": "aggregate", "value": 3}),
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [ok({"kind": "aggregate", "value": 13})],
+                },
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [ok({"kind": "aggregate", "value": 3})],
+                },
             ]
         )
         key = self._entity_key(1)
@@ -673,8 +679,38 @@ class OnlineStoreTest(unittest.TestCase):
             ),
             3,
         )
-        self.assertTrue(client.sent[0][1]["command"]["key"].startswith("fa:"))
-        self.assertTrue(client.sent[1][1]["command"]["key"].startswith("fh:"))
+        self.assertTrue(client.sent[0][1]["commands"][0]["key"].startswith("fa:"))
+        self.assertTrue(client.sent[1][1]["commands"][0]["key"].startswith("fh:"))
+
+    def test_many_windowed_aggregates_share_one_bounded_request(self):
+        self.config.online_store.write_feature_history = True
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [
+                        ok({"kind": "aggregate", "value": 13}),
+                        ok({"kind": "aggregate", "value": 3}),
+                    ],
+                }
+            ]
+        )
+        key = self._entity_key(1)
+        values = self.store.query_feature_aggregates(
+            self.config,
+            self.view,
+            [
+                (key, "trips", 1, 100, "sum", None),
+                (key, "trips", 1, 100, "count", None),
+            ],
+        )
+        self.assertEqual(values, [13, 3])
+        self.assertEqual(len(client.sent), 1)
+        path, document = client.sent[0]
+        self.assertEqual(path, "/batch_execute")
+        self.assertEqual(len(document["commands"]), 2)
+        self.assertTrue(document["commands"][0]["key"].startswith("fa:"))
+        self.assertTrue(document["commands"][1]["key"].startswith("fh:"))
 
     def test_list_history_keeps_original_value_without_numeric_projection(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto

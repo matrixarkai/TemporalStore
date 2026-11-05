@@ -70,14 +70,25 @@ def main() -> None:
     parser.add_argument("--events", type=int, default=64)
     parser.add_argument("--write-batch", type=int, default=256)
     parser.add_argument("--reads", type=int, default=1000)
+    parser.add_argument("--aggregate-batch", type=int, default=64)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--control-tolerance", type=float, default=0.25)
     parser.add_argument("--run-dir", default="/dev/shm/feast_bench")
     parser.add_argument("--out")
     args = parser.parse_args()
-    if min(args.entities, args.events, args.write_batch, args.reads, args.concurrency) < 1:
-        parser.error("entities, events, write-batch, reads, and concurrency must be positive")
+    if min(
+        args.entities,
+        args.events,
+        args.write_batch,
+        args.reads,
+        args.aggregate_batch,
+        args.concurrency,
+    ) < 1:
+        parser.error(
+            "entities, events, write-batch, reads, aggregate-batch, and concurrency "
+            "must be positive"
+        )
     if not 0 <= args.control_tolerance < 1:
         parser.error("control-tolerance must be in [0, 1)")
     if args.timeout_seconds <= 0:
@@ -212,6 +223,42 @@ def main() -> None:
                         if call_index is not None:
                             pending.add(pool.submit(read_one, call_index))
                 read_seconds = time.perf_counter() - started
+
+            batch_latencies_us: List[float] = []
+            batched_reads = 0
+            batch_started = time.perf_counter()
+            for start in range(0, args.reads, args.aggregate_batch):
+                call_indices = list(
+                    range(start, min(start + args.aggregate_batch, args.reads))
+                )
+                queries = []
+                expected = []
+                for call_index in call_indices:
+                    index = call_index % args.entities
+                    queries.append(
+                        (
+                            keys[index],
+                            "amount",
+                            base_ms,
+                            base_ms + (args.events - 1) * 1000,
+                            "sum",
+                            None,
+                        )
+                    )
+                    expected.append(
+                        args.events * index
+                        + args.events * (args.events - 1) // 2
+                    )
+                begin = time.perf_counter()
+                observed = adapter.query_feature_aggregates(config, view, queries)
+                batch_latencies_us.append((time.perf_counter() - begin) * 1_000_000)
+                if observed != expected:
+                    raise RuntimeError(
+                        f"batched aggregate differs for calls {start}.."
+                        f"{start + len(call_indices) - 1}"
+                    )
+                batched_reads += len(call_indices)
+            batch_read_seconds = time.perf_counter() - batch_started
             control_after = control_sample()
             control_drift = abs(control_after - control_before) / control_before
 
@@ -229,6 +276,13 @@ def main() -> None:
                 "aggregate_p50_us": percentile(latencies_us, 0.50),
                 "aggregate_p99_us": percentile(latencies_us, 0.99),
                 "read_seconds": read_seconds,
+                "aggregate_batch_size": args.aggregate_batch,
+                "batched_aggregate_reads": batched_reads,
+                "batched_aggregate_reads_per_second": batched_reads
+                / batch_read_seconds,
+                "aggregate_batch_call_p50_us": percentile(batch_latencies_us, 0.50),
+                "aggregate_batch_call_p99_us": percentile(batch_latencies_us, 0.99),
+                "batch_read_seconds": batch_read_seconds,
                 "verified_entities": args.entities,
                 "control_before_p50_us": control_before,
                 "control_after_p50_us": control_after,
