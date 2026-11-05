@@ -25,8 +25,8 @@ check that fails the run rather than a warning in the output.
 | **Matched payloads across arms.** The per-row payload width is measured and asserted equal across every arm before any arm is compared. | A latency ratio between two stores holding different bytes. |
 | **A control that the measurement cannot influence.** The SQLite arm runs first and again last. SQLite is untouched by anything the other arms do, so if its two p50s disagree by more than `--control-tolerance` (default 25%), the run is marked **VOID** and no cross-store comparison from it is usable. | Attributing a host's movement, or the harness's own drift, to a store. |
 | **One control check per payload group.** | A guard that filters its own population down to one group and is then disarmed by adding a second. An earlier version of this block compared only the first payload's two SQLite runs and broke out of the loop, so a second payload's control could drift arbitrarily and the run still reported itself usable. |
-| **Load stamped on every phase; `--max-load` marks the run PROVISIONAL.** | A p99 that measures a contended box rather than a store. This matters here: the host is shared, and figures taken while other work is building are not comparable with figures taken idle. |
-| **Teardown checked against the shard's record count.** | A `teardown` that deleted nothing looking identical to a working one — and leaving every later point in a sweep reading a larger store. |
+| **Load stamped on every phase; `--max-io-pressure` marks the run PROVISIONAL.** | A p99 that measures a contended box rather than a store. This matters here: the host is shared, and figures taken while other work is building are not comparable with figures taken idle. |
+| **Exact fixture cleanup checked against the shard's record count.** The command-surface arms delete the known entity keys after measurement. | A cleanup that deleted nothing looking identical to a working one — and leaving every later point in a sweep reading a larger store. |
 | **Warm and cold are separate columns, never averaged.** | A single number that is neither. |
 | **A fresh requested-feature list per read.** | Feast 0.67.0's Redis online store appends the timestamp key to the list the caller passed. Reusing one list grows the requested field set by one entry per read, so that arm would answer a longer and longer `HMGET` while every other arm answered a fixed one — the measurement quietly becoming a comparison of different work. It surfaced as an error thousands of reads later, which is the lucky outcome. |
 
@@ -112,6 +112,13 @@ PYTHONPATH="$PWD" python benchmarks/bench_feature_serving.py \
 ```
 
 The harness exits non-zero when a run is PROVISIONAL or VOID, so it can gate.
+
+For long list-valued features, use `--payloads sequence`. That profile writes
+one 4,096-element Feast `Array(Int64)` per entity, verifies serialized values
+after materialization, and reports both write rows/s and concurrent read rows/s
+when `--concurrency` exceeds one. The command-surface arms use bounded HTTP
+batches and delete the fixture's known keys after timing; they do not enable
+key tracking on an async-commit shard.
 
 ## Measured: single-client read latency
 

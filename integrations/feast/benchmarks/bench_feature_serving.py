@@ -58,9 +58,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 PAYLOADS = {
     # Ten integer features: the shape a counter-heavy view has.
-    "small": {"ints": 10, "blob_bytes": 0},
+    "small": {"ints": 10, "blob_bytes": 0, "sequence_len": 0},
     # Four integers and a kilobyte blob: an embedding or a serialized struct.
-    "large": {"ints": 4, "blob_bytes": 1024},
+    "large": {"ints": 4, "blob_bytes": 1024, "sequence_len": 0},
+    # A Feast list feature, not an opaque byte blob. Opt in with --payloads sequence.
+    "sequence": {"ints": 1, "blob_bytes": 0, "sequence_len": 4096},
 }
 
 
@@ -198,29 +200,11 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "host": host,
             "port": int(port),
             "shard_id": args.shard_id,
-            # The dedup read is a correctness feature for out-of-order
-            # materialization, not part of the read path under test. It is
-            # turned off so the write phase is one round trip and the read
-            # numbers are not reading a different write history per arm.
+            # The dedup read is for out-of-order materialization. The fixture
+            # arrives in order, so omit it from the measured write path.
             "skip_dedup": True,
-            # ON FOR THE BENCHMARK, AND IT CHANGES A COLUMN, SO IT IS STATED.
-            # The command surface has no key-space scan, so without this flag
-            # `teardown_infra` cannot enumerate what the run wrote and every
-            # arm leaves its rows behind. Measured across one sweep: the shard
-            # went from 40,000 to 80,000 hash records, so each later point was
-            # reading a larger store than the one before it and an entity-count
-            # sweep was also, silently, a store-size sweep.
-            #
-            # The cost is on the WRITE path only -- one `set_add` per row into
-            # one per-view set -- so `write_seconds` here is not comparable with
-            # a deployment that leaves the flag off. The read columns, which are
-            # what this harness is for, are untouched by it.
-            "track_keys_for_teardown": True,
-            # `set_members` answers with the WHOLE tracking set in one response,
-            # and a response payload is a decimal array (~4 characters a byte),
-            # so a 50,000-entity view's teardown read is megabytes and does not
-            # fit the 10 s default. Raised for the harness only; it does not
-            # touch any read on the measured path.
+            # Async commit and key tracking together can lose writes. The
+            # harness knows every entity key and deletes those keys directly.
             "timeout_seconds": 120.0,
         }
     if arm == "ts_proxy":
@@ -245,8 +229,8 @@ ARM_METADATA = {
     # promise the server never made.
     "redis_aof": ("Redis (Valkey 8) durable", "appendonly yes, appendfsync <probed>", "RESP, pipelined"),
     "postgres": ("PostgreSQL 16", "default synchronous_commit=on, PGDATA on tmpfs", "libpq"),
-    "ts_async": ("TemporalStore", "async commit (async_storage=true)", "HTTP /batch_execute, 1 round trip"),
-    "ts_sync": ("TemporalStore", "durable commit (async_storage=false)", "HTTP /batch_execute, 1 round trip"),
+    "ts_async": ("TemporalStore", "async commit (async_storage=true)", "HTTP /batch_execute, bounded batches"),
+    "ts_sync": ("TemporalStore", "durable commit (async_storage=false)", "HTTP /batch_execute, bounded batches"),
     "ts_proxy": ("TemporalStore via proxy", "async commit (async_storage=true)", "HTTP /batch_execute through the proxy hop"),
 }
 
@@ -268,17 +252,26 @@ def build_values(payload: str, index: int):
         # every arm, so the stored bytes match.
         blob = bytes(((index + j) * 2654435761) % 256 for j in range(spec["blob_bytes"]))
         values["blob"] = ValueProto(bytes_val=blob)
+    if spec["sequence_len"]:
+        sequence = ValueProto()
+        sequence.int64_list_val.val.extend(
+            100_000 + (index * 131 + position) % 500_000
+            for position in range(spec["sequence_len"])
+        )
+        values["sequence"] = sequence
     return values
 
 
 def feature_schema(payload: str):
     from feast import Field
-    from feast.types import Bytes, Int64
+    from feast.types import Array, Bytes, Int64
 
     spec = PAYLOADS[payload]
     schema = [Field(name=f"f{i}", dtype=Int64) for i in range(spec["ints"])]
     if spec["blob_bytes"]:
         schema.append(Field(name="blob", dtype=Bytes))
+    if spec["sequence_len"]:
+        schema.append(Field(name="sequence", dtype=Array(Int64)))
     return schema
 
 
@@ -295,6 +288,8 @@ def write_source_parquet(path: str, payload: str) -> None:
         frame[f"f{i}"] = [0, 1]
     if spec["blob_bytes"]:
         frame["blob"] = [b"\x00", b"\x01"]
+    if spec["sequence_len"]:
+        frame["sequence"] = [[0, 1], [1, 2]]
     pd.DataFrame(frame).to_parquet(path, index=False)
 
 
@@ -453,7 +448,7 @@ def run_arm(
     write_seconds = time.perf_counter() - write_start
     print(
         f"    wrote {args.entities} rows, {payload_bytes} B payload/row, "
-        f"in {write_seconds:.2f}s"
+        f"in {write_seconds:.2f}s ({args.entities / write_seconds:,.0f} rows/s)"
     )
 
     # -- ASSERT THE DENOMINATOR before any timing is reported ---------------
@@ -647,14 +642,29 @@ def run_arm(
             f"p50={concurrent.p50:.0f}us p99={concurrent.p99:.0f}us"
         )
 
-    # TEARDOWN IS CHECKED AGAINST THE STORE'S OWN RECORD COUNT, not against the
-    # absence of an exception. The opt-in key-tracking path is the only one that
-    # deletes anything, and a `teardown` that quietly deleted nothing would look
-    # identical to a working one from here -- while leaving every later arm in
-    # the sweep reading a larger store.
+    # The fixture knows every key it wrote. Delete those keys directly on the
+    # command-surface arms, then verify the server's own record count fell.
     records_before = temporalstore_record_count(args) if arm.startswith("ts_") else None
     try:
-        provider.teardown_infra(config.project, [view], [entity])
+        if arm.startswith("ts_"):
+            from feast_temporalstore_command import TemporalStoreCommandOnlineStore
+
+            adapter = TemporalStoreCommandOnlineStore()
+            client = adapter._get_client(config)
+            try:
+                client.batch_execute(
+                    [
+                        {
+                            "kind": "common_delete",
+                            "key": adapter._entity_hash_key(config, entity_key),
+                        }
+                        for entity_key, _, _, _ in rows
+                    ]
+                )
+            finally:
+                client.close()
+        else:
+            provider.teardown_infra(config.project, [view], [entity])
         teardown_error: Optional[str] = None
     except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
         teardown_error = f"{type(exc).__name__}: {exc}"
@@ -671,12 +681,10 @@ def run_arm(
                 f"({records_before:,} -> {records_after:,}); "
                 f"wrote {args.entities:,} entities"
             )
-            if removed <= 0:
+            if removed != args.entities:
                 raise SystemExit(
-                    f"{arm}: teardown reported success but the shard still holds "
-                    f"{records_after:,} records (was {records_before:,}). A teardown "
-                    f"that deletes nothing leaves every later measurement reading a "
-                    f"larger store than the one before it."
+                    f"{arm}: expected to remove {args.entities:,} entity records, "
+                    f"removed {removed:,} ({records_before:,} -> {records_after:,})"
                 )
 
     return ArmResult(
@@ -715,18 +723,19 @@ def render(results: List[ArmResult], args: argparse.Namespace, provisional: bool
         )
         lines.append("")
         lines.append(
-            "| store | durability | transport | cold p50 | cold p99 | "
+            "| store | durability | transport | write rows/s | cold p50 | cold p99 | "
             f"warm p50 (b=1) | warm p99 (b=1) | warm p50 (b={args.batch}) | "
             f"warm p99 (b={args.batch}) | warm rows/s (b={args.batch}) | "
             f"serving p50 (b={args.batch}) | serving p99 (b={args.batch}) | load |"
         )
-        lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for r in group:
             peak = max(
                 r.cold.load_after, r.warm_b1.load_after, r.warm_bn.load_after, r.serving.load_after
             )
             lines.append(
                 f"| {r.store_label} | {r.durability} | {r.transport} | "
+                f"{r.entities / r.write_seconds:,.0f} | "
                 f"{r.cold.p50:,.0f} us | {r.cold.p99:,.0f} us | "
                 f"{r.warm_b1.p50:,.0f} us | {r.warm_b1.p99:,.0f} us | "
                 f"{r.warm_bn.p50:,.0f} us | {r.warm_bn.p99:,.0f} us | "
@@ -888,6 +897,15 @@ def main() -> int:
                 ]
             )
             for r in results:
+                writer.writerow(
+                    [
+                        r.arm, r.store_label, r.durability, r.transport,
+                        r.payload_bytes_per_row, r.entities, "write_bulk",
+                        (r.entities + args.write_batch - 1) // args.write_batch,
+                        r.entities, "", "", f"{r.entities / r.write_seconds:.1f}",
+                        "", "", 1, f"{r.write_seconds:.6f}",
+                    ]
+                )
                 for phase in (r.cold, r.warm_b1, r.warm_bn, r.serving, r.concurrent):
                     if phase is None:
                         continue

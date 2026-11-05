@@ -527,6 +527,20 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertTrue(client.sent[0][1]["command"]["key"].startswith("fa:"))
         self.assertTrue(client.sent[1][1]["command"]["key"].startswith("fh:"))
 
+    def test_list_history_keeps_original_value_without_numeric_projection(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        client = self._install()
+        sequence = ValueProto()
+        sequence.int64_list_val.val.extend(range(4096))
+        row = [(self._entity_key(1), {"sequence": sequence}, self.datetime.now(self.timezone.utc), None)]
+        self.store.online_write_batch(self.config, self.view, row, None)
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual([command["kind"] for command in commands], ["hash_multi_set", "feature_append"])
+        self.assertEqual(bytes(commands[1]["points"][0]["value"]), sequence.SerializeToString())
+
     def test_key_tracking_records_each_written_key_and_teardown_deletes_them(self):
         """The opt-in teardown path, which is the only one that deletes anything.
 
