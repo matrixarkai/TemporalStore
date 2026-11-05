@@ -20,10 +20,14 @@ from __future__ import annotations
 
 import base64
 import json
-import msgpack
 import os
 import sys
 import unittest
+
+try:
+    import msgpack
+except ModuleNotFoundError:
+    msgpack = None  # type: ignore[assignment]
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -176,6 +180,7 @@ class ClientProtocolTest(unittest.TestCase):
             [str(i) for i in range(5)],
         )
 
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_binary_batch_keeps_long_values_as_bytes(self):
         payload = bytes(range(256)) * 16
 
@@ -202,6 +207,7 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertEqual(decode_bytes(answer["values"][0]), payload)
         self.assertIsNone(decode_bytes(answer["values"][1]))
 
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_binary_batch_endpoint_falls_back_once(self):
         class OlderNodeClient(RecordingClient):
             attempts = 0

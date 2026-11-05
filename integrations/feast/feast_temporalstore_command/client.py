@@ -25,9 +25,13 @@ from __future__ import annotations
 import base64
 import http.client
 import json
-import msgpack
 import threading
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+
+try:
+    import msgpack
+except ModuleNotFoundError:  # A source checkout can still use the JSON route.
+    msgpack = None  # type: ignore[assignment]
 
 __all__ = [
     "TemporalStoreCommandError",
@@ -107,7 +111,7 @@ class TemporalStoreClient:
         self._all_connections: List[http.client.HTTPConnection] = []
         self._registry_lock = threading.Lock()
         self._batch_write_supported: Optional[bool] = None
-        self._binary_batch_supported: Optional[bool] = None
+        self._binary_batch_supported: Optional[bool] = False if msgpack is None else None
 
     # -- connection handling -------------------------------------------------
 
@@ -257,7 +261,7 @@ class TemporalStoreClient:
         body: bytes,
     ) -> List[Dict[str, Any]]:
         envelope = None
-        if self._binary_batch_supported is not False:
+        if msgpack is not None and self._binary_batch_supported is not False:
             try:
                 raw = self._request_encoded("/batch_execute_msgpack", body)
             except TemporalStoreCommandError as error:
