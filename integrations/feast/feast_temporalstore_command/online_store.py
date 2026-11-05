@@ -40,9 +40,9 @@ event timestamp are one key's worth of work:
   across stores by construction, which is the only reason a latency comparison
   between them means anything.
 
-Both reads and writes go through ``/batch_execute``, so a
-``get_online_features`` call over N entities is one round trip, not N -- the
-same shape as the Redis store's pipelining.
+Both reads and writes go through bounded ``/batch_execute`` requests, so a
+``get_online_features`` call groups entities instead of issuing one request
+per entity.
 """
 
 from __future__ import annotations
@@ -61,6 +61,7 @@ from feast.infra.supported_async_methods import SupportedAsyncMethods
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import FeastConfigBaseModel
+from feast.types import Int32, Int64
 
 from .client import TemporalStoreClient, decode_bytes, encode_bytes
 
@@ -131,10 +132,8 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
 
     Off by default. When on, each written value is additionally appended to a
     per-``(view, entity, feature)`` feature series keyed by its event
-    timestamp, so the history behind the served value stays queryable through
-    ``FeatureQuery`` / ``FeatureAggQuery`` -- windowed aggregates over the same
-    data the online store is serving, which is the capability a plain key-value
-    online store cannot offer.
+    timestamp. Scalar integer features also get a numeric series for native
+    windowed aggregates; the raw history keeps its original serialized value.
 
     Serving reads do **not** change: ``online_read`` always answers from the
     hash. That is deliberate. ``FeatureQuery`` returns a window in ascending
@@ -300,8 +299,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
 
         stored_nanos: Dict[str, int] = {}
         if not online_config.skip_dedup:
-            # One batched read of just the timestamp field, then one batched
-            # write: two round trips for the whole call, not two per row.
+            # Read just the timestamp field before the bounded write batches.
             reads = client.batch_execute(
                 [
                     {"kind": "hash_multi_get", "key": key, "fields": [ts_field]}
@@ -374,6 +372,24 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                             ],
                         }
                     )
+                    numeric_field = value.WhichOneof("val")
+                    if numeric_field in ("int32_val", "int64_val"):
+                        commands.append(
+                            {
+                                "kind": "feature_append",
+                                "key": self._aggregate_key(
+                                    config, view_name, entity_key, feature_name
+                                ),
+                                "points": [
+                                    {
+                                        "timestamp_ms": timestamp_ms,
+                                        "value": list(
+                                            str(getattr(value, numeric_field)).encode("ascii")
+                                        ),
+                                    }
+                                ],
+                            }
+                        )
 
             if online_config.key_ttl_seconds:
                 commands.append(
@@ -420,6 +436,66 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             entity_key_serialization_version=config.entity_key_serialization_version,
         )
         return f"fh:{config.project}:{view_name}:{serialized.hex()}:{feature_name}"
+
+    @classmethod
+    def _aggregate_key(
+        cls,
+        config: RepoConfig,
+        view_name: str,
+        entity_key: EntityKeyProto,
+        feature_name: str,
+    ) -> str:
+        return "fa:" + cls._history_key(config, view_name, entity_key, feature_name)[3:]
+
+    def query_feature_aggregate(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        entity_key: EntityKeyProto,
+        feature_name: str,
+        start_ms: int,
+        end_ms: int,
+        aggregator: str,
+        count: Optional[int] = None,
+    ) -> int:
+        """Query a history window; numeric aggregates require scalar integer values."""
+        online_config = config.online_store
+        assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
+        if not online_config.write_feature_history:
+            raise ValueError("write_feature_history must be enabled")
+        if start_ms < 0 or end_ms < start_ms or (count is not None and count < 0):
+            raise ValueError("invalid aggregate window or count")
+        feature = next(
+            (item for item in table.features if item.name == feature_name), None
+        )
+        if feature is None:
+            raise ValueError(f"unknown feature: {feature_name}")
+        name = aggregator.lower()
+        if name not in (
+            "sum", "avg", "average", "min", "max", "first", "last", "count", "events"
+        ):
+            raise ValueError(f"unsupported aggregator: {aggregator}")
+        if name not in ("count", "events") and feature.dtype not in (Int32, Int64):
+            raise ValueError("numeric aggregates require an Int32 or Int64 feature")
+        view_name = self._view_name(table, config)
+        key = (
+            self._history_key(config, view_name, entity_key, feature_name)
+            if name in ("count", "events")
+            else self._aggregate_key(config, view_name, entity_key, feature_name)
+        )
+        answer = self._get_client(config).execute(
+            {
+                "kind": "feature_agg_query",
+                "key": key,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "aggregator": name,
+                "count": count,
+            }
+        )
+        if answer.get("kind") != "aggregate":
+            raise ValueError("unexpected feature aggregate response")
+        return int(answer["value"])
 
     @staticmethod
     def _teardown_set_key(config: RepoConfig, view_name: str) -> str:

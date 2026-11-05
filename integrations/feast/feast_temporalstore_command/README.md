@@ -112,9 +112,13 @@ commands, plus a batched timestamp read first unless `skip_dedup` is set:
 
 Off by default. When on, every value is *also* appended to a feature series
 keyed by `(view, entity, feature)` at its event timestamp, so the history
-behind the served value stays queryable through `FeatureQuery` and
-`FeatureAggQuery` — windowed aggregates over the same data the online store is
-serving, which a plain key-value online store cannot offer.
+behind the served value stays queryable through `FeatureQuery`. Scalar Int32
+and Int64 values also get an ASCII-integer projection for native windowed
+`FeatureAggQuery`; the raw serialized history remains unchanged. The adapter's
+`query_feature_aggregate` accepts `sum`, `avg`, `min`, `max`, `first`, `last`,
+`count`, and `events`. Numeric operations require an integer feature; counts
+read the raw series. Existing history written before the numeric projection
+needs backfilling before numeric queries can include it.
 
 Serving reads do not change: `online_read` always answers from the hash. That
 is deliberate, and it is worth knowing why. `FeatureQuery` returns a window in

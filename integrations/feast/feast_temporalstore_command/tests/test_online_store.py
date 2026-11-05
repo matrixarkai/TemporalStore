@@ -494,11 +494,38 @@ class OnlineStoreTest(unittest.TestCase):
         client = self._install()
         self.store.online_write_batch(self.config, self.view, row, None)
         kinds = [c["kind"] for c in client.sent[0][1]["commands"]]
-        self.assertEqual(kinds, ["hash_multi_set", "feature_append"])
+        self.assertEqual(kinds, ["hash_multi_set", "feature_append", "feature_append"])
         append = client.sent[0][1]["commands"][1]
         # FeaturePoint.value has no base64 annotation; it must go out as a list
         # of integers or the node refuses it.
         self.assertIsInstance(append["points"][0]["value"], list)
+        numeric = client.sent[0][1]["commands"][2]
+        self.assertTrue(numeric["key"].startswith("fa:"))
+        self.assertEqual(bytes(numeric["points"][0]["value"]), b"1")
+
+    def test_windowed_aggregate_uses_numeric_series_and_count_uses_raw_history(self):
+        self.config.online_store.write_feature_history = True
+        client = self._install(
+            [
+                ok({"kind": "aggregate", "value": 13}),
+                ok({"kind": "aggregate", "value": 3}),
+            ]
+        )
+        key = self._entity_key(1)
+        self.assertEqual(
+            self.store.query_feature_aggregate(
+                self.config, self.view, key, "trips", 1, 100, "sum"
+            ),
+            13,
+        )
+        self.assertEqual(
+            self.store.query_feature_aggregate(
+                self.config, self.view, key, "trips", 1, 100, "count"
+            ),
+            3,
+        )
+        self.assertTrue(client.sent[0][1]["command"]["key"].startswith("fa:"))
+        self.assertTrue(client.sent[1][1]["command"]["key"].startswith("fh:"))
 
     def test_key_tracking_records_each_written_key_and_teardown_deletes_them(self):
         """The opt-in teardown path, which is the only one that deletes anything.
