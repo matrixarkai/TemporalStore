@@ -709,7 +709,12 @@ def run_arm(
 # ---------------------------------------------------------------------------
 
 
-def render(results: List[ArmResult], args: argparse.Namespace, provisional: bool) -> str:
+def render(
+    results: List[ArmResult],
+    args: argparse.Namespace,
+    provisional: bool,
+    peak_io_pressure: float,
+) -> str:
     lines: List[str] = []
     by_payload: Dict[str, List[ArmResult]] = {}
     for result in results:
@@ -878,7 +883,7 @@ def main() -> int:
     # Decided on I/O pressure, not on loadavg, for the reason in load_average's
     # docstring. `peak_load` is still carried and printed.
     provisional = peak_io_pressure > args.max_io_pressure
-    table = render(results, args, provisional)
+    table = render(results, args, provisional, peak_io_pressure)
     print(table)
     if control_void:
         print(f"\n**VOID** -- {control_void}")

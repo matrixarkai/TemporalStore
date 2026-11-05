@@ -1044,11 +1044,88 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
+            let object_id = stable_block_object_id(shard_id, "hash", &key);
+
+            // A large feature and its small scalar fields must stay readable as
+            // one object under cache pressure. One packed block gives every
+            // field the same readable address and pays for one storage append.
+            if contains_large_value {
+                let mut positions = std::collections::HashMap::<String, usize>::new();
+                let mut packed_entries = Vec::<(String, Vec<u8>)>::with_capacity(entries.len());
+                for (field, value) in entries {
+                    if let Some(position) = positions.get(&field).copied() {
+                        packed_entries[position].1 = value;
+                    } else {
+                        positions.insert(field.clone(), packed_entries.len());
+                        packed_entries.push((field, value));
+                    }
+                }
+                let block_ordinal = packed_entries
+                    .iter()
+                    .find_map(|(field, _)| {
+                        shard
+                            .hashes
+                            .get(&key)
+                            .and_then(|fields| fields.get(field))
+                            .and_then(ElementEntry::block_id)
+                    })
+                    .or_else(|| {
+                        shard
+                            .hashes
+                            .get(&key)
+                            .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
+                            .map(|held| held.saturating_add(1))
+                    })
+                    .filter(|ordinal| *ordinal <= crate::block_store::MAX_ADDRESSABLE_BLOCK_ID)
+                    .and_then(|ordinal| u32::try_from(ordinal).ok())
+                    .unwrap_or(0);
+                let items = packed_entries
+                    .iter()
+                    .map(|(field, value)| (field.as_bytes(), value.as_slice()))
+                    .collect::<Vec<_>>();
+                let block = crate::engine::container_blocks::encode_container_block(
+                    crate::engine::container_blocks::ElementKeySpelling::Utf8,
+                    &items,
+                );
+                block_in_wal::stage(object_id, None, &block);
+                let address = crate::alloc_probe::in_class(
+                    crate::alloc_probe::AllocClass::SlabAppend,
+                    || block_store.append_block_of_object(
+                        &block,
+                        Some(object_id),
+                        Some(routing_bucket),
+                        block_ordinal,
+                    ),
+                );
+                if let Ok(address) = address {
+                    for (field, _) in packed_entries {
+                        let field_handle =
+                            super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
+                        super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                            shard,
+                            shard_id,
+                            &key,
+                            Some(field.clone()),
+                            field_handle,
+                            address.clone(),
+                            true,
+                            address.clone(),
+                        );
+                        invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
+                        mutated = true;
+                    }
+                }
+                return ExecuteOutcome {
+                    response: CommandResponse::Empty,
+                    mutated,
+                };
+            }
+
             // A COUNT, not a list of pending proofs. The install happens inline now, so nothing
             // is carried past the loop except whether anything landed.
             let mut applied = 0usize;
             for (field, value) in entries {
-                let object_id = stable_block_object_id(shard_id, "hash", &key);
                 // WHICH block of this object this element is. Computed BEFORE the append, because
                 // the append stamps the ordinal into the record header AND onto the address it
                 // returns from the same value -- assigning it afterwards would leave the two

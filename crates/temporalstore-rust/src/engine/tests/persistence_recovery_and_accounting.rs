@@ -8785,22 +8785,29 @@ fn large_async_hash_values_remain_readable_after_cache_eviction() {
             shard_id: 1,
             command: Command::HashMultiSet {
                 key: format!("sequence/{index}"),
-                entries: vec![("values".to_string(), vec![index; 12 * 1024])],
+                entries: vec![
+                    ("timestamp".to_string(), vec![index.wrapping_add(1); 16]),
+                    ("timestamp".to_string(), vec![index; 16]),
+                    ("values".to_string(), vec![index; 12 * 1024]),
+                ],
             },
         });
         assert!(response.status.ok, "write {index} failed: {response:?}");
     }
     {
         let shards = engine.shards.read().expect("shards lock poisoned");
-        let address = shards
+        let fields = shards
             .get(&1)
             .unwrap()
             .hashes
             .get("sequence/0")
-            .unwrap()
-            .get("values")
             .unwrap();
-        assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
+        assert!(fields
+            .values()
+            .all(|address| address.block_slab_id() != HOT_BLOCK_SLAB_ID));
+        let mut addresses = fields.values();
+        let first = addresses.next().unwrap();
+        assert!(addresses.all(|address| address == first));
     }
     engine.cache().invalidate_shard(1).unwrap();
     for index in 0..64u8 {
@@ -8808,13 +8815,13 @@ fn large_async_hash_values_remain_readable_after_cache_eviction() {
             shard_id: 1,
             command: Command::HashMultiGet {
                 key: format!("sequence/{index}"),
-                fields: vec!["values".to_string()],
+                fields: vec!["timestamp".to_string(), "values".to_string()],
             },
         });
         assert_eq!(
             response.response,
             CommandResponse::Values {
-                values: vec![Some(vec![index; 12 * 1024])],
+                values: vec![Some(vec![index; 16]), Some(vec![index; 12 * 1024])],
             },
             "large value {index} must survive cache eviction",
         );
