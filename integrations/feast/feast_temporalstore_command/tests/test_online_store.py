@@ -53,7 +53,7 @@ class RecordingClient(TemporalStoreClient):
         self.sent = []
         self.answers = list(answers or [])
 
-    def _post(self, path, document):  # type: ignore[override]
+    def _answer(self, path, document):
         self.sent.append((path, document))
         if self.answers:
             return self.answers.pop(0)
@@ -64,6 +64,12 @@ class RecordingClient(TemporalStoreClient):
             }
         return ok({"kind": "empty"})
 
+    def _post(self, path, document):  # type: ignore[override]
+        return self._answer(path, document)
+
+    def _post_encoded(self, path, body):  # type: ignore[override]
+        return self._answer(path, json.loads(body))
+
 
 class ByteEncodingTest(unittest.TestCase):
     def test_a_payload_survives_a_round_trip_through_the_request_encoding(self):
@@ -71,9 +77,8 @@ class ByteEncodingTest(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertEqual(decode_bytes(encode_bytes(payload)), payload)
 
-    def test_the_response_decoder_accepts_the_decimal_array_the_node_actually_sends(self):
-        # CommandResponse::Values carries no base64 annotation, so a byte comes
-        # back as a number. This is the shape in production today.
+    def test_the_response_decoder_accepts_older_decimal_arrays(self):
+        # Nodes from before compact responses return one number per byte.
         self.assertEqual(decode_bytes([104, 101, 108, 108, 111]), b"hello")
 
     def test_the_response_decoder_also_accepts_base64(self):
@@ -172,6 +177,32 @@ class ClientProtocolTest(unittest.TestCase):
         ]
         self.assertEqual(len(client.batch_execute(commands)), 3)
         self.assertEqual([len(document["commands"]) for _, document in client.sent], [1, 1, 1])
+
+    def test_batch_serializes_each_command_once(self):
+        from unittest.mock import patch
+
+        client = RecordingClient()
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["f", "eA=="]]}
+            for i in range(4)
+        ]
+        real_dumps = json.dumps
+        encoded_commands = 0
+
+        def counted_dumps(value, *args, **kwargs):
+            nonlocal encoded_commands
+            if isinstance(value, dict) and "kind" in value:
+                encoded_commands += 1
+            return real_dumps(value, *args, **kwargs)
+
+        with patch(
+            "feast_temporalstore_command.client.json.dumps",
+            side_effect=counted_dumps,
+        ):
+            client.batch_execute(commands)
+
+        self.assertEqual(encoded_commands, len(commands))
+        self.assertEqual(client.sent[0][1]["commands"], commands)
 
     def test_the_command_document_is_json_serialisable_as_sent(self):
         client = RecordingClient()

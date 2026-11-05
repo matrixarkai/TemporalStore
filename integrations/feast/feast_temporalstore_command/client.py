@@ -157,8 +157,7 @@ class TemporalStoreClient:
                 pass
         self._local = threading.local()
 
-    def _post(self, path: str, document: Dict[str, Any]) -> Dict[str, Any]:
-        body = json.dumps(document, separators=(",", ":")).encode("utf-8")
+    def _post_encoded(self, path: str, body: bytes) -> Dict[str, Any]:
         headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
         # A timeout can happen after the server applied a write but before its
         # response arrives. Do not resend an ambiguous request: FeatureAppend
@@ -177,6 +176,10 @@ class TemporalStoreClient:
                 f"http_{response.status}", raw.decode("utf-8", "replace")[:512]
             )
         return json.loads(raw)
+
+    def _post(self, path: str, document: Dict[str, Any]) -> Dict[str, Any]:
+        body = json.dumps(document, separators=(",", ":")).encode("utf-8")
+        return self._post_encoded(path, body)
 
     # -- commands ------------------------------------------------------------
 
@@ -206,28 +209,45 @@ class TemporalStoreClient:
             return []
         results: List[Dict[str, Any]] = []
         chunk: List[Dict[str, Any]] = []
-        chunk_bytes = 0
+        encoded_chunk: List[bytes] = []
+        prefix = (
+            b'{"shard_id":'
+            + str(self.shard_id).encode("ascii")
+            + b',"commands":['
+        )
+        envelope_bytes = len(prefix) + len(b"]}")
+        chunk_bytes = envelope_bytes
         for command in commands:
-            # Count encoded bytes, not Python object sizes: large serialized
-            # feature values dominate the HTTP body. A single oversized value
-            # remains one command and is left for the server to accept or reject.
-            command_bytes = len(json.dumps(command, separators=(",", ":")).encode("utf-8"))
+            # Keep the exact encoding used for the request. Long feature values
+            # dominate the body; encoding them again while building the envelope
+            # doubles client CPU and temporary memory for no change on the wire.
+            encoded = json.dumps(command, separators=(",", ":")).encode("utf-8")
+            separator_bytes = 1 if chunk else 0
             if chunk and (
                 len(chunk) >= self.max_batch_commands
-                or chunk_bytes + command_bytes + 1 > self.max_batch_request_bytes
+                or chunk_bytes + separator_bytes + len(encoded)
+                > self.max_batch_request_bytes
             ):
-                results.extend(self._batch_once(chunk))
+                results.extend(self._batch_once(chunk, encoded_chunk, prefix))
                 chunk = []
-                chunk_bytes = 0
+                encoded_chunk = []
+                chunk_bytes = envelope_bytes
+                separator_bytes = 0
             chunk.append(command)
-            chunk_bytes += command_bytes + 1
+            encoded_chunk.append(encoded)
+            chunk_bytes += separator_bytes + len(encoded)
         if chunk:
-            results.extend(self._batch_once(chunk))
+            results.extend(self._batch_once(chunk, encoded_chunk, prefix))
         return results
 
-    def _batch_once(self, commands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        document = {"shard_id": self.shard_id, "commands": commands}
-        envelope = self._post("/batch_execute", document)
+    def _batch_once(
+        self,
+        commands: List[Dict[str, Any]],
+        encoded_commands: List[bytes],
+        prefix: bytes,
+    ) -> List[Dict[str, Any]]:
+        body = prefix + b",".join(encoded_commands) + b"]}"
+        envelope = self._post_encoded("/batch_execute", body)
         status = envelope.get("status") or {}
         if not status.get("ok", False):
             raise TemporalStoreCommandError(
