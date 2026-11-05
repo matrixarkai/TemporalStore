@@ -46,7 +46,7 @@ import shutil
 import statistics
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -619,9 +619,21 @@ def run_arm(
 
         wall_start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-            for elapsed_us, served_now in pool.map(read_concurrently, range(args.reads)):
-                concurrent.latencies_us.append(elapsed_us)
-                concurrent.rows_served += served_now
+            next_call = iter(range(args.reads))
+            pending = set()
+            for call_index in next_call:
+                pending.add(pool.submit(read_concurrently, call_index))
+                if len(pending) == args.concurrency * 2:
+                    break
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    elapsed_us, served_now = future.result()
+                    concurrent.latencies_us.append(elapsed_us)
+                    concurrent.rows_served += served_now
+                    call_index = next(next_call, None)
+                    if call_index is not None:
+                        pending.add(pool.submit(read_concurrently, call_index))
         concurrent.wall_seconds = time.perf_counter() - wall_start
         concurrent.load_after = load_average()
         if concurrent.rows_served != args.reads * args.batch:
