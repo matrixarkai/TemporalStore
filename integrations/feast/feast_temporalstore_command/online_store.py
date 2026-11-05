@@ -314,7 +314,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     stored.ParseFromString(raw)
                     stored_nanos[key] = stored.seconds * 1_000_000_000 + stored.nanos
 
-        commands: List[Dict[str, Any]] = []
+        latest_commands: Dict[str, Dict[str, Any]] = {}
+        history_points: Dict[str, List[Dict[str, Any]]] = {}
+        numeric_points: Dict[str, List[Dict[str, Any]]] = {}
+        expiry_keys: Dict[str, None] = {}
         written = 0
         skipped = 0
         # The newest event time queued so far in this call, per key. Without it,
@@ -348,62 +351,64 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         encode_bytes(value.SerializeToString()),
                     )
                 )
-            commands.append(
-                {"kind": "hash_multi_set", "key": hash_key, "entries": entries}
-            )
+            # A Feast batch can contain many events for one entity. Only its
+            # newest accepted row belongs in the latest-value hash; history
+            # below retains every accepted timestamp.
+            latest_commands[hash_key] = {
+                "kind": "hash_multi_set", "key": hash_key, "entries": entries
+            }
 
             if online_config.write_feature_history:
                 timestamp_ms = proto_ts.seconds * 1000 + proto_ts.nanos // 1_000_000
                 for feature_name, value in values.items():
-                    commands.append(
+                    history_key = self._history_key(
+                        config, view_name, entity_key, feature_name
+                    )
+                    history_points.setdefault(history_key, []).append(
                         {
-                            "kind": "feature_append",
-                            "key": self._history_key(
-                                config, view_name, entity_key, feature_name
-                            ),
-                            # FeaturePoint.value carries no base64 annotation, so
-                            # it goes out as a decimal array -- the one payload on
-                            # this path that is not base64.
-                            "points": [
-                                {
-                                    "timestamp_ms": timestamp_ms,
-                                    "value": list(value.SerializeToString()),
-                                }
-                            ],
+                            "timestamp_ms": timestamp_ms,
+                            # FeaturePoint.value carries no base64 annotation.
+                            "value": list(value.SerializeToString()),
                         }
                     )
                     numeric_field = value.WhichOneof("val")
                     if numeric_field in ("int32_val", "int64_val"):
-                        commands.append(
+                        aggregate_key = self._aggregate_key(
+                            config, view_name, entity_key, feature_name
+                        )
+                        numeric_points.setdefault(aggregate_key, []).append(
                             {
-                                "kind": "feature_append",
-                                "key": self._aggregate_key(
-                                    config, view_name, entity_key, feature_name
+                                "timestamp_ms": timestamp_ms,
+                                "value": list(
+                                    str(getattr(value, numeric_field)).encode("ascii")
                                 ),
-                                "points": [
-                                    {
-                                        "timestamp_ms": timestamp_ms,
-                                        "value": list(
-                                            str(getattr(value, numeric_field)).encode("ascii")
-                                        ),
-                                    }
-                                ],
                             }
                         )
 
             if online_config.key_ttl_seconds:
-                commands.append(
-                    {
-                        "kind": "common_expire",
-                        "key": hash_key,
-                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-                    }
-                )
+                expiry_keys[hash_key] = None
             if online_config.track_keys_for_teardown:
                 tracked_keys.append(hash_key)
             written += 1
 
-        for key in tracked_keys:
+        commands: List[Dict[str, Any]] = list(latest_commands.values())
+        commands.extend(
+            {"kind": "feature_append", "key": key, "points": points}
+            for key, points in history_points.items()
+        )
+        commands.extend(
+            {"kind": "feature_append", "key": key, "points": points}
+            for key, points in numeric_points.items()
+        )
+        commands.extend(
+            {
+                "kind": "common_expire",
+                "key": key,
+                "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
+            }
+            for key in expiry_keys
+        )
+        for key in dict.fromkeys(tracked_keys):
             commands.append(
                 {
                     "kind": "set_add",

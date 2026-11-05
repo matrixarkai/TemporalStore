@@ -120,6 +120,11 @@ and Int64 values also get an ASCII-integer projection for native windowed
 read the raw series. Existing history written before the numeric projection
 needs backfilling before numeric queries can include it.
 
+Repeated events for the same entity-feature within one Feast write batch are
+consolidated into one multi-point history command. The latest-value hash is
+also written once per entity, using the newest accepted event in that batch.
+This preserves every history timestamp without paying three commands per event.
+
 Serving reads do not change: `online_read` always answers from the hash. That
 is deliberate, and it is worth knowing why. `FeatureQuery` returns a window in
 **ascending** timestamp order and truncates with `take(count)`, so asking it

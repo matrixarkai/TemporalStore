@@ -165,29 +165,23 @@ class TemporalStoreClient:
     def _post(self, path: str, document: Dict[str, Any]) -> Dict[str, Any]:
         body = json.dumps(document, separators=(",", ":")).encode("utf-8")
         headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
-        # One retry, and only one: a pooled connection the node closed between
-        # calls fails on the write, before anything was applied, so resending is
-        # safe. A failure after the request was sent is NOT retried here --
-        # these commands are not all idempotent, and a client cannot tell the
-        # two cases apart once the bytes are on the wire.
-        for attempt in (0, 1):
-            conn = self._connection()
-            try:
-                conn.request("POST", path, body=body, headers=headers)
-                response = conn.getresponse()
-                raw = response.read()
-            except (http.client.HTTPException, OSError):
-                self._drop_connection()
-                if attempt == 1:
-                    raise
-                continue
-            if response.status != 200:
-                self._drop_connection()
-                raise TemporalStoreCommandError(
-                    f"http_{response.status}", raw.decode("utf-8", "replace")[:512]
-                )
-            return json.loads(raw)
-        raise AssertionError("unreachable")
+        # A timeout can happen after the server applied a write but before its
+        # response arrives. Do not resend an ambiguous request: FeatureAppend
+        # and other commands are not generally idempotent.
+        conn = self._connection()
+        try:
+            conn.request("POST", path, body=body, headers=headers)
+            response = conn.getresponse()
+            raw = response.read()
+        except (http.client.HTTPException, OSError):
+            self._drop_connection()
+            raise
+        if response.status != 200:
+            self._drop_connection()
+            raise TemporalStoreCommandError(
+                f"http_{response.status}", raw.decode("utf-8", "replace")[:512]
+            )
+        return json.loads(raw)
 
     # -- commands ------------------------------------------------------------
 

@@ -120,6 +120,40 @@ when `--concurrency` exceeds one. The command-surface arms use bounded HTTP
 batches and delete the fixture's known keys after timing; they do not enable
 key tracking on an async-commit shard.
 
+The separate aggregate workload exercises the Feast command adapter's
+`write_feature_history` path. It streams integer event batches, verifies the
+latest served value plus full and tail-window sums and raw-history counts for
+every entity, measures concurrent native aggregate queries, and removes all
+known hash and history keys afterward:
+
+```bash
+cd integrations/feast
+PYTHONPATH="$PWD" python benchmarks/bench_aggregate_serving.py \
+  --host 127.0.0.1 --port 17502 --entities 256 --events 64 \
+  --reads 2000 --concurrency 4
+```
+
+The resulting QPS is a single-node measurement, not a cross-store comparison;
+the benchmark marks the run `void` if the same-path control p50 drifts beyond
+`--control-tolerance` (25% by default). Repeat under a controlled host load
+before using the number for a capacity decision.
+
+### Measured aggregate history serving
+
+Two consecutive valid runs used a release standalone data node with durable
+commit (`async_storage=false`), its default 16 MiB cache, 1,024 entities, 64
+events per entity, write batches of 256 rows, 4,000 aggregate reads, and eight
+read workers. Every run verified latest values, full-window sums and counts,
+and tail-window sums before timing, then returned the shard to zero records.
+
+| run | history events/s | aggregate queries/s | p50 | p99 | control drift |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 14,965 | 1,482 | 4,848 us | 12,737 us | 0.28% |
+| 2 | 15,260 | 1,552 | 4,566 us | 13,106 us | 15.80% |
+
+These are same-store, local single-node measurements. They do not establish
+multi-node capacity or a comparison with another online store.
+
 ## Measured: single-client read latency
 
 **Conditions for both tables below**, identical except the payload: 5,000

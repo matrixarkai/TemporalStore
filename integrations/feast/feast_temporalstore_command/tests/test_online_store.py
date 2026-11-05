@@ -123,6 +123,30 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertEqual(client.batch_execute([]), [])
         self.assertEqual(client.sent, [])
 
+    def test_timeout_after_sending_a_write_is_not_retried(self):
+        class TimedOutConnection:
+            requests = 0
+            closed = False
+
+            def request(self, *_args, **_kwargs):
+                self.requests += 1
+
+            def getresponse(self):
+                raise TimeoutError("response did not arrive")
+
+            def close(self):
+                self.closed = True
+
+        client = TemporalStoreClient()
+        connection = TimedOutConnection()
+        client._local.conn = connection
+        with self.assertRaises(TimeoutError):
+            client.batch_execute(
+                [{"kind": "feature_append", "key": "history", "points": []}]
+            )
+        self.assertEqual(connection.requests, 1)
+        self.assertTrue(connection.closed)
+
     def test_large_batch_is_split_without_reordering_commands(self):
         client = RecordingClient(
             [
@@ -502,6 +526,39 @@ class OnlineStoreTest(unittest.TestCase):
         numeric = client.sent[0][1]["commands"][2]
         self.assertTrue(numeric["key"].startswith("fa:"))
         self.assertEqual(bytes(numeric["points"][0]["value"]), b"1")
+
+    def test_repeated_entity_history_is_consolidated_without_losing_points(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        key = self._entity_key(1)
+        first = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        second = self.datetime(2026, 1, 1, 0, 0, 1, tzinfo=self.timezone.utc)
+        client = self._install()
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [
+                (key, {"trips": ValueProto(int64_val=3)}, first, None),
+                (key, {"trips": ValueProto(int64_val=5)}, second, None),
+            ],
+            None,
+        )
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            ["hash_multi_set", "feature_append", "feature_append"],
+        )
+        self.assertEqual(
+            dict(commands[0]["entries"])["stats:trips"],
+            encode_bytes(ValueProto(int64_val=5).SerializeToString()),
+        )
+        self.assertEqual(len(commands[1]["points"]), 2)
+        self.assertEqual(
+            [bytes(point["value"]) for point in commands[2]["points"]],
+            [b"3", b"5"],
+        )
 
     def test_windowed_aggregate_uses_numeric_series_and_count_uses_raw_history(self):
         self.config.online_store.write_feature_history = True
