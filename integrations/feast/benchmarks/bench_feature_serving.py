@@ -45,6 +45,8 @@ import os
 import shutil
 import statistics
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -69,6 +71,7 @@ class Phase:
     load_before: float = 0.0
     load_after: float = 0.0
     rows_served: int = 0
+    wall_seconds: float = 0.0
 
     def percentile(self, fraction: float) -> float:
         if not self.latencies_us:
@@ -91,7 +94,7 @@ class Phase:
 
     @property
     def throughput_rows_per_s(self) -> float:
-        total_us = sum(self.latencies_us)
+        total_us = self.wall_seconds * 1_000_000 if self.wall_seconds else sum(self.latencies_us)
         if total_us <= 0 or self.rows_served == 0:
             return float("nan")
         return self.rows_served / (total_us / 1_000_000.0)
@@ -109,6 +112,7 @@ class ArmResult:
     warm_b1: Phase
     warm_bn: Phase
     serving: Phase
+    concurrent: Optional[Phase]
     write_seconds: float
     batch_n: int
     void_reason: Optional[str] = None
@@ -590,6 +594,47 @@ def run_arm(
             f"{args.reads * args.batch} rows"
         )
 
+    concurrent = None
+    if args.concurrency > 1:
+        concurrent = Phase("concurrent_online_read", load_before=load_average())
+        worker_state = threading.local()
+
+        def read_concurrently(call_index: int) -> Tuple[float, int]:
+            if not hasattr(worker_state, "provider"):
+                worker_state.provider = FeatureStore(config=config)._get_provider()
+            keys = [
+                EntityKeyProto(
+                    join_keys=["eid"],
+                    entity_values=[ValueProto(int64_val=hot[(call_index * args.batch + offset) % len(hot)])],
+                )
+                for offset in range(args.batch)
+            ]
+            begin = time.perf_counter()
+            answer = worker_state.provider.online_read(config, view, keys, list(feature_names))
+            elapsed_us = (time.perf_counter() - begin) * 1_000_000
+            if len(answer) != len(keys):
+                raise RuntimeError(f"{arm}: concurrent read returned {len(answer)} of {len(keys)} rows")
+            served_now = sum(1 for _, values in answer if values is not None)
+            return elapsed_us, served_now
+
+        wall_start = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            for elapsed_us, served_now in pool.map(read_concurrently, range(args.reads)):
+                concurrent.latencies_us.append(elapsed_us)
+                concurrent.rows_served += served_now
+        concurrent.wall_seconds = time.perf_counter() - wall_start
+        concurrent.load_after = load_average()
+        if concurrent.rows_served != args.reads * args.batch:
+            raise SystemExit(
+                f"{arm}: concurrent pass served {concurrent.rows_served} of "
+                f"{args.reads * args.batch} rows"
+            )
+        print(
+            f"    concurrent workers={args.concurrency} rows/s="
+            f"{concurrent.throughput_rows_per_s:.0f} "
+            f"p50={concurrent.p50:.0f}us p99={concurrent.p99:.0f}us"
+        )
+
     # TEARDOWN IS CHECKED AGAINST THE STORE'S OWN RECORD COUNT, not against the
     # absence of an exception. The opt-in key-tracking path is the only one that
     # deletes anything, and a `teardown` that quietly deleted nothing would look
@@ -633,6 +678,7 @@ def run_arm(
         warm_b1=warm_b1,
         warm_bn=warm_bn,
         serving=serving,
+        concurrent=concurrent,
         write_seconds=write_seconds,
         batch_n=args.batch,
     )
@@ -675,6 +721,21 @@ def render(results: List[ArmResult], args: argparse.Namespace, provisional: bool
                 f"{r.warm_bn.throughput_rows_per_s:,.0f} | "
                 f"{r.serving.p50:,.0f} us | {r.serving.p99:,.0f} us | {peak:.0f} |"
             )
+        if args.concurrency > 1:
+            lines.extend([
+                "",
+                "| store | workers | calls | rows | wall seconds | rows/s | p50 | p99 |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|",
+            ])
+            for r in group:
+                phase = r.concurrent
+                if phase is not None:
+                    lines.append(
+                        f"| {r.store_label} | {args.concurrency} | {phase.calls} | "
+                        f"{phase.rows_served} | {phase.wall_seconds:.3f} | "
+                        f"{phase.throughput_rows_per_s:,.0f} | "
+                        f"{phase.p50:,.0f} us | {phase.p99:,.0f} us |"
+                    )
     if provisional:
         lines.append("")
         lines.append(
@@ -697,6 +758,7 @@ def main() -> int:
     parser.add_argument("--entities", type=int, default=10000)
     parser.add_argument("--hot", type=int, default=512)
     parser.add_argument("--reads", type=int, default=2000)
+    parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--cold-reads", type=int, default=2000)
     parser.add_argument("--batch", type=int, default=10)
     parser.add_argument("--write-batch", type=int, default=500)
@@ -718,6 +780,9 @@ def main() -> int:
     parser.add_argument("--control-tolerance", type=float, default=0.25)
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
+
+    if args.concurrency < 1 or args.reads < 1 or args.batch < 1 or args.hot < 1:
+        parser.error("concurrency, reads, batch and hot must be positive")
 
     os.makedirs(args.run_dir, exist_ok=True)
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
@@ -807,11 +872,13 @@ def main() -> int:
                 [
                     "arm", "store", "durability", "transport", "payload_bytes_per_row",
                     "entities", "phase", "calls", "rows_served", "p50_us", "p99_us",
-                    "rows_per_s", "load_before", "load_after",
+                    "rows_per_s", "load_before", "load_after", "workers", "wall_seconds",
                 ]
             )
             for r in results:
-                for phase in (r.cold, r.warm_b1, r.warm_bn, r.serving):
+                for phase in (r.cold, r.warm_b1, r.warm_bn, r.serving, r.concurrent):
+                    if phase is None:
+                        continue
                     writer.writerow(
                         [
                             r.arm, r.store_label, r.durability, r.transport,
@@ -820,6 +887,8 @@ def main() -> int:
                             f"{phase.p50:.1f}", f"{phase.p99:.1f}",
                             f"{phase.throughput_rows_per_s:.1f}",
                             f"{phase.load_before:.2f}", f"{phase.load_after:.2f}",
+                            args.concurrency if phase is r.concurrent else 1,
+                            f"{phase.wall_seconds:.6f}" if phase is r.concurrent else "",
                         ]
                     )
         print(f"\nwrote {args.out} and {csv_path}")
