@@ -229,8 +229,16 @@ ARM_METADATA = {
     # promise the server never made.
     "redis_aof": ("Redis (Valkey 8) durable", "appendonly yes, appendfsync <probed>", "RESP, pipelined"),
     "postgres": ("PostgreSQL 16", "default synchronous_commit=on, PGDATA on tmpfs", "libpq"),
-    "ts_async": ("TemporalStore", "async commit (async_storage=true)", "HTTP /batch_execute, bounded batches"),
-    "ts_sync": ("TemporalStore", "durable commit (async_storage=false)", "HTTP /batch_execute, bounded batches"),
+    "ts_async": (
+        "TemporalStore",
+        "async commit (async_storage=true)",
+        "HTTP /batch_write + /batch_execute, bounded batches",
+    ),
+    "ts_sync": (
+        "TemporalStore",
+        "durable commit (async_storage=false)",
+        "HTTP /batch_write + /batch_execute, bounded batches",
+    ),
     "ts_proxy": ("TemporalStore via proxy", "async commit (async_storage=true)", "HTTP /batch_execute through the proxy hop"),
 }
 

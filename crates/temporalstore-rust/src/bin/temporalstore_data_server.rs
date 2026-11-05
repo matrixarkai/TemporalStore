@@ -1026,6 +1026,10 @@ fn main() {
                 Ok(req) => json_response(200, &runtime.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/batch_write") => match parse_json::<BatchExecuteRequest>(&request.body) {
+                Ok(req) => json_response(200, &runtime.batch_write(req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
             ("POST", "/execute_replicated") => {
                 match parse_json::<ReplicatedExecuteRequest>(&request.body) {
                     Ok(req) => json_response(200, &engine.execute_replicated(req)),

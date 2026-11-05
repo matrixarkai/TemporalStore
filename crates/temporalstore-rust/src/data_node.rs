@@ -49,8 +49,8 @@ use crate::meta::{
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, ShardId, Status,
+    BatchExecuteRequest, BatchExecuteResponse, BatchWriteError, BatchWriteResponse, Command,
+    CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
 #[path = "data_node/data_node_lifecycle.rs"]
@@ -2640,6 +2640,55 @@ impl DataNodeRuntime {
         );
         self.mirror_writes(request.shard_id, &request.commands, &response.responses);
         response
+    }
+
+    /// Execute a write-only batch and return only its count plus sparse failures.
+    ///
+    /// The regular batch response remains available for reads and callers that need command
+    /// payloads. Feature ingestion needs neither: repeating a full successful status and empty
+    /// response for every command adds response bytes and JSON work proportional to batch size.
+    pub fn batch_write(&self, request: BatchExecuteRequest) -> BatchWriteResponse {
+        if let Some(index) = request
+            .commands
+            .iter()
+            .position(|command| !is_write_command(command))
+        {
+            return BatchWriteResponse {
+                status: Status::error(
+                    "read_in_write_batch",
+                    format!("command {index} is not a write"),
+                ),
+                applied: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let response = self.batch_execute(request);
+        if !response.status.ok {
+            return BatchWriteResponse {
+                status: response.status,
+                applied: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let mut applied = 0;
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if item.status.ok {
+                applied += 1;
+            } else {
+                errors.push(BatchWriteError {
+                    index,
+                    status: item.status,
+                });
+            }
+        }
+        BatchWriteResponse {
+            status: Status::ok(),
+            applied,
+            errors,
+        }
     }
 
     pub fn batch_execute_checked(

@@ -40,9 +40,10 @@ event timestamp are one key's worth of work:
   across stores by construction, which is the only reason a latency comparison
   between them means anything.
 
-Both reads and writes go through bounded ``/batch_execute`` requests, so a
-``get_online_features`` call groups entities instead of issuing one request
-per entity.
+Reads go through bounded ``/batch_execute`` requests. Writes use the compact
+``/batch_write`` acknowledgment and safely fall back to ``/batch_execute``
+when an older node returns 404, so serving groups entities instead of issuing
+one request per entity.
 """
 
 from __future__ import annotations
@@ -418,7 +419,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             )
 
         if commands:
-            client.batch_execute(commands)
+            client.batch_write(commands)
         if progress and written:
             progress(written)
         logger.debug(

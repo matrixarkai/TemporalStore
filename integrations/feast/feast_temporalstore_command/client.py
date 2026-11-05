@@ -2,11 +2,11 @@
 # Copyright 2026 MatrixArkAI
 """HTTP/JSON command client for a TemporalStore data node.
 
-The data node serves the command surface at ``POST /execute`` and
-``POST /batch_execute``. Both take a shard id and one or more ``Command``
-documents; ``Command`` is a serde-tagged enum, so a command is a JSON object
-whose ``kind`` is the snake_case variant name and whose remaining fields are
-the variant's fields.
+The data node serves the command surface at ``POST /execute``,
+``POST /batch_execute``, and the compact write-only ``POST /batch_write``.
+They take a shard id and one or more ``Command`` documents; ``Command`` is a
+serde-tagged enum, so a command is a JSON object whose ``kind`` is the
+snake_case variant name and whose remaining fields are the variant's fields.
 
 Two asymmetries in that wire format are load-bearing for anyone measuring it,
 so they are stated here rather than discovered later:
@@ -25,7 +25,7 @@ import base64
 import http.client
 import json
 import threading
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 __all__ = [
     "TemporalStoreCommandError",
@@ -104,6 +104,7 @@ class TemporalStoreClient:
         # makes `close()` mean closed.
         self._all_connections: List[http.client.HTTPConnection] = []
         self._registry_lock = threading.Lock()
+        self._batch_write_supported: Optional[bool] = None
 
     # -- connection handling -------------------------------------------------
 
@@ -205,9 +206,14 @@ class TemporalStoreClient:
         ``commands``. An empty list is answered without a round trip: the node
         would accept it, but a caller that batched nothing wants nothing.
         """
-        if not commands:
-            return []
         results: List[Dict[str, Any]] = []
+        for chunk, body in self._encoded_batches(commands):
+            results.extend(self._batch_once(chunk, body))
+        return results
+
+    def _encoded_batches(
+        self, commands: List[Dict[str, Any]]
+    ) -> Iterator[Tuple[List[Dict[str, Any]], bytes]]:
         chunk: List[Dict[str, Any]] = []
         encoded_chunk: List[bytes] = []
         prefix = (
@@ -228,7 +234,7 @@ class TemporalStoreClient:
                 or chunk_bytes + separator_bytes + len(encoded)
                 > self.max_batch_request_bytes
             ):
-                results.extend(self._batch_once(chunk, encoded_chunk, prefix))
+                yield chunk, prefix + b",".join(encoded_chunk) + b"]}"
                 chunk = []
                 encoded_chunk = []
                 chunk_bytes = envelope_bytes
@@ -237,16 +243,13 @@ class TemporalStoreClient:
             encoded_chunk.append(encoded)
             chunk_bytes += separator_bytes + len(encoded)
         if chunk:
-            results.extend(self._batch_once(chunk, encoded_chunk, prefix))
-        return results
+            yield chunk, prefix + b",".join(encoded_chunk) + b"]}"
 
     def _batch_once(
         self,
         commands: List[Dict[str, Any]],
-        encoded_commands: List[bytes],
-        prefix: bytes,
+        body: bytes,
     ) -> List[Dict[str, Any]]:
-        body = prefix + b",".join(encoded_commands) + b"]}"
         envelope = self._post_encoded("/batch_execute", body)
         status = envelope.get("status") or {}
         if not status.get("ok", False):
@@ -263,6 +266,49 @@ class TemporalStoreClient:
                 f"sent {len(commands)} commands, got {len(responses)} responses",
             )
         return [self._unwrap(item) for item in responses]
+
+    def batch_write(self, commands: List[Dict[str, Any]]) -> None:
+        """Run write commands with a compact success count and sparse failures.
+
+        A node without the write-only endpoint answers 404 before applying anything;
+        that response is safe to fall back from to the regular batch endpoint. Other
+        transport errors remain ambiguous and are never retried.
+        """
+        for chunk, body in self._encoded_batches(commands):
+            if self._batch_write_supported is False:
+                self._batch_once(chunk, body)
+                continue
+            try:
+                envelope = self._post_encoded("/batch_write", body)
+            except TemporalStoreCommandError as error:
+                if error.code != "http_404":
+                    raise
+                self._batch_write_supported = False
+                self._batch_once(chunk, body)
+                continue
+
+            self._batch_write_supported = True
+            status = envelope.get("status") or {}
+            if not status.get("ok", False):
+                raise TemporalStoreCommandError(
+                    status.get("code", "unknown"), status.get("message", "")
+                )
+            errors = envelope.get("errors") or []
+            applied = int(envelope.get("applied", 0))
+            if applied + len(errors) != len(chunk):
+                raise TemporalStoreCommandError(
+                    "batch_length_mismatch",
+                    f"sent {len(chunk)} writes, got {applied} successes and "
+                    f"{len(errors)} errors",
+                )
+            if errors:
+                first = errors[0]
+                item_status = first.get("status") or {}
+                raise TemporalStoreCommandError(
+                    item_status.get("code", "unknown"),
+                    f"command {first.get('index', '?')}: "
+                    f"{item_status.get('message', '')}",
+                )
 
     def health(self) -> bool:
         try:

@@ -62,6 +62,12 @@ class RecordingClient(TemporalStoreClient):
                 "status": {"ok": True, "code": "ok", "message": ""},
                 "responses": [ok({"kind": "empty"})] * len(document["commands"]),
             }
+        if path == "/batch_write":
+            return {
+                "status": {"ok": True, "code": "ok", "message": ""},
+                "applied": len(document["commands"]),
+                "errors": [],
+            }
         return ok({"kind": "empty"})
 
     def _post(self, path, document):  # type: ignore[override]
@@ -203,6 +209,60 @@ class ClientProtocolTest(unittest.TestCase):
 
         self.assertEqual(encoded_commands, len(commands))
         self.assertEqual(client.sent[0][1]["commands"], commands)
+
+    def test_compact_write_acknowledges_the_whole_batch(self):
+        client = RecordingClient()
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["f", "eA=="]]}
+            for i in range(3)
+        ]
+        client.batch_write(commands)
+        self.assertEqual(client.sent, [("/batch_write", {"shard_id": 1, "commands": commands})])
+
+    def test_compact_write_surfaces_an_indexed_command_error(self):
+        client = RecordingClient(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "applied": 1,
+                    "errors": [
+                        {
+                            "index": 1,
+                            "status": {
+                                "ok": False,
+                                "code": "quota_exhausted",
+                                "message": "limit reached",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        with self.assertRaises(TemporalStoreCommandError) as caught:
+            client.batch_write(
+                [
+                    {"kind": "common_delete", "key": "a"},
+                    {"kind": "common_delete", "key": "b"},
+                ]
+            )
+        self.assertEqual(caught.exception.code, "quota_exhausted")
+        self.assertIn("command 1", caught.exception.message)
+
+    def test_missing_compact_write_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def _post_encoded(self, path, body):  # type: ignore[override]
+                if path == "/batch_write":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._post_encoded(path, body)
+
+        client = OlderNodeClient()
+        client.batch_write([{"kind": "common_delete", "key": "a"}])
+        client.batch_write([{"kind": "common_delete", "key": "b"}])
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual([path for path, _ in client.sent], ["/batch_execute", "/batch_execute"])
 
     def test_the_command_document_is_json_serialisable_as_sent(self):
         client = RecordingClient()
@@ -388,7 +448,7 @@ class OnlineStoreTest(unittest.TestCase):
 
         self.assertEqual(len(client.sent), 1, "a write should be ONE round trip")
         path, document = client.sent[0]
-        self.assertEqual(path, "/batch_execute")
+        self.assertEqual(path, "/batch_write")
         commands = document["commands"]
         self.assertEqual(len(commands), 3)
         self.assertTrue(all(c["kind"] == "hash_multi_set" for c in commands))
@@ -407,7 +467,8 @@ class OnlineStoreTest(unittest.TestCase):
                 },
                 {
                     "status": {"ok": True, "code": "ok", "message": ""},
-                    "responses": [ok({"kind": "empty"})],
+                    "applied": 1,
+                    "errors": [],
                 },
             ]
         )

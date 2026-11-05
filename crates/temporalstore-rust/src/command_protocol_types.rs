@@ -2583,9 +2583,8 @@ pub enum CommandResponse {
         /// `b'v'` is below the line, where the toll is exactly zero, which is why every fixture in
         /// this area had seen 1.0x and the toll went unpriced.
         ///
-        /// SISTER VARIANTS STILL PAY IT. `Members` and `Values` carry bulk payloads through
-        /// `Vec<Vec<u8>>` and `Vec<Option<Vec<u8>>>`; a field-level annotation does not reach
-        /// inside a container, so they need their own wrapper and are deliberately unchanged.
+        /// `Members` still needs its own wrapper because a field-level annotation does not reach
+        /// inside `Vec<Vec<u8>>`. `Values` uses `response_values` below.
         #[serde(with = "cached_payload_bytes")]
         value: Option<Vec<u8>>,
     },
@@ -2877,9 +2876,41 @@ pub struct BatchExecuteResponse {
     pub responses: Vec<ExecuteResponse>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchWriteError {
+    pub index: usize,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchWriteResponse {
+    pub status: Status,
+    pub applied: usize,
+    pub errors: Vec<BatchWriteError>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_batch_write_success_does_not_grow_per_command() {
+        let one = serde_json::to_vec(&BatchWriteResponse {
+            status: Status::ok(),
+            applied: 1,
+            errors: Vec::new(),
+        })
+        .unwrap();
+        let many = serde_json::to_vec(&BatchWriteResponse {
+            status: Status::ok(),
+            applied: 10_000,
+            errors: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(many.len() < 100, "compact response was {} bytes", many.len());
+        assert!(many.len() <= one.len() + 4, "{one:?} -> {many:?}");
+    }
 
     #[test]
     fn values_use_compact_json_bytes_and_accept_integer_arrays() {
