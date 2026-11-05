@@ -1,8 +1,9 @@
 # TemporalStore as a Feast online store — over the native command surface
 
 A [Feast](https://github.com/feast-dev/feast) **online store** that talks to a
-TemporalStore data node over its own command surface: `POST /batch_execute`
-with `HashMultiSet` / `HashMultiGet` commands.
+TemporalStore data node over its own command surface: compact `POST /batch_write`
+requests and binary `POST /batch_execute_msgpack` responses, with compatible
+JSON routing for older nodes.
 
 ## Which integration point this is
 
@@ -60,7 +61,7 @@ to want. It costs three things this one does not:
 2. **One HTTP round trip per Redis command.** `serve_redis_proxy` issues one
    `/execute` per command it decodes, so a pipelined `HMGET` over N entities
    becomes N sequential round trips. This package groups entity reads into
-   bounded `/batch_execute` requests.
+   bounded `/batch_execute_msgpack` requests.
 3. **A byte-encoding workaround.** Feast's Redis store names a hash field by
    the 4-byte little-endian murmur3 of `"{view}:{feature}"` — arbitrary bytes.
    A hash field on the command surface is a `String`, so this package uses the
@@ -86,8 +87,10 @@ footprint ratio without knowing.
 
 ## Reads
 
-`online_read` over N entity keys uses ordered `/batch_execute` requests bounded
-by command count and encoded request bytes. The answers are positional; a short answer is refused
+`online_read` over N entity keys uses ordered `/batch_execute_msgpack` requests
+bounded by command count and encoded request bytes. Nodes without that route
+are detected once per client and use `/batch_execute`. The answers are
+positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
 
@@ -96,8 +99,10 @@ empty values.
 
 ## Writes
 
-`online_write_batch` uses bounded `/batch_execute` requests for `HashMultiSet`
-commands, plus a batched timestamp read first unless `skip_dedup` is set:
+`online_write_batch` uses bounded `/batch_write` requests for `HashMultiSet`
+commands, plus a batched timestamp read first unless `skip_dedup` is set. Nodes
+without the compact write route are detected once per client and use
+`/batch_execute`:
 
 * **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then
   write only the rows whose event time is newer. The number of round trips is
@@ -156,8 +161,8 @@ Partial is written as partial below. Nothing here is rounded up.
 
 | method | required? | status |
 | --- | --- | --- |
-| `online_write_batch` | **abstract** | **implemented** — one `/batch_execute`; parameters identical to the base class |
-| `online_read` | **abstract** | **implemented** — one `/batch_execute` for N entities |
+| `online_write_batch` | **abstract** | **implemented** — bounded `/batch_write` calls with a compatibility fallback; parameters identical to the base class |
+| `online_read` | **abstract** | **implemented** — bounded binary batch calls for N entities with a compatibility fallback |
 | `update` | **abstract** | **implemented** — nothing to create (the surface is schemaless); views being removed are swept through the teardown path |
 | `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which is off by default and **must not be combined with async commit** (see that option's docs: 17,500 of 20,000 rows were lost). With it off, teardown logs that it cannot enumerate instead of claiming success |
 | `online_read_async` | optional, **base raises** | **implemented** — without it `get_online_features_async` fails outright |
@@ -266,12 +271,10 @@ anyone reading a latency or bandwidth number off this path:
 
 * **Requests are base64.** `HashMultiSet.entries` carries the bytes codec, so
   values go out base64 — a flat 1.33x.
-* **Responses are decimal arrays.** `CommandResponse::Values` carries no such
-  codec, so a byte comes back as the characters `104,`. That is roughly **3.8x
-  the payload** for protobuf-serialized feature values. A read's wire cost is
-  therefore about 4x its payload, and that is the **transport**, not the
-  engine. The client decodes both shapes, so a node that gains the codec later
-  needs no change here.
+* **Binary batch responses keep byte strings binary.** A measured response
+  carrying ten 12 KiB values is 123,551 bytes, versus 164,811 bytes through
+  JSON base64: 25.03% fewer wire bytes. The client still accepts JSON base64
+  and the older decimal-array shape.
 
 ## Tests
 
@@ -283,15 +286,9 @@ python integrations/feast/run_tests.py
 cd integrations/feast && PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_online_store.py
 ```
 
-**18 tests, no running store needed**: the transport is replaced with a
-recording stub and the assertions are about the commands this integration
-emits, which is the part that can be wrong in a way a live smoke test would not
-notice. Counts, as measured rather than estimated:
-
-| environment | collected | executed | skipped |
-| --- | --: | --: | --: |
-| Feast installed | 18 | 18 | 0 |
-| Feast absent | 18 | 9 | 9 |
+**The current offline run executes 49 checks:** 42 command-provider tests plus
+7 wire tests. The transport is replaced with a recording stub in that tier;
+the five-case Feast API conformance tier runs separately against a live node.
 
 The runner asserts the **executed** count, not the collected one, and that
 distinction is the whole guard: `unittest` collects a class decorated with

@@ -40,10 +40,10 @@ event timestamp are one key's worth of work:
   across stores by construction, which is the only reason a latency comparison
   between them means anything.
 
-Reads go through bounded ``/batch_execute`` requests. Writes use the compact
-``/batch_write`` acknowledgment and safely fall back to ``/batch_execute``
-when an older node returns 404, so serving groups entities instead of issuing
-one request per entity.
+Reads use bounded ``/batch_execute_msgpack`` responses and fall back once to
+the JSON-compatible ``/batch_execute`` route when needed. Writes use the
+compact ``/batch_write`` acknowledgment with the same compatibility behavior,
+so serving groups entities instead of issuing one request per entity.
 """
 
 from __future__ import annotations

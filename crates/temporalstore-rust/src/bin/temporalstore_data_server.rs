@@ -24,7 +24,7 @@ use temporalstore_rust::data_node::{
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    get_bytes_with_headers, json_response, parse_json, post_json,
+    get_bytes_with_headers, json_response, msgpack_response, parse_json, post_json,
     post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
     HttpRequestOptions, StreamAction, StreamTransfer,
 };
@@ -1026,6 +1026,15 @@ fn main() {
                 Ok(req) => json_response(200, &runtime.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/batch_execute_msgpack") => {
+                match parse_json::<BatchExecuteRequest>(&request.body) {
+                    Ok(req) => msgpack_response(200, &runtime.batch_execute(req)),
+                    Err(err) => json_response(
+                        400,
+                        &Status::error("bad_request", err.to_string()),
+                    ),
+                }
+            }
             ("POST", "/batch_write") => match parse_json::<BatchExecuteRequest>(&request.body) {
                 Ok(req) => json_response(200, &runtime.batch_write(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),

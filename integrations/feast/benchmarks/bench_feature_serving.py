@@ -232,12 +232,12 @@ ARM_METADATA = {
     "ts_async": (
         "TemporalStore",
         "async commit (async_storage=true)",
-        "HTTP /batch_write + /batch_execute, bounded batches",
+        "HTTP /batch_write + /batch_execute_msgpack, bounded with JSON fallback",
     ),
     "ts_sync": (
         "TemporalStore",
         "durable commit (async_storage=false)",
-        "HTTP /batch_write + /batch_execute, bounded batches",
+        "HTTP /batch_write + /batch_execute_msgpack, bounded with JSON fallback",
     ),
     "ts_proxy": ("TemporalStore via proxy", "async commit (async_storage=true)", "HTTP /batch_execute through the proxy hop"),
 }

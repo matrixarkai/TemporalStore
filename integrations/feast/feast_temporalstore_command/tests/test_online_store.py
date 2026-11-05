@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+import msgpack
 import os
 import sys
 import unittest
@@ -50,6 +51,7 @@ class RecordingClient(TemporalStoreClient):
 
     def __init__(self, answers=None):
         super().__init__()
+        self._binary_batch_supported = False
         self.sent = []
         self.answers = list(answers or [])
 
@@ -173,6 +175,53 @@ class ClientProtocolTest(unittest.TestCase):
             [command["key"] for _, document in client.sent for command in document["commands"]],
             [str(i) for i in range(5)],
         )
+
+    def test_binary_batch_keeps_long_values_as_bytes(self):
+        payload = bytes(range(256)) * 16
+
+        class BinaryClient(TemporalStoreClient):
+            paths = []
+
+            def _request_encoded(self, path, body):  # type: ignore[override]
+                self.paths.append(path)
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "responses": [
+                            ok({"kind": "values", "values": [payload, None]})
+                        ],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = BinaryClient()
+        answer = client.batch_execute(
+            [{"kind": "hash_multi_get", "key": "a", "fields": ["f", "missing"]}]
+        )[0]
+        self.assertEqual(client.paths, ["/batch_execute_msgpack"])
+        self.assertEqual(decode_bytes(answer["values"][0]), payload)
+        self.assertIsNone(decode_bytes(answer["values"][1]))
+
+    def test_missing_binary_batch_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def __init__(self):
+                super().__init__()
+                self._binary_batch_supported = None
+
+            def _request_encoded(self, path, body):  # type: ignore[override]
+                if path == "/batch_execute_msgpack":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._request_encoded(path, body)
+
+        client = OlderNodeClient()
+        command = {"kind": "hash_multi_get", "key": "a", "fields": ["f"]}
+        client.batch_execute([command])
+        client.batch_execute([command])
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual([path for path, _ in client.sent], ["/batch_execute", "/batch_execute"])
 
     def test_encoded_byte_limit_splits_large_feature_values(self):
         client = RecordingClient()

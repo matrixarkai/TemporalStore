@@ -2,11 +2,12 @@
 # Copyright 2026 MatrixArkAI
 """HTTP/JSON command client for a TemporalStore data node.
 
-The data node serves the command surface at ``POST /execute``,
-``POST /batch_execute``, and the compact write-only ``POST /batch_write``.
-They take a shard id and one or more ``Command`` documents; ``Command`` is a
-serde-tagged enum, so a command is a JSON object whose ``kind`` is the
-snake_case variant name and whose remaining fields are the variant's fields.
+The data node serves the command surface at ``POST /execute``, the binary-read
+``POST /batch_execute_msgpack``, the JSON-compatible ``POST /batch_execute``,
+and the compact write-only ``POST /batch_write``. They take a shard id and one
+or more ``Command`` documents; ``Command`` is a serde-tagged enum, so a command
+is a JSON object whose ``kind`` is the snake_case variant name and whose
+remaining fields are the variant's fields.
 
 Two asymmetries in that wire format are load-bearing for anyone measuring it,
 so they are stated here rather than discovered later:
@@ -14,9 +15,9 @@ so they are stated here rather than discovered later:
 * **Request payloads are base64.** ``HashMultiSet.entries`` carries a
   ``bytes_serde`` annotation, so values go out as base64 strings -- a flat
   1.33x on the bytes, whatever they are.
-* **Response payloads are base64.** ``CommandResponse::Values`` uses the same
-  flat 1.33x encoding as requests. :func:`decode_bytes` also accepts the older
-  decimal-array shape so clients can read responses from either node version.
+* **JSON response payloads are base64.** The binary batch response keeps them
+  as byte strings. :func:`decode_bytes` accepts both plus the older decimal-array
+  shape, so clients can read responses from every node version.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import msgpack
 import threading
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
@@ -105,6 +107,7 @@ class TemporalStoreClient:
         self._all_connections: List[http.client.HTTPConnection] = []
         self._registry_lock = threading.Lock()
         self._batch_write_supported: Optional[bool] = None
+        self._binary_batch_supported: Optional[bool] = None
 
     # -- connection handling -------------------------------------------------
 
@@ -158,7 +161,7 @@ class TemporalStoreClient:
                 pass
         self._local = threading.local()
 
-    def _post_encoded(self, path: str, body: bytes) -> Dict[str, Any]:
+    def _request_encoded(self, path: str, body: bytes) -> bytes:
         headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
         # A timeout can happen after the server applied a write but before its
         # response arrives. Do not resend an ambiguous request: FeatureAppend
@@ -176,7 +179,10 @@ class TemporalStoreClient:
             raise TemporalStoreCommandError(
                 f"http_{response.status}", raw.decode("utf-8", "replace")[:512]
             )
-        return json.loads(raw)
+        return raw
+
+    def _post_encoded(self, path: str, body: bytes) -> Dict[str, Any]:
+        return json.loads(self._request_encoded(path, body))
 
     def _post(self, path: str, document: Dict[str, Any]) -> Dict[str, Any]:
         body = json.dumps(document, separators=(",", ":")).encode("utf-8")
@@ -250,7 +256,24 @@ class TemporalStoreClient:
         commands: List[Dict[str, Any]],
         body: bytes,
     ) -> List[Dict[str, Any]]:
-        envelope = self._post_encoded("/batch_execute", body)
+        envelope = None
+        if self._binary_batch_supported is not False:
+            try:
+                raw = self._request_encoded("/batch_execute_msgpack", body)
+            except TemporalStoreCommandError as error:
+                if error.code != "http_404":
+                    raise
+                self._binary_batch_supported = False
+            else:
+                try:
+                    envelope = msgpack.unpackb(raw, raw=False)
+                except (ValueError, msgpack.UnpackException) as error:
+                    raise TemporalStoreCommandError(
+                        "invalid_binary_response", str(error)
+                    ) from error
+                self._binary_batch_supported = True
+        if envelope is None:
+            envelope = self._post_encoded("/batch_execute", body)
         status = envelope.get("status") or {}
         if not status.get("ok", False):
             raise TemporalStoreCommandError(
