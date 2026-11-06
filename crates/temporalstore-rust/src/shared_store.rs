@@ -3119,6 +3119,13 @@ pub(crate) const SHARED_OBJECT_CONTAINER_PROTOBUF: u8 = 0x01;
 ///
 /// THE ONLY PLACE THAT DECIDES. Every reader below calls this, so the two shapes cannot be told
 /// apart two different ways -- which is how a sniffing reader usually goes wrong.
+///
+/// THE JSON ARMS BELOW THIS ARE PERMANENT, now that no writer in this tree can produce that
+/// shape. The hold rule is on the installed base: a reader stays if ANY build that ever shipped
+/// could have written data a live store still holds, and every lease, cursor and routing-range
+/// object written before the writer flip is the JSON shape. "Which writer runs today" is the
+/// wrong question, and this is a public repo -- deleting a reader for a format on disk is silent
+/// data loss, not a cleanup.
 fn shared_object_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
     match bytes.split_first() {
         Some((&SHARED_OBJECT_CONTAINER_PROTOBUF, body)) => Some(body),
@@ -3126,38 +3133,21 @@ fn shared_object_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Lets a test exercise the binary writer without touching process-wide environment, which
-    /// would race every other test in the binary.
-    static PROTOBUF_OBJECTS_ON_THIS_THREAD: std::cell::Cell<bool> =
-        std::cell::Cell::new(false);
-}
-
-#[cfg(test)]
-pub(crate) fn write_shared_objects_as_protobuf_on_this_thread(on: bool) {
-    PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.set(on));
-}
-
-/// WHETHER THE WRITER TAKES THE BINARY ARM. OFF BY DEFAULT, AND THE READER DOES NOT CONSULT IT.
-///
-/// Reading the binary shape is UNCONDITIONAL; only writing it is gated. That asymmetry is the
-/// point: a store written by a node with this on must stay readable by a node with it off, so the
-/// reader cannot be allowed to depend on the flag. Same arrangement the index log uses.
-fn write_shared_objects_as_protobuf() -> bool {
-    #[cfg(test)]
-    if PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.get()) {
-        return true;
-    }
-    matches!(
-        std::env::var("TS_SHARED_STORE_PROTOBUF_OBJECTS_ENABLED")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
+// THE THREE OBJECT WRITERS ARE UNCONDITIONAL AS OF THIS CHANGE, AND NO JSON ENCODE PATH IS
+// LEFT FOR ANY OF THEM.
+//
+// `TS_SHARED_STORE_PROTOBUF_OBJECTS_ENABLED` and the per-thread override that went with it are
+// gone, along with the `serde_json` fall-through in each of `encode_shard_lease`,
+// `encode_replay_cursor` and `encode_routing_range_stamp`. The gate existed so the binary
+// writers could land while the readers rolled out; the readers shipped, and none of them has
+// ever consulted the gate, so there is nothing left for it to protect.
+//
+// THE ENCODERS ARE DELETED AND THE DECODERS ARE KEPT, FOR OPPOSITE REASONS. An encoder no
+// caller reaches is how a retired format comes back -- a later branch finds the function and
+// calls it. A decoder with no caller in THIS tree is still reached by every lease, cursor and
+// routing-range object already on disk: the hold is on the installed base, not on which writer
+// runs today. `shared_object_protobuf_body` decides per object from the first byte, never from a
+// setting, so a node that has never written a JSON object still reads one.
 
 fn encode_shared_object_protobuf<M: Message>(message: &M) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + message.encoded_len());
@@ -3181,14 +3171,13 @@ fn decode_shard_lease(bytes: &[u8]) -> Result<ShardLease, SharedStoreReplication
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// Encode a lease. ONE SHAPE, with no gate to pick another. `decode_shard_lease` above keeps
+/// its JSON arm permanently, for the leases already on disk.
 fn encode_shard_lease(lease: &ShardLease) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    if write_shared_objects_as_protobuf() {
-        return Ok(encode_shared_object_protobuf(&v1::SharedStoreShardLease {
-            load_version: lease.load_version,
-            owner: lease.owner.clone(),
-        }));
-    }
-    Ok(serde_json::to_vec(lease)?)
+    Ok(encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+        load_version: lease.load_version,
+        owner: lease.owner.clone(),
+    }))
 }
 
 // ---- the replay cursor
@@ -3207,19 +3196,18 @@ fn decode_replay_cursor(
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// Encode a replay cursor. ONE SHAPE, with no gate to pick another. `decode_replay_cursor`
+/// above keeps its JSON arm permanently, for the cursors already on disk.
 fn encode_replay_cursor(
     cursor: &SharedStoreReplayCursor,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    if write_shared_objects_as_protobuf() {
-        return Ok(encode_shared_object_protobuf(
-            &v1::SharedStoreReplayCursorObject {
-                shard_id: cursor.shard_id,
-                last_wal_index: cursor.last_wal_index,
-                last_replay_time_ms: cursor.last_replay_time_ms,
-            },
-        ));
-    }
-    Ok(serde_json::to_vec_pretty(cursor)?)
+    Ok(encode_shared_object_protobuf(
+        &v1::SharedStoreReplayCursorObject {
+            shard_id: cursor.shard_id,
+            last_wal_index: cursor.last_wal_index,
+            last_replay_time_ms: cursor.last_replay_time_ms,
+        },
+    ))
 }
 
 // ---- the routing-range stamp published beside the index
@@ -3237,18 +3225,18 @@ pub(crate) fn decode_routing_range_stamp(
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// Encode a routing-range stamp. ONE SHAPE, with no gate to pick another.
+/// `decode_routing_range_stamp` above keeps its JSON arm permanently, for the stamps already on
+/// disk.
 fn encode_routing_range_stamp(
     stamp: &crate::engine::routing_range_stamp::RoutingRangeStamp,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    if write_shared_objects_as_protobuf() {
-        return Ok(encode_shared_object_protobuf(
-            &v1::SharedStoreRoutingRangeStamp {
-                start_routing_bucket: stamp.start_routing_bucket,
-                end_routing_bucket: stamp.end_routing_bucket,
-            },
-        ));
-    }
-    Ok(serde_json::to_vec(stamp)?)
+    Ok(encode_shared_object_protobuf(
+        &v1::SharedStoreRoutingRangeStamp {
+            start_routing_bucket: stamp.start_routing_bucket,
+            end_routing_bucket: stamp.end_routing_bucket,
+        },
+    ))
 }
 
 fn parse_wal_index(key: &str) -> Option<u64> {
@@ -8975,48 +8963,191 @@ mod tests {
         );
     }
 
-    /// THE WRITER IS STILL JSON BY DEFAULT, AND THE READER DOES NOT CONSULT THE GATE.
+    /// ALL THREE OBJECT WRITERS ARE BINARY WITH NOTHING TO TURN ON, AND A PLANTED JSON OBJECT
+    /// IS STILL READ BY THE REAL READER.
     ///
-    /// The asymmetry is the safety property: a store written with the flag ON must stay readable
-    /// by a node with it OFF. A test that only flipped the flag and round-tripped would pass even
-    /// if the reader had been made conditional, which is the mistake that breaks existing stores.
+    /// Driven through the real acquire/validate, save/load and publish/restore paths, because
+    /// those are what a running node uses -- a codec that round-trips in isolation is covered by
+    /// `the_widened_object_readers_accept_both_shapes` and proves nothing about them.
+    ///
+    /// EACH JSON ARM IS DRIVEN ON BYTES PLANTED DIRECTLY INTO THE OBJECT STORE, because the
+    /// writer that used to produce them has been deleted. A test that round-tripped through the
+    /// writer would have had nothing left to drive after the flip, and would have quietly become
+    /// a test of the binary arm twice over.
+    ///
+    /// Each plant carries a value NO OTHER PATH IN THIS TEST CAN PRODUCE, which is what keeps the
+    /// read assertions from being answered by something else:
+    ///   - the lease is planted at load_version 5 by `owner-legacy`, and `validate_shard_lease`
+    ///     accepts only an EXACT match, so 5 can only have come from the planted document;
+    ///   - the cursor is planted at index 77, and `load_replay_cursor` answers a ZERO cursor for
+    ///     an absent object, so a fallback recovering this value would answer 0 rather than 77 --
+    ///     which is why `try_load_replay_cursor` is used and the exact fields are asserted;
+    ///   - the routing-range stamp is planted as the same value the index was published with,
+    ///     because `install_index_bytes` refuses a range that disagrees with the index. The
+    ///     discriminator there is the ARM, not the value: `restore_index_and_blocks` propagates a
+    ///     decode failure as `RoutingRangeMissing` and has no fallback, so the restore completing
+    ///     is only possible if the JSON arm ran.
     #[tokio::test]
-    async fn the_object_writer_is_json_until_asked_and_the_reader_never_cares() {
+    async fn the_object_writers_are_binary_and_planted_json_objects_are_still_read() {
         let dir = tempfile::tempdir().unwrap();
         let (store, replicator) = test_shared_store(dir.path());
+        // DENOMINATOR: three objects lost their JSON encoder, and each is written out by hand
+        // below rather than looped over generically, so this count is what says none was
+        // quietly dropped from the test.
+        let mut checked = 0;
 
-        // ---- default: JSON on disk. The key comes from the SAME helper the writer uses, so this
-        // cannot drift from the real layout the way a hand-spelled prefix would.
-        replicator.acquire_shard_lease(1, 1, "owner-a").await.unwrap();
-        let lease_key = replicator.lease_key(1);
-        let default_bytes = store.get(&lease_key).await.unwrap();
+        // ================= the shard lease =================
+        // The key comes from the SAME helper the writer uses, so it cannot drift from the real
+        // layout the way a hand-spelled prefix would.
+        replicator.acquire_shard_lease(2, 1, "owner-a").await.unwrap();
+        let lease_key = replicator.lease_key(2);
+        let written = store.get(&lease_key).await.unwrap();
         assert_eq!(
-            default_bytes[0], b'{',
-            "the shipped default must still write the JSON shape"
+            written[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "the shipped default must write the lease in the binary shape as of the flip"
         );
-        // And it validates, through the widened reader.
-        replicator.validate_shard_lease(1, 1).await.unwrap();
-
-        // ---- asked: binary on disk, and still readable.
-        write_shared_objects_as_protobuf_on_this_thread(true);
-        replicator.acquire_shard_lease(1, 2, "owner-b").await.unwrap();
-        let binary_bytes = store.get(&lease_key).await.unwrap();
-        assert_eq!(
-            binary_bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
-            "with the gate on, the lease must be written in the binary shape"
+        assert_ne!(
+            written[0], b'{',
+            "the default still writes a JSON lease, so the encode arm this change deleted is \
+             reachable after all"
         );
         assert!(
-            serde_json::from_slice::<serde_json::Value>(&binary_bytes).is_err(),
-            "the binary object must not parse as JSON, or the container byte proves nothing"
+            serde_json::from_slice::<serde_json::Value>(&written).is_err(),
+            "the binary lease must not parse as JSON, or the container byte proves nothing"
+        );
+        replicator.validate_shard_lease(2, 1).await.unwrap();
+
+        // The INSTALLED BASE: JSON bytes written straight into the store.
+        let planted = serde_json::to_vec(&ShardLease {
+            load_version: 5,
+            owner: "owner-legacy".to_string(),
+        })
+        .unwrap();
+        assert_eq!(planted[0], b'{', "the planted lease is not the JSON shape");
+        store.put(&lease_key, Bytes::from(planted)).await.unwrap();
+        assert_eq!(
+            store.get(&lease_key).await.unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below reads a JSON lease"
+        );
+        replicator.validate_shard_lease(2, 5).await.expect(
+            "the planted JSON lease was not read, so every lease written before the flip is \
+             unreadable and the shard it fences cannot be claimed",
+        );
+        // And the fence still refuses a stale load_version, so reading the old shape did not
+        // weaken the check that uses it.
+        assert!(replicator.validate_shard_lease(2, 4).await.is_err());
+        checked += 1;
+
+        // ================= the replay cursor =================
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 3,
+                last_wal_index: 41,
+                last_replay_time_ms: 1234,
+            })
+            .await
+            .unwrap();
+        let cursor_key = replicator.replay_cursor_key(3);
+        let written = store.get(&cursor_key).await.unwrap();
+        assert_eq!(
+            written[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "the shipped default must write the cursor in the binary shape as of the flip"
+        );
+        assert_ne!(written[0], b'{', "the default still writes a JSON cursor");
+        assert_eq!(
+            replicator.load_replay_cursor(3).await.unwrap().last_wal_index,
+            41
         );
 
-        // THE LOAD-BEARING ASSERTION: turn the writer back OFF and read the binary object. A
-        // reader that consulted the gate would fail here, which is exactly the regression that
-        // would make a mixed-version cluster unable to read its own store.
-        write_shared_objects_as_protobuf_on_this_thread(false);
-        replicator.validate_shard_lease(1, 2).await.unwrap();
-        // A stale fence is still refused, so the widening did not weaken the check itself.
-        assert!(replicator.validate_shard_lease(1, 1).await.is_err());
+        let planted = serde_json::to_vec_pretty(&SharedStoreReplayCursor {
+            shard_id: 3,
+            last_wal_index: 77,
+            last_replay_time_ms: 5678,
+        })
+        .unwrap();
+        assert_eq!(planted[0], b'{', "the planted cursor is not the JSON shape");
+        store.put(&cursor_key, Bytes::from(planted)).await.unwrap();
+        assert_eq!(
+            store.get(&cursor_key).await.unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below reads a JSON cursor"
+        );
+        let read = replicator
+            .try_load_replay_cursor(3)
+            .await
+            .unwrap()
+            .expect("the planted cursor object is present, so this must not be None");
+        assert_eq!(
+            (read.shard_id, read.last_wal_index, read.last_replay_time_ms),
+            (3, 77, 5678),
+            "the planted JSON cursor was not read; the absent-object fallback answers index 0, \
+             so 77 is a value only the JSON decode arm can produce"
+        );
+        checked += 1;
+
+        // ================= the routing-range stamp published beside the index =================
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"published-value".to_vec(),
+            },
+        });
+        replicator.publish_index(1, &primary).await.unwrap();
+        replicator
+            .publish_block_slabs(1, &primary.block_store())
+            .await
+            .unwrap();
+        let range_key = replicator.index_routing_range_key(1);
+        let written = store.get(&range_key).await.unwrap();
+        assert_eq!(
+            written[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "the shipped default must write the routing range in the binary shape as of the flip"
+        );
+        assert_ne!(written[0], b'{', "the default still writes a JSON routing range");
+
+        // The planted stamp must agree with the published index, so it is the SAME value in the
+        // old shape. The arm is the discriminator here, not the value.
+        let stamp = decode_routing_range_stamp(&written).unwrap();
+        let planted = serde_json::to_vec(&stamp).unwrap();
+        assert_eq!(planted[0], b'{', "the planted stamp is not the JSON shape");
+        store.put(&range_key, Bytes::from(planted)).await.unwrap();
+        assert_eq!(
+            store.get(&range_key).await.unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below reads a JSON routing range"
+        );
+
+        let follower = test_engine(dir.path(), "follower");
+        let restored = replicator
+            .restore_index_and_blocks(1, &follower, &follower.block_store())
+            .await
+            .expect(
+                "the restore refused a JSON routing-range object, so every index published \
+                 before the flip can no longer be restored",
+            );
+        assert_eq!(restored, vec![0]);
+        follower.load_shard(1);
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"published-value".to_vec())
+            },
+            "the restore completed but the index it installed is not the published one"
+        );
+        checked += 1;
+
+        assert_eq!(checked, 3, "three object writers lost their JSON arm in this change");
     }
 
     #[tokio::test]
