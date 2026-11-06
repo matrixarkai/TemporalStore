@@ -491,16 +491,32 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         ],
     ) -> List[int]:
         """Query many history windows through bounded ordered batches."""
-        commands = [
-            self._feature_aggregate_command(config, table, *query) for query in queries
-        ]
+        commands = []
+        command_indexes = {}
+        response_indexes = []
+        for query in queries:
+            command = self._feature_aggregate_command(config, table, *query)
+            identity = (
+                command["key"],
+                command["start_ms"],
+                command["end_ms"],
+                command["aggregator"],
+                command["count"],
+            )
+            command_index = command_indexes.get(identity)
+            if command_index is None:
+                command_index = len(commands)
+                command_indexes[identity] = command_index
+                commands.append(command)
+            response_indexes.append(command_index)
+
         answers = self._get_client(config).batch_execute(commands)
-        values = []
+        unique_values = []
         for answer in answers:
             if answer.get("kind") != "aggregate":
                 raise ValueError("unexpected feature aggregate response")
-            values.append(int(answer["value"]))
-        return values
+            unique_values.append(int(answer["value"]))
+        return [unique_values[index] for index in response_indexes]
 
     def _feature_aggregate_command(
         self,
