@@ -95,6 +95,15 @@ impl Config {
         self.flag_or("control_coalesce_persist", true)
     }
 
+    /// Gate for a trim that records its BOUNDARY instead of one record per point it dropped.
+    ///
+    /// OFF by default, and it has to stay off for one release: the record is readable only by a
+    /// build carrying the apply path below, and an older one declines the item and lets the
+    /// trimmed points reappear until the next trim drops them again. Reader first, writer after.
+    pub fn trim_boundary_record_enabled(&self) -> bool {
+        self.flag("trim_boundary_record")
+    }
+
     /// Gate for bounded distinct: convert oversized exact CHANGE sets to fixed-size HLL sketches
     /// (approximate distinct counts past the threshold). Off by default so distinct stays exact.
     pub fn control_distinct_sketch_enabled(&self) -> bool {

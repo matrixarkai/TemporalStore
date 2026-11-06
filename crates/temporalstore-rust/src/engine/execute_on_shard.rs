@@ -465,6 +465,7 @@ pub(crate) fn execute_on_shard(
     control_rollup_enabled: bool,
     control_coalesce_persist: bool,
     control_distinct_sketch: bool,
+    trim_boundary_record: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
@@ -2579,6 +2580,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2683,6 +2685,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2885,6 +2888,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_blocks(
@@ -3094,6 +3098,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
