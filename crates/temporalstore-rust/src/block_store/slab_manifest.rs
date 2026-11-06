@@ -414,7 +414,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
     //
     // The stored id IS the slab id, and every path that WRITES one now writes the slab id itself,
     // so a descriptor this process builds cannot diverge. The manifest is the one way a different
-    // number enters: `stored_slab_id` serializes -- under the older `band_id` key -- and
+    // number enters: `stored_slab_id` serializes -- as of #2487 under its own canonical key, with
+    // the older `band_id` accepted on read only -- and
     // `load_slab_manifest_at` keeps whatever the file carried. The inspect loop above rewrites
     // it, but only for the slabs it actually inspected, and by default this open deliberately
     // SKIPS every sealed slab whose size and mtime still match what it was verified against. A

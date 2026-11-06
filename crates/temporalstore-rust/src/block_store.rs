@@ -1521,9 +1521,10 @@ pub struct BlockStoreSlabDescriptor {
     /// nothing ever configured the two sizes differently and the grouping was never exercised,
     /// which is why the map is keyed by slab id with one descriptor per slab.
     ///
-    /// It stays because it SERIALIZES -- under its original key, which the wire names below
-    /// record as `zone_id` -> `extent_id` -> `band_id` -- and the compat corpora carry it, so
-    /// dropping it is a wire break rather than a cleanup. Read `block_slab_id` in new code; the
+    /// It stays because it SERIALIZES -- as of #2487 under its own canonical name, with the
+    /// earlier spellings the aliases below record (`zone_id` -> `extent_id` -> `band_id`)
+    /// accepted on read only -- so dropping the field is a wire break rather than a cleanup.
+    /// Read `block_slab_id` in new code; the
     /// two cannot diverge, `reconcile_slab_manifest_with_disk` normalises this one from the map
     /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
     /// ever do.
@@ -1852,10 +1853,20 @@ pub struct BlockStoreBlockIndexReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct BlockStoreSlabManifest {
     version: u32,
-    /// ON-DISK KEY, NOT THE RUST NAME. `slab_manifest.json` is a format an already-deployed
-    /// binary reads, and the descriptor's `band_id` carries no `#[serde(default)]`, so a manifest
-    /// written under new keys is unreadable to it rather than merely unfamiliar.
-    /// `a_folded_manifest_still_writes_the_keys_on_disk` pins both keys.
+    /// EMITS `slabs`. `bands`, `extents` and `zones` are RETIRED spellings, accepted on read
+    /// and never written -- a serde `alias` widens the reader only.
+    ///
+    /// This flipped in #2487 and the decision is recorded in
+    /// `docs/temporalstore_page_block_address_contract.md`: it was available because the three
+    /// `compat/*.json` corpora anything actually reads carry the retired slab names ZERO times,
+    /// where counting all nine files made them look pinned. The readers were widened and shipped
+    /// before the writer moved, which is the only order in which such a flip exists at all.
+    ///
+    /// What the old comment here said -- that the file still says `bands` -- has been WRONG since
+    /// that change, and it is why two tests that reach in by literal string key were read as a
+    /// writer defect rather than as casualties of the flip.
+    /// `a_folded_manifest_still_writes_the_keys_on_disk` is the guard that pins which spelling
+    /// reaches the file, in both directions.
     #[serde(alias = "bands", alias = "extents", alias = "zones")]
     slabs: Vec<BlockStoreSlabDescriptor>,
 }
@@ -5378,12 +5389,24 @@ const RETIRED_NAMES: &[&str] = &[
         let manifest_path = slab_manifest_path(dir.path());
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest["bands"] = serde_json::json!([manifest["bands"]
+        // THE ON-DISK KEYS, READ BY LITERAL STRING -- which is why #2487 could flip them with a
+        // clean `cargo check`. The slab list is under `slabs` and the slab id under
+        // `block_segment_id`; `bands` and `band_id` are the RETIRED spellings, accepted on read
+        // and no longer written. `a_folded_manifest_still_writes_the_keys_on_disk` is the guard
+        // that pins which of those reaches the file, and
+        // `docs/temporalstore_page_block_address_contract.md` records why the flip was available.
+        let slabs = manifest["slabs"]
             .as_array()
-            .unwrap()
+            .unwrap_or_else(|| panic!("the slab list must be under \"slabs\": {manifest}"));
+        assert_eq!(
+            slabs.len(),
+            2,
+            "this guard drops one of two descriptors, so it needs both: {manifest}"
+        );
+        manifest["slabs"] = serde_json::json!([slabs
             .iter()
             .find(|slab| slab["block_segment_id"] == serde_json::json!(first.block_slab_id()))
-            .unwrap()
+            .unwrap_or_else(|| panic!("no descriptor for the first slab: {manifest}"))
             .clone()]);
         fs::write(
             &manifest_path,
@@ -5742,18 +5765,25 @@ const RETIRED_NAMES: &[&str] = &[
         let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
 
         // DENOMINATOR: the manifest really has descriptors, and they really agree to begin with.
-        // The KEYS read here are the on-disk spelling and are deliberately not the Rust one:
-        // "bands" and "band_id" are the format, `slabs` and `stored_slab_id` are the code.
-        // The slab id is read under `block_segment_id` because that is what THIS build writes; a
-        // manifest from an older build spells it `page_segment_id` and loads through the alias.
-        let entries = manifest["bands"].as_array_mut().expect("bands array");
+        //
+        // THE KEYS READ HERE ARE THE EMITTED ON-DISK SPELLING, and as of #2487 that is the
+        // canonical one: the list is under `slabs` and the stored id under `stored_slab_id`.
+        // `bands` and `band_id` are the RETIRED spellings -- still accepted on read, never
+        // written. The comment that used to sit here said the opposite, which is what a literal
+        // string key costs: the flip compiled clean and only these two tests saw it.
+        //
+        // The slab id is read under `block_segment_id` because that name did NOT move; the
+        // contract document records it as one of the three that stayed, on a count of the live
+        // compat corpora. A manifest from an older build spells it `page_segment_id` and loads
+        // through the alias.
+        let entries = manifest["slabs"].as_array_mut().expect("slabs array");
         assert!(
             entries.len() >= 3,
             "the manifest must really carry descriptors: {entries:?}"
         );
         for entry in entries.iter() {
             assert_eq!(
-                entry["band_id"].as_u64(),
+                entry["stored_slab_id"].as_u64(),
                 entry["block_segment_id"].as_u64(),
                 "they agree before the edit"
             );
@@ -5763,7 +5793,11 @@ const RETIRED_NAMES: &[&str] = &[
         // always inspected and would be rewritten whatever this file said; the two sealed ones
         // are the point.
         for entry in entries.iter_mut() {
-            entry["band_id"] = serde_json::json!(999_u64);
+            // Written under the EMITTED key. Setting the retired `band_id` instead would not
+            // merely miss: the descriptor already carries `stored_slab_id`, and `band_id` is an
+            // accepted alias for that same field, so a document holding both is a DUPLICATE
+            // FIELD and the whole manifest stops decoding.
+            entry["stored_slab_id"] = serde_json::json!(999_u64);
         }
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -5818,16 +5852,26 @@ const RETIRED_NAMES: &[&str] = &[
         }
     }
 
-    /// The CODE says slab. The FILE still says band, and that is the point.
+    /// THE CODE AND THE FILE BOTH SAY SLAB NOW, and asserting which is the point.
     ///
-    /// `slab_manifest.json` is read by binaries that are already deployed, and the descriptor's
-    /// `band_id` carries no `#[serde(default)]` -- so a manifest written under renamed keys is
-    /// not "an older shape with a missing field", it is unreadable. There is no alias mechanism
-    /// on the WRITE side to soften that: serde writes exactly one name per field.
+    /// The file used to say `band`, and this guard used to assert that. #2487 flipped the
+    /// emitted names to the canonical spelling and inverted the body of this test with them;
+    /// the doc comment that used to sit here was left describing the old direction, and that
+    /// stale text is what later got read as evidence of a writer defect. Hence this correction.
     ///
-    /// Renaming a Rust field whose wire name was IMPLICIT is the way that happens by accident.
-    /// It compiles, every type-level test still passes, and the only thing that changed is the
-    /// bytes on disk. This asserts the bytes.
+    /// WHY THE FLIP WAS AVAILABLE, since it is a published format: the three `compat/*.json`
+    /// corpora anything reads carry the retired slab names ZERO times. Counting all nine files
+    /// made them look pinned; counting the ones a test, harness or workflow actually opens put
+    /// them at zero. `docs/temporalstore_page_block_address_contract.md` records that count,
+    /// the three emitted names that did NOT move, and the reader-first ordering.
+    ///
+    /// WHY A GUARD IS STILL NEEDED EITHER WAY: a serde `alias` widens the READER only, and
+    /// serde writes exactly one name per field. Renaming a Rust field whose wire name is
+    /// IMPLICIT therefore changes the bytes on disk with nothing at the type level to notice --
+    /// it compiles, and every test that goes through the type still passes. This asserts the
+    /// bytes. It is also the test to update FIRST if the emitted names ever move again, because
+    /// the two tests repaired alongside this comment reach into the same file by literal string
+    /// key and the compiler cannot see them.
     #[test]
     fn a_folded_manifest_still_writes_the_keys_on_disk() {
         let dir = tempfile::tempdir().unwrap();
