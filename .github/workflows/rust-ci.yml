@@ -272,6 +272,9 @@ jobs:
             wal_record::tests::the_hot_block_sentinel_is_declared_in_exactly_one_file \
             shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
             shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
+            engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_answers_to_the_feature_ceiling_on_the_same_series \
+            engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_inside_the_ceiling_is_still_accepted \
+            engine::tests::part2::feature_append_rejects_hard_size_limit_before_mutation \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
