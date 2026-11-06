@@ -327,38 +327,43 @@ class TemporalStoreClient:
             + msgpack.packb("commands", use_bin_type=True)
         )
         chunk: List[Dict[str, Any]] = []
-        encoded_chunk: List[bytes] = []
-        command_bytes = 0
+        packer = msgpack.Packer(use_bin_type=True, autoreset=False)
+
+        def body_for(command_count: int, payload_end: Optional[int] = None) -> bytes:
+            view = packer.getbuffer()
+            payload = view if payload_end is None else view[:payload_end]
+            body = b"".join((prefix, _msgpack_array_header(command_count), payload))
+            del payload, view
+            return body
+
         for command in commands:
-            encoded = msgpack.packb(_binary_command(command), use_bin_type=True)
-            next_count = len(chunk) + 1
-            next_bytes = (
-                len(prefix)
-                + len(_msgpack_array_header(next_count))
-                + command_bytes
-                + len(encoded)
-            )
-            if chunk and (
-                len(chunk) >= max_commands
-                or next_bytes > self.max_batch_request_bytes
-            ):
-                yield (
-                    chunk,
-                    prefix
-                    + _msgpack_array_header(len(chunk))
-                    + b"".join(encoded_chunk),
-                )
+            if chunk and len(chunk) >= max_commands:
+                completed = chunk
+                body = body_for(len(completed))
+                packer.reset()
                 chunk = []
-                encoded_chunk = []
-                command_bytes = 0
-            chunk.append(command)
-            encoded_chunk.append(encoded)
-            command_bytes += len(encoded)
-        if chunk:
-            yield (
-                chunk,
-                prefix + _msgpack_array_header(len(chunk)) + b"".join(encoded_chunk),
+                yield completed, body
+
+            binary_command = _binary_command(command)
+            previous_payload_bytes = len(packer.getbuffer())
+            packer.pack(binary_command)
+            next_body_bytes = (
+                len(prefix)
+                + len(_msgpack_array_header(len(chunk) + 1))
+                + len(packer.getbuffer())
             )
+            if chunk and next_body_bytes > self.max_batch_request_bytes:
+                completed = chunk
+                body = body_for(len(completed), previous_payload_bytes)
+                packer.reset()
+                chunk = []
+                yield completed, body
+                # This command belongs to the next body. Repacking only the
+                # boundary command avoids retaining every encoded fragment.
+                packer.pack(binary_command)
+            chunk.append(command)
+        if chunk:
+            yield chunk, body_for(len(chunk))
 
     def _encoded_batches(
         self, commands: List[Dict[str, Any]], max_commands: int

@@ -293,6 +293,59 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertEqual(document["commands"][0]["entries"][0][1], payload)
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_binary_batch_uses_one_streaming_packer(self):
+        client = TemporalStoreClient()
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["f", b"v"]]}
+            for i in range(16)
+        ]
+
+        with mock.patch(
+            "feast_temporalstore_command.client.msgpack.Packer",
+            wraps=msgpack.Packer,
+        ) as packer:
+            batches = list(client._binary_batches(commands, 6))
+
+        self.assertEqual([len(chunk) for chunk, _body in batches], [6, 6, 4])
+        streaming_packers = [
+            call for call in packer.call_args_list if call.kwargs.get("autoreset") is False
+        ]
+        self.assertEqual(len(streaming_packers), 1)
+        self.assertEqual(
+            [
+                command
+                for _chunk, body in batches
+                for command in msgpack.unpackb(body, raw=False)["commands"]
+            ],
+            commands,
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_binary_byte_limit_keeps_greedy_command_packing(self):
+        client = TemporalStoreClient(max_batch_request_bytes=180)
+        commands = [
+            {
+                "kind": "hash_multi_set",
+                "key": str(i),
+                "entries": [["sequence", b"x" * 100]],
+            }
+            for i in range(3)
+        ]
+
+        batches = list(client._binary_batches(commands, len(commands)))
+
+        self.assertEqual([len(chunk) for chunk, _body in batches], [1, 1, 1])
+        self.assertTrue(all(len(body) <= 180 for _chunk, body in batches))
+        self.assertEqual(
+            [
+                command["key"]
+                for _chunk, body in batches
+                for command in msgpack.unpackb(body, raw=False)["commands"]
+            ],
+            ["0", "1", "2"],
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_binary_batch_endpoint_falls_back_once(self):
         class OlderNodeClient(RecordingClient):
             attempts = 0
