@@ -5403,10 +5403,21 @@ const RETIRED_NAMES: &[&str] = &[
             2,
             "this guard drops one of two descriptors, so it needs both: {manifest}"
         );
+        // DROP THE SEALED SLAB'S DESCRIPTOR, NOT THE ACTIVE ONE, and that choice is the whole
+        // guard. `BlockStore::new` calls `ensure_slab_descriptor` for the ACTIVE slab id
+        // immediately after `reconcile_slab_manifest_with_disk` returns, and that function
+        // inserts a descriptor for exactly that one id. So a test that drops the active
+        // descriptor is answered by the fallback: reconcile's own insert branch can be removed
+        // outright and the test still passes. A SEALED slab present on disk with no descriptor is
+        // the case nothing else repairs.
+        //
+        // Verified by plant: deleting the `None =>` insert in
+        // `reconcile_slab_manifest_with_disk` left the active-slab version of this test green and
+        // reddens this one.
         manifest["slabs"] = serde_json::json!([slabs
             .iter()
-            .find(|slab| slab["block_segment_id"] == serde_json::json!(first.block_slab_id()))
-            .unwrap_or_else(|| panic!("no descriptor for the first slab: {manifest}"))
+            .find(|slab| slab["block_segment_id"] == serde_json::json!(second.block_slab_id()))
+            .unwrap_or_else(|| panic!("no descriptor for the active slab: {manifest}"))
             .clone()]);
         fs::write(
             &manifest_path,
@@ -5417,14 +5428,32 @@ const RETIRED_NAMES: &[&str] = &[
         let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
 
-        assert!(descriptors
-            .iter()
-            .any(|slab| slab.block_slab_id == first.block_slab_id()
-                && slab.state == BlockStoreSlabState::Sealed));
-        assert!(descriptors
-            .iter()
-            .any(|slab| slab.block_slab_id == second.block_slab_id()
-                && slab.state == BlockStoreSlabState::Active));
+        // THE LOAD-BEARING ONE: this descriptor was deleted from the manifest and the slab file
+        // it describes is sealed, so `ensure_slab_descriptor` -- which only ever inserts the
+        // ACTIVE id -- cannot have produced it. Only reconcile's insert branch can.
+        assert!(
+            descriptors
+                .iter()
+                .any(|slab| slab.block_slab_id == first.block_slab_id()
+                    && slab.state == BlockStoreSlabState::Sealed),
+            "the sealed slab is on disk with no descriptor and the open did not reconcile one \
+             for it: {descriptors:?}"
+        );
+        // The active one is kept in the manifest here, so this is a control rather than the
+        // property: it says the edit above removed one descriptor and not both.
+        assert!(
+            descriptors
+                .iter()
+                .any(|slab| slab.block_slab_id == second.block_slab_id()
+                    && slab.state == BlockStoreSlabState::Active),
+            "the descriptor this edit KEPT is missing, so the fixture removed more than it \
+             meant to: {descriptors:?}"
+        );
+        assert_eq!(
+            descriptors.len(),
+            2,
+            "exactly the two slabs on disk must be described: {descriptors:?}"
+        );
         let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.slab_manifest_reconciled_on_open);
         assert!(report.slab_manifest_disk_consistent);
