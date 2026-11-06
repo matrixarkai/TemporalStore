@@ -1112,15 +1112,36 @@ pub(crate) fn execute_on_shard(
                         ),
                         Some(routing_bucket),
                     );
-                    fields
-                        .iter()
-                        .map(|field| {
-                            hash_fields
-                                .and_then(|entries| entries.get(field))
-                                .and_then(|_| frame.as_deref())
-                                .and_then(|bytes| select_container_value(bytes, field))
-                        })
-                        .collect()
+                    match frame.as_deref().map(|bytes| {
+                        container_blocks::project_utf8_container_elements(bytes, &fields)
+                    }) {
+                        Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
+                            for (index, field) in fields.iter().enumerate() {
+                                if hash_fields
+                                    .and_then(|entries| entries.get(field))
+                                    .is_none()
+                                {
+                                    values[index] = None;
+                                }
+                            }
+                            values
+                        }
+                        Some(container_blocks::Utf8ContainerProjection::Corrupt(_)) => {
+                            note_corrupt_container_block();
+                            vec![None; fields.len()]
+                        }
+                        Some(container_blocks::Utf8ContainerProjection::NotFramed)
+                        | Some(container_blocks::Utf8ContainerProjection::OtherSpelling) => fields
+                            .iter()
+                            .map(|field| {
+                                hash_fields
+                                    .and_then(|entries| entries.get(field))
+                                    .and_then(|_| frame.as_deref())
+                                    .and_then(|bytes| select_container_value(bytes, field))
+                            })
+                            .collect(),
+                        None => vec![None; fields.len()],
+                    }
                 } else {
                     vec![None; fields.len()]
                 }
