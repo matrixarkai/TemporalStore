@@ -152,31 +152,11 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     off, :meth:`TemporalStoreCommandOnlineStore.teardown` has nothing to enumerate and
     says so rather than silently leaving data behind.
 
-    **DO NOT TURN THIS ON TOGETHER WITH ASYNC COMMIT. ROWS ARE LOST.**
-    Measured on a release build against a freshly created, empty shard, writing
-    20,000 entities at a batch width of 500, with ``async_storage=true`` on the
-    shard: **17,500 of the 20,000 rows read back empty.** Not late -- empty.
-    The shard reported ``total_records=20001``, and ``HashGetAll`` on a lost
-    row's key answered with **zero fields**, so the object exists and holds
-    nothing; a 20-second pause did not bring the values back. Only the last
-    2,500 writes -- the final five batches -- survived, which is the shape of
-    older dirty objects being dropped before they were persisted.
-
-    It is an INTERACTION, and that is why it went unseen: neither half does it
-    alone. Same node, same payload, same entity count:
-
-    ===============  ==========  =====================
-    async_storage    this flag   rows lost of 20,000
-    ===============  ==========  =====================
-    false            true        0
-    true             false       0
-    true             **true**    **17,500**
-    ===============  ==========  =====================
-
-    The default path is unaffected, because this flag is off by default and
-    ``async_storage=true`` with it off loses nothing. If you need exact teardown
-    AND async commit, do the teardown pass against a shard configured for
-    durable commit.
+    Async commit is supported. A release-build regression run on a fresh shard
+    retained all 20,000 feature-shaped rows while this option wrote the shared
+    tracking set. Container blocks can be recovered from their WAL records
+    after cache pressure, so the tracking write cannot make an acknowledged
+    hash row disappear.
 
     **AND THE WRITE PATH IS QUADRATIC EVEN WHEN IT IS SAFE.**
     Every key goes into ONE set -- the shard reports it as a single

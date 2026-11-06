@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Reproduce: with async commit, a hot set write makes earlier hash writes vanish.
+"""Guard async feature hashes against loss under shared-set cache pressure.
 
 ================================================================================
-TWO PRECONDITIONS. REPRODUCE AT THE WRONG SHAPE AND YOU WILL CONCLUDE IT IS
-FIXED. Both were found by a run that reported no loss, and both are the defaults
-below -- change either and the loss disappears while the defect is still there.
+TWO PRECONDITIONS. A regression run with the wrong shape can pass while the
+original defect is present. Both are encoded in the defaults below.
 
   1. THE FAILING WORKLOAD MUST BE THE FIRST THING ON THE SHARD. Run as the
      third cell, after two others had each left 20,000 rows, the identical
@@ -48,16 +47,15 @@ node's own command surface with the standard library only, so the defect cannot
 be read as something a Python integration does to itself. Every command here is
 one the node's own `Command` enum defines.
 
-WHAT IT SHOWS. Against a FRESH, EMPTY shard with `async_storage=true`:
+WHAT IT CHECKS. Against a FRESH, EMPTY shard with `async_storage=true`:
 
   * write N hashes, interleaving one `SetAdd` per hash into a SINGLE set key
     (the shape an exact-teardown key index has),
   * read every hash back,
-  * and a large fraction of them answer with NO FIELDS AT ALL.
+  * and require every hash to retain its fields.
 
-The shard still counts them: `/server/info` reports `total_records` as though
-every row were there, while `HashGetAll` on a lost key returns zero entries. So
-the record count is incremented for a row whose content never persisted.
+The historical failure left the shard counting rows whose `HashGetAll` result
+was empty. The current container-block WAL lookup keeps those rows readable.
 
 IT IS AN INTERACTION, which is why it needs this exact shape. Neither half does
 it alone, and this script proves that by running all four combinations:
@@ -65,10 +63,10 @@ it alone, and this script proves that by running all four combinations:
     async_storage   hot-set writes   result
     false           yes              no loss
     true            no               no loss
-    true            yes              LOSS
+    true            yes              no loss
 
-A 20-second pause does not bring the values back, so it is loss and not a
-visibility delay -- the script re-reads and reports that separately.
+If a regression occurs, a pause and second read distinguish persistent loss
+from a visibility delay.
 
 USAGE
 
@@ -308,7 +306,7 @@ def main() -> int:
     }
     print(
         f"\ncells in order {wanted} "
-        f"(the failing one is 'tt' and runs FIRST by default):",
+        f"(the historical failure cell is 'tt' and runs FIRST by default):",
         flush=True,
     )
     lost_cells = []
