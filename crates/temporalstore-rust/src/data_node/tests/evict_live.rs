@@ -2902,3 +2902,235 @@ fn the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_cloc
         second.dropped_object_count
     );
 }
+
+/// WHETHER A ROW ACKNOWLEDGED UNDER DEFERRED PERSISTENCE SURVIVES THE CACHE BUDGET.
+///
+/// # THE DEFECT THIS DEFENDS, AND WHY IT NEEDS A GUARD AT ALL
+///
+/// `async_storage=true` together with a shared teardown-tracking set once lost **17,500 of 20,000
+/// rows** on a release server -- not late, EMPTY: a 20 s pause did not bring them back, and only
+/// the last few batches survived, which is the shape of older dirty objects dropped before
+/// persistence. The shard meanwhile reported `total_records = 20001` while `HashGetAll` on a lost
+/// key returned zero fields, so **a record count was incremented for a record whose content never
+/// persisted**.
+///
+/// That is fixed, and it was re-measured on a release server at 20,000 rows with zero lost. **But
+/// nothing in this repository runs the thing that measured it.** The reproduction lives at
+/// `tools/repro_async_commit_row_loss.py`, and the only workflow touching `tools/*.py` does
+/// `python -m py_compile tools/*.py` -- it SYNTAX-CHECKS the guard and never executes it. So the
+/// zero-loss result is a point-in-time measurement with no standing guard, and the regression it
+/// was written to catch cannot fire. An orphan file is as green as a correct one.
+///
+/// This arm is that guard, in-process and inside the suite, so the loss fails a test if it returns.
+///
+/// # WHY A TEST CAN DO IN 400 ROWS WHAT THE PROBE NEEDED 20,000 FOR
+///
+/// The recorded precondition is that the loss tracks what the shard holds against its cache
+/// budget, and that short keys with one-byte values did NOT reproduce it. That reads as a scale
+/// requirement and is really a RATIO requirement: a live node has a large budget, so 20,000
+/// feature-shaped rows were needed to cross it. `with_local_dirs` takes the budget as its first
+/// argument, so here the budget is set SMALL and the same crossing happens at 400 rows. The row
+/// shape is kept faithful -- 62-hex-character keys and eleven field slots, the footprint the probe
+/// found necessary -- plus one `SetAdd` per row into ONE shared key, which is the only thing the
+/// two deferred cells of the probe differed by.
+///
+/// # NON-VACUITY IS ASSERTED FIRST, BECAUSE EVERY WAY THIS ARM CAN LIE IS A WAY OF DOING LESS
+///
+/// A passing read-back proves nothing unless three preconditions actually held, and each of them
+/// fails SILENTLY by making the arm weaker rather than redder:
+///
+///   1. **The shard must really SPILL** -- `block_store().stats().writes > 0`. Measured at 3,987
+///      block writes for these 400 rows.
+///   2. **Every command must reach the log** -- the WAL is the durable home while blocks lag, so a
+///      read-back means nothing if a write never became durable anywhere. Measured 800 of 800.
+///   3. **The budget must really be crossed, by a MARGIN** -- measured 163,296 B resident against
+///      a 65,536 B budget, 2.49x, and asserted at 2x so that shrinking ROWS fails the arm instead
+///      of quietly removing the pressure.
+///   4. **The read-back must cover the whole write population** -- every key is read and the count
+///      examined is asserted, so a loop that silently covered nothing cannot report success.
+///
+/// # WHAT THIS ARM DELIBERATELY DOES NOT CLAIM, AND WHY IT IS STRONGER FOR IT
+///
+/// It does NOT rest on `async_storage` being honoured. My first version asserted
+/// `block_writes == 0` on the reasoning that the flag defers persistence -- and that is FALSE once
+/// the budget is crossed: 3,987 blocks were written, because the data has to go somewhere, and
+/// spilling is exactly what PREVENTS the loss. There is also no in-process config read-back to
+/// assert the flag with. So the claim is the one that can be evidenced end to end: **under real
+/// budget pressure with real spilling, every acknowledged row keeps its content.** That is the
+/// property which failed historically, and it cannot silently stop guarding if `set_config` were
+/// ever ignored -- which an assertion about the flag could.
+///
+/// Values are a function of their key and slot, so a read resolved through the wrong block fails
+/// rather than passing on a lucky length, and the mismatch lists are asserted EMPTY, not printed.
+///
+/// rust-internal: drives this crate own engine, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib data_node::tests::evict_live::an_acknowledged_row_keeps_its_fields_across_the_cache_budget -- --exact
+#[test]
+fn an_acknowledged_row_keeps_its_fields_across_the_cache_budget() {
+    /// Small enough that 400 feature-shaped rows cross it; the probe needed 20,000 only because a
+    /// live node budget is large.
+    const CACHE_BUDGET: usize = 1 << 16;
+    const ROWS: usize = 400;
+    /// Ten features plus the view timestamp slot: the eleven the probe found necessary.
+    const FIELDS: usize = 11;
+
+    let dir = tempfile::tempdir().unwrap();
+    let block_dir = dir.path().join("blocks");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        CACHE_BUDGET,
+        dir.path().join("cache"),
+        &block_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(crate::control::SetConfigRequest {
+                shard_id: 1,
+                config: crate::control::Config {
+                    version: 2,
+                    async_storage: true,
+                    ..crate::control::Config::default()
+                },
+            })
+            .ok,
+        "set_config(async_storage) was refused, so this arm would measure the SYNC path"
+    );
+
+    // 62 hex characters, the footprint the probe needed. A short key did not reproduce the loss.
+    let row_key = |index: usize| -> String { format!("{index:062x}") };
+    let field_name = |slot: usize| -> String {
+        if slot + 1 == FIELDS {
+            "_ts:view".to_string()
+        } else {
+            format!("view:f{slot}")
+        }
+    };
+    // Every value is a function of its key AND its slot, so a read served from the wrong block is
+    // a mismatch rather than a coincidence.
+    let field_value =
+        |index: usize, slot: usize| -> Vec<u8> { format!("{}:{slot}", row_key(index)).into_bytes() };
+
+    let set_key = "teardown:index".to_string();
+    for index in 0..ROWS {
+        let key = row_key(index);
+        let entries: Vec<(String, Vec<u8>)> = (0..FIELDS)
+            .map(|slot| (field_name(slot), field_value(index, slot)))
+            .collect();
+        let wrote = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiSet {
+                key: key.clone(),
+                entries,
+            },
+        });
+        assert!(wrote.status.ok, "write {index} failed: {wrote:?}");
+        // The shared hot key: the only thing the two deferred cells of the probe differed by.
+        let tracked = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SetAdd {
+                key: set_key.clone(),
+                member: key.into_bytes(),
+            },
+        });
+        assert!(tracked.status.ok, "tracking add {index} failed: {tracked:?}");
+    }
+
+    // --- NON-VACUITY 1: persistence really was deferred, so these rows ARE the population at risk.
+    // --- NON-VACUITY 1: the shard really SPILLED. Measured 3,987 block writes for these 400
+    // --- rows, so the deferral is not total once the budget is crossed -- and that is the
+    // --- mechanism which PREVENTS the loss, not a violation of it.
+    let block_writes = engine.block_store().stats().writes;
+    assert!(
+        block_writes > 0,
+        "NON-VACUITY: no block was written, so nothing spilled and this arm never reached the \
+         regime the loss lived in. Raise ROWS or lower CACHE_BUDGET rather than loosening this."
+    );
+
+    // --- NON-VACUITY 2: every command reached the log, which is the durable home while blocks lag.
+    let wal_writes = engine.write_ahead_log_store().stats(1).writes;
+    let commands = 2 * ROWS as u64;
+    assert!(
+        wal_writes >= commands,
+        "NON-VACUITY: the log holds {wal_writes} of {commands} issued commands, so some write \
+         never became durable anywhere and a later read-back would be measuring the wrong thing"
+    );
+
+    // --- NON-VACUITY 2: the shard really is holding more than its budget.
+    // --- NON-VACUITY 3: the budget really was crossed, and by a stated MARGIN. A guard whose
+    // --- population it filters is disarmed by shrinking that population, so this fails if ROWS is
+    // --- reduced rather than quietly becoming a write-and-read with no pressure behind it.
+    // --- Measured: 163,296 B resident against a 65,536 B budget, a margin of 2.49x.
+    let resident = engine.bucket_index_resident_bytes(1);
+    assert!(
+        resident > 2 * CACHE_BUDGET as u64,
+        "NON-VACUITY: the shard holds {resident} B against a {CACHE_BUDGET} B budget, under the 2x \
+         margin this arm was sized for (measured 163,296 B, 2.49x). Either ROWS was reduced or the \
+         per-row footprint shrank, and in both cases the pressure this arm depends on is gone. \
+         Raise ROWS rather than loosening this assertion."
+    );
+
+    // --- THE INVARIANT: an acknowledged row is either persisted or still resident. Read every one.
+    let mut examined = 0usize;
+    let mut missing: Vec<String> = Vec::new();
+    let mut wrong: Vec<String> = Vec::new();
+    for index in 0..ROWS {
+        let key = row_key(index);
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashGetAll { key: key.clone() },
+        });
+        assert!(read.status.ok, "read {index} failed: {read:?}");
+        examined += 1;
+        let CommandResponse::HashEntries { entries } = read.response else {
+            panic!(
+                "HashGetAll answered {:?} rather than HashEntries",
+                read.response
+            );
+        };
+        if entries.is_empty() {
+            missing.push(key);
+            continue;
+        }
+        if entries.len() != FIELDS {
+            wrong.push(format!("{key}: {} of {FIELDS} fields", entries.len()));
+            continue;
+        }
+        for slot in 0..FIELDS {
+            let want = field_value(index, slot);
+            let name = field_name(slot);
+            match entries.iter().find(|(got, _)| *got == name) {
+                None => wrong.push(format!("{key}: field {name} absent")),
+                Some((_, got)) if *got != want => wrong.push(format!(
+                    "{key}: field {name} served {} bytes, not the value of its key",
+                    got.len()
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+
+    // --- NON-VACUITY 3: the read-back covered the whole write population.
+    assert_eq!(
+        examined, ROWS,
+        "NON-VACUITY: {examined} of {ROWS} rows were examined, so the read-back is not the whole \
+         write population and an empty mismatch list would mean nothing"
+    );
+    assert!(
+        missing.is_empty(),
+        "{} of {ROWS} acknowledged rows read back EMPTY under deferred persistence. This is the \
+         17,500-of-20,000 loss returning: a row acknowledged to a client must be either persisted \
+         or still resident. First few: {:?}",
+        missing.len(),
+        &missing[..missing.len().min(5)]
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} acknowledged rows read back with the wrong content under deferred persistence, which \
+         is a read served through the wrong block rather than a loss. First few: {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+}
