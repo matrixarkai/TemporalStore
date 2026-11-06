@@ -50,8 +50,8 @@ use crate::meta::{
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
     BatchConditionalWriteResponse, BatchExecuteRequest, BatchExecuteResponse,
-    BatchHashMultiGetError, BatchHashMultiGetRequest, BatchHashMultiGetResponse,
-    BatchHashMultiGetRow, BatchHashMultiSetRequest, BatchHashTimestampSetRequest, BatchWriteError,
+    BatchHashMultiGetRequest, BatchHashMultiGetResponse, BatchHashMultiSetRequest,
+    BatchHashTimestampSetRequest, BatchWriteError,
     BatchWriteResponse, Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
@@ -2754,46 +2754,7 @@ impl DataNodeRuntime {
         &self,
         request: BatchHashMultiGetRequest,
     ) -> BatchHashMultiGetResponse {
-        let field_count = request.fields.len();
-        let response = self.batch_hash_multi_get(request);
-        if !response.status.ok {
-            return BatchHashMultiGetResponse {
-                status: response.status,
-                rows: Vec::new(),
-                errors: Vec::new(),
-            };
-        }
-
-        let mut rows = Vec::with_capacity(response.responses.len());
-        let mut errors = Vec::new();
-        for (index, item) in response.responses.into_iter().enumerate() {
-            if !item.status.ok {
-                errors.push(BatchHashMultiGetError {
-                    index,
-                    status: item.status,
-                });
-                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
-                continue;
-            }
-            match item.response {
-                CommandResponse::Values { values } => rows.push(BatchHashMultiGetRow(values)),
-                _ => {
-                    errors.push(BatchHashMultiGetError {
-                        index,
-                        status: Status::error(
-                            "unexpected_read_response",
-                            "hash multi-get returned a non-values response",
-                        ),
-                    });
-                    rows.push(BatchHashMultiGetRow(vec![None; field_count]));
-                }
-            }
-        }
-        BatchHashMultiGetResponse {
-            status: Status::ok(),
-            rows,
-            errors,
-        }
+        self.inner.engine.batch_hash_multi_get_compact(request)
     }
 
     /// Write one shared field projection to many hashes.

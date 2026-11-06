@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Context model-provider calls (summaries/embeddings, OpenAI-compatible), split from context_workflow.rs.
+//! Context model-provider calls for summaries and embeddings across supported provider protocols.
+use std::sync::OnceLock;
+
+use crate::llm_context::{BatchEmbedder, OllamaConfig, OllamaProvider};
+
 use super::*;
+
+const CONTEXT_SUMMARY_SYSTEM_PROMPT: &str = "You generate TemporalStore ContextNode traversal summaries. Be faithful to the supplied source; prefer current state and resolved contradictions; never invent facts. l0 is a compact routing abstract; l1 is a richer synthesis whose length scales to the source's information.";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ContextExtractSummaries {
@@ -81,6 +87,21 @@ pub(crate) fn context_summaries_for_extract(
                 l2_ref,
             })
         }
+        ContextProviderKind::Ollama => {
+            let content = call_ollama_context_provider(&provider, request)?;
+            let (l0, l1) = parse_provider_summary_content(&content, request);
+            let l2_ref = format!(
+                "tsctx://tenant/{}/model/{}/source/{}",
+                request.tenant_hash, provider.provider_name, request.source_id
+            );
+            Ok(ContextExtractSummaries {
+                status: Status::ok(),
+                provider,
+                l0,
+                l1,
+                l2_ref,
+            })
+        }
         ContextProviderKind::Mock => Ok(mock_context_summaries(provider, request)),
     }
 }
@@ -100,6 +121,29 @@ pub(crate) fn context_summaries_for_extract(
 /// configured an encoder does not silently acquire one, and one that requires a real model still
 /// gets the error `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` exists to raise.
 pub fn context_provider_from_env() -> ContextModelProviderConfig {
+    if std::env::var("MATRIXARK_CONTEXT_PROVIDER")
+        .ok()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("ollama"))
+    {
+        let config = OllamaConfig::from_env();
+        let embedding_model = std::env::var("MATRIXARK_EMBEDDING_MODEL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| config.embedding_model.clone());
+        return ContextModelProviderConfig {
+            provider_name: "ollama".to_string(),
+            provider_kind: ContextProviderKind::Ollama,
+            base_url: config.base_url,
+            model: config.extraction_model,
+            embedding_model,
+            timeout_ms: config.timeout_ms,
+            max_retries: config.max_retries,
+            mock_mode: false,
+            ..ContextModelProviderConfig::default()
+        };
+    }
+
     // Two names for one endpoint, because two paths grew their own: the serving side and the
     // Python side read `MATRIXARK_EMBEDDING_API_BASE`, the embed drainer read
     // `MATRIXARK_EMBED_BASE_URL`. Both are honoured here so there is one constructor rather than
@@ -213,6 +257,7 @@ pub(crate) fn context_embeddings_for_extract(
         ContextProviderKind::OpenAiCompatible => {
             call_openai_compatible_embedding_provider(&provider, inputs)?
         }
+        ContextProviderKind::Ollama => call_ollama_embedding_provider(&provider, inputs)?,
         ContextProviderKind::Mock => inputs
             .iter()
             .map(|(_, _, _, text)| deterministic_context_embedding(&provider.embedding_model, text))
@@ -278,6 +323,84 @@ pub(crate) fn mock_context_summaries(
             request.tenant_hash, node_hash, request.source_id
         ),
     }
+}
+
+fn ollama_provider(provider: &ContextModelProviderConfig) -> Result<OllamaProvider, Status> {
+    let mut config = OllamaConfig::from_env();
+    if !provider.base_url.trim().is_empty() {
+        config.base_url = provider.base_url.trim().trim_end_matches('/').to_string();
+    }
+    config.extraction_model = provider.model.clone();
+    config.embedding_model = provider.embedding_model.clone();
+    config.timeout_ms = provider.timeout_ms;
+    config.max_retries = provider.max_retries;
+    OllamaProvider::new(config).map_err(|err| {
+        Status::error(
+            "ollama_provider_invalid",
+            format!(
+                "context provider {} is invalid: {err}",
+                provider.provider_name
+            ),
+        )
+    })
+}
+
+fn call_ollama_embedding_provider(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<Vec<Vec<f32>>, Status> {
+    let client = ollama_provider(provider)?;
+    let texts = inputs
+        .iter()
+        .map(|(_, _, _, text)| *text)
+        .collect::<Vec<_>>();
+    let batch = client.embed_batch(&texts).map_err(|err| {
+        Status::error(
+            "embedding_provider_request_failed",
+            format!(
+                "embedding provider {} request failed: {err}",
+                provider.provider_name
+            ),
+        )
+    })?;
+    if batch.dimensions == 0 || batch.values.len() % batch.dimensions != 0 {
+        return Err(Status::error(
+            "embedding_provider_bad_response",
+            format!(
+                "embedding provider {} returned an invalid flat embedding batch",
+                provider.provider_name
+            ),
+        ));
+    }
+    Ok(batch
+        .values
+        .chunks_exact(batch.dimensions)
+        .map(<[f32]>::to_vec)
+        .collect())
+}
+
+fn call_ollama_context_provider(
+    provider: &ContextModelProviderConfig,
+    request: &ContextExtractRequest,
+) -> Result<String, Status> {
+    let client = ollama_provider(provider)?;
+    let prompt = context_summary_prompt(request);
+    client
+        .generate_structured_json(
+            CONTEXT_SUMMARY_SYSTEM_PROMPT,
+            &prompt,
+            context_summary_schema(),
+        )
+        .map(|value| value.to_string())
+        .map_err(|err| {
+            Status::error(
+                "model_provider_request_failed",
+                format!(
+                    "context provider {} request failed: {err}",
+                    provider.provider_name
+                ),
+            )
+        })
 }
 
 pub(crate) fn call_openai_compatible_embedding_provider(
@@ -394,25 +517,13 @@ pub(crate) fn call_openai_compatible_context_provider(
     } else {
         "l1: this source is thin; keep l1 minimal (a single distilled fact line, <=220 characters). Do NOT pad or repeat l0."
     };
-    let prompt = format!(
-        "Generate hierarchical ContextNode traversal summaries for source_kind={:?}, source_id={}, title={}.\n\
-         Return ONLY JSON with string fields l0 and l1.\n\
-         l0: a compact routing abstract (<=220 characters) used for embedding-scored tree traversal.\n\
-         {l1_guidance}\n\
-         Do not invent facts beyond the source.\n\
-         Source body:\n{}",
-        request.source_kind, request.source_id, request.title, request.body
-    );
+    let prompt = context_summary_prompt_with_guidance(request, l1_guidance);
     let completion_request = OpenAiChatCompletionRequest {
         model: &provider.model,
         messages: vec![
             OpenAiChatMessage {
                 role: "system",
-                content: "You generate TemporalStore ContextNode traversal summaries. \
-                          Be faithful to the supplied source; prefer current state and resolved \
-                          contradictions; never invent facts. l0 is a compact routing abstract; \
-                          l1 is a richer synthesis whose length scales to the source's information."
-                    .to_string(),
+                content: CONTEXT_SUMMARY_SYSTEM_PROMPT.to_string(),
             },
             OpenAiChatMessage {
                 role: "user",
@@ -460,6 +571,44 @@ pub(crate) fn call_openai_compatible_context_provider(
                 ),
             )
         })
+}
+
+fn context_summary_prompt(request: &ContextExtractRequest) -> String {
+    let guidance = if context_source_warrants_l1(&request.body) {
+        "l1: a richer semantic synthesis for tree-first retrieval -- fold the source's key facts, named entities, and CURRENT state into <=1200 characters. Prefer current state and resolved contradictions over stale facts."
+    } else {
+        "l1: this source is thin; keep l1 minimal (a single distilled fact line, <=220 characters). Do NOT pad or repeat l0."
+    };
+    context_summary_prompt_with_guidance(request, guidance)
+}
+
+fn context_summary_prompt_with_guidance(
+    request: &ContextExtractRequest,
+    l1_guidance: &str,
+) -> String {
+    format!(
+        "Generate hierarchical ContextNode traversal summaries for source_kind={:?}, source_id={}, title={}.\n\
+         Return ONLY JSON with string fields l0 and l1.\n\
+         l0: a compact routing abstract (<=220 characters) used for embedding-scored tree traversal.\n\
+         {l1_guidance}\n\
+         Do not invent facts beyond the source.\n\
+         Source body:\n{}",
+        request.source_kind, request.source_id, request.title, request.body
+    )
+}
+
+fn context_summary_schema() -> &'static Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "l0": { "type": "string" },
+                "l1": { "type": "string" }
+            },
+            "required": ["l0", "l1"]
+        })
+    })
 }
 
 pub(crate) fn parse_openai_compatible_base_url(base_url: &str) -> Result<(String, String), Status> {

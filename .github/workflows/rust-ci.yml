@@ -262,6 +262,9 @@ jobs:
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
+            block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
+            block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
+            block_store::tests::a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load \
             block_store::shorter_struct_against_an_existing_row::a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation \
             wal_record::tests::the_synthetic_slab_sentinels_are_not_the_top_of_the_u64_range \
             wal_record::tests::is_wal_resident_covers_both_sentinels_and_refuses_a_real_slab \
@@ -281,6 +284,36 @@ jobs:
               exit 1
             fi
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
+      # Three of these four build a corpus and compare measured surfaces, so they run far longer
+      # than the read-safety guards above -- 42s to 376s each in a debug run on a loaded box. They
+      # are pinned in a step with its own budget so that a slow cost guard cannot starve the fast
+      # guards above, and so a timeout here is attributable to this group rather than to them.
+      #
+      # Each asserts a COUNT as well as a result, for the same reason the step above does: a rename
+      # would otherwise leave this step green having run nothing at all. Until now all four ran
+      # only in the advisory step, which is `continue-on-error`, so every one of them could have
+      # started failing behind a green check.
+      - name: cargo test (round, container and key-inversion cost guards, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for t in \
+            engine::tests::round_scale::a_round_walks_the_live_block_set_a_constant_number_of_times \
+            engine::tests::round_scale::an_idle_round_still_walks_the_live_block_set \
+            engine::tests::model_map_container_cost::no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container \
+            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/cost-gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/cost-gate.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
@@ -371,6 +404,7 @@ jobs:
             engine::tests::part4::object_block_lookup_refs_per_object_census \
             engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
             engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
+            engine::tests::part4::the_pressure_snapshot_reads_cache_stats_without_listing_the_cache \
             engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             engine::tests::the_consolidated_object_map::installing_a_control_state_block_keeps_the_rows_block_refs \
             engine::container_blocks::member_component_tests::a_hex_component_still_decodes_to_the_member_it_always_did \
