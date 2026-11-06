@@ -1268,25 +1268,65 @@ fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
     crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND
 }
 
-/// Records that must be undumped before a dump is taken.
+/// `min_undumped_wal_records` value that takes the record count out of the dump gate entirely.
 ///
-/// One meant "dump whenever anything is undumped", because the delay only applies while the count
-/// is below the threshold. Measured writing one key a hundred times, with the dumps taken: 100
-/// dumps at that setting, 10 at a threshold of ten, 2 at fifty. Dumps fall in proportion, and the
-/// only cost is that much more log to replay after a restart -- a thousand records is a few hundred
-/// kilobytes, against two orders of magnitude fewer block writes for a bucket that is written often.
+/// NOT ZERO, and that is the whole reason this constant exists rather than a bare literal. The
+/// gate reads `min_undumped_wal_records > 0 && undumped < threshold`, so zero makes the record
+/// arm say "do not wait" and RELEASES a dump on every single round -- the opposite of off. Several
+/// call sites pass zero for exactly that effect (`data_node_worker.rs`, `task_execution.rs`, the
+/// string-delete and migration corpora), so zero is taken and cannot be reused to mean "off".
+///
+/// A threshold no log can reach is what means "this trigger does not fire", and `u64::MAX` is that
+/// value without ambiguity: `undumped_wal_records` is `last_sequence - last_dumped_sequence`, a
+/// difference between two sequence numbers that are themselves `u64`, so it cannot reach it. The
+/// tree already used a large value this way before this constant named it -- see the
+/// `min_undumped_wal_records: 1_000_000` fixtures in `maintenance_and_lifecycle_recovery.rs`,
+/// commented as "far out of reach, so only the byte one can release the dump".
+pub const WAL_DUMP_RECORD_TRIGGER_OFF: u64 = u64::MAX;
+
+/// Records that must be undumped before the RECORD COUNT releases a dump. **Ships off.**
+///
+/// So the shipped gate decides on BYTES alone: `min_undumped_wal_bytes`, 128 MiB of undumped log.
+///
+/// # WHY IT SHIPS OFF
+///
+/// It was 1,000 records, and it was the arm that actually fired. A shard taking ordinary traffic
+/// crosses a thousand undumped records continuously, so the byte threshold beside it never got a
+/// turn and every maintenance round took a dump -- and the dump is where the round spends its
+/// time, because it re-serializes the selected buckets' index. The record arm was therefore not a
+/// cadence at all on a shard that is being written to: it was a permanent release.
+///
+/// # WHAT IS GIVEN UP, SAID PLAINLY
+///
+/// The log is what a restart replays, and only a dump advances the point replay starts from. With
+/// the record arm off, the worst-case replay window is set by the byte threshold alone: up to
+/// `min_undumped_wal_bytes` of log, 128 MiB, where before it was whichever of 1,000 records and
+/// 128 MiB came first -- a few hundred kilobytes on a small-record workload. So a restart can
+/// have up to roughly 128 MiB of log to replay instead of a few hundred kilobytes, and a crash
+/// leaves correspondingly more work before the shard serves again. Nothing is less durable: every
+/// record is in the log either way, and the byte threshold still bounds the window.
+///
+/// # IT IS STILL CONFIGURABLE
+///
+/// The field is read exactly as it was. Set it to any positive value and the record count releases
+/// the dump again, which is the setting to reach for when a short replay window matters more than
+/// round cost; `WAL_DUMP_RECORD_TRIGGER_OFF` is the value that means off. The guard
+/// `the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable` pins both
+/// halves of that sentence.
 fn default_storage_manager_min_undumped_wal_records() -> u64 {
-    1_000
+    WAL_DUMP_RECORD_TRIGGER_OFF
 }
 
-/// Durable write-ahead log bytes that release the dump on their own.
+/// Durable write-ahead log bytes that release the dump. **The only trigger in the shipped gate.**
 ///
 /// 128 MiB. A log allowed to reach that size before anything reclaims it is a large share of the
-/// budget on a box with a measured capacity wall near a 400 MB store, which is why the record
-/// threshold beside this one exists: whichever is reached first releases the dump.
+/// budget on a box with a measured capacity wall near a 400 MB store.
 ///
-/// It bounds what the record threshold cannot: a thousand records says nothing about how many
-/// bytes they are. Whichever threshold is reached first releases the dump.
+/// It is now the whole gate on a default deployment: `min_undumped_wal_records` ships at
+/// `WAL_DUMP_RECORD_TRIGGER_OFF`, so this value alone decides both when a dump is taken and how
+/// much log a restart can face -- raising it lengthens the replay window and lowers the round
+/// cost, lowering it does the reverse. It bounds the quantity that actually matters: a record
+/// count says nothing about how many bytes those records are.
 fn default_storage_manager_min_undumped_wal_bytes() -> u64 {
     128 * 1024 * 1024
 }
