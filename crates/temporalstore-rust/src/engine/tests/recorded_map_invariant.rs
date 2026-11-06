@@ -856,3 +856,107 @@ fn reading_a_lists_next_sequence_cannot_create_the_list() {
          an entry a failed append then left behind."
     );
 }
+
+/// THE FOUR KINDS' STORED BYTES, PINNED -- WHICH THE ROUND-TRIP ARM ABOVE CANNOT DO.
+///
+/// `every_kind_round_trip_uses_the_codec_its_field_always_used` proves each kind survives its own
+/// codec. It cannot prove the codec still emits what it emitted BEFORE: a change that altered the
+/// encoding consistently in BOTH directions round-trips perfectly and makes every stored index
+/// unreadable. That is the failure this pins, and the reason it is pinned now rather than after a
+/// refactor is that the bytes have to be captured from the ENCODER AS IT SHIPS.
+///
+/// WHY A GOLDEN STRING IS NOT BRITTLE HERE. The fixture is fixed and tiny, and the pin is on the
+/// kinds' OWN codecs rather than on a whole shard image -- so an unrelated index change cannot move
+/// it. If one of these strings has to change, the change is a stored-format change and owes the
+/// stamp sweep, which is exactly the conversation this arm exists to force.
+///
+/// rust-internal: pins this crate's own stored encoding, no product behaviour
+#[test]
+fn the_four_kind_encodings_are_byte_for_byte_what_they_were() {
+    let mut hash_elements = crate::engine::hash_field_map::HashFieldMap::default();
+    hash_elements.insert(std::sync::Arc::from("field-a"), an_address());
+    let mut hashes = RecordedMap::<HashKind>::default();
+    hashes.insert_elements_for_test("h", hash_elements);
+
+    let mut set_elements = std::collections::BTreeMap::new();
+    set_elements.insert(vec![0u8, 1, 2, 255], an_address());
+    let mut sets = RecordedMap::<SetKind>::default();
+    sets.insert_elements_for_test("s", set_elements);
+
+    let mut z = std::collections::BTreeMap::new();
+    z.insert(vec![0u8, 254, 255], (9u64, an_address()));
+    let mut zsets = RecordedMap::<ZSetKind>::default();
+    zsets.insert_elements_for_test("z", z);
+
+    let mut l = std::collections::BTreeMap::new();
+    l.insert(-5i64, an_address());
+    let mut lists = RecordedMap::<ListKind>::default();
+    lists.insert_elements_for_test("l", l);
+
+    let hash_bytes = serde_json::to_string(&hashes).expect("hash encodes");
+    let set_bytes = serde_json::to_string(&sets).expect("set encodes");
+    let zset_bytes = serde_json::to_string(&zsets).expect("zset encodes");
+    let list_bytes = serde_json::to_string(&lists).expect("list encodes");
+
+    // TODAY'S BYTES, CAPTURED FROM THE ENCODER AS IT SHIPS. Four kinds, two shapes, and the
+    // SHAPES ARE THE POINT: `hash` and `list` encode as a MAP of element maps, while `set` and
+    // `zset` encode each object's elements as a SEQUENCE OF PAIRS, because their element key is
+    // `Vec<u8>` and has no object-key representation. A wrapper that made all four look alike
+    // would round-trip and destroy two of them.
+    const HASH_PIN: &str = r#"{"h":{"field-a":{"a":12884902016,"l":64,"pi":11,"oi":null,"g":11}}}"#;
+    const SET_PIN: &str =
+        r#"{"s":[[[0,1,2,255],{"a":12884902016,"l":64,"pi":11,"oi":null,"g":11}]]}"#;
+    const ZSET_PIN: &str =
+        r#"{"z":[[[0,254,255],[9,{"a":12884902016,"l":64,"pi":11,"oi":null,"g":11}]]]}"#;
+    const LIST_PIN: &str = r#"{"l":{"-5":{"a":12884902016,"l":64,"pi":11,"oi":null,"g":11}}}"#;
+
+    // NON-VACUITY FIRST, so no equality below can pass by comparing emptiness with emptiness.
+    for (kind, bytes) in [
+        ("hash", &hash_bytes),
+        ("set", &set_bytes),
+        ("zset", &zset_bytes),
+        ("list", &list_bytes),
+    ] {
+        assert!(
+            bytes.len() > 10,
+            "the {kind} codec emitted {} bytes, too short to be a populated map",
+            bytes.len()
+        );
+    }
+
+    // THE SHAPE, ASSERTED SEPARATELY FROM THE BYTES. Updating a golden string is a one-line edit
+    // someone can make to silence a failure; these say what the string MEANS, so swapping a
+    // sequence codec for a map one fails by name even if the literals were refreshed to match.
+    assert!(
+        set_bytes.contains("[[["),
+        "the set codec no longer emits a SEQUENCE of (member, address) pairs -- it produced \
+         {set_bytes}. A `Vec<u8>` member has no JSON object-key form, so a map encoding here \
+         loses every member with a non-UTF8 byte."
+    );
+    assert!(
+        zset_bytes.contains("[[["),
+        "the zset codec no longer emits a SEQUENCE of pairs -- it produced {zset_bytes}"
+    );
+    assert!(
+        !hash_bytes.contains("[["),
+        "the hash codec started emitting a sequence -- it produced {hash_bytes}. This kind's \
+         field has always been a plain map and a stored index written as a map cannot be read \
+         back as a sequence."
+    );
+    assert!(
+        !list_bytes.contains("[["),
+        "the list codec started emitting a sequence -- it produced {list_bytes}"
+    );
+
+    // AND THE BYTES THEMSELVES. A change here is a STORED FORMAT change: an index written by the
+    // shipping encoder will not read back, so it owes a `SHARD_INDEX_FORMAT_VERSION` step and the
+    // sweep of every literal pinned against it -- not a refreshed literal.
+    assert_eq!(
+        HASH_PIN, hash_bytes,
+        "the hash kind's stored bytes moved. This is a stored-format change, not a test fixture \
+         drifting: bump the index format stamp and sweep its literal pins."
+    );
+    assert_eq!(SET_PIN, set_bytes, "the set kind's stored bytes moved");
+    assert_eq!(ZSET_PIN, zset_bytes, "the zset kind's stored bytes moved");
+    assert_eq!(LIST_PIN, list_bytes, "the list kind's stored bytes moved");
+}

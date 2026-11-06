@@ -1,23 +1,61 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Reproduce: with async commit, a hot set write makes earlier hash writes vanish.
+"""Guard async feature hashes against loss under shared-set cache pressure.
+
+================================================================================
+TWO PRECONDITIONS. A regression run with the wrong shape can pass while the
+original defect is present. Both are encoded in the defaults below.
+
+  1. THE FAILING WORKLOAD MUST BE THE FIRST THING ON THE SHARD. Run as the
+     third cell, after two others had each left 20,000 rows, the identical
+     workload lost NOTHING. Start the node on empty data directories; this
+     script refuses a non-empty shard rather than reporting a clean run on one.
+
+  2. THE OBJECT FOOTPRINT MUST MATCH. Short keys with one-byte values did not
+     reproduce. It reproduced only once each key was the width a serialized
+     entity key produces -- 62 hex characters plus a project -- and each row
+     carried ELEVEN field slots. The loss tracks what the shard holds against
+     its cache memory budget, so a smaller row is a DIFFERENT EXPERIMENT, not a
+     simpler one.
+================================================================================
+
+WHAT HAS BEEN RULED OUT, so nobody spends a run repeating it:
+
+  * NOT a visibility delay. A 20-second pause does not bring the values back,
+    and this script re-reads and reports that separately.
+  * NOT the Feast integration. This file loads no Feast module; the provider's
+    `track_keys_for_teardown` option is only the workload that reaches it.
+  * NOT that option alone, and NOT entity count alone. On a fresh project,
+    20,000 entities read back complete with the flag on AND off. It is the
+    INTERACTION, and the grid below runs all three combinations.
+  * NOT the status endpoint. `/server/info` measures 1.8-2.7 ms from an empty
+    shard up to 42,000 keys; when it stalled it was blocked behind this same
+    write storm rather than walking anything.
+
+WHERE TO LOOK. The surviving rows are the LAST written -- 4,000 of 20,000, the
+final eight batches of 500 -- so what is lost is older dirty objects not yet
+persisted when the hot-key writes drove the shard past its cache budget. The
+suspect path is whatever drops or evicts a dirty object under memory pressure
+while `async_storage=true` defers persistence, and the missing guarantee is that
+an object acknowledged to a client is either persisted or still resident.
+`total_records` is incremented for rows whose content is gone, so whatever
+maintains that count is not the same thing that holds the content.
 
 NO FEAST, NO CLIENT LIBRARY, NO THIRD-PARTY PACKAGE. This drives the data
 node's own command surface with the standard library only, so the defect cannot
 be read as something a Python integration does to itself. Every command here is
 one the node's own `Command` enum defines.
 
-WHAT IT SHOWS. Against a FRESH, EMPTY shard with `async_storage=true`:
+WHAT IT CHECKS. Against a FRESH, EMPTY shard with `async_storage=true`:
 
   * write N hashes, interleaving one `SetAdd` per hash into a SINGLE set key
     (the shape an exact-teardown key index has),
   * read every hash back,
-  * and a large fraction of them answer with NO FIELDS AT ALL.
+  * and require every hash to retain its fields.
 
-The shard still counts them: `/server/info` reports `total_records` as though
-every row were there, while `HashGetAll` on a lost key returns zero entries. So
-the record count is incremented for a row whose content never persisted.
+The historical failure left the shard counting rows whose `HashGetAll` result
+was empty. The current container-block WAL lookup keeps those rows readable.
 
 IT IS AN INTERACTION, which is why it needs this exact shape. Neither half does
 it alone, and this script proves that by running all four combinations:
@@ -25,10 +63,10 @@ it alone, and this script proves that by running all four combinations:
     async_storage   hot-set writes   result
     false           yes              no loss
     true            no               no loss
-    true            yes              LOSS
+    true            yes              no loss
 
-A 20-second pause does not bring the values back, so it is loss and not a
-visibility delay -- the script re-reads and reports that separately.
+If a regression occurs, a pause and second read distinguish persistent loss
+from a visibility delay.
 
 USAGE
 
@@ -268,7 +306,7 @@ def main() -> int:
     }
     print(
         f"\ncells in order {wanted} "
-        f"(the failing one is 'tt' and runs FIRST by default):",
+        f"(the historical failure cell is 'tt' and runs FIRST by default):",
         flush=True,
     )
     lost_cells = []

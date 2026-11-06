@@ -498,22 +498,37 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 // 2. THE COMPONENT NAME, AND HOW MUCH OF IT IS SPELLING
 // =============================================================================================
 
-/// A ZSET COMPONENT NAME SPELLS EXACTLY HALF ITS BYTES, AT EVERY MEMBER WIDTH -- STILL, AFTER THE
-/// SCORE LEFT IT, BECAUSE THE PROPERTY WAS NEVER ABOUT THE SCORE.
+/// A COMPONENT NAME CHARGES ONE BYTE MORE THAN ITS MEMBER, NOT TWICE ITS MEMBER -- AT EVERY WIDTH,
+/// FOR SET AND ZSET ALIKE.
 ///
-/// `zset_component(member)` is `hex::encode(member)` now: two hex digits per member byte and
-/// nothing else, where it used to be sixteen hex digits of score then two per member byte. Hex
-/// encoding doubles ANY input, so a name of a `W`-byte member is `2W` bytes carrying `W` bytes of
-/// information at every width -- the same one-half fraction the score-carrying form had, because
-/// that form was also pure hex of a fixed input size (`8 + W` bytes) and a hex doubling is one
-/// half spelling by construction, with or without a score folded into what it is hex of. What
-/// moved is the DENOMINATOR, not the fraction: a twenty-byte member's name was 56 bytes carrying
-/// 28 bytes of information: it is 40 bytes carrying 20 now.
+/// WHAT THIS TEST USED TO SAY, AND WHY IT NO LONGER SAYS IT. It asserted that a zset component
+/// spells exactly HALF its bytes, at every member width: `hex::encode` doubles any input, so a
+/// `W`-byte member cost `2W` characters carrying `W` bytes, an exact one-half fraction by
+/// construction. That property was real, it was measured, and it was the DEFECT -- the component
+/// is the term that scales with member width, so the doubling WAS the member-width rate of every
+/// set and zset write. The test is retargeted rather than deleted because the quantity it watches
+/// is still the right one; only the answer moved.
 ///
-/// TWO DENOMINATORS, AND THEY ANSWER DIFFERENT QUESTIONS. "Half of a zset name is spelling" is
-/// per NAME and is exact. "What share of all component text in a store is hex at all" is per
-/// CORPUS and depends on the mix -- a hash field is plain text and is not spelled -- so it is
-/// reported here as a measured fraction over a named mix rather than carried as a constant.
+/// WHAT IT SAYS NOW: the component is one tag byte plus the member, so the slope against member
+/// width is ONE and the spelling share falls as `1/(W+1)` instead of sitting at one half forever.
+///
+/// AND THE SLOPE IS NOT ONE FOR EVERY MEMBER, WHICH IS THE PART THAT MATTERS FOR A RELEASE.
+/// `encode_name` returns text unchanged and base64-encodes anything that is not valid UTF-8, so:
+///
+/// ```text
+///     member is text      1 + W            slope 1.000   (was 2W)
+///     member is binary    2 + 4*ceil(W/3)  slope 1.333   (was 2W)
+///
+/// TWO tag bytes on the binary arm and not one, which is worth stating because it is easy to
+/// predict wrongly and this test caught exactly that prediction. `member_component` writes one
+/// unconditionally, so a reader holding only the string can tell the spellings apart; then
+/// `encode_name` writes its OWN before the base64, so its decoder can tell base64 from
+/// pass-through text. They answer different questions and both are needed. A fixed two bytes does
+/// not touch the slope, which is the term that matters.
+/// ```
+///
+/// A binary set member -- which Redis permits and real workloads use -- therefore gains a THIRD,
+/// not a half. Both arms are asserted below so neither figure can be quoted as the other.
 ///
 /// THE NEGATIVE CONTROL is the decimal arm. `timestamped_component` with no identity is
 /// `stored_key.to_string()`, which is NOT hex and NOT a fixed doubling: it is up to twenty
@@ -522,37 +537,107 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 ///
 /// rust-internal: reads this crate's own component-name producers, no product behaviour
 #[test]
-fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_width() {
-    println!("--- zset component name, per name ---");
-    println!("  {:>5}  {:>5}  {:>5}  {:>6}", "W", "name", "info", "spell%");
-    let mut fractions: Vec<f64> = Vec::new();
-    for width in [1usize, 4, 8, 16, MEMBER_WIDTH, 32, 64, 256] {
-        let member = vec![0xABu8; width];
-        let name = zset_component(&member);
-        let information = width;
+fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
+    let set_name = crate::engine::execute_on_shard::set_component;
+    // SET AND ZSET BOTH, because the flip moved two kinds and a test over one of them would pass
+    // on a tree where the other was missed. They render identically today and that is asserted,
+    // not assumed.
+    println!("--- component name, per name ---");
+    println!(
+        "  {:>5}  {:>6}  {:>6}  {:>6}  {:>7}",
+        "W", "text", "binary", "hex", "spell%"
+    );
+    let widths = [1usize, 4, 8, 16, MEMBER_WIDTH, 32, 64, 256];
+    for width in widths {
+        // TEXT: the common case, and the one the cost-per-op instrument exercises.
+        let text: Vec<u8> = std::iter::repeat(b'a').take(width).collect();
+        let text_name = zset_component(&text);
         assert_eq!(
-            name.len(),
-            2 * width,
-            "the zset component spelling moved at width {width}"
+            text_name.len(),
+            1 + width,
+            "a text member of {width} bytes should cost one tag byte more, not {}",
+            text_name.len()
         );
-        let fraction = (name.len() - information) as f64 / name.len() as f64;
-        fractions.push(fraction);
+        assert_eq!(
+            set_name(&text),
+            text_name,
+            "set and zset must spell the same member the same way at width {width}"
+        );
+
+        // BINARY: 0xAB repeated is not valid UTF-8, so this is the base64 arm.
+        let binary = vec![0xABu8; width];
+        let binary_name = zset_component(&binary);
+        assert_eq!(
+            binary_name.len(),
+            2 + 4 * width.div_ceil(3),
+            "a binary member of {width} bytes should cost two tag bytes plus base64, not {} \
+             -- `member_component` writes one tag and `encode_name` writes another before the \
+             base64",
+            binary_name.len()
+        );
+        assert_eq!(set_name(&binary), binary_name);
+
+        // THE THING THIS REPLACED, computed here so the comparison is not a remembered number.
+        let hex_len = 2 * width;
+        assert!(
+            text_name.len() < hex_len || width == 1,
+            "the text spelling is not shorter than hex at width {width}"
+        );
+        assert!(
+            binary_name.len() < hex_len || width <= 8,
+            "the binary spelling is not shorter than hex at width {width}: {} vs {hex_len}",
+            binary_name.len()
+        );
+        let fraction = (text_name.len() - width) as f64 / text_name.len() as f64;
         println!(
-            "  {width:>5}  {:>5}  {information:>5}  {:>5.1}%",
-            name.len(),
+            "  {width:>5}  {:>6}  {:>6}  {hex_len:>6}  {:>6.2}%",
+            text_name.len(),
+            binary_name.len(),
             100.0 * fraction
         );
-    }
-    for (index, fraction) in fractions.iter().enumerate() {
         assert!(
-            (fraction - 0.5).abs() < 1e-12,
-            "the spelling fraction is not one half at row {index}: {fraction}"
+            fraction <= 1.0 / (width as f64 + 1.0) + 1e-12,
+            "the text spelling share is above 1/(W+1) at width {width}: {fraction}"
         );
     }
-    // At MEMBER_WIDTH, the figure this module is quoted at, spelled out.
-    let quoted = zset_component(&vec![0u8; MEMBER_WIDTH]);
-    assert_eq!(quoted.len(), 40, "a 20-byte member's name is 40 bytes now the score is gone");
-    assert_eq!(MEMBER_WIDTH, 20, "and 20 bytes carry the same information");
+    // THE SLOPE, WHICH IS THE WHOLE POINT: a fixed term cannot be mistaken for a rate here,
+    // because this divides a difference by a difference and the tag cancels out.
+    let (lo, hi) = (16usize, 256usize);
+    let text_slope = (zset_component(&vec![b'a'; hi]).len() as f64
+        - zset_component(&vec![b'a'; lo]).len() as f64)
+        / (hi - lo) as f64;
+    assert!(
+        (text_slope - 1.0).abs() < 1e-12,
+        "the text component slope is {text_slope}, not the 1.0 that replaced hex's 2.0"
+    );
+    let binary_slope = (zset_component(&vec![0xABu8; hi]).len() as f64
+        - zset_component(&vec![0xABu8; lo]).len() as f64)
+        / (hi - lo) as f64;
+    assert!(
+        (binary_slope - 4.0 / 3.0).abs() < 0.01,
+        "the binary component slope is {binary_slope}, not the 4/3 base64 charges"
+    );
+    println!("  slope: text {text_slope:.4}  binary {binary_slope:.4}  hex was 2.0000");
+    assert_eq!(MEMBER_WIDTH, 20, "the quoted width is part of the measurement");
+    assert_eq!(
+        zset_component(&vec![b'a'; MEMBER_WIDTH]).len(),
+        21,
+        "a 20-byte TEXT member's name is 21 bytes, where hex charged 40"
+    );
+    // 0xAB AND NOT 0x00. A run of NUL bytes is perfectly valid UTF-8, so `encode_name` passes it
+    // through and a `vec![0u8; W]` fixture measures the TEXT arm while reading as though it were
+    // the binary one. It did not matter under hex, which doubles any input regardless; it decides
+    // which branch is taken now. The byte has to be one that cannot appear in UTF-8.
+    assert_eq!(
+        zset_component(&vec![0u8; MEMBER_WIDTH]).len(),
+        21,
+        "twenty NUL bytes are valid UTF-8, so they take the text arm at one byte more"
+    );
+    assert_eq!(
+        zset_component(&vec![0xABu8; MEMBER_WIDTH]).len(),
+        30,
+        "a 20-byte BINARY member's name is 30 bytes, where hex charged 40"
+    );
 
     // THE NEGATIVE CONTROL: the decimal producer is not a doubling and must not read as one.
     let decimal = crate::engine::packed_blocks::timestamped_component(u64::MAX, None);

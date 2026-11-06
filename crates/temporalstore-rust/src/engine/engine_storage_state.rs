@@ -7945,7 +7945,7 @@ impl CoreIndex {
     /// CHEAP IN THE CASE THAT MATTERS. `all` short-circuits on the first object holding refs, so a
     /// populated shard answers after one slot. The walk is paid only by a shard where nothing
     /// names a block -- the decode-then-rebuild window -- and there is nothing there to walk fast.
-    pub(super) fn names_no_object_pages(&self) -> bool {
+    pub(super) fn names_no_object_blocks(&self) -> bool {
         self.object_block_lookup.is_empty()
             && self
                 .objects
@@ -7959,7 +7959,7 @@ impl CoreIndex {
     /// the stats path reports. An object has one home, so this is a sum and not a union -- and the
     /// slot side is walked rather than counted, because a `HashMap`'s length counts rows and a row
     /// with no block is a real state here.
-    pub(super) fn objects_naming_pages(&self) -> usize {
+    pub(super) fn objects_naming_blocks(&self) -> usize {
         self.object_block_lookup.len()
             + self
                 .objects
@@ -7975,7 +7975,7 @@ impl CoreIndex {
     /// a rebuild would clear the lookup, re-file every block, and leave every SLOT still holding
     /// the refs it had before -- so a block that moved would be named twice, at its old position
     /// and its new one, and `BlockKeysByPosition` would carry both.
-    pub(super) fn clear_object_pages(&mut self) {
+    pub(super) fn clear_object_blocks(&mut self) {
         self.object_block_lookup.clear();
         for table in self.objects.values_mut() {
             for slot in table.values_mut() {
@@ -8649,7 +8649,7 @@ pub(super) fn next_block_index_for_object(
 /// three times, because several copies of a condition is how most of them come to agree and the
 /// rest do not, which this series has already hit with two filers disagreeing.
 ///
-/// `hex::encode` for a set member and for a zset member, base sixteen plus the two's-complement
+/// `member_component` for a set member and for a zset member, base sixteen plus the two's-complement
 /// bias for a list sequence, the field itself for a hash -- each the SAME rendering the write path
 /// files. A component this cannot parse answers `None` rather than defaulting to the empty member
 /// or to sequence zero: an unreadable name names nothing, which is the rule every arm of the
@@ -8664,11 +8664,11 @@ pub(super) fn resident_component_address<'a>(
     match model_id {
         "hash" => shard.hashes.get(object_key)?.get(component),
         "set" => {
-            let member = hex::decode(component).ok()?;
+            let member = super::container_blocks::member_from_component(component)?;
             shard.sets.get(object_key)?.get(&member)
         }
         "zset" => {
-            let member = hex::decode(component).ok()?;
+            let member = super::container_blocks::member_from_component(component)?;
             shard
                 .zsets
                 .get(object_key)?

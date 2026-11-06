@@ -1976,7 +1976,9 @@ impl TemporalEngine {
                             );
                     }
                     ("set", Some(encoded)) => {
-                        let Ok(member) = hex::decode(encoded) else {
+                        let Some(member) =
+                            super::container_blocks::member_from_component(encoded)
+                        else {
                             return false;
                         };
                         shard.sets.replay_remove_element(&item.object_key, &member);
@@ -1994,7 +1996,9 @@ impl TemporalEngine {
                     // anything beyond finding the member to drop, which is still all this arm
                     // does.
                     ("zset", Some(encoded)) => {
-                        let Ok(member) = hex::decode(encoded) else {
+                        let Some(member) =
+                            super::container_blocks::member_from_component(encoded)
+                        else {
                             return false;
                         };
                         shard
@@ -2150,9 +2154,10 @@ impl TemporalEngine {
             }
             // set: the PAGE spells the member, and the page's key IS the member.
             //
-            // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For `ElementKeySpelling::Hex`
-            // the element key stored in the block is the member's own bytes, and the component is
-            // `hex::encode` of them -- so the hex round trip below is undoing a rendering that only
+            // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For
+            // `ElementKeySpelling::Name`, and for `Hex` before it on blocks written earlier, the
+            // element key stored in the block is the member's own bytes and the component is a
+            // rendering of them -- so the round trip below is undoing a rendering that only
             // ever existed to put the member in a `String`. It is kept rather than short-circuited
             // because `elements_the_outcome_block_holds` answers in components for every kind, which
             // is what lets all four arms share one resolver instead of each decoding the frame its
@@ -2162,7 +2167,8 @@ impl TemporalEngine {
                     return false;
                 };
                 for component in members {
-                    let Ok(member) = hex::decode(component) else {
+                    let Some(member) = super::container_blocks::member_from_component(component)
+                    else {
                         return false;
                     };
                     let component = component.clone();
@@ -2245,7 +2251,8 @@ impl TemporalEngine {
                     return false;
                 };
                 for component in members {
-                    let Ok(member) = hex::decode(component) else {
+                    let Some(member) = super::container_blocks::member_from_component(component)
+                    else {
                         return false;
                     };
                     let component = component.clone();

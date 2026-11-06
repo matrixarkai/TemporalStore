@@ -52,8 +52,33 @@ except Exception:
 # put the wire floor at 9 against a real 7, and the floor refused the run --
 # which is the behaviour wanted, on the wrong value.
 WIRE_FLOOR = 7
-COMMAND_FLOOR_WITH_FEAST = 28
+COMMAND_FLOOR_WITH_FEAST = 29
 COMMAND_FLOOR_WITHOUT_FEAST = 12
+
+# The conformance tier needs a running data node, so a skip is legitimate where
+# there is none -- this runner is standard-library-only on purpose and must not
+# come to require a server. But a skip that leaves the final line reading
+# "PASS: 7 wire + 28 command" is INVISIBLE, and an invisible skip is how a tier
+# comes to have never executed while every signal stays green. Measured, not
+# supposed: with the node unreachable the tier reported `executed 0, skipped 1`
+# and this script still exited 0 with a PASS line that never mentioned it.
+#
+# Two things change. The conformance count is now always in the PASS line, and
+# FEAST_CONFORMANCE_REQUIRED=1 turns a skip into a failure for the one caller
+# that knows a node should be reachable. The floor is a count a real run
+# produced, not a guess.
+CONFORMANCE_FLOOR_WHEN_REQUIRED = 5
+
+
+def _conformance_required() -> bool:
+    """Whether a skipped conformance tier is a failure.
+
+    A function so the truthiness rule lives in one place: 1/true/yes/on,
+    case-insensitively, and nothing else. An UNSET variable must not read as
+    required, or every environment without a node starts failing.
+    """
+    raw = os.environ.get("FEAST_CONFORMANCE_REQUIRED", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_module(path: str, name: str):
@@ -172,11 +197,20 @@ def main() -> int:
     # not do is report a skipped run as a pass -- the count is printed either
     # way.
     print("\n--- feast_temporalstore_command conformance tier (needs a node) ---")
+    # Bound BEFORE the branch: previously assigned only on the path that ran, so
+    # the final line could not report it and a skip left no trace at all.
+    conf_executed = 0
+    conformance_required = _conformance_required()
     conformance_path = os.path.join(
         HERE, "feast_temporalstore_command", "tests", "test_feast_api_conformance.py"
     )
     if not FEAST_AVAILABLE:
         print("conformance: SKIPPED, feast is not installed")
+        if conformance_required:
+            problems.append(
+                "the conformance tier was skipped because feast is not installed, "
+                "while FEAST_CONFORMANCE_REQUIRED is set"
+            )
     elif not os.path.isfile(conformance_path):
         problems.append("the conformance test file is missing")
     else:
@@ -191,17 +225,38 @@ def main() -> int:
                 "NOTHING was verified through Feast's own API. Not a failure "
                 "here, and not a pass either."
             )
+            if conformance_required:
+                problems.append(
+                    "the conformance tier executed 0 tests while "
+                    "FEAST_CONFORMANCE_REQUIRED is set -- a node was expected to be "
+                    "reachable and was not, so NOTHING was verified through Feast's "
+                    "own API"
+                )
         else:
             print(f"conformance: {conf_executed} test(s) executed against a live node")
+            if conformance_required and conf_executed < CONFORMANCE_FLOOR_WHEN_REQUIRED:
+                problems.append(
+                    f"the conformance tier executed {conf_executed} tests, expected "
+                    f"at least {CONFORMANCE_FLOOR_WHEN_REQUIRED}"
+                )
 
     print()
     if problems:
         for problem in problems:
             print(f"FAIL: {problem}", file=sys.stderr)
         return 1
+    # THE CONFORMANCE COUNT IS IN THE SUCCESS LINE, ALWAYS. Its absence is what
+    # let a run that verified nothing through Feast's API read as a complete pass.
+    conformance_note = (
+        f"{conf_executed} conformance"
+        if conf_executed
+        else "0 conformance (SKIPPED -- nothing verified through Feast's own API)"
+    )
     print(
-        f"PASS: {wire_executed} wire + {command_executed} command tests executed "
-        f"(feast_available={FEAST_AVAILABLE})"
+        f"PASS: {wire_executed} wire + {command_executed} command + "
+        f"{conformance_note} tests executed "
+        f"(feast_available={FEAST_AVAILABLE}, "
+        f"conformance_required={conformance_required})"
     )
     return 0
 

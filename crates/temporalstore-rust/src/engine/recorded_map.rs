@@ -247,7 +247,7 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// it removes the authority". IT IS NOT THAT, and the correction is worth having even though the
 /// conclusion survives: the map's key is `element`, the parameter beside it, and the two are
 /// different VALUES rather than two spellings of one. For `SetKind` the caller passes
-/// `Some(hex::encode(member))` here and the raw `member` bytes as `element`; the map is keyed by
+/// `Some(set_component(member))` here and the raw `member` bytes as `element`; the map is keyed by
 /// the bytes.
 ///
 /// WHAT IT FEEDS, AFTER THE REPLAY PATH STOPPED ASKING THE OUTCOME. Both readers are inside

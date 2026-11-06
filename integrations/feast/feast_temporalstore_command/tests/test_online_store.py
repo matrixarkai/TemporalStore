@@ -24,6 +24,11 @@ import os
 import sys
 import unittest
 
+try:
+    import msgpack
+except ModuleNotFoundError:
+    msgpack = None  # type: ignore[assignment]
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from feast_temporalstore_command.client import (  # noqa: E402
@@ -50,11 +55,45 @@ class RecordingClient(TemporalStoreClient):
 
     def __init__(self, answers=None):
         super().__init__()
+        self._binary_batch_supported = False
+        self._binary_write_supported = False
         self.sent = []
         self.answers = list(answers or [])
+        self.tracking_members = None
 
-    def _post(self, path, document):  # type: ignore[override]
+    def _answer(self, path, document):
         self.sent.append((path, document))
+        if self.tracking_members is not None:
+            if path == "/execute" and document["command"]["kind"] == "set_members":
+                key = document["command"]["key"]
+                return ok(
+                    {
+                        "kind": "members",
+                        "members": [
+                            list(member) for member in self.tracking_members.get(key, [])
+                        ],
+                    }
+                )
+            if path == "/batch_execute" and all(
+                command["kind"] == "set_members" for command in document["commands"]
+            ):
+                return {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [
+                        ok(
+                            {
+                                "kind": "members",
+                                "members": [
+                                    list(member)
+                                    for member in self.tracking_members.get(
+                                        command["key"], []
+                                    )
+                                ],
+                            }
+                        )
+                        for command in document["commands"]
+                    ],
+                }
         if self.answers:
             return self.answers.pop(0)
         if path == "/batch_execute":
@@ -62,7 +101,19 @@ class RecordingClient(TemporalStoreClient):
                 "status": {"ok": True, "code": "ok", "message": ""},
                 "responses": [ok({"kind": "empty"})] * len(document["commands"]),
             }
+        if path == "/batch_write":
+            return {
+                "status": {"ok": True, "code": "ok", "message": ""},
+                "applied": len(document["commands"]),
+                "errors": [],
+            }
         return ok({"kind": "empty"})
+
+    def _post(self, path, document):  # type: ignore[override]
+        return self._answer(path, document)
+
+    def _post_encoded(self, path, body):  # type: ignore[override]
+        return self._answer(path, json.loads(body))
 
 
 class ByteEncodingTest(unittest.TestCase):
@@ -71,9 +122,8 @@ class ByteEncodingTest(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertEqual(decode_bytes(encode_bytes(payload)), payload)
 
-    def test_the_response_decoder_accepts_the_decimal_array_the_node_actually_sends(self):
-        # CommandResponse::Values carries no base64 annotation, so a byte comes
-        # back as a number. This is the shape in production today.
+    def test_the_response_decoder_accepts_older_decimal_arrays(self):
+        # Nodes from before compact responses return one number per byte.
         self.assertEqual(decode_bytes([104, 101, 108, 108, 111]), b"hello")
 
     def test_the_response_decoder_also_accepts_base64(self):
@@ -122,6 +172,284 @@ class ClientProtocolTest(unittest.TestCase):
         client = RecordingClient()
         self.assertEqual(client.batch_execute([]), [])
         self.assertEqual(client.sent, [])
+
+    def test_timeout_after_sending_a_write_is_not_retried(self):
+        class TimedOutConnection:
+            requests = 0
+            closed = False
+
+            def request(self, *_args, **_kwargs):
+                self.requests += 1
+
+            def getresponse(self):
+                raise TimeoutError("response did not arrive")
+
+            def close(self):
+                self.closed = True
+
+        client = TemporalStoreClient()
+        connection = TimedOutConnection()
+        client._local.conn = connection
+        with self.assertRaises(TimeoutError):
+            client.batch_execute(
+                [{"kind": "feature_append", "key": "history", "points": []}]
+            )
+        self.assertEqual(connection.requests, 1)
+        self.assertTrue(connection.closed)
+
+    def test_large_batch_is_split_without_reordering_commands(self):
+        client = RecordingClient(
+            [
+                {"status": {"ok": True}, "responses": [ok({"index": i}) for i in indexes]}
+                for indexes in ([0, 1], [2, 3], [4])
+            ]
+        )
+        client.max_batch_commands = 2
+        commands = [{"kind": "hash_multi_get", "key": str(i), "fields": ["f"]} for i in range(5)]
+        self.assertEqual([answer["index"] for answer in client.batch_execute(commands)], list(range(5)))
+        self.assertEqual([len(document["commands"]) for _, document in client.sent], [2, 2, 1])
+        self.assertEqual(
+            [command["key"] for _, document in client.sent for command in document["commands"]],
+            [str(i) for i in range(5)],
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_binary_batch_keeps_long_values_as_bytes(self):
+        payload = bytes(range(256)) * 16
+
+        class BinaryClient(TemporalStoreClient):
+            paths = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                self.paths.append((path, content_type))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "responses": [
+                            ok({"kind": "values", "values": [payload, None]})
+                        ],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = BinaryClient()
+        answer = client.batch_execute(
+            [{"kind": "hash_multi_get", "key": "a", "fields": ["f", "missing"]}]
+        )[0]
+        self.assertEqual(
+            client.paths, [("/batch_execute_msgpack", "application/msgpack")]
+        )
+        self.assertEqual(decode_bytes(answer["values"][0]), payload)
+        self.assertIsNone(decode_bytes(answer["values"][1]))
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_binary_batch_request_keeps_long_values_as_bytes(self):
+        payload = bytes(range(256)) * 16
+
+        class BinaryClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                self.documents.append((path, content_type, msgpack.unpackb(body, raw=False)))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "responses": [ok({"kind": "empty"})],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = BinaryClient()
+        client.batch_execute(
+            [
+                {
+                    "kind": "hash_multi_set",
+                    "key": "a",
+                    "entries": [["sequence", encode_bytes(payload)]],
+                }
+            ]
+        )
+        path, content_type, document = client.documents[0]
+        self.assertEqual(path, "/batch_execute_msgpack")
+        self.assertEqual(content_type, "application/msgpack")
+        self.assertEqual(document["commands"][0]["entries"][0][1], payload)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_binary_batch_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def __init__(self):
+                super().__init__()
+                self._binary_batch_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                if path == "/batch_execute_msgpack":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._request_encoded(path, body, content_type)
+
+        client = OlderNodeClient()
+        command = {"kind": "hash_multi_get", "key": "a", "fields": ["f"]}
+        client.batch_execute([command])
+        client.batch_execute([command])
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual([path for path, _ in client.sent], ["/batch_execute", "/batch_execute"])
+
+    def test_encoded_byte_limit_splits_large_feature_values(self):
+        client = RecordingClient()
+        client.max_batch_request_bytes = 180
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["sequence", "x" * 100]]}
+            for i in range(3)
+        ]
+        self.assertEqual(len(client.batch_execute(commands)), 3)
+        self.assertEqual([len(document["commands"]) for _, document in client.sent], [1, 1, 1])
+
+    def test_batch_serializes_each_command_once(self):
+        from unittest.mock import patch
+
+        client = RecordingClient()
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["f", "eA=="]]}
+            for i in range(4)
+        ]
+        real_dumps = json.dumps
+        encoded_commands = 0
+
+        def counted_dumps(value, *args, **kwargs):
+            nonlocal encoded_commands
+            if isinstance(value, dict) and "kind" in value:
+                encoded_commands += 1
+            return real_dumps(value, *args, **kwargs)
+
+        with patch(
+            "feast_temporalstore_command.client.json.dumps",
+            side_effect=counted_dumps,
+        ):
+            client.batch_execute(commands)
+
+        self.assertEqual(encoded_commands, len(commands))
+        self.assertEqual(client.sent[0][1]["commands"], commands)
+
+    def test_compact_write_acknowledges_the_whole_batch(self):
+        client = RecordingClient()
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["f", "eA=="]]}
+            for i in range(3)
+        ]
+        client.batch_write(commands)
+        self.assertEqual(client.sent, [("/batch_write", {"shard_id": 1, "commands": commands})])
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_binary_write_request_keeps_values_as_bytes(self):
+        payload = bytes(range(256)) * 16
+
+        class BinaryWriteClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.documents.append((path, content_type, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["commands"]),
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = BinaryWriteClient()
+        client.batch_write(
+            [
+                {
+                    "kind": "hash_multi_set",
+                    "key": "a",
+                    "entries": [["sequence", encode_bytes(payload)]],
+                }
+            ]
+        )
+        path, content_type, document = client.documents[0]
+        self.assertEqual(path, "/batch_write_msgpack")
+        self.assertEqual(content_type, "application/msgpack")
+        self.assertEqual(document["commands"][0]["entries"][0][1], payload)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_binary_write_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def __init__(self):
+                super().__init__()
+                self._binary_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                if path == "/batch_write_msgpack":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._request_encoded(path, body, content_type)
+
+        client = OlderNodeClient()
+        client.batch_write([{"kind": "common_delete", "key": "a"}])
+        client.batch_write([{"kind": "common_delete", "key": "b"}])
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual([path for path, _ in client.sent], ["/batch_write", "/batch_write"])
+
+    def test_compact_write_surfaces_an_indexed_command_error(self):
+        client = RecordingClient(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "applied": 1,
+                    "errors": [
+                        {
+                            "index": 1,
+                            "status": {
+                                "ok": False,
+                                "code": "quota_exhausted",
+                                "message": "limit reached",
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+        with self.assertRaises(TemporalStoreCommandError) as caught:
+            client.batch_write(
+                [
+                    {"kind": "common_delete", "key": "a"},
+                    {"kind": "common_delete", "key": "b"},
+                ]
+            )
+        self.assertEqual(caught.exception.code, "quota_exhausted")
+        self.assertIn("command 1", caught.exception.message)
+
+    def test_missing_compact_write_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def _post_encoded(self, path, body):  # type: ignore[override]
+                if path == "/batch_write":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._post_encoded(path, body)
+
+        client = OlderNodeClient()
+        client.batch_write([{"kind": "common_delete", "key": "a"}])
+        client.batch_write([{"kind": "common_delete", "key": "b"}])
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual([path for path, _ in client.sent], ["/batch_execute", "/batch_execute"])
 
     def test_the_command_document_is_json_serialisable_as_sent(self):
         client = RecordingClient()
@@ -288,7 +616,17 @@ class OnlineStoreTest(unittest.TestCase):
             self.config.online_store.port,
             self.config.online_store.shard_id,
             self.config.online_store.timeout_seconds,
+            self.config.online_store.max_batch_commands,
+            self.config.online_store.max_batch_request_bytes,
         )
+        return client
+
+    def _install_tracking(self, members_by_key=None, legacy_members=None):
+        client = self._install()
+        client.tracking_members = dict(members_by_key or {})
+        if legacy_members:
+            legacy_key = self.store._teardown_set_key(self.config, "stats")
+            client.tracking_members[legacy_key] = list(legacy_members)
         return client
 
     def test_a_write_sends_one_hash_multi_set_per_row_in_one_round_trip(self):
@@ -305,7 +643,7 @@ class OnlineStoreTest(unittest.TestCase):
 
         self.assertEqual(len(client.sent), 1, "a write should be ONE round trip")
         path, document = client.sent[0]
-        self.assertEqual(path, "/batch_execute")
+        self.assertEqual(path, "/batch_write")
         commands = document["commands"]
         self.assertEqual(len(commands), 3)
         self.assertTrue(all(c["kind"] == "hash_multi_set" for c in commands))
@@ -324,7 +662,8 @@ class OnlineStoreTest(unittest.TestCase):
                 },
                 {
                     "status": {"ok": True, "code": "ok", "message": ""},
-                    "responses": [ok({"kind": "empty"})],
+                    "applied": 1,
+                    "errors": [],
                 },
             ]
         )
@@ -466,11 +805,121 @@ class OnlineStoreTest(unittest.TestCase):
         client = self._install()
         self.store.online_write_batch(self.config, self.view, row, None)
         kinds = [c["kind"] for c in client.sent[0][1]["commands"]]
-        self.assertEqual(kinds, ["hash_multi_set", "feature_append"])
+        self.assertEqual(kinds, ["hash_multi_set", "feature_append", "feature_append"])
         append = client.sent[0][1]["commands"][1]
         # FeaturePoint.value has no base64 annotation; it must go out as a list
         # of integers or the node refuses it.
         self.assertIsInstance(append["points"][0]["value"], list)
+        numeric = client.sent[0][1]["commands"][2]
+        self.assertTrue(numeric["key"].startswith("fa:"))
+        self.assertEqual(bytes(numeric["points"][0]["value"]), b"1")
+
+    def test_repeated_entity_history_is_consolidated_without_losing_points(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        key = self._entity_key(1)
+        first = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        second = self.datetime(2026, 1, 1, 0, 0, 1, tzinfo=self.timezone.utc)
+        client = self._install()
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [
+                (key, {"trips": ValueProto(int64_val=3)}, first, None),
+                (key, {"trips": ValueProto(int64_val=5)}, second, None),
+            ],
+            None,
+        )
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            ["hash_multi_set", "feature_append", "feature_append"],
+        )
+        self.assertEqual(
+            dict(commands[0]["entries"])["stats:trips"],
+            encode_bytes(ValueProto(int64_val=5).SerializeToString()),
+        )
+        self.assertEqual(len(commands[1]["points"]), 2)
+        self.assertEqual(
+            [bytes(point["value"]) for point in commands[2]["points"]],
+            [b"3", b"5"],
+        )
+
+    def test_windowed_aggregate_uses_numeric_series_and_count_uses_raw_history(self):
+        self.config.online_store.write_feature_history = True
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [ok({"kind": "aggregate", "value": 13})],
+                },
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [ok({"kind": "aggregate", "value": 3})],
+                },
+            ]
+        )
+        key = self._entity_key(1)
+        self.assertEqual(
+            self.store.query_feature_aggregate(
+                self.config, self.view, key, "trips", 1, 100, "sum"
+            ),
+            13,
+        )
+        self.assertEqual(
+            self.store.query_feature_aggregate(
+                self.config, self.view, key, "trips", 1, 100, "count"
+            ),
+            3,
+        )
+        self.assertTrue(client.sent[0][1]["commands"][0]["key"].startswith("fa:"))
+        self.assertTrue(client.sent[1][1]["commands"][0]["key"].startswith("fh:"))
+
+    def test_many_windowed_aggregates_share_one_bounded_request(self):
+        self.config.online_store.write_feature_history = True
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [
+                        ok({"kind": "aggregate", "value": 13}),
+                        ok({"kind": "aggregate", "value": 3}),
+                    ],
+                }
+            ]
+        )
+        key = self._entity_key(1)
+        values = self.store.query_feature_aggregates(
+            self.config,
+            self.view,
+            [
+                (key, "trips", 1, 100, "sum", None),
+                (key, "trips", 1, 100, "count", None),
+            ],
+        )
+        self.assertEqual(values, [13, 3])
+        self.assertEqual(len(client.sent), 1)
+        path, document = client.sent[0]
+        self.assertEqual(path, "/batch_execute")
+        self.assertEqual(len(document["commands"]), 2)
+        self.assertTrue(document["commands"][0]["key"].startswith("fa:"))
+        self.assertTrue(document["commands"][1]["key"].startswith("fh:"))
+
+    def test_list_history_keeps_original_value_without_numeric_projection(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        client = self._install()
+        sequence = ValueProto()
+        sequence.int64_list_val.val.extend(range(4096))
+        row = [(self._entity_key(1), {"sequence": sequence}, self.datetime.now(self.timezone.utc), None)]
+        self.store.online_write_batch(self.config, self.view, row, None)
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual([command["kind"] for command in commands], ["hash_multi_set", "feature_append"])
+        self.assertEqual(bytes(commands[1]["points"][0]["value"]), sequence.SerializeToString())
 
     def test_key_tracking_records_each_written_key_and_teardown_deletes_them(self):
         """The opt-in teardown path, which is the only one that deletes anything.
@@ -496,49 +945,123 @@ class OnlineStoreTest(unittest.TestCase):
         commands = client.sent[0][1]["commands"]
         kinds = [c["kind"] for c in commands]
         self.assertEqual(kinds, ["hash_multi_set", "hash_multi_set", "set_add", "set_add"])
-        set_key = commands[2]["key"]
-        self.assertEqual(set_key, "fkeys:proj:stats")
         tracked = {decode_bytes(c["member"]).decode() for c in commands[2:]}
         written = {c["key"] for c in commands[:2]}
         self.assertEqual(
             tracked, written, "the tracked members must be exactly the keys written"
         )
+        for command in commands[2:]:
+            member = decode_bytes(command["member"]).decode()
+            self.assertEqual(
+                command["key"],
+                self.store._teardown_shard_key(self.config, "stats", member),
+            )
 
-        # Now tear down: one set_members read, then bounded batches of deletes,
-        # then the tracking set dropped last and on its own.
-        client = self._install(
-            [
-                ok(
-                    {
-                        "kind": "members",
-                        "members": [list(k.encode()) for k in sorted(written)],
-                    }
-                ),
-            ]
-        )
+        members_by_key = {}
+        for command in commands[2:]:
+            members_by_key.setdefault(command["key"], []).append(
+                decode_bytes(command["member"])
+            )
+        # Now tear down: one legacy read plus bounded shard reads, then bounded
+        # batches of field deletes and the occupied tracking sets dropped last.
+        client = self._install_tracking(members_by_key)
         self.store.teardown(self.config, [self.view], [self.entity])
         self.assertEqual(client.sent[0][0], "/execute")
         self.assertEqual(client.sent[0][1]["command"]["kind"], "set_members")
-        deleted_keys = []
+        field_deletes, key_deletes = [], []
         for path, document in client.sent[1:]:
             self.assertEqual(path, "/batch_execute")
             for command in document["commands"]:
-                self.assertEqual(command["kind"], "common_delete")
-                deleted_keys.append(command["key"])
+                if command["kind"] == "hash_delete":
+                    field_deletes.append((command["key"], command["field"]))
+                elif command["kind"] == "common_delete":
+                    key_deletes.append(command["key"])
+                elif command["kind"] != "set_members":
+                    self.fail(f"unexpected command {command['kind']}")
+
+        # THE ROWS ARE NOT DELETED, THEIR FIELDS ARE. The row is shared by every
+        # view in the project, so dropping it would take the neighbours' features
+        # with it.
         self.assertEqual(
-            set(deleted_keys),
-            written | {set_key},
-            "teardown must delete every tracked key AND the tracking set",
+            {key for key, _ in field_deletes},
+            written,
+            "every tracked row must have its fields removed",
         )
-        # The set is dropped LAST: while any key it names still exists, the set
-        # is the only thing that names it, so a run that failed partway can be
-        # repeated. Dropping it first would strand the survivors.
-        self.assertEqual(deleted_keys[-1], set_key)
         self.assertEqual(
-            len(deleted_keys),
-            len(written) + 1,
-            "no key may be deleted twice",
+            {field for _, field in field_deletes},
+            {"stats:trips", "_ts:stats"},
+            "exactly this view's feature fields and its timestamp field",
         )
+        # The tracking set is the ONLY thing deleted as a whole key, and it is
+        # dropped LAST: while any row it names still holds this view's fields,
+        # the set is the only thing that names them, so a run that failed
+        # partway can be repeated.
+        self.assertEqual(set(key_deletes), set(members_by_key))
+        last_path, last_document = client.sent[-1]
+        self.assertTrue(
+            all(command["kind"] == "common_delete" for command in last_document["commands"])
+        )
+        self.assertEqual(
+            len(field_deletes),
+            len(written) * 2,
+            "one delete per (row, field), no field twice",
+        )
+
+    def test_tearing_down_one_view_leaves_another_views_fields_on_a_shared_row(self):
+        """FEAST ISSUE #2150, WHICH THIS LAYOUT IS EXPOSED TO BY CONSTRUCTION.
+
+        There is one hash per (project, entity key) and EVERY feature view in
+        the project writes into it -- the view appears only in the field names.
+        So a teardown that deleted the row would delete every other view's
+        features for that entity, which is the bug Feast's own
+        `test_online_store_cleanup` exists to catch. That test is gated
+        `universal_online_stores(only=["redis"])`, so it never ran against this
+        store; this is the local equivalent.
+
+        Asserted on the FIELD NAMES in the emitted commands, because that is
+        where the view lives -- a row-level assertion cannot tell the two views
+        apart at all.
+        """
+        from feast import Field, FeatureView
+        from feast.types import Int64
+
+        other = FeatureView(
+            name="other_stats",
+            entities=[self.entity],
+            schema=[Field(name="miles", dtype=Int64)],
+            source=self.view.batch_source,
+        )
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.track_keys_for_teardown = True
+        written_key = "somerow:proj"
+        client = self._install(
+            [
+                ok({"kind": "members", "members": [list(written_key.encode())]}),
+            ]
+        )
+        self.store.teardown(self.config, [self.view], [self.entity])
+
+        touched = []
+        for _path, document in client.sent[1:]:
+            touched.extend(document["commands"])
+
+        # DENOMINATOR: it really did emit deletes for the one tracked row.
+        self.assertTrue(touched, "teardown emitted nothing")
+        self.assertNotIn(
+            "common_delete",
+            [c["kind"] for c in touched if c.get("key") == written_key],
+            "the shared row must NOT be deleted as a whole key -- that is the "
+            "defect: it would take every other view's fields with it",
+        )
+        fields = {c["field"] for c in touched if c["kind"] == "hash_delete"}
+        self.assertEqual(fields, {"stats:trips", "_ts:stats"})
+        for field in fields:
+            self.assertFalse(
+                field.startswith(f"{other.name}:") or field == f"_ts:{other.name}",
+                f"teardown of 'stats' touched a field belonging to "
+                f"'{other.name}': {field}",
+            )
 
     def test_teardown_bounds_its_batches_instead_of_sending_one_per_key_count(self):
         """THE REQUEST SIZE MUST NOT BE A PROPERTY OF THE DATA.
@@ -576,19 +1099,24 @@ class OnlineStoreTest(unittest.TestCase):
         }
         self.assertEqual(len(written), rows, "the fixture must really hold 100 keys")
 
-        client = self._install(
-            [
-                ok(
-                    {
-                        "kind": "members",
-                        "members": [list(k.encode()) for k in sorted(written)],
-                    }
-                ),
-            ]
-        )
+        tracking_commands = [
+            command
+            for command in client.sent[0][1]["commands"]
+            if command["kind"] == "set_add"
+        ]
+        members_by_key = {}
+        for command in tracking_commands:
+            members_by_key.setdefault(command["key"], []).append(
+                decode_bytes(command["member"])
+            )
+        client = self._install_tracking(members_by_key)
         self.store.teardown(self.config, [self.view], [self.entity])
 
-        batches = [document["commands"] for _, document in client.sent[1:]]
+        batches = [
+            [command for command in document["commands"] if command["kind"] != "set_members"]
+            for _, document in client.sent[1:]
+        ]
+        batches = [batch for batch in batches if batch]
         self.assertTrue(batches, "teardown sent no deletes at all")
         largest = max(len(b) for b in batches)
         self.assertLessEqual(
@@ -597,11 +1125,17 @@ class OnlineStoreTest(unittest.TestCase):
             f"teardown sent a {largest}-command batch against a bound of 16; "
             f"the request size is still a property of the data",
         )
-        deleted = [c["key"] for b in batches for c in b]
-        set_key = self.store._teardown_set_key(self.config, "stats")
-        self.assertEqual(set(deleted), written | {set_key})
-        self.assertEqual(len(deleted), rows + 1, "no key may be deleted twice")
-        self.assertEqual(deleted[-1], set_key, "the tracking set is dropped last")
+        commands = [c for b in batches for c in b]
+        field_deletes = [c for c in commands if c["kind"] == "hash_delete"]
+        key_deletes = [c for c in commands if c["kind"] == "common_delete"]
+        # One hash_delete per (row, field): this view has one feature plus its
+        # timestamp field, so two per row. The bound still has to hold over a
+        # command count that is now a MULTIPLE of the row count, which is the
+        # harder case for it.
+        self.assertEqual(len(field_deletes), rows * 2)
+        self.assertEqual({c["key"] for c in field_deletes}, written)
+        self.assertEqual({c["key"] for c in key_deletes}, set(members_by_key))
+        self.assertTrue(all(c["kind"] == "common_delete" for c in batches[-1]))
 
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.
@@ -771,7 +1305,7 @@ class AdvertisedCapabilityTest(unittest.TestCase):
 # Feast from a run without it, and cannot tell either from a run where the whole
 # Feast tier silently stopped executing.
 MINIMUM_EXECUTED_WITHOUT_FEAST = 12
-MINIMUM_EXECUTED_WITH_FEAST = 28
+MINIMUM_EXECUTED_WITH_FEAST = 29
 
 
 def main() -> int:

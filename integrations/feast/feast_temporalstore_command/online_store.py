@@ -40,14 +40,16 @@ event timestamp are one key's worth of work:
   across stores by construction, which is the only reason a latency comparison
   between them means anything.
 
-Both reads and writes go through ``/batch_execute``, so a
-``get_online_features`` call over N entities is one round trip, not N -- the
-same shape as the Redis store's pipelining.
+Reads use bounded binary ``/batch_execute_msgpack`` requests and responses.
+Writes use bounded binary ``/batch_write_msgpack`` requests and compact
+responses. Both paths fall back once to JSON-compatible routes when needed, so
+serving groups entities instead of issuing one request per entity.
 """
 
 from __future__ import annotations
 
 import logging
+import zlib
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
@@ -61,14 +63,16 @@ from feast.infra.supported_async_methods import SupportedAsyncMethods
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import FeastConfigBaseModel
+from feast.types import Int32, Int64
 
-from .client import TemporalStoreClient, decode_bytes, encode_bytes
+from .client import TemporalStoreClient, decode_bytes
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["TemporalStoreCommandOnlineStoreConfig", "TemporalStoreCommandOnlineStore"]
 
 _FULL_CLASS_PATH = "feast_temporalstore_command.TemporalStoreCommandOnlineStore"
+_TEARDOWN_TRACKING_SHARDS = 1024
 
 _NO_VECTOR_SEARCH = (
     "TemporalStore's online store does not serve vector or document retrieval. It "
@@ -102,6 +106,12 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     timeout_seconds: float = 10.0
     """Per-request socket timeout."""
 
+    max_batch_commands: int = 512
+    """Maximum commands per HTTP batch during reads and materialization."""
+
+    max_batch_request_bytes: int = 4 * 1024 * 1024
+    """Approximate encoded command bytes per HTTP batch."""
+
     key_ttl_seconds: Optional[int] = None
     """Expiry armed on each entity key after a write.
 
@@ -125,10 +135,8 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
 
     Off by default. When on, each written value is additionally appended to a
     per-``(view, entity, feature)`` feature series keyed by its event
-    timestamp, so the history behind the served value stays queryable through
-    ``FeatureQuery`` / ``FeatureAggQuery`` -- windowed aggregates over the same
-    data the online store is serving, which is the capability a plain key-value
-    online store cannot offer.
+    timestamp. Scalar integer features also get a numeric series for native
+    windowed aggregates; the raw history keeps its original serialized value.
 
     Serving reads do **not** change: ``online_read`` always answers from the
     hash. That is deliberate. ``FeatureQuery`` returns a window in ascending
@@ -142,58 +150,22 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     track_keys_for_teardown: bool = False
     """Record each written entity key in a per-view set so teardown can find it.
 
-    Off by default because it adds a write per row to a single hot key. With it
+    Off by default because it adds one write per row. With it
     off, :meth:`TemporalStoreCommandOnlineStore.teardown` has nothing to enumerate and
     says so rather than silently leaving data behind.
 
-    **DO NOT TURN THIS ON TOGETHER WITH ASYNC COMMIT. ROWS ARE LOST.**
-    Measured on a release build against a freshly created, empty shard, writing
-    20,000 entities at a batch width of 500, with ``async_storage=true`` on the
-    shard: **17,500 of the 20,000 rows read back empty.** Not late -- empty.
-    The shard reported ``total_records=20001``, and ``HashGetAll`` on a lost
-    row's key answered with **zero fields**, so the object exists and holds
-    nothing; a 20-second pause did not bring the values back. Only the last
-    2,500 writes -- the final five batches -- survived, which is the shape of
-    older dirty objects being dropped before they were persisted.
+    Async commit is supported. A release-build regression run on a fresh shard
+    retained all 20,000 feature-shaped rows while this option wrote the shared
+    tracking set. Container blocks can be recovered from their WAL records
+    after cache pressure, so the tracking write cannot make an acknowledged
+    hash row disappear.
 
-    It is an INTERACTION, and that is why it went unseen: neither half does it
-    alone. Same node, same payload, same entity count:
-
-    ===============  ==========  =====================
-    async_storage    this flag   rows lost of 20,000
-    ===============  ==========  =====================
-    false            true        0
-    true             false       0
-    true             **true**    **17,500**
-    ===============  ==========  =====================
-
-    The default path is unaffected, because this flag is off by default and
-    ``async_storage=true`` with it off loses nothing. If you need exact teardown
-    AND async commit, do the teardown pass against a shard configured for
-    durable commit.
-
-    **AND THE WRITE PATH IS QUADRATIC EVEN WHEN IT IS SAFE.**
-    Every key goes into ONE set -- the shard reports it as a single
-    `set_records` entry -- so each row's `SetAdd` is a write to a container
-    holding every row before it. Measured on a release build, writing N rows at
-    a batch width of 500, against the same node and payload:
-
-    ========  ==============  ==============
-    rows      elapsed         vs 5,000 rows
-    ========  ==============  ==============
-    5,000       3.05 s          1.0x
-    20,000     39.94 s         13.1x
-    50,000    463.67 s        152.0x
-    ========  ==============  ==============
-
-    Ten times the rows for about a hundred and fifty times the work. Two other
-    online stores driven through the same harness stayed linear over the same
-    range, so this is this write path and not the host.
-
-    Use it for a small view, or for a test fixture that has to clean up after
-    itself. For a production view of any size, leave it off and reclaim rows
-    with :attr:`key_ttl_seconds` instead -- an expiry costs one command per row
-    once, not one container rewrite per row.
+    Tracking is spread over 1,024 deterministic sets. Each set therefore holds
+    roughly one key in 1,024 instead of becoming a single ever-growing hot
+    container. The count is fixed rather than configurable so a deployment
+    cannot strand keys by changing it before teardown. Teardown also reads the
+    former unsharded set, so views written by an older provider remain
+    cleanable after an upgrade.
     """
 
     teardown_batch_size: int = 512
@@ -237,6 +209,8 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             online_config.port,
             online_config.shard_id,
             online_config.timeout_seconds,
+            online_config.max_batch_commands,
+            online_config.max_batch_request_bytes,
         )
         # Rebuild on a config change rather than handing back a client pointed
         # at the previous node: a cached client that outlives its config reads
@@ -292,8 +266,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
 
         stored_nanos: Dict[str, int] = {}
         if not online_config.skip_dedup:
-            # One batched read of just the timestamp field, then one batched
-            # write: two round trips for the whole call, not two per row.
+            # Read just the timestamp field before the bounded write batches.
             reads = client.batch_execute(
                 [
                     {"kind": "hash_multi_get", "key": key, "fields": [ts_field]}
@@ -308,7 +281,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     stored.ParseFromString(raw)
                     stored_nanos[key] = stored.seconds * 1_000_000_000 + stored.nanos
 
-        commands: List[Dict[str, Any]] = []
+        latest_commands: Dict[str, Dict[str, Any]] = {}
+        history_points: Dict[str, List[Dict[str, Any]]] = {}
+        numeric_points: Dict[str, List[Dict[str, Any]]] = {}
+        expiry_keys: Dict[str, None] = {}
         written = 0
         skipped = 0
         # The newest event time queued so far in this call, per key. Without it,
@@ -334,62 +310,79 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 continue
             queued_nanos[hash_key] = event_nanos
 
-            entries = [(ts_field, encode_bytes(proto_ts.SerializeToString()))]
+            entries = [(ts_field, proto_ts.SerializeToString())]
             for feature_name, value in values.items():
                 entries.append(
                     (
                         _feature_field(view_name, feature_name),
-                        encode_bytes(value.SerializeToString()),
+                        value.SerializeToString(),
                     )
                 )
-            commands.append(
-                {"kind": "hash_multi_set", "key": hash_key, "entries": entries}
-            )
+            # A Feast batch can contain many events for one entity. Only its
+            # newest accepted row belongs in the latest-value hash; history
+            # below retains every accepted timestamp.
+            latest_commands[hash_key] = {
+                "kind": "hash_multi_set", "key": hash_key, "entries": entries
+            }
 
             if online_config.write_feature_history:
                 timestamp_ms = proto_ts.seconds * 1000 + proto_ts.nanos // 1_000_000
                 for feature_name, value in values.items():
-                    commands.append(
+                    history_key = self._history_key(
+                        config, view_name, entity_key, feature_name
+                    )
+                    history_points.setdefault(history_key, []).append(
                         {
-                            "kind": "feature_append",
-                            "key": self._history_key(
-                                config, view_name, entity_key, feature_name
-                            ),
-                            # FeaturePoint.value carries no base64 annotation, so
-                            # it goes out as a decimal array -- the one payload on
-                            # this path that is not base64.
-                            "points": [
-                                {
-                                    "timestamp_ms": timestamp_ms,
-                                    "value": list(value.SerializeToString()),
-                                }
-                            ],
+                            "timestamp_ms": timestamp_ms,
+                            "value": value.SerializeToString(),
                         }
                     )
+                    numeric_field = value.WhichOneof("val")
+                    if numeric_field in ("int32_val", "int64_val"):
+                        aggregate_key = self._aggregate_key(
+                            config, view_name, entity_key, feature_name
+                        )
+                        numeric_points.setdefault(aggregate_key, []).append(
+                            {
+                                "timestamp_ms": timestamp_ms,
+                                "value": str(getattr(value, numeric_field)).encode("ascii"),
+                            }
+                        )
 
             if online_config.key_ttl_seconds:
-                commands.append(
-                    {
-                        "kind": "common_expire",
-                        "key": hash_key,
-                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-                    }
-                )
+                expiry_keys[hash_key] = None
             if online_config.track_keys_for_teardown:
                 tracked_keys.append(hash_key)
             written += 1
 
-        for key in tracked_keys:
+        commands: List[Dict[str, Any]] = list(latest_commands.values())
+        commands.extend(
+            {"kind": "feature_append", "key": key, "points": points}
+            for key, points in history_points.items()
+        )
+        commands.extend(
+            {"kind": "feature_append", "key": key, "points": points}
+            for key, points in numeric_points.items()
+        )
+        commands.extend(
+            {
+                "kind": "common_expire",
+                "key": key,
+                "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
+            }
+            for key in expiry_keys
+        )
+        for key in dict.fromkeys(tracked_keys):
             commands.append(
                 {
                     "kind": "set_add",
-                    "key": self._teardown_set_key(config, view_name),
-                    "member": encode_bytes(key.encode("utf-8")),
+                    "key": self._teardown_shard_key(config, view_name, key),
+                    "member": key.encode("utf-8"),
                 }
             )
 
         if commands:
-            client.batch_execute(commands)
+            client.batch_write(commands)
         if progress and written:
             progress(written)
         logger.debug(
@@ -413,9 +406,115 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         )
         return f"fh:{config.project}:{view_name}:{serialized.hex()}:{feature_name}"
 
+    @classmethod
+    def _aggregate_key(
+        cls,
+        config: RepoConfig,
+        view_name: str,
+        entity_key: EntityKeyProto,
+        feature_name: str,
+    ) -> str:
+        return "fa:" + cls._history_key(config, view_name, entity_key, feature_name)[3:]
+
+    def query_feature_aggregate(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        entity_key: EntityKeyProto,
+        feature_name: str,
+        start_ms: int,
+        end_ms: int,
+        aggregator: str,
+        count: Optional[int] = None,
+    ) -> int:
+        """Query a history window; numeric aggregates require scalar integer values."""
+        return self.query_feature_aggregates(
+            config,
+            table,
+            [(entity_key, feature_name, start_ms, end_ms, aggregator, count)],
+        )[0]
+
+    def query_feature_aggregates(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        queries: Sequence[
+            Tuple[EntityKeyProto, str, int, int, str, Optional[int]]
+        ],
+    ) -> List[int]:
+        """Query many history windows through bounded ordered batches."""
+        commands = [
+            self._feature_aggregate_command(config, table, *query) for query in queries
+        ]
+        answers = self._get_client(config).batch_execute(commands)
+        values = []
+        for answer in answers:
+            if answer.get("kind") != "aggregate":
+                raise ValueError("unexpected feature aggregate response")
+            values.append(int(answer["value"]))
+        return values
+
+    def _feature_aggregate_command(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        entity_key: EntityKeyProto,
+        feature_name: str,
+        start_ms: int,
+        end_ms: int,
+        aggregator: str,
+        count: Optional[int],
+    ) -> Dict[str, Any]:
+        online_config = config.online_store
+        assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
+        if not online_config.write_feature_history:
+            raise ValueError("write_feature_history must be enabled")
+        if start_ms < 0 or end_ms < start_ms or (count is not None and count < 0):
+            raise ValueError("invalid aggregate window or count")
+        feature = next(
+            (item for item in table.features if item.name == feature_name), None
+        )
+        if feature is None:
+            raise ValueError(f"unknown feature: {feature_name}")
+        name = aggregator.lower()
+        if name not in (
+            "sum", "avg", "average", "min", "max", "first", "last", "count", "events"
+        ):
+            raise ValueError(f"unsupported aggregator: {aggregator}")
+        if name not in ("count", "events") and feature.dtype not in (Int32, Int64):
+            raise ValueError("numeric aggregates require an Int32 or Int64 feature")
+        view_name = self._view_name(table, config)
+        key = (
+            self._history_key(config, view_name, entity_key, feature_name)
+            if name in ("count", "events")
+            else self._aggregate_key(config, view_name, entity_key, feature_name)
+        )
+        return {
+            "kind": "feature_agg_query",
+            "key": key,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "aggregator": name,
+            "count": count,
+        }
+
     @staticmethod
     def _teardown_set_key(config: RepoConfig, view_name: str) -> str:
         return f"fkeys:{config.project}:{view_name}"
+
+    @classmethod
+    def _teardown_shard_key(
+        cls, config: RepoConfig, view_name: str, row_key: str
+    ) -> str:
+        shard = zlib.crc32(row_key.encode("utf-8")) & (_TEARDOWN_TRACKING_SHARDS - 1)
+        return f"{cls._teardown_set_key(config, view_name)}:{shard:03x}"
+
+    @classmethod
+    def _teardown_shard_keys(
+        cls, config: RepoConfig, view_name: str
+    ) -> List[str]:
+        prefix = cls._teardown_set_key(config, view_name)
+        return [f"{prefix}:{shard:03x}" for shard in range(_TEARDOWN_TRACKING_SHARDS)]
 
     # -- reads ---------------------------------------------------------------
 
@@ -536,34 +635,103 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         batch_size = max(1, int(online_config.teardown_batch_size))
         for table in tables:
             view_name = self._view_name(table, config)
-            set_key = self._teardown_set_key(config, view_name)
-            members = client.execute({"kind": "set_members", "key": set_key}).get(
-                "members"
-            ) or []
-            commands: List[Dict[str, Any]] = []
-            for member in members:
-                raw = decode_bytes(member)
-                if raw is None:
-                    continue
-                commands.append(
-                    {"kind": "common_delete", "key": raw.decode("utf-8")}
-                )
-            # The tracking set is dropped LAST, and only after every key it
-            # named is gone. If a chunk fails partway, the set still lists the
-            # survivors, so a re-run finishes the job; dropping the set first
-            # would strand whatever remained with nothing left to name it.
+            legacy_set_key = self._teardown_set_key(config, view_name)
+            shard_keys = self._teardown_shard_keys(config, view_name)
+            # DELETE THIS VIEW'S FIELDS, NOT THE WHOLE ROW. The layout is one
+            # hash per (project, entity key), SHARED BY EVERY FEATURE VIEW in
+            # the project -- the view appears only in the FIELD names. So a
+            # `CommonDelete` on the row removed every other view's features for
+            # that entity too, and the caller asked for one view to be torn
+            # down.
+            #
+            # This is Feast's own issue #2150, and its universal suite has a
+            # test for exactly it -- `test_online_store_cleanup`, which
+            # registers two views over a shared `driver` entity, deletes one,
+            # and requires the other's features to survive. That test is gated
+            # `@pytest.mark.universal_online_stores(only=["redis"])`, so it
+            # never ran against this store and the defect was not caught by it.
+            #
+            # The fields are derivable rather than discovered: a write puts
+            # `"{view}:{feature}"` for each feature plus one `"_ts:{view}"`, so
+            # the view's own schema names them. It costs F+1 `HashDelete`
+            # commands per row instead of one `CommonDelete`, which is the
+            # price of not destroying a neighbour's data.
+            fields = [
+                _feature_field(view_name, feature.name) for feature in table.features
+            ] + [_ts_field(view_name)]
+            row_keys = set()
+            active_set_keys = []
+            pending_deletes: List[Dict[str, Any]] = []
             deleted = 0
-            for start in range(0, len(commands), batch_size):
-                chunk = commands[start : start + batch_size]
-                client.batch_execute(chunk)
-                deleted += len(chunk)
-            client.batch_execute([{"kind": "common_delete", "key": set_key}])
+            field_delete_round_trips = 0
+
+            def delete_members(members: Sequence[Any]) -> None:
+                nonlocal deleted, field_delete_round_trips
+                for member in members:
+                    raw = decode_bytes(member)
+                    if raw is None:
+                        continue
+                    row_key = raw.decode("utf-8")
+                    if row_key in row_keys:
+                        continue
+                    row_keys.add(row_key)
+                    for field in fields:
+                        pending_deletes.append(
+                            {"kind": "hash_delete", "key": row_key, "field": field}
+                        )
+                        if len(pending_deletes) == batch_size:
+                            client.batch_execute(pending_deletes)
+                            deleted += len(pending_deletes)
+                            field_delete_round_trips += 1
+                            pending_deletes.clear()
+
+            legacy_members = client.execute(
+                {"kind": "set_members", "key": legacy_set_key}
+            ).get("members") or []
+            if legacy_members:
+                active_set_keys.append(legacy_set_key)
+                delete_members(legacy_members)
+
+            tracking_read_round_trips = 1
+            read_batch_size = client.max_batch_commands
+            for start in range(0, len(shard_keys), read_batch_size):
+                key_batch = shard_keys[start : start + read_batch_size]
+                shard_answers = client.batch_execute(
+                    [{"kind": "set_members", "key": key} for key in key_batch]
+                )
+                tracking_read_round_trips += 1
+                for set_key, answer in zip(key_batch, shard_answers):
+                    shard_members = answer.get("members") or []
+                    if shard_members:
+                        active_set_keys.append(set_key)
+                        delete_members(shard_members)
+
+            if pending_deletes:
+                client.batch_execute(pending_deletes)
+                deleted += len(pending_deletes)
+                field_delete_round_trips += 1
+                pending_deletes.clear()
+
+            # Tracking sets are dropped LAST, only after every row they named
+            # has lost this view's fields. If a chunk fails partway, remaining
+            # sets still name their rows and a re-run finishes the cleanup.
+            tracking_deletes = [
+                {"kind": "common_delete", "key": set_key}
+                for set_key in active_set_keys
+            ]
+            tracking_delete_round_trips = 0
+            for start in range(0, len(tracking_deletes), batch_size):
+                client.batch_execute(tracking_deletes[start : start + batch_size])
+                tracking_delete_round_trips += 1
             logger.info(
-                "temporalstore: tore down view=%s keys=%d in %d round trip(s) "
-                "of at most %d",
+                "temporalstore: tore down view=%s rows=%d fields=%d in %d round "
+                "trip(s) of at most %d",
                 view_name,
+                len(row_keys),
                 deleted,
-                (len(commands) + batch_size - 1) // batch_size + 1,
+                field_delete_round_trips
+                + tracking_read_round_trips
+                + tracking_delete_round_trips,
                 batch_size,
             )
 

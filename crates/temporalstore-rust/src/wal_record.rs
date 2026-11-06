@@ -510,4 +510,108 @@ mod tests {
             );
         }
     }
+
+    /// THE SENTINEL IS AT THE TOP OF THE 32-BIT RANGE, NOT `u64::MAX`.
+    ///
+    /// This is the fact a stale second copy got wrong. `shared_store::publish_checkpoint`
+    /// carried its own `const HOT_BLOCK_SLAB_ID: u64 = u64::MAX` to exclude synthetic addresses
+    /// from the checkpoint completeness barrier. The engine's sentinel had moved to
+    /// `u32::MAX as u64` and that copy did not move with it, so the exclusion matched nothing:
+    /// every live hot block fell through and failed the barrier with `CheckpointSlabNotDurable`,
+    /// refusing a checkpoint that was in fact complete.
+    ///
+    /// Pinning the VALUE rather than the call site is deliberate: the defect was a restatement
+    /// of this number somewhere else, and only a test about the number itself is about the
+    /// thing that went wrong.
+    #[test]
+    fn the_synthetic_slab_sentinels_are_not_the_top_of_the_u64_range() {
+        assert_ne!(
+            crate::engine::HOT_BLOCK_SLAB_ID,
+            u64::MAX,
+            "a copy of this sentinel hardcoded u64::MAX; if the real one ever becomes u64::MAX,              find every site that assumes otherwise before changing this"
+        );
+        assert_ne!(WAL_LOG_SLAB_ID, u64::MAX);
+        assert_eq!(crate::engine::HOT_BLOCK_SLAB_ID, u32::MAX as u64);
+        assert_eq!(WAL_LOG_SLAB_ID, (u32::MAX as u64) - 1);
+    }
+
+    /// `is_wal_resident` answers for BOTH sentinels, and for nothing else.
+    ///
+    /// The checkpoint barrier skipped only the hot sentinel, so a `WAL_LOG_SLAB_ID` address was
+    /// equally unskipped -- it is just as synthetic and just as absent from any uploaded slab.
+    /// One question, one answer, both sentinels.
+    #[test]
+    fn is_wal_resident_covers_both_sentinels_and_refuses_a_real_slab() {
+        assert!(is_wal_resident(crate::engine::HOT_BLOCK_SLAB_ID));
+        assert!(is_wal_resident(WAL_LOG_SLAB_ID));
+        assert!(!is_wal_resident(u64::MAX), "u64::MAX is not a sentinel");
+        assert!(!is_wal_resident(0));
+        assert!(!is_wal_resident(1));
+        assert!(!is_wal_resident((u32::MAX as u64) - 2));
+    }
+
+    /// THE SENTINEL HAS EXACTLY ONE HOME, AND THIS FAILS IF A SECOND ONE GROWS BACK.
+    ///
+    /// The defect was not a wrong value, it was a SECOND DECLARATION -- which is wrong even
+    /// while it agrees, because only one of the two ever gets updated. So the guard is about the
+    /// count of declarations, not about any value.
+    ///
+    /// Anchored on a DECLARATION (`HOT_BLOCK_SLAB_ID` followed by `:` and `=` on one line) and
+    /// comment lines are dropped first, because a source-text guard that counts prose reports
+    /// its own documentation as the defect.
+    #[test]
+    fn the_hot_block_sentinel_is_declared_in_exactly_one_file() {
+        use std::path::Path;
+        fn walk(dir: &Path, hits: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, hits);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let Ok(text) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    for line in text.lines() {
+                        let code = line.trim_start();
+                        if code.starts_with("//") {
+                            continue;
+                        }
+                        // ANCHORED ON THE DECLARATION KEYWORD, not on punctuation. A first
+                        // version asked for `:` and `=` on a line mentioning the name, and
+                        // `ElementEntry::try_from_parts(HOT_BLOCK_SLAB_ID, ..)` inside a
+                        // `let address = ..` satisfies both -- so a USE SITE read as a second
+                        // declaration and the guard failed on correct code. `const NAME` is the
+                        // shape a declaration has and a use site never has, and it is the shape
+                        // the real defect had: `const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;`.
+                        // THE NEEDLE IS SPLIT SO THIS GUARD CANNOT MATCH ITSELF. The scan
+                        // walks every file under `src`, including this one, and a predicate
+                        // written as one literal appears in its own source -- so the guard
+                        // reported ITSELF as the second declaration and failed on correct
+                        // code. `concat!` joins the halves at compile time while the source
+                        // line never holds the needle contiguously. Comment lines are already
+                        // dropped above, which is why the two prose mentions nearby are not
+                        // hits; this line is code, and that is the difference.
+                        if code.contains(concat!("const ", "HOT_BLOCK_SLAB_ID")) {
+                            hits.push(format!("{}: {}", path.display(), code.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        walk(&src, &mut hits);
+        assert_eq!(
+            hits.len(),
+            1,
+            "HOT_BLOCK_SLAB_ID must be declared exactly once (engine_constants.rs); a second              declaration is how the checkpoint barrier came to compare against u64::MAX. Found: {hits:#?}"
+        );
+        assert!(
+            hits[0].contains("engine_constants.rs"),
+            "the one declaration must be the engine's: {hits:#?}"
+        );
+    }
 }
