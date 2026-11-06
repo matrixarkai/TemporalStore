@@ -8151,9 +8151,17 @@ mod tests {
 
     #[cfg(feature = "matrixobject")]
     #[tokio::test]
-    async fn probe_what_a_replay_spends_per_entry() {
-        // SIZING ONLY, not a guard. Measures what the READ side of the shared path spends now
-        // that the write side is coalesced, so the next lever is chosen from a number.
+    async fn a_replay_reads_a_contiguous_run_in_one_request() {
+        // A REPLAY USED TO SPEND A REQUEST PER ENTRY ON BYTES ONE REQUEST COVERS.
+        //
+        // The shared WAL is one appendable object per shard and entries land back to back, so a
+        // run of them is a run of slices of a single byte range. Reading each on its own spent
+        // an envelope per entry: measured at 26 requests for 24 entries and 2.77x the bytes the
+        // replay actually wanted.
+        //
+        // Asserted as a COUNT, because that is what changed. The byte ratio is printed and not
+        // pinned: it moves with the header set and with entry size, and pinning it would break
+        // on changes the claim survives.
         let (_object_server, uri) = spawn_matrixobject_object_server();
         let store = Arc::new(MatrixObjectHttpStore::new(&uri).unwrap());
         let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
@@ -8165,7 +8173,7 @@ mod tests {
                 .write(
                     1,
                     Command::StringSet {
-                        key: format!("probe-{index:02}"),
+                        key: format!("run-{index:02}"),
                         value: vec![b'v'; 280],
                     },
                 )
@@ -8175,29 +8183,49 @@ mod tests {
         writer.flush_pending(ENTRIES).await.unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let follower = test_engine(dir.path(), "probe-follower");
+        let follower = test_engine(dir.path(), "run-follower");
         follower.load_shard(1);
 
-        let req_before = store.requests_issued();
+        let before = store.requests_issued();
         let sent_before = store.wire_bytes_sent();
         let recv_before = store.wire_bytes_received();
         let report = replicator.replay_wal(1, 0, &follower).await.unwrap();
-        let requests = store.requests_issued() - req_before;
-        let sent = store.wire_bytes_sent() - sent_before;
-        let recv = store.wire_bytes_received() - recv_before;
+        let requests = store.requests_issued() - before;
+        let wire = (store.wire_bytes_sent() - sent_before) + (store.wire_bytes_received() - recv_before);
 
         println!(
-            "REPLAYCOST entries={} applied={} requests={requests} sent={sent} recv={recv} \
-             range_bytes={} offset_index_reads={} requests_per_entry={:.2} \
+            "REPLAYRUN entries={ENTRIES} applied={} requests={requests} range_bytes={} \
              wire_per_range_byte={:.2}",
-            ENTRIES,
             report.applied,
             report.range_bytes_read,
-            report.offset_index_reads,
-            requests as f64 / ENTRIES as f64,
-            (sent + recv) as f64 / report.range_bytes_read.max(1) as f64,
+            wire as f64 / report.range_bytes_read.max(1) as f64,
         );
-        assert_eq!(report.applied, ENTRIES);
+
+        // EVERY ENTRY STILL ARRIVES. A coalesced read that dropped or duplicated one would
+        // satisfy any request-count assertion.
+        assert_eq!(
+            report.applied, ENTRIES,
+            "replay applied {} of {ENTRIES} entries",
+            report.applied
+        );
+
+        // THE POINT: far fewer requests than entries. A bound, not an exact number -- the
+        // offset-index load and the prefix listing are their own requests, and a run is capped
+        // by the apply window, so a longer log legitimately takes more than one.
+        assert!(
+            requests < ENTRIES as u64 / 4,
+            "replaying {ENTRIES} entries spent {requests} requests; coalesced it should be a \
+             handful, and anything near {ENTRIES} means a request per entry again"
+        );
+
+        // NOT VACUOUS: it did talk to the store, and it did fetch the entries' bytes.
+        assert!(requests >= 1, "the replay spent no requests, so it read nothing");
+        assert!(
+            report.range_bytes_read >= (ENTRIES as u64) * 200,
+            "only {} range bytes for {ENTRIES} entries of ~300 bytes, so the run read did not \
+             fetch what the entries need",
+            report.range_bytes_read
+        );
     }
 
     #[cfg(feature = "matrixobject")]
