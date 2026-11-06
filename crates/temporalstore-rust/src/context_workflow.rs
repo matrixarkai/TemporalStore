@@ -86,7 +86,8 @@ use self::resource::{
 use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
 use crate::llm_context::{
-    score_embedding_candidates_exact, EmbeddingChannel, EmbeddingKey, EmbeddingVector,
+    score_embedding_candidates_exact, EmbeddingBatch, EmbeddingChannel, EmbeddingKey,
+    EmbeddingVector,
 };
 use crate::types::{
     context_model_descriptors, context_node_summary_vector_enabled, Command, CommandResponse,
@@ -1720,7 +1721,11 @@ pub(crate) fn extract_context_gated(
             // persist nothing. It defaulted on and nothing set it, so the extraction has always
             // been kept: the node, event and summaries persist, the node is marked
             // embedding-dirty for the drainer, and lexical scoring keeps it rankable meanwhile.
-            (Vec::new(), ContextEmbeddingGenerationReport::default(), true)
+            (
+                EmbeddingBatch::default(),
+                ContextEmbeddingGenerationReport::default(),
+                true,
+            )
         }
     };
 
@@ -1743,27 +1748,27 @@ pub(crate) fn extract_context_gated(
         // retrieve pass scores an L1 summary vector too, and an unstamped one cannot be told
         // apart from one the encoder in use wrote.
         let embedding_model_hash = context_embedding_model_hash(&provider.embedding_model);
-        if let Some(vector) = embedding_vectors.first() {
+        if let Some(vector) = embedding_vectors.get_row(0) {
             // The level-1 summary carries its own vector because that is the only place a
             // summary's vector lives -- the embedding fold moved vectors off separate rows and
             // onto the records that own them. Retrieval does not read it yet (it takes L0 from
             // node.vector and only ever queries level 2 for summary vectors), and dropping the
             // write on that basis is the exact mistake
             // context_extract_stores_embedding_vectors_on_the_records_themselves exists to catch.
-            summary_l0.vector = vector.clone();
+            summary_l0.vector = vector.to_vec();
             summary_l0.embedding_model_hash = embedding_model_hash;
             // The node itself carries its L0 vector too: the traversal scores children from
             // node.vector first, and without this the happy path would leave it empty on every
             // fresh ingest -- only the drainer's deferred path would ever fill it, so the
             // fallback to the separate record could never be retired.
-            node.vector = vector.clone();
+            node.vector = vector.to_vec();
             node.embedding_model_hash = embedding_model_hash;
             node.embedding_updated_at_ms = timestamp_ms;
         }
-        if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.first()) {
+        if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get_row(0)) {
             // Index 0, not a slot of its own: this summary's text IS `l1`, and `l1` is what the
             // node was embedded from, so the vector it wants is the one already returned.
-            summary.vector = vector.clone();
+            summary.vector = vector.to_vec();
             // The one summary vector retrieval actually scores: level 2 is the only level the
             // retrieve pass queries for vectors, so this stamp is what the guard there reads.
             summary.embedding_model_hash = embedding_model_hash;
@@ -1772,15 +1777,15 @@ pub(crate) fn extract_context_gated(
             // every later summary write; setting it here as well is what stops the node written
             // moments ago from being read back and rewritten by the summary upsert that follows.
             if context_node_summary_vector_enabled() {
-                node.summary_vector = vector.clone();
+                node.summary_vector = vector.to_vec();
                 node.summary_vector_valid_from_ms = summary.valid_from_ms;
                 node.summary_vector_model_hash = summary.embedding_model_hash;
             }
         }
         // The event is at index 1 either way, because the node now contributes exactly one text
         // to the batch whether or not L1 was emitted.
-        if let Some(vector) = embedding_vectors.get(1) {
-            event.vector = vector.clone();
+        if let Some(vector) = embedding_vectors.get_row(1) {
+            event.vector = vector.to_vec();
         }
     }
 
