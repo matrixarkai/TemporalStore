@@ -2,9 +2,17 @@
 // Copyright 2026 MatrixArkAI
 
 //! Standalone per-shard command execution extracted from engine.rs.
-use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use crate::engine::timestamped_series::TimestampedSeries as _;
+use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use super::*;
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct HashTimestamp {
+    #[prost(int64, tag = "1")]
+    seconds: i64,
+    #[prost(int32, tag = "2")]
+    nanos: i32,
+}
 
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
 ///
@@ -188,7 +196,7 @@ fn load_context_node(
     // MISSING for a durably acknowledged write on that path. The identity cannot be built without
     // naming a kind, so the arms had to separate.
     shard
-        .bucket_index.hashes
+        .hashes
         .get(object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .map(|address| (address, BlockIdentity::of(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD))))
@@ -457,6 +465,7 @@ pub(crate) fn execute_on_shard(
     control_rollup_enabled: bool,
     control_coalesce_persist: bool,
     control_distinct_sketch: bool,
+    trim_boundary_record: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
@@ -468,6 +477,56 @@ pub(crate) fn execute_on_shard(
     shard.control_coalesce_persist = control_coalesce_persist;
     shard.control_distinct_sketch = control_distinct_sketch;
     let mut mutated = false;
+    let mut conditional_hash_write = false;
+    let command = match command {
+        Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let stored_timestamp = shard
+                .hashes
+                .get(&key)
+                .and_then(|fields| fields.get(&timestamp_field))
+                .and_then(|address| {
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        BlockIdentity::of(
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(timestamp_field.as_str()),
+                        ),
+                        Some(block_routing_bucket(
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                })
+                .and_then(|bytes| {
+                    <HashTimestamp as prost::Message>::decode(bytes.as_slice()).ok()
+                })
+                .map(|timestamp| (timestamp.seconds, timestamp.nanos));
+            if stored_timestamp
+                .is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos))
+            {
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            conditional_hash_write = true;
+            Command::HashMultiSet { key, entries }
+        }
+        command => command,
+    };
     let response = match command {
         // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
         // invalidates a cache entry.
@@ -984,7 +1043,7 @@ pub(crate) fn execute_on_shard(
                     // `Serialize`) and already the address `HashMultiGet` reads a field from --
                     // same lookup, used here as the point read's source of truth under the gate.
                     value: shard
-                        .bucket_index.hashes
+                        .hashes
                         .get(&key)
                         .and_then(|fields| fields.get(&field))
                         .and_then(|address| {
@@ -1016,28 +1075,101 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let hash_fields = shard.bucket_index.hashes.get(&key);
-            let values = fields
-                .iter()
-                .map(|field| {
-                    hash_fields
-                        .and_then(|entries| entries.get(field))
-                        .and_then(|address| {
-                            read_block_bytes(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                // The hash the key names, and the field being read as its element.
-                                BlockIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
-                                Some(block_routing_bucket(
-                                    &key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
-                            )
-                        })
-                })
-                .collect();
+            let routing_bucket =
+                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // A packed row gives every present field the same address. Detect that common case
+            // without allocating a per-command address map, fetch its frame once, and project all
+            // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
+            // the established independent-read path.
+            let mut shared: Option<(&ElementEntry, &str)> = None;
+            let mut distinct_addresses = false;
+            if let Some(entries) = hash_fields {
+                for field in &fields {
+                    let Some(address) = entries.get(field) else {
+                        continue;
+                    };
+                    match shared {
+                        None => shared = Some((address, field.as_str())),
+                        Some((held, _)) if held == address => {}
+                        Some(_) => {
+                            distinct_addresses = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            let values = if !distinct_addresses {
+                if let Some((address, first_field)) = shared {
+                    let frame = read_block_frame_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        BlockIdentity::of(
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(first_field),
+                        ),
+                        Some(routing_bucket),
+                    );
+                    match frame.as_deref().map(|bytes| {
+                        container_blocks::project_utf8_container_elements(bytes, &fields)
+                    }) {
+                        Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
+                            for (index, field) in fields.iter().enumerate() {
+                                if hash_fields
+                                    .and_then(|entries| entries.get(field))
+                                    .is_none()
+                                {
+                                    values[index] = None;
+                                }
+                            }
+                            values
+                        }
+                        Some(container_blocks::Utf8ContainerProjection::Corrupt(_)) => {
+                            note_corrupt_container_block();
+                            vec![None; fields.len()]
+                        }
+                        Some(container_blocks::Utf8ContainerProjection::NotFramed)
+                        | Some(container_blocks::Utf8ContainerProjection::OtherSpelling) => fields
+                            .iter()
+                            .map(|field| {
+                                hash_fields
+                                    .and_then(|entries| entries.get(field))
+                                    .and_then(|_| frame.as_deref())
+                                    .and_then(|bytes| select_container_value(bytes, field))
+                            })
+                            .collect(),
+                        None => vec![None; fields.len()],
+                    }
+                } else {
+                    vec![None; fields.len()]
+                }
+            } else {
+                fields
+                    .iter()
+                    .map(|field| {
+                        hash_fields
+                            .and_then(|entries| entries.get(field))
+                            .and_then(|address| {
+                                read_block_bytes(
+                                    cache,
+                                    block_store,
+                                    shard_id,
+                                    address,
+                                    BlockIdentity::of(
+                                        shard_id,
+                                        "hash",
+                                        &key,
+                                        Some(field.as_str()),
+                                    ),
+                                    Some(routing_bucket),
+                                )
+                            })
+                    })
+                    .collect()
+            };
             CommandResponse::Values { values }
         }
         Command::HashMultiSet { key, entries } => {
@@ -1048,9 +1180,11 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "hash", &key);
 
             // A large feature and its small scalar fields must stay readable as
-            // one object under cache pressure. One packed block gives every
-            // field the same readable address and pays for one storage append.
-            if contains_large_value {
+            // one object under cache pressure. Timestamp-conditioned writes are
+            // complete feature rows too, so packing them avoids one block append
+            // per scalar while preserving field-addressed reads. Generic small
+            // hash writes retain their existing per-field representation.
+            if contains_large_value || conditional_hash_write {
                 let mut positions = std::collections::HashMap::<String, usize>::new();
                 let mut packed_entries = Vec::<(String, Vec<u8>)>::with_capacity(entries.len());
                 for (field, value) in entries {
@@ -1065,14 +1199,14 @@ pub(crate) fn execute_on_shard(
                     .iter()
                     .find_map(|(field, _)| {
                         shard
-                            .bucket_index.hashes
+                            .hashes
                             .get(&key)
                             .and_then(|fields| fields.get(field))
                             .and_then(ElementEntry::block_id)
                     })
                     .or_else(|| {
                         shard
-                            .bucket_index.hashes
+                            .hashes
                             .get(&key)
                             .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
                             .map(|held| held.saturating_add(1))
@@ -1117,7 +1251,11 @@ pub(crate) fn execute_on_shard(
                     }
                 }
                 return ExecuteOutcome {
-                    response: CommandResponse::Empty,
+                    response: if conditional_hash_write {
+                        CommandResponse::Integer { value: 1 }
+                    } else {
+                        CommandResponse::Empty
+                    },
                     mutated,
                 };
             }
@@ -1178,8 +1316,15 @@ pub(crate) fn execute_on_shard(
             if applied > 0 {
                 mutated = true;
             }
-            CommandResponse::Empty
+            if conditional_hash_write {
+                CommandResponse::Integer { value: 1 }
+            } else {
+                CommandResponse::Empty
+            }
         }
+        Command::HashMultiSetIfTimestampOlder { .. } => unreachable!(
+            "conditional hash writes are normalized before command dispatch"
+        ),
         Command::HashIncrBy {
             key,
             field,
@@ -1192,7 +1337,7 @@ pub(crate) fn execute_on_shard(
             // the wrong answer is not just served, it is persisted. `shard.bucket_index.hashes` is durable and
             // already the address `HashMultiGet`/the gated `HashGet` read a field from.
             let current = shard
-                .bucket_index.hashes
+                .hashes
                 .get(&key)
                 .and_then(|fields| fields.get(&field))
                 .and_then(|address| {
@@ -1308,7 +1453,7 @@ pub(crate) fn execute_on_shard(
             // Copied out before the block reads: those borrow the cache and the block store while
             // this borrows the shard, and the addresses are what both halves of the union need.
             let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
-                .bucket_index.hashes
+                .hashes
                 .get(&key)
                 .map(|fields| {
                     fields
@@ -1542,7 +1687,7 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let biased = zset_score_bits(score);
             let existed = shard
-                .bucket_index.zsets
+                .zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(old_biased, _)| *old_biased);
@@ -1635,7 +1780,7 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::Bytes {
                 value: shard
-                    .bucket_index.zsets
+                    .zsets
                     .get(&key)
                     .and_then(|members| members.get(&member))
                     .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
@@ -1652,7 +1797,7 @@ pub(crate) fn execute_on_shard(
             // container exists to make unrepresentable. Reading the score with `get` costs one
             // lookup and lets the record go first.
             let biased = shard
-                .bucket_index.zsets
+                .zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| *biased);
@@ -1915,7 +2060,7 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let old = shard
-                .bucket_index.zsets
+                .zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| *biased);
@@ -2028,14 +2173,14 @@ pub(crate) fn execute_on_shard(
         Command::ZSetRank { key, member, rev } => {
             remove_if_expired(shard, &key);
             let target = shard
-                .bucket_index.zsets
+                .zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| (*biased, member.clone()));
             CommandResponse::Bytes {
                 value: target.map(|(biased, member)| {
                     let before = shard
-                        .bucket_index.zsets
+                        .zsets
                         .get(&key)
                         .map(|members| {
                             members
@@ -2342,7 +2487,7 @@ pub(crate) fn execute_on_shard(
                 GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 CommandResponse::Members {
                     members: shard
-                        .bucket_index.sets
+                        .sets
                         .get(&key)
                         .map(|members| {
                             members.iter().map(|(member, _)| member.clone()).collect()
@@ -2435,6 +2580,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2539,6 +2685,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2741,6 +2888,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_blocks(
@@ -2916,6 +3064,8 @@ pub(crate) fn execute_on_shard(
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
+            let mut published: Vec<ElementEntry> = Vec::new();
+            let mut replaced_any = false;
             if let Ok(addresses) = append_timestamped_kv_blocks(
                 cache,
                 block_store,
@@ -2929,27 +3079,52 @@ pub(crate) fn execute_on_shard(
                 next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    series.set(timestamp_ms, address);
+                    // A replaced timestamp supersedes a block, and a superseded block must be
+                    // dropped rather than joined -- so record it and take the restating path.
+                    // `set` returns nothing where `insert` returned the superseded value, so
+                    // the question has to be asked BEFORE the write rather than read off it.
+                    if series.get(timestamp_ms).is_some() {
+                        replaced_any = true;
+                    }
+                    series.set(timestamp_ms, address.clone());
+                    published.push(address);
                     mutated = true;
                 }
             }
-            mutated |= trim_timestamped_series(
+            let trimmed = trim_timestamped_series(
                 shard_id,
                 "feature",
                 &key,
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
-            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_blocks(
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
-                mutated,
-            );
+            mutated |= trimmed;
+            if replaced_any || trimmed {
+                // Something was superseded or evicted: the live set has to be restated in full.
+                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
+                sync_bucket_index_object_blocks(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    live_addresses,
+                    mutated,
+                );
+            } else {
+                // A pure append. Publishing only the new blocks leaves the index in the same
+                // state, and stops a row append costing the length of the series it joins.
+                sync_bucket_index_object_blocks_with_mode(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    published,
+                    mutated,
+                    false,
+                );
+            }
             CommandResponse::Empty
         }
         Command::SequenceQuery {
@@ -3691,7 +3866,7 @@ pub(crate) fn execute_on_shard(
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     let node = shard
-                        .bucket_index.hashes
+                        .hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -3794,7 +3969,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_node_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let node = shard
-                .bucket_index.hashes
+                .hashes
                 .get(&object_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -3846,7 +4021,7 @@ pub(crate) fn execute_on_shard(
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     shard
-                        .bucket_index.hashes
+                        .hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -5235,7 +5410,7 @@ pub(crate) fn execute_on_shard(
             let node_key = context_node_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &node_key);
             let node = shard
-                .bucket_index.hashes
+                .hashes
                 .get(&node_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, BlockIdentity::of(shard_id, "hash", &node_key, Some(CONTEXT_NODE_FIELD))))
@@ -5375,7 +5550,7 @@ fn zset_members_in_score_range(
     max_exclusive: bool,
 ) -> Vec<(Vec<u8>, u64)> {
     let mut ordered: Vec<(Vec<u8>, u64)> = shard
-        .bucket_index.zsets
+        .zsets
         .get(key)
         .map(|members| {
             members
@@ -5403,7 +5578,7 @@ fn zset_members_in_score_range(
 
 fn zset_ordered_members(shard: &ShardState, key: &str) -> Vec<(Vec<u8>, u64)> {
     let mut ordered: Vec<(Vec<u8>, u64)> = shard
-        .bucket_index.zsets
+        .zsets
         .get(key)
         .map(|members| {
             members

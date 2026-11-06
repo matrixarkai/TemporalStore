@@ -26,6 +26,47 @@ pub struct EmbeddingHit {
     pub score: f32,
 }
 
+/// Exact cosine scores for a bounded rerank set.
+///
+/// The compact index should select the set. This function is deliberately
+/// allocation-light and does not own or retain application vectors.
+pub fn score_embedding_candidates_exact(
+    query: &[f32],
+    candidates: &[EmbeddingVector<'_>],
+) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+    let query_inverse_norm = query_inverse_norm(query, query.len())?;
+    let mut hits = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if candidate.values.len() != query.len() {
+            return Err(EmbeddingIndexError::DimensionMismatch {
+                key: candidate.key,
+                expected: query.len(),
+                actual: candidate.values.len(),
+            });
+        }
+        let mut dot = 0.0f32;
+        let mut norm_squared = 0.0f32;
+        for (dimension, value) in candidate.values.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(EmbeddingIndexError::NonFiniteValue {
+                    key: candidate.key,
+                    dimension,
+                });
+            }
+            dot += query[dimension] * value;
+            norm_squared += value * value;
+        }
+        if norm_squared <= f32::EPSILON {
+            return Err(EmbeddingIndexError::ZeroNorm { key: candidate.key });
+        }
+        hits.push(EmbeddingHit {
+            key: candidate.key,
+            score: dot * query_inverse_norm * norm_squared.sqrt().recip(),
+        });
+    }
+    Ok(hits)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddingIndexConfig {
     pub dimensions: usize,
@@ -218,12 +259,69 @@ impl EmbeddingIndex {
             .saturating_mul(self.config.dimensions + std::mem::size_of::<f32>())
     }
 
+    pub fn contains(&self, key: EmbeddingKey) -> bool {
+        self.tenants
+            .get(&key.tenant_id)
+            .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
+    }
+
     pub fn upsert_batch(
         &mut self,
         batch: &[EmbeddingVector<'_>],
     ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
+        if let [input] = batch {
+            return self.upsert_one(*input);
+        }
         let compact = self.prepare_batch(batch)?;
         self.upsert_compact_batch(&compact)
+    }
+
+    fn upsert_one(
+        &mut self,
+        input: EmbeddingVector<'_>,
+    ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
+        self.validate_vector_dimensions(input.key, input.values)?;
+        let exists = self.contains(input.key);
+        let requested = self.len().saturating_add(usize::from(!exists));
+        if requested > self.config.max_entries {
+            return Err(EmbeddingIndexError::CapacityExceeded {
+                capacity: self.config.max_entries,
+                requested,
+            });
+        }
+        let (scale, quantization_multiplier) = quantization_parameters(input.key, input.values)?;
+
+        let rows = self.tenants.entry(input.key.tenant_id).or_default();
+        let (inserted, updated) = if let Some(&position) = rows.positions.get(&input.key.item_id) {
+            rows.scales[position] = scale;
+            let start = position * self.config.dimensions;
+            quantize_into(
+                input.values,
+                quantization_multiplier,
+                &mut rows.vectors[start..start + self.config.dimensions],
+            );
+            (0, 1)
+        } else {
+            let position = rows.item_ids.len();
+            rows.item_ids.push(input.key.item_id);
+            rows.positions.insert(input.key.item_id, position);
+            rows.scales.push(scale);
+            rows.vectors.extend(
+                input
+                    .values
+                    .iter()
+                    .map(|value| quantize_value(*value, quantization_multiplier)),
+            );
+            self.total_entries += 1;
+            (1, 0)
+        };
+
+        Ok(EmbeddingWriteReport {
+            inserted,
+            updated,
+            total_entries: self.len(),
+            quantized_vector_bytes: self.quantized_vector_bytes(),
+        })
     }
 
     pub fn prepare_batch(
@@ -233,7 +331,7 @@ impl EmbeddingIndex {
         let mut batch_keys = HashSet::with_capacity(batch.len());
         let mut new_entries = 0usize;
         for input in batch {
-            self.validate_vector(input.key, input.values)?;
+            self.validate_vector_dimensions(input.key, input.values)?;
             if !batch_keys.insert(input.key) {
                 return Err(EmbeddingIndexError::DuplicateKey { key: input.key });
             }
@@ -259,7 +357,7 @@ impl EmbeddingIndex {
         let mut vectors = Vec::with_capacity(batch.len().saturating_mul(self.config.dimensions));
         for input in batch {
             keys.push(input.key);
-            scales.push(quantize_unit_vector(input.values, &mut vectors));
+            scales.push(quantize_unit_vector(input.key, input.values, &mut vectors)?);
         }
         CompactEmbeddingBatch::from_compact_rows(
             self.config.dimensions,
@@ -379,14 +477,15 @@ impl EmbeddingIndex {
         let Some(rows) = self.tenants.get(&tenant_id) else {
             return Ok(Vec::new());
         };
-        let query = self.normalized_query(query)?;
+        let query_inverse_norm = query_inverse_norm(query, self.config.dimensions)?;
         let limit = limit.min(rows.item_ids.len());
         let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
 
         for position in 0..rows.item_ids.len() {
             let start = position * self.config.dimensions;
             let row = &rows.vectors[start..start + self.config.dimensions];
-            let score = (dot_i8_f32(row, &query) * rows.scales[position]).clamp(-1.0, 1.0);
+            let score = (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm)
+                .clamp(-1.0, 1.0);
             let candidate = HeapHit { score, position };
             if heap.len() < limit {
                 heap.push(Reverse(candidate));
@@ -415,7 +514,40 @@ impl EmbeddingIndex {
         Ok(hits)
     }
 
-    fn validate_vector(
+    /// Score only the requested item ids without scanning the rest of the tenant.
+    ///
+    /// Results preserve candidate order so callers that already own a ranking
+    /// pipeline can merge scores without paying for an extra sort.
+    pub fn score_candidates(
+        &self,
+        tenant_id: u64,
+        query: &[f32],
+        candidate_item_ids: &[u64],
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        let Some(rows) = self.tenants.get(&tenant_id) else {
+            return Ok(Vec::new());
+        };
+        let query_inverse_norm = query_inverse_norm(query, self.config.dimensions)?;
+        let mut hits = Vec::with_capacity(candidate_item_ids.len().min(rows.item_ids.len()));
+        for item_id in candidate_item_ids {
+            let Some(&position) = rows.positions.get(item_id) else {
+                continue;
+            };
+            let start = position * self.config.dimensions;
+            let row = &rows.vectors[start..start + self.config.dimensions];
+            hits.push(EmbeddingHit {
+                key: EmbeddingKey {
+                    tenant_id,
+                    item_id: *item_id,
+                },
+                score: (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm)
+                    .clamp(-1.0, 1.0),
+            });
+        }
+        Ok(hits)
+    }
+
+    fn validate_vector_dimensions(
         &self,
         key: EmbeddingKey,
         values: &[f32],
@@ -427,39 +559,31 @@ impl EmbeddingIndex {
                 actual: values.len(),
             });
         }
-        let mut norm_squared = 0.0f64;
-        for (dimension, value) in values.iter().enumerate() {
-            if !value.is_finite() {
-                return Err(EmbeddingIndexError::NonFiniteValue { key, dimension });
-            }
-            norm_squared += f64::from(*value) * f64::from(*value);
-        }
-        if norm_squared <= f64::EPSILON {
-            return Err(EmbeddingIndexError::ZeroNorm { key });
-        }
         Ok(())
     }
+}
 
-    fn normalized_query(&self, query: &[f32]) -> Result<Vec<f32>, EmbeddingIndexError> {
-        if query.len() != self.config.dimensions {
-            return Err(EmbeddingIndexError::QueryDimensionMismatch {
-                expected: self.config.dimensions,
-                actual: query.len(),
-            });
-        }
-        let mut norm_squared = 0.0f64;
-        for (dimension, value) in query.iter().enumerate() {
-            if !value.is_finite() {
-                return Err(EmbeddingIndexError::QueryNonFiniteValue { dimension });
-            }
-            norm_squared += f64::from(*value) * f64::from(*value);
-        }
-        if norm_squared <= f64::EPSILON {
-            return Err(EmbeddingIndexError::QueryZeroNorm);
-        }
-        let inverse_norm = norm_squared.sqrt().recip() as f32;
-        Ok(query.iter().map(|value| value * inverse_norm).collect())
+fn query_inverse_norm(
+    query: &[f32],
+    expected_dimensions: usize,
+) -> Result<f32, EmbeddingIndexError> {
+    if query.len() != expected_dimensions {
+        return Err(EmbeddingIndexError::QueryDimensionMismatch {
+            expected: expected_dimensions,
+            actual: query.len(),
+        });
     }
+    let mut norm_squared = 0.0f64;
+    for (dimension, value) in query.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(EmbeddingIndexError::QueryNonFiniteValue { dimension });
+        }
+        norm_squared += f64::from(*value) * f64::from(*value);
+    }
+    if norm_squared <= f64::EPSILON {
+        return Err(EmbeddingIndexError::QueryZeroNorm);
+    }
+    Ok(norm_squared.sqrt().recip() as f32)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -490,24 +614,53 @@ impl Ord for HeapHit {
     }
 }
 
-fn quantize_unit_vector(values: &[f32], output: &mut Vec<i8>) -> f32 {
-    let inverse_norm = values
-        .iter()
-        .map(|value| f64::from(*value) * f64::from(*value))
-        .sum::<f64>()
-        .sqrt()
-        .recip() as f32;
-    let peak = values
-        .iter()
-        .map(|value| (value * inverse_norm).abs())
-        .fold(0.0f32, f32::max);
-    let scale = peak / 127.0;
+fn quantize_unit_vector(
+    key: EmbeddingKey,
+    values: &[f32],
+    output: &mut Vec<i8>,
+) -> Result<f32, EmbeddingIndexError> {
+    let (scale, quantization_multiplier) = quantization_parameters(key, values)?;
     output.extend(
         values
             .iter()
-            .map(|value| (value * inverse_norm / scale).round().clamp(-127.0, 127.0) as i8),
+            .map(|value| quantize_value(*value, quantization_multiplier)),
     );
-    scale
+    Ok(scale)
+}
+
+fn quantization_parameters(
+    key: EmbeddingKey,
+    values: &[f32],
+) -> Result<(f32, f32), EmbeddingIndexError> {
+    let mut norm_squared = 0.0f64;
+    let mut peak = 0.0f32;
+    for (dimension, value) in values.iter().copied().enumerate() {
+        if !value.is_finite() {
+            return Err(EmbeddingIndexError::NonFiniteValue { key, dimension });
+        }
+        norm_squared += f64::from(value) * f64::from(value);
+        peak = peak.max(value.abs());
+    }
+    if norm_squared <= f64::EPSILON {
+        return Err(EmbeddingIndexError::ZeroNorm { key });
+    }
+
+    let scale = peak * (norm_squared.sqrt().recip() as f32) / 127.0;
+    let quantization_multiplier = 127.0 / peak;
+    Ok((scale, quantization_multiplier))
+}
+
+fn quantize_into(values: &[f32], quantization_multiplier: f32, output: &mut [i8]) {
+    for (slot, value) in output.iter_mut().zip(values) {
+        *slot = quantize_value(*value, quantization_multiplier);
+    }
+}
+
+#[inline]
+fn quantize_value(value: f32, quantization_multiplier: f32) -> i8 {
+    (value * quantization_multiplier)
+        .round()
+        .clamp(-127.0, 127.0) as i8
 }
 
 #[inline]
@@ -601,6 +754,10 @@ mod tests {
                 },
             ])
             .unwrap();
+        let (vector_address, vector_capacity) = {
+            let rows = index.tenants.get(&1).unwrap();
+            (rows.vectors.as_ptr() as usize, rows.vectors.capacity())
+        };
         let report = index
             .upsert_batch(&[EmbeddingVector {
                 key: key_a,
@@ -608,7 +765,94 @@ mod tests {
             }])
             .unwrap();
         assert_eq!((report.inserted, report.updated), (0, 1));
+        let rows = index.tenants.get(&1).unwrap();
+        assert_eq!(rows.vectors.as_ptr() as usize, vector_address);
+        assert_eq!(rows.vectors.capacity(), vector_capacity);
         assert!(index.remove(key_b));
         assert_eq!(index.search(1, &y, 2).unwrap()[0].key, key_a);
+    }
+
+    #[test]
+    fn query_magnitude_does_not_change_compact_scores() {
+        let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(3, 4)).unwrap();
+        let stored = [9.0, 3.0, -1.0];
+        let key = EmbeddingKey {
+            tenant_id: 1,
+            item_id: 7,
+        };
+        index
+            .upsert_batch(&[EmbeddingVector {
+                key,
+                values: &stored,
+            }])
+            .unwrap();
+
+        let unit_scale = index.search(1, &[3.0, 1.0, 0.0], 1).unwrap()[0];
+        let large_scale = index.search(1, &[300.0, 100.0, 0.0], 1).unwrap()[0];
+        assert_eq!(unit_scale.key, key);
+        assert!((unit_scale.score - large_scale.score).abs() < 1e-6);
+    }
+
+    #[test]
+    fn preparation_still_rejects_invalid_vector_values() {
+        let index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 4)).unwrap();
+        let key = EmbeddingKey {
+            tenant_id: 1,
+            item_id: 7,
+        };
+        assert_eq!(
+            index
+                .prepare_batch(&[EmbeddingVector {
+                    key,
+                    values: &[f32::NAN, 1.0],
+                }])
+                .unwrap_err(),
+            EmbeddingIndexError::NonFiniteValue { key, dimension: 0 }
+        );
+        assert_eq!(
+            index
+                .prepare_batch(&[EmbeddingVector {
+                    key,
+                    values: &[0.0, 0.0],
+                }])
+                .unwrap_err(),
+            EmbeddingIndexError::ZeroNorm { key }
+        );
+    }
+
+    #[cfg(feature = "alloc-probe")]
+    #[test]
+    fn hot_update_and_candidate_scoring_add_no_query_temporary() {
+        let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(4, 4)).unwrap();
+        let key = EmbeddingKey {
+            tenant_id: 1,
+            item_id: 7,
+        };
+        let initial = [1.0, 0.5, 0.25, 0.125];
+        let updated = [0.125, 0.25, 0.5, 1.0];
+        index
+            .upsert_batch(&[EmbeddingVector {
+                key,
+                values: &initial,
+            }])
+            .unwrap();
+
+        let update_probe = crate::alloc_probe::Probe::start();
+        index
+            .upsert_batch(&[EmbeddingVector {
+                key,
+                values: &updated,
+            }])
+            .unwrap();
+        let update_allocations = update_probe.stop();
+        assert_eq!(update_allocations.allocs, 0);
+
+        let query_probe = crate::alloc_probe::Probe::start();
+        let hits = index
+            .score_candidates(1, &[2.0, 4.0, 8.0, 16.0], &[7])
+            .unwrap();
+        let query_allocations = query_probe.stop();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(query_allocations.allocs, 1);
     }
 }

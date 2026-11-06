@@ -5,6 +5,18 @@
 #![allow(clippy::all)]
 use super::*;
 use super::helpers::*;
+use crate::types::{
+    BatchHashMultiSetRow, BatchHashMultiSetValue, BatchHashTimestampSetRequest,
+    BatchHashTimestampSetRow,
+};
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct TestTimestamp {
+    #[prost(int64, tag = "1")]
+    seconds: i64,
+    #[prost(int32, tag = "2")]
+    nanos: i32,
+}
 
 #[test]
 fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
@@ -28,6 +40,7 @@ fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
     assert!(written.status.ok, "{written:?}");
     assert_eq!(written.applied, 2);
     assert!(written.errors.is_empty());
+    assert_eq!(runtime.dirty_shards(), vec![1]);
 
     let rejected = runtime.batch_write(BatchExecuteRequest {
         shard_id: 1,
@@ -50,6 +63,257 @@ fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
         stored.response,
         CommandResponse::Bytes {
             value: Some(b"one".to_vec())
+        }
+    );
+}
+
+#[test]
+fn compact_batch_write_keeps_shared_wal_mirroring() {
+    #[derive(Debug, Default)]
+    struct RecordingSink {
+        commands: Mutex<Vec<Command>>,
+    }
+
+    impl SharedWalSink for RecordingSink {
+        fn record_write(&self, _shard_id: ShardId, command: &Command) {
+            self.commands
+                .lock()
+                .expect("recording sink lock poisoned")
+                .push(command.clone());
+        }
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let sink = Arc::new(RecordingSink::default());
+    runtime.set_shared_wal_sink(sink.clone());
+
+    let written = runtime.batch_write(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet {
+                key: "a".to_string(),
+                value: b"one".to_vec(),
+            },
+            Command::StringSet {
+                key: "b".to_string(),
+                value: b"two".to_vec(),
+            },
+        ],
+    });
+
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 2);
+    assert_eq!(
+        sink.commands
+            .lock()
+            .expect("recording sink lock poisoned")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let written = runtime.batch_write(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![Command::HashMultiSet {
+            key: "present".to_string(),
+            entries: vec![
+                ("a".to_string(), b"one".to_vec()),
+                ("b".to_string(), b"two".to_vec()),
+            ],
+        }],
+    });
+    assert!(written.status.ok, "{written:?}");
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["present".to_string(), "missing".to_string()],
+        fields: vec!["b".to_string(), "a".to_string()],
+    });
+
+    assert!(read.status.ok, "{read:?}");
+    assert_eq!(read.responses.len(), 2);
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+        }
+    );
+    assert_eq!(
+        read.responses[1].response,
+        CommandResponse::Values {
+            values: vec![None, None]
+        }
+    );
+
+    let compact = runtime.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["present".to_string(), "missing".to_string()],
+        fields: vec!["b".to_string(), "a".to_string()],
+    });
+    assert!(compact.status.ok, "{compact:?}");
+    assert!(compact.errors.is_empty());
+    assert_eq!(compact.rows.len(), 2);
+    assert_eq!(
+        compact.rows[0].0,
+        vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+    );
+    assert_eq!(compact.rows[1].0, vec![None, None]);
+}
+
+#[test]
+fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["a".to_string(), "b".to_string()],
+        rows: vec![
+            BatchHashMultiSetRow(
+                "first".to_string(),
+                vec![
+                    BatchHashMultiSetValue(b"one".to_vec()),
+                    BatchHashMultiSetValue(b"two".to_vec()),
+                ],
+            ),
+            BatchHashMultiSetRow(
+                "second".to_string(),
+                vec![
+                    BatchHashMultiSetValue(b"three".to_vec()),
+                    BatchHashMultiSetValue(b"four".to_vec()),
+                ],
+            ),
+        ],
+    });
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 2);
+    assert_eq!(runtime.dirty_shards(), vec![1]);
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["first".to_string(), "second".to_string()],
+        fields: vec!["b".to_string(), "a".to_string()],
+    });
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+        }
+    );
+    assert_eq!(
+        read.responses[1].response,
+        CommandResponse::Values {
+            values: vec![Some(b"four".to_vec()), Some(b"three".to_vec())]
+        }
+    );
+
+    let rejected = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["a".to_string(), "b".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "bad".to_string(),
+            vec![BatchHashMultiSetValue(b"only-one".to_vec())],
+        )],
+    });
+    assert_eq!(rejected.status.code, "field_value_count_mismatch");
+    assert_eq!(rejected.applied, 0);
+}
+
+#[test]
+fn conditional_hash_batch_keeps_only_newer_rows() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let encode_timestamp = |seconds| {
+        <TestTimestamp as prost::Message>::encode_to_vec(&TestTimestamp {
+            seconds,
+            nanos: 0,
+        })
+    };
+
+    let response = runtime.batch_hash_timestamp_set(BatchHashTimestampSetRequest {
+        shard_id: 1,
+        fields: vec![
+            "timestamp".to_string(),
+            "f0".to_string(),
+            "f1".to_string(),
+            "f2".to_string(),
+            "f3".to_string(),
+        ],
+        timestamp_field: "timestamp".to_string(),
+        rows: vec![
+            BatchHashTimestampSetRow(
+                "entity".to_string(),
+                20,
+                0,
+                vec![
+                    BatchHashMultiSetValue(encode_timestamp(20)),
+                    BatchHashMultiSetValue(b"new-0".to_vec()),
+                    BatchHashMultiSetValue(b"new-1".to_vec()),
+                    BatchHashMultiSetValue(b"new-2".to_vec()),
+                    BatchHashMultiSetValue(b"new-3".to_vec()),
+                ],
+            ),
+            BatchHashTimestampSetRow(
+                "entity".to_string(),
+                10,
+                0,
+                vec![
+                    BatchHashMultiSetValue(encode_timestamp(10)),
+                    BatchHashMultiSetValue(b"old-0".to_vec()),
+                    BatchHashMultiSetValue(b"old-1".to_vec()),
+                    BatchHashMultiSetValue(b"old-2".to_vec()),
+                    BatchHashMultiSetValue(b"old-3".to_vec()),
+                ],
+            ),
+        ],
+    });
+    assert!(response.status.ok, "{response:?}");
+    assert_eq!(response.applied, 1);
+    assert_eq!(response.skipped, 1);
+    assert!(response.errors.is_empty());
+    assert_eq!(
+        runtime.engine().block_store().stats().writes,
+        1,
+        "five accepted fields must append one packed block; the stale row appends nothing"
+    );
+
+    runtime.engine().cache().invalidate_shard(1).unwrap();
+    let reads_before = runtime.engine().block_store().stats().reads;
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["entity".to_string()],
+        fields: vec![
+            "timestamp".to_string(),
+            "f0".to_string(),
+            "f1".to_string(),
+            "f2".to_string(),
+            "f3".to_string(),
+        ],
+    });
+    assert_eq!(
+        runtime.engine().block_store().stats().reads - reads_before,
+        1,
+        "five projected fields sharing a packed address must fetch that block once"
+    );
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![
+                Some(encode_timestamp(20)),
+                Some(b"new-0".to_vec()),
+                Some(b"new-1".to_vec()),
+                Some(b"new-2".to_vec()),
+                Some(b"new-3".to_vec()),
+            ]
         }
     );
 }

@@ -297,6 +297,7 @@ impl TemporalEngine {
         // per-batch record of touched buckets and forces the full sweep below.
         let mut rebuilt_bucket_index = false;
         let mut wal_commands = Vec::new();
+        let mut context_embedding_commands = Vec::new();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
@@ -429,12 +430,16 @@ impl TemporalEngine {
                 config.control_rollup_enabled(),
                 config.control_coalesce_persist_enabled(),
                 config.control_distinct_sketch_enabled(),
+                config.trim_boundary_record_enabled(),
                 request.shard_id,
                 start_routing_bucket,
                 end_routing_bucket,
                 shard,
                 command,
             );
+            if Self::command_updates_context_embedding(&command_for_post_write) {
+                context_embedding_commands.push(command_for_post_write.clone());
+            }
             // LRU recency: stamp the bucket(s) this command
             // touched, read or write, so eviction can prefer least-recently-used buckets.
             {
@@ -754,6 +759,8 @@ impl TemporalEngine {
                 }
             }
         }
+        drop(shards);
+        self.publish_context_embedding_commands(&context_embedding_commands);
         BatchExecuteResponse {
             status: Status::ok(),
             responses,

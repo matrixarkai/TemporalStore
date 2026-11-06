@@ -24,6 +24,7 @@ mod container_blocks;
 mod execute_on_shard;
 #[path = "engine/engine_context.rs"]
 mod context;
+mod context_embedding_index;
 #[path = "engine/engine_lifecycle.rs"]
 mod lifecycle;
 mod object_manager;
@@ -185,6 +186,7 @@ pub struct TemporalEngine {
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
+    context_embedding_indexes: Arc<RwLock<crate::llm_context::EmbeddingIndexRegistry>>,
     /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
     /// environment carries a default.
     quotas: Arc<RwLock<quota::QuotaTable>>,
@@ -1035,6 +1037,8 @@ impl TemporalEngine {
             shard,
             config.feature_max_size,
         );
+        let context_embedding_command =
+            Self::command_updates_context_embedding(&command).then(|| command.clone());
 
         let outcome = execute_on_shard(
             &self.cache,
@@ -1044,6 +1048,7 @@ impl TemporalEngine {
             config.control_rollup_enabled(),
             config.control_coalesce_persist_enabled(),
             config.control_distinct_sketch_enabled(),
+                config.trim_boundary_record_enabled(),
             request.shard_id,
             start_routing_bucket,
             end_routing_bucket,
@@ -1584,6 +1589,9 @@ impl TemporalEngine {
                     RESIDENT_SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+        }
+        if let Some(command) = &context_embedding_command {
+            self.publish_context_embedding_command(command);
         }
         ExecuteResponse {
             status: Status::ok(),
@@ -3602,7 +3610,8 @@ fn command_upsert_components(
         Command::HashSet { key, field, .. } => {
             Some(vec![("hash", key.clone(), Some(field.clone()))])
         }
-        Command::HashMultiSet { key, entries } => Some(
+        Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => Some(
             entries
                 .iter()
                 .map(|(field, _)| ("hash", key.clone(), Some(field.clone())))
@@ -4158,7 +4167,8 @@ fn command_touched_container_elements(
                 field: field.clone(),
             }]
         }
-        Command::HashMultiSet { key, entries } => entries
+        Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => entries
             .iter()
             .map(|(field, _)| TouchedContainerElement::Hash {
                 key: key.clone(),
@@ -7707,8 +7717,16 @@ fn read_block_bytes(
     let Some(component) = identity.component() else {
         return Some(bytes);
     };
+    select_container_value(&bytes, component)
+}
+
+/// Select one component from bytes already fetched by the caller.
+///
+/// Keeping this separate from the storage funnel lets a multi-field projection retain one packed
+/// frame and select several values without repeating the cache lookup or block read.
+fn select_container_value(bytes: &[u8], component: &str) -> Option<Vec<u8>> {
     match container_blocks::select_container_element(&bytes, component) {
-        container_blocks::ContainerElementRead::NotFramed => Some(bytes),
+        container_blocks::ContainerElementRead::NotFramed => Some(bytes.to_vec()),
         container_blocks::ContainerElementRead::Found(value) => Some(value),
         // A BLOCK THAT STATES THE REMOVAL HAS NO VALUE TO HAND BACK, and this funnel's contract is a
         // value or nothing. The two are one answer HERE and two answers to the derivation, which is

@@ -64,8 +64,9 @@
 use super::*;
 use crate::engine::container_blocks::{
     component_from_element_key, decode_container_block, element_key_from_component,
-    encode_container_block, select_container_element, varint_len, ContainerElementRead,
-    ContainerBlockDecode, ContainerBlockItem, ElementKeySpelling, CONTAINER_BLOCK_MAGIC,
+    encode_container_block, project_utf8_container_elements, select_container_element, varint_len,
+    ContainerBlockDecode, ContainerBlockItem, ContainerElementRead, ElementKeySpelling,
+    Utf8ContainerProjection, CONTAINER_BLOCK_MAGIC,
 };
 
 /// Every spelling, so a test over "all of them" cannot silently stop covering one that is added.
@@ -715,6 +716,49 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
         covered += 1;
     }
     assert_eq!(EVERY_SPELLING.len(), covered, "every spelling must be covered");
+}
+
+#[test]
+fn one_utf8_projection_preserves_order_duplicates_and_misses() {
+    let a = b"value-a".to_vec();
+    let b = b"value-b".to_vec();
+    let c = b"value-c".to_vec();
+    let block = encode_container_block(
+        ElementKeySpelling::Utf8,
+        &[
+            (b"a", a.as_slice()),
+            (b"b", b.as_slice()),
+            (b"c", c.as_slice()),
+        ],
+    );
+    let fields = vec![
+        "c".to_string(),
+        "a".to_string(),
+        "missing".to_string(),
+        "c".to_string(),
+    ];
+
+    assert_eq!(
+        Utf8ContainerProjection::Values(vec![
+            Some(c.clone()),
+            Some(a),
+            None,
+            Some(c),
+        ]),
+        project_utf8_container_elements(&block, &fields)
+    );
+    assert_eq!(
+        Utf8ContainerProjection::NotFramed,
+        project_utf8_container_elements(b"bare value", &fields)
+    );
+    let other_spelling = encode_container_block(
+        ElementKeySpelling::Hex,
+        &[(b"a", b.as_slice())],
+    );
+    assert_eq!(
+        Utf8ContainerProjection::OtherSpelling,
+        project_utf8_container_elements(&other_spelling, &fields)
+    );
 }
 
 /// A FRAME WHOSE SPELLING CANNOT NAME THE COMPONENT ASKED FOR ANSWERS ABSENT, NOT THE FIRST ITEM.

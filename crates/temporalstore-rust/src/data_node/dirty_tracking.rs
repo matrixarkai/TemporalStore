@@ -71,10 +71,61 @@ pub(super) fn mark_dirty_for_successful_commands(
     responses: &[ExecuteResponse],
 ) {
     for (command, response) in commands.iter().zip(responses.iter()) {
-        if response.status.ok && is_write_command(command) {
+        if command_was_applied(command, response) {
             mark_dirty(dirty, shard_id, command_key(command).as_deref());
         }
     }
+}
+
+pub(super) fn write_command_keys(commands: &[Command]) -> Vec<(usize, String, bool)> {
+    commands
+        .iter()
+        .enumerate()
+        .filter_map(|(index, command)| {
+            if is_write_command(command) {
+                command_key(command).map(|key| {
+                    (
+                        index,
+                        key,
+                        matches!(command, Command::HashMultiSetIfTimestampOlder { .. }),
+                    )
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub(super) fn mark_dirty_for_successful_keys(
+    dirty: &Mutex<DirtyTracker>,
+    shard_id: ShardId,
+    keys: &[(usize, String, bool)],
+    responses: &[ExecuteResponse],
+) {
+    for (index, key, conditional) in keys {
+        if responses
+            .get(*index)
+            .map(|response| {
+                response.status.ok
+                    && (!conditional
+                        || matches!(
+                            &response.response,
+                            CommandResponse::Integer { value } if *value > 0
+                        ))
+            })
+            .unwrap_or(false)
+        {
+            mark_dirty(dirty, shard_id, Some(key));
+        }
+    }
+}
+
+pub(super) fn command_was_applied(command: &Command, response: &ExecuteResponse) -> bool {
+    response.status.ok
+        && (!matches!(command, Command::HashMultiSetIfTimestampOlder { .. })
+            || matches!(&response.response, CommandResponse::Integer { value } if *value > 0))
+        && is_write_command(command)
 }
 
 // Delegate to the engine's canonical object-key extractor (same one used for validation), so

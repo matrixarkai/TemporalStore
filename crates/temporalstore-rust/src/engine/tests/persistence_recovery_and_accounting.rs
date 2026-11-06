@@ -16825,12 +16825,48 @@ fn a_filtered_sequence_query_returns_fewer_rows_than_match() {
     );
 }
 
+/// The Counter coalesce cure is INERT under default config, and this pins why.
+///
+/// `persist_control_state_block` skips the O(series) whole-series JSON rewrite only when
+/// `async_storage && shard.control_coalesce_persist`. The flag half already defaults ON, which
+/// reads like the cure is live -- but `async_storage` defaults OFF, and a default flip on one
+/// half of a conjunction enables nothing. So every default deployment still pays the quadratic
+/// write.
+///
+/// This asserts the EFFECTIVE predicate rather than either half, so it fires if someone flips
+/// `async_storage`'s default, drops the conjunction, or changes the flag default back -- each of
+/// which changes which path a default deployment takes. It needs no allocator probe: the
+/// `alloc-probe` feature installs a counting global allocator that turned 17 socket-bound tests
+/// red, so the byte-measuring sibling below cannot be part of a normal run and cannot be gated.
+/// This one can.
+#[test]
+fn the_counter_coalesce_cure_is_inert_under_default_config() {
+    let config = Config::default();
+    assert!(
+        !config.async_storage,
+        "async_storage must default false -- if this flips, the coalesce escape becomes live for          default deployments and the quadratic-write path stops being the default"
+    );
+    assert!(
+        config.control_coalesce_persist_enabled(),
+        "control_coalesce_persist must default true -- it was flipped on deliberately"
+    );
+    let escape_taken = config.async_storage && config.control_coalesce_persist_enabled();
+    assert!(
+        !escape_taken,
+        "the coalesce escape must be INERT under default config: it needs BOTH halves, and          async_storage is off, so a default deployment takes the whole-series rewrite"
+    );
+}
+
 /// One counter increment rewrites the WHOLE counter series.
 ///
 /// `persist_control_state_block` runs on every `ControlStateIncrement` and calls
 /// `serde_json::to_vec(series)` -- its own comment calls this "the O(series) per-write
 /// whole-series block rewrite (the write-amplification source)". The cure already exists
-/// behind `control_coalesce_persist`, which is off by default.
+/// behind `control_coalesce_persist`, which now defaults ON -- but the escape is
+/// `async_storage && control_coalesce_persist`, and `async_storage` defaults OFF, so
+/// every default deployment still takes this path. See
+/// `the_counter_coalesce_cure_is_inert_under_default_config`, which pins that and runs
+/// without the allocator probe.
 ///
 /// This is a paired A/B: both arms run async_storage (the flag is gated on it), same series,
 /// same increments; the ONLY difference is the flag. Serializing a whole series is ONE big

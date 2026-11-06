@@ -2238,6 +2238,63 @@ fn hybrid_mixed_store_keeps_both_embedded_and_unembedded_rankable() {
 }
 
 #[test]
+fn extraction_prewarms_and_retrieval_rebuilds_the_compact_vector_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache_dir = dir.path().join("cache");
+    let block_dir = dir.path().join("blocks");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
+    engine.load_shard(1);
+    let tenant_hash = 8_811;
+    let extracted = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash,
+            source_kind: ContextSourceKind::Incident,
+            source_id: "compact-vector-source".to_string(),
+            title: "Durable ingest".to_string(),
+            body: "The ingest service batches durable writes and recovers them before serving semantic queries. The deployment keeps vector retrieval fast after restart.".to_string(),
+            timestamp_ms: 9_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(extracted.status.ok, "{:?}", extracted.status);
+    assert!(engine.context_embedding_index_len() >= 1);
+    drop(engine);
+
+    let recovered = TemporalEngine::with_local_dirs(1024 * 1024, cache_dir, block_dir, index_dir);
+    recovered.load_shard(1);
+    assert_eq!(recovered.context_embedding_index_len(), 0);
+    let report = retrieve_context(
+        &recovered,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes: vec![extracted.node.node_hash],
+            query: "fast durable vector retrieval after restart".to_string(),
+            start_time_ms: 0,
+            end_time_ms: u64::MAX,
+            max_events: 4,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 1,
+            max_event_nodes: 1,
+            prefer_current_agent: false,
+            current_agent_scope_key: String::new(),
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(
+        report.fanout_plan.selected_node_hashes,
+        vec![extracted.node.node_hash]
+    );
+    assert!(recovered.context_embedding_index_len() >= 1);
+}
+
+#[test]
 fn context_workflow_falls_back_when_live_provider_fails() {
     let engine = test_engine();
     let report = extract_context(

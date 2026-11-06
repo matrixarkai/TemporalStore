@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -49,8 +49,10 @@ use crate::meta::{
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchWriteError, BatchWriteResponse, Command,
-    CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
+    BatchConditionalWriteResponse, BatchExecuteRequest, BatchExecuteResponse,
+    BatchHashMultiGetError, BatchHashMultiGetRequest, BatchHashMultiGetResponse,
+    BatchHashMultiGetRow, BatchHashMultiSetRequest, BatchHashTimestampSetRequest, BatchWriteError,
+    BatchWriteResponse, Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
 #[path = "data_node/data_node_lifecycle.rs"]
@@ -2003,7 +2005,8 @@ struct DataNodeRuntimeInner {
     next_job_id: AtomicU64,
     /// Optional durable shared-storage sink; when set, accepted writes are
     /// mirrored to shared storage for cross-restart / local-loss recovery.
-    shared_wal_sink: Mutex<Option<Arc<dyn SharedWalSink>>>,
+    /// A read guard spans unmirrored execution so attachment cannot race a moved request.
+    shared_wal_sink: RwLock<Option<Arc<dyn SharedWalSink>>>,
     /// Who answers "do I lead this shard". `None` means nobody has been told to answer, which
     /// reads as [`ShardLeadership::Unknown`] and NOT as "not the leader".
     shard_leadership: Mutex<Option<Arc<dyn ShardLeadershipSource>>>,
@@ -2310,7 +2313,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: Mutex::new(None),
+            shared_wal_sink: RwLock::new(None),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2361,15 +2364,16 @@ impl DataNodeRuntime {
     }
 
     pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
+        let mut shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .write()
+            .expect("shared wal sink lock poisoned");
         // The engine emits deletions of its own -- eviction drops, expiry sweeps -- that never
         // pass through this layer. Give it the same sink, or those deletions reach the local
         // log alone and a successor replaying the shared log resurrects the keys.
         self.inner.engine.set_maintenance_wal_mirror(Arc::clone(&sink));
-        *self
-            .inner
-            .shared_wal_sink
-            .lock()
-            .expect("shared wal sink lock poisoned") = Some(sink);
+        *shared_wal_sink = Some(sink);
     }
 
     fn mirror_write(&self, shard_id: ShardId, command: &Command) {
@@ -2379,7 +2383,7 @@ impl DataNodeRuntime {
         let sink = self
             .inner
             .shared_wal_sink
-            .lock()
+            .read()
             .expect("shared wal sink lock poisoned")
             .clone();
         if let Some(sink) = sink {
@@ -2396,14 +2400,14 @@ impl DataNodeRuntime {
         let sink = self
             .inner
             .shared_wal_sink
-            .lock()
+            .read()
             .expect("shared wal sink lock poisoned")
             .clone();
         let Some(sink) = sink else {
             return;
         };
         for (command, response) in commands.iter().zip(responses.iter()) {
-            if response.status.ok && is_write_command(command) {
+            if command_was_applied(command, response) {
                 sink.record_write(shard_id, command);
             }
         }
@@ -2466,7 +2470,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: Mutex::new(None),
+            shared_wal_sink: RwLock::new(None),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2582,8 +2586,37 @@ impl DataNodeRuntime {
                 response: CommandResponse::Empty,
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let conditional = matches!(
+                &request.command,
+                Command::HashMultiSetIfTimestampOlder { .. }
+            );
+            let dirty_key = if is_write_command(&request.command) {
+                command_key(&request.command)
+            } else {
+                None
+            };
+            let response = self.inner.engine.execute(request);
+            if response.status.ok
+                && (!conditional
+                    || matches!(
+                        &response.response,
+                        CommandResponse::Integer { value } if *value > 0
+                    ))
+            {
+                mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.execute(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        if command_was_applied(&request.command, &response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
@@ -2608,8 +2641,37 @@ impl DataNodeRuntime {
                 },
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let conditional = matches!(
+                &request.command,
+                Command::HashMultiSetIfTimestampOlder { .. }
+            );
+            let dirty_key = if is_write_command(&request.command) {
+                command_key(&request.command)
+            } else {
+                None
+            };
+            let response = self.inner.engine.execute_checked(request);
+            if response.status.ok
+                && (!conditional
+                    || matches!(
+                        &response.response.response,
+                        CommandResponse::Integer { value } if *value > 0
+                    ))
+            {
+                mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.execute_checked(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        if response.status.ok && command_was_applied(&request.command, &response.response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
@@ -2631,6 +2693,24 @@ impl DataNodeRuntime {
                 responses: Vec::new(),
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_keys = write_command_keys(&request.commands);
+            let response = self.inner.engine.batch_execute(request);
+            mark_dirty_for_successful_keys(
+                &self.inner.dirty,
+                shard_id,
+                &dirty_keys,
+                &response.responses,
+            );
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.batch_execute(request.clone());
         mark_dirty_for_successful_commands(
             &self.inner.dirty,
@@ -2640,6 +2720,227 @@ impl DataNodeRuntime {
         );
         self.mirror_writes(request.shard_id, &request.commands, &response.responses);
         response
+    }
+
+    /// Read one shared field projection from many hashes.
+    ///
+    /// The regular batch command remains the execution path, so admission,
+    /// expiry, cache, and response ordering stay identical. Only the request
+    /// representation is compact: field names cross the network once.
+    pub fn batch_hash_multi_get(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchExecuteResponse {
+        let fields = request.fields;
+        self.batch_execute(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .keys
+                .into_iter()
+                .map(|key| Command::HashMultiGet {
+                    key,
+                    fields: fields.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Read one shared projection with a compact success response.
+    ///
+    /// The regular batch remains the execution path. This removes repeated
+    /// successful statuses and response tags from the network result while
+    /// retaining positional rows and sparse indexed failures.
+    pub fn batch_hash_multi_get_compact(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchHashMultiGetResponse {
+        let field_count = request.fields.len();
+        let response = self.batch_hash_multi_get(request);
+        if !response.status.ok {
+            return BatchHashMultiGetResponse {
+                status: response.status,
+                rows: Vec::new(),
+                errors: Vec::new(),
+            };
+        }
+
+        let mut rows = Vec::with_capacity(response.responses.len());
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if !item.status.ok {
+                errors.push(BatchHashMultiGetError {
+                    index,
+                    status: item.status,
+                });
+                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                continue;
+            }
+            match item.response {
+                CommandResponse::Values { values } => rows.push(BatchHashMultiGetRow(values)),
+                _ => {
+                    errors.push(BatchHashMultiGetError {
+                        index,
+                        status: Status::error(
+                            "unexpected_read_response",
+                            "hash multi-get returned a non-values response",
+                        ),
+                    });
+                    rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                }
+            }
+        }
+        BatchHashMultiGetResponse {
+            status: Status::ok(),
+            rows,
+            errors,
+        }
+    }
+
+    /// Write one shared field projection to many hashes.
+    ///
+    /// Expansion feeds the regular write batch so admission, WAL mirroring,
+    /// dirty tracking, and failure indexing stay identical. Only repeated field
+    /// names and command tags are removed from the network representation.
+    pub fn batch_hash_multi_set(
+        &self,
+        request: BatchHashMultiSetRequest,
+    ) -> BatchWriteResponse {
+        if let Some((index, row)) = request
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.1.len() != request.fields.len())
+        {
+            return BatchWriteResponse {
+                status: Status::error(
+                    "field_value_count_mismatch",
+                    format!(
+                        "row {index} has {} values for {} fields",
+                        row.1.len(),
+                        request.fields.len()
+                    ),
+                ),
+                applied: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let fields = request.fields;
+        self.batch_write(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSet {
+                    key: row.0,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.1.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Write shared hash fields only when each stored timestamp is older.
+    ///
+    /// Each row becomes one conditional engine command, so the comparison and all field
+    /// replacements occur under the same shard write guard.
+    pub fn batch_hash_timestamp_set(
+        &self,
+        request: BatchHashTimestampSetRequest,
+    ) -> BatchConditionalWriteResponse {
+        if !request.fields.iter().any(|field| field == &request.timestamp_field) {
+            return BatchConditionalWriteResponse {
+                status: Status::error(
+                    "timestamp_field_missing",
+                    "timestamp_field must be present in fields",
+                ),
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+        if let Some((index, row)) = request
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.3.len() != request.fields.len())
+        {
+            return BatchConditionalWriteResponse {
+                status: Status::error(
+                    "field_value_count_mismatch",
+                    format!(
+                        "row {index} has {} values for {} fields",
+                        row.3.len(),
+                        request.fields.len()
+                    ),
+                ),
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let fields = request.fields;
+        let timestamp_field = request.timestamp_field;
+        let response = self.batch_execute(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSetIfTimestampOlder {
+                    key: row.0,
+                    timestamp_field: timestamp_field.clone(),
+                    timestamp_seconds: row.1,
+                    timestamp_nanos: row.2,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.3.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+                .collect(),
+        });
+        if !response.status.ok {
+            return BatchConditionalWriteResponse {
+                status: response.status,
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let mut applied = 0;
+        let mut skipped = 0;
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if !item.status.ok {
+                errors.push(BatchWriteError {
+                    index,
+                    status: item.status,
+                });
+                continue;
+            }
+            match item.response {
+                CommandResponse::Integer { value: 1 } => applied += 1,
+                CommandResponse::Integer { value: 0 } => skipped += 1,
+                _ => errors.push(BatchWriteError {
+                    index,
+                    status: Status::error(
+                        "unexpected_write_response",
+                        "conditional hash write returned an invalid response",
+                    ),
+                }),
+            }
+        }
+        BatchConditionalWriteResponse {
+            status: Status::ok(),
+            applied,
+            skipped,
+            errors,
+        }
     }
 
     /// Execute a write-only batch and return only its count plus sparse failures.
@@ -2708,6 +3009,26 @@ impl DataNodeRuntime {
                 },
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_keys = write_command_keys(&request.commands);
+            let response = self.inner.engine.batch_execute_checked(request);
+            if response.status.ok {
+                mark_dirty_for_successful_keys(
+                    &self.inner.dirty,
+                    shard_id,
+                    &dirty_keys,
+                    &response.response.responses,
+                );
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.batch_execute_checked(request.clone());
         if response.status.ok {
             mark_dirty_for_successful_commands(

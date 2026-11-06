@@ -276,6 +276,13 @@ message Command {
     ContextWriteIndexRef context_write_index_ref = 54;
     ContextUpsertNode context_upsert_node = 55;
     ContextSetNodeEmbedding context_set_node_embedding = 56;
+    ContextWriteEvent context_write_event = 57;
+    ContextWriteExtractedEvent context_write_extracted_event = 58;
+    ContextUpsertEntity context_upsert_entity = 59;
+    ContextUpsertSummary context_upsert_summary = 60;
+    ContextWriteCompressionEvent context_write_compression_event = 61;
+    ContextWritePackAudit context_write_pack_audit = 62;
+    HashMultiSetIfTimestampOlder hash_multi_set_if_timestamp_older = 63;
   }
 }
 
@@ -323,6 +330,14 @@ message HashEntry {
 message HashMultiSet {
   string key = 1;
   repeated HashEntry entries = 2;
+}
+
+message HashMultiSetIfTimestampOlder {
+  string key = 1;
+  string timestamp_field = 2;
+  int64 timestamp_seconds = 3;
+  int32 timestamp_nanos = 4;
+  repeated HashEntry entries = 5;
 }
 
 message HashMultiGet {
@@ -1156,4 +1171,352 @@ message ContextSetNodeEmbedding {
   uint64 model_hash = 3;
   repeated float vector = 4;
   uint64 updated_at_ms = 5;
+}
+
+// THE DURABLE EVENT. ALL FIFTEEN FIELDS.
+//
+// NOT a client projection. `ContextEvent` has no client message at all, and the one that exists
+// for its sibling -- `message ContextNode`, four fields against a fifteen-field durable struct,
+// whose converter fabricates `parent_hash`, `kind` and `status` as zero -- is exactly what a
+// durable record must not reuse. `ContextNodeRecord` above is the same decision for the node.
+//
+// SEVEN OF THE FIFTEEN ARE `skip_serializing` IN THE JSON FORM, so the durable JSON this replaces
+// never wrote them. They are carried anyway, as `ContextNodeRecord` carries its three: the WAL's
+// contract is to reproduce the COMMAND, not to re-apply the JSON form's write policy. That makes
+// this record STRICTLY MORE FAITHFUL than the JSON it replaces, which is a property the round-trip
+// test asserts rather than a claim made here -- `event_type_code()` falls back to `kind`, so a
+// replay that lost it resolves a different event type.
+//
+// `vector` is `repeated float` -- packed by default, and NOT quantised. Int8 quantisation is a
+// separately gated decision with its own quality bar.
+//
+// NO MODEL HASH, and that is `ContextEvent`'s existing design rather than an omission here: the
+// event vector has never carried one. Inventing a guard during a format port would put a field on
+// disk that the shipped reader does not know, for a check this record has never made. The three
+// that do exist -- `ContextNodeRecord.embedding_model_hash`,
+// `ContextNodeRecord.summary_vector_model_hash` and `ContextSetNodeEmbedding.model_hash` -- stay
+// individual and are not shared with this one.
+message ContextEventRecord {
+  uint64 event_id_hash = 1;
+  uint64 event_time_ms = 2;
+  uint64 ingestion_time_ms = 3;
+  // Deprecated hot-schema field, `skip_serializing` in the JSON form; carried so the command
+  // round-trips. `event_type_code()` reads this when `event_type` is zero.
+  uint32 kind = 4;
+  uint32 event_type = 5;
+  // Deprecated hot-schema field; carried for the same reason.
+  uint64 actor_hash = 6;
+  // Deprecated hot-schema field; carried for the same reason.
+  uint32 status = 7;
+  // Deprecated hot-schema field; carried for the same reason.
+  uint64 valid_until_ms = 8;
+  float confidence = 9;
+  float importance = 10;
+  string text = 11;
+  // Deprecated hot-schema field; carried for the same reason.
+  string source_ref = 12;
+  // Deprecated hot-schema field; carried for the same reason.
+  repeated uint64 related_node_hashes = 13;
+  // Deprecated hot-schema field; carried for the same reason.
+  bytes compact_attrs = 14;
+  repeated float vector = 15;
+}
+
+// The five internal secondary indexes an extraction can switch off.
+//
+// A proto3 enum must have a zero value and `InternalContextIndex` in Rust has no sixth variant, so
+// UNSPECIFIED exists to satisfy the wire format and is NOT one of the five. The decode REFUSES it,
+// and refuses any number it does not know: a repeated proto enum is open and arrives as `i32`, so
+// an unmapped number defaulted to the first variant would switch off whichever index happens to
+// sort first rather than the one that was asked for.
+enum InternalContextIndex {
+  INTERNAL_CONTEXT_INDEX_UNSPECIFIED = 0;
+  INTERNAL_CONTEXT_INDEX_EVENT_KIND = 1;
+  INTERNAL_CONTEXT_INDEX_ENTITY = 2;
+  INTERNAL_CONTEXT_INDEX_STATUS = 3;
+  INTERNAL_CONTEXT_INDEX_SOURCE = 4;
+  INTERNAL_CONTEXT_INDEX_EVENT_TIME_BUCKET = 5;
+}
+
+message ContextExtractedEventIndexesRecord {
+  uint64 scope_hash = 1;
+  repeated uint64 entity_hashes = 2;
+  uint64 status_hash = 3;
+  uint64 source_hash = 4;
+  uint64 event_time_bucket_ms = 5;
+  repeated InternalContextIndex disabled_indexes = 6;
+}
+
+message ContextWriteEvent {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  // The Rust field is boxed -- the variant decides how wide EVERY command is -- and `Box<T>`
+  // serialises identically to `T`, so it is transparent to both codecs.
+  //
+  // REFUSED BY NAME when absent, never defaulted: a nested message is always optional on the wire,
+  // and an all-zero event filed as if real cannot be told from a real one afterwards.
+  ContextEventRecord event = 3;
+  bool first_write_only = 4;
+  bool cold_storage = 5;
+}
+
+message ContextWriteExtractedEvent {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  // Refused by name when absent, as above.
+  ContextEventRecord event = 3;
+  // DEFAULTED when absent, unlike `event`, and the difference is read off the Rust declaration
+  // rather than decided here: `indexes` is `#[serde(default)] indexes:
+  // ContextExtractedEventIndexes`, a plain field with a `Default`, so the JSON reader this replaces
+  // already treats an absent block as the empty default. `event` has no default and no absence the
+  // JSON form accepts. The writer always emits this field, even when empty, so an absent block on
+  // disk means an older build rather than an empty one.
+  ContextExtractedEventIndexesRecord indexes = 4;
+  bool first_write_only = 5;
+  bool cold_storage = 6;
+}
+
+// THE DURABLE ENTITY. ALL TEN FIELDS.
+message ContextEntityRecord {
+  uint64 entity_hash = 1;
+  uint64 node_hash = 2;
+  // `#[serde(rename = "type", alias = "entity_type")]` in Rust, so the JSON key is `type` and the
+  // identifier is `entity_type`. A proto field name is not a JSON key and nothing reads it as one,
+  // so it is named for the identifier.
+  uint32 entity_type = 3;
+  string name = 4;
+  string value = 5;
+  uint64 updated_at_ms = 6;
+  uint64 valid_from_ms = 7;
+  float confidence = 8;
+  repeated uint64 source_event_hashes = 9;
+  // Inline, `repeated float`, packed, and NOT quantised.
+  //
+  // NO MODEL HASH, which is `ContextEntity`'s existing design rather than a guard dropped here --
+  // the entity vector has never carried one, exactly as the event vector has not. Compare
+  // ContextSummaryRecord below, which DOES carry one and must keep it.
+  repeated float vector = 10;
+}
+
+// THE DURABLE SUMMARY. ALL SIX FIELDS, AND ONE OF THEM IS AN ENCODER GUARD IN ITS OWN RIGHT.
+//
+// `embedding_model_hash` here is the FOURTH such guard in this file and must not be shared with,
+// defaulted from or folded into any of the other three -- `ContextNodeRecord.embedding_model_hash`,
+// `ContextNodeRecord.summary_vector_model_hash` and `ContextSetNodeEmbedding.model_hash`. The
+// reason is in the Rust doc on the field: the retrieve pass scores a node's OWN vector and this
+// summary's vector into ONE score map, so a summary scored under a replaced encoder marks the node
+// scored and withdraws the lexical fallback the declined node was routed to. That is worse than
+// being un-embedded, not equal to it.
+//
+// Zeroing it loses no datum: it disarms the check. Two encoders truncated to the same width give
+// no length error, only a cosine across two vector spaces. Zero means unknown -- a summary written
+// before the field existed, or one carrying no vector -- and unknown never conflicts.
+message ContextSummaryRecord {
+  uint64 node_hash = 1;
+  uint32 level = 2;
+  string text = 3;
+  uint64 valid_from_ms = 4;
+  // NOT quantised.
+  repeated float vector = 5;
+  // The guard, beside the vector it describes. See above.
+  uint64 embedding_model_hash = 6;
+}
+
+message ContextCompressionEventRecord {
+  uint64 compression_id_hash = 1;
+  uint64 node_hash = 2;
+  uint64 source_start_ms = 3;
+  uint64 source_end_ms = 4;
+  uint64 compressed_time_ms = 5;
+  string summary = 6;
+}
+
+message ContextAuditRefRecord {
+  uint64 node_hash = 1;
+  uint64 event_time_ms = 2;
+  string reason = 3;
+}
+
+message ContextPackAuditRecord {
+  string query_id = 1;
+  uint64 session_hash = 2;
+  uint64 request_time_ms = 3;
+  uint64 query_hash = 4;
+  uint32 max_prompt_tokens = 5;
+  uint32 selected_tokens = 6;
+  // REPEATED, so there is nothing to refuse: a repeated field has no presence on the wire in
+  // proto3, and `#[serde(default)]` on the Rust side already takes an absent list as empty.
+  //
+  // The two lists are kept SEPARATE and are asserted separately. Selected and blocked are the two
+  // halves of the audit's verdict, so a converter that crossed them would reverse every decision
+  // the audit records while every field still round-tripped.
+  repeated ContextAuditRefRecord selected_refs = 7;
+  repeated ContextAuditRefRecord blocked_refs = 8;
+}
+
+message ContextUpsertEntity {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, never defaulted: a nested message is always optional on the wire,
+  // and an upsert with no entity would file a record of all zeros that cannot afterwards be told
+  // from a real one.
+  ContextEntityRecord entity = 2;
+}
+
+message ContextUpsertSummary {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextSummaryRecord summary = 2;
+}
+
+message ContextWriteCompressionEvent {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextCompressionEventRecord event = 2;
+}
+
+message ContextWritePackAudit {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextPackAuditRecord audit = 2;
+}
+
+// ===========================================================================================
+// THE DURABLE INGESTION STATE, the one file under the engine's ingestion directory.
+//
+// It is rewritten WHOLE under a temp-and-rename, so there is no partial-document shape to
+// model and no append framing: one message is one file. The reader lands first and accepts
+// both shapes; the writer that produces this one follows in its own change.
+//
+// NOTHING ASSERTS THE FILENAME. `state.json` appears exactly once in the crate, as a
+// `root.join("state.json")` construction with no test or doc pinning it, so the spelling is
+// not a durable contract the way `slab_manifest.json` is. The name stays regardless: the
+// writer retires either way, and renaming a path that is already on disk is a separate,
+// riskier decision.
+// ===========================================================================================
+
+// The ingestion crate's own `Status`, which rides inside a dead letter. Distinct from the
+// service-level status messages above because it is a DURABLE field here, not a response.
+message IngestionStatus {
+  bool ok = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message IngestionSourceApi {
+  string request_id = 1;
+}
+
+message IngestionSourceKafka {
+  string topic = 1;
+  int32 partition = 2;
+  int64 offset = 3;
+  // ABSENT IS NOT EMPTY, AND ABSENT IS NOT ZERO. Both of these are `Option` in the durable
+  // shape, and a record with no key reads differently from one keyed by the empty string, so
+  // they are `optional` rather than bare scalars.
+  optional string key = 4;
+  optional uint64 timestamp_ms = 5;
+}
+
+message IngestionSourceFlink {
+  string job_id = 1;
+  string operator_uid = 2;
+  uint32 subtask_index = 3;
+  uint64 checkpoint_id = 4;
+  uint64 record_index = 5;
+}
+
+// A `oneof`, and an ABSENT one is refused on decode rather than read as an API source. The
+// three arms carry different idempotence keys, so guessing one would let a replayed Kafka
+// record through as a fresh API call.
+message IngestionSource {
+  oneof source {
+    IngestionSourceApi api = 1;
+    IngestionSourceKafka kafka = 2;
+    IngestionSourceFlink flink = 3;
+  }
+}
+
+message KafkaOffsetLedgerEntry {
+  string topic = 1;
+  int32 partition = 2;
+  int64 committed_offset = 3;
+  uint64 updated_unix_ms = 4;
+}
+
+message IngestionStreamCommitState {
+  string stream_id = 1;
+  uint64 committed_sequence = 2;
+  uint64 updated_unix_ms = 3;
+}
+
+// UNSPECIFIED is refused on decode. Precommitted, Committed and Aborted decide whether a
+// Flink checkpoint's records may be replayed, so defaulting the tag would either replay
+// committed work or discard precommitted work.
+enum FlinkCheckpointStatus {
+  FLINK_CHECKPOINT_STATUS_UNSPECIFIED = 0;
+  FLINK_CHECKPOINT_STATUS_PRECOMMITTED = 1;
+  FLINK_CHECKPOINT_STATUS_COMMITTED = 2;
+  FLINK_CHECKPOINT_STATUS_ABORTED = 3;
+}
+
+message FlinkCheckpointState {
+  string job_id = 1;
+  string operator_uid = 2;
+  uint32 subtask_index = 3;
+  uint64 checkpoint_id = 4;
+  FlinkCheckpointStatus status = 5;
+  uint64 updated_unix_ms = 6;
+}
+
+message IngestionDeadLetter {
+  uint64 index = 1;
+  IngestionSource source = 2;
+  uint64 shard_id = 3;
+  IngestionStatus status = 4;
+}
+
+message IngestionStats {
+  uint64 accepted_total = 1;
+  uint64 failed_total = 2;
+  uint64 duplicate_total = 3;
+  uint64 dead_letter_total = 4;
+  uint64 stream_backpressure_total = 5;
+  uint64 stream_duplicate_total = 6;
+  uint64 kafka_committed_total = 7;
+  uint64 flink_precommit_total = 8;
+  uint64 flink_commit_total = 9;
+  uint64 flink_abort_total = 10;
+  int64 max_kafka_lag = 11;
+}
+
+// KEYED ENTRIES, NOT A PROTO `map`. The three collections are `BTreeMap`s in memory, so their
+// iteration order IS their key order and a re-encode of one state produces the same bytes. A
+// proto `map` has no defined order, which would make the same state encode differently on
+// different runs -- and this file is compared and checksummed by operators.
+//
+// The key is carried EXPLICITLY rather than rebuilt from the value's fields. It is derived
+// (`kafka_offset_key`, `flink_checkpoint_key`), and a decoder that recomputed it would quietly
+// re-key a document whose key function has since changed, instead of reading what was written.
+message DurableIngestionKafkaOffsetEntry {
+  string key = 1;
+  KafkaOffsetLedgerEntry value = 2;
+}
+
+message DurableIngestionStreamCommitEntry {
+  string key = 1;
+  IngestionStreamCommitState value = 2;
+}
+
+message DurableIngestionFlinkCheckpointEntry {
+  string key = 1;
+  FlinkCheckpointState value = 2;
+}
+
+message DurableIngestionState {
+  repeated DurableIngestionKafkaOffsetEntry kafka_offsets = 1;
+  repeated DurableIngestionStreamCommitEntry stream_commits = 2;
+  repeated DurableIngestionFlinkCheckpointEntry flink_checkpoints = 3;
+  // ORDER PRESERVED: dead letters are a `Vec` and operators read them in arrival order.
+  repeated IngestionDeadLetter dead_letters = 4;
+  IngestionStats stats = 5;
 }

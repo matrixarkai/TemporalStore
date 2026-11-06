@@ -70,6 +70,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
         | Command::HashMultiSet { key, .. }
+        | Command::HashMultiSetIfTimestampOlder { key, .. }
         | Command::HashIncrBy { key, .. }
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
@@ -298,6 +299,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::StringSetConditional { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
@@ -357,6 +359,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
@@ -514,6 +517,14 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::HashMultiSetIfTimestampOlder {
+            timestamp_nanos, ..
+        } if !(0..1_000_000_000).contains(timestamp_nanos) => {
+            return Err(Status::error(
+                "invalid_argument",
+                "timestamp_nanos must be between 0 and 999999999",
+            ));
+        }
         // Expiry checks here use the SAME replay-aware clock as the executor's
         // `remove_if_expired`. Validation runs only on the leader today, where the two
         // clocks coincide, so this changes no production behaviour. It removes a split

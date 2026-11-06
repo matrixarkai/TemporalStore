@@ -1180,6 +1180,122 @@ where
     ///
     /// Every guard from the single-lookup path is here rather than there, so neither
     /// caller can be the one without them.
+    /// Reads a CONTIGUOUS RUN of entries with one ranged read.
+    ///
+    /// # WHY A RUN CAN BE ONE READ
+    ///
+    /// In `ProtobufAppendBlob` mode the shared WAL is one appendable object per shard, and
+    /// `publish_wal_entries_batch` derives each entry's `[start, end)` by advancing a cursor
+    /// through the payload it just appended -- so entry k's `end_offset` IS entry k+1's
+    /// `start_offset`, by construction rather than by luck, and a sequence of single appends
+    /// leaves the same shape. N adjacent entries are therefore N slices of ONE byte range, and
+    /// reading them one at a time spends N request envelopes on bytes one request covers.
+    /// Measured before this: 24 entries cost 26 requests and 2.77x the bytes they wanted.
+    ///
+    /// # WHAT IS NOT COALESCED, AND WHY THAT IS THE SAFE DEFAULT
+    ///
+    /// The caller groups only entries whose ranges are STRICTLY adjacent within one blob. A
+    /// batch container records the SAME range for every entry it carries, so its entries are
+    /// not adjacent -- they are identical -- and they fall out of a run and keep the point read
+    /// they have today. A hole, a different blob, or a zero-length range does the same. An
+    /// uncoalesced log is therefore slower and never wrong.
+    ///
+    /// Every per-entry guard the point reader applies is applied here, per slice: the declared
+    /// byte count against its own range, and the decoded entry's shard and index against what
+    /// the index claimed. Those are what stop a replay applying another shard's entry, and
+    /// reading in bulk must not become a way around them.
+    async fn read_wal_entries_in_run(
+        &self,
+        shard_id: ShardId,
+        run: &[(u64, &SharedStoreWalOffsetMetadata)],
+    ) -> Result<Vec<(SharedStoreWalEntry, u64)>, SharedStoreReplicationError> {
+        let invalid = |message: String| {
+            SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                message,
+            ))
+        };
+        let first = run
+            .first()
+            .map(|(_, metadata)| *metadata)
+            .ok_or_else(|| invalid("an empty run cannot be read".to_string()))?;
+        let last = run
+            .last()
+            .map(|(_, metadata)| *metadata)
+            .ok_or_else(|| invalid("an empty run cannot be read".to_string()))?;
+        let span = last
+            .wal_blob_end_offset
+            .checked_sub(first.wal_blob_start_offset)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "invalid WAL offset metadata run for shard {shard_id}: {}..{}",
+                    first.wal_blob_start_offset, last.wal_blob_end_offset
+                ))
+            })?;
+
+        let bytes = self
+            .object_store
+            .get_range(&first.wal_blob_key, first.wal_blob_start_offset, span)
+            .await?;
+        if bytes.len() as u64 != span {
+            return Err(invalid(format!(
+                "a run read of shard {shard_id} asked for {span} bytes and got {}",
+                bytes.len()
+            )));
+        }
+
+        let mut out = Vec::with_capacity(run.len());
+        for (wal_index, metadata) in run {
+            let length = metadata
+                .wal_blob_end_offset
+                .checked_sub(metadata.wal_blob_start_offset)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "invalid WAL offset metadata range for shard {shard_id} index {wal_index}"
+                    ))
+                })?;
+            if length != metadata.wal_blob_bytes_written {
+                return Err(invalid(format!(
+                    "WAL offset metadata bytes mismatch for shard {shard_id} index {wal_index}"
+                )));
+            }
+            let from = metadata
+                .wal_blob_start_offset
+                .checked_sub(first.wal_blob_start_offset)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "shard {shard_id} index {wal_index} sits outside its own run"
+                    ))
+                })?;
+            let width = usize::try_from(length)
+                .map_err(|_| invalid(format!("shard {shard_id} index {wal_index} range too large")))?;
+            let to = from.checked_add(width).ok_or_else(|| {
+                invalid(format!("shard {shard_id} index {wal_index} overflows its run"))
+            })?;
+            if to > bytes.len() {
+                return Err(invalid(format!(
+                    "shard {shard_id} index {wal_index} ends at {to} in a run of {} bytes",
+                    bytes.len()
+                )));
+            }
+            let slice = bytes.slice(from..to);
+            let entry = if is_wal_batch_container(&slice) {
+                decode_wal_batch_container_entry_exact(&slice, &metadata.wal_blob_key, *wal_index)?
+            } else {
+                decode_wal_proto_frame_exact(&slice, &metadata.wal_blob_key)?
+            };
+            if entry.shard_id != shard_id || entry.wal_index != *wal_index {
+                return Err(invalid(format!(
+                    "WAL offset metadata points to shard {} index {}, expected shard {shard_id} index {wal_index}",
+                    entry.shard_id, entry.wal_index
+                )));
+            }
+            out.push((entry, length));
+        }
+        Ok(out)
+    }
+
     async fn read_wal_entry_with_offset_metadata(
         &self,
         shard_id: ShardId,
@@ -1801,7 +1917,14 @@ where
         // window is as strong as one per entry -- see `apply_one_coalesced_batch`, which is also
         // why the window is buffered rather than the scope held across the read below: the scope
         // is a thread-local and this loop awaits.
-        let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
+        // ---- A HOLE IS FOUND BEFORE ANY BYTE IS FETCHED.
+        //
+        // The gap check used to sit inside the read loop, so a replay read and applied every
+        // entry up to a hole before reporting it. Hoisting it changes nothing a caller sees --
+        // a gap is still an error and the applies below only run over a sequence that passed --
+        // and it is what makes grouping possible at all: a run cannot be cut from a sequence
+        // not yet known to be whole.
+        let mut ordered: Vec<(u64, &SharedStoreWalOffsetMetadata)> = Vec::new();
         for (wal_index, metadata) in offset_metadata.range((after_wal_index + 1)..) {
             if *wal_index != expected {
                 return Err(SharedStoreReplicationError::ReplayGap {
@@ -1809,17 +1932,50 @@ where
                     actual: *wal_index,
                 });
             }
-            let (entry, range_bytes_read) = self
-                .read_wal_entry_with_offset_metadata(shard_id, *wal_index, metadata)
-                .await?;
-            window.push((*wal_index, entry));
-            report.applied += 1;
-            report.last_wal_index = *wal_index;
-            report.offset_index_reads += 1;
-            report.range_bytes_read += range_bytes_read;
             expected += 1;
-            if window.len() >= REPLAY_APPLY_WINDOW {
-                Self::apply_replayed_window(shard_id, &mut window, engine)?;
+            ordered.push((*wal_index, metadata));
+        }
+
+        let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
+        let mut position = 0usize;
+        while position < ordered.len() {
+            // A RUN REACHES AS FAR AS THE BYTES STAY ADJACENT IN ONE BLOB.
+            //
+            // Bounded by the apply window as well, so a long log is still read and applied in
+            // steps rather than pulled into memory whole.
+            let mut end = position + 1;
+            while end < ordered.len()
+                && ordered[end].1.wal_blob_key == ordered[position].1.wal_blob_key
+                && ordered[end].1.wal_blob_start_offset == ordered[end - 1].1.wal_blob_end_offset
+                && ordered[end].1.wal_blob_end_offset > ordered[end].1.wal_blob_start_offset
+                && end - position < REPLAY_APPLY_WINDOW
+            {
+                end += 1;
+            }
+            let run = &ordered[position..end];
+            // A RUN OF ONE KEEPS THE POINT READ, so the single-entry path stays the one that
+            // has always served it, guards and all, rather than becoming a special case of a
+            // bulk reader.
+            let read = if run.len() == 1 {
+                let (wal_index, metadata) = run[0];
+                let (entry, length) = self
+                    .read_wal_entry_with_offset_metadata(shard_id, wal_index, metadata)
+                    .await?;
+                vec![(entry, length)]
+            } else {
+                self.read_wal_entries_in_run(shard_id, run).await?
+            };
+            position = end;
+
+            for ((wal_index, _), (entry, range_bytes_read)) in run.iter().zip(read) {
+                window.push((*wal_index, entry));
+                report.applied += 1;
+                report.last_wal_index = *wal_index;
+                report.offset_index_reads += 1;
+                report.range_bytes_read += range_bytes_read;
+                if window.len() >= REPLAY_APPLY_WINDOW {
+                    Self::apply_replayed_window(shard_id, &mut window, engine)?;
+                }
             }
         }
         Self::apply_replayed_window(shard_id, &mut window, engine)?;
@@ -3011,32 +3167,51 @@ where
             }
         }
 
-        let mut last_wal_index = 0;
-        let mut last_receipt = None;
-        for (index, entry) in drained.iter().cloned().enumerate() {
-            last_wal_index = entry.wal_index;
-            match self.replicator.publish_wal_entry(entry).await {
-                Ok(receipt) => last_receipt = receipt,
-                Err(err) => {
-                    let mut pending = self
-                        .pending
-                        .lock()
-                        .expect("shared-store async queue lock poisoned");
-                    for entry in drained[index..].iter().rev().cloned() {
-                        pending.push_front(entry);
-                    }
-                    return Err(err);
+        // ONE GROUP COMMIT, NOT ONE PER ENTRY.
+        //
+        // This drained up to `max_entries` and then published them one at a time, so a flush of
+        // 256 entries cost 256 durable barriers -- and over a network, 512 requests, because
+        // every entry writes a WAL frame and an offset-index frame. `publish_wal_entries_batch`
+        // already coalesces a run into ONE append of the concatenated frames plus ONE append of
+        // the concatenated offset metadata, deriving each entry's offsets from the single
+        // receipt. So the queue was assembling a batch and then spending it singly.
+        //
+        // THE DURABLE BYTES ARE THE SAME. Appending frames one after another and appending their
+        // concatenation produce the same object, in the same order, and the offset index gets the
+        // same per-entry records either way. This changes how many requests that costs, not what
+        // ends up on disk.
+        //
+        // Nothing here needs to sort the batch by shard: the batch call refuses to coalesce a
+        // mixed-shard run (and a non-append-blob mode) and falls back to per-entry publishing
+        // itself, which it documents as "correct, just uncoalesced". So a mixed queue is slower
+        // and never wrong.
+        //
+        // ALL-OR-NOTHING ON FAILURE, which is simpler than the index arithmetic it replaces: the
+        // coalesced write is one append, so it either landed or it did not, and there is no
+        // prefix of it to keep. The whole run goes back on the queue in its original order.
+        let reports = match self.replicator.publish_wal_entries_batch(&drained).await {
+            Ok(reports) => reports,
+            Err(err) => {
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .expect("shared-store async queue lock poisoned");
+                for entry in drained.iter().rev().cloned() {
+                    pending.push_front(entry);
                 }
+                return Err(err);
             }
-        }
+        };
+
+        let last = reports.last();
         let remaining = self.queued_len();
         Ok(SharedStoreFlushReport {
             flushed: drained.len(),
             remaining,
-            last_wal_index,
-            last_wal_blob_start_offset: last_receipt.as_ref().map(|receipt| receipt.start_offset),
-            last_wal_blob_end_offset: last_receipt.as_ref().map(|receipt| receipt.end_offset),
-            last_wal_blob_object_length: last_receipt.as_ref().map(|receipt| receipt.object_length),
+            last_wal_index: last.map(|report| report.wal_index).unwrap_or(0),
+            last_wal_blob_start_offset: last.and_then(|report| report.wal_blob_start_offset),
+            last_wal_blob_end_offset: last.and_then(|report| report.wal_blob_end_offset),
+            last_wal_blob_object_length: last.and_then(|report| report.wal_blob_object_length),
         })
     }
 }
@@ -3100,6 +3275,13 @@ pub(crate) const SHARED_OBJECT_CONTAINER_PROTOBUF: u8 = 0x01;
 ///
 /// THE ONLY PLACE THAT DECIDES. Every reader below calls this, so the two shapes cannot be told
 /// apart two different ways -- which is how a sniffing reader usually goes wrong.
+///
+/// THE JSON ARMS BELOW THIS ARE PERMANENT, now that no writer in this tree can produce that
+/// shape. The hold rule is on the installed base: a reader stays if ANY build that ever shipped
+/// could have written data a live store still holds, and every lease, cursor and routing-range
+/// object written before the writer flip is the JSON shape. "Which writer runs today" is the
+/// wrong question, and this is a public repo -- deleting a reader for a format on disk is silent
+/// data loss, not a cleanup.
 fn shared_object_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
     match bytes.split_first() {
         Some((&SHARED_OBJECT_CONTAINER_PROTOBUF, body)) => Some(body),
@@ -3107,38 +3289,21 @@ fn shared_object_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    /// Lets a test exercise the binary writer without touching process-wide environment, which
-    /// would race every other test in the binary.
-    static PROTOBUF_OBJECTS_ON_THIS_THREAD: std::cell::Cell<bool> =
-        std::cell::Cell::new(false);
-}
-
-#[cfg(test)]
-pub(crate) fn write_shared_objects_as_protobuf_on_this_thread(on: bool) {
-    PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.set(on));
-}
-
-/// WHETHER THE WRITER TAKES THE BINARY ARM. OFF BY DEFAULT, AND THE READER DOES NOT CONSULT IT.
-///
-/// Reading the binary shape is UNCONDITIONAL; only writing it is gated. That asymmetry is the
-/// point: a store written by a node with this on must stay readable by a node with it off, so the
-/// reader cannot be allowed to depend on the flag. Same arrangement the index log uses.
-fn write_shared_objects_as_protobuf() -> bool {
-    #[cfg(test)]
-    if PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.get()) {
-        return true;
-    }
-    matches!(
-        std::env::var("TS_SHARED_STORE_PROTOBUF_OBJECTS_ENABLED")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
+// THE THREE OBJECT WRITERS ARE UNCONDITIONAL AS OF THIS CHANGE, AND NO JSON ENCODE PATH IS
+// LEFT FOR ANY OF THEM.
+//
+// `TS_SHARED_STORE_PROTOBUF_OBJECTS_ENABLED` and the per-thread override that went with it are
+// gone, along with the `serde_json` fall-through in each of `encode_shard_lease`,
+// `encode_replay_cursor` and `encode_routing_range_stamp`. The gate existed so the binary
+// writers could land while the readers rolled out; the readers shipped, and none of them has
+// ever consulted the gate, so there is nothing left for it to protect.
+//
+// THE ENCODERS ARE DELETED AND THE DECODERS ARE KEPT, FOR OPPOSITE REASONS. An encoder no
+// caller reaches is how a retired format comes back -- a later branch finds the function and
+// calls it. A decoder with no caller in THIS tree is still reached by every lease, cursor and
+// routing-range object already on disk: the hold is on the installed base, not on which writer
+// runs today. `shared_object_protobuf_body` decides per object from the first byte, never from a
+// setting, so a node that has never written a JSON object still reads one.
 
 fn encode_shared_object_protobuf<M: Message>(message: &M) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + message.encoded_len());
@@ -3162,14 +3327,13 @@ fn decode_shard_lease(bytes: &[u8]) -> Result<ShardLease, SharedStoreReplication
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// Encode a lease. ONE SHAPE, with no gate to pick another. `decode_shard_lease` above keeps
+/// its JSON arm permanently, for the leases already on disk.
 fn encode_shard_lease(lease: &ShardLease) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    if write_shared_objects_as_protobuf() {
-        return Ok(encode_shared_object_protobuf(&v1::SharedStoreShardLease {
-            load_version: lease.load_version,
-            owner: lease.owner.clone(),
-        }));
-    }
-    Ok(serde_json::to_vec(lease)?)
+    Ok(encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+        load_version: lease.load_version,
+        owner: lease.owner.clone(),
+    }))
 }
 
 // ---- the replay cursor
@@ -3188,19 +3352,18 @@ fn decode_replay_cursor(
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// Encode a replay cursor. ONE SHAPE, with no gate to pick another. `decode_replay_cursor`
+/// above keeps its JSON arm permanently, for the cursors already on disk.
 fn encode_replay_cursor(
     cursor: &SharedStoreReplayCursor,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    if write_shared_objects_as_protobuf() {
-        return Ok(encode_shared_object_protobuf(
-            &v1::SharedStoreReplayCursorObject {
-                shard_id: cursor.shard_id,
-                last_wal_index: cursor.last_wal_index,
-                last_replay_time_ms: cursor.last_replay_time_ms,
-            },
-        ));
-    }
-    Ok(serde_json::to_vec_pretty(cursor)?)
+    Ok(encode_shared_object_protobuf(
+        &v1::SharedStoreReplayCursorObject {
+            shard_id: cursor.shard_id,
+            last_wal_index: cursor.last_wal_index,
+            last_replay_time_ms: cursor.last_replay_time_ms,
+        },
+    ))
 }
 
 // ---- the routing-range stamp published beside the index
@@ -3218,18 +3381,18 @@ pub(crate) fn decode_routing_range_stamp(
     Ok(serde_json::from_slice(bytes)?)
 }
 
+/// Encode a routing-range stamp. ONE SHAPE, with no gate to pick another.
+/// `decode_routing_range_stamp` above keeps its JSON arm permanently, for the stamps already on
+/// disk.
 fn encode_routing_range_stamp(
     stamp: &crate::engine::routing_range_stamp::RoutingRangeStamp,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    if write_shared_objects_as_protobuf() {
-        return Ok(encode_shared_object_protobuf(
-            &v1::SharedStoreRoutingRangeStamp {
-                start_routing_bucket: stamp.start_routing_bucket,
-                end_routing_bucket: stamp.end_routing_bucket,
-            },
-        ));
-    }
-    Ok(serde_json::to_vec(stamp)?)
+    Ok(encode_shared_object_protobuf(
+        &v1::SharedStoreRoutingRangeStamp {
+            start_routing_bucket: stamp.start_routing_bucket,
+            end_routing_bucket: stamp.end_routing_bucket,
+        },
+    ))
 }
 
 fn parse_wal_index(key: &str) -> Option<u64> {
@@ -4189,6 +4352,27 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                     .collect(),
             })
         }
+        Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        } => v1::command::Kind::HashMultiSetIfTimestampOlder(
+            v1::HashMultiSetIfTimestampOlder {
+                key: key.clone(),
+                timestamp_field: timestamp_field.clone(),
+                timestamp_seconds: *timestamp_seconds,
+                timestamp_nanos: *timestamp_nanos,
+                entries: entries
+                    .iter()
+                    .map(|(field, value)| v1::HashEntry {
+                        field: field.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            },
+        ),
         Command::HashMultiGet { key, fields } => {
             v1::command::Kind::HashMultiGet(v1::HashMultiGet {
                 key: key.clone(),
@@ -4580,6 +4764,65 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             model_hash: *model_hash,
             vector: vector.clone(),
             updated_at_ms: *updated_at_ms,
+        }),
+        Command::ContextUpsertEntity {
+            tenant_hash,
+            entity,
+        } => v1::command::Kind::ContextUpsertEntity(v1::ContextUpsertEntity {
+            tenant_hash: *tenant_hash,
+            entity: Some(sdk::context_entity_record_to_proto(entity)),
+        }),
+        Command::ContextUpsertSummary {
+            tenant_hash,
+            summary,
+        } => v1::command::Kind::ContextUpsertSummary(v1::ContextUpsertSummary {
+            tenant_hash: *tenant_hash,
+            // The summary's OWN model hash travels with its OWN vector. It is not the node's, and
+            // it is not shared with `ContextSetNodeEmbedding.model_hash`.
+            summary: Some(sdk::context_summary_record_to_proto(summary)),
+        }),
+        Command::ContextWriteCompressionEvent { tenant_hash, event } => {
+            v1::command::Kind::ContextWriteCompressionEvent(v1::ContextWriteCompressionEvent {
+                tenant_hash: *tenant_hash,
+                event: Some(sdk::context_compression_event_record_to_proto(event)),
+            })
+        }
+        Command::ContextWritePackAudit { tenant_hash, audit } => {
+            v1::command::Kind::ContextWritePackAudit(v1::ContextWritePackAudit {
+                tenant_hash: *tenant_hash,
+                audit: Some(sdk::context_pack_audit_record_to_proto(audit)),
+            })
+        }
+        Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            first_write_only,
+            cold_storage,
+        } => v1::command::Kind::ContextWriteEvent(v1::ContextWriteEvent {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            event: Some(sdk::context_event_record_to_proto(event)),
+            first_write_only: *first_write_only,
+            cold_storage: *cold_storage,
+        }),
+        Command::ContextWriteExtractedEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            indexes,
+            first_write_only,
+            cold_storage,
+        } => v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            event: Some(sdk::context_event_record_to_proto(event)),
+            // ALWAYS `Some`, even for an empty block. The decode defaults an absent one, so a
+            // writer that sent `None` for an empty block would make "written by an older build"
+            // and "written with no indexes" the same bytes.
+            indexes: Some(sdk::context_extracted_event_indexes_to_proto(indexes)),
+            first_write_only: *first_write_only,
+            cold_storage: *cold_storage,
         }),
         _ => return None,
     };
@@ -7917,6 +8160,238 @@ mod tests {
 
     #[cfg(feature = "matrixobject")]
     #[tokio::test]
+    async fn a_replay_reads_a_contiguous_run_in_one_request() {
+        // A REPLAY USED TO SPEND A REQUEST PER ENTRY ON BYTES ONE REQUEST COVERS.
+        //
+        // The shared WAL is one appendable object per shard and entries land back to back, so a
+        // run of them is a run of slices of a single byte range. Reading each on its own spent
+        // an envelope per entry: measured at 26 requests for 24 entries and 2.77x the bytes the
+        // replay actually wanted.
+        //
+        // Asserted as a COUNT, because that is what changed. The byte ratio is printed and not
+        // pinned: it moves with the header set and with entry size, and pinning it would break
+        // on changes the claim survives.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = Arc::new(MatrixObjectHttpStore::new(&uri).unwrap());
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+
+        const ENTRIES: usize = 24;
+        for index in 0..ENTRIES {
+            writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: format!("run-{index:02}"),
+                        value: vec![b'v'; 280],
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        writer.flush_pending(ENTRIES).await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let follower = test_engine(dir.path(), "run-follower");
+        follower.load_shard(1);
+
+        let before = store.requests_issued();
+        let sent_before = store.wire_bytes_sent();
+        let recv_before = store.wire_bytes_received();
+        let report = replicator.replay_wal(1, 0, &follower).await.unwrap();
+        let requests = store.requests_issued() - before;
+        let wire = (store.wire_bytes_sent() - sent_before) + (store.wire_bytes_received() - recv_before);
+
+        println!(
+            "REPLAYRUN entries={ENTRIES} applied={} requests={requests} range_bytes={} \
+             wire_per_range_byte={:.2}",
+            report.applied,
+            report.range_bytes_read,
+            wire as f64 / report.range_bytes_read.max(1) as f64,
+        );
+
+        // EVERY ENTRY STILL ARRIVES. A coalesced read that dropped or duplicated one would
+        // satisfy any request-count assertion.
+        assert_eq!(
+            report.applied, ENTRIES,
+            "replay applied {} of {ENTRIES} entries",
+            report.applied
+        );
+
+        // THE POINT: far fewer requests than entries. A bound, not an exact number -- the
+        // offset-index load and the prefix listing are their own requests, and a run is capped
+        // by the apply window, so a longer log legitimately takes more than one.
+        assert!(
+            requests < ENTRIES as u64 / 4,
+            "replaying {ENTRIES} entries spent {requests} requests; coalesced it should be a \
+             handful, and anything near {ENTRIES} means a request per entry again"
+        );
+
+        // NOT VACUOUS: it did talk to the store, and it did fetch the entries' bytes.
+        assert!(requests >= 1, "the replay spent no requests, so it read nothing");
+        assert!(
+            report.range_bytes_read >= (ENTRIES as u64) * 200,
+            "only {} range bytes for {ENTRIES} entries of ~300 bytes, so the run read did not \
+             fetch what the entries need",
+            report.range_bytes_read
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn an_async_flush_is_one_group_commit_not_one_per_entry() {
+        // THE QUEUE WAS ASSEMBLING A BATCH AND SPENDING IT SINGLY.
+        //
+        // `flush_pending` drains up to `max_entries` and used to publish them one at a time, so
+        // a flush of N entries cost N durable barriers -- and over a network 2N requests, since
+        // every entry writes a WAL frame and an offset-index frame.
+        // `publish_wal_entries_batch` already coalesces a run into one append of the
+        // concatenated frames plus one of the concatenated offset metadata.
+        //
+        // The sync path had a group commit for this and the async path was exempted, on the
+        // grounds that it is off the ack critical path. That is true of LATENCY and says nothing
+        // about REQUESTS, which is what a networked shared store is billed in.
+        //
+        // The durable bytes are unchanged: appending frames in order and appending their
+        // concatenation produce the same object. Only the request count moves, which is why that
+        // is what this asserts.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = Arc::new(MatrixObjectHttpStore::new(&uri).unwrap());
+        // No `with_wal_append_mode` override: the default is `ProtobufAppendBlob`, which is the
+        // mode that can coalesce at all. `JsonPerKey` writes a key per entry and the batch call
+        // correctly refuses to pretend otherwise.
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+
+        const ENTRIES: usize = 24;
+        for index in 0..ENTRIES {
+            writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: format!("batched-{index:02}"),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .await
+                .expect("an async write should queue");
+        }
+
+        // Measured across the FLUSH only: the queueing above must not be counted, or the figure
+        // describes the wrong thing.
+        let before = store.requests_issued();
+        let report = writer
+            .flush_pending(ENTRIES)
+            .await
+            .expect("the flush should publish");
+        let spent = store.requests_issued() - before;
+
+        assert_eq!(
+            report.flushed, ENTRIES,
+            "the flush reported {} entries and should have flushed {ENTRIES}",
+            report.flushed
+        );
+        println!("ASYNCFLUSH entries={ENTRIES} requests={spent}");
+
+        // THE POINT: a flush of N entries costs a handful of requests, not two per entry.
+        // Bounded rather than pinned at exactly two, because the fence and the offset index are
+        // their own requests and a retry is legitimate -- what must not come back is one barrier
+        // per entry.
+        assert!(
+            spent < ENTRIES as u64,
+            "flushing {ENTRIES} entries spent {spent} requests; coalesced it should be a handful, \
+             and {} would mean one durable barrier per entry again",
+            2 * ENTRIES
+        );
+
+        // NOT VACUOUS: the flush really did talk to the store, and the entries really landed.
+        assert!(spent >= 1, "the flush spent no requests at all, so nothing was published");
+        assert!(
+            report.last_wal_index >= ENTRIES as u64,
+            "the last wal index is {} after {ENTRIES} entries, so they did not all go through",
+            report.last_wal_index
+        );
+        // AND THE BYTES ARE READABLE AS ONE LOG -- a coalesced append must leave the same object
+        // a sequence of appends would, not a batch blob only this writer can parse. An ordinary
+        // follower replay is the check for that, and it also prices the READ side of a coalesced
+        // log: how many offset-index reads and range bytes it takes to walk.
+        let dir = tempfile::tempdir().unwrap();
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal(1, 0, &follower)
+            .await
+            .expect("the shared WAL should replay");
+        println!(
+            "ASYNCFLUSHREPLAY applied={} last={} offset_index_reads={} range_bytes={}",
+            report.applied, report.last_wal_index, report.offset_index_reads, report.range_bytes_read
+        );
+        assert_eq!(
+            report.applied, ENTRIES,
+            "replay applied {} of {ENTRIES} entries from the coalesced log",
+            report.applied
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn the_shared_path_opens_one_connection_not_one_per_request() {
+        // WHAT CONNECTION REUSE BUYS IS INVISIBLE TO THE BYTE COUNTERS.
+        //
+        // A handshake moves no HTTP bytes, so reuse took the wire figure from 2.619 to 2.572 --
+        // which is the `Connection: close` header no longer being sent, and nothing else. The
+        // saving is a TCP round trip per request: free on loopback, a full RTT over a network,
+        // and paid twice per shared-store record because an entry writes a WAL frame and an
+        // offset-index frame.
+        //
+        // So it is asserted as a COUNT of sockets, which is the only thing here that actually
+        // measures it.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let key = "shared/wal/one-connection";
+        const RECORDS: usize = 32;
+
+        for index in 0..RECORDS {
+            store
+                .append_blob(key, Bytes::from(format!("record-{index:02}").into_bytes()))
+                .await
+                .expect("the append should publish");
+        }
+        // A read too, so the pool is exercised by more than one request shape -- a GET carries
+        // a body back where a PUT reply does not, and a pooled socket is only safe if the body
+        // was read to the byte.
+        let whole = store.get(key).await.expect("the object should read back");
+        assert_eq!(
+            whole.len(),
+            RECORDS * "record-00".len(),
+            "the object is not the size the appends should have made it"
+        );
+
+        let requests = store.requests_issued();
+        let opened = store.connections_opened();
+        println!("SHAREDPATHCONNS records={RECORDS} requests={requests} connections={opened}");
+
+        // THE POINT: far fewer sockets than requests. Pinned as a bound rather than exactly
+        // one, because a server may close an idle keep-alive connection whenever it likes and
+        // this client correctly opens another -- so demanding exactly one would make a
+        // legitimate server behaviour fail the suite.
+        assert!(
+            opened < requests / 4,
+            "{requests} requests opened {opened} connections; with reuse that should be a small \
+             fraction. Equal to the request count means every request is paying a handshake, \
+             which is what this client used to do"
+        );
+
+        // NOT VACUOUS: something was actually opened, and the requests really happened.
+        assert!(opened >= 1, "no connection was opened at all, so nothing was measured");
+        assert!(
+            requests >= RECORDS as u64,
+            "{requests} requests for {RECORDS} appends cannot have done the work"
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
     async fn what_the_shared_path_spends_on_the_wire_per_record() {
         // WHAT A RECORD COSTS OVER A NETWORK, which no instrument here measured.
         //
@@ -8744,48 +9219,191 @@ mod tests {
         );
     }
 
-    /// THE WRITER IS STILL JSON BY DEFAULT, AND THE READER DOES NOT CONSULT THE GATE.
+    /// ALL THREE OBJECT WRITERS ARE BINARY WITH NOTHING TO TURN ON, AND A PLANTED JSON OBJECT
+    /// IS STILL READ BY THE REAL READER.
     ///
-    /// The asymmetry is the safety property: a store written with the flag ON must stay readable
-    /// by a node with it OFF. A test that only flipped the flag and round-tripped would pass even
-    /// if the reader had been made conditional, which is the mistake that breaks existing stores.
+    /// Driven through the real acquire/validate, save/load and publish/restore paths, because
+    /// those are what a running node uses -- a codec that round-trips in isolation is covered by
+    /// `the_widened_object_readers_accept_both_shapes` and proves nothing about them.
+    ///
+    /// EACH JSON ARM IS DRIVEN ON BYTES PLANTED DIRECTLY INTO THE OBJECT STORE, because the
+    /// writer that used to produce them has been deleted. A test that round-tripped through the
+    /// writer would have had nothing left to drive after the flip, and would have quietly become
+    /// a test of the binary arm twice over.
+    ///
+    /// Each plant carries a value NO OTHER PATH IN THIS TEST CAN PRODUCE, which is what keeps the
+    /// read assertions from being answered by something else:
+    ///   - the lease is planted at load_version 5 by `owner-legacy`, and `validate_shard_lease`
+    ///     accepts only an EXACT match, so 5 can only have come from the planted document;
+    ///   - the cursor is planted at index 77, and `load_replay_cursor` answers a ZERO cursor for
+    ///     an absent object, so a fallback recovering this value would answer 0 rather than 77 --
+    ///     which is why `try_load_replay_cursor` is used and the exact fields are asserted;
+    ///   - the routing-range stamp is planted as the same value the index was published with,
+    ///     because `install_index_bytes` refuses a range that disagrees with the index. The
+    ///     discriminator there is the ARM, not the value: `restore_index_and_blocks` propagates a
+    ///     decode failure as `RoutingRangeMissing` and has no fallback, so the restore completing
+    ///     is only possible if the JSON arm ran.
     #[tokio::test]
-    async fn the_object_writer_is_json_until_asked_and_the_reader_never_cares() {
+    async fn the_object_writers_are_binary_and_planted_json_objects_are_still_read() {
         let dir = tempfile::tempdir().unwrap();
         let (store, replicator) = test_shared_store(dir.path());
+        // DENOMINATOR: three objects lost their JSON encoder, and each is written out by hand
+        // below rather than looped over generically, so this count is what says none was
+        // quietly dropped from the test.
+        let mut checked = 0;
 
-        // ---- default: JSON on disk. The key comes from the SAME helper the writer uses, so this
-        // cannot drift from the real layout the way a hand-spelled prefix would.
-        replicator.acquire_shard_lease(1, 1, "owner-a").await.unwrap();
-        let lease_key = replicator.lease_key(1);
-        let default_bytes = store.get(&lease_key).await.unwrap();
+        // ================= the shard lease =================
+        // The key comes from the SAME helper the writer uses, so it cannot drift from the real
+        // layout the way a hand-spelled prefix would.
+        replicator.acquire_shard_lease(2, 1, "owner-a").await.unwrap();
+        let lease_key = replicator.lease_key(2);
+        let written = store.get(&lease_key).await.unwrap();
         assert_eq!(
-            default_bytes[0], b'{',
-            "the shipped default must still write the JSON shape"
+            written[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "the shipped default must write the lease in the binary shape as of the flip"
         );
-        // And it validates, through the widened reader.
-        replicator.validate_shard_lease(1, 1).await.unwrap();
-
-        // ---- asked: binary on disk, and still readable.
-        write_shared_objects_as_protobuf_on_this_thread(true);
-        replicator.acquire_shard_lease(1, 2, "owner-b").await.unwrap();
-        let binary_bytes = store.get(&lease_key).await.unwrap();
-        assert_eq!(
-            binary_bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
-            "with the gate on, the lease must be written in the binary shape"
+        assert_ne!(
+            written[0], b'{',
+            "the default still writes a JSON lease, so the encode arm this change deleted is \
+             reachable after all"
         );
         assert!(
-            serde_json::from_slice::<serde_json::Value>(&binary_bytes).is_err(),
-            "the binary object must not parse as JSON, or the container byte proves nothing"
+            serde_json::from_slice::<serde_json::Value>(&written).is_err(),
+            "the binary lease must not parse as JSON, or the container byte proves nothing"
+        );
+        replicator.validate_shard_lease(2, 1).await.unwrap();
+
+        // The INSTALLED BASE: JSON bytes written straight into the store.
+        let planted = serde_json::to_vec(&ShardLease {
+            load_version: 5,
+            owner: "owner-legacy".to_string(),
+        })
+        .unwrap();
+        assert_eq!(planted[0], b'{', "the planted lease is not the JSON shape");
+        store.put(&lease_key, Bytes::from(planted)).await.unwrap();
+        assert_eq!(
+            store.get(&lease_key).await.unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below reads a JSON lease"
+        );
+        replicator.validate_shard_lease(2, 5).await.expect(
+            "the planted JSON lease was not read, so every lease written before the flip is \
+             unreadable and the shard it fences cannot be claimed",
+        );
+        // And the fence still refuses a stale load_version, so reading the old shape did not
+        // weaken the check that uses it.
+        assert!(replicator.validate_shard_lease(2, 4).await.is_err());
+        checked += 1;
+
+        // ================= the replay cursor =================
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 3,
+                last_wal_index: 41,
+                last_replay_time_ms: 1234,
+            })
+            .await
+            .unwrap();
+        let cursor_key = replicator.replay_cursor_key(3);
+        let written = store.get(&cursor_key).await.unwrap();
+        assert_eq!(
+            written[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "the shipped default must write the cursor in the binary shape as of the flip"
+        );
+        assert_ne!(written[0], b'{', "the default still writes a JSON cursor");
+        assert_eq!(
+            replicator.load_replay_cursor(3).await.unwrap().last_wal_index,
+            41
         );
 
-        // THE LOAD-BEARING ASSERTION: turn the writer back OFF and read the binary object. A
-        // reader that consulted the gate would fail here, which is exactly the regression that
-        // would make a mixed-version cluster unable to read its own store.
-        write_shared_objects_as_protobuf_on_this_thread(false);
-        replicator.validate_shard_lease(1, 2).await.unwrap();
-        // A stale fence is still refused, so the widening did not weaken the check itself.
-        assert!(replicator.validate_shard_lease(1, 1).await.is_err());
+        let planted = serde_json::to_vec_pretty(&SharedStoreReplayCursor {
+            shard_id: 3,
+            last_wal_index: 77,
+            last_replay_time_ms: 5678,
+        })
+        .unwrap();
+        assert_eq!(planted[0], b'{', "the planted cursor is not the JSON shape");
+        store.put(&cursor_key, Bytes::from(planted)).await.unwrap();
+        assert_eq!(
+            store.get(&cursor_key).await.unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below reads a JSON cursor"
+        );
+        let read = replicator
+            .try_load_replay_cursor(3)
+            .await
+            .unwrap()
+            .expect("the planted cursor object is present, so this must not be None");
+        assert_eq!(
+            (read.shard_id, read.last_wal_index, read.last_replay_time_ms),
+            (3, 77, 5678),
+            "the planted JSON cursor was not read; the absent-object fallback answers index 0, \
+             so 77 is a value only the JSON decode arm can produce"
+        );
+        checked += 1;
+
+        // ================= the routing-range stamp published beside the index =================
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"published-value".to_vec(),
+            },
+        });
+        replicator.publish_index(1, &primary).await.unwrap();
+        replicator
+            .publish_block_slabs(1, &primary.block_store())
+            .await
+            .unwrap();
+        let range_key = replicator.index_routing_range_key(1);
+        let written = store.get(&range_key).await.unwrap();
+        assert_eq!(
+            written[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "the shipped default must write the routing range in the binary shape as of the flip"
+        );
+        assert_ne!(written[0], b'{', "the default still writes a JSON routing range");
+
+        // The planted stamp must agree with the published index, so it is the SAME value in the
+        // old shape. The arm is the discriminator here, not the value.
+        let stamp = decode_routing_range_stamp(&written).unwrap();
+        let planted = serde_json::to_vec(&stamp).unwrap();
+        assert_eq!(planted[0], b'{', "the planted stamp is not the JSON shape");
+        store.put(&range_key, Bytes::from(planted)).await.unwrap();
+        assert_eq!(
+            store.get(&range_key).await.unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below reads a JSON routing range"
+        );
+
+        let follower = test_engine(dir.path(), "follower");
+        let restored = replicator
+            .restore_index_and_blocks(1, &follower, &follower.block_store())
+            .await
+            .expect(
+                "the restore refused a JSON routing-range object, so every index published \
+                 before the flip can no longer be restored",
+            );
+        assert_eq!(restored, vec![0]);
+        follower.load_shard(1);
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"published-value".to_vec())
+            },
+            "the restore completed but the index it installed is not the published one"
+        );
+        checked += 1;
+
+        assert_eq!(checked, 3, "three object writers lost their JSON arm in this change");
     }
 
     #[tokio::test]
@@ -12095,14 +12713,13 @@ mod tests {
 /// THE LIST ONLY SHRINKS. Adding a write command without a proto mapping fails this test, and
 /// covering one requires deleting its name here, in the same change. So the work left is visible
 /// in the tree instead of in a plan, and progress cannot be undone quietly.
-const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
-    "ContextUpsertEntity",
-    "ContextUpsertSummary",
-    "ContextWriteCompressionEvent",
-    "ContextWriteEvent",
-    "ContextWriteExtractedEvent",
-    "ContextWritePackAudit",
-];
+///
+/// EMPTY. Every write command the shared WAL can carry now has a protobuf mapping, so the JSON arm
+/// of `encode_wal_proto_frame` is reached by no write. The list is kept rather than deleted
+/// because `no_write_command_quietly_joins_the_json_fallback` recomputes the intersection from
+/// source text on every run and compares it against this: an empty roster is now the assertion
+/// that the set is empty, and a write command added without a mapping fails against it.
+const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[];
 
 /// THE NINE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
 ///
@@ -12168,6 +12785,1078 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
             Some(&command),
             "{name} did not survive the round trip"
         );
+    }
+}
+
+#[test]
+fn a_timestamp_conditioned_hash_write_round_trips_through_the_wal() {
+    let command = Command::HashMultiSetIfTimestampOlder {
+        key: "entity-7".into(),
+        timestamp_field: "_ts:view".into(),
+        timestamp_seconds: 1_700_000_000,
+        timestamp_nanos: 123_456_789,
+        entries: vec![
+            ("_ts:view".into(), vec![8, 1]),
+            ("view:score".into(), vec![8, 42]),
+        ],
+    };
+    let entry = SharedStoreWalEntry {
+        shard_id: 7,
+        wal_index: 11,
+        command: Some(command.clone()),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+
+    let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+        .expect("the conditioned hash write must encode");
+    let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+        .expect("the conditioned hash write frame must decode");
+    assert_eq!(frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO);
+
+    let decoded = decode_wal_proto_frame_exact(&bytes, "conditioned hash write")
+        .expect("the conditioned hash write must replay");
+    assert_eq!(decoded.command, Some(command));
+}
+
+/// A `ContextEntity` with all ten fields set, distinctly.
+fn a_fully_populated_context_entity() -> crate::types::ContextEntity {
+    crate::types::ContextEntity {
+        entity_hash: 0x2122_2324_2526_2728,
+        node_hash: 0x3132_3334_3536_3738,
+        entity_type: 44,
+        name: "entity name".to_string(),
+        value: "entity value".to_string(),
+        updated_at_ms: 1_700_000_000_011,
+        valid_from_ms: 1_700_000_000_012,
+        confidence: 0.125,
+        source_event_hashes: vec![201, 202, 203],
+        // NOT quantised, and no model hash: `ContextEntity` has never carried one. `1.0e-7` is the
+        // element that says so -- it is exact in `f32` and would not survive int8 quantisation.
+        vector: vec![0.5, -0.25, 1.0e-7, 3.5],
+    }
+}
+
+/// A `ContextSummary` with all six fields set, the encoder guard among them.
+fn a_fully_populated_context_summary() -> crate::types::ContextSummary {
+    crate::types::ContextSummary {
+        node_hash: 0x4142_4344_4546_4748,
+        level: crate::types::CONTEXT_SUMMARY_LEVEL_L1,
+        text: "the summary text".to_string(),
+        valid_from_ms: 1_700_000_000_013,
+        vector: vec![-1.0, 0.75, 1.0e-7, 2.0],
+        // DISTINCT from every other encoder guard in this file. See
+        // `each_encoder_guard_is_its_own_field_and_carries_its_own_value`.
+        embedding_model_hash: 0xDDDD_0004_0004_0004,
+    }
+}
+
+/// A `ContextCompressionEvent` with all six fields set.
+fn a_fully_populated_compression_event() -> crate::types::ContextCompressionEvent {
+    crate::types::ContextCompressionEvent {
+        compression_id_hash: 0x5152_5354_5556_5758,
+        node_hash: 0x6162_6364_6566_6768,
+        source_start_ms: 1_700_000_000_020,
+        source_end_ms: 1_700_000_000_030,
+        compressed_time_ms: 1_700_000_000_040,
+        summary: "what the compression rolled up".to_string(),
+    }
+}
+
+/// A `ContextPackAudit` with all eight fields set, and the two ref lists DIFFERENT.
+///
+/// Selected and blocked are the two halves of the verdict. Lists that merely had the same length,
+/// or the same contents, could not tell a converter that crossed them from one that did not.
+fn a_fully_populated_pack_audit() -> crate::types::ContextPackAudit {
+    use crate::types::ContextAuditRef;
+    crate::types::ContextPackAudit {
+        query_id: "query-7".to_string(),
+        session_hash: 0x7172_7374_7576_7778,
+        request_time_ms: 1_700_000_000_050,
+        query_hash: 0x8182_8384_8586_8788,
+        max_prompt_tokens: 4096,
+        selected_tokens: 1234,
+        selected_refs: vec![ContextAuditRef {
+            node_hash: 901,
+            event_time_ms: 1_700_000_000_060,
+            reason: "selected: highest score".to_string(),
+        }],
+        blocked_refs: vec![
+            ContextAuditRef {
+                node_hash: 902,
+                event_time_ms: 1_700_000_000_070,
+                reason: "blocked: over budget".to_string(),
+            },
+            ContextAuditRef {
+                node_hash: 903,
+                event_time_ms: 1_700_000_000_080,
+                reason: "blocked: encoder declined".to_string(),
+            },
+        ],
+    }
+}
+
+/// THE LAST FOUR WRITES, DRIVEN THROUGH THE REAL FRAME, AND THE ROSTER REACHES ZERO.
+///
+/// A MAPPING IS NOT A FORMAT. `command_to_sdk_proto` compiling proves only that a mapping exists;
+/// `encode_wal_proto_frame` is what chooses the arm. Every case goes through the real frame and is
+/// checked three ways: the frame DECLARES protobuf, the payload does NOT parse as JSON, and the
+/// command comes back field for field.
+///
+/// FIVE CLAUSES:
+///
+///   1. `COMMANDS_STILL_ENCODED_AS_JSON` is EMPTY, in this same change -- that roster only shrinks
+///      and covering a command means deleting its name from it;
+///   2. the frame declares protobuf and the payload is not JSON;
+///   3. the command round-trips field for field, through the path replay uses;
+///   4. the pack audit's two ref lists come back on the right side of the verdict;
+///   5. the durable JSON tagging is pinned for each of the four, so the old-format reader is driven
+///      on the shape it will actually meet on disk.
+#[test]
+fn the_last_context_record_writes_are_framed_as_protobuf_and_round_trip() {
+    // ---- CLAUSE 1: THE ROSTER REACHED ZERO ----
+    assert!(
+        COMMANDS_STILL_ENCODED_AS_JSON.is_empty(),
+        "COMMANDS_STILL_ENCODED_AS_JSON still holds {:?}. Every write the shared WAL can carry is \
+         mapped as of this change, so the roster is empty and stays the assertion that it is",
+        COMMANDS_STILL_ENCODED_AS_JSON
+    );
+
+    let cases: Vec<(&str, &str, Command)> = vec![
+        (
+            "ContextUpsertEntity",
+            "context_upsert_entity",
+            Command::ContextUpsertEntity {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1011,
+                entity: a_fully_populated_context_entity(),
+            },
+        ),
+        (
+            "ContextUpsertSummary",
+            "context_upsert_summary",
+            Command::ContextUpsertSummary {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1012,
+                summary: a_fully_populated_context_summary(),
+            },
+        ),
+        (
+            "ContextWriteCompressionEvent",
+            "context_write_compression_event",
+            Command::ContextWriteCompressionEvent {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1013,
+                event: a_fully_populated_compression_event(),
+            },
+        ),
+        (
+            "ContextWritePackAudit",
+            "context_write_pack_audit",
+            Command::ContextWritePackAudit {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1014,
+                audit: a_fully_populated_pack_audit(),
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: four is the number this batch covered, and a shorter list would make
+    // every assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 4, "this batch covers the last four context writes");
+
+    for (name, tag, command) in &cases {
+        assert!(
+            crate::engine::is_write_command(command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // ---- CLAUSE 2 ----
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // ---- CLAUSE 3 ----
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(command),
+            "{name} did not survive the round trip"
+        );
+
+        // ---- CLAUSE 5: THE DURABLE JSON TAGGING, PER COMMAND ----
+        //
+        // `Command` is `#[serde(tag = "kind", rename_all = "snake_case")]`, so a record an older
+        // build wrote is ONE FLAT OBJECT with a discriminator beside the variant's own fields, not
+        // `{"ContextUpsertEntity": {..}}`. The JSON arm is still the reader for every record
+        // written before this change, so it is driven on that shape here.
+        let json = serde_json::to_value(command).expect("the command must serialize");
+        let object = json
+            .as_object()
+            .expect("a durable record is ONE flat object, not a map from variant name to body");
+        assert_eq!(
+            object.get("kind").and_then(|kind| kind.as_str()),
+            Some(*tag),
+            "{name}'s durable discriminator is not `kind: {tag}`: {json}"
+        );
+        assert!(
+            object.contains_key("tenant_hash") && !object.contains_key(*name),
+            "{name}'s variant fields are not SIBLINGS of the `kind` discriminator: {json}"
+        );
+        let through_json: Command = serde_json::from_value(json.clone()).unwrap_or_else(|err| {
+            panic!(
+                "a {name} record written by an older build must still decode through the JSON \
+                 arm: {err}"
+            )
+        });
+        assert_eq!(
+            &through_json, command,
+            "{name} did not survive the JSON round trip either. None of its fields is \
+             `skip_serializing`, so unlike `ContextEvent` this one loses nothing through JSON, and \
+             a difference here means the durable JSON shape has moved"
+        );
+    }
+
+    // ---- CLAUSE 4: THE AUDIT'S TWO REF LISTS DID NOT CROSS ----
+    let audit = a_fully_populated_pack_audit();
+    assert_ne!(
+        audit.selected_refs, audit.blocked_refs,
+        "the fixture gives the two halves of the verdict the same contents, so a converter that \
+         crossed them would pass"
+    );
+    let entry = SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index: 1,
+        command: Some(Command::ContextWritePackAudit {
+            tenant_hash: 1,
+            audit: audit.clone(),
+        }),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+    let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT).expect("must frame");
+    let back = decode_wal_proto_frame_exact(&bytes, "verdict test").expect("must decode");
+    match back.command {
+        Some(Command::ContextWritePackAudit { audit: got, .. }) => {
+            assert_eq!(
+                got.selected_refs, audit.selected_refs,
+                "the SELECTED refs came back as {:?}",
+                got.selected_refs
+            );
+            assert_eq!(
+                got.blocked_refs, audit.blocked_refs,
+                "the BLOCKED refs came back as {:?}",
+                got.blocked_refs
+            );
+        }
+        other => panic!("decoded to the wrong variant: {other:?}"),
+    }
+}
+
+/// EACH OF THE FOUR ENCODER GUARDS IS ITS OWN FIELD AND CARRIES ITS OWN VALUE.
+///
+/// # WHAT THE GUARDS ARE FOR
+///
+/// A vector read under the wrong encoder produces NO error. Two encoders truncated to the same
+/// width give no length mismatch, only a cosine computed across two different vector spaces. The
+/// model hash is the whole check, so zeroing one, defaulting one from another, or folding two into
+/// one field does not lose a datum -- it disarms the check.
+///
+/// # WHY THEY CANNOT BE SHARED
+///
+/// There are FOUR, and each covers a vector that can be replaced independently of the others:
+///
+///   * `ContextNodeRecord.embedding_model_hash` -- the node's own vector;
+///   * `ContextNodeRecord.summary_vector_model_hash` -- the node's CACHED COPY of a summary vector,
+///     deliberately separate because a re-embed can replace one without touching the other;
+///   * `ContextSetNodeEmbedding.model_hash` -- the write that sets a node vector;
+///   * `ContextSummaryRecord.embedding_model_hash` -- the summary record's own vector, which the
+///     retrieve pass scores into the SAME score map as the node's, so a summary scored under a
+///     replaced encoder marks the node scored and withdraws the lexical fallback that a declined
+///     node was routed to.
+///
+/// # HOW THIS CANNOT PASS BY ACCIDENT
+///
+/// All four are given DIFFERENT values, and every pair is asserted distinct before the round trip
+/// runs. A shared field, a defaulted one or a crossed pair makes two of the four equal on the way
+/// back, and the clause that fails names which. Driven through the real frame, so this is a fact
+/// about the bytes rather than about the converter signature.
+#[test]
+fn each_encoder_guard_is_its_own_field_and_carries_its_own_value() {
+    const NODE_VECTOR_ENCODER: u64 = 0xAAAA_0001_0001_0001;
+    const NODE_SUMMARY_COPY_ENCODER: u64 = 0xBBBB_0002_0002_0002;
+    const SET_EMBEDDING_ENCODER: u64 = 0xCCCC_0003_0003_0003;
+    const SUMMARY_RECORD_ENCODER: u64 = 0xDDDD_0004_0004_0004;
+
+    // The four values are distinct, asserted rather than assumed: if two of them were equal every
+    // clause below would hold on a build that had folded those two fields into one.
+    let guards = [
+        ("ContextNodeRecord.embedding_model_hash", NODE_VECTOR_ENCODER),
+        (
+            "ContextNodeRecord.summary_vector_model_hash",
+            NODE_SUMMARY_COPY_ENCODER,
+        ),
+        ("ContextSetNodeEmbedding.model_hash", SET_EMBEDDING_ENCODER),
+        (
+            "ContextSummaryRecord.embedding_model_hash",
+            SUMMARY_RECORD_ENCODER,
+        ),
+    ];
+    assert_eq!(guards.len(), 4, "there are four encoder guards");
+    for (left_index, (left_name, left)) in guards.iter().enumerate() {
+        for (right_name, right) in guards.iter().skip(left_index + 1) {
+            assert_ne!(
+                left, right,
+                "{left_name} and {right_name} are given the same value in this test, so a build \
+                 that shared one field between them would pass"
+            );
+        }
+    }
+    assert_eq!(
+        a_fully_populated_context_summary().embedding_model_hash,
+        SUMMARY_RECORD_ENCODER,
+        "the summary fixture no longer carries the value this test distinguishes it by"
+    );
+
+    // Vectors that would NOT survive int8 quantisation, so the round trip says something about
+    // precision as well as about the guard beside it.
+    let fine_grained = vec![0.5f32, -0.25, 1.0e-7, 3.5];
+
+    // ALL FIFTEEN FIELDS WRITTEN OUT. `ContextNode` has no `Default`, and that is just as well:
+    // a `..Default::default()` fixture leaves the fields around the two guards at zero, so a
+    // converter that read a guard out of a neighbouring field would still come back right.
+    let node = crate::types::ContextNode {
+        node_hash: 0x9192_9394_9596_9798,
+        parent_hash: 0x9192_9394_9596_9799,
+        kind: 5,
+        canonical_name: "canonical node name".to_string(),
+        l0: "the l0 text".to_string(),
+        status: 6,
+        last_event_time_ms: 1_700_000_000_100,
+        l1_ref: "l1://ref".to_string(),
+        raw_metadata_ref: "raw://ref".to_string(),
+        vector: fine_grained.clone(),
+        embedding_model_hash: NODE_VECTOR_ENCODER,
+        embedding_updated_at_ms: 1_700_000_000_101,
+        summary_vector: vec![1.0, -1.0, 1.0e-7],
+        summary_vector_valid_from_ms: 1_700_000_000_102,
+        summary_vector_model_hash: NODE_SUMMARY_COPY_ENCODER,
+    };
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ContextUpsertNode",
+            Command::ContextUpsertNode {
+                tenant_hash: 1,
+                node: Box::new(node.clone()),
+            },
+        ),
+        (
+            "ContextSetNodeEmbedding",
+            Command::ContextSetNodeEmbedding {
+                tenant_hash: 2,
+                node_hash: node.node_hash,
+                model_hash: SET_EMBEDDING_ENCODER,
+                vector: fine_grained.clone(),
+                updated_at_ms: 1_700_000_000_090,
+            },
+        ),
+        (
+            "ContextUpsertSummary",
+            Command::ContextUpsertSummary {
+                tenant_hash: 3,
+                summary: a_fully_populated_context_summary(),
+            },
+        ),
+    ];
+    // All three vector-carrying commands, so every one of the four guards is driven through the
+    // frame rather than only the one this batch added.
+    assert_eq!(cases.len(), 3, "the four guards live on three commands");
+
+    for (name, command) in &cases {
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is not framed as protobuf, so this says nothing about the proto record"
+        );
+        let back = decode_wal_proto_frame_exact(&bytes, "encoder guard test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+
+        // Field for field, which carries every guard AND every vector element with it.
+        assert_eq!(
+            back.command.as_ref(),
+            Some(command),
+            "{name} did not survive the round trip, so one of its guards or one of its vector \
+             elements moved"
+        );
+
+        // And then each guard READ OFF the decoded command by name, so the failure says which one.
+        match back.command.as_ref() {
+            Some(Command::ContextUpsertNode { node, .. }) => {
+                assert_eq!(
+                    node.embedding_model_hash, NODE_VECTOR_ENCODER,
+                    "the node's own encoder guard came back as {:#x}",
+                    node.embedding_model_hash
+                );
+                assert_eq!(
+                    node.summary_vector_model_hash, NODE_SUMMARY_COPY_ENCODER,
+                    "the node's SUMMARY-COPY encoder guard came back as {:#x}. It is deliberately \
+                     separate from the field above, because a re-embed can replace one vector \
+                     without touching the copy",
+                    node.summary_vector_model_hash
+                );
+                assert_ne!(
+                    node.embedding_model_hash, node.summary_vector_model_hash,
+                    "the node's two guards came back equal, so one field is serving both vectors"
+                );
+            }
+            Some(Command::ContextSetNodeEmbedding { model_hash, .. }) => assert_eq!(
+                *model_hash, SET_EMBEDDING_ENCODER,
+                "the set-embedding guard came back as {model_hash:#x}"
+            ),
+            Some(Command::ContextUpsertSummary { summary, .. }) => assert_eq!(
+                summary.embedding_model_hash, SUMMARY_RECORD_ENCODER,
+                "the summary record's own encoder guard came back as {:#x}. It is the fourth guard \
+                 and is not the node's: the retrieve pass scores this vector into the same score \
+                 map, so sharing it would let a summary written by a replaced encoder mark its \
+                 node scored",
+                summary.embedding_model_hash
+            ),
+            other => panic!("{name} decoded to the wrong variant: {other:?}"),
+        }
+    }
+}
+
+/// EACH OF THE FOUR WRITES REFUSES AN ABSENT RECORD BY NAME, AND EACH REFUSAL HAS A CONTROL.
+///
+/// A proto message field is ALWAYS optional on the wire, so every nested record arrives as an
+/// `Option`. None of these four has a `#[serde(default)]` on the Rust side and none of them means
+/// anything without the record it carries, so an absent one is REFUSED BY NAME rather than
+/// defaulted: filing an all-zero entity, summary, compression event or pack audit would put a
+/// record on disk that cannot afterwards be told from a real one.
+///
+/// Every refusal sits beside a PRESENT record that must still decode, because a decode that
+/// refused everything would satisfy the refusal arms on its own.
+#[test]
+fn the_last_context_record_writes_refuse_an_absent_record_by_name() {
+    use crate::sdk::{sdk_command_to_types, v1};
+
+    let wrap = |kind: v1::command::Kind| v1::Command { kind: Some(kind) };
+
+    let absent: Vec<(&str, &str, v1::command::Kind)> = vec![
+        (
+            "ContextUpsertEntity",
+            "context entity record missing",
+            v1::command::Kind::ContextUpsertEntity(v1::ContextUpsertEntity {
+                tenant_hash: 1,
+                entity: None,
+            }),
+        ),
+        (
+            "ContextUpsertSummary",
+            "context summary record missing",
+            v1::command::Kind::ContextUpsertSummary(v1::ContextUpsertSummary {
+                tenant_hash: 1,
+                summary: None,
+            }),
+        ),
+        (
+            "ContextWriteCompressionEvent",
+            "context compression event record missing",
+            v1::command::Kind::ContextWriteCompressionEvent(v1::ContextWriteCompressionEvent {
+                tenant_hash: 1,
+                event: None,
+            }),
+        ),
+        (
+            "ContextWritePackAudit",
+            "context pack audit record missing",
+            v1::command::Kind::ContextWritePackAudit(v1::ContextWritePackAudit {
+                tenant_hash: 1,
+                audit: None,
+            }),
+        ),
+    ];
+    assert_eq!(absent.len(), 4, "all four of this batch's writes are covered");
+
+    for (name, says, kind) in absent {
+        let error = sdk_command_to_types(wrap(kind)).expect_err(&format!(
+            "{name} with no record decoded, so an all-zero record was filed as if real"
+        ));
+        assert!(
+            error.message().contains(says),
+            "{name}'s refusal does not name what was missing -- it said {error}, and a refusal \
+             that does not name the field is a refusal nobody can act on"
+        );
+    }
+
+    // ---- THE CONTROLS: a PRESENT record decodes, field for field, on all four. ----
+    let present: Vec<(&str, v1::command::Kind, Command)> = vec![
+        (
+            "ContextUpsertEntity",
+            v1::command::Kind::ContextUpsertEntity(v1::ContextUpsertEntity {
+                tenant_hash: 11,
+                entity: Some(sdk::context_entity_record_to_proto(
+                    &a_fully_populated_context_entity(),
+                )),
+            }),
+            Command::ContextUpsertEntity {
+                tenant_hash: 11,
+                entity: a_fully_populated_context_entity(),
+            },
+        ),
+        (
+            "ContextUpsertSummary",
+            v1::command::Kind::ContextUpsertSummary(v1::ContextUpsertSummary {
+                tenant_hash: 12,
+                summary: Some(sdk::context_summary_record_to_proto(
+                    &a_fully_populated_context_summary(),
+                )),
+            }),
+            Command::ContextUpsertSummary {
+                tenant_hash: 12,
+                summary: a_fully_populated_context_summary(),
+            },
+        ),
+        (
+            "ContextWriteCompressionEvent",
+            v1::command::Kind::ContextWriteCompressionEvent(v1::ContextWriteCompressionEvent {
+                tenant_hash: 13,
+                event: Some(sdk::context_compression_event_record_to_proto(
+                    &a_fully_populated_compression_event(),
+                )),
+            }),
+            Command::ContextWriteCompressionEvent {
+                tenant_hash: 13,
+                event: a_fully_populated_compression_event(),
+            },
+        ),
+        (
+            "ContextWritePackAudit",
+            v1::command::Kind::ContextWritePackAudit(v1::ContextWritePackAudit {
+                tenant_hash: 14,
+                audit: Some(sdk::context_pack_audit_record_to_proto(
+                    &a_fully_populated_pack_audit(),
+                )),
+            }),
+            Command::ContextWritePackAudit {
+                tenant_hash: 14,
+                audit: a_fully_populated_pack_audit(),
+            },
+        ),
+    ];
+    assert_eq!(present.len(), 4, "every refusal above has a control");
+
+    for (name, kind, expected) in present {
+        let decoded = sdk_command_to_types(wrap(kind))
+            .unwrap_or_else(|err| panic!("{name} with a present record must decode: {err}"));
+        assert_eq!(
+            decoded, expected,
+            "{name}'s control decoded to something other than the command it was built from"
+        );
+    }
+
+    // ---- AN EMPTY REF LIST IS NOT AN ABSENT RECORD ----
+    //
+    // `selected_refs` and `blocked_refs` are REPEATED, which has no presence on the wire in
+    // proto3, and `#[serde(default)]` on the Rust side already takes an absent list as empty. So
+    // an empty audit decodes rather than being refused -- the refusal above is about the AUDIT,
+    // not about what is in it.
+    let empty_lists = sdk_command_to_types(wrap(v1::command::Kind::ContextWritePackAudit(
+        v1::ContextWritePackAudit {
+            tenant_hash: 15,
+            audit: Some(v1::ContextPackAuditRecord {
+                query_id: "query-empty".to_string(),
+                session_hash: 5,
+                request_time_ms: 6,
+                query_hash: 7,
+                max_prompt_tokens: 8,
+                selected_tokens: 0,
+                selected_refs: Vec::new(),
+                blocked_refs: Vec::new(),
+            }),
+        },
+    )))
+    .expect("an audit that selected and blocked nothing is a real audit, not a missing one");
+    match empty_lists {
+        Command::ContextWritePackAudit { audit, .. } => {
+            assert!(audit.selected_refs.is_empty() && audit.blocked_refs.is_empty());
+            assert_eq!(audit.query_id, "query-empty");
+        }
+        other => panic!("decoded to the wrong variant: {other:?}"),
+    }
+}
+
+/// A `ContextEvent` with every one of its fifteen fields set, and set DISTINCTLY.
+///
+/// A converter that crossed two fields of the same type, or dropped one, passes on a fixture whose
+/// fields are mostly zero. The seven `skip_serializing` fields are deliberately non-default here,
+/// because the clause that says this record is more faithful than the JSON it replaces is vacuous
+/// if the JSON had nothing to lose.
+///
+/// `confidence` and `importance` are quarters, which are exact in `f32`, so the equality below is
+/// an equality and not a tolerance.
+#[allow(deprecated)]
+fn a_fully_populated_context_event() -> crate::types::ContextEvent {
+    crate::types::ContextEvent {
+        event_id_hash: 0x0102_0304_0506_0708,
+        event_time_ms: 1_700_000_000_001,
+        ingestion_time_ms: 1_700_000_000_002,
+        kind: 11,
+        event_type: 22,
+        actor_hash: 0x1111_2222_3333_4444,
+        status: 33,
+        valid_until_ms: 1_700_000_000_003,
+        confidence: 0.25,
+        importance: 0.75,
+        text: "the fifteenth field is the vector".to_string(),
+        source_ref: "source://ref/1".to_string(),
+        related_node_hashes: vec![7, 8, 9],
+        compact_attrs: vec![0xA7, 0xB3, 0x00, 0xFF],
+        // NOT quantised, and no model hash: `ContextEvent` has never carried one.
+        vector: vec![-1.5, 0.0, 0.5, 1.0],
+    }
+}
+
+/// A full index block, with ALL FIVE internal indexes disabled.
+fn a_fully_populated_index_block() -> crate::types::ContextExtractedEventIndexes {
+    use crate::types::InternalContextIndex;
+    crate::types::ContextExtractedEventIndexes {
+        scope_hash: 0x5555_6666_7777_8888,
+        entity_hashes: vec![101, 102],
+        status_hash: 0x9999_AAAA_BBBB_CCCC,
+        source_hash: 0xDDDD_EEEE_FFFF_0001,
+        event_time_bucket_ms: 1_700_000_000_000,
+        disabled_indexes: vec![
+            InternalContextIndex::EventKind,
+            InternalContextIndex::Entity,
+            InternalContextIndex::Status,
+            InternalContextIndex::Source,
+            InternalContextIndex::EventTimeBucket,
+        ],
+    }
+}
+
+/// THE TWO CONTEXT-EVENT WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// A MAPPING IS NOT A FORMAT. `command_to_sdk_proto` compiling proves only that a mapping exists;
+/// `encode_wal_proto_frame` is what chooses the arm, so the mapping can be there while the frame
+/// still reaches for `serde_json`. Both cases go through the real frame and are checked three ways:
+/// the frame DECLARES protobuf, the payload does NOT parse as JSON, and the command comes back
+/// field for field.
+///
+/// FIVE CLAUSES, and the last two are the ones a round trip alone cannot give:
+///
+///   1. both names have LEFT `COMMANDS_STILL_ENCODED_AS_JSON`, in this same change, because that
+///      roster only shrinks and covering a command means deleting its name;
+///   2. the frame declares protobuf and the payload is not JSON;
+///   3. the command round-trips field for field, through the path replay uses;
+///   4. the TAGGING of the durable JSON record is pinned -- one FLAT object with a `kind`
+///      discriminator beside the variant's own fields -- so the old-format reader is driven on the
+///      shape it will actually meet on disk rather than on a guess;
+///   5. that JSON form DROPS seven of the event's fifteen fields and this record does not, which
+///      makes the port strictly more faithful rather than merely different. Asserted by showing a
+///      JSON round trip returns something UNEQUAL to the command while the proto one does not.
+#[test]
+fn the_covered_context_event_writes_are_framed_as_protobuf_and_round_trip() {
+    let indexes = a_fully_populated_index_block();
+    assert_eq!(
+        indexes.disabled_indexes.len(),
+        5,
+        "the fixture must disable ALL FIVE internal indexes; a converter that collapsed them onto \
+         one variant or dropped the list passes on a shorter one"
+    );
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ContextWriteEvent",
+            Command::ContextWriteEvent {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1011,
+                node_hash: 0x1112_1314_1516_1718,
+                event: Box::new(a_fully_populated_context_event()),
+                // Set OPPOSITELY on the two cases. Two bools that are always equal cannot tell a
+                // converter that crossed them from one that did not.
+                first_write_only: true,
+                cold_storage: false,
+            },
+        ),
+        (
+            "ContextWriteExtractedEvent",
+            Command::ContextWriteExtractedEvent {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1011,
+                node_hash: 0x1112_1314_1516_1718,
+                event: Box::new(a_fully_populated_context_event()),
+                indexes: indexes.clone(),
+                first_write_only: false,
+                cold_storage: true,
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: two is the number this batch covered, and a shorter list would make every
+    // assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 2, "this batch covers the two context-event writes");
+
+    // ---- CLAUSE 1: THE ROSTER SHRANK IN THIS SAME CHANGE ----
+    for (name, _) in &cases {
+        assert!(
+            !COMMANDS_STILL_ENCODED_AS_JSON.contains(name),
+            "{name} is framed as protobuf below and is still on COMMANDS_STILL_ENCODED_AS_JSON. \
+             That roster only shrinks, and a covered command whose name is still on it reads as \
+             work outstanding"
+        );
+    }
+
+    for (name, command) in &cases {
+        // Every one of them must be a WRITE, or it would never reach this log at all and the test
+        // would be asserting something about an unreachable path.
+        assert!(
+            crate::engine::is_write_command(command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // ---- CLAUSE 2: THE FRAME DECLARES PROTOBUF, AND THE BYTES AGREE ----
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        // The declared id is written by the same code that chose the arm, so it cannot be the only
+        // witness: the payload itself must not be JSON.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // ---- CLAUSE 3: AND THE WHOLE ENTRY COMES BACK, THROUGH THE PATH REPLAY USES ----
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(command),
+            "{name} did not survive the round trip"
+        );
+    }
+
+    // ---- CLAUSE 4: THE DURABLE JSON RECORD'S TAGGING, PINNED ----
+    //
+    // `Command` is `#[serde(tag = "kind", rename_all = "snake_case")]`, so a record an older build
+    // wrote is ONE FLAT OBJECT with a discriminator beside the variant's own fields. It is not
+    // `{"ContextWriteEvent": {..}}`, and a reader test built on that shape fails for reasons that
+    // have nothing to do with the format.
+    let (_, command) = &cases[0];
+    let json = serde_json::to_value(command).expect("the command must serialize");
+    let object = json
+        .as_object()
+        .expect("a durable record is ONE flat object, not a map from variant name to body");
+    assert_eq!(
+        object.get("kind").and_then(|kind| kind.as_str()),
+        Some("context_write_event"),
+        "the durable record's discriminator is not `kind: context_write_event`: {json}"
+    );
+    for sibling in ["tenant_hash", "node_hash", "event", "first_write_only", "cold_storage"] {
+        assert!(
+            object.contains_key(sibling),
+            "`{sibling}` is not a SIBLING of the `kind` discriminator, so the record is not \
+             internally tagged after all: {json}"
+        );
+    }
+    assert!(
+        !object.contains_key("ContextWriteEvent"),
+        "the record is externally tagged, which this enum is not: {json}"
+    );
+    // And an older build's record still decodes, because the frame declares its encoding and the
+    // JSON arm is the reader for every record written before this change.
+    let through_json: Command = serde_json::from_value(json.clone()).unwrap_or_else(|err| {
+        panic!("a record written by an older build must still decode through the JSON arm: {err}")
+    });
+
+    // ---- CLAUSE 5: THE JSON FORM DROPS SEVEN FIELDS, AND THIS RECORD DOES NOT ----
+    let fixture = a_fully_populated_context_event();
+    #[allow(deprecated)]
+    let every_dropped_field_is_set = fixture.kind != 0
+        && fixture.actor_hash != 0
+        && fixture.status != 0
+        && fixture.valid_until_ms != 0
+        && !fixture.source_ref.is_empty()
+        && !fixture.related_node_hashes.is_empty()
+        && !fixture.compact_attrs.is_empty();
+    assert!(
+        every_dropped_field_is_set,
+        "the fixture leaves one of the seven `skip_serializing` fields at its default, so the \
+         clause below would hold whether or not the JSON form dropped it"
+    );
+    let event_json = object
+        .get("event")
+        .and_then(|event| event.as_object())
+        .expect("the event must serialize as an object");
+    for dropped in [
+        "kind",
+        "actor_hash",
+        "status",
+        "valid_until_ms",
+        "source_ref",
+        "related_node_hashes",
+        "compact_attrs",
+    ] {
+        assert!(
+            !event_json.contains_key(dropped),
+            "`{dropped}` is `skip_serializing` on `ContextEvent` and the JSON form emitted it \
+             anyway. The premise of this clause has moved, so re-read it rather than deleting it"
+        );
+    }
+    assert_ne!(
+        &through_json, command,
+        "a JSON round trip returned the command UNCHANGED, so the seven `skip_serializing` fields \
+         survived it. Either the JSON form started writing them or the fixture stopped setting \
+         them -- and until one of those is true, this record carrying all fifteen is strictly more \
+         faithful than the bytes it replaces rather than merely different"
+    );
+}
+
+/// AN ABSENT EVENT RECORD IS REFUSED BY NAME; AN ABSENT INDEX BLOCK IS DEFAULTED; AND AN UNKNOWN
+/// INDEX NUMBER IS REFUSED.
+///
+/// # WHY THE TWO NESTED FIELDS ARE TREATED DIFFERENTLY
+///
+/// A proto message field is ALWAYS optional on the wire, so every nested record arrives as an
+/// `Option` and the decode has to choose. The choice is read off the RUST DECLARATION rather than
+/// made here:
+///
+///   * `event` has no `#[serde(default)]` and no default -- the JSON form accepts no absence of it
+///     -- so an absent one is refused. Defaulting it would file an event of all zeros, and a
+///     fabricated zero on disk cannot be told from a real one afterwards.
+///   * `indexes` is `#[serde(default)] indexes: ContextExtractedEventIndexes`, a plain field over a
+///     type with a `Default`, so the JSON reader this replaces ALREADY takes an absent block as the
+///     empty default. Refusing it here would reject records the old reader accepted.
+///
+/// # EVERY REFUSAL IS PAIRED WITH A CONTROL
+///
+/// A decode that refused everything would satisfy the refusal arms on its own, so each one sits
+/// beside a PRESENT record that must still decode. The index arms are the sharpest case: a
+/// repeated proto enum is open and arrives as `i32`, so the zero (`UNSPECIFIED`, which exists only
+/// because proto3 demands a zero value and is not one of the five) and an unmapped number are both
+/// refused, while all five real numbers must come back as all five variants.
+#[test]
+fn a_context_event_write_refuses_an_absent_record_and_defaults_an_absent_index_block() {
+    use crate::sdk::{sdk_command_to_types, v1};
+
+    let record = || sdk::context_event_record_to_proto(&a_fully_populated_context_event());
+    let wrap = |kind: v1::command::Kind| v1::Command { kind: Some(kind) };
+
+    // ---- REFUSED: an absent event record, on both commands. ----
+    for (name, kind) in [
+        (
+            "ContextWriteEvent",
+            v1::command::Kind::ContextWriteEvent(v1::ContextWriteEvent {
+                tenant_hash: 1,
+                node_hash: 2,
+                event: None,
+                first_write_only: false,
+                cold_storage: false,
+            }),
+        ),
+        (
+            "ContextWriteExtractedEvent",
+            v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+                tenant_hash: 1,
+                node_hash: 2,
+                event: None,
+                indexes: Some(sdk::context_extracted_event_indexes_to_proto(
+                    &a_fully_populated_index_block(),
+                )),
+                first_write_only: false,
+                cold_storage: false,
+            }),
+        ),
+    ] {
+        let refused = sdk_command_to_types(wrap(kind));
+        let error = refused.expect_err(&format!(
+            "{name} with no event record decoded, so an all-zero event was filed as if real"
+        ));
+        assert!(
+            error.message().contains("context event record missing"),
+            "{name}'s refusal does not name what was missing: {error}"
+        );
+    }
+
+    // ---- CONTROL: a PRESENT event record decodes, so the refusals above are not "refuse all". ----
+    let decoded = sdk_command_to_types(wrap(v1::command::Kind::ContextWriteEvent(
+        v1::ContextWriteEvent {
+            tenant_hash: 3,
+            node_hash: 4,
+            event: Some(record()),
+            first_write_only: true,
+            cold_storage: false,
+        },
+    )))
+    .expect("a present event record must decode");
+    assert_eq!(
+        decoded,
+        Command::ContextWriteEvent {
+            tenant_hash: 3,
+            node_hash: 4,
+            event: Box::new(a_fully_populated_context_event()),
+            first_write_only: true,
+            cold_storage: false,
+        },
+        "the control decoded to something other than the command it was built from"
+    );
+
+    // ---- DEFAULTED: an absent index block, which is what the JSON reader already does. ----
+    let defaulted = sdk_command_to_types(wrap(
+        v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+            tenant_hash: 5,
+            node_hash: 6,
+            event: Some(record()),
+            indexes: None,
+            first_write_only: false,
+            cold_storage: true,
+        }),
+    ))
+    .expect("an absent index block is the documented empty default, not a refusal");
+    assert_eq!(
+        defaulted,
+        Command::ContextWriteExtractedEvent {
+            tenant_hash: 5,
+            node_hash: 6,
+            event: Box::new(a_fully_populated_context_event()),
+            indexes: crate::types::ContextExtractedEventIndexes::default(),
+            first_write_only: false,
+            cold_storage: true,
+        },
+        "an absent index block decoded to something other than the empty default"
+    );
+
+    // ---- CONTROL: a PRESENT index block keeps its contents, all five indexes included. ----
+    let full = a_fully_populated_index_block();
+    let kept = sdk_command_to_types(wrap(v1::command::Kind::ContextWriteExtractedEvent(
+        v1::ContextWriteExtractedEvent {
+            tenant_hash: 7,
+            node_hash: 8,
+            event: Some(record()),
+            indexes: Some(sdk::context_extracted_event_indexes_to_proto(&full)),
+            first_write_only: true,
+            cold_storage: true,
+        },
+    )))
+    .expect("a present index block must decode");
+    match kept {
+        Command::ContextWriteExtractedEvent { indexes, .. } => {
+            assert_eq!(
+                indexes, full,
+                "a present index block did not come back field for field"
+            );
+            assert_eq!(
+                indexes.disabled_indexes.len(),
+                5,
+                "the five disabled indexes did not all survive: {:?}",
+                indexes.disabled_indexes
+            );
+        }
+        other => panic!("decoded to the wrong variant: {other:?}"),
+    }
+
+    // ---- REFUSED: the proto3 zero, and a number nothing maps. ----
+    for (what, raw) in [
+        (
+            "the proto3 zero, INTERNAL_CONTEXT_INDEX_UNSPECIFIED, which is not one of the five",
+            0i32,
+        ),
+        ("a number no variant maps", 99i32),
+        ("a negative number", -1i32),
+    ] {
+        let refused = sdk_command_to_types(wrap(
+            v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+                tenant_hash: 9,
+                node_hash: 10,
+                event: Some(record()),
+                indexes: Some(v1::ContextExtractedEventIndexesRecord {
+                    scope_hash: 1,
+                    entity_hashes: Vec::new(),
+                    status_hash: 0,
+                    source_hash: 0,
+                    event_time_bucket_ms: 0,
+                    disabled_indexes: vec![raw],
+                }),
+                first_write_only: false,
+                cold_storage: false,
+            }),
+        ));
+        let error = refused.expect_err(&format!(
+            "a disabled-index list carrying {what} decoded. Defaulting it onto the first variant \
+             switches off whichever index happens to sort first rather than the one asked for"
+        ));
+        assert!(
+            error.message().contains("unknown internal context index"),
+            "the refusal of {what} does not say what it refused: {error}"
+        );
+    }
+
+    // ---- CONTROL: the five real numbers come back as the five variants, in order. ----
+    let five = sdk_command_to_types(wrap(v1::command::Kind::ContextWriteExtractedEvent(
+        v1::ContextWriteExtractedEvent {
+            tenant_hash: 11,
+            node_hash: 12,
+            event: Some(record()),
+            indexes: Some(v1::ContextExtractedEventIndexesRecord {
+                scope_hash: 0,
+                entity_hashes: Vec::new(),
+                status_hash: 0,
+                source_hash: 0,
+                event_time_bucket_ms: 0,
+                disabled_indexes: vec![1, 2, 3, 4, 5],
+            }),
+            first_write_only: false,
+            cold_storage: false,
+        },
+    )))
+    .expect("the five mapped numbers must decode");
+    match five {
+        Command::ContextWriteExtractedEvent { indexes, .. } => assert_eq!(
+            indexes.disabled_indexes,
+            a_fully_populated_index_block().disabled_indexes,
+            "the wire numbers 1..=5 did not decode to the five variants in order, so a wrong \
+             number here disables a different index than the one that was asked for"
+        ),
+        other => panic!("decoded to the wrong variant: {other:?}"),
     }
 }
 

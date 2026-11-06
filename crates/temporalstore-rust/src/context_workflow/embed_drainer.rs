@@ -584,6 +584,7 @@ mod tests {
             let inline = inline_vector(&engine, tenant, node);
             assert!(!inline.is_empty(), "node {node} has no vector of its own");
         }
+        assert!(engine.context_embedding_index_len() >= nodes.len());
         assert_eq!(count_pending(&engine), 0);
 
         // A second pass is a no-op (empty pending set) -> O(pending) drains to zero.

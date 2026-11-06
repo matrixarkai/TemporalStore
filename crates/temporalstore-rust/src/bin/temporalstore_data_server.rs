@@ -40,7 +40,8 @@ use temporalstore_rust::raft::{
     RaftSnapshotPublishReport, RaftSnapshotTriggerReport, ReadIndexResponse,
 };
 use temporalstore_rust::types::{
-    BatchExecuteRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
+    BatchExecuteRequest, BatchHashMultiGetRequest, BatchHashMultiSetRequest,
+    BatchHashTimestampSetRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
     ReplicatedExecuteRequest, ShardId, Status,
 };
 use temporalstore_rust::{
@@ -1029,6 +1030,94 @@ fn main() {
             ("POST", "/batch_execute_msgpack") => {
                 match parse_msgpack::<BatchExecuteRequest>(&request.body) {
                     Ok(req) => msgpack_response(200, &runtime.batch_execute(req)),
+                    Err(err) => json_response(
+                        400,
+                        &Status::error("bad_request", err.to_string()),
+                    ),
+                }
+            }
+            ("POST", "/batch_hash_multi_get_msgpack") => {
+                match parse_msgpack::<BatchHashMultiGetRequest>(&request.body) {
+                    Ok(req)
+                        if req.keys.len() <= 4096
+                            && req.fields.len() <= 4096
+                            && req.keys.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
+                    {
+                        msgpack_response(200, &runtime.batch_hash_multi_get(req))
+                    }
+                    Ok(_) => json_response(
+                        400,
+                        &Status::error(
+                            "batch_too_large",
+                            "shared-field hash batch exceeds the expansion limit",
+                        ),
+                    ),
+                    Err(err) => json_response(
+                        400,
+                        &Status::error("bad_request", err.to_string()),
+                    ),
+                }
+            }
+            ("POST", "/batch_hash_multi_get_compact_msgpack") => {
+                match parse_msgpack::<BatchHashMultiGetRequest>(&request.body) {
+                    Ok(req)
+                        if req.keys.len() <= 4096
+                            && req.fields.len() <= 4096
+                            && req.keys.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
+                    {
+                        msgpack_response(200, &runtime.batch_hash_multi_get_compact(req))
+                    }
+                    Ok(_) => json_response(
+                        400,
+                        &Status::error(
+                            "batch_too_large",
+                            "shared-field hash batch exceeds the expansion limit",
+                        ),
+                    ),
+                    Err(err) => json_response(
+                        400,
+                        &Status::error("bad_request", err.to_string()),
+                    ),
+                }
+            }
+            ("POST", "/batch_hash_multi_set_msgpack") => {
+                match parse_msgpack::<BatchHashMultiSetRequest>(&request.body) {
+                    Ok(req)
+                        if req.rows.len() <= 4096
+                            && req.fields.len() <= 4096
+                            && req.rows.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
+                    {
+                        msgpack_response(200, &runtime.batch_hash_multi_set(req))
+                    }
+                    Ok(_) => json_response(
+                        400,
+                        &Status::error(
+                            "batch_too_large",
+                            "shared-field hash write exceeds the expansion limit",
+                        ),
+                    ),
+                    Err(err) => json_response(
+                        400,
+                        &Status::error("bad_request", err.to_string()),
+                    ),
+                }
+            }
+            ("POST", "/batch_hash_timestamp_set_msgpack") => {
+                match parse_msgpack::<BatchHashTimestampSetRequest>(&request.body) {
+                    Ok(req)
+                        if req.rows.len() <= 4096
+                            && req.fields.len() <= 4096
+                            && req.rows.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
+                    {
+                        msgpack_response(200, &runtime.batch_hash_timestamp_set(req))
+                    }
+                    Ok(_) => json_response(
+                        400,
+                        &Status::error(
+                            "batch_too_large",
+                            "conditional hash write exceeds the expansion limit",
+                        ),
+                    ),
                     Err(err) => json_response(
                         400,
                         &Status::error("bad_request", err.to_string()),
