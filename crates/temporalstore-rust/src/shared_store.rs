@@ -4581,6 +4581,37 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             vector: vector.clone(),
             updated_at_ms: *updated_at_ms,
         }),
+        Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            first_write_only,
+            cold_storage,
+        } => v1::command::Kind::ContextWriteEvent(v1::ContextWriteEvent {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            event: Some(sdk::context_event_record_to_proto(event)),
+            first_write_only: *first_write_only,
+            cold_storage: *cold_storage,
+        }),
+        Command::ContextWriteExtractedEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            indexes,
+            first_write_only,
+            cold_storage,
+        } => v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            event: Some(sdk::context_event_record_to_proto(event)),
+            // ALWAYS `Some`, even for an empty block. The decode defaults an absent one, so a
+            // writer that sent `None` for an empty block would make "written by an older build"
+            // and "written with no indexes" the same bytes.
+            indexes: Some(sdk::context_extracted_event_indexes_to_proto(indexes)),
+            first_write_only: *first_write_only,
+            cold_storage: *cold_storage,
+        }),
         _ => return None,
     };
     Some(v1::Command { kind: Some(kind) })
@@ -12099,8 +12130,6 @@ const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
     "ContextUpsertEntity",
     "ContextUpsertSummary",
     "ContextWriteCompressionEvent",
-    "ContextWriteEvent",
-    "ContextWriteExtractedEvent",
     "ContextWritePackAudit",
 ];
 
@@ -12168,6 +12197,454 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
             Some(&command),
             "{name} did not survive the round trip"
         );
+    }
+}
+
+/// A `ContextEvent` with every one of its fifteen fields set, and set DISTINCTLY.
+///
+/// A converter that crossed two fields of the same type, or dropped one, passes on a fixture whose
+/// fields are mostly zero. The seven `skip_serializing` fields are deliberately non-default here,
+/// because the clause that says this record is more faithful than the JSON it replaces is vacuous
+/// if the JSON had nothing to lose.
+///
+/// `confidence` and `importance` are quarters, which are exact in `f32`, so the equality below is
+/// an equality and not a tolerance.
+#[allow(deprecated)]
+fn a_fully_populated_context_event() -> crate::types::ContextEvent {
+    crate::types::ContextEvent {
+        event_id_hash: 0x0102_0304_0506_0708,
+        event_time_ms: 1_700_000_000_001,
+        ingestion_time_ms: 1_700_000_000_002,
+        kind: 11,
+        event_type: 22,
+        actor_hash: 0x1111_2222_3333_4444,
+        status: 33,
+        valid_until_ms: 1_700_000_000_003,
+        confidence: 0.25,
+        importance: 0.75,
+        text: "the fifteenth field is the vector".to_string(),
+        source_ref: "source://ref/1".to_string(),
+        related_node_hashes: vec![7, 8, 9],
+        compact_attrs: vec![0xA7, 0xB3, 0x00, 0xFF],
+        // NOT quantised, and no model hash: `ContextEvent` has never carried one.
+        vector: vec![-1.5, 0.0, 0.5, 1.0],
+    }
+}
+
+/// A full index block, with ALL FIVE internal indexes disabled.
+fn a_fully_populated_index_block() -> crate::types::ContextExtractedEventIndexes {
+    use crate::types::InternalContextIndex;
+    crate::types::ContextExtractedEventIndexes {
+        scope_hash: 0x5555_6666_7777_8888,
+        entity_hashes: vec![101, 102],
+        status_hash: 0x9999_AAAA_BBBB_CCCC,
+        source_hash: 0xDDDD_EEEE_FFFF_0001,
+        event_time_bucket_ms: 1_700_000_000_000,
+        disabled_indexes: vec![
+            InternalContextIndex::EventKind,
+            InternalContextIndex::Entity,
+            InternalContextIndex::Status,
+            InternalContextIndex::Source,
+            InternalContextIndex::EventTimeBucket,
+        ],
+    }
+}
+
+/// THE TWO CONTEXT-EVENT WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// A MAPPING IS NOT A FORMAT. `command_to_sdk_proto` compiling proves only that a mapping exists;
+/// `encode_wal_proto_frame` is what chooses the arm, so the mapping can be there while the frame
+/// still reaches for `serde_json`. Both cases go through the real frame and are checked three ways:
+/// the frame DECLARES protobuf, the payload does NOT parse as JSON, and the command comes back
+/// field for field.
+///
+/// FIVE CLAUSES, and the last two are the ones a round trip alone cannot give:
+///
+///   1. both names have LEFT `COMMANDS_STILL_ENCODED_AS_JSON`, in this same change, because that
+///      roster only shrinks and covering a command means deleting its name;
+///   2. the frame declares protobuf and the payload is not JSON;
+///   3. the command round-trips field for field, through the path replay uses;
+///   4. the TAGGING of the durable JSON record is pinned -- one FLAT object with a `kind`
+///      discriminator beside the variant's own fields -- so the old-format reader is driven on the
+///      shape it will actually meet on disk rather than on a guess;
+///   5. that JSON form DROPS seven of the event's fifteen fields and this record does not, which
+///      makes the port strictly more faithful rather than merely different. Asserted by showing a
+///      JSON round trip returns something UNEQUAL to the command while the proto one does not.
+#[test]
+fn the_covered_context_event_writes_are_framed_as_protobuf_and_round_trip() {
+    let indexes = a_fully_populated_index_block();
+    assert_eq!(
+        indexes.disabled_indexes.len(),
+        5,
+        "the fixture must disable ALL FIVE internal indexes; a converter that collapsed them onto \
+         one variant or dropped the list passes on a shorter one"
+    );
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ContextWriteEvent",
+            Command::ContextWriteEvent {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1011,
+                node_hash: 0x1112_1314_1516_1718,
+                event: Box::new(a_fully_populated_context_event()),
+                // Set OPPOSITELY on the two cases. Two bools that are always equal cannot tell a
+                // converter that crossed them from one that did not.
+                first_write_only: true,
+                cold_storage: false,
+            },
+        ),
+        (
+            "ContextWriteExtractedEvent",
+            Command::ContextWriteExtractedEvent {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1011,
+                node_hash: 0x1112_1314_1516_1718,
+                event: Box::new(a_fully_populated_context_event()),
+                indexes: indexes.clone(),
+                first_write_only: false,
+                cold_storage: true,
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: two is the number this batch covered, and a shorter list would make every
+    // assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 2, "this batch covers the two context-event writes");
+
+    // ---- CLAUSE 1: THE ROSTER SHRANK IN THIS SAME CHANGE ----
+    for (name, _) in &cases {
+        assert!(
+            !COMMANDS_STILL_ENCODED_AS_JSON.contains(name),
+            "{name} is framed as protobuf below and is still on COMMANDS_STILL_ENCODED_AS_JSON. \
+             That roster only shrinks, and a covered command whose name is still on it reads as \
+             work outstanding"
+        );
+    }
+
+    for (name, command) in &cases {
+        // Every one of them must be a WRITE, or it would never reach this log at all and the test
+        // would be asserting something about an unreachable path.
+        assert!(
+            crate::engine::is_write_command(command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // ---- CLAUSE 2: THE FRAME DECLARES PROTOBUF, AND THE BYTES AGREE ----
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        // The declared id is written by the same code that chose the arm, so it cannot be the only
+        // witness: the payload itself must not be JSON.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // ---- CLAUSE 3: AND THE WHOLE ENTRY COMES BACK, THROUGH THE PATH REPLAY USES ----
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(command),
+            "{name} did not survive the round trip"
+        );
+    }
+
+    // ---- CLAUSE 4: THE DURABLE JSON RECORD'S TAGGING, PINNED ----
+    //
+    // `Command` is `#[serde(tag = "kind", rename_all = "snake_case")]`, so a record an older build
+    // wrote is ONE FLAT OBJECT with a discriminator beside the variant's own fields. It is not
+    // `{"ContextWriteEvent": {..}}`, and a reader test built on that shape fails for reasons that
+    // have nothing to do with the format.
+    let (_, command) = &cases[0];
+    let json = serde_json::to_value(command).expect("the command must serialize");
+    let object = json
+        .as_object()
+        .expect("a durable record is ONE flat object, not a map from variant name to body");
+    assert_eq!(
+        object.get("kind").and_then(|kind| kind.as_str()),
+        Some("context_write_event"),
+        "the durable record's discriminator is not `kind: context_write_event`: {json}"
+    );
+    for sibling in ["tenant_hash", "node_hash", "event", "first_write_only", "cold_storage"] {
+        assert!(
+            object.contains_key(sibling),
+            "`{sibling}` is not a SIBLING of the `kind` discriminator, so the record is not \
+             internally tagged after all: {json}"
+        );
+    }
+    assert!(
+        !object.contains_key("ContextWriteEvent"),
+        "the record is externally tagged, which this enum is not: {json}"
+    );
+    // And an older build's record still decodes, because the frame declares its encoding and the
+    // JSON arm is the reader for every record written before this change.
+    let through_json: Command = serde_json::from_value(json.clone()).unwrap_or_else(|err| {
+        panic!("a record written by an older build must still decode through the JSON arm: {err}")
+    });
+
+    // ---- CLAUSE 5: THE JSON FORM DROPS SEVEN FIELDS, AND THIS RECORD DOES NOT ----
+    let fixture = a_fully_populated_context_event();
+    #[allow(deprecated)]
+    let every_dropped_field_is_set = fixture.kind != 0
+        && fixture.actor_hash != 0
+        && fixture.status != 0
+        && fixture.valid_until_ms != 0
+        && !fixture.source_ref.is_empty()
+        && !fixture.related_node_hashes.is_empty()
+        && !fixture.compact_attrs.is_empty();
+    assert!(
+        every_dropped_field_is_set,
+        "the fixture leaves one of the seven `skip_serializing` fields at its default, so the \
+         clause below would hold whether or not the JSON form dropped it"
+    );
+    let event_json = object
+        .get("event")
+        .and_then(|event| event.as_object())
+        .expect("the event must serialize as an object");
+    for dropped in [
+        "kind",
+        "actor_hash",
+        "status",
+        "valid_until_ms",
+        "source_ref",
+        "related_node_hashes",
+        "compact_attrs",
+    ] {
+        assert!(
+            !event_json.contains_key(dropped),
+            "`{dropped}` is `skip_serializing` on `ContextEvent` and the JSON form emitted it \
+             anyway. The premise of this clause has moved, so re-read it rather than deleting it"
+        );
+    }
+    assert_ne!(
+        &through_json, command,
+        "a JSON round trip returned the command UNCHANGED, so the seven `skip_serializing` fields \
+         survived it. Either the JSON form started writing them or the fixture stopped setting \
+         them -- and until one of those is true, this record carrying all fifteen is strictly more \
+         faithful than the bytes it replaces rather than merely different"
+    );
+}
+
+/// AN ABSENT EVENT RECORD IS REFUSED BY NAME; AN ABSENT INDEX BLOCK IS DEFAULTED; AND AN UNKNOWN
+/// INDEX NUMBER IS REFUSED.
+///
+/// # WHY THE TWO NESTED FIELDS ARE TREATED DIFFERENTLY
+///
+/// A proto message field is ALWAYS optional on the wire, so every nested record arrives as an
+/// `Option` and the decode has to choose. The choice is read off the RUST DECLARATION rather than
+/// made here:
+///
+///   * `event` has no `#[serde(default)]` and no default -- the JSON form accepts no absence of it
+///     -- so an absent one is refused. Defaulting it would file an event of all zeros, and a
+///     fabricated zero on disk cannot be told from a real one afterwards.
+///   * `indexes` is `#[serde(default)] indexes: ContextExtractedEventIndexes`, a plain field over a
+///     type with a `Default`, so the JSON reader this replaces ALREADY takes an absent block as the
+///     empty default. Refusing it here would reject records the old reader accepted.
+///
+/// # EVERY REFUSAL IS PAIRED WITH A CONTROL
+///
+/// A decode that refused everything would satisfy the refusal arms on its own, so each one sits
+/// beside a PRESENT record that must still decode. The index arms are the sharpest case: a
+/// repeated proto enum is open and arrives as `i32`, so the zero (`UNSPECIFIED`, which exists only
+/// because proto3 demands a zero value and is not one of the five) and an unmapped number are both
+/// refused, while all five real numbers must come back as all five variants.
+#[test]
+fn a_context_event_write_refuses_an_absent_record_and_defaults_an_absent_index_block() {
+    use crate::sdk::{sdk_command_to_types, v1};
+
+    let record = || sdk::context_event_record_to_proto(&a_fully_populated_context_event());
+    let wrap = |kind: v1::command::Kind| v1::Command { kind: Some(kind) };
+
+    // ---- REFUSED: an absent event record, on both commands. ----
+    for (name, kind) in [
+        (
+            "ContextWriteEvent",
+            v1::command::Kind::ContextWriteEvent(v1::ContextWriteEvent {
+                tenant_hash: 1,
+                node_hash: 2,
+                event: None,
+                first_write_only: false,
+                cold_storage: false,
+            }),
+        ),
+        (
+            "ContextWriteExtractedEvent",
+            v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+                tenant_hash: 1,
+                node_hash: 2,
+                event: None,
+                indexes: Some(sdk::context_extracted_event_indexes_to_proto(
+                    &a_fully_populated_index_block(),
+                )),
+                first_write_only: false,
+                cold_storage: false,
+            }),
+        ),
+    ] {
+        let refused = sdk_command_to_types(wrap(kind));
+        let error = refused.expect_err(&format!(
+            "{name} with no event record decoded, so an all-zero event was filed as if real"
+        ));
+        assert!(
+            error.message().contains("context event record missing"),
+            "{name}'s refusal does not name what was missing: {error}"
+        );
+    }
+
+    // ---- CONTROL: a PRESENT event record decodes, so the refusals above are not "refuse all". ----
+    let decoded = sdk_command_to_types(wrap(v1::command::Kind::ContextWriteEvent(
+        v1::ContextWriteEvent {
+            tenant_hash: 3,
+            node_hash: 4,
+            event: Some(record()),
+            first_write_only: true,
+            cold_storage: false,
+        },
+    )))
+    .expect("a present event record must decode");
+    assert_eq!(
+        decoded,
+        Command::ContextWriteEvent {
+            tenant_hash: 3,
+            node_hash: 4,
+            event: Box::new(a_fully_populated_context_event()),
+            first_write_only: true,
+            cold_storage: false,
+        },
+        "the control decoded to something other than the command it was built from"
+    );
+
+    // ---- DEFAULTED: an absent index block, which is what the JSON reader already does. ----
+    let defaulted = sdk_command_to_types(wrap(
+        v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+            tenant_hash: 5,
+            node_hash: 6,
+            event: Some(record()),
+            indexes: None,
+            first_write_only: false,
+            cold_storage: true,
+        }),
+    ))
+    .expect("an absent index block is the documented empty default, not a refusal");
+    assert_eq!(
+        defaulted,
+        Command::ContextWriteExtractedEvent {
+            tenant_hash: 5,
+            node_hash: 6,
+            event: Box::new(a_fully_populated_context_event()),
+            indexes: crate::types::ContextExtractedEventIndexes::default(),
+            first_write_only: false,
+            cold_storage: true,
+        },
+        "an absent index block decoded to something other than the empty default"
+    );
+
+    // ---- CONTROL: a PRESENT index block keeps its contents, all five indexes included. ----
+    let full = a_fully_populated_index_block();
+    let kept = sdk_command_to_types(wrap(v1::command::Kind::ContextWriteExtractedEvent(
+        v1::ContextWriteExtractedEvent {
+            tenant_hash: 7,
+            node_hash: 8,
+            event: Some(record()),
+            indexes: Some(sdk::context_extracted_event_indexes_to_proto(&full)),
+            first_write_only: true,
+            cold_storage: true,
+        },
+    )))
+    .expect("a present index block must decode");
+    match kept {
+        Command::ContextWriteExtractedEvent { indexes, .. } => {
+            assert_eq!(
+                indexes, full,
+                "a present index block did not come back field for field"
+            );
+            assert_eq!(
+                indexes.disabled_indexes.len(),
+                5,
+                "the five disabled indexes did not all survive: {:?}",
+                indexes.disabled_indexes
+            );
+        }
+        other => panic!("decoded to the wrong variant: {other:?}"),
+    }
+
+    // ---- REFUSED: the proto3 zero, and a number nothing maps. ----
+    for (what, raw) in [
+        (
+            "the proto3 zero, INTERNAL_CONTEXT_INDEX_UNSPECIFIED, which is not one of the five",
+            0i32,
+        ),
+        ("a number no variant maps", 99i32),
+        ("a negative number", -1i32),
+    ] {
+        let refused = sdk_command_to_types(wrap(
+            v1::command::Kind::ContextWriteExtractedEvent(v1::ContextWriteExtractedEvent {
+                tenant_hash: 9,
+                node_hash: 10,
+                event: Some(record()),
+                indexes: Some(v1::ContextExtractedEventIndexesRecord {
+                    scope_hash: 1,
+                    entity_hashes: Vec::new(),
+                    status_hash: 0,
+                    source_hash: 0,
+                    event_time_bucket_ms: 0,
+                    disabled_indexes: vec![raw],
+                }),
+                first_write_only: false,
+                cold_storage: false,
+            }),
+        ));
+        let error = refused.expect_err(&format!(
+            "a disabled-index list carrying {what} decoded. Defaulting it onto the first variant \
+             switches off whichever index happens to sort first rather than the one asked for"
+        ));
+        assert!(
+            error.message().contains("unknown internal context index"),
+            "the refusal of {what} does not say what it refused: {error}"
+        );
+    }
+
+    // ---- CONTROL: the five real numbers come back as the five variants, in order. ----
+    let five = sdk_command_to_types(wrap(v1::command::Kind::ContextWriteExtractedEvent(
+        v1::ContextWriteExtractedEvent {
+            tenant_hash: 11,
+            node_hash: 12,
+            event: Some(record()),
+            indexes: Some(v1::ContextExtractedEventIndexesRecord {
+                scope_hash: 0,
+                entity_hashes: Vec::new(),
+                status_hash: 0,
+                source_hash: 0,
+                event_time_bucket_ms: 0,
+                disabled_indexes: vec![1, 2, 3, 4, 5],
+            }),
+            first_write_only: false,
+            cold_storage: false,
+        },
+    )))
+    .expect("the five mapped numbers must decode");
+    match five {
+        Command::ContextWriteExtractedEvent { indexes, .. } => assert_eq!(
+            indexes.disabled_indexes,
+            a_fully_populated_index_block().disabled_indexes,
+            "the wire numbers 1..=5 did not decode to the five variants in order, so a wrong \
+             number here disables a different index than the one that was asked for"
+        ),
+        other => panic!("decoded to the wrong variant: {other:?}"),
     }
 }
 
