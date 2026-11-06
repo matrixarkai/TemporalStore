@@ -2259,8 +2259,9 @@ pub fn retrieve_context(
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
     // bulk-loaded (un-embedded) store collapsed to recency order and lost focused
-    // recall. Instead, load those un-embedded candidates and score them by
-    // query/text lexical overlap, normalized into the same micros scale as cosine.
+    // recall. Instead, score those un-embedded candidates from the node records already retained
+    // by the vector pass, using query/text lexical overlap normalized into the same micros scale
+    // as cosine.
     // Embedded nodes keep their cosine score untouched, so when every node is
     // embedded this pass does nothing and behavior is identical to before.
     let mut lexical_scores_by_node = BTreeMap::<u64, i64>::new();
@@ -2277,26 +2278,13 @@ pub fn retrieve_context(
                 .unwrap_or(true)
         })
         .collect();
-    if !unembedded.is_empty() {
-        for chunk in unembedded.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
-            if chunk.is_empty() {
-                continue;
-            }
-            let nodes_response = engine.execute(ExecuteRequest {
-                shard_id: request.shard_id,
-                command: Command::ContextGetNodes {
-                    tenant_hash: request.tenant_hash,
-                    node_hashes: chunk.to_vec(),
-                },
-            });
-            if let CommandResponse::ContextNodes { nodes } = nodes_response.response {
-                for node in nodes {
-                    let text = format!("{} {} {}", node.canonical_name, node.l0, node.l1_ref);
-                    let lexical = context_relevance_score_plan(&query_plan, &text);
-                    lexical_scores_by_node.insert(node.node_hash, lexical_score_to_micros(lexical));
-                    prefetched_nodes.insert(node.node_hash, node);
-                }
-            }
+    // Every candidate node was decoded above. Re-reading unembedded nodes here used to repeat
+    // the same storage command and vector allocations solely to access text already in this map.
+    for node_hash in unembedded {
+        if let Some(node) = prefetched_nodes.get(&node_hash) {
+            let text = format!("{} {} {}", node.canonical_name, node.l0, node.l1_ref);
+            let lexical = context_relevance_score_plan(&query_plan, &text);
+            lexical_scores_by_node.insert(node.node_hash, lexical_score_to_micros(lexical));
         }
     }
     let mut summary_scores = node_hashes
@@ -2340,52 +2328,33 @@ pub fn retrieve_context(
         .min(summary_node_limit.max(1))
         .min(query_aware_event_limit);
     let rerank_node_limit = summary_node_limit.min(summary_scores.len());
-    let rerank_node_hashes = summary_scores
-        .iter()
-        .take(rerank_node_limit)
-        .map(|(node_hash, _, _, _, _)| *node_hash)
-        .collect::<Vec<_>>();
-    let rerank_nodes = if rerank_node_hashes.is_empty() {
-        Vec::new()
-    } else {
-        let nodes_response = engine.execute(ExecuteRequest {
-            shard_id: request.shard_id,
-            command: Command::ContextGetNodes {
-                tenant_hash: request.tenant_hash,
-                node_hashes: rerank_node_hashes,
-            },
-        });
-        match nodes_response.response {
-            CommandResponse::ContextNodes { nodes } => nodes,
-            _ => Vec::new(),
-        }
-    };
-    for node in rerank_nodes {
-        let node_hash = node.node_hash;
-        if let Some(score) = summary_scores
-            .iter_mut()
-            .find(|(candidate_hash, _, _, _, _)| *candidate_hash == node_hash)
-        {
-            let summary_text = format!("{} {}", node.l0, node.l1_ref);
-            let summary_score = context_relevance_score_plan(&query_plan, &summary_text);
-            let freshness_ms = node.last_event_time_ms;
-            let agent_scope_boost = if request.prefer_current_agent
-                && context_record_scope_matches(
-                    &node.raw_metadata_ref,
-                    &request.current_agent_scope_key,
-                ) {
-                125_000i64
-            } else {
-                0i64
-            };
-            score.1 = score
-                .1
-                .saturating_add((summary_score as i64).saturating_mul(1_000))
-                .saturating_add(agent_scope_boost);
-            score.3 = summary_score;
-            score.4 = freshness_ms;
-        }
-        prefetched_nodes.insert(node_hash, node);
+    // Rerank the exact node versions whose vectors produced the first score. Besides avoiding a
+    // second decode, this keeps a concurrent update from mixing two node versions in one ranking.
+    // The candidates are already the sorted prefix, so mutate that prefix directly instead of
+    // allocating their hashes and searching the same vector once per candidate.
+    for (node_hash, score, _, summary_score_slot, freshness_slot) in
+        summary_scores.iter_mut().take(rerank_node_limit)
+    {
+        let Some(node) = prefetched_nodes.get(node_hash) else {
+            continue;
+        };
+        let summary_text = format!("{} {}", node.l0, node.l1_ref);
+        let summary_score = context_relevance_score_plan(&query_plan, &summary_text);
+        let freshness_ms = node.last_event_time_ms;
+        let agent_scope_boost = if request.prefer_current_agent
+            && context_record_scope_matches(
+                &node.raw_metadata_ref,
+                &request.current_agent_scope_key,
+            ) {
+            125_000i64
+        } else {
+            0i64
+        };
+        *score = score
+            .saturating_add((summary_score as i64).saturating_mul(1_000))
+            .saturating_add(agent_scope_boost);
+        *summary_score_slot = summary_score;
+        *freshness_slot = freshness_ms;
     }
     summary_scores.sort_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
         (
