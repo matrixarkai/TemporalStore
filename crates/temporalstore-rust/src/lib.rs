@@ -55,6 +55,7 @@ pub mod env_flag;
 pub mod http;
 pub mod index_log;
 pub mod ingestion;
+pub mod llm_context;
 pub(crate) mod log_framing;
 #[cfg(feature = "matrixobject")]
 pub mod matrixobject_store;
