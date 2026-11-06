@@ -844,6 +844,43 @@ class OnlineStoreTest(unittest.TestCase):
         # dict of empty values.
         self.assertEqual(results[1], (None, None))
 
+    def test_repeated_entity_reads_share_one_hash_command(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        event = Timestamp()
+        event.FromDatetime(self.datetime(2026, 3, 4, tzinfo=self.timezone.utc))
+        present = ok(
+            {
+                "kind": "values",
+                "values": [
+                    list(ValueProto(int64_val=42).SerializeToString()),
+                    list(event.SerializeToString()),
+                ],
+            }
+        )
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [present],
+                }
+            ]
+        )
+        entity_key = self._entity_key(1)
+        results = self.store.online_read(
+            self.config,
+            self.view,
+            [entity_key, self._entity_key(1), entity_key],
+            ["trips"],
+        )
+
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual([row[1]["trips"].int64_val for row in results], [42, 42, 42])
+        self.assertIsNot(results[0][1]["trips"], results[1][1]["trips"])
+
     def test_a_short_field_answer_does_not_shift_values_onto_other_features(self):
         # A node that answers with fewer slots than fields requested must not
         # silently align `trips` to the timestamp slot.
