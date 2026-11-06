@@ -231,6 +231,8 @@ jobs:
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
+            data_node::tests::evict_live::a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted \
+            data_node::tests::evict_live::the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_clock \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
             shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::the_node_and_embedding_writes_are_framed_as_protobuf_and_round_trip \
@@ -360,6 +362,15 @@ jobs:
             engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
             engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             engine::tests::the_consolidated_object_map::installing_a_control_state_block_keeps_the_rows_block_refs \
+            engine::container_blocks::member_component_tests::a_hex_component_still_decodes_to_the_member_it_always_did \
+            engine::container_blocks::member_component_tests::a_member_whose_text_is_valid_hex_is_not_confused_with_the_bytes_that_hex_spells \
+            engine::container_blocks::member_component_tests::the_new_spelling_round_trips_a_text_a_tag_leading_and_a_non_utf8_member \
+            engine::container_blocks::member_component_tests::the_new_spelling_charges_one_byte_a_member_byte_where_hex_charges_two \
+            engine::container_blocks::member_component_tests::the_two_new_spelling_bytes_are_four_and_five_and_round_trip \
+            engine::container_blocks::member_component_tests::the_new_variants_render_a_component_the_same_pair_parses_back \
+            engine::container_blocks::member_component_tests::every_kind_maps_to_the_spelling_its_writers_emit \
+            engine::container_blocks::member_component_tests::a_block_written_before_the_flip_is_found_by_a_component_in_either_spelling \
+            engine::container_blocks::member_component_tests::a_write_after_the_flip_frames_rather_than_falling_back_to_a_bare_value \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \

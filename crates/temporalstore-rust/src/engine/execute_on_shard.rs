@@ -1044,11 +1044,88 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
+            let object_id = stable_block_object_id(shard_id, "hash", &key);
+
+            // A large feature and its small scalar fields must stay readable as
+            // one object under cache pressure. One packed block gives every
+            // field the same readable address and pays for one storage append.
+            if contains_large_value {
+                let mut positions = std::collections::HashMap::<String, usize>::new();
+                let mut packed_entries = Vec::<(String, Vec<u8>)>::with_capacity(entries.len());
+                for (field, value) in entries {
+                    if let Some(position) = positions.get(&field).copied() {
+                        packed_entries[position].1 = value;
+                    } else {
+                        positions.insert(field.clone(), packed_entries.len());
+                        packed_entries.push((field, value));
+                    }
+                }
+                let block_ordinal = packed_entries
+                    .iter()
+                    .find_map(|(field, _)| {
+                        shard
+                            .hashes
+                            .get(&key)
+                            .and_then(|fields| fields.get(field))
+                            .and_then(ElementEntry::block_id)
+                    })
+                    .or_else(|| {
+                        shard
+                            .hashes
+                            .get(&key)
+                            .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
+                            .map(|held| held.saturating_add(1))
+                    })
+                    .filter(|ordinal| *ordinal <= crate::block_store::MAX_ADDRESSABLE_BLOCK_ID)
+                    .and_then(|ordinal| u32::try_from(ordinal).ok())
+                    .unwrap_or(0);
+                let items = packed_entries
+                    .iter()
+                    .map(|(field, value)| (field.as_bytes(), value.as_slice()))
+                    .collect::<Vec<_>>();
+                let block = crate::engine::container_blocks::encode_container_block(
+                    crate::engine::container_blocks::ElementKeySpelling::Utf8,
+                    &items,
+                );
+                block_in_wal::stage(object_id, None, &block);
+                let address = crate::alloc_probe::in_class(
+                    crate::alloc_probe::AllocClass::SlabAppend,
+                    || block_store.append_block_of_object(
+                        &block,
+                        Some(object_id),
+                        Some(routing_bucket),
+                        block_ordinal,
+                    ),
+                );
+                if let Ok(address) = address {
+                    for (field, _) in packed_entries {
+                        let field_handle =
+                            super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
+                        super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                            shard,
+                            shard_id,
+                            &key,
+                            Some(field.clone()),
+                            field_handle,
+                            address.clone(),
+                            true,
+                            address.clone(),
+                        );
+                        invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
+                        mutated = true;
+                    }
+                }
+                return ExecuteOutcome {
+                    response: CommandResponse::Empty,
+                    mutated,
+                };
+            }
+
             // A COUNT, not a list of pending proofs. The install happens inline now, so nothing
             // is carried past the loop except whether anything landed.
             let mut applied = 0usize;
             for (field, value) in entries {
-                let object_id = stable_block_object_id(shard_id, "hash", &key);
                 // WHICH block of this object this element is. Computed BEFORE the append, because
                 // the append stamps the ordinal into the record header AND onto the address it
                 // returns from the same value -- assigning it afterwards would leave the two
@@ -1399,7 +1476,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetAdd { key, member } => {
             remove_if_expired(shard, &key);
-            let member_component = hex::encode(&member);
+            let member_component = set_component(&member);
             let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -2276,7 +2353,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let member_component = hex::encode(&member);
+            let member_component = set_component(&member);
             // REMOVING THE LAST MEMBER REMOVES THE KEY, as it does for the other three container
             // kinds. `record_exists_exact` ORs `shard.bucket_index.sets.contains_key(key)` in beside its
             // bucket-index answer, so an empty member map left under a live key is a key that
@@ -2410,6 +2487,8 @@ pub(crate) fn execute_on_shard(
             let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
+            let mut published: Vec<ElementEntry> = Vec::new();
+            let mut replaced_any = false;
             // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
             // FIRST policy walks the point list in order and
             // skips any ts already present, so for an in-batch duplicate timestamp the FIRST
@@ -2441,15 +2520,19 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage,
                     true,
-                next_block_index,
-            ) {
+                    next_block_index,
+                ) {
                     for (timestamp_ms, address) in addresses {
-                        series.set(timestamp_ms, address);
+                        if series.get(timestamp_ms).is_some() {
+                            replaced_any = true;
+                        }
+                        series.set(timestamp_ms, address.clone());
+                        published.push(address);
                         mutated = true;
                     }
                 }
             }
-            mutated |= trim_timestamped_series(
+            let trimmed = trim_timestamped_series(
                 shard_id,
                 "feature",
                 &key,
@@ -2457,15 +2540,28 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
             );
-            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_blocks(
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
-                mutated,
-            );
+            mutated |= trimmed;
+            if replaced_any || trimmed {
+                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
+                sync_bucket_index_object_blocks(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    live_addresses,
+                    mutated,
+                );
+            } else {
+                sync_bucket_index_object_blocks_with_mode(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    published,
+                    mutated,
+                    false,
+                );
+            }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -5225,7 +5321,7 @@ pub(super) fn zset_score_string(biased: u64) -> String {
     }
 }
 
-/// The persisted component: the member alone, hex encoded.
+/// The persisted component: the member alone, spelled ONCE.
 ///
 /// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
 /// it bought was never built on: every zset serving arm that returns members in score order
@@ -5235,8 +5331,25 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 /// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
 /// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
 /// WAL outcome's `value` field -- it is simply no longer spelled into this string.
+/// WAS `hex::encode(member)`, WHICH CHARGED TWO BYTES PER MEMBER BYTE. The component is the term
+/// that scales with member width, so that doubling was the member-width RATE of a zset write and
+/// not a fixed overhead on it. [`super::container_blocks::member_component`] charges one byte plus
+/// the member, and the tag it puts in front is what keeps the two spellings tellable apart on a
+/// string that carries no spelling byte of its own.
 pub(super) fn zset_component(member: &[u8]) -> String {
-    hex::encode(member)
+    super::container_blocks::member_component(member)
+}
+
+/// The persisted component for a SET member: the member alone, spelled ONCE.
+///
+/// Sibling of [`zset_component`], and the same rendering as it -- a set component and a zset
+/// component have been the same shape since the score came off the zset string. They stay two
+/// names because the two kinds reach this from different arms, so a per-kind divergence has
+/// somewhere to land, and because what this replaces was `hex::encode` spelled INLINE at five
+/// separate set write sites. A spelling decided at each site is a spelling that can be flipped at
+/// four of them and missed at the fifth.
+pub(super) fn set_component(member: &[u8]) -> String {
+    super::container_blocks::member_component(member)
 }
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.

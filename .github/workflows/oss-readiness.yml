@@ -60,9 +60,11 @@ jobs:
       # asserted on `sys.modules` IN-PROCESS, which is false in any process that
       # has imported Feast and vacuous in any that has not.
       #
-      # The suite runs here WITHOUT Feast installed, and that is the point: both
-      # client tiers are pure standard library and must stay that way, so the
-      # import tests assert that importing either package does not drag Feast in.
+      # The suite runs here WITHOUT Feast or packaged client codecs installed.
+      # Both providers must remain importable from a bare source checkout; the
+      # command client uses its JSON route when the binary codec is unavailable.
+      # The import tests also assert that importing either package does not drag
+      # Feast in.
       # The runner asserts how many tests EXECUTED -- not how many were collected --
       # because `unittest` collects a `skipUnless` class either way, so a tier that
       # silently stops running would otherwise report a green run of skips.
