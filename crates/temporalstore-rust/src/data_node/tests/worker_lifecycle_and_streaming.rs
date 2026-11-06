@@ -28,6 +28,7 @@ fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
     assert!(written.status.ok, "{written:?}");
     assert_eq!(written.applied, 2);
     assert!(written.errors.is_empty());
+    assert_eq!(runtime.dirty_shards(), vec![1]);
 
     let rejected = runtime.batch_write(BatchExecuteRequest {
         shard_id: 1,
@@ -51,6 +52,53 @@ fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
         CommandResponse::Bytes {
             value: Some(b"one".to_vec())
         }
+    );
+}
+
+#[test]
+fn compact_batch_write_keeps_shared_wal_mirroring() {
+    #[derive(Debug, Default)]
+    struct RecordingSink {
+        commands: Mutex<Vec<Command>>,
+    }
+
+    impl SharedWalSink for RecordingSink {
+        fn record_write(&self, _shard_id: ShardId, command: &Command) {
+            self.commands
+                .lock()
+                .expect("recording sink lock poisoned")
+                .push(command.clone());
+        }
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let sink = Arc::new(RecordingSink::default());
+    runtime.set_shared_wal_sink(sink.clone());
+
+    let written = runtime.batch_write(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet {
+                key: "a".to_string(),
+                value: b"one".to_vec(),
+            },
+            Command::StringSet {
+                key: "b".to_string(),
+                value: b"two".to_vec(),
+            },
+        ],
+    });
+
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 2);
+    assert_eq!(
+        sink.commands
+            .lock()
+            .expect("recording sink lock poisoned")
+            .len(),
+        2
     );
 }
 
