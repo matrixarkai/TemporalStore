@@ -627,6 +627,36 @@ impl<'a, K: RecordedKind> IntoIterator for &'a RecordedMap<K> {
 // ---------------------------------------------------------------------------------------------
 
 impl<K: RecordedKind> RecordedMap<K> {
+    /// Install an element, reaching an already-live object through a BORROW.
+    ///
+    /// `Arc::from(&str)` always mallocs and copies, and `entry()` takes its key BY VALUE -- so
+    /// handing it a freshly built `Arc` for a slot that already exists allocates the key, copies
+    /// the text into it, and drops it again. Measured at the map, 400 installs into ONE existing
+    /// object: 64.9 B per write at an 8-byte key against 264.9 B at a 208-byte key -- a 200.0 B
+    /// difference for a 200 B key, with the allocation COUNT identical in both arms, which is the
+    /// signature of a copy rather than an extra allocation. `remove_element` below has always done
+    /// the borrowed thing.
+    ///
+    /// ONE HOME FOR THE RULE. Every install arm routes here, so the borrow cannot be right in one
+    /// and forgotten in another -- a second copy of a rule is wrong even while it agrees. The MISS
+    /// path still builds the `Arc`, because then the map genuinely needs to own the key; that costs
+    /// one extra hash of the key, once per object instead of once per element.
+    fn install_into(
+        &mut self,
+        object_key: &str,
+        element: <K::Elements as ElementMap>::Element,
+        value: <K::Elements as ElementMap>::Value,
+    ) {
+        if let Some(elements) = self.entries.get_mut(object_key) {
+            elements.insert_element(element, value);
+            return;
+        }
+        self.entries
+            .entry(std::sync::Arc::from(object_key))
+            .or_default()
+            .insert_element(element, value);
+    }
+
     fn install(&mut self, recorded: RecordedElement<K>) {
         let RecordedElement {
             filed: _,
@@ -634,10 +664,7 @@ impl<K: RecordedKind> RecordedMap<K> {
             element,
             value,
         } = recorded;
-        self.entries
-            .entry(std::sync::Arc::from(&object_key[..]))
-            .or_default()
-            .insert_element(element, value);
+        self.install_into(&object_key, element, value);
     }
 
     /// Drop a recorded element, and the key with it when that element was its last.
@@ -795,10 +822,7 @@ impl<K: ReplaysInstallsUnrecorded> RecordedMap<K> {
         element: <K::Elements as ElementMap>::Element,
         value: <K::Elements as ElementMap>::Value,
     ) {
-        self.entries
-            .entry(std::sync::Arc::from(object_key))
-            .or_default()
-            .insert_element(element, value);
+        self.install_into(object_key, element, value);
     }
 }
 
@@ -1289,10 +1313,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         element: <K::Elements as ElementMap>::Element,
         value: <K::Elements as ElementMap>::Value,
     ) {
-        self.entries
-            .entry(std::sync::Arc::from(object_key))
-            .or_default()
-            .insert_element(element, value);
+        self.install_into(object_key, element, value);
     }
 
     pub(super) fn insert_elements_for_test(&mut self, object_key: &str, elements: K::Elements) {
@@ -1317,5 +1338,96 @@ impl<K: RecordedKind> RecordedMap<K> {
 
     pub(super) fn restore_for_test(&mut self, entries: HashMap<ModelKey, K::Elements>) {
         self.entries = entries;
+    }
+}
+
+/// WHAT AN ELEMENT WRITE INTO A LIVE OBJECT ALLOCATES, measured at the map and not at the engine.
+///
+/// Every install arm here reaches the resident map through
+/// `entries.entry(Arc::from(object_key))`. `Arc::from(&str)` ALWAYS mallocs and copies, and
+/// `entry()` takes its key BY VALUE, so on an OCCUPIED slot the fresh `Arc` is built, copied into
+/// and dropped immediately: a malloc, a memcpy and a free for a key the map already holds.
+/// `remove_element` in this same file does the borrowed thing and allocates nothing.
+///
+/// KEY LENGTH IS THE DIMENSION, because a key COPY costs its own length. While the defect is
+/// present the per-write `alloc_bytes` of a long-keyed object exceeds a short-keyed one by about
+/// the key-length difference; once the install borrows, per-write bytes are INDEPENDENT of key
+/// length. That is a value only the fixed path can produce.
+///
+/// AND IT IS MEASURED AT THE MAP, NOT THROUGH `engine.execute`. Driving the public write path was
+/// tried first and cannot attribute: a write there allocated ~254 KB and grew 4,687 B per write
+/// when the key grew 200 B, because the key is carried about twenty-three times across the WAL
+/// record, the block record and the index entries. No fix to the install alone could flatten that,
+/// so the number proved nothing about this line. Varying a dimension that reaches far more than the
+/// function under test is not a control.
+///
+/// Every element is built BEFORE the probe opens; `format!` and `Arc::from` on the FIELD allocate
+/// too, and although a field name's length is equal in both arms, building them inside would put
+/// the measurement's own noise inside the window.
+#[cfg(test)]
+mod element_write_key_allocation {
+    use super::{HashKind, RecordedMap};
+
+    const WRITES: usize = 400;
+    const SHORT_KEY: usize = 8;
+    const LONG_KEY: usize = 208;
+
+    fn per_write(key_len: usize) -> (u64, f64) {
+        let key = "k".repeat(key_len);
+        let mut map: RecordedMap<HashKind> = RecordedMap::default();
+        // The FIRST install creates the slot. Everything measured below lands on an occupied one.
+        map.insert_element_for_test(
+            &key,
+            std::sync::Arc::from("seed"),
+            crate::block_store::ElementEntry::default(),
+        );
+        let elements: Vec<std::sync::Arc<str>> = (0..WRITES)
+            .map(|index| std::sync::Arc::from(format!("f{index:06}").as_str()))
+            .collect();
+        let probe = crate::alloc_probe::Probe::start();
+        for element in elements {
+            map.insert_element_for_test(
+                &key,
+                element,
+                crate::block_store::ElementEntry::default(),
+            );
+        }
+        let counts = probe.stop();
+        (counts.allocs, counts.alloc_bytes as f64 / WRITES as f64)
+    }
+
+    #[test]
+    #[ignore = "allocation measurement; needs --features alloc-probe"]
+    fn an_element_write_into_a_live_object_does_not_copy_its_key() {
+        // THE CANARY. Without `--features alloc-probe` the counting allocator is not installed,
+        // every counter reads zero, and the assertion below would pass on a zero that means
+        // nothing. Fail loudly on a known allocation instead.
+        let canary = crate::alloc_probe::Probe::start();
+        let sink: Vec<u8> = Vec::with_capacity(8192);
+        assert!(
+            canary.stop().allocs > 0,
+            "the counting allocator is not installed -- rerun with `--features alloc-probe`, or \
+             every number this test prints is a zero that means nothing"
+        );
+        drop(sink);
+
+        let (short_allocs, short_per) = per_write(SHORT_KEY);
+        let (long_allocs, long_per) = per_write(LONG_KEY);
+        let delta = long_per - short_per;
+        let key_delta = (LONG_KEY - SHORT_KEY) as f64;
+        eprintln!(
+            "  [element-write] {WRITES} installs into ONE existing object\n    \
+             short key ({SHORT_KEY} B): {short_allocs} allocs, {short_per:.1} B/write\n    \
+             long  key ({LONG_KEY} B): {long_allocs} allocs, {long_per:.1} B/write\n    \
+             per-write delta {delta:.1} B against a key-length delta of {key_delta:.0} B"
+        );
+
+        assert!(
+            delta < key_delta / 4.0,
+            "per-write allocation grew {delta:.1} B when the key grew {key_delta:.0} B, so an \
+             install into an EXISTING object is still copying the key it already has. Reach an \
+             occupied slot through a borrow, the way `remove_element` does, instead of building an \
+             `Arc` for `entry()` to drop"
+        );
     }
 }
