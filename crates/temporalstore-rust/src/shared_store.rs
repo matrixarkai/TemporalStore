@@ -7917,6 +7917,78 @@ mod tests {
 
     #[cfg(feature = "matrixobject")]
     #[tokio::test]
+    async fn what_the_shared_path_spends_on_the_wire_per_record() {
+        // WHAT A RECORD COSTS OVER A NETWORK, which no instrument here measured.
+        //
+        // Read amplification on this path has been measured in process -- bytes fetched at the
+        // block layer against bytes returned -- and that figure says nothing about a request's
+        // HEAD. Over a socket the head is not a rounding error at WAL record sizes: a request
+        // line, a Host, a Content-Length and an offset, and a reply carrying an etag, a
+        // content type, a last-modified, an accept-ranges and two version spellings.
+        //
+        // This PRINTS rather than pinning a ratio. A number that moves whenever a header is
+        // added is not an invariant, and pinning it would break on changes the claim survives
+        // -- so the assertions below pin only what must not regress: the request COUNT, and
+        // that the envelope is a real fraction rather than nothing.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+
+        // Sized like the real thing: the shared store's WAL blob key, and a frame about as
+        // wide as one entry's.
+        let key = "scale-harness/shards/1/shared/wal/wal.protobuf.blob";
+        const RECORDS: usize = 64;
+        const FRAME: usize = 300;
+        let frame = vec![b'w'; FRAME];
+
+        for _ in 0..RECORDS {
+            store
+                .append_blob(key, Bytes::from(frame.clone()))
+                .await
+                .expect("the append should publish");
+        }
+
+        let requests = store.requests_issued();
+        let sent = store.wire_bytes_sent();
+        let received = store.wire_bytes_received();
+        let payload = (RECORDS * FRAME) as u64;
+
+        println!(
+            "SHAREDPATHWIRE records={RECORDS} frame={FRAME} payload={payload} requests={requests} \
+             sent={sent} received={received} sent_per_record={:.1} received_per_record={:.1} \
+             wire_per_payload={:.3}",
+            sent as f64 / RECORDS as f64,
+            received as f64 / RECORDS as f64,
+            (sent + received) as f64 / payload as f64,
+        );
+
+        // ONE REQUEST PER RECORD, plus the one ask for an object never seen. This is the
+        // invariant worth pinning -- it is a count, so it does not drift with a header.
+        assert_eq!(
+            requests,
+            1 + RECORDS as u64,
+            "{RECORDS} appends spent {requests} requests; one ask then one write each is {}",
+            1 + RECORDS as u64
+        );
+
+        // THE PAYLOAD REALLY CROSSED, so the figures above are not describing an empty run.
+        assert!(
+            sent > payload,
+            "sent {sent} bytes for {payload} bytes of frames, which cannot include them"
+        );
+
+        // AND THE ENVELOPE IS A REAL FRACTION, not a rounding error -- this is the claim the
+        // measurement exists to support, stated as a floor so it cannot quietly become false.
+        let envelope = sent - payload;
+        assert!(
+            envelope > payload / 10,
+            "the request envelope is {envelope} bytes against {payload} of payload, under a \
+             tenth -- if that is genuinely so, the head has stopped being worth attacking and \
+             this assertion should be revisited rather than loosened"
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
     async fn an_append_over_the_shared_path_costs_one_request_not_two() {
         // WHAT THE SHARED PATH SPENDS OVER A NETWORK IS REQUESTS, NOT ONLY BYTES.
         //
