@@ -445,6 +445,10 @@ fn usage_and_exit() -> ! {
     eprintln!("  --shared-store-ops <n> default 1000");
     eprintln!("  --shared-store-flush-every <n> default 25");
     eprintln!("  --shared-store-concurrency <n> default 1");
+    eprintln!("      ADDS a phase; it does not parallelise the others. Above 1 it runs that many");
+    eprintln!("      concurrent sync writers against ONE shard, which the single-writer fence");
+    eprintln!("      serialises -- so the wall-clock of conc=4 is not comparable with conc=1,");
+    eprintln!("      and the extra time is the cost of contended ops, not a slowdown of the rest.");
     eprintln!("  --shared-store-root <path> default temp dir");
     eprintln!("  --shared-store-uri <matrixobject://host:port> remote object store");
     std::process::exit(2);
@@ -506,6 +510,21 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             options.shared_store_flush_every,
         )
         .await;
+        // THIS FLAG ADDS WORK; IT DOES NOT PARALLELISE THE WORK ABOVE.
+        //
+        // The sync and async phases always run, on `shard_id` and `shard_id + 1`. Above 1 this
+        // adds a THIRD phase of the same op count on `shard_id + 2`, driven by that many
+        // concurrent sync writers against that ONE shard. So conc=4 does half again as many
+        // ops as conc=1, and comparing their wall-clocks reads an added phase as a regression:
+        // measured 241 s at conc=1 against 1,533 s at conc=4, where the extra ~1,292 s bought
+        // 2,000 contended ops at roughly 646 ms each against roughly 60 ms uncontended.
+        //
+        // Contended is the expensive shape BY DESIGN, not by accident: the shared store is
+        // single-writer-per-shard and `enforce_fence` is what makes it so, so several writers
+        // on one shard's append offset serialise and the losers pay a refusal and a retry --
+        // round trips, over a network. The number this phase produces is therefore a measure of
+        // CONTENTION, and a report that prints it next to the uncontended QPS should say which
+        // is which rather than leave a reader to assume they are the same quantity scaled.
         let concurrent_sync = if options.shared_store_concurrency > 1 {
             Some(
                 run_shared_store_concurrent_sync(
