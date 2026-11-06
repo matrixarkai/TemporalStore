@@ -277,13 +277,14 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         stored_nanos: Dict[str, int] = {}
         if not online_config.skip_dedup:
             # Read just the timestamp field before the bounded write batches.
+            unique_hash_keys = list(dict.fromkeys(hash_keys))
             reads = client.batch_execute(
                 [
                     {"kind": "hash_multi_get", "key": key, "fields": [ts_field]}
-                    for key in hash_keys
+                    for key in unique_hash_keys
                 ]
             )
-            for key, response in zip(hash_keys, reads):
+            for key, response in zip(unique_hash_keys, reads):
                 values = response.get("values") or []
                 raw = decode_bytes(values[0]) if values else None
                 if raw:
