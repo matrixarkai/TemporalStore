@@ -7704,8 +7704,16 @@ fn read_block_bytes(
     let Some(component) = identity.component() else {
         return Some(bytes);
     };
+    select_container_value(&bytes, component)
+}
+
+/// Select one component from bytes already fetched by the caller.
+///
+/// Keeping this separate from the storage funnel lets a multi-field projection retain one packed
+/// frame and select several values without repeating the cache lookup or block read.
+fn select_container_value(bytes: &[u8], component: &str) -> Option<Vec<u8>> {
     match container_blocks::select_container_element(&bytes, component) {
-        container_blocks::ContainerElementRead::NotFramed => Some(bytes),
+        container_blocks::ContainerElementRead::NotFramed => Some(bytes.to_vec()),
         container_blocks::ContainerElementRead::Found(value) => Some(value),
         // A BLOCK THAT STATES THE REMOVAL HAS NO VALUE TO HAND BACK, and this funnel's contract is a
         // value or nothing. The two are one answer HERE and two answers to the derivation, which is
