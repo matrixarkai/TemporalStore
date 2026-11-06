@@ -1370,3 +1370,144 @@ message ContextWritePackAudit {
   // Refused by name when absent, as above.
   ContextPackAuditRecord audit = 2;
 }
+
+// ===========================================================================================
+// THE DURABLE INGESTION STATE, the one file under the engine's ingestion directory.
+//
+// It is rewritten WHOLE under a temp-and-rename, so there is no partial-document shape to
+// model and no append framing: one message is one file. The reader lands first and accepts
+// both shapes; the writer that produces this one follows in its own change.
+//
+// NOTHING ASSERTS THE FILENAME. `state.json` appears exactly once in the crate, as a
+// `root.join("state.json")` construction with no test or doc pinning it, so the spelling is
+// not a durable contract the way `slab_manifest.json` is. The name stays regardless: the
+// writer retires either way, and renaming a path that is already on disk is a separate,
+// riskier decision.
+// ===========================================================================================
+
+// The ingestion crate's own `Status`, which rides inside a dead letter. Distinct from the
+// service-level status messages above because it is a DURABLE field here, not a response.
+message IngestionStatus {
+  bool ok = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message IngestionSourceApi {
+  string request_id = 1;
+}
+
+message IngestionSourceKafka {
+  string topic = 1;
+  int32 partition = 2;
+  int64 offset = 3;
+  // ABSENT IS NOT EMPTY, AND ABSENT IS NOT ZERO. Both of these are `Option` in the durable
+  // shape, and a record with no key reads differently from one keyed by the empty string, so
+  // they are `optional` rather than bare scalars.
+  optional string key = 4;
+  optional uint64 timestamp_ms = 5;
+}
+
+message IngestionSourceFlink {
+  string job_id = 1;
+  string operator_uid = 2;
+  uint32 subtask_index = 3;
+  uint64 checkpoint_id = 4;
+  uint64 record_index = 5;
+}
+
+// A `oneof`, and an ABSENT one is refused on decode rather than read as an API source. The
+// three arms carry different idempotence keys, so guessing one would let a replayed Kafka
+// record through as a fresh API call.
+message IngestionSource {
+  oneof source {
+    IngestionSourceApi api = 1;
+    IngestionSourceKafka kafka = 2;
+    IngestionSourceFlink flink = 3;
+  }
+}
+
+message KafkaOffsetLedgerEntry {
+  string topic = 1;
+  int32 partition = 2;
+  int64 committed_offset = 3;
+  uint64 updated_unix_ms = 4;
+}
+
+message IngestionStreamCommitState {
+  string stream_id = 1;
+  uint64 committed_sequence = 2;
+  uint64 updated_unix_ms = 3;
+}
+
+// UNSPECIFIED is refused on decode. Precommitted, Committed and Aborted decide whether a
+// Flink checkpoint's records may be replayed, so defaulting the tag would either replay
+// committed work or discard precommitted work.
+enum FlinkCheckpointStatus {
+  FLINK_CHECKPOINT_STATUS_UNSPECIFIED = 0;
+  FLINK_CHECKPOINT_STATUS_PRECOMMITTED = 1;
+  FLINK_CHECKPOINT_STATUS_COMMITTED = 2;
+  FLINK_CHECKPOINT_STATUS_ABORTED = 3;
+}
+
+message FlinkCheckpointState {
+  string job_id = 1;
+  string operator_uid = 2;
+  uint32 subtask_index = 3;
+  uint64 checkpoint_id = 4;
+  FlinkCheckpointStatus status = 5;
+  uint64 updated_unix_ms = 6;
+}
+
+message IngestionDeadLetter {
+  uint64 index = 1;
+  IngestionSource source = 2;
+  uint64 shard_id = 3;
+  IngestionStatus status = 4;
+}
+
+message IngestionStats {
+  uint64 accepted_total = 1;
+  uint64 failed_total = 2;
+  uint64 duplicate_total = 3;
+  uint64 dead_letter_total = 4;
+  uint64 stream_backpressure_total = 5;
+  uint64 stream_duplicate_total = 6;
+  uint64 kafka_committed_total = 7;
+  uint64 flink_precommit_total = 8;
+  uint64 flink_commit_total = 9;
+  uint64 flink_abort_total = 10;
+  int64 max_kafka_lag = 11;
+}
+
+// KEYED ENTRIES, NOT A PROTO `map`. The three collections are `BTreeMap`s in memory, so their
+// iteration order IS their key order and a re-encode of one state produces the same bytes. A
+// proto `map` has no defined order, which would make the same state encode differently on
+// different runs -- and this file is compared and checksummed by operators.
+//
+// The key is carried EXPLICITLY rather than rebuilt from the value's fields. It is derived
+// (`kafka_offset_key`, `flink_checkpoint_key`), and a decoder that recomputed it would quietly
+// re-key a document whose key function has since changed, instead of reading what was written.
+message DurableIngestionKafkaOffsetEntry {
+  string key = 1;
+  KafkaOffsetLedgerEntry value = 2;
+}
+
+message DurableIngestionStreamCommitEntry {
+  string key = 1;
+  IngestionStreamCommitState value = 2;
+}
+
+message DurableIngestionFlinkCheckpointEntry {
+  string key = 1;
+  FlinkCheckpointState value = 2;
+}
+
+message DurableIngestionState {
+  repeated DurableIngestionKafkaOffsetEntry kafka_offsets = 1;
+  repeated DurableIngestionStreamCommitEntry stream_commits = 2;
+  repeated DurableIngestionFlinkCheckpointEntry flink_checkpoints = 3;
+  // ORDER PRESERVED: dead letters are a `Vec` and operators read them in arrival order.
+  repeated IngestionDeadLetter dead_letters = 4;
+  IngestionStats stats = 5;
+}
