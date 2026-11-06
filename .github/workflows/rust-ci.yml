@@ -371,6 +371,7 @@ jobs:
             engine::tests::part4::object_block_lookup_refs_per_object_census \
             engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
             engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
+            engine::tests::part4::the_pressure_snapshot_reads_cache_stats_without_listing_the_cache \
             engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             engine::tests::the_consolidated_object_map::installing_a_control_state_block_keeps_the_rows_block_refs \
             engine::container_blocks::member_component_tests::a_hex_component_still_decodes_to_the_member_it_always_did \
