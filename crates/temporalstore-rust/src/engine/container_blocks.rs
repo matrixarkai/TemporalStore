@@ -311,6 +311,19 @@ pub(super) enum ContainerElementRead {
     Corrupt(String),
 }
 
+/// What projecting several UTF-8 named elements from one fetched block produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Utf8ContainerProjection {
+    /// No container magic; the caller retains legacy bare-value behavior.
+    NotFramed,
+    /// The frame uses another container spelling; the caller retains the generic selector.
+    OtherSpelling,
+    /// One positional value per requested component.
+    Values(Vec<Option<Vec<u8>>>),
+    /// The frame could not be walked.
+    Corrupt(String),
+}
+
 fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
@@ -570,12 +583,12 @@ fn frame_header(
 /// bytes on disk -- so a decoder that took one meaning for both would either resurrect a removed
 /// element in a new block or invent a removal in an old one. The shape comes from the magic, which is
 /// the only thing on the block that can say.
-fn take_item<'a>(
+fn take_item_bytes<'a>(
     bytes: &'a [u8],
     cursor: &mut usize,
     index: u64,
     shape: ContainerBlockShape,
-) -> Result<(&'a [u8], Vec<u8>, bool), String> {
+) -> Result<(&'a [u8], &'a [u8], bool), String> {
     let key_len = take_varint(bytes, cursor, "key length")? as usize;
     let key = take_slice(bytes, cursor, key_len, "key")?;
     let tag = take_varint(bytes, cursor, "value tag")?;
@@ -586,19 +599,29 @@ fn take_item<'a>(
                 "container block item {index} names value offset {offset} into a {key_len}-byte key"
             )
         })?;
-        return Ok((key, tail.to_vec(), false));
+        return Ok((key, tail, false));
     }
     if shape == ContainerBlockShape::WithRemovals && tag == TAG_REMOVED {
         // NO VALUE BYTES FOLLOW. The cursor stands after the tag, which is what keeps the
         // consume-the-payload-exactly property true for a block whose last item is a removal.
-        return Ok((key, Vec::new(), true));
+        return Ok((key, &[], true));
     }
     let bias = match shape {
         ContainerBlockShape::LiveOnly => TAG_INLINE_BIAS_V1,
         ContainerBlockShape::WithRemovals => TAG_INLINE_BIAS_V2,
     };
     let value = take_slice(bytes, cursor, (tag - bias) as usize, "value")?;
-    Ok((key, value.to_vec(), false))
+    Ok((key, value, false))
+}
+
+fn take_item<'a>(
+    bytes: &'a [u8],
+    cursor: &mut usize,
+    index: u64,
+    shape: ContainerBlockShape,
+) -> Result<(&'a [u8], Vec<u8>, bool), String> {
+    take_item_bytes(bytes, cursor, index, shape)
+        .map(|(key, value, deleted)| (key, value.to_vec(), deleted))
 }
 
 /// Ask a payload for one element's value, without building every other item.
@@ -648,7 +671,7 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
         Err(error) => return ContainerElementRead::Corrupt(error),
     };
     for index in 0..count {
-        match take_item(bytes, &mut cursor, index, shape) {
+        match take_item_bytes(bytes, &mut cursor, index, shape) {
             Ok((key, value, deleted)) => {
                 let matched = match &wanted {
                     Wanted::Key(key_wanted) => key == key_wanted.as_slice(),
@@ -660,7 +683,7 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
                     return if deleted {
                         ContainerElementRead::Removed
                     } else {
-                        ContainerElementRead::Found(value)
+                        ContainerElementRead::Found(value.to_vec())
                     };
                 }
             }
@@ -668,6 +691,70 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
         }
     }
     ContainerElementRead::Absent
+}
+
+/// Project UTF-8 named fields in one pass over a packed hash block.
+///
+/// The generic point selector starts at the frame header for every field. A feature projection
+/// asks for many fields from the same packed row, so indexing requested names once and walking the
+/// frame once keeps decode work linear in the row width. Skipped values remain borrowed; only
+/// values that the caller requested are copied into the response.
+pub(super) fn project_utf8_container_elements(
+    bytes: &[u8],
+    components: &[String],
+) -> Utf8ContainerProjection {
+    let Some(header) = frame_header(bytes) else {
+        return Utf8ContainerProjection::NotFramed;
+    };
+    let (shape, spelling) = match header {
+        Ok(header) => header,
+        Err(error) => return Utf8ContainerProjection::Corrupt(error),
+    };
+    if spelling != ElementKeySpelling::Utf8 {
+        return Utf8ContainerProjection::OtherSpelling;
+    }
+
+    let mut first_position = std::collections::HashMap::<&[u8], usize>::with_capacity(
+        components.len(),
+    );
+    for (index, component) in components.iter().enumerate() {
+        first_position.entry(component.as_bytes()).or_insert(index);
+    }
+    let mut values = vec![None; components.len()];
+    let mut found = vec![false; components.len()];
+    let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
+    let count = match take_varint(bytes, &mut cursor, "item count") {
+        Ok(count) => count,
+        Err(error) => return Utf8ContainerProjection::Corrupt(error),
+    };
+    if count > bytes.len() as u64 {
+        return Utf8ContainerProjection::Corrupt(format!(
+            "container block claims {count} items in {} bytes",
+            bytes.len()
+        ));
+    }
+    for index in 0..count {
+        let (key, value, deleted) = match take_item_bytes(bytes, &mut cursor, index, shape) {
+            Ok(item) => item,
+            Err(error) => return Utf8ContainerProjection::Corrupt(error),
+        };
+        let Some(&position) = first_position.get(key) else {
+            continue;
+        };
+        if !found[position] {
+            found[position] = true;
+            if !deleted {
+                values[position] = Some(value.to_vec());
+            }
+        }
+    }
+    for (index, component) in components.iter().enumerate() {
+        let first = first_position[component.as_bytes()];
+        if index != first && found[first] {
+            values[index] = values[first].clone();
+        }
+    }
+    Utf8ContainerProjection::Values(values)
 }
 
 /// Spell a container member as an index component, without doubling it.
