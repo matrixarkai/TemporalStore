@@ -2,9 +2,9 @@
 
 A [Feast](https://github.com/feast-dev/feast) **online store** that talks to a
 TemporalStore data node over its own command surface: binary
-`POST /batch_write_msgpack` writes and shared-field
+shared-field `POST /batch_hash_multi_set_msgpack` writes and
 `POST /batch_hash_multi_get_msgpack` reads, with compatible command-batch
-routing for older nodes.
+routing for augmented writes and older nodes.
 
 ## Which integration point this is
 
@@ -104,13 +104,16 @@ empty values.
 
 ## Writes
 
-`online_write_batch` uses bounded binary `/batch_write_msgpack` requests for
-`HashMultiSet` commands, plus a batched timestamp read first unless
-`skip_dedup` is set. That timestamp projection also uses
+`online_write_batch` sends the common latest-value batch through
+`/batch_hash_multi_set_msgpack`: field names are encoded once, followed by
+ordered `(entity key, values)` rows. Mixed feature layouts and writes augmented
+with history, expiry, or teardown tracking use bounded binary
+`/batch_write_msgpack` command batches. A batched timestamp read runs first
+unless `skip_dedup` is set. That timestamp projection also uses
 `/batch_hash_multi_get_msgpack`, so `_ts` crosses the wire once per batch.
 Reads retain the 512-command response bound while writes
 default to 4,096 commands and remain capped at 4 MiB of encoded request data.
-Nodes without the binary write route are detected once per client and use
+Nodes without either binary write route are detected once per client and use
 `/batch_write` or `/batch_execute`:
 
 * **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then

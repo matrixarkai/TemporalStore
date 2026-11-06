@@ -49,8 +49,9 @@ use crate::meta::{
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetRequest, BatchWriteError,
-    BatchWriteResponse, Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
+    BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetRequest,
+    BatchHashMultiSetRequest, BatchWriteError, BatchWriteResponse, Command, CommandResponse,
+    ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
 #[path = "data_node/data_node_lifecycle.rs"]
@@ -2718,6 +2719,53 @@ impl DataNodeRuntime {
                 .map(|key| Command::HashMultiGet {
                     key,
                     fields: fields.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Write one shared field projection to many hashes.
+    ///
+    /// Expansion feeds the regular write batch so admission, WAL mirroring,
+    /// dirty tracking, and failure indexing stay identical. Only repeated field
+    /// names and command tags are removed from the network representation.
+    pub fn batch_hash_multi_set(
+        &self,
+        request: BatchHashMultiSetRequest,
+    ) -> BatchWriteResponse {
+        if let Some((index, row)) = request
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.1.len() != request.fields.len())
+        {
+            return BatchWriteResponse {
+                status: Status::error(
+                    "field_value_count_mismatch",
+                    format!(
+                        "row {index} has {} values for {} fields",
+                        row.1.len(),
+                        request.fields.len()
+                    ),
+                ),
+                applied: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let fields = request.fields;
+        self.batch_write(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSet {
+                    key: row.0,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.1.into_iter().map(|value| value.0))
+                        .collect(),
                 })
                 .collect(),
         })

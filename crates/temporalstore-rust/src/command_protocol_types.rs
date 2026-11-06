@@ -2880,6 +2880,27 @@ pub struct BatchHashMultiGetRequest {
     pub fields: Vec<String>,
 }
 
+/// One entity row in a shared-field hash write. A tuple keeps the binary wire
+/// shape to ``[key, values]`` instead of repeating member names per entity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiSetRow(pub String, pub Vec<BatchHashMultiSetValue>);
+
+/// A hash value carried as a native byte string by binary codecs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct BatchHashMultiSetValue(
+    #[serde(with = "crate::bytes_serde::binary")] pub Vec<u8>,
+);
+
+/// Write the same hash fields to many keys without repeating field names in
+/// every command on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiSetRequest {
+    pub shard_id: ShardId,
+    pub fields: Vec<String>,
+    pub rows: Vec<BatchHashMultiSetRow>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BatchExecuteResponse {
     pub status: Status,
@@ -2937,6 +2958,55 @@ mod tests {
         );
         assert_eq!(
             rmp_serde::from_slice::<BatchHashMultiGetRequest>(&compact_bytes).unwrap(),
+            compact
+        );
+    }
+
+    #[test]
+    fn shared_hash_write_fields_are_encoded_once_per_batch() {
+        let fields: Vec<String> = (0..64)
+            .map(|index| format!("feature-{index:02}"))
+            .collect();
+        let rows: Vec<BatchHashMultiSetRow> = (0..512)
+            .map(|index| {
+                BatchHashMultiSetRow(
+                    format!("entity-{index:04}"),
+                    (0..fields.len())
+                        .map(|value| BatchHashMultiSetValue(vec![value as u8; 3]))
+                        .collect(),
+                )
+            })
+            .collect();
+        let compact = BatchHashMultiSetRequest {
+            shard_id: 1,
+            fields: fields.clone(),
+            rows: rows.clone(),
+        };
+        let expanded = BatchExecuteRequest {
+            shard_id: 1,
+            commands: rows
+                .iter()
+                .map(|row| Command::HashMultiSet {
+                    key: row.0.clone(),
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.1.iter().map(|value| value.0.clone()))
+                        .collect(),
+                })
+                .collect(),
+        };
+
+        let compact_bytes = rmp_serde::to_vec_named(&compact).unwrap();
+        let expanded_bytes = rmp_serde::to_vec_named(&expanded).unwrap();
+        assert!(
+            compact_bytes.len() * 2 < expanded_bytes.len(),
+            "shared={} expanded={}",
+            compact_bytes.len(),
+            expanded_bytes.len()
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<BatchHashMultiSetRequest>(&compact_bytes).unwrap(),
             compact
         );
     }
