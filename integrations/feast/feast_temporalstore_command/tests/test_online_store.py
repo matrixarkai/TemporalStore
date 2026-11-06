@@ -750,6 +750,42 @@ class OnlineStoreTest(unittest.TestCase):
         read_commands = client.sent[0][1]["commands"]
         self.assertEqual(read_commands[0]["fields"], ["_ts:stats"])
 
+    def test_repeated_entity_writes_share_one_timestamp_read(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._install()
+        self.config.online_store.skip_dedup = False
+        older = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        newer = self.datetime(2026, 2, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [
+                (
+                    self._entity_key(1),
+                    {"trips": ValueProto(int64_val=1)},
+                    older,
+                    None,
+                ),
+                (
+                    self._entity_key(1),
+                    {"trips": ValueProto(int64_val=2)},
+                    newer,
+                    None,
+                ),
+            ],
+            None,
+        )
+
+        read_commands = client.sent[0][1]["commands"]
+        self.assertEqual(len(read_commands), 1)
+        write_commands = client.sent[1][1]["commands"]
+        self.assertEqual(len(write_commands), 1)
+        self.assertEqual(
+            dict(write_commands[0]["entries"])["stats:trips"],
+            encode_bytes(ValueProto(int64_val=2).SerializeToString()),
+        )
+
     def test_a_stale_row_is_not_written_over_a_newer_stored_value(self):
         from google.protobuf.timestamp_pb2 import Timestamp
 
