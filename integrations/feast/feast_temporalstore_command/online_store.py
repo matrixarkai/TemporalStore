@@ -582,6 +582,48 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
 
     # -- reads ---------------------------------------------------------------
 
+    @staticmethod
+    def _decode_online_response(
+        response: Dict[str, Any],
+        fields: Sequence[str],
+        feature_names: Sequence[str],
+    ) -> Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]:
+        raw_values = response.get("values") or []
+        # HashMultiGet answers positionally, one slot per requested field,
+        # with null for a field the hash does not hold. A short answer would
+        # shift every value onto the wrong feature, so pad rather than zip
+        # a ragged pair.
+        if len(raw_values) < len(fields):
+            raw_values = list(raw_values) + [None] * (len(fields) - len(raw_values))
+
+        decoded = [decode_bytes(value) for value in raw_values]
+        ts_bytes = decoded[-1]
+        event_timestamp: Optional[datetime] = None
+        if ts_bytes:
+            proto_ts = Timestamp()
+            proto_ts.ParseFromString(ts_bytes)
+            event_timestamp = proto_ts.ToDatetime()
+
+        row: Dict[str, ValueProto] = {}
+        for feature_name, value_bytes in zip(feature_names, decoded[:-1]):
+            value = ValueProto()
+            if value_bytes:
+                value.ParseFromString(value_bytes)
+            row[feature_name] = value
+
+        if event_timestamp is None and not any(decoded[:-1]):
+            return None, None
+        return event_timestamp, row
+
+    @staticmethod
+    def _copy_online_row(row: Dict[str, ValueProto]) -> Dict[str, ValueProto]:
+        copied: Dict[str, ValueProto] = {}
+        for feature_name, value in row.items():
+            copied_value = ValueProto()
+            copied_value.CopyFrom(value)
+            copied[feature_name] = copied_value
+        return copied
+
     def online_read(
         self,
         config: RepoConfig,
@@ -625,41 +667,26 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             ]
         )
 
+        # Storage commands are already coalesced by entity key. Decode on that same
+        # unique cardinality instead of reparsing every protobuf for every repeated
+        # requested position.
+        decoded_rows = [
+            self._decode_online_response(response, fields, feature_names)
+            for response in responses
+        ]
+        returned = [False] * len(decoded_rows)
         results: List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]] = []
         for response_index in response_indices:
-            response = responses[response_index]
-            raw_values = response.get("values") or []
-            # HashMultiGet answers positionally, one slot per requested field,
-            # with null for a field the hash does not hold. A short answer would
-            # shift every value onto the wrong feature, so pad rather than zip
-            # a ragged pair.
-            if len(raw_values) < len(fields):
-                raw_values = list(raw_values) + [None] * (
-                    len(fields) - len(raw_values)
-                )
-
-            decoded = [decode_bytes(value) for value in raw_values]
-            ts_bytes = decoded[-1]
-            event_timestamp: Optional[datetime] = None
-            if ts_bytes:
-                proto_ts = Timestamp()
-                proto_ts.ParseFromString(ts_bytes)
-                event_timestamp = proto_ts.ToDatetime()
-
-            row: Dict[str, ValueProto] = {}
-            for feature_name, value_bytes in zip(feature_names, decoded[:-1]):
-                value = ValueProto()
-                if value_bytes:
-                    value.ParseFromString(value_bytes)
-                row[feature_name] = value
-
-            # A row with no stored timestamp and no stored value was never
-            # written; Feast expects (None, None) for that, not a dict of empty
-            # values, which would read downstream as "present but null".
-            if event_timestamp is None and not any(decoded[:-1]):
+            event_timestamp, row = decoded_rows[response_index]
+            if row is None:
                 results.append((None, None))
-            else:
+            elif not returned[response_index]:
+                returned[response_index] = True
                 results.append((event_timestamp, row))
+            else:
+                # Feast callers may mutate returned protobufs. Repeated positions
+                # therefore share parsing work, not mutable message instances.
+                results.append((event_timestamp, self._copy_online_row(row)))
         return results
 
     # -- lifecycle -----------------------------------------------------------
