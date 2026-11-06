@@ -262,6 +262,9 @@ jobs:
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
+            block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
+            block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
+            block_store::tests::a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load \
             block_store::shorter_struct_against_an_existing_row::a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation \
             wal_record::tests::the_synthetic_slab_sentinels_are_not_the_top_of_the_u64_range \
             wal_record::tests::is_wal_resident_covers_both_sentinels_and_refuses_a_real_slab \
