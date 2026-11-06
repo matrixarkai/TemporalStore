@@ -405,17 +405,22 @@ impl TemporalEngine {
                 continue;
             }
             let command_for_post_write = command.clone();
+            let object_keys = command_object_keys(&command_for_post_write);
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(String, usize, Option<u64>)> =
-                command_object_keys(&command_for_post_write)
-                    .into_iter()
-                    .map(|key| {
-                        let size = key_membership_size(shard, &key);
-                        let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                        (key, size, deadline)
-                    })
-                    .collect();
+            let membership_before: Vec<(String, usize, Option<u64>)> = object_keys
+                .iter()
+                .map(|key| {
+                    let size = key_membership_size(shard, &key);
+                    let deadline = shard.expires_at_ms().get(key.as_str()).copied();
+                    (key.clone(), size, deadline)
+                })
+                .collect();
+            let feature_trimmed_membership = command_will_trim_feature_membership(
+                &command_for_post_write,
+                shard,
+                config.feature_max_size,
+            );
             let outcome = execute_on_shard(
                 &self.cache,
                 &self.block_store,
@@ -444,21 +449,15 @@ impl TemporalEngine {
             }
             if outcome.mutated {
                 mutated_any = true;
-                let object_keys = command_object_keys(&command_for_post_write);
                 delta_command_keys.extend(object_keys.iter().cloned());
                 // Same question as the single-command path, through the SAME function: a
                 // membership shrink OR a deadline change. Two spellings of this test is how
                 // one of them keeps a bug the other fixed, so there is only one.
                 if !batch_membership_shrank {
-                    batch_membership_shrank = delta_key_state_change(shard, &membership_before);
+                    batch_membership_shrank = feature_trimmed_membership
+                        || delta_key_state_change(shard, &membership_before);
                 }
-                match (
-                    &mut batch_upsert_components,
-                    command_upsert_components(&command_for_post_write, shard),
-                ) {
-                    (Some(collected), Some(components)) => collected.extend(components),
-                    (state, _) => *state = None,
-                }
+                let written_components = command_upsert_components(&command_for_post_write, shard);
                 batch_touched_container_elements.extend(command_touched_container_elements(
                     &command_for_post_write,
                     shard,
@@ -503,8 +502,7 @@ impl TemporalEngine {
                     // below re-upserts every field the object holds, which is quadratic in that
                     // count; this is one upsert per written component. It reports false when it
                     // cannot model the write, and the whole-object sync then runs.
-                    let written = command_upsert_components(&command_for_post_write, shard);
-                    let narrow = match written.as_deref() {
+                    let narrow = match written_components.as_deref() {
                         Some(components) => {
                             crate::engine::storage_bucket_internals::sync_blocks_for_written_components(
                                 shard,
@@ -524,6 +522,10 @@ impl TemporalEngine {
                                 )
                             }))
                 };
+                match (&mut batch_upsert_components, written_components) {
+                    (Some(collected), Some(components)) => collected.extend(components),
+                    (state, _) => *state = None,
+                }
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
                     // A command that writes no block cannot have changed the block index, so a
