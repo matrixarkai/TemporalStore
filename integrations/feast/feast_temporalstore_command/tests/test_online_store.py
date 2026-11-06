@@ -59,6 +59,7 @@ class RecordingClient(TemporalStoreClient):
         self._binary_batch_supported = False
         self._binary_write_supported = False
         self._shared_field_read_supported = False
+        self._compact_shared_field_read_supported = False
         self._shared_field_write_supported = False
         self.sent = []
         self.shared_reads = []
@@ -317,10 +318,8 @@ class ClientProtocolTest(unittest.TestCase):
                 return msgpack.packb(
                     {
                         "status": {"ok": True, "code": "ok", "message": ""},
-                        "responses": [
-                            ok({"kind": "values", "values": [key.encode()]})
-                            for key in document["keys"]
-                        ],
+                        "rows": [[key.encode()] for key in document["keys"]],
+                        "errors": [],
                     },
                     use_bin_type=True,
                 )
@@ -332,13 +331,81 @@ class ClientProtocolTest(unittest.TestCase):
 
         self.assertEqual(len(client.documents), 1)
         path, content_type, document = client.documents[0]
-        self.assertEqual(path, "/batch_hash_multi_get_msgpack")
+        self.assertEqual(path, "/batch_hash_multi_get_compact_msgpack")
         self.assertEqual(content_type, "application/msgpack")
         self.assertEqual(document, {"shard_id": 1, "keys": keys, "fields": fields})
         self.assertEqual(
-            [decode_bytes(answer["values"][0]).decode() for answer in answers],
+            [decode_bytes(answer[0]).decode() for answer in answers],
             keys,
         )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_compact_read_endpoint_uses_shared_route_once(self):
+        class PreviousSharedReadClient(TemporalStoreClient):
+            def __init__(self):
+                super().__init__()
+                self.compact_attempts = 0
+                self.paths = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.paths.append(path)
+                if path == "/batch_hash_multi_get_compact_msgpack":
+                    self.compact_attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "responses": [
+                            ok({"kind": "values", "values": [key.encode()]})
+                            for key in document["keys"]
+                        ],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = PreviousSharedReadClient()
+        self.assertEqual(client.batch_hash_multi_get(["a"], ["f"]), [[b"a"]])
+        self.assertEqual(client.batch_hash_multi_get(["b"], ["f"]), [[b"b"]])
+        self.assertEqual(client.compact_attempts, 1)
+        self.assertEqual(
+            client.paths,
+            [
+                "/batch_hash_multi_get_compact_msgpack",
+                "/batch_hash_multi_get_msgpack",
+                "/batch_hash_multi_get_msgpack",
+            ],
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_compact_read_surfaces_an_indexed_error(self):
+        class RefusedReadClient(TemporalStoreClient):
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "rows": [[b"ok"], [None]],
+                        "errors": [
+                            {
+                                "index": 1,
+                                "status": {
+                                    "ok": False,
+                                    "code": "shard_unavailable",
+                                    "message": "not ready",
+                                },
+                            }
+                        ],
+                    },
+                    use_bin_type=True,
+                )
+
+        with self.assertRaises(TemporalStoreCommandError) as caught:
+            RefusedReadClient().batch_hash_multi_get(["a", "b"], ["f"])
+        self.assertEqual(caught.exception.code, "shard_unavailable")
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_shared_field_batches_keep_order_across_command_boundaries(self):

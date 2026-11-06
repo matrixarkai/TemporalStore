@@ -2880,6 +2880,28 @@ pub struct BatchHashMultiGetRequest {
     pub fields: Vec<String>,
 }
 
+/// One positional row in a compact shared-field hash response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct BatchHashMultiGetRow(
+    #[serde(with = "response_values")] pub Vec<Option<Vec<u8>>>,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiGetError {
+    pub index: usize,
+    pub status: Status,
+}
+
+/// A shared-field read response with one top-level status and sparse errors.
+/// Successful rows carry only their positional values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiGetResponse {
+    pub status: Status,
+    pub rows: Vec<BatchHashMultiGetRow>,
+    pub errors: Vec<BatchHashMultiGetError>,
+}
+
 /// One entity row in a shared-field hash write. A tuple keeps the binary wire
 /// shape to ``[key, values]`` instead of repeating member names per entity.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2958,6 +2980,42 @@ mod tests {
         );
         assert_eq!(
             rmp_serde::from_slice::<BatchHashMultiGetRequest>(&compact_bytes).unwrap(),
+            compact
+        );
+    }
+
+    #[test]
+    fn compact_shared_hash_read_drops_per_row_envelopes() {
+        let values = vec![Some(vec![1, 2, 3]); 16];
+        let compact = BatchHashMultiGetResponse {
+            status: Status::ok(),
+            rows: (0..512)
+                .map(|_| BatchHashMultiGetRow(values.clone()))
+                .collect(),
+            errors: Vec::new(),
+        };
+        let expanded = BatchExecuteResponse {
+            status: Status::ok(),
+            responses: (0..512)
+                .map(|_| ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Values {
+                        values: values.clone(),
+                    },
+                })
+                .collect(),
+        };
+
+        let compact_bytes = rmp_serde::to_vec_named(&compact).unwrap();
+        let expanded_bytes = rmp_serde::to_vec_named(&expanded).unwrap();
+        assert!(
+            compact_bytes.len() * 3 < expanded_bytes.len() * 2,
+            "compact={} expanded={}",
+            compact_bytes.len(),
+            expanded_bytes.len()
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<BatchHashMultiGetResponse>(&compact_bytes).unwrap(),
             compact
         );
     }
