@@ -39,6 +39,7 @@ online_store:
   port: 17102
   shard_id: 1
   max_batch_commands: 512
+  max_write_batch_commands: 4096
   max_batch_request_bytes: 4194304
   skip_dedup: false          # see "Writes" below
   key_ttl_seconds: null      # see "Teardown" below
@@ -102,8 +103,10 @@ empty values.
 
 `online_write_batch` uses bounded binary `/batch_write_msgpack` requests for
 `HashMultiSet` commands, plus a batched timestamp read first unless
-`skip_dedup` is set. Nodes without the binary write route are detected once
-per client and use `/batch_write` or `/batch_execute`:
+`skip_dedup` is set. Reads retain the 512-command response bound while writes
+default to 4,096 commands and remain capped at 4 MiB of encoded request data.
+Nodes without the binary write route are detected once per client and use
+`/batch_write` or `/batch_execute`:
 
 * **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then
   write only the rows whose event time is newer. The number of round trips is

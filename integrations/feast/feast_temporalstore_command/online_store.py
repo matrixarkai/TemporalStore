@@ -107,7 +107,10 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     """Per-request socket timeout."""
 
     max_batch_commands: int = 512
-    """Maximum commands per HTTP batch during reads and materialization."""
+    """Maximum commands per HTTP batch during reads."""
+
+    max_write_batch_commands: int = 4096
+    """Maximum commands per HTTP batch during materialization writes."""
 
     max_batch_request_bytes: int = 4 * 1024 * 1024
     """Approximate encoded command bytes per HTTP batch."""
@@ -211,6 +214,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             online_config.timeout_seconds,
             online_config.max_batch_commands,
             online_config.max_batch_request_bytes,
+            online_config.max_write_batch_commands,
         )
         # Rebuild on a config change rather than handing back a client pointed
         # at the previous node: a cached client that outlives its config reads
