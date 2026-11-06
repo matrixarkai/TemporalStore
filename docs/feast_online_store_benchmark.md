@@ -266,9 +266,8 @@ this run found.** Only the 5,000-entity point produced usable read figures:
 | 20,000 | — | **run refused**: the write reported success and the shard grew to 20,001 records, but entity 0 read back nothing |
 | 50,000 | — | **run refused**, same way, at 50,001 records |
 
-What the refused points did yield is the write path's shape, and it is clean
-enough to name. With `track_keys_for_teardown` on, every written key is added
-to a single per-view set:
+What the refused points did yield was the former write path's shape. Every
+written key was added to one per-view set:
 
 | entities | TemporalStore write | vs 5,000 | Valkey write | SQLite write |
 |---:|---:|---:|---:|---:|
@@ -284,15 +283,35 @@ O(N²). The two comparison arms are linear in the same test
 (Valkey 8.6x and SQLite 18.2x for 10x the rows), so this is a property of this
 write path and not of the host.
 
-**`track_keys_for_teardown` is therefore not usable above a few thousand
-entities per view**, and that is now written where the option is documented. It
-remains off by default. The entity-count read sweep needs re-running with it off
-and a different means of bounding the shard between points; until then the read
-figures above stand only at 5,000 entities and the question of how read latency
-moves with entity count is **not answered here**.
+That single-set layout has been replaced by 1,024 deterministic tracking sets.
+The shard count is fixed so changing configuration cannot strand tracked rows,
+and teardown still reads the former unsharded key for rolling upgrades.
 
-The readback failure at 20,000 and 50,000 is **now attributed** — see "A
-correctness defect that disqualifies one option" below. Those runs had
+The focused benchmark at
+`integrations/feast/benchmarks/bench_teardown_tracking.py` drives the Feast
+command provider against a release node on a fresh tmpfs-backed shard. Batch
+width is 500, every value is read back and compared, and each point starts from
+empty directories:
+
+| entities | write | write rows/s | read rows/s | largest tracking set | missing or mismatched |
+|---:|---:|---:|---:|---:|---:|
+| 5,000 | 0.94 s | 5,329 | 8,964 | 11 | 0 |
+| 20,000 | 5.28 s | 3,785 | 8,009 | 29 | 0 |
+| 50,000 | 7.80 s | 6,412 | 11,061 | 62 | 0 |
+
+Ten times the rows now takes 8.3 times the elapsed write time instead of the
+historical 152 times. At 50,000 rows all 1,024 tracking sets are occupied,
+average 48.83 members, so the largest container is close to the expected
+`N/1024` rather than holding all 50,000 members. The flag remains off by
+default because it adds one write per row, not because its container size is
+unbounded.
+
+The benchmark's `--verify-teardown` arm also ran 1,000 rows through the full
+cleanup path in 0.184 s. A post-cleanup read found zero remaining feature rows
+and all 1,024 tracking sets contained zero members.
+
+The historical readback failure at 20,000 and 50,000 is attributed below.
+Those runs had
 `track_keys_for_teardown` on against a shard configured for async commit, and
 that pair loses rows. It took four probes to get there, and the first three
 were worthless for a specific reason worth recording: each of them left
@@ -604,6 +623,6 @@ something recorded it. The sweep below therefore runs with
 `track_keys_for_teardown` on and starts from an empty shard, and the record
 count before and after each point is printed with it.
 
-That flag's cost is on the **write** path only — one `set_add` per row — so the
-write timings here are not comparable with a deployment that leaves it off. The
-read columns are untouched by it.
+That flag's cost is on the **write** path only — one `set_add` per row,
+distributed over 1,024 sets — so the write timings here are not comparable
+with a deployment that leaves it off. The read columns are untouched by it.

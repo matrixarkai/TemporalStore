@@ -49,6 +49,7 @@ serving groups entities instead of issuing one request per entity.
 from __future__ import annotations
 
 import logging
+import zlib
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
@@ -71,6 +72,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["TemporalStoreCommandOnlineStoreConfig", "TemporalStoreCommandOnlineStore"]
 
 _FULL_CLASS_PATH = "feast_temporalstore_command.TemporalStoreCommandOnlineStore"
+_TEARDOWN_TRACKING_SHARDS = 1024
 
 _NO_VECTOR_SEARCH = (
     "TemporalStore's online store does not serve vector or document retrieval. It "
@@ -148,7 +150,7 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     track_keys_for_teardown: bool = False
     """Record each written entity key in a per-view set so teardown can find it.
 
-    Off by default because it adds a write per row to a single hot key. With it
+    Off by default because it adds one write per row. With it
     off, :meth:`TemporalStoreCommandOnlineStore.teardown` has nothing to enumerate and
     says so rather than silently leaving data behind.
 
@@ -158,28 +160,12 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     after cache pressure, so the tracking write cannot make an acknowledged
     hash row disappear.
 
-    **AND THE WRITE PATH IS QUADRATIC EVEN WHEN IT IS SAFE.**
-    Every key goes into ONE set -- the shard reports it as a single
-    `set_records` entry -- so each row's `SetAdd` is a write to a container
-    holding every row before it. Measured on a release build, writing N rows at
-    a batch width of 500, against the same node and payload:
-
-    ========  ==============  ==============
-    rows      elapsed         vs 5,000 rows
-    ========  ==============  ==============
-    5,000       3.05 s          1.0x
-    20,000     39.94 s         13.1x
-    50,000    463.67 s        152.0x
-    ========  ==============  ==============
-
-    Ten times the rows for about a hundred and fifty times the work. Two other
-    online stores driven through the same harness stayed linear over the same
-    range, so this is this write path and not the host.
-
-    Use it for a small view, or for a test fixture that has to clean up after
-    itself. For a production view of any size, leave it off and reclaim rows
-    with :attr:`key_ttl_seconds` instead -- an expiry costs one command per row
-    once, not one container rewrite per row.
+    Tracking is spread over 1,024 deterministic sets. Each set therefore holds
+    roughly one key in 1,024 instead of becoming a single ever-growing hot
+    container. The count is fixed rather than configurable so a deployment
+    cannot strand keys by changing it before teardown. Teardown also reads the
+    former unsharded set, so views written by an older provider remain
+    cleanable after an upgrade.
     """
 
     teardown_batch_size: int = 512
@@ -390,7 +376,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             commands.append(
                 {
                     "kind": "set_add",
-                    "key": self._teardown_set_key(config, view_name),
+                    "key": self._teardown_shard_key(config, view_name, key),
                     "member": key.encode("utf-8"),
                 }
             )
@@ -516,6 +502,20 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
     def _teardown_set_key(config: RepoConfig, view_name: str) -> str:
         return f"fkeys:{config.project}:{view_name}"
 
+    @classmethod
+    def _teardown_shard_key(
+        cls, config: RepoConfig, view_name: str, row_key: str
+    ) -> str:
+        shard = zlib.crc32(row_key.encode("utf-8")) & (_TEARDOWN_TRACKING_SHARDS - 1)
+        return f"{cls._teardown_set_key(config, view_name)}:{shard:03x}"
+
+    @classmethod
+    def _teardown_shard_keys(
+        cls, config: RepoConfig, view_name: str
+    ) -> List[str]:
+        prefix = cls._teardown_set_key(config, view_name)
+        return [f"{prefix}:{shard:03x}" for shard in range(_TEARDOWN_TRACKING_SHARDS)]
+
     # -- reads ---------------------------------------------------------------
 
     def online_read(
@@ -635,10 +635,8 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         batch_size = max(1, int(online_config.teardown_batch_size))
         for table in tables:
             view_name = self._view_name(table, config)
-            set_key = self._teardown_set_key(config, view_name)
-            members = client.execute({"kind": "set_members", "key": set_key}).get(
-                "members"
-            ) or []
+            legacy_set_key = self._teardown_set_key(config, view_name)
+            shard_keys = self._teardown_shard_keys(config, view_name)
             # DELETE THIS VIEW'S FIELDS, NOT THE WHOLE ROW. The layout is one
             # hash per (project, entity key), SHARED BY EVERY FEATURE VIEW in
             # the project -- the view appears only in the FIELD names. So a
@@ -661,33 +659,79 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             fields = [
                 _feature_field(view_name, feature.name) for feature in table.features
             ] + [_ts_field(view_name)]
-            commands: List[Dict[str, Any]] = []
-            for member in members:
-                raw = decode_bytes(member)
-                if raw is None:
-                    continue
-                row_key = raw.decode("utf-8")
-                commands.extend(
-                    {"kind": "hash_delete", "key": row_key, "field": field}
-                    for field in fields
-                )
-            # The tracking set is dropped LAST, and only after every key it
-            # named is gone. If a chunk fails partway, the set still lists the
-            # survivors, so a re-run finishes the job; dropping the set first
-            # would strand whatever remained with nothing left to name it.
+            row_keys = set()
+            active_set_keys = []
+            pending_deletes: List[Dict[str, Any]] = []
             deleted = 0
-            for start in range(0, len(commands), batch_size):
-                chunk = commands[start : start + batch_size]
-                client.batch_execute(chunk)
-                deleted += len(chunk)
-            client.batch_execute([{"kind": "common_delete", "key": set_key}])
+            field_delete_round_trips = 0
+
+            def delete_members(members: Sequence[Any]) -> None:
+                nonlocal deleted, field_delete_round_trips
+                for member in members:
+                    raw = decode_bytes(member)
+                    if raw is None:
+                        continue
+                    row_key = raw.decode("utf-8")
+                    if row_key in row_keys:
+                        continue
+                    row_keys.add(row_key)
+                    for field in fields:
+                        pending_deletes.append(
+                            {"kind": "hash_delete", "key": row_key, "field": field}
+                        )
+                        if len(pending_deletes) == batch_size:
+                            client.batch_execute(pending_deletes)
+                            deleted += len(pending_deletes)
+                            field_delete_round_trips += 1
+                            pending_deletes.clear()
+
+            legacy_members = client.execute(
+                {"kind": "set_members", "key": legacy_set_key}
+            ).get("members") or []
+            if legacy_members:
+                active_set_keys.append(legacy_set_key)
+                delete_members(legacy_members)
+
+            tracking_read_round_trips = 1
+            read_batch_size = client.max_batch_commands
+            for start in range(0, len(shard_keys), read_batch_size):
+                key_batch = shard_keys[start : start + read_batch_size]
+                shard_answers = client.batch_execute(
+                    [{"kind": "set_members", "key": key} for key in key_batch]
+                )
+                tracking_read_round_trips += 1
+                for set_key, answer in zip(key_batch, shard_answers):
+                    shard_members = answer.get("members") or []
+                    if shard_members:
+                        active_set_keys.append(set_key)
+                        delete_members(shard_members)
+
+            if pending_deletes:
+                client.batch_execute(pending_deletes)
+                deleted += len(pending_deletes)
+                field_delete_round_trips += 1
+                pending_deletes.clear()
+
+            # Tracking sets are dropped LAST, only after every row they named
+            # has lost this view's fields. If a chunk fails partway, remaining
+            # sets still name their rows and a re-run finishes the cleanup.
+            tracking_deletes = [
+                {"kind": "common_delete", "key": set_key}
+                for set_key in active_set_keys
+            ]
+            tracking_delete_round_trips = 0
+            for start in range(0, len(tracking_deletes), batch_size):
+                client.batch_execute(tracking_deletes[start : start + batch_size])
+                tracking_delete_round_trips += 1
             logger.info(
                 "temporalstore: tore down view=%s rows=%d fields=%d in %d round "
                 "trip(s) of at most %d",
                 view_name,
-                len(members),
+                len(row_keys),
                 deleted,
-                (len(commands) + batch_size - 1) // batch_size + 1,
+                field_delete_round_trips
+                + tracking_read_round_trips
+                + tracking_delete_round_trips,
                 batch_size,
             )
 

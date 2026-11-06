@@ -59,9 +59,41 @@ class RecordingClient(TemporalStoreClient):
         self._binary_write_supported = False
         self.sent = []
         self.answers = list(answers or [])
+        self.tracking_members = None
 
     def _answer(self, path, document):
         self.sent.append((path, document))
+        if self.tracking_members is not None:
+            if path == "/execute" and document["command"]["kind"] == "set_members":
+                key = document["command"]["key"]
+                return ok(
+                    {
+                        "kind": "members",
+                        "members": [
+                            list(member) for member in self.tracking_members.get(key, [])
+                        ],
+                    }
+                )
+            if path == "/batch_execute" and all(
+                command["kind"] == "set_members" for command in document["commands"]
+            ):
+                return {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [
+                        ok(
+                            {
+                                "kind": "members",
+                                "members": [
+                                    list(member)
+                                    for member in self.tracking_members.get(
+                                        command["key"], []
+                                    )
+                                ],
+                            }
+                        )
+                        for command in document["commands"]
+                    ],
+                }
         if self.answers:
             return self.answers.pop(0)
         if path == "/batch_execute":
@@ -589,6 +621,14 @@ class OnlineStoreTest(unittest.TestCase):
         )
         return client
 
+    def _install_tracking(self, members_by_key=None, legacy_members=None):
+        client = self._install()
+        client.tracking_members = dict(members_by_key or {})
+        if legacy_members:
+            legacy_key = self.store._teardown_set_key(self.config, "stats")
+            client.tracking_members[legacy_key] = list(legacy_members)
+        return client
+
     def test_a_write_sends_one_hash_multi_set_per_row_in_one_round_trip(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
@@ -905,26 +945,26 @@ class OnlineStoreTest(unittest.TestCase):
         commands = client.sent[0][1]["commands"]
         kinds = [c["kind"] for c in commands]
         self.assertEqual(kinds, ["hash_multi_set", "hash_multi_set", "set_add", "set_add"])
-        set_key = commands[2]["key"]
-        self.assertEqual(set_key, "fkeys:proj:stats")
         tracked = {decode_bytes(c["member"]).decode() for c in commands[2:]}
         written = {c["key"] for c in commands[:2]}
         self.assertEqual(
             tracked, written, "the tracked members must be exactly the keys written"
         )
+        for command in commands[2:]:
+            member = decode_bytes(command["member"]).decode()
+            self.assertEqual(
+                command["key"],
+                self.store._teardown_shard_key(self.config, "stats", member),
+            )
 
-        # Now tear down: one set_members read, then bounded batches of deletes,
-        # then the tracking set dropped last and on its own.
-        client = self._install(
-            [
-                ok(
-                    {
-                        "kind": "members",
-                        "members": [list(k.encode()) for k in sorted(written)],
-                    }
-                ),
-            ]
-        )
+        members_by_key = {}
+        for command in commands[2:]:
+            members_by_key.setdefault(command["key"], []).append(
+                decode_bytes(command["member"])
+            )
+        # Now tear down: one legacy read plus bounded shard reads, then bounded
+        # batches of field deletes and the occupied tracking sets dropped last.
+        client = self._install_tracking(members_by_key)
         self.store.teardown(self.config, [self.view], [self.entity])
         self.assertEqual(client.sent[0][0], "/execute")
         self.assertEqual(client.sent[0][1]["command"]["kind"], "set_members")
@@ -936,7 +976,7 @@ class OnlineStoreTest(unittest.TestCase):
                     field_deletes.append((command["key"], command["field"]))
                 elif command["kind"] == "common_delete":
                     key_deletes.append(command["key"])
-                else:
+                elif command["kind"] != "set_members":
                     self.fail(f"unexpected command {command['kind']}")
 
         # THE ROWS ARE NOT DELETED, THEIR FIELDS ARE. The row is shared by every
@@ -956,11 +996,10 @@ class OnlineStoreTest(unittest.TestCase):
         # dropped LAST: while any row it names still holds this view's fields,
         # the set is the only thing that names them, so a run that failed
         # partway can be repeated.
-        self.assertEqual(key_deletes, [set_key])
+        self.assertEqual(set(key_deletes), set(members_by_key))
         last_path, last_document = client.sent[-1]
-        self.assertEqual(
-            last_document["commands"][-1],
-            {"kind": "common_delete", "key": set_key},
+        self.assertTrue(
+            all(command["kind"] == "common_delete" for command in last_document["commands"])
         )
         self.assertEqual(
             len(field_deletes),
@@ -1060,19 +1099,24 @@ class OnlineStoreTest(unittest.TestCase):
         }
         self.assertEqual(len(written), rows, "the fixture must really hold 100 keys")
 
-        client = self._install(
-            [
-                ok(
-                    {
-                        "kind": "members",
-                        "members": [list(k.encode()) for k in sorted(written)],
-                    }
-                ),
-            ]
-        )
+        tracking_commands = [
+            command
+            for command in client.sent[0][1]["commands"]
+            if command["kind"] == "set_add"
+        ]
+        members_by_key = {}
+        for command in tracking_commands:
+            members_by_key.setdefault(command["key"], []).append(
+                decode_bytes(command["member"])
+            )
+        client = self._install_tracking(members_by_key)
         self.store.teardown(self.config, [self.view], [self.entity])
 
-        batches = [document["commands"] for _, document in client.sent[1:]]
+        batches = [
+            [command for command in document["commands"] if command["kind"] != "set_members"]
+            for _, document in client.sent[1:]
+        ]
+        batches = [batch for batch in batches if batch]
         self.assertTrue(batches, "teardown sent no deletes at all")
         largest = max(len(b) for b in batches)
         self.assertLessEqual(
@@ -1082,7 +1126,6 @@ class OnlineStoreTest(unittest.TestCase):
             f"the request size is still a property of the data",
         )
         commands = [c for b in batches for c in b]
-        set_key = self.store._teardown_set_key(self.config, "stats")
         field_deletes = [c for c in commands if c["kind"] == "hash_delete"]
         key_deletes = [c for c in commands if c["kind"] == "common_delete"]
         # One hash_delete per (row, field): this view has one feature plus its
@@ -1091,8 +1134,8 @@ class OnlineStoreTest(unittest.TestCase):
         # harder case for it.
         self.assertEqual(len(field_deletes), rows * 2)
         self.assertEqual({c["key"] for c in field_deletes}, written)
-        self.assertEqual([c["key"] for c in key_deletes], [set_key])
-        self.assertEqual(commands[-1], {"kind": "common_delete", "key": set_key})
+        self.assertEqual({c["key"] for c in key_deletes}, set(members_by_key))
+        self.assertTrue(all(c["kind"] == "common_delete" for c in batches[-1]))
 
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.
