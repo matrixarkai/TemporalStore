@@ -278,6 +278,10 @@ message Command {
     ContextSetNodeEmbedding context_set_node_embedding = 56;
     ContextWriteEvent context_write_event = 57;
     ContextWriteExtractedEvent context_write_extracted_event = 58;
+    ContextUpsertEntity context_upsert_entity = 59;
+    ContextUpsertSummary context_upsert_summary = 60;
+    ContextWriteCompressionEvent context_write_compression_event = 61;
+    ContextWritePackAudit context_write_pack_audit = 62;
   }
 }
 
@@ -1261,4 +1265,108 @@ message ContextWriteExtractedEvent {
   ContextExtractedEventIndexesRecord indexes = 4;
   bool first_write_only = 5;
   bool cold_storage = 6;
+}
+
+// THE DURABLE ENTITY. ALL TEN FIELDS.
+message ContextEntityRecord {
+  uint64 entity_hash = 1;
+  uint64 node_hash = 2;
+  // `#[serde(rename = "type", alias = "entity_type")]` in Rust, so the JSON key is `type` and the
+  // identifier is `entity_type`. A proto field name is not a JSON key and nothing reads it as one,
+  // so it is named for the identifier.
+  uint32 entity_type = 3;
+  string name = 4;
+  string value = 5;
+  uint64 updated_at_ms = 6;
+  uint64 valid_from_ms = 7;
+  float confidence = 8;
+  repeated uint64 source_event_hashes = 9;
+  // Inline, `repeated float`, packed, and NOT quantised.
+  //
+  // NO MODEL HASH, which is `ContextEntity`'s existing design rather than a guard dropped here --
+  // the entity vector has never carried one, exactly as the event vector has not. Compare
+  // ContextSummaryRecord below, which DOES carry one and must keep it.
+  repeated float vector = 10;
+}
+
+// THE DURABLE SUMMARY. ALL SIX FIELDS, AND ONE OF THEM IS AN ENCODER GUARD IN ITS OWN RIGHT.
+//
+// `embedding_model_hash` here is the FOURTH such guard in this file and must not be shared with,
+// defaulted from or folded into any of the other three -- `ContextNodeRecord.embedding_model_hash`,
+// `ContextNodeRecord.summary_vector_model_hash` and `ContextSetNodeEmbedding.model_hash`. The
+// reason is in the Rust doc on the field: the retrieve pass scores a node's OWN vector and this
+// summary's vector into ONE score map, so a summary scored under a replaced encoder marks the node
+// scored and withdraws the lexical fallback the declined node was routed to. That is worse than
+// being un-embedded, not equal to it.
+//
+// Zeroing it loses no datum: it disarms the check. Two encoders truncated to the same width give
+// no length error, only a cosine across two vector spaces. Zero means unknown -- a summary written
+// before the field existed, or one carrying no vector -- and unknown never conflicts.
+message ContextSummaryRecord {
+  uint64 node_hash = 1;
+  uint32 level = 2;
+  string text = 3;
+  uint64 valid_from_ms = 4;
+  // NOT quantised.
+  repeated float vector = 5;
+  // The guard, beside the vector it describes. See above.
+  uint64 embedding_model_hash = 6;
+}
+
+message ContextCompressionEventRecord {
+  uint64 compression_id_hash = 1;
+  uint64 node_hash = 2;
+  uint64 source_start_ms = 3;
+  uint64 source_end_ms = 4;
+  uint64 compressed_time_ms = 5;
+  string summary = 6;
+}
+
+message ContextAuditRefRecord {
+  uint64 node_hash = 1;
+  uint64 event_time_ms = 2;
+  string reason = 3;
+}
+
+message ContextPackAuditRecord {
+  string query_id = 1;
+  uint64 session_hash = 2;
+  uint64 request_time_ms = 3;
+  uint64 query_hash = 4;
+  uint32 max_prompt_tokens = 5;
+  uint32 selected_tokens = 6;
+  // REPEATED, so there is nothing to refuse: a repeated field has no presence on the wire in
+  // proto3, and `#[serde(default)]` on the Rust side already takes an absent list as empty.
+  //
+  // The two lists are kept SEPARATE and are asserted separately. Selected and blocked are the two
+  // halves of the audit's verdict, so a converter that crossed them would reverse every decision
+  // the audit records while every field still round-tripped.
+  repeated ContextAuditRefRecord selected_refs = 7;
+  repeated ContextAuditRefRecord blocked_refs = 8;
+}
+
+message ContextUpsertEntity {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, never defaulted: a nested message is always optional on the wire,
+  // and an upsert with no entity would file a record of all zeros that cannot afterwards be told
+  // from a real one.
+  ContextEntityRecord entity = 2;
+}
+
+message ContextUpsertSummary {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextSummaryRecord summary = 2;
+}
+
+message ContextWriteCompressionEvent {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextCompressionEventRecord event = 2;
+}
+
+message ContextWritePackAudit {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextPackAuditRecord audit = 2;
 }
