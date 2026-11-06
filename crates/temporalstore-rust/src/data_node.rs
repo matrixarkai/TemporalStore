@@ -2683,6 +2683,18 @@ impl DataNodeRuntime {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        self.batch_execute_inner(request, false)
+    }
+
+    fn batch_execute_packed_hash_rows(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        self.batch_execute_inner(request, true)
+    }
+
+    fn batch_execute_inner(
+        &self,
+        request: BatchExecuteRequest,
+        packed_hash_rows: bool,
+    ) -> BatchExecuteResponse {
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             request.shard_id,
@@ -2701,7 +2713,11 @@ impl DataNodeRuntime {
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
             let dirty_keys = write_command_keys(&request.commands);
-            let response = self.inner.engine.batch_execute(request);
+            let response = if packed_hash_rows {
+                self.inner.engine.batch_execute_packed_hash_rows(request)
+            } else {
+                self.inner.engine.batch_execute(request)
+            };
             mark_dirty_for_successful_keys(
                 &self.inner.dirty,
                 shard_id,
@@ -2711,7 +2727,13 @@ impl DataNodeRuntime {
             return response;
         }
         drop(shared_wal_sink);
-        let response = self.inner.engine.batch_execute(request.clone());
+        let response = if packed_hash_rows {
+            self.inner
+                .engine
+                .batch_execute_packed_hash_rows(request.clone())
+        } else {
+            self.inner.engine.batch_execute(request.clone())
+        };
         mark_dirty_for_successful_commands(
             &self.inner.dirty,
             request.shard_id,
@@ -2846,7 +2868,7 @@ impl DataNodeRuntime {
 
         let fields = request.fields;
         let timestamp_field = request.timestamp_field;
-        let response = self.batch_execute(BatchExecuteRequest {
+        let response = self.batch_execute_packed_hash_rows(BatchExecuteRequest {
             shard_id: request.shard_id,
             commands: request
                 .rows
