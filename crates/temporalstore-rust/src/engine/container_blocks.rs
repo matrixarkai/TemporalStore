@@ -324,6 +324,26 @@ pub(super) enum Utf8ContainerProjection {
     Corrupt(String),
 }
 
+/// The requested-name index shared by every row in one hash projection batch.
+pub(super) struct Utf8ProjectionPlan<'a> {
+    components: &'a [String],
+    first_position: std::collections::HashMap<&'a [u8], usize>,
+}
+
+impl<'a> Utf8ProjectionPlan<'a> {
+    pub(super) fn new(components: &'a [String]) -> Self {
+        let mut first_position =
+            std::collections::HashMap::<&[u8], usize>::with_capacity(components.len());
+        for (index, component) in components.iter().enumerate() {
+            first_position.entry(component.as_bytes()).or_insert(index);
+        }
+        Self {
+            components,
+            first_position,
+        }
+    }
+}
+
 fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
@@ -703,6 +723,14 @@ pub(super) fn project_utf8_container_elements(
     bytes: &[u8],
     components: &[String],
 ) -> Utf8ContainerProjection {
+    let plan = Utf8ProjectionPlan::new(components);
+    project_utf8_container_elements_with_plan(bytes, &plan)
+}
+
+pub(super) fn project_utf8_container_elements_with_plan(
+    bytes: &[u8],
+    plan: &Utf8ProjectionPlan<'_>,
+) -> Utf8ContainerProjection {
     let Some(header) = frame_header(bytes) else {
         return Utf8ContainerProjection::NotFramed;
     };
@@ -714,14 +742,8 @@ pub(super) fn project_utf8_container_elements(
         return Utf8ContainerProjection::OtherSpelling;
     }
 
-    let mut first_position = std::collections::HashMap::<&[u8], usize>::with_capacity(
-        components.len(),
-    );
-    for (index, component) in components.iter().enumerate() {
-        first_position.entry(component.as_bytes()).or_insert(index);
-    }
-    let mut values = vec![None; components.len()];
-    let mut found = vec![false; components.len()];
+    let mut values = vec![None; plan.components.len()];
+    let mut found = vec![false; plan.components.len()];
     let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
         Ok(count) => count,
@@ -738,7 +760,7 @@ pub(super) fn project_utf8_container_elements(
             Ok(item) => item,
             Err(error) => return Utf8ContainerProjection::Corrupt(error),
         };
-        let Some(&position) = first_position.get(key) else {
+        let Some(&position) = plan.first_position.get(key) else {
             continue;
         };
         if !found[position] {
@@ -748,8 +770,8 @@ pub(super) fn project_utf8_container_elements(
             }
         }
     }
-    for (index, component) in components.iter().enumerate() {
-        let first = first_position[component.as_bytes()];
+    for (index, component) in plan.components.iter().enumerate() {
+        let first = plan.first_position[component.as_bytes()];
         if index != first && found[first] {
             values[index] = values[first].clone();
         }

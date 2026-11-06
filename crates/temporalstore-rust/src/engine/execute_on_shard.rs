@@ -457,6 +457,117 @@ pub fn reset_tombstone_append_failure_count() {
     TOMBSTONE_APPEND_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub(super) fn execute_hash_multi_get(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    key: &str,
+    fields: &[String],
+    projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
+) -> ExecuteOutcome {
+    if remove_if_expired(shard, key) {
+        let _ = cache.invalidate_record(shard_id, "hash", key);
+        return ExecuteOutcome {
+            response: CommandResponse::Values {
+                values: vec![None; fields.len()],
+            },
+            mutated: true,
+        };
+    }
+    let hash_fields = shard.hashes.get(key);
+    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    // A packed row gives every present field the same address. Detect that common case
+    // without allocating a per-command address map, fetch its frame once, and project all
+    // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
+    // the established independent-read path.
+    let mut shared: Option<(&ElementEntry, &str)> = None;
+    let mut distinct_addresses = false;
+    if let Some(entries) = hash_fields {
+        for field in fields {
+            let Some(address) = entries.get(field) else {
+                continue;
+            };
+            match shared {
+                None => shared = Some((address, field.as_str())),
+                Some((held, _)) if held == address => {}
+                Some(_) => {
+                    distinct_addresses = true;
+                    break;
+                }
+            }
+        }
+    }
+    let values = if !distinct_addresses {
+        if let Some((address, first_field)) = shared {
+            let frame = read_block_frame_bytes(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                BlockIdentity::of(shard_id, "hash", key, Some(first_field)),
+                Some(routing_bucket),
+            );
+            match frame.as_deref().map(|bytes| {
+                container_blocks::project_utf8_container_elements_with_plan(
+                    bytes,
+                    projection_plan,
+                )
+            }) {
+                Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
+                    for (index, field) in fields.iter().enumerate() {
+                        if hash_fields.and_then(|entries| entries.get(field)).is_none() {
+                            values[index] = None;
+                        }
+                    }
+                    values
+                }
+                Some(container_blocks::Utf8ContainerProjection::Corrupt(_)) => {
+                    note_corrupt_container_block();
+                    vec![None; fields.len()]
+                }
+                Some(container_blocks::Utf8ContainerProjection::NotFramed)
+                | Some(container_blocks::Utf8ContainerProjection::OtherSpelling) => fields
+                    .iter()
+                    .map(|field| {
+                        hash_fields
+                            .and_then(|entries| entries.get(field))
+                            .and_then(|_| frame.as_deref())
+                            .and_then(|bytes| select_container_value(bytes, field))
+                    })
+                    .collect(),
+                None => vec![None; fields.len()],
+            }
+        } else {
+            vec![None; fields.len()]
+        }
+    } else {
+        fields
+            .iter()
+            .map(|field| {
+                hash_fields
+                    .and_then(|entries| entries.get(field))
+                    .and_then(|address| {
+                        read_block_bytes(
+                            cache,
+                            block_store,
+                            shard_id,
+                            address,
+                            BlockIdentity::of(shard_id, "hash", key, Some(field.as_str())),
+                            Some(routing_bucket),
+                        )
+                    })
+            })
+            .collect()
+    };
+    ExecuteOutcome {
+        response: CommandResponse::Values { values },
+        mutated: false,
+    }
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -1064,113 +1175,18 @@ pub(crate) fn execute_on_shard(
             })
         }
         Command::HashMultiGet { key, fields } => {
-            if remove_if_expired(shard, &key) {
-                mutated = true;
-                let _ = cache.invalidate_record(shard_id, "hash", &key);
-                return ExecuteOutcome {
-                    response: CommandResponse::Values {
-                        values: vec![None; fields.len()],
-                    },
-                    mutated,
-                };
-            }
-            let hash_fields = shard.hashes.get(&key);
-            let routing_bucket =
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // A packed row gives every present field the same address. Detect that common case
-            // without allocating a per-command address map, fetch its frame once, and project all
-            // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
-            // the established independent-read path.
-            let mut shared: Option<(&ElementEntry, &str)> = None;
-            let mut distinct_addresses = false;
-            if let Some(entries) = hash_fields {
-                for field in &fields {
-                    let Some(address) = entries.get(field) else {
-                        continue;
-                    };
-                    match shared {
-                        None => shared = Some((address, field.as_str())),
-                        Some((held, _)) if held == address => {}
-                        Some(_) => {
-                            distinct_addresses = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            let values = if !distinct_addresses {
-                if let Some((address, first_field)) = shared {
-                    let frame = read_block_frame_bytes(
-                        cache,
-                        block_store,
-                        shard_id,
-                        address,
-                        BlockIdentity::of(
-                            shard_id,
-                            "hash",
-                            &key,
-                            Some(first_field),
-                        ),
-                        Some(routing_bucket),
-                    );
-                    match frame.as_deref().map(|bytes| {
-                        container_blocks::project_utf8_container_elements(bytes, &fields)
-                    }) {
-                        Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
-                            for (index, field) in fields.iter().enumerate() {
-                                if hash_fields
-                                    .and_then(|entries| entries.get(field))
-                                    .is_none()
-                                {
-                                    values[index] = None;
-                                }
-                            }
-                            values
-                        }
-                        Some(container_blocks::Utf8ContainerProjection::Corrupt(_)) => {
-                            note_corrupt_container_block();
-                            vec![None; fields.len()]
-                        }
-                        Some(container_blocks::Utf8ContainerProjection::NotFramed)
-                        | Some(container_blocks::Utf8ContainerProjection::OtherSpelling) => fields
-                            .iter()
-                            .map(|field| {
-                                hash_fields
-                                    .and_then(|entries| entries.get(field))
-                                    .and_then(|_| frame.as_deref())
-                                    .and_then(|bytes| select_container_value(bytes, field))
-                            })
-                            .collect(),
-                        None => vec![None; fields.len()],
-                    }
-                } else {
-                    vec![None; fields.len()]
-                }
-            } else {
-                fields
-                    .iter()
-                    .map(|field| {
-                        hash_fields
-                            .and_then(|entries| entries.get(field))
-                            .and_then(|address| {
-                                read_block_bytes(
-                                    cache,
-                                    block_store,
-                                    shard_id,
-                                    address,
-                                    BlockIdentity::of(
-                                        shard_id,
-                                        "hash",
-                                        &key,
-                                        Some(field.as_str()),
-                                    ),
-                                    Some(routing_bucket),
-                                )
-                            })
-                    })
-                    .collect()
-            };
-            CommandResponse::Values { values }
+            let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+            return execute_hash_multi_get(
+                cache,
+                block_store,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                &key,
+                &fields,
+                &projection_plan,
+            );
         }
         Command::HashMultiSet { key, entries } => {
             remove_if_expired(shard, &key);

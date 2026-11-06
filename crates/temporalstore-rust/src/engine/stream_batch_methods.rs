@@ -169,6 +169,211 @@ impl TemporalEngine {
         }
     }
 
+    fn compact_hash_multi_get_response(
+        field_count: usize,
+        response: BatchExecuteResponse,
+    ) -> BatchHashMultiGetResponse {
+        if !response.status.ok {
+            return BatchHashMultiGetResponse {
+                status: response.status,
+                rows: Vec::new(),
+                errors: Vec::new(),
+            };
+        }
+        let mut rows = Vec::with_capacity(response.responses.len());
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if !item.status.ok {
+                errors.push(BatchHashMultiGetError {
+                    index,
+                    status: item.status,
+                });
+                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                continue;
+            }
+            match item.response {
+                CommandResponse::Values { values } => rows.push(BatchHashMultiGetRow(values)),
+                _ => {
+                    errors.push(BatchHashMultiGetError {
+                        index,
+                        status: Status::error(
+                            "unexpected_read_response",
+                            "hash multi-get returned a non-values response",
+                        ),
+                    });
+                    rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                }
+            }
+        }
+        BatchHashMultiGetResponse {
+            status: Status::ok(),
+            rows,
+            errors,
+        }
+    }
+
+    /// Serve one shared field projection without expanding it into owned commands per row.
+    pub fn batch_hash_multi_get_compact(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchHashMultiGetResponse {
+        let BatchHashMultiGetRequest {
+            shard_id,
+            keys,
+            fields,
+        } = request;
+        let field_count = fields.len();
+        if keys.is_empty() {
+            return BatchHashMultiGetResponse {
+                status: Status::ok(),
+                rows: Vec::new(),
+                errors: Vec::new(),
+            };
+        }
+
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return BatchHashMultiGetResponse {
+                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                rows: Vec::new(),
+                errors: Vec::new(),
+            };
+        };
+        if !replaying_wal()
+            && self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .map(|info| info.recovering)
+                .unwrap_or(false)
+        {
+            return BatchHashMultiGetResponse {
+                status: Status::error(
+                    "shard_not_loaded",
+                    "shard is recovering (WAL replay in progress)",
+                ),
+                rows: Vec::new(),
+                errors: Vec::new(),
+            };
+        }
+
+        // Lazy expiry is a mutating read and must retain the generic batch's WAL/index handling.
+        // Feature-serving rows do not use TTLs, so the no-command-expansion path remains the
+        // common case while any shard that does carry expiry state keeps the established behavior.
+        if !shard.expires_at_ms().is_empty() {
+            drop(shards);
+            let response = self.batch_execute(BatchExecuteRequest {
+                shard_id,
+                commands: keys
+                    .into_iter()
+                    .map(|key| Command::HashMultiGet {
+                        key,
+                        fields: fields.clone(),
+                    })
+                    .collect(),
+            });
+            return Self::compact_hash_multi_get_response(field_count, response);
+        }
+
+        let config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_default();
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .cloned();
+        let start_routing_bucket = info
+            .as_ref()
+            .map(|info| info.start_routing_bucket)
+            .unwrap_or_default();
+        let end_routing_bucket = info
+            .as_ref()
+            .map(|info| info.end_routing_bucket)
+            .unwrap_or(u32::MAX);
+        if !(self.wal_store.flat_append() && shard.promote_scan_done) {
+            self.promote_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if promote_model_maps_to_bucket_index_authority(
+                shard_id,
+                shard,
+                start_routing_bucket,
+                end_routing_bucket,
+            ) {
+                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+            }
+            if self.wal_store.flat_append() && shard_has_model_entries(shard) {
+                shard.promote_scan_done = true;
+            }
+        }
+
+        let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+        let mut rows = Vec::with_capacity(keys.len());
+        let mut errors = Vec::new();
+        for (index, key) in keys.iter().enumerate() {
+            let rejected = if !raft_applying() && !replaying_wal() {
+                if !self.charge_quota(shard_id, quota::QuotaKind::Read) {
+                    Some(Status::error(
+                        "quota_exhausted",
+                        format!("shard {shard_id} is over its read rate limit"),
+                    ))
+                } else {
+                    self.check_admission(shard_id, false, &config, &info).err()
+                }
+            } else {
+                None
+            };
+            if let Some(status) = rejected {
+                errors.push(BatchHashMultiGetError { index, status });
+                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                continue;
+            }
+
+            let outcome = execute_on_shard::execute_hash_multi_get(
+                &self.cache,
+                &self.block_store,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                key,
+                &fields,
+                &projection_plan,
+            );
+            debug_assert!(!outcome.mutated, "TTL state must use the generic batch path");
+            let now = now_ms();
+            crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
+                let routing_bucket =
+                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                shard.bucket_recency.insert(routing_bucket, now);
+            });
+            match outcome.response {
+                CommandResponse::Values { values } => rows.push(BatchHashMultiGetRow(values)),
+                _ => {
+                    errors.push(BatchHashMultiGetError {
+                        index,
+                        status: Status::error(
+                            "unexpected_read_response",
+                            "hash multi-get returned a non-values response",
+                        ),
+                    });
+                    rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                }
+            }
+        }
+        BatchHashMultiGetResponse {
+            status: Status::ok(),
+            rows,
+            errors,
+        }
+    }
+
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
         // and the records this path appends are built from the commands -- so nothing ever took
