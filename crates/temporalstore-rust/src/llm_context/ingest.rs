@@ -6,8 +6,9 @@ use std::error::Error;
 use thiserror::Error;
 
 use super::{
-    EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError, EmbeddingKey,
-    EmbeddingVector,
+    CompactEmbeddingBatch, EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError,
+    EmbeddingKey, EmbeddingRecoveryReport, EmbeddingVector, TemporalEmbeddingStore,
+    TemporalEmbeddingStoreError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +105,8 @@ where
     EmbeddingShape { values: usize, dimensions: usize },
     #[error(transparent)]
     Index(#[from] EmbeddingIndexError),
+    #[error(transparent)]
+    Store(#[from] TemporalEmbeddingStoreError),
 }
 
 pub struct LlmContextEngine<X, E>
@@ -152,6 +155,18 @@ where
         self.ingest_extracted(messages.len(), &extracted)
     }
 
+    pub fn ingest_messages_durable(
+        &mut self,
+        messages: &[ContextMessage],
+        store: &TemporalEmbeddingStore<'_>,
+    ) -> Result<ContextIngestReport, ContextEngineError<X::Error, E::Error>> {
+        let extracted = self
+            .extractor
+            .extract_batch(messages)
+            .map_err(ContextEngineError::Extraction)?;
+        self.ingest_extracted_durable(messages.len(), &extracted, store)
+    }
+
     pub fn ingest_extracted(
         &mut self,
         input_messages: usize,
@@ -168,25 +183,8 @@ where
             });
         }
 
-        let texts: Vec<&str> = extracted.iter().map(|item| item.text.as_str()).collect();
-        let embeddings = self
-            .embedder
-            .embed_batch(&texts)
-            .map_err(ContextEngineError::Embedding)?;
-        self.validate_embedding_batch(extracted.len(), &embeddings)?;
-
-        let vectors: Vec<EmbeddingVector<'_>> = extracted
-            .iter()
-            .enumerate()
-            .map(|(index, item)| EmbeddingVector {
-                key: EmbeddingKey {
-                    tenant_id: item.tenant_id,
-                    item_id: item.context_id,
-                },
-                values: embeddings.row(index),
-            })
-            .collect();
-        let write = self.index.upsert_batch(&vectors)?;
+        let compact = self.prepare_extracted(extracted)?;
+        let write = self.index.upsert_compact_batch(&compact)?;
         Ok(ContextIngestReport {
             input_messages,
             extracted_contexts: extracted.len(),
@@ -195,6 +193,36 @@ where
             total_embeddings: write.total_entries,
             quantized_vector_bytes: write.quantized_vector_bytes,
         })
+    }
+
+    pub fn ingest_extracted_durable(
+        &mut self,
+        input_messages: usize,
+        extracted: &[ExtractedContext],
+        store: &TemporalEmbeddingStore<'_>,
+    ) -> Result<ContextIngestReport, ContextEngineError<X::Error, E::Error>> {
+        if extracted.is_empty() {
+            return self.ingest_extracted(input_messages, extracted);
+        }
+        let compact = self.prepare_extracted(extracted)?;
+        store.persist_batch(&compact)?;
+        let write = self.index.upsert_compact_batch(&compact)?;
+        Ok(ContextIngestReport {
+            input_messages,
+            extracted_contexts: extracted.len(),
+            inserted_embeddings: write.inserted,
+            updated_embeddings: write.updated,
+            total_embeddings: write.total_entries,
+            quantized_vector_bytes: write.quantized_vector_bytes,
+        })
+    }
+
+    pub fn recover_tenant(
+        &mut self,
+        tenant_id: u64,
+        store: &TemporalEmbeddingStore<'_>,
+    ) -> Result<EmbeddingRecoveryReport, ContextEngineError<X::Error, E::Error>> {
+        Ok(store.recover_tenant(tenant_id, &mut self.index)?)
     }
 
     pub fn retrieve(
@@ -237,13 +265,40 @@ where
         }
         Ok(())
     }
+
+    fn prepare_extracted(
+        &self,
+        extracted: &[ExtractedContext],
+    ) -> Result<CompactEmbeddingBatch, ContextEngineError<X::Error, E::Error>> {
+        let texts: Vec<&str> = extracted.iter().map(|item| item.text.as_str()).collect();
+        let embeddings = self
+            .embedder
+            .embed_batch(&texts)
+            .map_err(ContextEngineError::Embedding)?;
+        self.validate_embedding_batch(extracted.len(), &embeddings)?;
+        let vectors: Vec<EmbeddingVector<'_>> = extracted
+            .iter()
+            .enumerate()
+            .map(|(index, item)| EmbeddingVector {
+                key: EmbeddingKey {
+                    tenant_id: item.tenant_id,
+                    item_id: item.context_id,
+                },
+                values: embeddings.row(index),
+            })
+            .collect();
+        Ok(self.index.prepare_batch(&vectors)?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
 
+    use matrixcache::MultiLayerCache;
+
     use super::*;
+    use crate::TemporalEngine;
 
     struct ExtractEveryMessage;
 
@@ -315,6 +370,34 @@ mod tests {
         let report = engine.ingest_messages(&messages).unwrap();
         assert_eq!(report.inserted_embeddings, 2);
         let hits = engine.retrieve(5, "database durability", 1).unwrap();
+        assert_eq!(hits[0].key.item_id, 20);
+    }
+
+    #[test]
+    fn durable_ingestion_recovers_into_a_fresh_hot_index() {
+        let storage_engine = TemporalEngine::new(MultiLayerCache::default());
+        storage_engine.load_shard(1);
+        let store = TemporalEmbeddingStore::new(&storage_engine, 1, "context").unwrap();
+        let config = EmbeddingIndexConfig::new(2, 16).with_model_hash(73);
+        let messages = vec![ContextMessage {
+            tenant_id: 5,
+            message_id: 20,
+            event_time_ms: 1,
+            role: ContextRole::User,
+            text: "database recovery design".to_string(),
+        }];
+
+        let mut writer =
+            LlmContextEngine::new(config, ExtractEveryMessage, TwoDimensionalEmbedder).unwrap();
+        writer.ingest_messages_durable(&messages, &store).unwrap();
+
+        let mut recovered =
+            LlmContextEngine::new(config, ExtractEveryMessage, TwoDimensionalEmbedder).unwrap();
+        assert_eq!(
+            recovered.recover_tenant(5, &store).unwrap().recovered_rows,
+            1
+        );
+        let hits = recovered.retrieve(5, "database durability", 1).unwrap();
         assert_eq!(hits[0].key.item_id, 20);
     }
 }
