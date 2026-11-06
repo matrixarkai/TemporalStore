@@ -1368,6 +1368,18 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde::pairs")]
         entries: Vec<(String, Vec<u8>)>,
     },
+    /// Atomically replace hash fields when the stored protobuf timestamp is older.
+    ///
+    /// The condition and writes execute under one shard guard. A skipped command does not
+    /// mutate storage and therefore does not enter the WAL.
+    HashMultiSetIfTimestampOlder {
+        key: String,
+        timestamp_field: String,
+        timestamp_seconds: i64,
+        timestamp_nanos: i32,
+        #[serde(with = "crate::bytes_serde::pairs")]
+        entries: Vec<(String, Vec<u8>)>,
+    },
     HashIncrBy {
         key: String,
         field: String,
@@ -2921,6 +2933,32 @@ pub struct BatchHashMultiSetRequest {
     pub shard_id: ShardId,
     pub fields: Vec<String>,
     pub rows: Vec<BatchHashMultiSetRow>,
+}
+
+/// One row in a shared-field conditional hash write.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashTimestampSetRow(
+    pub String,
+    pub i64,
+    pub i32,
+    pub Vec<BatchHashMultiSetValue>,
+);
+
+/// Atomically write shared hash fields when each row's timestamp is newer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashTimestampSetRequest {
+    pub shard_id: ShardId,
+    pub fields: Vec<String>,
+    pub timestamp_field: String,
+    pub rows: Vec<BatchHashTimestampSetRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchConditionalWriteResponse {
+    pub status: Status,
+    pub applied: usize,
+    pub skipped: usize,
+    pub errors: Vec<BatchWriteError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

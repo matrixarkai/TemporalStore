@@ -61,6 +61,7 @@ class RecordingClient(TemporalStoreClient):
         self._shared_field_read_supported = False
         self._compact_shared_field_read_supported = False
         self._shared_field_write_supported = False
+        self._conditional_shared_field_write_supported = False
         self.sent = []
         self.shared_reads = []
         self.shared_writes = []
@@ -670,6 +671,60 @@ class ClientProtocolTest(unittest.TestCase):
         )
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_conditional_shared_write_carries_timestamp_once_per_row(self):
+        class ConditionalWriteClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.documents.append((path, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": 1,
+                        "skipped": 1,
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = ConditionalWriteClient()
+        result = client.batch_hash_timestamp_set(
+            ["ts", "feature"],
+            "ts",
+            [
+                ("a", 20, 3, [b"timestamp-a", b"one"]),
+                ("b", 10, 2, [b"timestamp-b", b"two"]),
+            ],
+        )
+
+        self.assertEqual(result, (1, 1))
+        path, document = client.documents[0]
+        self.assertEqual(path, "/batch_hash_timestamp_set_msgpack")
+        self.assertEqual(document["fields"], ["ts", "feature"])
+        self.assertEqual(document["timestamp_field"], "ts")
+        self.assertEqual(document["rows"][0], ["a", 20, 3, [b"timestamp-a", b"one"]])
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_conditional_write_endpoint_is_remembered(self):
+        class OlderNodeClient(TemporalStoreClient):
+            attempts = 0
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                self.attempts += 1
+                raise TemporalStoreCommandError("http_404", "not found")
+
+        client = OlderNodeClient()
+        rows = [("a", 1, 0, [b"timestamp", b"value"])]
+        self.assertIsNone(client.batch_hash_timestamp_set(["ts", "f"], "ts", rows))
+        self.assertIsNone(client.batch_hash_timestamp_set(["ts", "f"], "ts", rows))
+        self.assertEqual(client.attempts, 1)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_shared_field_write_endpoint_falls_back_once(self):
         class OlderNodeClient(RecordingClient):
             attempts = 0
@@ -933,8 +988,8 @@ class OnlineStoreTest(unittest.TestCase):
             join_keys=["driver_id"], entity_values=[ValueProto(int64_val=driver_id)]
         )
 
-    def _install(self, answers=None):
-        client = RecordingClient(answers)
+    def _install(self, answers=None, client=None):
+        client = client or RecordingClient(answers)
         self.store._client = client
         self.store._client_signature = (
             self.config.online_store.host,
@@ -1078,6 +1133,47 @@ class OnlineStoreTest(unittest.TestCase):
         read_commands = client.sent[0][1]["commands"]
         self.assertEqual(read_commands[0]["fields"], ["_ts:stats"])
         self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_default_write_uses_one_atomic_timestamp_request(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        class ConditionalRecordingClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self._conditional_shared_field_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.sent.append((path, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["rows"]),
+                        "skipped": 0,
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = self._install(client=ConditionalRecordingClient())
+        self.config.online_store.skip_dedup = False
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None)],
+            None,
+        )
+
+        self.assertEqual(client.shared_reads, [])
+        self.assertEqual(len(client.sent), 1)
+        path, document = client.sent[0]
+        self.assertEqual(path, "/batch_hash_timestamp_set_msgpack")
+        self.assertEqual(document["timestamp_field"], "_ts:stats")
+        self.assertEqual(len(document["rows"]), 1)
 
     def test_repeated_entity_writes_share_one_timestamp_read(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto

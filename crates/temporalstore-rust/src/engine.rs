@@ -3609,7 +3609,8 @@ fn command_upsert_components(
         Command::HashSet { key, field, .. } => {
             Some(vec![("hash", key.clone(), Some(field.clone()))])
         }
-        Command::HashMultiSet { key, entries } => Some(
+        Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => Some(
             entries
                 .iter()
                 .map(|(field, _)| ("hash", key.clone(), Some(field.clone())))
@@ -4165,7 +4166,8 @@ fn command_touched_container_elements(
                 field: field.clone(),
             }]
         }
-        Command::HashMultiSet { key, entries } => entries
+        Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => entries
             .iter()
             .map(|(field, _)| TouchedContainerElement::Hash {
                 key: key.clone(),

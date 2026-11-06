@@ -49,8 +49,9 @@ use crate::meta::{
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetError, BatchHashMultiGetRequest,
-    BatchHashMultiGetResponse, BatchHashMultiGetRow, BatchHashMultiSetRequest, BatchWriteError,
+    BatchConditionalWriteResponse, BatchExecuteRequest, BatchExecuteResponse,
+    BatchHashMultiGetError, BatchHashMultiGetRequest, BatchHashMultiGetResponse,
+    BatchHashMultiGetRow, BatchHashMultiSetRequest, BatchHashTimestampSetRequest, BatchWriteError,
     BatchWriteResponse, Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
@@ -2406,7 +2407,7 @@ impl DataNodeRuntime {
             return;
         };
         for (command, response) in commands.iter().zip(responses.iter()) {
-            if response.status.ok && is_write_command(command) {
+            if command_was_applied(command, response) {
                 sink.record_write(shard_id, command);
             }
         }
@@ -2592,20 +2593,30 @@ impl DataNodeRuntime {
             .expect("shared wal sink lock poisoned");
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
+            let conditional = matches!(
+                &request.command,
+                Command::HashMultiSetIfTimestampOlder { .. }
+            );
             let dirty_key = if is_write_command(&request.command) {
                 command_key(&request.command)
             } else {
                 None
             };
             let response = self.inner.engine.execute(request);
-            if response.status.ok {
+            if response.status.ok
+                && (!conditional
+                    || matches!(
+                        &response.response,
+                        CommandResponse::Integer { value } if *value > 0
+                    ))
+            {
                 mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
             }
             return response;
         }
         drop(shared_wal_sink);
         let response = self.inner.engine.execute(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        if command_was_applied(&request.command, &response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
@@ -2637,20 +2648,30 @@ impl DataNodeRuntime {
             .expect("shared wal sink lock poisoned");
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
+            let conditional = matches!(
+                &request.command,
+                Command::HashMultiSetIfTimestampOlder { .. }
+            );
             let dirty_key = if is_write_command(&request.command) {
                 command_key(&request.command)
             } else {
                 None
             };
             let response = self.inner.engine.execute_checked(request);
-            if response.status.ok {
+            if response.status.ok
+                && (!conditional
+                    || matches!(
+                        &response.response.response,
+                        CommandResponse::Integer { value } if *value > 0
+                    ))
+            {
                 mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
             }
             return response;
         }
         drop(shared_wal_sink);
         let response = self.inner.engine.execute_checked(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        if response.status.ok && command_was_applied(&request.command, &response.response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
@@ -2820,6 +2841,106 @@ impl DataNodeRuntime {
                 })
                 .collect(),
         })
+    }
+
+    /// Write shared hash fields only when each stored timestamp is older.
+    ///
+    /// Each row becomes one conditional engine command, so the comparison and all field
+    /// replacements occur under the same shard write guard.
+    pub fn batch_hash_timestamp_set(
+        &self,
+        request: BatchHashTimestampSetRequest,
+    ) -> BatchConditionalWriteResponse {
+        if !request.fields.iter().any(|field| field == &request.timestamp_field) {
+            return BatchConditionalWriteResponse {
+                status: Status::error(
+                    "timestamp_field_missing",
+                    "timestamp_field must be present in fields",
+                ),
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+        if let Some((index, row)) = request
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.3.len() != request.fields.len())
+        {
+            return BatchConditionalWriteResponse {
+                status: Status::error(
+                    "field_value_count_mismatch",
+                    format!(
+                        "row {index} has {} values for {} fields",
+                        row.3.len(),
+                        request.fields.len()
+                    ),
+                ),
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let fields = request.fields;
+        let timestamp_field = request.timestamp_field;
+        let response = self.batch_execute(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSetIfTimestampOlder {
+                    key: row.0,
+                    timestamp_field: timestamp_field.clone(),
+                    timestamp_seconds: row.1,
+                    timestamp_nanos: row.2,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.3.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+                .collect(),
+        });
+        if !response.status.ok {
+            return BatchConditionalWriteResponse {
+                status: response.status,
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let mut applied = 0;
+        let mut skipped = 0;
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if !item.status.ok {
+                errors.push(BatchWriteError {
+                    index,
+                    status: item.status,
+                });
+                continue;
+            }
+            match item.response {
+                CommandResponse::Integer { value: 1 } => applied += 1,
+                CommandResponse::Integer { value: 0 } => skipped += 1,
+                _ => errors.push(BatchWriteError {
+                    index,
+                    status: Status::error(
+                        "unexpected_write_response",
+                        "conditional hash write returned an invalid response",
+                    ),
+                }),
+            }
+        }
+        BatchConditionalWriteResponse {
+            status: Status::ok(),
+            applied,
+            skipped,
+            errors,
+        }
     }
 
     /// Execute a write-only batch and return only its count plus sparse failures.

@@ -40,8 +40,9 @@ use temporalstore_rust::raft::{
     RaftSnapshotPublishReport, RaftSnapshotTriggerReport, ReadIndexResponse,
 };
 use temporalstore_rust::types::{
-    BatchExecuteRequest, BatchHashMultiGetRequest, BatchHashMultiSetRequest, ExecuteRequest,
-    ExecuteResponse, ReplicatedBatchExecuteRequest, ReplicatedExecuteRequest, ShardId, Status,
+    BatchExecuteRequest, BatchHashMultiGetRequest, BatchHashMultiSetRequest,
+    BatchHashTimestampSetRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
+    ReplicatedExecuteRequest, ShardId, Status,
 };
 use temporalstore_rust::{
     handle_authenticated_raft_http, production_raft_security_from_env, production_readiness_report,
@@ -1093,6 +1094,28 @@ fn main() {
                         &Status::error(
                             "batch_too_large",
                             "shared-field hash write exceeds the expansion limit",
+                        ),
+                    ),
+                    Err(err) => json_response(
+                        400,
+                        &Status::error("bad_request", err.to_string()),
+                    ),
+                }
+            }
+            ("POST", "/batch_hash_timestamp_set_msgpack") => {
+                match parse_msgpack::<BatchHashTimestampSetRequest>(&request.body) {
+                    Ok(req)
+                        if req.rows.len() <= 4096
+                            && req.fields.len() <= 4096
+                            && req.rows.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
+                    {
+                        msgpack_response(200, &runtime.batch_hash_timestamp_set(req))
+                    }
+                    Ok(_) => json_response(
+                        400,
+                        &Status::error(
+                            "batch_too_large",
+                            "conditional hash write exceeds the expansion limit",
                         ),
                     ),
                     Err(err) => json_response(

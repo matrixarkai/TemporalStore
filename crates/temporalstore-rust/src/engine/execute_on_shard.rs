@@ -2,9 +2,17 @@
 // Copyright 2026 MatrixArkAI
 
 //! Standalone per-shard command execution extracted from engine.rs.
-use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use crate::engine::timestamped_series::TimestampedSeries as _;
+use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use super::*;
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct HashTimestamp {
+    #[prost(int64, tag = "1")]
+    seconds: i64,
+    #[prost(int32, tag = "2")]
+    nanos: i32,
+}
 
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
 ///
@@ -468,6 +476,56 @@ pub(crate) fn execute_on_shard(
     shard.control_coalesce_persist = control_coalesce_persist;
     shard.control_distinct_sketch = control_distinct_sketch;
     let mut mutated = false;
+    let mut conditional_hash_write = false;
+    let command = match command {
+        Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        } => {
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
+            let stored_timestamp = shard
+                .hashes
+                .get(&key)
+                .and_then(|fields| fields.get(&timestamp_field))
+                .and_then(|address| {
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        BlockIdentity::of(
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(timestamp_field.as_str()),
+                        ),
+                        Some(block_routing_bucket(
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                })
+                .and_then(|bytes| {
+                    <HashTimestamp as prost::Message>::decode(bytes.as_slice()).ok()
+                })
+                .map(|timestamp| (timestamp.seconds, timestamp.nanos));
+            if stored_timestamp
+                .is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos))
+            {
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            conditional_hash_write = true;
+            Command::HashMultiSet { key, entries }
+        }
+        command => command,
+    };
     let response = match command {
         // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
         // invalidates a cache entry.
@@ -1117,7 +1175,11 @@ pub(crate) fn execute_on_shard(
                     }
                 }
                 return ExecuteOutcome {
-                    response: CommandResponse::Empty,
+                    response: if conditional_hash_write {
+                        CommandResponse::Integer { value: 1 }
+                    } else {
+                        CommandResponse::Empty
+                    },
                     mutated,
                 };
             }
@@ -1178,8 +1240,15 @@ pub(crate) fn execute_on_shard(
             if applied > 0 {
                 mutated = true;
             }
-            CommandResponse::Empty
+            if conditional_hash_write {
+                CommandResponse::Integer { value: 1 }
+            } else {
+                CommandResponse::Empty
+            }
         }
+        Command::HashMultiSetIfTimestampOlder { .. } => unreachable!(
+            "conditional hash writes are normalized before command dispatch"
+        ),
         Command::HashIncrBy {
             key,
             field,

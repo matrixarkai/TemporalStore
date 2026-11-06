@@ -3,8 +3,9 @@
 """HTTP command client for a TemporalStore data node.
 
 The data node serves binary ``POST /batch_execute_msgpack``, shared-field hash
-read/write routes, and ``POST /batch_write_msgpack``, plus JSON-compatible
-``POST /execute``, ``POST /batch_execute``, and ``POST /batch_write`` routes.
+read/write routes, atomic timestamp-conditioned hash writes, and
+``POST /batch_write_msgpack``, plus JSON-compatible ``POST /execute``,
+``POST /batch_execute``, and ``POST /batch_write`` routes.
 They take a shard id and one or more command documents; ``Command`` is a
 serde-tagged enum whose ``kind`` is the snake_case variant name.
 
@@ -82,7 +83,7 @@ def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
     """Return one command with byte-bearing fields represented as bytes."""
     encoded = dict(command)
     kind = encoded.get("kind")
-    if kind == "hash_multi_set":
+    if kind in {"hash_multi_set", "hash_multi_set_if_timestamp_older"}:
         encoded["entries"] = [
             (name, _required_binary(value))
             for name, value in encoded.get("entries", [])
@@ -103,7 +104,7 @@ def _json_command(command: Dict[str, Any]) -> Dict[str, Any]:
     """Return one command in the established JSON byte encoding."""
     encoded = dict(command)
     kind = encoded.get("kind")
-    if kind == "hash_multi_set":
+    if kind in {"hash_multi_set", "hash_multi_set_if_timestamp_older"}:
         encoded["entries"] = [
             (name, encode_bytes(_required_binary(value)))
             for name, value in encoded.get("entries", [])
@@ -186,6 +187,9 @@ class TemporalStoreClient:
             False if msgpack is None else None
         )
         self._shared_field_write_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
+        self._conditional_shared_field_write_supported: Optional[bool] = (
             False if msgpack is None else None
         )
 
@@ -574,6 +578,128 @@ class TemporalStoreClient:
                 for key, values in rows
             ]
         )
+
+    def batch_hash_timestamp_set(
+        self,
+        fields: List[str],
+        timestamp_field: str,
+        rows: List[Tuple[str, int, int, List[bytes]]],
+    ) -> Optional[Tuple[int, int]]:
+        """Atomically write rows whose stored timestamp is older.
+
+        ``None`` means the node does not expose the route and no row was
+        attempted. Once any chunk receives a response, later failures are
+        surfaced because retrying could overwrite rows twice.
+        """
+        if not rows:
+            return (0, 0)
+        if msgpack is None or self._conditional_shared_field_write_supported is False:
+            return None
+
+        processed_any = False
+        applied = 0
+        skipped = 0
+        try:
+            for chunk, body in self._shared_timestamp_write_batches(
+                fields, timestamp_field, rows
+            ):
+                raw = self._request_encoded(
+                    "/batch_hash_timestamp_set_msgpack",
+                    body,
+                    "application/msgpack",
+                )
+                envelope = msgpack.unpackb(raw, raw=False)
+                status = envelope.get("status") or {}
+                if not status.get("ok", False):
+                    raise TemporalStoreCommandError(
+                        status.get("code", "unknown"), status.get("message", "")
+                    )
+                errors = envelope.get("errors") or []
+                if errors:
+                    first = errors[0]
+                    item_status = first.get("status") or {}
+                    raise TemporalStoreCommandError(
+                        item_status.get("code", "unknown"),
+                        f"write {first.get('index', '?')}: "
+                        f"{item_status.get('message', '')}",
+                    )
+                chunk_applied = int(envelope.get("applied", 0))
+                chunk_skipped = int(envelope.get("skipped", 0))
+                if chunk_applied + chunk_skipped != len(chunk):
+                    raise TemporalStoreCommandError(
+                        "batch_length_mismatch",
+                        f"sent {len(chunk)} writes, got "
+                        f"{chunk_applied + chunk_skipped} results",
+                    )
+                applied += chunk_applied
+                skipped += chunk_skipped
+                processed_any = True
+        except TemporalStoreCommandError as error:
+            if error.code != "http_404" or processed_any:
+                raise
+            self._conditional_shared_field_write_supported = False
+            return None
+        except (ValueError, msgpack.UnpackException) as error:
+            raise TemporalStoreCommandError(
+                "invalid_binary_response", str(error)
+            ) from error
+
+        self._conditional_shared_field_write_supported = True
+        return applied, skipped
+
+    def _shared_timestamp_write_batches(
+        self,
+        fields: List[str],
+        timestamp_field: str,
+        rows: List[Tuple[str, int, int, List[bytes]]],
+    ) -> Iterator[Tuple[List[Tuple[str, int, int, List[bytes]]], bytes]]:
+        if msgpack is None:
+            return
+        prefix = (
+            b"\x84"
+            + msgpack.packb("shard_id", use_bin_type=True)
+            + msgpack.packb(self.shard_id, use_bin_type=True)
+            + msgpack.packb("fields", use_bin_type=True)
+            + msgpack.packb(fields, use_bin_type=True)
+            + msgpack.packb("timestamp_field", use_bin_type=True)
+            + msgpack.packb(timestamp_field, use_bin_type=True)
+            + msgpack.packb("rows", use_bin_type=True)
+        )
+        chunk: List[Tuple[str, int, int, List[bytes]]] = []
+        packer = msgpack.Packer(use_bin_type=True, autoreset=False)
+
+        def body_for(row_count: int, payload_end: Optional[int] = None) -> bytes:
+            view = packer.getbuffer()
+            payload = view if payload_end is None else view[:payload_end]
+            body = b"".join((prefix, _msgpack_array_header(row_count), payload))
+            del payload, view
+            return body
+
+        for row in rows:
+            if chunk and len(chunk) >= self.max_write_batch_commands:
+                completed = chunk
+                body = body_for(len(completed))
+                packer.reset()
+                chunk = []
+                yield completed, body
+
+            previous_payload_bytes = len(packer.getbuffer())
+            packer.pack(row)
+            next_body_bytes = (
+                len(prefix)
+                + len(_msgpack_array_header(len(chunk) + 1))
+                + len(packer.getbuffer())
+            )
+            if chunk and next_body_bytes > self.max_batch_request_bytes:
+                completed = chunk
+                body = body_for(len(completed), previous_payload_bytes)
+                packer.reset()
+                chunk = []
+                yield completed, body
+                packer.pack(row)
+            chunk.append(row)
+        if chunk:
+            yield chunk, body_for(len(chunk))
 
     def _shared_field_write_batches(
         self, fields: List[str], rows: List[Tuple[str, List[bytes]]]

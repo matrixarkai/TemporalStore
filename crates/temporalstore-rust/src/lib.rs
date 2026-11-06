@@ -349,8 +349,10 @@ pub use storage_backend::{
     matrixobject_feature_compiled, StorageBackend, StorageBackendConfig,
 };
 pub use types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiSetRequest, BatchHashMultiSetRow,
-    BatchHashMultiSetValue, BatchWriteError, BatchWriteResponse, Command, CommandResponse,
+    BatchConditionalWriteResponse, BatchExecuteRequest, BatchExecuteResponse,
+    BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue,
+    BatchHashTimestampSetRequest, BatchHashTimestampSetRow, BatchWriteError, BatchWriteResponse,
+    Command, CommandResponse,
     ContextAuditModel,
     ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
     ContextCompressionModel,
