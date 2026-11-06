@@ -24,12 +24,21 @@
 //! with BLOCKS in one eviction arm and OBJECTS in the other, 3.5x apart, inside a sort key.
 //!
 //! `page_and_block_counter_ratio` pins the reads and writes pair against nine workloads.
-//! NOTHING pinned the other mirrors. `page_index_entries` and `block_index_entries` are
-//! assigned from one expression four lines apart in `engine/engine_persistence.rs`, `page_store_reads`
-//! and `block_store_reads` are incremented on consecutive lines of one `else if` arm in
-//! `engine/storage_reports.rs`, and `page_index_count` is assigned FROM
-//! `physical_index.block_index_count` in `engine.rs`. Every one of those is one line away from
-//! becoming two quantities, and nothing fails when it does.
+//! NOTHING pinned the other mirrors. `page_store_reads` and `block_store_reads` are incremented
+//! on consecutive lines of one `else if` arm in `engine/storage_reports.rs`, and
+//! `page_index_count` is assigned FROM `physical_index.block_index_count` in `engine.rs`. Every
+//! one of those is one line away from becoming two quantities, and nothing fails when it does.
+//!
+//! `page_index_entries` and `block_index_entries` USED to be the third example here, assigned
+//! from one expression four lines apart in `engine/engine_persistence.rs`. The page half has
+//! since been retired -- it is on `SINGLE_ON_SHARD_STATS` below and `engine_persistence.rs`
+//! assigns the block half alone -- so the citation was naming a pair that no longer exists. A
+//! header that cites a retired pair is the same defect as a header that cites itself.
+//!
+//! `TWINNED_FIELD_PAIRS_IN_REPORTS` at the foot of this file is why that mattered. Reading the
+//! empty `TWINNED_ON_SHARD_STATS` as "the twins are gone" was wrong by ELEVEN: the published
+//! report structs in `engine/engine_reports.rs` still declare eleven twin pairs side by side,
+//! and nothing held any of them.
 //!
 //! # WHY IT IS WRITTEN THIS WAY ROUND
 //!
@@ -61,6 +70,33 @@ fn canonical_tier_name(name: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("_")
+}
+
+/// The line with leading whitespace and one leading `pub`/`pub(..)` removed.
+///
+/// LIFTED TO MODULE SCOPE from inside `no_page_named_identity_type_field_or_size_constant_exists_in_this_crate`,
+/// because the census below needs the same code form and two copies of a matcher is how one of
+/// them quietly stops matching what the other does.
+///
+/// `pub` is recognised only with a BOUNDARY after it -- whitespace or `(`. Without that, a field
+/// declared `public_storage_contract:` with no visibility keyword had its first three letters
+/// eaten and read back as `lic_storage_contract`, and `engine_reports.rs` declares exactly that
+/// name twice. It could not have created or hidden a twin pair, because neither spelling carries
+/// a `page` or `block` segment, but it would have moved the field total the census asserts a
+/// floor on.
+fn strip_leading_visibility(line: &str) -> &str {
+    let code = line.trim_start();
+    match code.strip_prefix("pub") {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        Some(rest) => match rest.strip_prefix('(') {
+            Some(inner) => match inner.find(')') {
+                Some(close) => inner[close + 1..].trim_start(),
+                None => code,
+            },
+            None => code,
+        },
+        None => code,
+    }
 }
 
 /// Every group of published keys that resolve to one canonical tier name.
@@ -99,10 +135,13 @@ fn mirror_groups(
 /// and the exact pair each one must carry.
 ///
 /// Not remembered -- each pair is one line away from carrying two quantities, and the
-/// line is named. `page_index_entries` and `block_index_entries` are assigned from one
-/// expression five lines apart in `engine/engine_persistence.rs`; `page_reads`/`block_reads` and
-/// `page_writes`/`block_writes` are declared beside each other on this struct in
-/// `control.rs` and filled from one snapshot.
+/// line is named. `page_reads`/`block_reads` and `page_writes`/`block_writes` were declared
+/// beside each other on this struct in `control.rs` and filled from one snapshot.
+///
+/// EMPTY TODAY, and that is a fact about THIS ONE STRUCT and no other. Every twin that was on
+/// `ShardCanonicalStorageStats` has been retired down to its block spelling and sits on
+/// [`SINGLE_ON_SHARD_STATS`] below. The published REPORT structs are a separate population with
+/// a separate roster, [`TWINNED_FIELD_PAIRS_IN_REPORTS`], and it holds eleven pairs.
 ///
 /// TO RETIRE A SPELLING, move the canonical name to [`SINGLE_ON_SHARD_STATS`] together
 /// with the spelling that survived. That one-line move is the reviewable artefact, and
@@ -497,24 +536,6 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
         })
     }
 
-    /// The line with leading whitespace and one leading `pub`/`pub(..)` removed.
-    fn strip_leading_visibility(line: &str) -> &str {
-        let code = line.trim_start();
-        match code.strip_prefix("pub") {
-            Some(rest) => {
-                let rest = rest.trim_start();
-                match rest.strip_prefix('(') {
-                    Some(inner) => match inner.find(')') {
-                        Some(close) => inner[close + 1..].trim_start(),
-                        None => rest,
-                    },
-                    None => rest,
-                }
-            }
-            None => code,
-        }
-    }
-
     // --- NON-VACUITY: each matcher still matches, in both directions. ---
     assert!(
         declares_a_page_named_type("pub struct PageAddress {"),
@@ -859,4 +880,826 @@ fn the_index_log_item_kind_reader_takes_the_block_spelling_and_the_page_spelling
              decode time and the first declaration wins"
         );
     }
+}
+
+// ===========================================================================================
+// THE TWIN FIELD PAIRS IN THE PUBLISHED REPORTS, AS A CENSUS RATHER THAN A COUNT.
+// ===========================================================================================
+
+/// What the two spellings of a published twin pair actually hold.
+///
+/// A pair's NAMES say nothing about this, and the answers have opposite consequences.
+/// `page_index_entry_count` and `block_index_entry_count` are filled from ONE expression, so
+/// retiring either loses no number. `page_address` and `block_address` are two PROJECTIONS of
+/// one `ElementEntry` into sample types that do not carry the same fields, so there is no single
+/// value to compare -- and `block_id` differs between them BY CONSTRUCTION. `page_index_count`
+/// and `block_index_count` are already filled from two different walks, so they are two
+/// measurements wearing a twin's names, and an agreement assertion over that pair would be red
+/// on a correct tree.
+///
+/// This is why the roster below carries the class beside each pair. A census that recorded only
+/// "these two names exist" would invite the agreement check to be applied to all of them, and
+/// three of the eleven would then have to be excluded by someone remembering why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TwinHolds {
+    /// ONE quantity under two names: both members are filled from one expression.
+    OneQuantity,
+    /// One underlying fact projected into two different SHAPES.
+    TwoProjections,
+    /// Two measurements, from two different walks, already.
+    TwoMeasurements,
+    /// A PUBLISHED CATALOG ENTRY that deliberately carries both spellings.
+    ///
+    /// The KEYS ARE THE WIRE here and the consumers are outside this repository, so folding the
+    /// two entries deletes a published entry rather than renaming a field. Tracked, never
+    /// renamed. `PAGE_SPELLED_CONTRACT_KEYS` above pins the contract half of this by key set.
+    PublishedCatalogEntry,
+}
+
+/// EVERY page/block twin field pair declared side by side inside one struct of
+/// `engine/engine_reports.rs`, with what the pair holds and where it is filled.
+///
+/// # WHY A CENSUS AND NOT A COUNT
+///
+/// `TWINNED_ON_SHARD_STATS` above is the roster for `ShardCanonicalStorageStats`, and it is
+/// EMPTY because every twin on that one struct has already been retired down to its block
+/// spelling. Reading that emptiness as "the twins are gone" is the mistake this roster exists to
+/// stop: the published REPORT structs in the same crate still carry eleven of them, and nothing
+/// held any of them. A retirement there would have moved no number anywhere and failed nothing.
+///
+/// # HOW THE POPULATION IS ESTABLISHED
+///
+/// Scanned out of the file by [`scan_twin_field_pairs`], not remembered. The test below compares
+/// the scan with this list IN BOTH DIRECTIONS, so a pair that LEAVES fails (it was retired
+/// without a roster move, and the comparison that pair deserves is now made by nothing) and a
+/// pair that ARRIVES fails too (it is a new twin no assertion has ever held).
+///
+/// TO RETIRE A SPELLING, move the entry to [`SINGLE_FIELD_PAIRS_IN_REPORTS`] with the spelling
+/// that survived. That one-line move is the reviewable artefact.
+///
+/// `(struct, canonical tier name, the two spellings, what the pair holds, where it is filled)`
+#[allow(clippy::type_complexity)]
+const TWINNED_FIELD_PAIRS_IN_REPORTS: &[(&str, &str, [&str; 2], TwinHolds, &str)] = &[
+    (
+        "PublicStorageContract",
+        "block_address",
+        ["block_address", "page_address"],
+        TwinHolds::PublishedCatalogEntry,
+        "engine_reports.rs fills both entries with text(\"ElementEntry\")",
+    ),
+    (
+        "PublicStorageContract",
+        "block_index_entry",
+        ["block_index_entry", "page_index_entry"],
+        TwinHolds::PublishedCatalogEntry,
+        "engine_reports.rs fills both entries from the same published type name",
+    ),
+    (
+        "PublicStorageFeatureShapes",
+        "block_address_fields",
+        ["block_address_fields", "page_address_fields"],
+        TwinHolds::PublishedCatalogEntry,
+        "engine_reports.rs fills both from public_storage_strings over one field list",
+    ),
+    (
+        "PublicStorageFeatureShapes",
+        "block_index_entry_fields",
+        ["block_index_entry_fields", "page_index_entry_fields"],
+        TwinHolds::PublishedCatalogEntry,
+        "engine_reports.rs fills both from public_storage_strings over one field list",
+    ),
+    (
+        "StorageBlockIndexEntrySample",
+        "block_address",
+        ["block_address", "page_address"],
+        TwinHolds::TwoProjections,
+        "storage_bucket_internals.rs projects ONE entry.address through \
+         storage_page_address_sample and storage_block_address_sample; the page sample carries \
+         slab_id and generation, the block sample carries a checksum, and block_id is \
+         block_id().unwrap_or(block_slab_id()) on one and block_slab_id() on the other",
+    ),
+    (
+        "StorageCacheWarmupReport",
+        "block_store_reads",
+        ["block_store_reads", "page_store_reads"],
+        TwinHolds::OneQuantity,
+        "storage_reports.rs increments both on CONSECUTIVE lines of one else-if arm of the \
+         cache-warmup loop",
+    ),
+    (
+        "StorageDataStructureApiParityReport",
+        "block_index_count",
+        ["block_index_count", "page_index_count"],
+        TwinHolds::TwoMeasurements,
+        "engine.rs fills page_index_count from physical_index.block_index_count -- a bucket walk \
+         -- and block_index_count from the sum over block_store.slab_reports(), a slab walk",
+    ),
+    (
+        "StorageGcSnapshot",
+        "stale_block_delete_markers",
+        ["stale_block_delete_markers", "stale_page_delete_markers"],
+        TwinHolds::OneQuantity,
+        "engine_reports.rs puts stale_page_tombstones and stale_block_tombstones from the same \
+         filter-and-count over plan.reclaim_candidates, and data_node.rs inserts both from \
+         stats.storage_manager_reclaim_block_runs",
+    ),
+    (
+        "StorageIndexSnapshot",
+        "block_index_entry_count",
+        ["block_index_entry_count", "page_index_entry_count"],
+        TwinHolds::OneQuantity,
+        "engine_reports.rs puts both metrics from object_lifecycle.live_block_refs, and \
+         data_node.rs adds both from block_entries, on consecutive lines in each",
+    ),
+    (
+        "StorageIndexSnapshot",
+        "block_index_entry_samples",
+        ["block_index_entry_samples", "page_index_entry_samples"],
+        TwinHolds::TwoProjections,
+        "storage_bucket_internals.rs builds both from the same take(MAX_STORAGE_INDEX_SAMPLES) \
+         of one live-entry walk, into two different sample types",
+    ),
+    (
+        "StorageWatermarkSnapshot",
+        "block_index_rebuild_watermark",
+        ["block_index_rebuild_watermark", "page_index_rebuild_watermark"],
+        TwinHolds::OneQuantity,
+        "engine_reports.rs puts both metrics from flag(!install_roll_forward_reports.is_empty())",
+    ),
+];
+
+/// Twin field pairs in the published reports that are DOWN to one spelling, with the spelling
+/// that survived.
+///
+/// EMPTY TODAY, and every clause below still runs over it, so the first retirement adds one line
+/// and writes no new machinery. The survivor is asserted to be the BLOCK spelling for the reason
+/// [`SINGLE_ON_SHARD_STATS`] gives: a count can never tell the right retirement from the wrong
+/// one, because dropping either half lowers it by exactly as much.
+const SINGLE_FIELD_PAIRS_IN_REPORTS: &[(&str, &str, &str)] = &[];
+
+/// The file the census above is taken over.
+const CENSUSED_REPORT_FILE: &str = "src/engine/engine_reports.rs";
+
+/// The name a line DECLARES as a field, if it declares one.
+///
+/// Anchored on the declaration: the code form of the line must be `<ident>:`, where `<ident>` is
+/// lower snake case. A doc line starts `//`, an attribute `#`, a stored key inside a fixture
+/// string `"`, and a function signature puts a space or `(` before its colon -- so none of them
+/// can match, and nothing has to be remembered and excluded by path. That matters here because
+/// this very file names every field in the roster above in its own comments.
+fn field_declared_on(line: &str) -> Option<&str> {
+    let code = strip_leading_visibility(line);
+    let name = code.split(':').next()?;
+    if name.is_empty() || name.len() == code.len() {
+        return None;
+    }
+    let mut characters = name.chars();
+    let first = characters.next()?;
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return None;
+    }
+    if !characters.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return None;
+    }
+    Some(name)
+}
+
+/// The struct a line opens a BLOCK for, if it opens one.
+///
+/// A struct LITERAL is excluded structurally rather than by a matcher: `StorageIndexSnapshot {`
+/// carries no `struct` keyword, so it opens no block and the `page_index_entry_count:` line
+/// inside it is never read as a declaration. A tuple struct ends `);` and opens nothing either.
+fn struct_block_opened_by(line: &str) -> Option<&str> {
+    let code = strip_leading_visibility(line);
+    if !code.trim_end().ends_with('{') {
+        return None;
+    }
+    let rest = code.strip_prefix("struct ")?;
+    let name = rest
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .next()?;
+    (!name.is_empty()).then_some(name)
+}
+
+/// Every page/block twin pair declared side by side inside one struct block of `text`, with the
+/// struct NAMES the scan opened and the field total it read.
+///
+/// The names are returned rather than a count because a count cannot say WHICH blocks the scan
+/// reached, and a conclusion of the form "these two fields are not declared in one struct" is
+/// only worth anything if the scan opened the structs in question. A matcher looking at an empty
+/// file reports a clean tree in exactly the same words as a matcher looking at a clean one.
+///
+/// Brace depth is counted only on lines that are not comments, so a doc comment carrying an
+/// unbalanced brace -- a JSON fragment, a format string -- cannot close a struct block early and
+/// silently drop the fields under it.
+fn scan_twin_field_pairs(
+    text: &str,
+) -> (Vec<(String, String, Vec<String>)>, Vec<String>, usize) {
+    let mut pairs: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut opened: Vec<String> = Vec::new();
+    let mut field_total = 0usize;
+    let mut open: Option<(String, std::collections::BTreeMap<String, Vec<String>>, i32)> = None;
+    for line in text.lines() {
+        let is_comment = line.trim_start().starts_with("//");
+        match open.as_mut() {
+            None => {
+                if let Some(name) = struct_block_opened_by(line) {
+                    opened.push(name.to_string());
+                    open = Some((name.to_string(), Default::default(), 1));
+                }
+            }
+            Some((name, groups, depth)) => {
+                if *depth == 1 && !is_comment {
+                    if let Some(field) = field_declared_on(line) {
+                        field_total += 1;
+                        groups
+                            .entry(canonical_tier_name(field))
+                            .or_default()
+                            .push(field.to_string());
+                    }
+                }
+                if !is_comment {
+                    *depth += line.matches('{').count() as i32;
+                    *depth -= line.matches('}').count() as i32;
+                }
+                if *depth <= 0 {
+                    let owner = name.clone();
+                    for (canonical, mut members) in std::mem::take(groups) {
+                        if members.len() >= 2 {
+                            members.sort();
+                            pairs.push((owner.clone(), canonical, members));
+                        }
+                    }
+                    open = None;
+                }
+            }
+        }
+    }
+    pairs.sort();
+    (pairs, opened, field_total)
+}
+
+/// Every twin field pair the published reports carry is on a roster, and the roster says what
+/// the pair holds.
+///
+/// SIX CLAUSES, because "the names exist" is the easy half:
+///
+///   1. the matchers work, in both directions, before anything is scanned;
+///   2. the scan reached a floor of structs and fields, so a clean result is a fact about the
+///      file and not about a broken walk;
+///   3. the rosters are well formed -- every listed spelling canonicalises to the name it is
+///      listed under, the canonical IS the block spelling, no pair lists one spelling twice, and
+///      nothing is on both rosters;
+///   4. the scanned population IS the declared one, in both directions;
+///   5. each declared pair is present under exactly its two declared spellings;
+///   6. each retired entry is present under exactly its surviving spelling.
+#[test]
+fn every_twin_field_pair_in_the_published_reports_is_on_the_roster() {
+    const MIN_STRUCTS: usize = 80;
+    const MIN_FIELDS: usize = 400;
+
+    // --- CLAUSE 1: the matchers, in both directions. ---
+    assert_eq!(
+        field_declared_on("    pub page_address: StoragePageAddressSample,"),
+        Some("page_address"),
+        "the field matcher no longer reports a published field declaration"
+    );
+    assert_eq!(
+        field_declared_on("    stored_slab_id: u64,"),
+        Some("stored_slab_id"),
+        "the field matcher misses a private field"
+    );
+    assert_eq!(
+        field_declared_on("    pub(super) block_id: u64,"),
+        Some("block_id"),
+        "the field matcher misses a restricted-visibility field"
+    );
+    assert_eq!(
+        field_declared_on("    #[serde(alias = \"page_id\")]"),
+        None,
+        "the field matcher reports a serde attribute, which is how older stored data decodes and \
+         is not a second field"
+    );
+    assert_eq!(
+        field_declared_on("    /// `page_address`: where the block is."),
+        None,
+        "the field matcher reports a doc line, so it would report this very file's own roster"
+    );
+    assert_eq!(
+        field_declared_on("        \"page_index_entry_count\","),
+        None,
+        "the field matcher reports a key inside a string literal"
+    );
+    assert_eq!(
+        field_declared_on("    pub fn page_address(&self) -> BlockAddress {"),
+        None,
+        "the field matcher reports a method signature"
+    );
+    assert_eq!(
+        struct_block_opened_by("pub struct StorageIndexSnapshot {"),
+        Some("StorageIndexSnapshot"),
+        "the struct matcher no longer opens a block on a struct declaration"
+    );
+    assert_eq!(
+        struct_block_opened_by("    StorageIndexSnapshot {"),
+        None,
+        "the struct matcher opens a block on a struct LITERAL. That is the whole reason the \
+         field matcher needs no exclusion list: `page_index_entry_count: metric(..)` inside \
+         `storage_index_snapshot_from_metrics` is shaped exactly like a declaration, and it is \
+         the absence of the `struct` keyword that keeps it out"
+    );
+    assert_eq!(
+        struct_block_opened_by("pub struct ShardId(u64);"),
+        None,
+        "the struct matcher opens a block on a tuple struct, which declares no named fields"
+    );
+    assert_eq!(
+        field_declared_on("        page_index_entry_count: metric(metrics, \"x\"),"),
+        Some("page_index_entry_count"),
+        "a struct literal's field is shaped like a declaration and the matcher SHOULD match it; \
+         it is excluded structurally by the clause above, not here"
+    );
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(CENSUSED_REPORT_FILE);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read {} failed: {err}", path.display()));
+    let (scanned, opened, field_total) = scan_twin_field_pairs(&text);
+    let struct_total = opened.len();
+
+    // --- CLAUSE 2: the scan reached the file. ---
+    assert!(
+        struct_total >= MIN_STRUCTS,
+        "the scan opened {struct_total} struct blocks in {}, floor is {MIN_STRUCTS} -- that is a \
+         broken scan, not a file with no reports in it",
+        path.display()
+    );
+    for owner in TWINNED_FIELD_PAIRS_IN_REPORTS
+        .iter()
+        .map(|(owner, _, _, _, _)| *owner)
+    {
+        assert!(
+            opened.iter().any(|found| found == owner),
+            "the scan never opened a struct block for {owner}, so every clause below that reads \
+             its fields is reading an empty set. The structs it did open are {opened:?}"
+        );
+    }
+    assert!(
+        field_total >= MIN_FIELDS,
+        "the scan read {field_total} field declarations in {}, floor is {MIN_FIELDS}",
+        path.display()
+    );
+    println!(
+        "censused {struct_total} struct blocks and {field_total} field declarations in \
+         {CENSUSED_REPORT_FILE}"
+    );
+    for (owner, canonical, members) in &scanned {
+        println!("  twin {owner}::{canonical} {members:?}");
+    }
+
+    // --- CLAUSE 3: the rosters are well formed, before anything is compared. ---
+    for (owner, canonical, pair, _, filled) in TWINNED_FIELD_PAIRS_IN_REPORTS {
+        for spelling in pair {
+            assert_eq!(
+                canonical_tier_name(spelling),
+                *canonical,
+                "{owner}::{spelling} is listed under {canonical} and canonicalises to {} instead",
+                canonical_tier_name(spelling)
+            );
+        }
+        assert_ne!(
+            pair[0], pair[1],
+            "{owner}::{canonical} lists one spelling twice"
+        );
+        assert_eq!(
+            canonical_tier_name(canonical),
+            *canonical,
+            "{owner}::{canonical} is not the canonical BLOCK spelling of its own pair"
+        );
+        assert!(
+            !filled.is_empty(),
+            "{owner}::{canonical} names no site that fills it. The class on this entry is a \
+             claim about one expression somewhere, and an unnamed site is a claim nobody can \
+             re-check"
+        );
+        assert!(
+            !SINGLE_FIELD_PAIRS_IN_REPORTS
+                .iter()
+                .any(|(retired_owner, retired, _)| retired_owner == owner && retired == canonical),
+            "{owner}::{canonical} is on both rosters; it is either twinned or down to one spelling"
+        );
+    }
+    for (owner, canonical, survivor) in SINGLE_FIELD_PAIRS_IN_REPORTS {
+        assert_eq!(
+            canonical_tier_name(survivor),
+            *canonical,
+            "{owner}::{survivor} is listed as the survivor of {canonical} and canonicalises to \
+             {} instead",
+            canonical_tier_name(survivor)
+        );
+        assert_eq!(
+            survivor, canonical,
+            "{owner}::{canonical} is recorded as retired down to {survivor}, which is not the \
+             block spelling"
+        );
+    }
+
+    // --- CLAUSE 4: the scanned population IS the declared one, in both directions. ---
+    let mut found: Vec<(&str, &str)> = scanned
+        .iter()
+        .map(|(owner, canonical, _)| (owner.as_str(), canonical.as_str()))
+        .collect();
+    found.sort_unstable();
+    let mut declared: Vec<(&str, &str)> = TWINNED_FIELD_PAIRS_IN_REPORTS
+        .iter()
+        .map(|(owner, canonical, _, _, _)| (*owner, *canonical))
+        .collect();
+    declared.sort_unstable();
+    assert_eq!(
+        found, declared,
+        "{CENSUSED_REPORT_FILE} declares a different set of twin field pairs than this file \
+         rosters. Found {found:?}, rostered {declared:?}. A pair that LEFT was retired without \
+         being moved to SINGLE_FIELD_PAIRS_IN_REPORTS, so the comparison it deserves is now made \
+         by nothing; a pair that ARRIVED is a new twin no assertion has ever held. Move the entry \
+         to the right roster rather than editing this list to match whatever the file now says"
+    );
+
+    // --- CLAUSE 5: each declared pair is present under exactly its two spellings. ---
+    for (owner, canonical, pair, _, _) in TWINNED_FIELD_PAIRS_IN_REPORTS {
+        let members = scanned
+            .iter()
+            .find(|(found_owner, found_canonical, _)| {
+                found_owner == owner && found_canonical == canonical
+            })
+            .map(|(_, _, members)| members)
+            .unwrap_or_else(|| {
+                panic!("{owner}::{canonical} is rostered twinned and is declared under no spelling")
+            });
+        let mut wanted: Vec<&str> = pair.to_vec();
+        wanted.sort_unstable();
+        let present: Vec<&str> = members.iter().map(|member| member.as_str()).collect();
+        assert_eq!(
+            present, wanted,
+            "{owner}::{canonical} is declared as {present:?} and rostered as {wanted:?}; a \
+             spelling was renamed or removed without moving this entry"
+        );
+    }
+
+    // --- CLAUSE 6: each retired entry is present under exactly its surviving spelling. ---
+    for (owner, canonical, survivor) in SINGLE_FIELD_PAIRS_IN_REPORTS {
+        assert!(
+            text.lines()
+                .any(|line| field_declared_on(line) == Some(*survivor)),
+            "{owner}::{canonical} is recorded as retired down to {survivor} and {survivor} is \
+             declared nowhere in {CENSUSED_REPORT_FILE}; retiring a twin publishes one name, not \
+             none"
+        );
+        assert!(
+            !TWINNED_FIELD_PAIRS_IN_REPORTS
+                .iter()
+                .any(|(entry_owner, entry_canonical, _, _, _)| {
+                    entry_owner == owner && entry_canonical == canonical
+                }),
+            "{owner}::{canonical} is recorded as retired and is still on the twinned roster"
+        );
+    }
+}
+
+/// `page_store_reads` in the native persistence workflow is a LONE retired spelling, and the
+/// field beside it is NOT its twin.
+///
+/// # WHY THIS ONE NEEDS ITS OWN GUARD
+///
+/// Every other page-spelled field in the census above sits next to its block twin, so retiring
+/// it is a deletion and the roster sees the pair shrink. This one sits next to
+/// `block_store_bytes_read`, which LOOKS like the twin and measures something else: the two are
+/// filled from `stats.block_store_compat.reads` and `stats.block_store_compat.bytes_read`, one
+/// a COUNT of reads and one a BYTE total. Folding the page-spelled field into its neighbour
+/// therefore reads as a rename and silently replaces a count with a byte figure -- the exact
+/// failure the module header records twice already, and the one no pair count can see, because
+/// the pair was never there to shrink.
+///
+/// The canonical spelling is not missing from this file either: `AsyncWarmupProbe` in the same
+/// file declares `block_store_reads`, from `StorageCacheWarmupReport`. So the retirement that is
+/// correct here is to fill a `block_store_reads` field on these two probes from the same source,
+/// and the one that is wrong is to point the neighbour at it.
+///
+/// FOUR CLAUSES, and the first is arithmetic on the canonicaliser rather than a remembered fact.
+#[test]
+fn the_lone_page_spelled_probe_field_has_no_twin_and_its_neighbour_measures_something_else() {
+    // --- CLAUSE 1: the neighbour is not the canonical twin, by the rule this file uses. ---
+    assert_eq!(
+        canonical_tier_name("page_store_reads"),
+        "block_store_reads",
+        "the canonicaliser no longer resolves the lone spelling, so the clause below compares \
+         nothing"
+    );
+    assert_ne!(
+        canonical_tier_name("page_store_reads"),
+        canonical_tier_name("block_store_bytes_read"),
+        "`page_store_reads` and `block_store_bytes_read` canonicalise to one name, which would \
+         make them a mirror pair. They are a COUNT and a BYTE TOTAL filled from two different \
+         fields of one stats struct"
+    );
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/bin/native_persistence_workflow.rs");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read {} failed: {err}", path.display()));
+
+    // --- CLAUSE 2: the scan opened the THREE struct blocks this conclusion rests on. ---
+    //
+    // Named rather than counted. The file declares six structs today, so a floor would have to be
+    // six, and a floor of six is satisfied by a scan that opened six of the wrong ones -- which
+    // is exactly how clause 3's "these two are not declared in one struct" would come out true by
+    // reading an empty set. The three named here are the two probes that carry the lone spelling
+    // and the one that carries the canonical spelling.
+    let (pairs, opened, field_total) = scan_twin_field_pairs(&text);
+    for owner in ["ReadProbe", "ResidencyProbe", "AsyncWarmupProbe"] {
+        assert!(
+            opened.iter().any(|found| found == owner),
+            "the scan never opened a struct block for {owner} in {}, so the clauses below are \
+             reading an empty field set. The structs it did open are {opened:?}",
+            path.display()
+        );
+    }
+    assert!(
+        field_total >= 90,
+        "the scan read {field_total} field declarations in {}, and the three probe structs alone \
+         carry more than that",
+        path.display()
+    );
+    let declares =
+        |field: &str| text.lines().any(|line| field_declared_on(line) == Some(field));
+    assert!(
+        declares("page_store_reads"),
+        "`page_store_reads` is declared nowhere in {}. If it has been retired, the clauses below \
+         are asserting a shape that no longer exists and this guard should go with it",
+        path.display()
+    );
+
+    // --- CLAUSE 3: the neighbour is there, and so is the canonical spelling -- elsewhere. ---
+    assert!(
+        declares("block_store_bytes_read"),
+        "`block_store_bytes_read` is no longer declared beside the lone spelling, so the \
+         confusion this guard refuses cannot arise and it should be re-read before being kept"
+    );
+    assert!(
+        declares("block_store_reads"),
+        "`block_store_reads` is declared nowhere in {}. It is the canonical spelling, carried by \
+         `AsyncWarmupProbe` from `StorageCacheWarmupReport`, and its presence is what makes the \
+         lone page spelling a retirement candidate rather than a tier with no block name",
+        path.display()
+    );
+    assert!(
+        !pairs
+            .iter()
+            .any(|(_, canonical, _)| canonical == "block_store_reads"),
+        "`page_store_reads` and `block_store_reads` are now declared in ONE struct of {}, which \
+         makes them a twin pair and moves this field under the census roster. Add the entry \
+         there and delete this guard: {pairs:?}",
+        path.display()
+    );
+
+    // --- CLAUSE 4: the two fields beside each other are filled from two different sources. ---
+    //
+    // Read as exact ASSIGNMENT text, including the trailing comma, because this is the line that
+    // would be changed by the wrong fold and the two source fields are what distinguishes a
+    // count from a byte total.
+    for (assignment, what) in [
+        (
+            "page_store_reads: stats.block_store_compat.reads,",
+            "a COUNT of reads",
+        ),
+        (
+            "block_store_bytes_read: stats.block_store_compat.bytes_read,",
+            "a BYTE total",
+        ),
+    ] {
+        assert!(
+            text.contains(assignment),
+            "{} no longer carries `{assignment}` -- {what}. If the two were folded onto one \
+             source, one of these published probe fields has silently changed what it measures",
+            path.display()
+        );
+    }
+}
+
+/// A page/block twin metric pair is counted ONCE by every aggregate that crosses it.
+///
+/// # WHAT WENT WRONG
+///
+/// `stale_page_tombstones`/`stale_block_tombstones` and
+/// `stale_pages_skipped`/`stale_blocks_skipped` are each ONE number under two names -- both
+/// producers fill each pair from one expression, and `TWINNED_FIELD_PAIRS_IN_REPORTS` rosters the
+/// field pair the first of them feeds as [`TwinHolds::OneQuantity`]. Five published counters then
+/// ADDED the two spellings, so every stale record was counted twice.
+///
+/// This is the failure mode a pair COUNT can never see. Nothing about the number of twins moved;
+/// the pair simply crossed a summing aggregator, which is also why retiring either spelling would
+/// have HALVED three published counters instead of leaving them alone.
+///
+/// # FIVE CLAUSES, AND THE FIRST IS THE ONE THAT MATTERS
+///
+///   1. the aggregate is NOT the sum -- asserted against the sum arithmetic explicitly, because
+///      an assertion of `10` is also satisfied by a build that sums 3 + 7 + 0, which is what a
+///      map carrying only one spelling looks like;
+///   2. a map carrying ONLY the page spelling answers the same, so this is not "ignore the
+///      retired name";
+///   3. a map carrying ONLY the block spelling answers the same, so it is not "ignore the
+///      canonical name" either;
+///   4. a DISAGREEING map answers with the larger, so neither spelling is hard-wired -- and this
+///      is the arm that no single-key read can pass;
+///   5. the zero case is unmoved, because `follower_cursor_safe_to_reclaim` is a test for zero
+///      and a doubling never changed it. That is exactly why this sat unguarded.
+#[test]
+fn a_twin_metric_pair_is_counted_once_by_every_aggregate_that_crosses_it() {
+    use crate::engine::reports::{
+        storage_gc_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
+    };
+
+    // The roster is the evidence for the whole test. If this pair is ever reclassified, the
+    // arithmetic below is no longer the right arithmetic and this has to be re-read rather than
+    // adjusted.
+    let rostered = TWINNED_FIELD_PAIRS_IN_REPORTS
+        .iter()
+        .find(|entry| entry.0 == "StorageGcSnapshot" && entry.1 == "stale_block_delete_markers")
+        .expect("the stale delete-marker twin must be on the census roster");
+    assert_eq!(
+        rostered.3,
+        TwinHolds::OneQuantity,
+        "the stale delete-marker pair is rostered as {:?}. Collapsing it with max is only correct \
+         while it carries ONE quantity under two names",
+        rostered.3
+    );
+
+    let map = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), *value))
+            .collect()
+    };
+
+    const RECORDS: u64 = 3;
+    const STALE: u64 = 7;
+    const SKIPPED: u64 = 5;
+
+    // --- CLAUSE 1: both spellings present and agreeing. ---
+    let both = map(&[
+        ("tombstone_records", RECORDS),
+        ("stale_page_tombstones", STALE),
+        ("stale_block_tombstones", STALE),
+        ("stale_pages_skipped", SKIPPED),
+        ("stale_blocks_skipped", SKIPPED),
+    ]);
+    let gc = storage_gc_snapshot_from_metrics(&both);
+    let safety = storage_safety_snapshot_from_metrics(&both);
+
+    // The two spellings are still published separately, each from its own key. Without this the
+    // clauses below would pass on a build that had simply deleted one of them.
+    assert_eq!(
+        (gc.stale_page_delete_markers, gc.stale_block_delete_markers),
+        (STALE, STALE),
+        "the twin pair itself must still be published under both names: {gc:?}"
+    );
+
+    let summed = RECORDS + STALE + STALE;
+    let counted_once = RECORDS + STALE;
+    assert_ne!(
+        summed, counted_once,
+        "the fixture makes the two arithmetics equal, so every clause below holds either way"
+    );
+    for (what, got) in [
+        ("StorageGcSnapshot::gc_eligible_record_count", gc.gc_eligible_record_count),
+        ("StorageSafetySnapshot::gc_eligible_record_count", safety.gc_eligible_record_count),
+        ("StorageSafetySnapshot::delete_marker_records", safety.delete_marker_records),
+    ] {
+        assert_ne!(
+            got, summed,
+            "{what} is {got}, which is {RECORDS} + {STALE} + {STALE}: the two spellings of ONE \
+             stale-record count were added, so every stale record is counted twice"
+        );
+        assert_eq!(
+            got, counted_once,
+            "{what} is {got} and the quantity counted once is {counted_once}"
+        );
+    }
+    for (what, got) in [
+        (
+            "StorageGcSnapshot::follower_cursor_blocked_reclaim_count",
+            gc.follower_cursor_blocked_reclaim_count,
+        ),
+        (
+            "StorageSafetySnapshot::follower_cursor_blocked_reclaim_count",
+            safety.follower_cursor_blocked_reclaim_count,
+        ),
+    ] {
+        assert_ne!(
+            got,
+            SKIPPED + SKIPPED,
+            "{what} is {got}, which is the two spellings of ONE blocked-reclaim count added"
+        );
+        assert_eq!(
+            got, SKIPPED,
+            "{what} is {got} and one blocked reclaim under two names is {SKIPPED}"
+        );
+    }
+
+    // --- CLAUSES 2 AND 3: one spelling at a time. ---
+    for (which, page, block) in [
+        ("the page spelling alone -- what an older build's map carries", Some(STALE), None),
+        ("the block spelling alone -- the canonical name", None, Some(STALE)),
+    ] {
+        let mut pairs: Vec<(&str, u64)> = vec![("tombstone_records", RECORDS)];
+        if let Some(value) = page {
+            pairs.push(("stale_page_tombstones", value));
+            pairs.push(("stale_pages_skipped", SKIPPED));
+        }
+        if let Some(value) = block {
+            pairs.push(("stale_block_tombstones", value));
+            pairs.push(("stale_blocks_skipped", SKIPPED));
+        }
+        let one = map(&pairs);
+        let gc = storage_gc_snapshot_from_metrics(&one);
+        let safety = storage_safety_snapshot_from_metrics(&one);
+        assert_eq!(
+            gc.gc_eligible_record_count, counted_once,
+            "with {which}, the gc aggregate is {} rather than {counted_once}. Collapsing the pair \
+             must not mean reading one fixed key, or a map that carries the other spelling reports \
+             no stale records at all",
+            gc.gc_eligible_record_count
+        );
+        assert_eq!(
+            safety.gc_eligible_record_count, counted_once,
+            "with {which}, the safety aggregate is {}",
+            safety.gc_eligible_record_count
+        );
+        assert_eq!(
+            gc.follower_cursor_blocked_reclaim_count, SKIPPED,
+            "with {which}, the blocked-reclaim count is {}",
+            gc.follower_cursor_blocked_reclaim_count
+        );
+    }
+
+    // --- CLAUSE 4: a DISAGREEING map. No single-key read can produce this. ---
+    const LOW: u64 = 7;
+    const HIGH: u64 = 11;
+    let disagreeing = map(&[
+        ("tombstone_records", RECORDS),
+        ("stale_page_tombstones", LOW),
+        ("stale_block_tombstones", HIGH),
+        ("stale_pages_skipped", HIGH),
+        ("stale_blocks_skipped", LOW),
+    ]);
+    let gc = storage_gc_snapshot_from_metrics(&disagreeing);
+    let safety = storage_safety_snapshot_from_metrics(&disagreeing);
+    // The two aggregates take their larger from OPPOSITE spellings in this fixture, which is what
+    // makes the pair of assertions impossible to satisfy by reading either key alone.
+    assert_eq!(
+        gc.gc_eligible_record_count,
+        RECORDS + HIGH,
+        "the stale pair disagrees {LOW} against {HIGH} and the gc aggregate read {}. It must take \
+         the larger: a divergent pair is no longer one quantity, and under-reporting a stale \
+         record is the direction that loses reclaimable space rather than invents it",
+        gc.gc_eligible_record_count
+    );
+    assert_eq!(
+        safety.gc_eligible_record_count,
+        RECORDS + HIGH,
+        "the safety aggregate read {}",
+        safety.gc_eligible_record_count
+    );
+    assert_eq!(
+        gc.follower_cursor_blocked_reclaim_count, HIGH,
+        "the skipped pair disagrees with the LARGER on the page spelling, and the gc blocked \
+         count read {}",
+        gc.follower_cursor_blocked_reclaim_count
+    );
+    assert_eq!(
+        safety.follower_cursor_blocked_reclaim_count, HIGH,
+        "the safety blocked count read {}",
+        safety.follower_cursor_blocked_reclaim_count
+    );
+
+    // --- CLAUSE 5: the zero case is unmoved, which is why this sat unguarded. ---
+    let empty = map(&[]);
+    let gc = storage_gc_snapshot_from_metrics(&empty);
+    let safety = storage_safety_snapshot_from_metrics(&empty);
+    assert_eq!(gc.follower_cursor_blocked_reclaim_count, 0);
+    assert_eq!(gc.gc_eligible_record_count, 0);
+    assert!(
+        gc.follower_cursor_safe_to_reclaim,
+        "an empty map must still read safe to reclaim"
+    );
+    assert!(safety.follower_cursor_safe_to_reclaim);
+    let blocked = map(&[("stale_pages_skipped", 1), ("stale_blocks_skipped", 1)]);
+    let gc = storage_gc_snapshot_from_metrics(&blocked);
+    assert_eq!(
+        gc.follower_cursor_blocked_reclaim_count, 1,
+        "one blocked reclaim under two names is one blocked reclaim"
+    );
+    assert!(
+        !gc.follower_cursor_safe_to_reclaim,
+        "a blocked reclaim must still read NOT safe. The safety flag is a test for zero, so the \
+         doubling never changed it -- which is exactly how five wrong counters stayed green"
+    );
 }

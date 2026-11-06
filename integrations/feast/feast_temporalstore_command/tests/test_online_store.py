@@ -213,6 +213,19 @@ class ClientProtocolTest(unittest.TestCase):
             [str(i) for i in range(5)],
         )
 
+    def test_writes_can_use_wider_batches_than_reads(self):
+        client = RecordingClient()
+        client.max_batch_commands = 2
+        client.max_write_batch_commands = 5
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["f", b"v"]]}
+            for i in range(5)
+        ]
+        client.batch_write(commands)
+        self.assertEqual(
+            [len(document["commands"]) for _, document in client.sent], [5]
+        )
+
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_binary_batch_keeps_long_values_as_bytes(self):
         payload = bytes(range(256)) * 16
@@ -446,10 +459,21 @@ class ClientProtocolTest(unittest.TestCase):
                 return super()._post_encoded(path, body)
 
         client = OlderNodeClient()
-        client.batch_write([{"kind": "common_delete", "key": "a"}])
-        client.batch_write([{"kind": "common_delete", "key": "b"}])
+        client.max_batch_commands = 2
+        client.max_write_batch_commands = 5
+        client.batch_write(
+            [{"kind": "common_delete", "key": str(i)} for i in range(5)]
+        )
+        client.batch_write([{"kind": "common_delete", "key": "next"}])
         self.assertEqual(client.attempts, 1)
-        self.assertEqual([path for path, _ in client.sent], ["/batch_execute", "/batch_execute"])
+        self.assertEqual(
+            [path for path, _ in client.sent],
+            ["/batch_execute"] * 4,
+        )
+        self.assertEqual(
+            [len(document["commands"]) for _, document in client.sent],
+            [2, 2, 1, 1],
+        )
 
     def test_the_command_document_is_json_serialisable_as_sent(self):
         client = RecordingClient()
@@ -618,6 +642,7 @@ class OnlineStoreTest(unittest.TestCase):
             self.config.online_store.timeout_seconds,
             self.config.online_store.max_batch_commands,
             self.config.online_store.max_batch_request_bytes,
+            self.config.online_store.max_write_batch_commands,
         )
         return client
 
@@ -651,6 +676,52 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertIn("_ts:stats", fields)
         self.assertIn("stats:trips", fields)
 
+    def test_history_serializes_each_entity_and_value_once(self):
+        from unittest.mock import patch
+
+        import feast_temporalstore_command.online_store as online_store_module
+
+        class CountingValue:
+            def __init__(self, number):
+                self.int64_val = number
+                self.serialize_calls = 0
+
+            def SerializeToString(self):
+                self.serialize_calls += 1
+                return str(self.int64_val).encode("ascii")
+
+            def WhichOneof(self, _name):
+                return "int64_val"
+
+        client = self._install()
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        values = {"trips": CountingValue(7), "fares": CountingValue(11)}
+        original_serialize_entity_key = online_store_module.serialize_entity_key
+        entity_serialize_calls = 0
+
+        def count_entity_serialization(*args, **kwargs):
+            nonlocal entity_serialize_calls
+            entity_serialize_calls += 1
+            return original_serialize_entity_key(*args, **kwargs)
+
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        with patch.object(
+            online_store_module,
+            "serialize_entity_key",
+            side_effect=count_entity_serialization,
+        ):
+            self.store.online_write_batch(
+                self.config,
+                self.view,
+                [(self._entity_key(1), values, now, None)],
+                None,
+            )
+
+        self.assertEqual(entity_serialize_calls, 1)
+        self.assertTrue(all(value.serialize_calls == 1 for value in values.values()))
+        self.assertEqual(len(client.sent[0][1]["commands"]), 5)
+
     def test_a_write_without_skip_dedup_reads_only_the_timestamp_field(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
@@ -678,6 +749,42 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(len(client.sent), 2, "dedup costs one extra round trip, not N")
         read_commands = client.sent[0][1]["commands"]
         self.assertEqual(read_commands[0]["fields"], ["_ts:stats"])
+
+    def test_repeated_entity_writes_share_one_timestamp_read(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._install()
+        self.config.online_store.skip_dedup = False
+        older = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        newer = self.datetime(2026, 2, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [
+                (
+                    self._entity_key(1),
+                    {"trips": ValueProto(int64_val=1)},
+                    older,
+                    None,
+                ),
+                (
+                    self._entity_key(1),
+                    {"trips": ValueProto(int64_val=2)},
+                    newer,
+                    None,
+                ),
+            ],
+            None,
+        )
+
+        read_commands = client.sent[0][1]["commands"]
+        self.assertEqual(len(read_commands), 1)
+        write_commands = client.sent[1][1]["commands"]
+        self.assertEqual(len(write_commands), 1)
+        self.assertEqual(
+            dict(write_commands[0]["entries"])["stats:trips"],
+            encode_bytes(ValueProto(int64_val=2).SerializeToString()),
+        )
 
     def test_a_stale_row_is_not_written_over_a_newer_stored_value(self):
         from google.protobuf.timestamp_pb2 import Timestamp
@@ -738,6 +845,41 @@ class OnlineStoreTest(unittest.TestCase):
             encode_bytes(ValueProto(int64_val=1).SerializeToString()),
         )
 
+    def test_latest_only_writes_serialize_only_the_winning_row(self):
+        class CountingValue:
+            def __init__(self, number):
+                self.number = number
+                self.serialize_calls = 0
+
+            def SerializeToString(self):
+                self.serialize_calls += 1
+                return str(self.number).encode("ascii")
+
+        client = self._install()
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = False
+        values = [CountingValue(number) for number in (1, 2, 3)]
+        base = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [
+                (
+                    self._entity_key(1),
+                    {"trips": value},
+                    base.replace(month=index + 1),
+                    None,
+                )
+                for index, value in enumerate(values)
+            ],
+            None,
+        )
+
+        self.assertEqual([value.serialize_calls for value in values], [0, 0, 1])
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(dict(commands[0]["entries"])["stats:trips"], encode_bytes(b"3"))
+
     def test_a_read_is_one_round_trip_and_answers_positionally(self):
         from google.protobuf.timestamp_pb2 import Timestamp
 
@@ -772,6 +914,43 @@ class OnlineStoreTest(unittest.TestCase):
         # An entity that was never written must read as (None, None), not as a
         # dict of empty values.
         self.assertEqual(results[1], (None, None))
+
+    def test_repeated_entity_reads_share_one_hash_command(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        event = Timestamp()
+        event.FromDatetime(self.datetime(2026, 3, 4, tzinfo=self.timezone.utc))
+        present = ok(
+            {
+                "kind": "values",
+                "values": [
+                    list(ValueProto(int64_val=42).SerializeToString()),
+                    list(event.SerializeToString()),
+                ],
+            }
+        )
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [present],
+                }
+            ]
+        )
+        entity_key = self._entity_key(1)
+        results = self.store.online_read(
+            self.config,
+            self.view,
+            [entity_key, self._entity_key(1), entity_key],
+            ["trips"],
+        )
+
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual([row[1]["trips"].int64_val for row in results], [42, 42, 42])
+        self.assertIsNot(results[0][1]["trips"], results[1][1]["trips"])
 
     def test_a_short_field_answer_does_not_shift_values_onto_other_features(self):
         # A node that answers with fewer slots than fields requested must not

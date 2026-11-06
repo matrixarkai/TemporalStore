@@ -107,7 +107,10 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     """Per-request socket timeout."""
 
     max_batch_commands: int = 512
-    """Maximum commands per HTTP batch during reads and materialization."""
+    """Maximum commands per HTTP batch during reads."""
+
+    max_write_batch_commands: int = 4096
+    """Maximum commands per HTTP batch during materialization writes."""
 
     max_batch_request_bytes: int = 4 * 1024 * 1024
     """Approximate encoded command bytes per HTTP batch."""
@@ -211,6 +214,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             online_config.timeout_seconds,
             online_config.max_batch_commands,
             online_config.max_batch_request_bytes,
+            online_config.max_write_batch_commands,
         )
         # Rebuild on a config change rather than handing back a client pointed
         # at the previous node: a cached client that outlives its config reads
@@ -236,12 +240,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             return table.name
 
     @staticmethod
-    def _entity_hash_key(config: RepoConfig, entity_key: EntityKeyProto) -> str:
-        serialized = serialize_entity_key(
+    def _entity_key_hex(config: RepoConfig, entity_key: EntityKeyProto) -> str:
+        return serialize_entity_key(
             entity_key,
             entity_key_serialization_version=config.entity_key_serialization_version,
-        )
-        return f"{serialized.hex()}:{config.project}"
+        ).hex()
+
+    @classmethod
+    def _entity_hash_key(cls, config: RepoConfig, entity_key: EntityKeyProto) -> str:
+        return f"{cls._entity_key_hex(config, entity_key)}:{config.project}"
 
     # -- writes --------------------------------------------------------------
 
@@ -262,18 +269,22 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         view_name = self._view_name(table, config)
         ts_field = _ts_field(view_name)
 
-        hash_keys = [self._entity_hash_key(config, row[0]) for row in data]
+        entity_key_hexes = [self._entity_key_hex(config, row[0]) for row in data]
+        hash_keys = [
+            f"{entity_key_hex}:{config.project}" for entity_key_hex in entity_key_hexes
+        ]
 
         stored_nanos: Dict[str, int] = {}
         if not online_config.skip_dedup:
             # Read just the timestamp field before the bounded write batches.
+            unique_hash_keys = list(dict.fromkeys(hash_keys))
             reads = client.batch_execute(
                 [
                     {"kind": "hash_multi_get", "key": key, "fields": [ts_field]}
-                    for key in hash_keys
+                    for key in unique_hash_keys
                 ]
             )
-            for key, response in zip(hash_keys, reads):
+            for key, response in zip(unique_hash_keys, reads):
                 values = response.get("values") or []
                 raw = decode_bytes(values[0]) if values else None
                 if raw:
@@ -281,7 +292,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     stored.ParseFromString(raw)
                     stored_nanos[key] = stored.seconds * 1_000_000_000 + stored.nanos
 
-        latest_commands: Dict[str, Dict[str, Any]] = {}
+        latest_timestamps: Dict[str, Timestamp] = {}
+        latest_values: Dict[str, Dict[str, ValueProto]] = {}
+        latest_serialized_values: Dict[
+            str, List[Tuple[str, ValueProto, bytes]]
+        ] = {}
         history_points: Dict[str, List[Dict[str, Any]]] = {}
         numeric_points: Dict[str, List[Dict[str, Any]]] = {}
         expiry_keys: Dict[str, None] = {}
@@ -294,7 +309,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         queued_nanos: Dict[str, int] = {}
         tracked_keys: List[str] = []
 
-        for (entity_key, values, timestamp, _created), hash_key in zip(data, hash_keys):
+        for (_entity_key, values, timestamp, _created), hash_key, entity_key_hex in zip(
+            data, hash_keys, entity_key_hexes
+        ):
             aware_ts = utils.make_tzaware(timestamp)
             proto_ts = Timestamp()
             proto_ts.FromDatetime(aware_ts)
@@ -310,37 +327,32 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 continue
             queued_nanos[hash_key] = event_nanos
 
-            entries = [(ts_field, proto_ts.SerializeToString())]
-            for feature_name, value in values.items():
-                entries.append(
-                    (
-                        _feature_field(view_name, feature_name),
-                        value.SerializeToString(),
-                    )
-                )
             # A Feast batch can contain many events for one entity. Only its
             # newest accepted row belongs in the latest-value hash; history
             # below retains every accepted timestamp.
-            latest_commands[hash_key] = {
-                "kind": "hash_multi_set", "key": hash_key, "entries": entries
-            }
+            latest_timestamps[hash_key] = proto_ts
 
             if online_config.write_feature_history:
+                serialized_values = [
+                    (feature_name, value, value.SerializeToString())
+                    for feature_name, value in values.items()
+                ]
+                latest_serialized_values[hash_key] = serialized_values
                 timestamp_ms = proto_ts.seconds * 1000 + proto_ts.nanos // 1_000_000
-                for feature_name, value in values.items():
-                    history_key = self._history_key(
-                        config, view_name, entity_key, feature_name
+                for feature_name, value, serialized_value in serialized_values:
+                    history_key = self._history_key_from_hex(
+                        config, view_name, entity_key_hex, feature_name
                     )
                     history_points.setdefault(history_key, []).append(
                         {
                             "timestamp_ms": timestamp_ms,
-                            "value": value.SerializeToString(),
+                            "value": serialized_value,
                         }
                     )
                     numeric_field = value.WhichOneof("val")
                     if numeric_field in ("int32_val", "int64_val"):
-                        aggregate_key = self._aggregate_key(
-                            config, view_name, entity_key, feature_name
+                        aggregate_key = self._aggregate_key_from_hex(
+                            config, view_name, entity_key_hex, feature_name
                         )
                         numeric_points.setdefault(aggregate_key, []).append(
                             {
@@ -348,6 +360,8 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                                 "value": str(getattr(value, numeric_field)).encode("ascii"),
                             }
                         )
+            else:
+                latest_values[hash_key] = values
 
             if online_config.key_ttl_seconds:
                 expiry_keys[hash_key] = None
@@ -355,7 +369,22 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 tracked_keys.append(hash_key)
             written += 1
 
-        commands: List[Dict[str, Any]] = list(latest_commands.values())
+        commands: List[Dict[str, Any]] = []
+        for hash_key, proto_ts in latest_timestamps.items():
+            serialized_values = latest_serialized_values.get(hash_key)
+            if serialized_values is None:
+                serialized_values = [
+                    (feature_name, value, value.SerializeToString())
+                    for feature_name, value in latest_values[hash_key].items()
+                ]
+            entries = [(ts_field, proto_ts.SerializeToString())]
+            entries.extend(
+                (_feature_field(view_name, feature_name), serialized_value)
+                for feature_name, _value, serialized_value in serialized_values
+            )
+            commands.append(
+                {"kind": "hash_multi_set", "key": hash_key, "entries": entries}
+            )
         commands.extend(
             {"kind": "feature_append", "key": key, "points": points}
             for key, points in history_points.items()
@@ -394,17 +423,34 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         )
 
     @staticmethod
+    def _history_key_from_hex(
+        config: RepoConfig,
+        view_name: str,
+        entity_key_hex: str,
+        feature_name: str,
+    ) -> str:
+        return f"fh:{config.project}:{view_name}:{entity_key_hex}:{feature_name}"
+
+    @classmethod
     def _history_key(
+        cls,
         config: RepoConfig,
         view_name: str,
         entity_key: EntityKeyProto,
         feature_name: str,
     ) -> str:
-        serialized = serialize_entity_key(
-            entity_key,
-            entity_key_serialization_version=config.entity_key_serialization_version,
+        return cls._history_key_from_hex(
+            config, view_name, cls._entity_key_hex(config, entity_key), feature_name
         )
-        return f"fh:{config.project}:{view_name}:{serialized.hex()}:{feature_name}"
+
+    @staticmethod
+    def _aggregate_key_from_hex(
+        config: RepoConfig,
+        view_name: str,
+        entity_key_hex: str,
+        feature_name: str,
+    ) -> str:
+        return f"fa:{config.project}:{view_name}:{entity_key_hex}:{feature_name}"
 
     @classmethod
     def _aggregate_key(
@@ -414,7 +460,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         entity_key: EntityKeyProto,
         feature_name: str,
     ) -> str:
-        return "fa:" + cls._history_key(config, view_name, entity_key, feature_name)[3:]
+        return cls._aggregate_key_from_hex(
+            config, view_name, cls._entity_key_hex(config, entity_key), feature_name
+        )
 
     def query_feature_aggregate(
         self,
@@ -538,19 +586,32 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         ts_field = _ts_field(view_name)
         fields = [_feature_field(view_name, name) for name in feature_names] + [ts_field]
 
+        unique_hash_keys: List[str] = []
+        response_index_by_hash_key: Dict[str, int] = {}
+        response_indices: List[int] = []
+        for entity_key in entity_keys:
+            hash_key = self._entity_hash_key(config, entity_key)
+            response_index = response_index_by_hash_key.get(hash_key)
+            if response_index is None:
+                response_index = len(unique_hash_keys)
+                response_index_by_hash_key[hash_key] = response_index
+                unique_hash_keys.append(hash_key)
+            response_indices.append(response_index)
+
         responses = client.batch_execute(
             [
                 {
                     "kind": "hash_multi_get",
-                    "key": self._entity_hash_key(config, entity_key),
+                    "key": hash_key,
                     "fields": fields,
                 }
-                for entity_key in entity_keys
+                for hash_key in unique_hash_keys
             ]
         )
 
         results: List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]] = []
-        for response in responses:
+        for response_index in response_indices:
+            response = responses[response_index]
             raw_values = response.get("values") or []
             # HashMultiGet answers positionally, one slot per requested field,
             # with null for a field the hash does not hold. A short answer would

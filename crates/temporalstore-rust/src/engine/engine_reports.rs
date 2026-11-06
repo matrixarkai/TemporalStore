@@ -1968,20 +1968,55 @@ pub struct StorageSafetySnapshot {
     pub physical_reclaim_errors: u64,
 }
 
+/// The ONE quantity a page/block twin metric pair carries, read through both spellings.
+///
+/// # WHY THIS IS NOT AN ADDITION
+///
+/// `stale_page_tombstones` and `stale_block_tombstones` are two NAMES for one number, and so are
+/// `stale_pages_skipped` and `stale_blocks_skipped`. Both producers say so in one expression:
+/// `StorageLifecycleReport::refresh_public_lifecycle_metrics` puts each pair from the same
+/// filter-and-count over `plan.reclaim_candidates` and from the same
+/// `follower_retention_block_count`, and `data_node.rs` inserts the tombstone pair from one
+/// `stats.storage_manager_reclaim_block_runs`. `TWINNED_FIELD_PAIRS_IN_REPORTS` rosters the field
+/// pair they feed as `OneQuantity`.
+///
+/// Adding them therefore counted the quantity TWICE. Five published counters carried it:
+/// `StorageGcSnapshot::gc_eligible_record_count` and `follower_cursor_blocked_reclaim_count`, and
+/// `StorageSafetySnapshot::delete_marker_records`, `gc_eligible_record_count` and
+/// `follower_cursor_blocked_reclaim_count`. A twin pair crossing a summing aggregator is the one
+/// shape where retiring a spelling HALVES a published number instead of leaving it alone, which
+/// is why the census found this and a pair count never could.
+///
+/// # WHY `max` AND NOT ONE CHOSEN SPELLING
+///
+/// `metric` answers 0 for an absent key, and a metrics map assembled by an older build may carry
+/// only the page spelling. Reading just the block spelling would report 0 on those, and reading
+/// just the page spelling freezes the retired name into the arithmetic. `max` is correct in all
+/// three worlds -- page only, block only, both -- and is the conservative reading of the one case
+/// this cannot be right about: if the two have genuinely diverged they are no longer one
+/// quantity, and "at least this many" is the answer that does not under-report a stale record.
+///
+/// This is the only place that knows the pair is one quantity. Four call sites read it, so a
+/// future retirement edits one function.
+fn twinned_metric(metrics: &BTreeMap<String, u64>, page_spelled: &str, block_spelled: &str) -> u64 {
+    metric(metrics, page_spelled).max(metric(metrics, block_spelled))
+}
+
 pub fn storage_safety_snapshot_from_metrics(
     metrics: &BTreeMap<String, u64>,
 ) -> StorageSafetySnapshot {
-    let follower_cursor_blocked_reclaim_count = metric(metrics, "stale_pages_skipped")
-        .saturating_add(metric(metrics, "stale_blocks_skipped"));
+    // ONE quantity under two names, counted once. See `twinned_metric`.
+    let follower_cursor_blocked_reclaim_count =
+        twinned_metric(metrics, "stale_pages_skipped", "stale_blocks_skipped");
+    let stale_delete_markers =
+        twinned_metric(metrics, "stale_page_tombstones", "stale_block_tombstones");
     StorageSafetySnapshot {
         append_watermark: metric(metrics, "append_watermark"),
         compaction_watermark: metric(metrics, "compaction_watermark"),
         delete_marker_records: metric(metrics, "tombstone_records")
-            .saturating_add(metric(metrics, "stale_page_tombstones"))
-            .saturating_add(metric(metrics, "stale_block_tombstones")),
+            .saturating_add(stale_delete_markers),
         gc_eligible_record_count: metric(metrics, "tombstone_records")
-            .saturating_add(metric(metrics, "stale_page_tombstones"))
-            .saturating_add(metric(metrics, "stale_block_tombstones")),
+            .saturating_add(stale_delete_markers),
         reclaimable_bytes: metric(metrics, "reclaimable_bytes"),
         follower_cursor_retention_floor: metric(metrics, "follower_cursor_retention_floor"),
         follower_cursor_blocked_reclaim_count,
@@ -2120,18 +2155,22 @@ pub struct StorageGcSnapshot {
 }
 
 pub fn storage_gc_snapshot_from_metrics(metrics: &BTreeMap<String, u64>) -> StorageGcSnapshot {
+    // The two spellings are published SEPARATELY below, each from its own key, because they are
+    // the twin pair itself and a consumer reading either name must still get its own number.
     let stale_page_delete_markers = metric(metrics, "stale_page_tombstones");
     let stale_block_delete_markers = metric(metrics, "stale_block_tombstones");
     let delete_marker_records = metric(metrics, "tombstone_records");
-    let follower_cursor_blocked_reclaim_count = metric(metrics, "stale_pages_skipped")
-        .saturating_add(metric(metrics, "stale_blocks_skipped"));
+    // The AGGREGATES below are where the pair must collapse to one quantity. See
+    // `twinned_metric`: adding the two spellings counted every stale record twice.
+    let follower_cursor_blocked_reclaim_count =
+        twinned_metric(metrics, "stale_pages_skipped", "stale_blocks_skipped");
+    let stale_delete_markers = stale_page_delete_markers.max(stale_block_delete_markers);
     StorageGcSnapshot {
         delete_marker_records,
         stale_page_delete_markers,
         stale_block_delete_markers,
         gc_eligible_record_count: delete_marker_records
-            .saturating_add(stale_page_delete_markers)
-            .saturating_add(stale_block_delete_markers),
+            .saturating_add(stale_delete_markers),
         reclaimable_bytes: metric(metrics, "reclaimable_bytes"),
         compaction_reclaimed_bytes: metric(metrics, "compaction_reclaimed_bytes"),
         physical_reclaimed_bytes: metric(metrics, "physical_reclaimed_bytes"),
