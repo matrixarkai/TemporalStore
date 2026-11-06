@@ -666,6 +666,44 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 cold_storage: command.cold_storage,
             }
         }
+        v1::command::Kind::ContextUpsertEntity(command) => {
+            // Refused rather than defaulted: an upsert with no entity would file a record of all
+            // zeros, and a fabricated zero on disk cannot be told from a real one.
+            let entity = command
+                .entity
+                .ok_or_else(|| TonicStatus::invalid_argument("context entity record missing"))?;
+            types::Command::ContextUpsertEntity {
+                tenant_hash: command.tenant_hash,
+                entity: context_entity_record_from_proto(entity),
+            }
+        }
+        v1::command::Kind::ContextUpsertSummary(command) => {
+            let summary = command
+                .summary
+                .ok_or_else(|| TonicStatus::invalid_argument("context summary record missing"))?;
+            types::Command::ContextUpsertSummary {
+                tenant_hash: command.tenant_hash,
+                summary: context_summary_record_from_proto(summary),
+            }
+        }
+        v1::command::Kind::ContextWriteCompressionEvent(command) => {
+            let event = command.event.ok_or_else(|| {
+                TonicStatus::invalid_argument("context compression event record missing")
+            })?;
+            types::Command::ContextWriteCompressionEvent {
+                tenant_hash: command.tenant_hash,
+                event: context_compression_event_record_from_proto(event),
+            }
+        }
+        v1::command::Kind::ContextWritePackAudit(command) => {
+            let audit = command
+                .audit
+                .ok_or_else(|| TonicStatus::invalid_argument("context pack audit record missing"))?;
+            types::Command::ContextWritePackAudit {
+                tenant_hash: command.tenant_hash,
+                audit: context_pack_audit_record_from_proto(audit),
+            }
+        }
         v1::command::Kind::ContextWriteExtractedEvent(command) => {
             let event = command
                 .event
@@ -705,6 +743,175 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             }
         }
     })
+}
+
+/// THE DURABLE ENTITY, RUST TO WIRE. ALL TEN FIELDS.
+///
+/// `vector` passes through unchanged -- no quantisation -- and carries no model hash, which is
+/// `ContextEntity`'s existing design and not a guard dropped here.
+pub(crate) fn context_entity_record_to_proto(
+    entity: &types::ContextEntity,
+) -> v1::ContextEntityRecord {
+    v1::ContextEntityRecord {
+        entity_hash: entity.entity_hash,
+        node_hash: entity.node_hash,
+        entity_type: entity.entity_type,
+        name: entity.name.clone(),
+        value: entity.value.clone(),
+        updated_at_ms: entity.updated_at_ms,
+        valid_from_ms: entity.valid_from_ms,
+        confidence: entity.confidence,
+        source_event_hashes: entity.source_event_hashes.clone(),
+        vector: entity.vector.clone(),
+    }
+}
+
+/// THE DURABLE ENTITY, WIRE TO RUST. ALL TEN FIELDS.
+pub(crate) fn context_entity_record_from_proto(
+    entity: v1::ContextEntityRecord,
+) -> types::ContextEntity {
+    types::ContextEntity {
+        entity_hash: entity.entity_hash,
+        node_hash: entity.node_hash,
+        entity_type: entity.entity_type,
+        name: entity.name,
+        value: entity.value,
+        updated_at_ms: entity.updated_at_ms,
+        valid_from_ms: entity.valid_from_ms,
+        confidence: entity.confidence,
+        source_event_hashes: entity.source_event_hashes,
+        vector: entity.vector,
+    }
+}
+
+/// THE DURABLE SUMMARY, RUST TO WIRE. ALL SIX FIELDS, GUARD INCLUDED.
+///
+/// `embedding_model_hash` travels with the vector it describes and is its OWN field, not shared
+/// with the node's two or with `ContextSetNodeEmbedding.model_hash`. Zeroing it would disarm the
+/// check that stops this summary being scored under a replaced encoder.
+pub(crate) fn context_summary_record_to_proto(
+    summary: &types::ContextSummary,
+) -> v1::ContextSummaryRecord {
+    v1::ContextSummaryRecord {
+        node_hash: summary.node_hash,
+        level: summary.level,
+        text: summary.text.clone(),
+        valid_from_ms: summary.valid_from_ms,
+        vector: summary.vector.clone(),
+        embedding_model_hash: summary.embedding_model_hash,
+    }
+}
+
+/// THE DURABLE SUMMARY, WIRE TO RUST. ALL SIX FIELDS, GUARD INCLUDED.
+pub(crate) fn context_summary_record_from_proto(
+    summary: v1::ContextSummaryRecord,
+) -> types::ContextSummary {
+    types::ContextSummary {
+        node_hash: summary.node_hash,
+        level: summary.level,
+        text: summary.text,
+        valid_from_ms: summary.valid_from_ms,
+        vector: summary.vector,
+        embedding_model_hash: summary.embedding_model_hash,
+    }
+}
+
+/// The durable compression event, Rust to wire.
+pub(crate) fn context_compression_event_record_to_proto(
+    event: &types::ContextCompressionEvent,
+) -> v1::ContextCompressionEventRecord {
+    v1::ContextCompressionEventRecord {
+        compression_id_hash: event.compression_id_hash,
+        node_hash: event.node_hash,
+        source_start_ms: event.source_start_ms,
+        source_end_ms: event.source_end_ms,
+        compressed_time_ms: event.compressed_time_ms,
+        summary: event.summary.clone(),
+    }
+}
+
+/// The durable compression event, wire to Rust.
+pub(crate) fn context_compression_event_record_from_proto(
+    event: v1::ContextCompressionEventRecord,
+) -> types::ContextCompressionEvent {
+    types::ContextCompressionEvent {
+        compression_id_hash: event.compression_id_hash,
+        node_hash: event.node_hash,
+        source_start_ms: event.source_start_ms,
+        source_end_ms: event.source_end_ms,
+        compressed_time_ms: event.compressed_time_ms,
+        summary: event.summary,
+    }
+}
+
+/// One audit ref, Rust to wire.
+fn context_audit_ref_to_proto(audit_ref: &types::ContextAuditRef) -> v1::ContextAuditRefRecord {
+    v1::ContextAuditRefRecord {
+        node_hash: audit_ref.node_hash,
+        event_time_ms: audit_ref.event_time_ms,
+        reason: audit_ref.reason.clone(),
+    }
+}
+
+/// One audit ref, wire to Rust.
+fn context_audit_ref_from_proto(audit_ref: v1::ContextAuditRefRecord) -> types::ContextAuditRef {
+    types::ContextAuditRef {
+        node_hash: audit_ref.node_hash,
+        event_time_ms: audit_ref.event_time_ms,
+        reason: audit_ref.reason,
+    }
+}
+
+/// THE DURABLE PACK AUDIT, RUST TO WIRE. ALL EIGHT FIELDS.
+///
+/// The two ref lists stay separate all the way through. Selected and blocked are the two halves of
+/// the verdict, and a crossing would reverse every decision the audit records while every field
+/// still round-tripped.
+pub(crate) fn context_pack_audit_record_to_proto(
+    audit: &types::ContextPackAudit,
+) -> v1::ContextPackAuditRecord {
+    v1::ContextPackAuditRecord {
+        query_id: audit.query_id.clone(),
+        session_hash: audit.session_hash,
+        request_time_ms: audit.request_time_ms,
+        query_hash: audit.query_hash,
+        max_prompt_tokens: audit.max_prompt_tokens,
+        selected_tokens: audit.selected_tokens,
+        selected_refs: audit
+            .selected_refs
+            .iter()
+            .map(context_audit_ref_to_proto)
+            .collect(),
+        blocked_refs: audit
+            .blocked_refs
+            .iter()
+            .map(context_audit_ref_to_proto)
+            .collect(),
+    }
+}
+
+/// THE DURABLE PACK AUDIT, WIRE TO RUST. ALL EIGHT FIELDS.
+pub(crate) fn context_pack_audit_record_from_proto(
+    audit: v1::ContextPackAuditRecord,
+) -> types::ContextPackAudit {
+    types::ContextPackAudit {
+        query_id: audit.query_id,
+        session_hash: audit.session_hash,
+        request_time_ms: audit.request_time_ms,
+        query_hash: audit.query_hash,
+        max_prompt_tokens: audit.max_prompt_tokens,
+        selected_tokens: audit.selected_tokens,
+        selected_refs: audit
+            .selected_refs
+            .into_iter()
+            .map(context_audit_ref_from_proto)
+            .collect(),
+        blocked_refs: audit
+            .blocked_refs
+            .into_iter()
+            .map(context_audit_ref_from_proto)
+            .collect(),
+    }
 }
 
 /// THE DURABLE EVENT, RUST TO WIRE. ALL FIFTEEN FIELDS.
