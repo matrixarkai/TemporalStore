@@ -252,7 +252,7 @@ jobs:
             meta::tests::a_complete_record_with_a_bad_checksum_is_refused_and_not_truncated \
             ingestion::tests::the_ingestion_state_reader_accepts_both_shapes \
             ingestion::tests::an_unknown_flink_tag_or_an_absent_ingestion_source_is_refused_rather_than_defaulted \
-            ingestion::tests::a_binary_ingestion_state_file_is_read_on_restart_and_still_refuses_the_duplicate \
+            ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart \
             shared_store::tests::the_widened_object_readers_accept_both_shapes \
             shared_store::tests::the_object_writers_are_binary_and_planted_json_objects_are_still_read \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
