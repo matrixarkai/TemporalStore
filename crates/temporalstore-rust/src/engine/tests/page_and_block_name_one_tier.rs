@@ -1483,3 +1483,223 @@ fn the_lone_page_spelled_probe_field_has_no_twin_and_its_neighbour_measures_some
         );
     }
 }
+
+/// A page/block twin metric pair is counted ONCE by every aggregate that crosses it.
+///
+/// # WHAT WENT WRONG
+///
+/// `stale_page_tombstones`/`stale_block_tombstones` and
+/// `stale_pages_skipped`/`stale_blocks_skipped` are each ONE number under two names -- both
+/// producers fill each pair from one expression, and `TWINNED_FIELD_PAIRS_IN_REPORTS` rosters the
+/// field pair the first of them feeds as [`TwinHolds::OneQuantity`]. Five published counters then
+/// ADDED the two spellings, so every stale record was counted twice.
+///
+/// This is the failure mode a pair COUNT can never see. Nothing about the number of twins moved;
+/// the pair simply crossed a summing aggregator, which is also why retiring either spelling would
+/// have HALVED three published counters instead of leaving them alone.
+///
+/// # FIVE CLAUSES, AND THE FIRST IS THE ONE THAT MATTERS
+///
+///   1. the aggregate is NOT the sum -- asserted against the sum arithmetic explicitly, because
+///      an assertion of `10` is also satisfied by a build that sums 3 + 7 + 0, which is what a
+///      map carrying only one spelling looks like;
+///   2. a map carrying ONLY the page spelling answers the same, so this is not "ignore the
+///      retired name";
+///   3. a map carrying ONLY the block spelling answers the same, so it is not "ignore the
+///      canonical name" either;
+///   4. a DISAGREEING map answers with the larger, so neither spelling is hard-wired -- and this
+///      is the arm that no single-key read can pass;
+///   5. the zero case is unmoved, because `follower_cursor_safe_to_reclaim` is a test for zero
+///      and a doubling never changed it. That is exactly why this sat unguarded.
+#[test]
+fn a_twin_metric_pair_is_counted_once_by_every_aggregate_that_crosses_it() {
+    use crate::engine::reports::{
+        storage_gc_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
+    };
+
+    // The roster is the evidence for the whole test. If this pair is ever reclassified, the
+    // arithmetic below is no longer the right arithmetic and this has to be re-read rather than
+    // adjusted.
+    let rostered = TWINNED_FIELD_PAIRS_IN_REPORTS
+        .iter()
+        .find(|entry| entry.0 == "StorageGcSnapshot" && entry.1 == "stale_block_delete_markers")
+        .expect("the stale delete-marker twin must be on the census roster");
+    assert_eq!(
+        rostered.3,
+        TwinHolds::OneQuantity,
+        "the stale delete-marker pair is rostered as {:?}. Collapsing it with max is only correct \
+         while it carries ONE quantity under two names",
+        rostered.3
+    );
+
+    let map = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
+        pairs
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), *value))
+            .collect()
+    };
+
+    const RECORDS: u64 = 3;
+    const STALE: u64 = 7;
+    const SKIPPED: u64 = 5;
+
+    // --- CLAUSE 1: both spellings present and agreeing. ---
+    let both = map(&[
+        ("tombstone_records", RECORDS),
+        ("stale_page_tombstones", STALE),
+        ("stale_block_tombstones", STALE),
+        ("stale_pages_skipped", SKIPPED),
+        ("stale_blocks_skipped", SKIPPED),
+    ]);
+    let gc = storage_gc_snapshot_from_metrics(&both);
+    let safety = storage_safety_snapshot_from_metrics(&both);
+
+    // The two spellings are still published separately, each from its own key. Without this the
+    // clauses below would pass on a build that had simply deleted one of them.
+    assert_eq!(
+        (gc.stale_page_delete_markers, gc.stale_block_delete_markers),
+        (STALE, STALE),
+        "the twin pair itself must still be published under both names: {gc:?}"
+    );
+
+    let summed = RECORDS + STALE + STALE;
+    let counted_once = RECORDS + STALE;
+    assert_ne!(
+        summed, counted_once,
+        "the fixture makes the two arithmetics equal, so every clause below holds either way"
+    );
+    for (what, got) in [
+        ("StorageGcSnapshot::gc_eligible_record_count", gc.gc_eligible_record_count),
+        ("StorageSafetySnapshot::gc_eligible_record_count", safety.gc_eligible_record_count),
+        ("StorageSafetySnapshot::delete_marker_records", safety.delete_marker_records),
+    ] {
+        assert_ne!(
+            got, summed,
+            "{what} is {got}, which is {RECORDS} + {STALE} + {STALE}: the two spellings of ONE \
+             stale-record count were added, so every stale record is counted twice"
+        );
+        assert_eq!(
+            got, counted_once,
+            "{what} is {got} and the quantity counted once is {counted_once}"
+        );
+    }
+    for (what, got) in [
+        (
+            "StorageGcSnapshot::follower_cursor_blocked_reclaim_count",
+            gc.follower_cursor_blocked_reclaim_count,
+        ),
+        (
+            "StorageSafetySnapshot::follower_cursor_blocked_reclaim_count",
+            safety.follower_cursor_blocked_reclaim_count,
+        ),
+    ] {
+        assert_ne!(
+            got,
+            SKIPPED + SKIPPED,
+            "{what} is {got}, which is the two spellings of ONE blocked-reclaim count added"
+        );
+        assert_eq!(
+            got, SKIPPED,
+            "{what} is {got} and one blocked reclaim under two names is {SKIPPED}"
+        );
+    }
+
+    // --- CLAUSES 2 AND 3: one spelling at a time. ---
+    for (which, page, block) in [
+        ("the page spelling alone -- what an older build's map carries", Some(STALE), None),
+        ("the block spelling alone -- the canonical name", None, Some(STALE)),
+    ] {
+        let mut pairs: Vec<(&str, u64)> = vec![("tombstone_records", RECORDS)];
+        if let Some(value) = page {
+            pairs.push(("stale_page_tombstones", value));
+            pairs.push(("stale_pages_skipped", SKIPPED));
+        }
+        if let Some(value) = block {
+            pairs.push(("stale_block_tombstones", value));
+            pairs.push(("stale_blocks_skipped", SKIPPED));
+        }
+        let one = map(&pairs);
+        let gc = storage_gc_snapshot_from_metrics(&one);
+        let safety = storage_safety_snapshot_from_metrics(&one);
+        assert_eq!(
+            gc.gc_eligible_record_count, counted_once,
+            "with {which}, the gc aggregate is {} rather than {counted_once}. Collapsing the pair \
+             must not mean reading one fixed key, or a map that carries the other spelling reports \
+             no stale records at all",
+            gc.gc_eligible_record_count
+        );
+        assert_eq!(
+            safety.gc_eligible_record_count, counted_once,
+            "with {which}, the safety aggregate is {}",
+            safety.gc_eligible_record_count
+        );
+        assert_eq!(
+            gc.follower_cursor_blocked_reclaim_count, SKIPPED,
+            "with {which}, the blocked-reclaim count is {}",
+            gc.follower_cursor_blocked_reclaim_count
+        );
+    }
+
+    // --- CLAUSE 4: a DISAGREEING map. No single-key read can produce this. ---
+    const LOW: u64 = 7;
+    const HIGH: u64 = 11;
+    let disagreeing = map(&[
+        ("tombstone_records", RECORDS),
+        ("stale_page_tombstones", LOW),
+        ("stale_block_tombstones", HIGH),
+        ("stale_pages_skipped", HIGH),
+        ("stale_blocks_skipped", LOW),
+    ]);
+    let gc = storage_gc_snapshot_from_metrics(&disagreeing);
+    let safety = storage_safety_snapshot_from_metrics(&disagreeing);
+    // The two aggregates take their larger from OPPOSITE spellings in this fixture, which is what
+    // makes the pair of assertions impossible to satisfy by reading either key alone.
+    assert_eq!(
+        gc.gc_eligible_record_count,
+        RECORDS + HIGH,
+        "the stale pair disagrees {LOW} against {HIGH} and the gc aggregate read {}. It must take \
+         the larger: a divergent pair is no longer one quantity, and under-reporting a stale \
+         record is the direction that loses reclaimable space rather than invents it",
+        gc.gc_eligible_record_count
+    );
+    assert_eq!(
+        safety.gc_eligible_record_count,
+        RECORDS + HIGH,
+        "the safety aggregate read {}",
+        safety.gc_eligible_record_count
+    );
+    assert_eq!(
+        gc.follower_cursor_blocked_reclaim_count, HIGH,
+        "the skipped pair disagrees with the LARGER on the page spelling, and the gc blocked \
+         count read {}",
+        gc.follower_cursor_blocked_reclaim_count
+    );
+    assert_eq!(
+        safety.follower_cursor_blocked_reclaim_count, HIGH,
+        "the safety blocked count read {}",
+        safety.follower_cursor_blocked_reclaim_count
+    );
+
+    // --- CLAUSE 5: the zero case is unmoved, which is why this sat unguarded. ---
+    let empty = map(&[]);
+    let gc = storage_gc_snapshot_from_metrics(&empty);
+    let safety = storage_safety_snapshot_from_metrics(&empty);
+    assert_eq!(gc.follower_cursor_blocked_reclaim_count, 0);
+    assert_eq!(gc.gc_eligible_record_count, 0);
+    assert!(
+        gc.follower_cursor_safe_to_reclaim,
+        "an empty map must still read safe to reclaim"
+    );
+    assert!(safety.follower_cursor_safe_to_reclaim);
+    let blocked = map(&[("stale_pages_skipped", 1), ("stale_blocks_skipped", 1)]);
+    let gc = storage_gc_snapshot_from_metrics(&blocked);
+    assert_eq!(
+        gc.follower_cursor_blocked_reclaim_count, 1,
+        "one blocked reclaim under two names is one blocked reclaim"
+    );
+    assert!(
+        !gc.follower_cursor_safe_to_reclaim,
+        "a blocked reclaim must still read NOT safe. The safety flag is a test for zero, so the \
+         doubling never changed it -- which is exactly how five wrong counters stayed green"
+    );
+}
