@@ -241,7 +241,13 @@ fn conditional_hash_batch_keeps_only_newer_rows() {
 
     let response = runtime.batch_hash_timestamp_set(BatchHashTimestampSetRequest {
         shard_id: 1,
-        fields: vec!["timestamp".to_string(), "value".to_string()],
+        fields: vec![
+            "timestamp".to_string(),
+            "f0".to_string(),
+            "f1".to_string(),
+            "f2".to_string(),
+            "f3".to_string(),
+        ],
         timestamp_field: "timestamp".to_string(),
         rows: vec![
             BatchHashTimestampSetRow(
@@ -250,7 +256,10 @@ fn conditional_hash_batch_keeps_only_newer_rows() {
                 0,
                 vec![
                     BatchHashMultiSetValue(encode_timestamp(20)),
-                    BatchHashMultiSetValue(b"new".to_vec()),
+                    BatchHashMultiSetValue(b"new-0".to_vec()),
+                    BatchHashMultiSetValue(b"new-1".to_vec()),
+                    BatchHashMultiSetValue(b"new-2".to_vec()),
+                    BatchHashMultiSetValue(b"new-3".to_vec()),
                 ],
             ),
             BatchHashTimestampSetRow(
@@ -259,7 +268,10 @@ fn conditional_hash_batch_keeps_only_newer_rows() {
                 0,
                 vec![
                     BatchHashMultiSetValue(encode_timestamp(10)),
-                    BatchHashMultiSetValue(b"old".to_vec()),
+                    BatchHashMultiSetValue(b"old-0".to_vec()),
+                    BatchHashMultiSetValue(b"old-1".to_vec()),
+                    BatchHashMultiSetValue(b"old-2".to_vec()),
+                    BatchHashMultiSetValue(b"old-3".to_vec()),
                 ],
             ),
         ],
@@ -268,16 +280,40 @@ fn conditional_hash_batch_keeps_only_newer_rows() {
     assert_eq!(response.applied, 1);
     assert_eq!(response.skipped, 1);
     assert!(response.errors.is_empty());
+    assert_eq!(
+        runtime.engine().block_store().stats().writes,
+        1,
+        "five accepted fields must append one packed block; the stale row appends nothing"
+    );
 
+    runtime.engine().cache().invalidate_shard(1).unwrap();
+    let reads_before = runtime.engine().block_store().stats().reads;
     let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["entity".to_string()],
-        fields: vec!["timestamp".to_string(), "value".to_string()],
+        fields: vec![
+            "timestamp".to_string(),
+            "f0".to_string(),
+            "f1".to_string(),
+            "f2".to_string(),
+            "f3".to_string(),
+        ],
     });
+    assert_eq!(
+        runtime.engine().block_store().stats().reads - reads_before,
+        1,
+        "five projected fields sharing a packed address must fetch that block once"
+    );
     assert_eq!(
         read.responses[0].response,
         CommandResponse::Values {
-            values: vec![Some(encode_timestamp(20)), Some(b"new".to_vec())]
+            values: vec![
+                Some(encode_timestamp(20)),
+                Some(b"new-0".to_vec()),
+                Some(b"new-1".to_vec()),
+                Some(b"new-2".to_vec()),
+                Some(b"new-3".to_vec()),
+            ]
         }
     );
 }

@@ -465,6 +465,7 @@ pub(crate) fn execute_on_shard(
     control_rollup_enabled: bool,
     control_coalesce_persist: bool,
     control_distinct_sketch: bool,
+    trim_boundary_record: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
@@ -1074,28 +1075,101 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let hash_fields = shard.hashes.get(&key);
-            let values = fields
-                .iter()
-                .map(|field| {
-                    hash_fields
-                        .and_then(|entries| entries.get(field))
-                        .and_then(|address| {
-                            read_block_bytes(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                // The hash the key names, and the field being read as its element.
-                                BlockIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
-                                Some(block_routing_bucket(
-                                    &key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
-                            )
-                        })
-                })
-                .collect();
+            let routing_bucket =
+                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // A packed row gives every present field the same address. Detect that common case
+            // without allocating a per-command address map, fetch its frame once, and project all
+            // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
+            // the established independent-read path.
+            let mut shared: Option<(&ElementEntry, &str)> = None;
+            let mut distinct_addresses = false;
+            if let Some(entries) = hash_fields {
+                for field in &fields {
+                    let Some(address) = entries.get(field) else {
+                        continue;
+                    };
+                    match shared {
+                        None => shared = Some((address, field.as_str())),
+                        Some((held, _)) if held == address => {}
+                        Some(_) => {
+                            distinct_addresses = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            let values = if !distinct_addresses {
+                if let Some((address, first_field)) = shared {
+                    let frame = read_block_frame_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        BlockIdentity::of(
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(first_field),
+                        ),
+                        Some(routing_bucket),
+                    );
+                    match frame.as_deref().map(|bytes| {
+                        container_blocks::project_utf8_container_elements(bytes, &fields)
+                    }) {
+                        Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
+                            for (index, field) in fields.iter().enumerate() {
+                                if hash_fields
+                                    .and_then(|entries| entries.get(field))
+                                    .is_none()
+                                {
+                                    values[index] = None;
+                                }
+                            }
+                            values
+                        }
+                        Some(container_blocks::Utf8ContainerProjection::Corrupt(_)) => {
+                            note_corrupt_container_block();
+                            vec![None; fields.len()]
+                        }
+                        Some(container_blocks::Utf8ContainerProjection::NotFramed)
+                        | Some(container_blocks::Utf8ContainerProjection::OtherSpelling) => fields
+                            .iter()
+                            .map(|field| {
+                                hash_fields
+                                    .and_then(|entries| entries.get(field))
+                                    .and_then(|_| frame.as_deref())
+                                    .and_then(|bytes| select_container_value(bytes, field))
+                            })
+                            .collect(),
+                        None => vec![None; fields.len()],
+                    }
+                } else {
+                    vec![None; fields.len()]
+                }
+            } else {
+                fields
+                    .iter()
+                    .map(|field| {
+                        hash_fields
+                            .and_then(|entries| entries.get(field))
+                            .and_then(|address| {
+                                read_block_bytes(
+                                    cache,
+                                    block_store,
+                                    shard_id,
+                                    address,
+                                    BlockIdentity::of(
+                                        shard_id,
+                                        "hash",
+                                        &key,
+                                        Some(field.as_str()),
+                                    ),
+                                    Some(routing_bucket),
+                                )
+                            })
+                    })
+                    .collect()
+            };
             CommandResponse::Values { values }
         }
         Command::HashMultiSet { key, entries } => {
@@ -1106,9 +1180,11 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "hash", &key);
 
             // A large feature and its small scalar fields must stay readable as
-            // one object under cache pressure. One packed block gives every
-            // field the same readable address and pays for one storage append.
-            if contains_large_value {
+            // one object under cache pressure. Timestamp-conditioned writes are
+            // complete feature rows too, so packing them avoids one block append
+            // per scalar while preserving field-addressed reads. Generic small
+            // hash writes retain their existing per-field representation.
+            if contains_large_value || conditional_hash_write {
                 let mut positions = std::collections::HashMap::<String, usize>::new();
                 let mut packed_entries = Vec::<(String, Vec<u8>)>::with_capacity(entries.len());
                 for (field, value) in entries {
@@ -2504,6 +2580,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2608,6 +2685,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2810,6 +2888,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_blocks(
@@ -3019,6 +3098,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
