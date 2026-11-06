@@ -676,6 +676,52 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertIn("_ts:stats", fields)
         self.assertIn("stats:trips", fields)
 
+    def test_history_serializes_each_entity_and_value_once(self):
+        from unittest.mock import patch
+
+        import feast_temporalstore_command.online_store as online_store_module
+
+        class CountingValue:
+            def __init__(self, number):
+                self.int64_val = number
+                self.serialize_calls = 0
+
+            def SerializeToString(self):
+                self.serialize_calls += 1
+                return str(self.int64_val).encode("ascii")
+
+            def WhichOneof(self, _name):
+                return "int64_val"
+
+        client = self._install()
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        values = {"trips": CountingValue(7), "fares": CountingValue(11)}
+        original_serialize_entity_key = online_store_module.serialize_entity_key
+        entity_serialize_calls = 0
+
+        def count_entity_serialization(*args, **kwargs):
+            nonlocal entity_serialize_calls
+            entity_serialize_calls += 1
+            return original_serialize_entity_key(*args, **kwargs)
+
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        with patch.object(
+            online_store_module,
+            "serialize_entity_key",
+            side_effect=count_entity_serialization,
+        ):
+            self.store.online_write_batch(
+                self.config,
+                self.view,
+                [(self._entity_key(1), values, now, None)],
+                None,
+            )
+
+        self.assertEqual(entity_serialize_calls, 1)
+        self.assertTrue(all(value.serialize_calls == 1 for value in values.values()))
+        self.assertEqual(len(client.sent[0][1]["commands"]), 5)
+
     def test_a_write_without_skip_dedup_reads_only_the_timestamp_field(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 

@@ -240,12 +240,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             return table.name
 
     @staticmethod
-    def _entity_hash_key(config: RepoConfig, entity_key: EntityKeyProto) -> str:
-        serialized = serialize_entity_key(
+    def _entity_key_hex(config: RepoConfig, entity_key: EntityKeyProto) -> str:
+        return serialize_entity_key(
             entity_key,
             entity_key_serialization_version=config.entity_key_serialization_version,
-        )
-        return f"{serialized.hex()}:{config.project}"
+        ).hex()
+
+    @classmethod
+    def _entity_hash_key(cls, config: RepoConfig, entity_key: EntityKeyProto) -> str:
+        return f"{cls._entity_key_hex(config, entity_key)}:{config.project}"
 
     # -- writes --------------------------------------------------------------
 
@@ -266,7 +269,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         view_name = self._view_name(table, config)
         ts_field = _ts_field(view_name)
 
-        hash_keys = [self._entity_hash_key(config, row[0]) for row in data]
+        entity_key_hexes = [self._entity_key_hex(config, row[0]) for row in data]
+        hash_keys = [
+            f"{entity_key_hex}:{config.project}" for entity_key_hex in entity_key_hexes
+        ]
 
         stored_nanos: Dict[str, int] = {}
         if not online_config.skip_dedup:
@@ -298,7 +304,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         queued_nanos: Dict[str, int] = {}
         tracked_keys: List[str] = []
 
-        for (entity_key, values, timestamp, _created), hash_key in zip(data, hash_keys):
+        for (_entity_key, values, timestamp, _created), hash_key, entity_key_hex in zip(
+            data, hash_keys, entity_key_hexes
+        ):
             aware_ts = utils.make_tzaware(timestamp)
             proto_ts = Timestamp()
             proto_ts.FromDatetime(aware_ts)
@@ -314,12 +322,16 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 continue
             queued_nanos[hash_key] = event_nanos
 
+            serialized_values = [
+                (feature_name, value, value.SerializeToString())
+                for feature_name, value in values.items()
+            ]
             entries = [(ts_field, proto_ts.SerializeToString())]
-            for feature_name, value in values.items():
+            for feature_name, _value, serialized_value in serialized_values:
                 entries.append(
                     (
                         _feature_field(view_name, feature_name),
-                        value.SerializeToString(),
+                        serialized_value,
                     )
                 )
             # A Feast batch can contain many events for one entity. Only its
@@ -331,20 +343,20 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
 
             if online_config.write_feature_history:
                 timestamp_ms = proto_ts.seconds * 1000 + proto_ts.nanos // 1_000_000
-                for feature_name, value in values.items():
-                    history_key = self._history_key(
-                        config, view_name, entity_key, feature_name
+                for feature_name, value, serialized_value in serialized_values:
+                    history_key = self._history_key_from_hex(
+                        config, view_name, entity_key_hex, feature_name
                     )
                     history_points.setdefault(history_key, []).append(
                         {
                             "timestamp_ms": timestamp_ms,
-                            "value": value.SerializeToString(),
+                            "value": serialized_value,
                         }
                     )
                     numeric_field = value.WhichOneof("val")
                     if numeric_field in ("int32_val", "int64_val"):
-                        aggregate_key = self._aggregate_key(
-                            config, view_name, entity_key, feature_name
+                        aggregate_key = self._aggregate_key_from_hex(
+                            config, view_name, entity_key_hex, feature_name
                         )
                         numeric_points.setdefault(aggregate_key, []).append(
                             {
@@ -398,17 +410,34 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         )
 
     @staticmethod
+    def _history_key_from_hex(
+        config: RepoConfig,
+        view_name: str,
+        entity_key_hex: str,
+        feature_name: str,
+    ) -> str:
+        return f"fh:{config.project}:{view_name}:{entity_key_hex}:{feature_name}"
+
+    @classmethod
     def _history_key(
+        cls,
         config: RepoConfig,
         view_name: str,
         entity_key: EntityKeyProto,
         feature_name: str,
     ) -> str:
-        serialized = serialize_entity_key(
-            entity_key,
-            entity_key_serialization_version=config.entity_key_serialization_version,
+        return cls._history_key_from_hex(
+            config, view_name, cls._entity_key_hex(config, entity_key), feature_name
         )
-        return f"fh:{config.project}:{view_name}:{serialized.hex()}:{feature_name}"
+
+    @staticmethod
+    def _aggregate_key_from_hex(
+        config: RepoConfig,
+        view_name: str,
+        entity_key_hex: str,
+        feature_name: str,
+    ) -> str:
+        return f"fa:{config.project}:{view_name}:{entity_key_hex}:{feature_name}"
 
     @classmethod
     def _aggregate_key(
@@ -418,7 +447,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         entity_key: EntityKeyProto,
         feature_name: str,
     ) -> str:
-        return "fa:" + cls._history_key(config, view_name, entity_key, feature_name)[3:]
+        return cls._aggregate_key_from_hex(
+            config, view_name, cls._entity_key_hex(config, entity_key), feature_name
+        )
 
     def query_feature_aggregate(
         self,
