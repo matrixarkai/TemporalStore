@@ -42,11 +42,12 @@ event timestamp are one key's worth of work:
 
 Reads use bounded binary ``/batch_hash_multi_get_compact_msgpack`` requests
 with one shared field projection and one top-level status per batch.
-The common latest-value write uses ``/batch_hash_multi_set_msgpack`` with the
-field projection encoded once; augmented or mixed-layout writes use bounded
-``/batch_write_msgpack`` command batches. Both paths fall back once to
-compatible command routes when needed, so serving groups entities instead of
-issuing one request per entity.
+The common latest-value write uses ``/batch_hash_timestamp_set_msgpack`` to
+compare and replace each row atomically in one request. Augmented or
+mixed-layout writes use bounded ``/batch_write_msgpack`` command batches.
+The latest-value path falls back once to the read-then-write routes for older
+nodes, so serving still groups entities instead of issuing one request per
+entity.
 """
 
 from __future__ import annotations
@@ -277,8 +278,14 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             f"{entity_key_hex}:{config.project}" for entity_key_hex in entity_key_hexes
         ]
 
+        defer_stored_dedup = (
+            not online_config.skip_dedup
+            and not online_config.write_feature_history
+            and not online_config.key_ttl_seconds
+            and not online_config.track_keys_for_teardown
+        )
         stored_nanos: Dict[str, int] = {}
-        if not online_config.skip_dedup:
+        if not online_config.skip_dedup and not defer_stored_dedup:
             # Read just the timestamp field before the bounded write batches.
             unique_hash_keys = list(dict.fromkeys(hash_keys))
             reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
@@ -413,22 +420,68 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 }
             )
 
-        if shared_fields is not None and shared_layout and not commands:
-            client.batch_hash_multi_set(
+        conditional_handled = False
+        if (
+            defer_stored_dedup
+            and shared_fields is not None
+            and shared_layout
+            and not commands
+        ):
+            conditional_result = client.batch_hash_timestamp_set(
                 list(shared_fields),
+                ts_field,
                 [
-                    (hash_key, [value for _field, value in entries])
+                    (
+                        hash_key,
+                        latest_timestamps[hash_key].seconds,
+                        latest_timestamps[hash_key].nanos,
+                        [value for _field, value in entries],
+                    )
                     for hash_key, entries in hash_rows
                 ],
             )
-        elif hash_rows or commands:
-            client.batch_write(
-                [
-                    {"kind": "hash_multi_set", "key": key, "entries": entries}
-                    for key, entries in hash_rows
-                ]
-                + commands
-            )
+            if conditional_result is not None:
+                conditional_handled = True
+                skipped += conditional_result[1]
+
+        if not conditional_handled:
+            if defer_stored_dedup and hash_rows:
+                unique_hash_keys = [hash_key for hash_key, _entries in hash_rows]
+                reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
+                for key, values in zip(unique_hash_keys, reads):
+                    raw = decode_bytes(values[0]) if values else None
+                    if raw:
+                        stored = Timestamp()
+                        stored.ParseFromString(raw)
+                        stored_nanos[key] = (
+                            stored.seconds * 1_000_000_000 + stored.nanos
+                        )
+                retained_rows: List[Tuple[str, List[Tuple[str, bytes]]]] = []
+                for hash_key, entries in hash_rows:
+                    timestamp = latest_timestamps[hash_key]
+                    event_nanos = timestamp.seconds * 1_000_000_000 + timestamp.nanos
+                    if event_nanos <= stored_nanos.get(hash_key, 0):
+                        skipped += 1
+                    else:
+                        retained_rows.append((hash_key, entries))
+                hash_rows = retained_rows
+
+            if shared_fields is not None and shared_layout and not commands:
+                client.batch_hash_multi_set(
+                    list(shared_fields),
+                    [
+                        (hash_key, [value for _field, value in entries])
+                        for hash_key, entries in hash_rows
+                    ],
+                )
+            elif hash_rows or commands:
+                client.batch_write(
+                    [
+                        {"kind": "hash_multi_set", "key": key, "entries": entries}
+                        for key, entries in hash_rows
+                    ]
+                    + commands
+                )
         if progress and written:
             progress(written)
         logger.debug(

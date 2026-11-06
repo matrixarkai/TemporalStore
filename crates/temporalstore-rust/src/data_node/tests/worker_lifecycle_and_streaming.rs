@@ -5,7 +5,18 @@
 #![allow(clippy::all)]
 use super::*;
 use super::helpers::*;
-use crate::types::{BatchHashMultiSetRow, BatchHashMultiSetValue};
+use crate::types::{
+    BatchHashMultiSetRow, BatchHashMultiSetValue, BatchHashTimestampSetRequest,
+    BatchHashTimestampSetRow,
+};
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct TestTimestamp {
+    #[prost(int64, tag = "1")]
+    seconds: i64,
+    #[prost(int32, tag = "2")]
+    nanos: i32,
+}
 
 #[test]
 fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
@@ -214,6 +225,61 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
     });
     assert_eq!(rejected.status.code, "field_value_count_mismatch");
     assert_eq!(rejected.applied, 0);
+}
+
+#[test]
+fn conditional_hash_batch_keeps_only_newer_rows() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let encode_timestamp = |seconds| {
+        <TestTimestamp as prost::Message>::encode_to_vec(&TestTimestamp {
+            seconds,
+            nanos: 0,
+        })
+    };
+
+    let response = runtime.batch_hash_timestamp_set(BatchHashTimestampSetRequest {
+        shard_id: 1,
+        fields: vec!["timestamp".to_string(), "value".to_string()],
+        timestamp_field: "timestamp".to_string(),
+        rows: vec![
+            BatchHashTimestampSetRow(
+                "entity".to_string(),
+                20,
+                0,
+                vec![
+                    BatchHashMultiSetValue(encode_timestamp(20)),
+                    BatchHashMultiSetValue(b"new".to_vec()),
+                ],
+            ),
+            BatchHashTimestampSetRow(
+                "entity".to_string(),
+                10,
+                0,
+                vec![
+                    BatchHashMultiSetValue(encode_timestamp(10)),
+                    BatchHashMultiSetValue(b"old".to_vec()),
+                ],
+            ),
+        ],
+    });
+    assert!(response.status.ok, "{response:?}");
+    assert_eq!(response.applied, 1);
+    assert_eq!(response.skipped, 1);
+    assert!(response.errors.is_empty());
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["entity".to_string()],
+        fields: vec!["timestamp".to_string(), "value".to_string()],
+    });
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![Some(encode_timestamp(20)), Some(b"new".to_vec())]
+        }
+    );
 }
 
 #[test]

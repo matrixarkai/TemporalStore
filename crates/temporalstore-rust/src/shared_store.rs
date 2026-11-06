@@ -4352,6 +4352,27 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                     .collect(),
             })
         }
+        Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        } => v1::command::Kind::HashMultiSetIfTimestampOlder(
+            v1::HashMultiSetIfTimestampOlder {
+                key: key.clone(),
+                timestamp_field: timestamp_field.clone(),
+                timestamp_seconds: *timestamp_seconds,
+                timestamp_nanos: *timestamp_nanos,
+                entries: entries
+                    .iter()
+                    .map(|(field, value)| v1::HashEntry {
+                        field: field.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            },
+        ),
         Command::HashMultiGet { key, fields } => {
             v1::command::Kind::HashMultiGet(v1::HashMultiGet {
                 key: key.clone(),
@@ -12765,6 +12786,37 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
             "{name} did not survive the round trip"
         );
     }
+}
+
+#[test]
+fn a_timestamp_conditioned_hash_write_round_trips_through_the_wal() {
+    let command = Command::HashMultiSetIfTimestampOlder {
+        key: "entity-7".into(),
+        timestamp_field: "_ts:view".into(),
+        timestamp_seconds: 1_700_000_000,
+        timestamp_nanos: 123_456_789,
+        entries: vec![
+            ("_ts:view".into(), vec![8, 1]),
+            ("view:score".into(), vec![8, 42]),
+        ],
+    };
+    let entry = SharedStoreWalEntry {
+        shard_id: 7,
+        wal_index: 11,
+        command: Some(command.clone()),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+
+    let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+        .expect("the conditioned hash write must encode");
+    let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+        .expect("the conditioned hash write frame must decode");
+    assert_eq!(frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO);
+
+    let decoded = decode_wal_proto_frame_exact(&bytes, "conditioned hash write")
+        .expect("the conditioned hash write must replay");
+    assert_eq!(decoded.command, Some(command));
 }
 
 /// A `ContextEntity` with all ten fields set, distinctly.

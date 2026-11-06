@@ -282,6 +282,7 @@ message Command {
     ContextUpsertSummary context_upsert_summary = 60;
     ContextWriteCompressionEvent context_write_compression_event = 61;
     ContextWritePackAudit context_write_pack_audit = 62;
+    HashMultiSetIfTimestampOlder hash_multi_set_if_timestamp_older = 63;
   }
 }
 
@@ -329,6 +330,14 @@ message HashEntry {
 message HashMultiSet {
   string key = 1;
   repeated HashEntry entries = 2;
+}
+
+message HashMultiSetIfTimestampOlder {
+  string key = 1;
+  string timestamp_field = 2;
+  int64 timestamp_seconds = 3;
+  int32 timestamp_nanos = 4;
+  repeated HashEntry entries = 5;
 }
 
 message HashMultiGet {
