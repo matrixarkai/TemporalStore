@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -1929,6 +1929,11 @@ pub fn retrieve_context(
     } else {
         request.node_hashes.clone()
     };
+    // Candidate builders can reach the same node through more than one index. Preserve the
+    // first occurrence, but never fetch, quantize, score, or expand that node twice.
+    let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
+    node_hashes.retain(|node_hash| seen_node_hashes.insert(*node_hash));
+    drop(seen_node_hashes);
     fanout_plan.namespace_node_candidates = node_hashes.len();
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
@@ -1952,18 +1957,18 @@ pub fn retrieve_context(
     // encoder is unknown, and unknown never conflicts.
     let active_embedding_model_hash =
         context_embedding_model_hash(request.provider.embedding_model.trim());
-    let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
-    let mut exact_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
-    let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
-    let mut node_score_candidates = Vec::<u64>::new();
-    let mut summary_score_candidates = Vec::<u64>::new();
+    let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
+    let mut exact_scores_by_node = HashMap::<u64, (i64, usize)>::new();
+    let mut prefetched_nodes = HashMap::<u64, ContextNode>::with_capacity(node_hashes.len());
+    let mut node_score_candidates = Vec::<u64>::with_capacity(node_hashes.len());
+    let mut summary_score_candidates = Vec::<u64>::with_capacity(node_hashes.len());
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
     // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
     // is handed to the hybrid lexical pass below, exactly like before it was embedded. Chunked
     // because a single oversized command is rejected outright, not truncated, and an unscored
     // node silently collapses to the lexical/recency fallback.
-    let mut l0_row_fallback: Vec<u64> = Vec::new();
+    let mut l0_row_fallback = Vec::<u64>::with_capacity(node_hashes.len());
     let mut width_conflict_nodes = 0usize;
     let mut model_conflict_nodes = 0usize;
     // The point in time the L1 summary vectors are wanted as of, hoisted because the node pass
@@ -1973,7 +1978,7 @@ pub fn retrieve_context(
     // Candidates whose summary vector the node fetch did NOT supply, and which therefore still
     // need the per-node summary lookup. Every candidate is on this list until its node carries a
     // copy, so a store written before the copy existed behaves exactly as it does today.
-    let mut summary_lookup_nodes: Vec<u64> = Vec::new();
+    let mut summary_lookup_nodes = Vec::<u64>::with_capacity(node_hashes.len());
     for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
@@ -1985,7 +1990,7 @@ pub fn retrieve_context(
                 node_hashes: chunk.to_vec(),
             },
         });
-        let mut returned = BTreeSet::new();
+        let mut returned = HashSet::with_capacity(chunk.len());
         if let CommandResponse::ContextNodes { nodes } = response.response {
             let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
@@ -2199,7 +2204,7 @@ pub fn retrieve_context(
         .into_iter()
         .take(rerank_limit)
         .map(|(node_hash, _)| node_hash)
-        .collect::<BTreeSet<_>>();
+        .collect::<Vec<_>>();
     let mut exact_node_rows = Vec::with_capacity(rerank_nodes.len());
     let mut exact_summary_rows = Vec::with_capacity(rerank_nodes.len());
     for node_hash in &rerank_nodes {
@@ -2264,51 +2269,36 @@ pub fn retrieve_context(
     // as cosine.
     // Embedded nodes keep their cosine score untouched, so when every node is
     // embedded this pass does nothing and behavior is identical to before.
-    let mut lexical_scores_by_node = BTreeMap::<u64, i64>::new();
     // Every retrieve does this. `MATRIXARK_CONTEXT_HYBRID_LEXICAL` could skip it and
     // defaulted on; nothing set it, so a node with no stored summary embedding has
     // always been scored by lexical overlap rather than left at a flat 0.
-    let unembedded: Vec<u64> = node_hashes
-        .iter()
-        .copied()
-        .filter(|node_hash| {
-            summary_scores_by_node
-                .get(node_hash)
-                .map(|(_, found)| *found == 0)
-                .unwrap_or(true)
-        })
-        .collect();
-    // Every candidate node was decoded above. Re-reading unembedded nodes here used to repeat
-    // the same storage command and vector allocations solely to access text already in this map.
-    for node_hash in unembedded {
-        if let Some(node) = prefetched_nodes.get(&node_hash) {
-            let text = format!("{} {} {}", node.canonical_name, node.l0, node.l1_ref);
-            let lexical = context_relevance_score_plan(&query_plan, &text);
-            lexical_scores_by_node.insert(node.node_hash, lexical_score_to_micros(lexical));
+    let mut scoring_text = String::new();
+    let mut summary_scores = Vec::with_capacity(node_hashes.len());
+    for node_hash in &node_hashes {
+        let (mut best_score, found) = summary_scores_by_node
+            .get(node_hash)
+            .copied()
+            .unwrap_or_default();
+        // Embedded node (found > 0): cosine score, exactly as before. Otherwise fall back to
+        // lexical overlap so un-embedded nodes remain rankable. Every candidate node was decoded
+        // above, and one reusable buffer avoids both another node read and one allocation per row.
+        if found == 0 {
+            if let Some(node) = prefetched_nodes.get(node_hash) {
+                scoring_text.clear();
+                scoring_text.push_str(&node.canonical_name);
+                scoring_text.push(' ');
+                scoring_text.push_str(&node.l0);
+                scoring_text.push(' ');
+                scoring_text.push_str(&node.l1_ref);
+                best_score = lexical_score_to_micros(context_relevance_score_plan(
+                    &query_plan,
+                    &scoring_text,
+                ));
+            }
         }
+        summary_scores.push((*node_hash, best_score, found, 0u32, 0u64));
     }
-    let mut summary_scores = node_hashes
-        .iter()
-        .map(|node_hash| {
-            let (best_score, found) = summary_scores_by_node
-                .get(node_hash)
-                .copied()
-                .unwrap_or_default();
-            // Embedded node (found > 0): cosine score, exactly as before. Otherwise
-            // fall back to the hybrid lexical score (0 when there was no overlap or
-            // hybrid is disabled) so un-embedded nodes are still rankable.
-            let best_score = if found > 0 {
-                best_score
-            } else {
-                lexical_scores_by_node
-                    .get(node_hash)
-                    .copied()
-                    .unwrap_or(best_score)
-            };
-            (*node_hash, best_score, found, 0u32, 0u64)
-        })
-        .collect::<Vec<_>>();
-    summary_scores.sort_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
+    summary_scores.sort_unstable_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
         (
             Reverse(*score),
             Reverse(*found),
@@ -2338,8 +2328,11 @@ pub fn retrieve_context(
         let Some(node) = prefetched_nodes.get(node_hash) else {
             continue;
         };
-        let summary_text = format!("{} {}", node.l0, node.l1_ref);
-        let summary_score = context_relevance_score_plan(&query_plan, &summary_text);
+        scoring_text.clear();
+        scoring_text.push_str(&node.l0);
+        scoring_text.push(' ');
+        scoring_text.push_str(&node.l1_ref);
+        let summary_score = context_relevance_score_plan(&query_plan, &scoring_text);
         let freshness_ms = node.last_event_time_ms;
         let agent_scope_boost = if request.prefer_current_agent
             && context_record_scope_matches(
@@ -2356,7 +2349,7 @@ pub fn retrieve_context(
         *summary_score_slot = summary_score;
         *freshness_slot = freshness_ms;
     }
-    summary_scores.sort_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
+    summary_scores.sort_unstable_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
         (
             Reverse(*score),
             Reverse(*found),
@@ -2443,7 +2436,7 @@ pub fn retrieve_context(
         })
         .collect();
 
-    let event_node_set = event_node_hashes.iter().copied().collect::<BTreeSet<_>>();
+    let event_node_set = event_node_hashes.iter().copied().collect::<HashSet<_>>();
     let mut event_query_returned_count = 0usize;
     let mut event_node_index = 0usize;
     for node_hash in node_hashes.iter().copied() {
