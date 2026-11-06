@@ -4,6 +4,150 @@
 //! Stream read/scan + batch execute + index snapshot publish methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+enum BatchCommandSource {
+    Commands(std::vec::IntoIter<Command>),
+    SharedTimestampRows {
+        fields: Vec<String>,
+        timestamp_field: Option<String>,
+        rows: std::vec::IntoIter<BatchHashTimestampSetRow>,
+    },
+}
+
+impl BatchCommandSource {
+    fn command_count(&self) -> usize {
+        match self {
+            Self::Commands(commands) => commands.len(),
+            Self::SharedTimestampRows { rows, .. } => rows.len(),
+        }
+    }
+
+    fn next_command(&mut self) -> Option<Command> {
+        match self {
+            Self::Commands(commands) => commands.next(),
+            Self::SharedTimestampRows {
+                fields,
+                timestamp_field,
+                rows,
+            } => {
+                let BatchHashTimestampSetRow(
+                    key,
+                    timestamp_seconds,
+                    timestamp_nanos,
+                    values,
+                ) = rows.next()?;
+                debug_assert_eq!(fields.len(), values.len());
+                Some(Command::HashMultiSetIfTimestampOlder {
+                    key,
+                    timestamp_field: timestamp_field
+                        .take()
+                        .expect("shared timestamp field returned after every row"),
+                    timestamp_seconds,
+                    timestamp_nanos,
+                    entries: std::mem::take(fields)
+                        .into_iter()
+                        .zip(values.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+            }
+        }
+    }
+
+    fn recycle(&mut self, command: Command) {
+        let Self::SharedTimestampRows {
+            fields,
+            timestamp_field,
+            ..
+        } = self
+        else {
+            return;
+        };
+        let Command::HashMultiSetIfTimestampOlder {
+            timestamp_field: returned_timestamp_field,
+            entries,
+            ..
+        } = command
+        else {
+            panic!("shared timestamp batch returned a different command kind");
+        };
+        debug_assert!(fields.is_empty());
+        fields.extend(entries.into_iter().map(|(field, _)| field));
+        *timestamp_field = Some(returned_timestamp_field);
+    }
+
+    fn recycles_commands(&self) -> bool {
+        matches!(self, Self::SharedTimestampRows { .. })
+    }
+}
+
+#[cfg(test)]
+mod shared_timestamp_source_tests {
+    use super::*;
+    use crate::types::BatchHashMultiSetValue;
+
+    #[test]
+    fn reuses_shared_field_name_allocations_across_rows() {
+        let mut source = BatchCommandSource::SharedTimestampRows {
+            fields: vec!["event_time".to_owned(), "score".to_owned()],
+            timestamp_field: Some("event_time".to_owned()),
+            rows: vec![
+                BatchHashTimestampSetRow(
+                    "feature:1".to_owned(),
+                    10,
+                    0,
+                    vec![
+                        BatchHashMultiSetValue(vec![1]),
+                        BatchHashMultiSetValue(vec![2]),
+                    ],
+                ),
+                BatchHashTimestampSetRow(
+                    "feature:2".to_owned(),
+                    11,
+                    0,
+                    vec![
+                        BatchHashMultiSetValue(vec![3]),
+                        BatchHashMultiSetValue(vec![4]),
+                    ],
+                ),
+            ]
+            .into_iter(),
+        };
+
+        let first = source.next_command().expect("first row");
+        let Command::HashMultiSetIfTimestampOlder {
+            timestamp_field,
+            entries,
+            ..
+        } = &first
+        else {
+            panic!("unexpected command kind");
+        };
+        let timestamp_ptr = timestamp_field.as_ptr();
+        let field_ptrs = entries
+            .iter()
+            .map(|(field, _)| field.as_ptr())
+            .collect::<Vec<_>>();
+        source.recycle(first);
+
+        let second = source.next_command().expect("second row");
+        let Command::HashMultiSetIfTimestampOlder {
+            timestamp_field,
+            entries,
+            ..
+        } = second
+        else {
+            panic!("unexpected command kind");
+        };
+        assert_eq!(timestamp_field.as_ptr(), timestamp_ptr);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(field, _)| field.as_ptr())
+                .collect::<Vec<_>>(),
+            field_ptrs
+        );
+    }
+}
+
 impl TemporalEngine {
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
@@ -375,7 +519,11 @@ impl TemporalEngine {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
-        self.batch_execute_inner(request, false)
+        self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::Commands(request.commands.into_iter()),
+            false,
+        )
     }
 
     /// Execute timestamp-conditioned packed hash rows without retaining a second copy of every
@@ -384,18 +532,32 @@ impl TemporalEngine {
     /// WAL. The caller keeps this mode limited to that homogeneous request shape.
     pub(crate) fn batch_execute_packed_hash_rows(
         &self,
-        request: BatchExecuteRequest,
+        request: BatchHashTimestampSetRequest,
     ) -> BatchExecuteResponse {
-        debug_assert!(request
-            .commands
-            .iter()
-            .all(|command| matches!(command, Command::HashMultiSetIfTimestampOlder { .. })));
-        self.batch_execute_inner(request, true)
+        if !crate::wal::wal_data_only_enabled() {
+            return BatchExecuteResponse {
+                status: Status::error(
+                    "data_only_wal_required",
+                    "shared timestamp rows require the data-only WAL",
+                ),
+                responses: Vec::new(),
+            };
+        }
+        self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::SharedTimestampRows {
+                fields: request.fields,
+                timestamp_field: Some(request.timestamp_field),
+                rows: request.rows.into_iter(),
+            },
+            true,
+        )
     }
 
     fn batch_execute_inner(
         &self,
-        request: BatchExecuteRequest,
+        shard_id: ShardId,
+        mut command_source: BatchCommandSource,
         elide_packed_hash_payloads: bool,
     ) -> BatchExecuteResponse {
         let elide_packed_hash_payloads =
@@ -417,7 +579,7 @@ impl TemporalEngine {
             }
         }
         let _drain_staged = DrainStagedOnExit;
-        let command_count = request.commands.len();
+        let command_count = command_source.command_count();
         let mut responses = Vec::with_capacity(command_count);
         if command_count == 0 {
             return BatchExecuteResponse {
@@ -426,7 +588,7 @@ impl TemporalEngine {
             };
         }
         let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&request.shard_id) else {
+        let Some(shard) = shards.get_mut(&shard_id) else {
             // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
             // partition is missing/not-primary (a topology error: the client should
             // refresh its shard map), not an OK batch full of per-command errors. The Rust client
@@ -449,7 +611,7 @@ impl TemporalEngine {
                 .infos
                 .read()
                 .expect("info lock poisoned")
-                .get(&request.shard_id)
+                .get(&shard_id)
                 .map(|info| info.recovering)
                 .unwrap_or(false)
         {
@@ -468,21 +630,21 @@ impl TemporalEngine {
             .infos
             .read()
             .expect("info lock poisoned")
-            .get(&request.shard_id)
+            .get(&shard_id)
             .map(|info| info.readonly)
             .unwrap_or(false);
         let config = self
             .configs
             .read()
             .expect("config lock poisoned")
-            .get(&request.shard_id)
+            .get(&shard_id)
             .cloned()
             .unwrap_or_default();
         let info = self
             .infos
             .read()
             .expect("info lock poisoned")
-            .get(&request.shard_id)
+            .get(&shard_id)
             .cloned();
         let start_routing_bucket = info
             .as_ref()
@@ -508,7 +670,7 @@ impl TemporalEngine {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if promote_model_maps_to_bucket_index_authority(
-                request.shard_id,
+                shard_id,
                 shard,
                 start_routing_bucket,
                 end_routing_bucket,
@@ -545,13 +707,14 @@ impl TemporalEngine {
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
         // does not make the others' identities uncarryable.
         let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
-        for command in request.commands {
+        while let Some(command) = command_source.next_command() {
             let write_command = is_write_command(&command);
             if readonly && write_command {
                 responses.push(ExecuteResponse {
                     status: Status::error("readonly_shard", "readonly shard rejects write command"),
                     response: CommandResponse::Empty,
                 });
+                command_source.recycle(command);
                 continue;
             }
             // Exempt under raft apply and under replay, as the single-command path is: a
@@ -574,13 +737,13 @@ impl TemporalEngine {
                 } else {
                     quota::QuotaKind::Read
                 };
-                if !self.charge_quota(request.shard_id, kind) {
+                if !self.charge_quota(shard_id, kind) {
                     responses.push(ExecuteResponse {
                         status: Status::error(
                             "quota_exhausted",
                             format!(
                                 "shard {} is over its {} rate limit",
-                                request.shard_id,
+                                shard_id,
                                 match kind {
                                     quota::QuotaKind::Write => "write",
                                     quota::QuotaKind::Read => "read",
@@ -589,15 +752,17 @@ impl TemporalEngine {
                         ),
                         response: CommandResponse::Empty,
                     });
+                    command_source.recycle(command);
                     continue;
                 }
                 if let Err(status) =
-                    self.check_admission(request.shard_id, write_command, &config, &info)
+                    self.check_admission(shard_id, write_command, &config, &info)
                 {
                     responses.push(ExecuteResponse {
                         status,
                         response: CommandResponse::Empty,
                     });
+                    command_source.recycle(command);
                     continue;
                 }
             }
@@ -621,12 +786,13 @@ impl TemporalEngine {
                     ),
                     response: CommandResponse::Empty,
                 });
+                command_source.recycle(command);
                 continue;
             }
             if let Err(status) = validate_command_preconditions(
                 &self.cache,
                 &self.block_store,
-                request.shard_id,
+                shard_id,
                 shard,
                 &command,
             ) {
@@ -634,6 +800,7 @@ impl TemporalEngine {
                     status,
                     response: CommandResponse::Empty,
                 });
+                command_source.recycle(command);
                 continue;
             }
             let object_keys = command_object_keys(&command);
@@ -667,7 +834,7 @@ impl TemporalEngine {
                         execute_on_shard::execute_packed_conditional_hash_write(
                             &self.cache,
                             &self.block_store,
-                            request.shard_id,
+                            shard_id,
                             start_routing_bucket,
                             end_routing_bucket,
                             shard,
@@ -690,7 +857,7 @@ impl TemporalEngine {
                         config.control_state_max_size(),
                         config.control_distinct_sketch_enabled(),
                         config.trim_boundary_record_enabled(),
-                        request.shard_id,
+                        shard_id,
                         start_routing_bucket,
                         end_routing_bucket,
                         shard,
@@ -699,19 +866,24 @@ impl TemporalEngine {
                     None,
                 ),
             };
-            let command_for_post_write = returned_post_write
-                .or(cloned_post_write)
-                .expect("every batch command keeps post-write metadata");
+            let mut command_for_post_write = Some(
+                returned_post_write
+                    .or(cloned_post_write)
+                    .expect("every batch command keeps post-write metadata"),
+            );
+            let command_for_post_write_ref = command_for_post_write
+                .as_ref()
+                .expect("post-write command remains available until WAL or recycle");
             let payload_elided = reuse_consumed_metadata;
-            if Self::command_updates_context_embedding(&command_for_post_write) {
-                context_embedding_commands.push(command_for_post_write.clone());
+            if Self::command_updates_context_embedding(command_for_post_write_ref) {
+                context_embedding_commands.push(command_for_post_write_ref.clone());
             }
             // LRU recency: stamp the bucket(s) this command
             // touched, read or write, so eviction can prefer least-recently-used buckets.
             {
                 let now = now_ms();
                 crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                    for_each_touched_key(&command_for_post_write, |key| {
+                    for_each_touched_key(command_for_post_write_ref, |key| {
                         let recency_bucket =
                             block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
                         shard.bucket_recency.insert(recency_bucket, now);
@@ -728,9 +900,10 @@ impl TemporalEngine {
                     batch_membership_shrank = feature_trimmed_membership
                         || delta_key_state_change(shard, &membership_before);
                 }
-                let written_components = command_upsert_components(&command_for_post_write, shard);
+                let written_components =
+                    command_upsert_components(command_for_post_write_ref, shard);
                 batch_touched_container_elements.extend(command_touched_container_elements(
-                    &command_for_post_write,
+                    command_for_post_write_ref,
                     shard,
                 ));
                 // The keys this write touched, for the maintenance below. `object_keys` is
@@ -738,7 +911,7 @@ impl TemporalEngine {
                 let mut object_keys_for_maintenance: Vec<String> = Vec::new();
                 if object_keys.is_empty() {
                     rebuild_bucket_block_ownership(
-                        request.shard_id,
+                        shard_id,
                         shard,
                         start_routing_bucket,
                         end_routing_bucket,
@@ -777,7 +950,7 @@ impl TemporalEngine {
                         Some(components) => {
                             crate::engine::storage_bucket_internals::sync_blocks_for_written_components(
                                 shard,
-                                request.shard_id,
+                                shard_id,
                                 components,
                             )
                         }
@@ -788,7 +961,7 @@ impl TemporalEngine {
                             && object_keys_for_maintenance.iter().all(|object_key| {
                                 crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
                                     shard,
-                                    request.shard_id,
+                                    shard_id,
                                     object_key,
                                 )
                             }))
@@ -804,12 +977,12 @@ impl TemporalEngine {
                     // has always skipped it here; this path did not, so the same command walked
                     // the whole store when it arrived in a batch and nothing when it arrived
                     // alone -- measured at one visit per block in the shard, per command.
-                    && !command_writes_no_block(&command_for_post_write)
-                    && (!command_updates_bucket_index_directly(&command_for_post_write)
+                    && !command_writes_no_block(command_for_post_write_ref)
+                    && (!command_updates_bucket_index_directly(command_for_post_write_ref)
                         || shard.bucket_index.bucket_map.is_empty())
                 {
                     rebuild_bucket_first_index(
-                        request.shard_id,
+                        shard_id,
                         shard,
                         start_routing_bucket,
                         end_routing_bucket,
@@ -820,8 +993,17 @@ impl TemporalEngine {
                 }
                 if write_command {
                     wal_payloads_elided |= payload_elided;
-                    wal_commands.push(command_for_post_write);
+                    if !command_source.recycles_commands() {
+                        wal_commands.push(
+                            command_for_post_write
+                                .take()
+                                .expect("post-write command is available for the WAL"),
+                        );
+                    }
                 }
+            }
+            if let Some(command) = command_for_post_write.take() {
+                command_source.recycle(command);
             }
             responses.push(ExecuteResponse {
                 status: Status::ok(),
@@ -881,7 +1063,7 @@ impl TemporalEngine {
             let batch_result = if use_data_only {
                 self.wal_store
                     .append_batch_as_one_record(
-                        request.shard_id,
+                        shard_id,
                         staged_outcomes,
                         staged_blocks,
                         sync,
@@ -889,7 +1071,7 @@ impl TemporalEngine {
                     .map(|_| ())
             } else {
                 self.wal_store
-                    .append_batch_atomic(request.shard_id, wal_commands, sync)
+                    .append_batch_atomic(shard_id, wal_commands, sync)
                     .map(|_| ())
             };
             if let Err(err) = batch_result {
@@ -905,7 +1087,7 @@ impl TemporalEngine {
                     };
                 } else {
                     tracing::error!(
-                        shard_id = request.shard_id,
+                        shard_id,
                         error = %err,
                         "async WAL batch append failed: acked writes are NOT durable and will be \
                          lost on a crash before the next flush"
@@ -932,9 +1114,9 @@ impl TemporalEngine {
                     .unwrap_or_default()
                     .saturating_add(1);
                 shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
-                    self.wal_store.cached_last_sequence(request.shard_id)
+                    self.wal_store.cached_last_sequence(shard_id)
                 } else {
-                    self.wal_store.stats(request.shard_id).last_sequence
+                    self.wal_store.stats(shard_id).last_sequence
                 });
                 // The WAL half of what each bucket this batch dirtied holds over the log, stamped
                 // the way the single-command path stamps it (engine.rs, after its own append).
@@ -963,7 +1145,7 @@ impl TemporalEngine {
                     Some(components) => (
                         collect_upsert_index_items(
                             shard,
-                            request.shard_id,
+                            shard_id,
                             components,
                             start_routing_bucket,
                             end_routing_bucket,
@@ -1001,7 +1183,7 @@ impl TemporalEngine {
                 let appended_index_log_sequence = self
                     .index_log_store
                     .append_delta(
-                        request.shard_id,
+                        shard_id,
                         items,
                         key_states,
                         shard.applied_wal_sequence,
