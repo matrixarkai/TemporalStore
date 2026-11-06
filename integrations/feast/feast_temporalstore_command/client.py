@@ -182,6 +182,9 @@ class TemporalStoreClient:
         self._shared_field_read_supported: Optional[bool] = (
             False if msgpack is None else None
         )
+        self._compact_shared_field_read_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
         self._shared_field_write_supported: Optional[bool] = (
             False if msgpack is None else None
         )
@@ -323,18 +326,46 @@ class TemporalStoreClient:
 
     def batch_hash_multi_get(
         self, keys: List[str], fields: List[str]
-    ) -> List[Dict[str, Any]]:
+    ) -> List[List[Any]]:
         """Read one field projection from many hashes with shared wire metadata.
 
         Feature serving asks for the same fields from every entity. Sending
         that projection once avoids repeating every field name in every
-        command. Nodes without the compact route fall back to the established
-        command batch before any request has been applied.
+        command. Nodes without the compact result route fall back once to the
+        shared-field response and then to established command batches.
         """
         if not keys:
             return []
+        if (
+            msgpack is not None
+            and self._compact_shared_field_read_supported is not False
+        ):
+            compact_results: List[List[Any]] = []
+            try:
+                for chunk, body in self._shared_field_read_batches(keys, fields):
+                    raw = self._request_encoded(
+                        "/batch_hash_multi_get_compact_msgpack",
+                        body,
+                        "application/msgpack",
+                    )
+                    envelope = msgpack.unpackb(raw, raw=False)
+                    compact_results.extend(
+                        self._decode_compact_hash_read_envelope(envelope, len(chunk))
+                    )
+            except TemporalStoreCommandError as error:
+                if error.code != "http_404" or compact_results:
+                    raise
+                self._compact_shared_field_read_supported = False
+            except (ValueError, msgpack.UnpackException) as error:
+                raise TemporalStoreCommandError(
+                    "invalid_binary_response", str(error)
+                ) from error
+            else:
+                self._compact_shared_field_read_supported = True
+                return compact_results
+
         if msgpack is not None and self._shared_field_read_supported is not False:
-            results: List[Dict[str, Any]] = []
+            results: List[List[Any]] = []
             try:
                 for chunk, body in self._shared_field_read_batches(keys, fields):
                     raw = self._request_encoded(
@@ -343,7 +374,10 @@ class TemporalStoreClient:
                         "application/msgpack",
                     )
                     envelope = msgpack.unpackb(raw, raw=False)
-                    results.extend(self._decode_batch_envelope(envelope, chunk))
+                    results.extend(
+                        (response.get("values") or [])
+                        for response in self._decode_batch_envelope(envelope, chunk)
+                    )
             except TemporalStoreCommandError as error:
                 if error.code != "http_404" or results:
                     raise
@@ -356,12 +390,41 @@ class TemporalStoreClient:
                 self._shared_field_read_supported = True
                 return results
 
-        return self.batch_execute(
-            [
-                {"kind": "hash_multi_get", "key": key, "fields": fields}
-                for key in keys
-            ]
-        )
+        return [
+            response.get("values") or []
+            for response in self.batch_execute(
+                [
+                    {"kind": "hash_multi_get", "key": key, "fields": fields}
+                    for key in keys
+                ]
+            )
+        ]
+
+    @staticmethod
+    def _decode_compact_hash_read_envelope(
+        envelope: Dict[str, Any], expected_count: int
+    ) -> List[List[Any]]:
+        status = envelope.get("status") or {}
+        if not status.get("ok", False):
+            raise TemporalStoreCommandError(
+                status.get("code", "unknown"), status.get("message", "")
+            )
+        rows = envelope.get("rows") or []
+        if len(rows) != expected_count:
+            raise TemporalStoreCommandError(
+                "batch_length_mismatch",
+                f"sent {expected_count} reads, got {len(rows)} rows",
+            )
+        errors = envelope.get("errors") or []
+        if errors:
+            first = errors[0]
+            item_status = first.get("status") or {}
+            raise TemporalStoreCommandError(
+                item_status.get("code", "unknown"),
+                f"read {first.get('index', '?')}: "
+                f"{item_status.get('message', '')}",
+            )
+        return rows
 
     def _shared_field_read_batches(
         self, keys: List[str], fields: List[str]

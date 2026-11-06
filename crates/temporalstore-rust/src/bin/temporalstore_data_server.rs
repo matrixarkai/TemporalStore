@@ -1057,6 +1057,28 @@ fn main() {
                     ),
                 }
             }
+            ("POST", "/batch_hash_multi_get_compact_msgpack") => {
+                match parse_msgpack::<BatchHashMultiGetRequest>(&request.body) {
+                    Ok(req)
+                        if req.keys.len() <= 4096
+                            && req.fields.len() <= 4096
+                            && req.keys.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
+                    {
+                        msgpack_response(200, &runtime.batch_hash_multi_get_compact(req))
+                    }
+                    Ok(_) => json_response(
+                        400,
+                        &Status::error(
+                            "batch_too_large",
+                            "shared-field hash batch exceeds the expansion limit",
+                        ),
+                    ),
+                    Err(err) => json_response(
+                        400,
+                        &Status::error("bad_request", err.to_string()),
+                    ),
+                }
+            }
             ("POST", "/batch_hash_multi_set_msgpack") => {
                 match parse_msgpack::<BatchHashMultiSetRequest>(&request.body) {
                     Ok(req)

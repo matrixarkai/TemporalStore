@@ -140,6 +140,20 @@ fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
             values: vec![None, None]
         }
     );
+
+    let compact = runtime.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["present".to_string(), "missing".to_string()],
+        fields: vec!["b".to_string(), "a".to_string()],
+    });
+    assert!(compact.status.ok, "{compact:?}");
+    assert!(compact.errors.is_empty());
+    assert_eq!(compact.rows.len(), 2);
+    assert_eq!(
+        compact.rows[0].0,
+        vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+    );
+    assert_eq!(compact.rows[1].0, vec![None, None]);
 }
 
 #[test]

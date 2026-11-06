@@ -49,9 +49,9 @@ use crate::meta::{
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetRequest,
-    BatchHashMultiSetRequest, BatchWriteError, BatchWriteResponse, Command, CommandResponse,
-    ExecuteRequest, ExecuteResponse, ShardId, Status,
+    BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetError, BatchHashMultiGetRequest,
+    BatchHashMultiGetResponse, BatchHashMultiGetRow, BatchHashMultiSetRequest, BatchWriteError,
+    BatchWriteResponse, Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
 #[path = "data_node/data_node_lifecycle.rs"]
@@ -2722,6 +2722,57 @@ impl DataNodeRuntime {
                 })
                 .collect(),
         })
+    }
+
+    /// Read one shared projection with a compact success response.
+    ///
+    /// The regular batch remains the execution path. This removes repeated
+    /// successful statuses and response tags from the network result while
+    /// retaining positional rows and sparse indexed failures.
+    pub fn batch_hash_multi_get_compact(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchHashMultiGetResponse {
+        let field_count = request.fields.len();
+        let response = self.batch_hash_multi_get(request);
+        if !response.status.ok {
+            return BatchHashMultiGetResponse {
+                status: response.status,
+                rows: Vec::new(),
+                errors: Vec::new(),
+            };
+        }
+
+        let mut rows = Vec::with_capacity(response.responses.len());
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if !item.status.ok {
+                errors.push(BatchHashMultiGetError {
+                    index,
+                    status: item.status,
+                });
+                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                continue;
+            }
+            match item.response {
+                CommandResponse::Values { values } => rows.push(BatchHashMultiGetRow(values)),
+                _ => {
+                    errors.push(BatchHashMultiGetError {
+                        index,
+                        status: Status::error(
+                            "unexpected_read_response",
+                            "hash multi-get returned a non-values response",
+                        ),
+                    });
+                    rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                }
+            }
+        }
+        BatchHashMultiGetResponse {
+            status: Status::ok(),
+            rows,
+            errors,
+        }
     }
 
     /// Write one shared field projection to many hashes.

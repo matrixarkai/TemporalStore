@@ -40,8 +40,8 @@ event timestamp are one key's worth of work:
   across stores by construction, which is the only reason a latency comparison
   between them means anything.
 
-Reads use bounded binary ``/batch_hash_multi_get_msgpack`` requests with one
-shared field projection per batch.
+Reads use bounded binary ``/batch_hash_multi_get_compact_msgpack`` requests
+with one shared field projection and one top-level status per batch.
 The common latest-value write uses ``/batch_hash_multi_set_msgpack`` with the
 field projection encoded once; augmented or mixed-layout writes use bounded
 ``/batch_write_msgpack`` command batches. Both paths fall back once to
@@ -282,8 +282,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             # Read just the timestamp field before the bounded write batches.
             unique_hash_keys = list(dict.fromkeys(hash_keys))
             reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
-            for key, response in zip(unique_hash_keys, reads):
-                values = response.get("values") or []
+            for key, values in zip(unique_hash_keys, reads):
                 raw = decode_bytes(values[0]) if values else None
                 if raw:
                     stored = Timestamp()
@@ -602,11 +601,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
 
     @staticmethod
     def _decode_online_response(
-        response: Dict[str, Any],
+        raw_values: Sequence[Any],
         fields: Sequence[str],
         feature_names: Sequence[str],
     ) -> Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]:
-        raw_values = response.get("values") or []
         # HashMultiGet answers positionally, one slot per requested field,
         # with null for a field the hash does not hold. A short answer would
         # shift every value onto the wrong feature, so pad rather than zip

@@ -3,8 +3,8 @@
 A [Feast](https://github.com/feast-dev/feast) **online store** that talks to a
 TemporalStore data node over its own command surface: binary
 shared-field `POST /batch_hash_multi_set_msgpack` writes and
-`POST /batch_hash_multi_get_msgpack` reads, with compatible command-batch
-routing for augmented writes and older nodes.
+compact `POST /batch_hash_multi_get_compact_msgpack` reads, with compatible
+shared-field and command-batch routing for augmented writes and older nodes.
 
 ## Which integration point this is
 
@@ -90,12 +90,14 @@ footprint ratio without knowing.
 ## Reads
 
 `online_read` over N entity keys uses ordered binary
-`/batch_hash_multi_get_msgpack` requests and responses bounded by key count and
-encoded request bytes. The projection is encoded once per batch instead of
-repeating every feature field beside every entity key. Nodes without that
-route are detected once per client and use `/batch_execute_msgpack` or
-`/batch_execute`. The answers are
-positional; a short answer is refused
+`/batch_hash_multi_get_compact_msgpack` requests and responses bounded by key
+count and encoded request bytes. The projection is encoded once per batch
+instead of repeating every feature field beside every entity key. Successful
+responses carry one top-level status, positional value rows, and sparse indexed
+errors instead of one status and response tag per entity. Nodes without the
+compact route are detected once per client and use
+`/batch_hash_multi_get_msgpack`, `/batch_execute_msgpack`, or `/batch_execute`.
+The answers are positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
 
@@ -110,7 +112,7 @@ ordered `(entity key, values)` rows. Mixed feature layouts and writes augmented
 with history, expiry, or teardown tracking use bounded binary
 `/batch_write_msgpack` command batches. A batched timestamp read runs first
 unless `skip_dedup` is set. That timestamp projection also uses
-`/batch_hash_multi_get_msgpack`, so `_ts` crosses the wire once per batch.
+the compact shared-field read route, so `_ts` crosses the wire once per batch.
 Reads retain the 512-command response bound while writes
 default to 4,096 commands and remain capped at 4 MiB of encoded request data.
 Nodes without either binary write route are detected once per client and use
