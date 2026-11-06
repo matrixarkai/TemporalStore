@@ -258,6 +258,12 @@ jobs:
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
+            block_store::shorter_struct_against_an_existing_row::a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation \
+            wal_record::tests::the_synthetic_slab_sentinels_are_not_the_top_of_the_u64_range \
+            wal_record::tests::is_wal_resident_covers_both_sentinels_and_refuses_a_real_slab \
+            wal_record::tests::the_hot_block_sentinel_is_declared_in_exactly_one_file \
+            shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
+            shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
