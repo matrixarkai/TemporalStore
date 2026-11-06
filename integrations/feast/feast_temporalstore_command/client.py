@@ -145,14 +145,25 @@ class TemporalStoreClient:
         timeout_seconds: float = 10.0,
         max_batch_commands: int = 512,
         max_batch_request_bytes: int = 4 * 1024 * 1024,
+        max_write_batch_commands: Optional[int] = None,
     ) -> None:
-        if max_batch_commands < 1 or max_batch_request_bytes < 1:
+        write_batch_commands = (
+            max_batch_commands
+            if max_write_batch_commands is None
+            else max_write_batch_commands
+        )
+        if (
+            max_batch_commands < 1
+            or write_batch_commands < 1
+            or max_batch_request_bytes < 1
+        ):
             raise ValueError("batch limits must be positive")
         self.host = host
         self.port = port
         self.shard_id = shard_id
         self.timeout_seconds = timeout_seconds
         self.max_batch_commands = max_batch_commands
+        self.max_write_batch_commands = write_batch_commands
         self.max_batch_request_bytes = max_batch_request_bytes
         self._local = threading.local()
         # EVERY connection this client ever opened, not just this thread's.
@@ -279,7 +290,9 @@ class TemporalStoreClient:
         if msgpack is not None and self._binary_batch_supported is not False:
             results: List[Dict[str, Any]] = []
             try:
-                for chunk, body in self._binary_batches(commands):
+                for chunk, body in self._binary_batches(
+                    commands, self.max_batch_commands
+                ):
                     raw = self._request_encoded(
                         "/batch_execute_msgpack", body, "application/msgpack"
                     )
@@ -298,12 +311,12 @@ class TemporalStoreClient:
                 return results
 
         results = []
-        for chunk, body in self._encoded_batches(commands):
+        for chunk, body in self._encoded_batches(commands, self.max_batch_commands):
             results.extend(self._batch_once_json(chunk, body))
         return results
 
     def _binary_batches(
-        self, commands: List[Dict[str, Any]]
+        self, commands: List[Dict[str, Any]], max_commands: int
     ) -> Iterator[Tuple[List[Dict[str, Any]], bytes]]:
         if msgpack is None:
             return
@@ -326,7 +339,7 @@ class TemporalStoreClient:
                 + len(encoded)
             )
             if chunk and (
-                len(chunk) >= self.max_batch_commands
+                len(chunk) >= max_commands
                 or next_bytes > self.max_batch_request_bytes
             ):
                 yield (
@@ -348,7 +361,7 @@ class TemporalStoreClient:
             )
 
     def _encoded_batches(
-        self, commands: List[Dict[str, Any]]
+        self, commands: List[Dict[str, Any]], max_commands: int
     ) -> Iterator[Tuple[List[Dict[str, Any]], bytes]]:
         chunk: List[Dict[str, Any]] = []
         encoded_chunk: List[bytes] = []
@@ -368,7 +381,7 @@ class TemporalStoreClient:
             ).encode("utf-8")
             separator_bytes = 1 if chunk else 0
             if chunk and (
-                len(chunk) >= self.max_batch_commands
+                len(chunk) >= max_commands
                 or chunk_bytes + separator_bytes + len(encoded)
                 > self.max_batch_request_bytes
             ):
@@ -422,7 +435,9 @@ class TemporalStoreClient:
         if msgpack is not None and self._binary_write_supported is not False:
             applied_any = False
             try:
-                for chunk, body in self._binary_batches(commands):
+                for chunk, body in self._binary_batches(
+                    commands, self.max_write_batch_commands
+                ):
                     raw = self._request_encoded(
                         "/batch_write_msgpack", body, "application/msgpack"
                     )
@@ -441,9 +456,14 @@ class TemporalStoreClient:
                 self._binary_write_supported = True
                 return
 
-        for chunk, body in self._encoded_batches(commands):
+        for chunk, body in self._encoded_batches(
+            commands, self.max_write_batch_commands
+        ):
             if self._batch_write_supported is False:
-                self._batch_once_json(chunk, body)
+                for fallback_chunk, fallback_body in self._encoded_batches(
+                    chunk, self.max_batch_commands
+                ):
+                    self._batch_once_json(fallback_chunk, fallback_body)
                 continue
             try:
                 envelope = self._post_encoded("/batch_write", body)
@@ -451,7 +471,10 @@ class TemporalStoreClient:
                 if error.code != "http_404":
                     raise
                 self._batch_write_supported = False
-                self._batch_once_json(chunk, body)
+                for fallback_chunk, fallback_body in self._encoded_batches(
+                    chunk, self.max_batch_commands
+                ):
+                    self._batch_once_json(fallback_chunk, fallback_body)
                 continue
 
             self._batch_write_supported = True
