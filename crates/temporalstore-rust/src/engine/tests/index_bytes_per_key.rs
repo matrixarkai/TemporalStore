@@ -12358,7 +12358,7 @@ const _: () = assert!(
 ///
 /// rust-internal: measures this crate's own layout, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib what_the_one_word_handle_costs_in_the_allocation -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::index_bytes_per_key::what_the_one_word_handle_costs_in_the_allocation -- --exact --nocapture
 #[test]
 fn what_the_one_word_handle_costs_in_the_allocation() {
     use crate::engine::object_record::ObjectSlot;
@@ -12462,7 +12462,7 @@ fn what_the_one_word_handle_costs_in_the_allocation() {
 ///
 /// rust-internal: measures this crate's own layout, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib what_keying_the_block_list_by_address_would_cost -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::index_bytes_per_key::what_keying_the_block_list_by_address_would_cost -- --exact --nocapture
 #[test]
 fn what_keying_the_block_list_by_address_would_cost() {
     use crate::block_store::ElementEntry;
@@ -12831,5 +12831,143 @@ fn what_the_lookups_sorted_key_order_is_worth_to_the_published_denominator() {
         sorted4 * 2 < raw4,
         "the sorted body compressed {raw4} bytes to {sorted4}, under 2:1. These keys are highly \
          repetitive, so a poor ratio means the body is not what this arm thinks it is."
+    );
+}
+
+/// WHAT THE CONTAINER KINDS BLOCK REFS COST WHERE THEY LIVE NOW, AND WHAT MOVING THEM COULD SAVE.
+///
+/// # WHY THIS EXISTS BEFORE THE MIGRATION AND NOT AFTER
+///
+/// `what_folding_the_block_refs_into_the_slot_would_save` priced the slot fold BEFORE it was built,
+/// and the fold then landed at the figure it predicted. This is the same step for the kinds that
+/// fold did NOT reach: `hash`, `set`, `zset` and `list`, whose rows live in `RecordedMap` and whose
+/// refs are therefore still served from `object_block_lookup`.
+///
+/// It is wanted now because NOBODY HAS MEASURED WHAT THAT LOOKUP COSTS ON A CORPUS THAT HAS
+/// CONTAINER OBJECTS. The published per-key figure is measured on a string-only corpus, where the
+/// lookup reads 0.0 B/key for the honest reason that every string had its refs adopted into its
+/// slot row. So the value of retiring the lookup is, today, unknown -- and a migration whose saving
+/// is unknown cannot be weighed against what it costs.
+///
+/// # WHAT IT COSTS, WHICH IS THE HALF THAT IS EASY TO FORGET
+///
+/// `object_block_lookup` is `#[serde(default, skip_serializing)]`: it is DERIVED and rebuilt from
+/// what the decode reads, so every byte it holds is RESIDENT and none of it is durable. The row it
+/// would move into is in a DURABLE map. So the trade is not "two structures become one" -- it is
+/// RESIDENT BYTES REMOVED AGAINST DURABLE BYTES ADDED, and `ObjectBlockLookup` own doc declines the
+/// move on exactly that ground: a carrier row in a durable map whose outer iteration feeds the dump
+/// manifest digest changes what a restore validates.
+///
+/// This arm prices the resident side only. It does not price the durable side, and it is not an
+/// argument that the move should happen.
+///
+/// # WHAT IT DOES NOT CLAIM
+///
+/// A CEILING ON THE SAVING, for the same reason the sibling arm gives: the lookup is nested, model
+/// then key, and what a flat per-object home would cost is not priced here. The elements value a
+/// container kind already holds is IDENTICAL under both shapes, so it cancels and is deliberately
+/// absent -- what is weighed is the holder the refs need, not the object.
+///
+/// THE PAID SIDE IS AN UPPER BOUND, not a measurement: a `BlockRefs` moved into an existing value
+/// costs at most its own width, and could cost nothing if it lands in padding that value already
+/// carries. Pricing that needs the real `K::Elements` and is a separate question.
+///
+/// rust-internal: measures this crate own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_container_kinds_refs_cost_where_they_live -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds nested maps at two corpus sizes under the counting allocator; run by name"]
+fn what_the_container_kinds_refs_cost_where_they_live() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    /// 7/8 of 2,048 -- the most a 2,048-bucket table holds, so a hash table here is exactly full.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, and exactly 4.0x `ONE_X`, so a per-key figure and a slope must agree.
+    const FOUR_X: usize = 7_168;
+
+    /// THE FOUR KINDS THAT HAVE NO SLOT ROW, named rather than counted, so a kind leaving this
+    /// list has to be deleted from it by hand.
+    const CONTAINER_KINDS: &[&str] = &["hash", "set", "zset", "list"];
+
+    let key = |i: usize| -> Arc<str> { Arc::from(format!("k{i:08}").as_str()) };
+    // The single-block arm, which the corpus is almost entirely made of. 16 B, pinned.
+    let one_ref = || BlockRefs::One(BlockLookupRef { routing_bucket: 7, block_ref_key: 2 });
+
+    // THE SHIPPED SHAPE: nested model -> key -> refs, with the objects spread across the four
+    // container kinds as the write path spreads them. Keys are SHARED with the holder the object
+    // already has, because the adoption puts every holder on one allocation -- so what the lookup
+    // costs over nothing is the key FIELD and the containers, never the characters.
+    let weigh_lookup = |n: usize| -> u64 {
+        let models: Vec<Arc<str>> = CONTAINER_KINDS.iter().map(|k| Arc::from(*k)).collect();
+        let mut lookup: BTreeMap<Arc<str>, BTreeMap<Arc<str>, BlockRefs>> = BTreeMap::new();
+        for i in 0..n {
+            let model = Arc::clone(&models[i % models.len()]);
+            lookup.entry(model).or_default().insert(key(i), one_ref());
+        }
+        let held: usize = lookup.values().map(BTreeMap::len).sum();
+        assert_eq!(
+            n, held,
+            "the lookup must hold every object once, or this weighs a different population than \
+             the per-key divisor claims"
+        );
+        assert_eq!(
+            CONTAINER_KINDS.len(),
+            lookup.len(),
+            "every container kind must be populated, or the nesting cost is measured over fewer \
+             models than ship"
+        );
+        deep_heap_bytes(&lookup)
+    };
+
+    println!();
+    println!("  WIDTHS");
+    for (name, w) in [
+        ("ModelKey (Arc<str>)", std::mem::size_of::<Arc<str>>()),
+        ("BlockRefs (One|Many union)", std::mem::size_of::<BlockRefs>()),
+        ("BlockLookupRef", std::mem::size_of::<BlockLookupRef>()),
+        ("lookup entry: (key, refs)", std::mem::size_of::<(Arc<str>, BlockRefs)>()),
+    ] {
+        println!("    {name:<30} {w:>4} B");
+    }
+
+    let one = weigh_lookup(ONE_X);
+    let four = weigh_lookup(FOUR_X);
+    let one_per = one as f64 / ONE_X as f64;
+    let four_per = four as f64 / FOUR_X as f64;
+    let slope = (four as f64 - one as f64) / (FOUR_X - ONE_X) as f64;
+    let paid = std::mem::size_of::<BlockRefs>() as f64;
+
+    println!();
+    println!("  WHAT THE LOOKUP COSTS FOR CONTAINER OBJECTS (resident, derived, never written)");
+    println!("    {ONE_X:>6} objects: {one:>10} B   {one_per:>8.2} B/object");
+    println!("    {FOUR_X:>6} objects: {four:>10} B   {four_per:>8.2} B/object");
+    println!("    slope between the two arms: {slope:>8.2} B/object");
+    println!();
+    println!("  THE TRADE, BOTH SIDES");
+    println!("    resident removed, at most : {four_per:>8.2} B/object");
+    println!("    durable added, at most    : {paid:>8.2} B/object (a BlockRefs in an existing value)");
+    println!("    net resident saving       : {:>8.2} B/object", four_per - paid);
+    println!();
+
+    // THE SLOPE AND THE PER-KEY FIGURE MUST AGREE, which is the phase discipline the sibling arm
+    // uses: a hashbrown or B-tree cost per key is a step function of n, so two arms in different
+    // phases can differ with nothing to give it away. Both counts are 7/8 of a power of two.
+    let spread = (slope - four_per).abs() / four_per;
+    assert!(
+        spread < 0.25,
+        "the slope ({slope:.2}) and the per-object figure ({four_per:.2}) disagree by {:.1}%, so \
+         one of the two corpus sizes is in a different table phase and neither figure describes \
+         the shipped shape",
+        100.0 * spread
+    );
+    // AND THE SAVING MUST BE POSITIVE TO BE WORTH THE QUESTION AT ALL. If a `BlockRefs` in the row
+    // costs as much as the whole lookup entry, the migration buys nothing resident and the
+    // recorded decline needs no further argument.
+    assert!(
+        four_per > paid,
+        "the lookup costs {four_per:.2} B/object and a row-carried BlockRefs costs {paid:.2}, so \
+         moving them saves nothing resident while the durable cost is paid for no gain"
     );
 }

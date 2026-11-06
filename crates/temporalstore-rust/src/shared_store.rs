@@ -532,6 +532,104 @@ struct SharedStoreWalFrameProto {
     command_crc32c: u32,
 }
 
+/// ONE ENTRY OF A GROUP COMMIT, carrying only what its neighbours do not already say.
+///
+/// This is deliberately NOT a [`SharedStoreWalFrameProto`]. A container of complete frames was
+/// built and measured first (a batch of N complete frames under one outer length prefix), and it
+/// saved 1.9 B per entry at a 16-byte payload and COST 4 B at a batch of one: a container divides
+/// only the 4-byte outer prefix and hands two of those four straight back as the nested field's
+/// own tag and length. The envelope is not a per-frame header. It is per-entry FIELDS -- the
+/// shard, the index, the encoding, the format -- restated by every entry of a batch that shares
+/// them. Dividing it means entries that are not frames, which is this message.
+///
+/// What it does NOT hoist is the checksum, and that is the one deliberate refusal here. See
+/// `command_crc32c` below.
+#[derive(Clone, PartialEq, Message)]
+struct SharedStoreWalBatchEntryProto {
+    #[prost(bytes = "vec", tag = "1")]
+    command_payload: Vec<u8>,
+    /// A CRC32C of THIS ENTRY'S payload, and the reason the container does not carry one of its
+    /// own.
+    ///
+    /// Hoisting this field is the obvious next economy and it is wrong. It is the largest
+    /// per-entry field left (five bytes against the two or three the others cost), so a single
+    /// digest over the whole container looks like the biggest remaining saving. But the question
+    /// a digest answers here is "did these bytes survive the trip" --
+    /// [`WAL_FRAME_FORMAT_CRC32C`] sets out the whole of that argument -- and there is a
+    /// production reader that asks it of ONE entry: a single-entry range read, which recomputes
+    /// the check over the bytes it just read. A container-wide digest would force that reader to
+    /// hash every other entry of the batch in order to verify its own, turning a point read into
+    /// a batch read's worth of hashing. Five bytes an entry is the price of that not happening,
+    /// and `a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not` is what
+    /// holds the property rather than this paragraph.
+    ///
+    /// `fixed32` for the reason the frame's copy gives: a CRC's value is spread across all 32
+    /// bits, so a varint carrying one costs five bytes far more often than one.
+    #[prost(fixed32, tag = "2")]
+    command_crc32c: u32,
+    /// This entry's command encoding PLUS ONE, or zero when it is the container's.
+    ///
+    /// # WHY PLUS ONE, WHICH LOOKS LIKE A TRICK AND IS NOT
+    ///
+    /// [`WAL_COMMAND_ENCODING_JSON_SERDE`] is zero and is a legitimate encoding, so zero cannot
+    /// mean "absent" as it stands. This is the same obstruction the sidecar's `shard_id` ran into
+    /// -- shard zero is a real shard, so omitting the field needs a marker the sidecar has no
+    /// room for, and [`WAL_FRAME_FORMAT_NO_SIZE`] records that as a decline. The difference here
+    /// is that the container HAS somewhere to put the alternative: the header states the
+    /// encoding the batch shares, so an entry only has to say when it differs. Biasing by one
+    /// buys that for nothing, because the field is absent in the common case and absent fields
+    /// cost no bytes at all.
+    #[prost(uint32, tag = "3")]
+    command_encoding_plus_one: u32,
+    /// This entry's log index PLUS ONE, or zero when it is `first_wal_index` plus its position.
+    ///
+    /// Index zero is a legitimate index, so the same bias applies and for the same reason. A
+    /// group commit's indices are contiguous by construction, so this field is absent in every
+    /// entry a group commit writes; it exists so that a container is still able to say what it
+    /// holds if that ever stops being true, rather than silently renumbering entries.
+    #[prost(uint64, tag = "4")]
+    wal_index_plus_one: u64,
+    /// The same blocks and items a frame carries, unchanged. Neither is shared across a batch,
+    /// so neither moves to the header.
+    #[prost(message, repeated, tag = "5")]
+    staged_blocks: Vec<SharedStoreStagedBlockProto>,
+    #[prost(message, repeated, tag = "6")]
+    items: Vec<crate::sdk::v1::EngineWalItem>,
+}
+
+/// A WHOLE GROUP COMMIT, stating once what every entry in it shares.
+///
+/// The fields here are hoisted out of the entries, not invented: `shard_id` is common BY
+/// CONSTRUCTION because `publish_wal_entries_batch` refuses a mixed-shard batch before it
+/// coalesces anything, `first_wal_index` is a base because a group commit's indices are
+/// contiguous, and `command_encoding` is common in the ordinary case with a per-entry override
+/// for when it is not.
+///
+/// The frame's `frame_format` has no counterpart: it is not hoisted, it is GONE. A frame is
+/// self-describing because one log may hold several digest shapes at once, which is what a
+/// rolling restart leaves behind. A container is already self-describing through
+/// [`Self::batch_format`], and this build's one container format states exactly one check shape
+/// -- a CRC32C over the payload with no declared length -- so a per-entry format field would be
+/// a constant restated N times.
+#[derive(Clone, PartialEq, Message)]
+struct SharedStoreWalBatchProto {
+    /// WHICH CONTAINER SHAPE THIS IS, so an older reader refuses rather than guesses.
+    ///
+    /// Deliberately NOT zero-defaulted into a meaning: a container is a shape no build has
+    /// written before, so there is no older container to stay compatible with, and absent is
+    /// therefore an error rather than a version. [`WAL_BATCH_FORMAT_HOISTED`] is one.
+    #[prost(uint32, tag = "1")]
+    batch_format: u32,
+    #[prost(uint64, tag = "2")]
+    shard_id: u64,
+    #[prost(uint64, tag = "3")]
+    first_wal_index: u64,
+    #[prost(uint32, tag = "4")]
+    command_encoding: u32,
+    #[prost(message, repeated, tag = "5")]
+    entries: Vec<SharedStoreWalBatchEntryProto>,
+}
+
 #[derive(Clone, PartialEq, Message)]
 struct SharedStoreWalOffsetMetadataProto {
     #[prost(uint64, tag = "1")]
@@ -1129,7 +1227,16 @@ where
                 length,
             )
             .await?;
-        let entry = decode_wal_proto_frame_exact(&bytes, &metadata.wal_blob_key)?;
+        // A container records the SAME byte range for every entry it carries, so a point read of
+        // one index lands on the whole container and picks its entry out. That is what keeps the
+        // sidecar unchanged: a container is self-describing through its marker byte, where an
+        // inner entry on its own would not be, and saying which it was would have cost a sidecar
+        // field -- charging back in the index what the header saves in the log.
+        let entry = if is_wal_batch_container(&bytes) {
+            decode_wal_batch_container_entry_exact(&bytes, &metadata.wal_blob_key, wal_index)?
+        } else {
+            decode_wal_proto_frame_exact(&bytes, &metadata.wal_blob_key)?
+        };
         if entry.shard_id != shard_id || entry.wal_index != wal_index {
             return Err(SharedStoreReplicationError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1280,11 +1387,20 @@ where
 
         // Completeness barrier: every slab the served index actually references must be covered by
         // an uploaded slab before the manifest is written, so a restore never resolves a live block
-        // to a slab that is absent from the checkpoint. The synthetic in-memory hot-block slab
-        // (u64::MAX) is folded into the exported index, not a durable slab, so it is excluded.
-        const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;
+        // to a slab that is absent from the checkpoint. A SYNTHETIC address is folded into the
+        // exported index rather than a durable slab, so it is excluded.
+        //
+        // ASK `is_wal_resident`, DO NOT RESTATE THE SENTINEL. This skipped a local
+        // `const HOT_BLOCK_SLAB_ID: u64 = u64::MAX`, and the engine's sentinel is
+        // `u32::MAX as u64` -- it moved to the top of the 32-bit range (see the note on
+        // `wal_record::WAL_LOG_SLAB_ID`) and this copy did not move with it. So the exclusion
+        // matched NOTHING: every live hot block fell through to the check below and failed the
+        // barrier with `CheckpointSlabNotDurable`, which refuses a checkpoint that is in fact
+        // complete. A second home for a constant is wrong even when it agrees, because only one
+        // of the two gets updated; `is_wal_resident` is the one home, and it answers for BOTH
+        // synthetic sentinels -- `WAL_LOG_SLAB_ID` was equally unskipped here.
         for referenced in engine.live_block_slab_ids(shard_id) {
-            if referenced == HOT_BLOCK_SLAB_ID {
+            if crate::wal_record::is_wal_resident(referenced) {
                 continue;
             }
             if !uploaded_slab_ids.contains(&referenced) {
@@ -3516,6 +3632,20 @@ fn decode_wal_proto_frame_exact(
             .try_into()
             .expect("length slice is exactly 4 bytes"),
     ) as usize;
+    // A FRAME THIS LONG WOULD BE READ BACK AS A CONTAINER, because its length prefix would lead
+    // with the marker byte. Refused here rather than assumed away: a discriminator that holds
+    // because nobody writes the colliding value is an assumption, and one that holds because the
+    // colliding value is refused is a property. See [`WAL_BATCH_CONTAINER_MARKER`].
+    if len as u64 >= WAL_BATCH_FRAME_LENGTH_CEILING {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "shared-store WAL frame at {checksum_source} declares {len} bytes, which \
+                 reaches the ceiling a frame length may not: such a frame is \
+                 indistinguishable from a batch container"
+            ),
+        )));
+    }
     if bytes.len() != len + 4 {
         return Err(SharedStoreReplicationError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -3568,55 +3698,88 @@ fn decode_wal_proto_frame_exact(
             )));
         }
     }
-    let command = match frame.command_encoding {
+    let command = wal_command_from_payload(
+        &frame.command_payload,
+        frame.command_encoding,
+        !frame.items.is_empty(),
+    )?;
+    Ok(wal_entry_from_parts(
+        frame.shard_id,
+        frame.wal_index,
+        command,
+        frame.staged_blocks,
+        frame.items,
+    ))
+}
+
+/// Which command a payload carries, given the encoding the record declares.
+///
+/// Extracted so a frame and a container entry cannot drift on it: both answer the same question
+/// about the same bytes, and an outcome-only record is recognised the same way in each.
+fn wal_command_from_payload(
+    command_payload: &[u8],
+    command_encoding: u32,
+    has_items: bool,
+) -> Result<Option<Command>, SharedStoreReplicationError> {
+    match command_encoding {
         // Outcome-only records deliberately carry no command. Keep empty command records
         // invalid unless results are present, and still reject unknown encoding tags.
-        WAL_COMMAND_ENCODING_JSON_SERDE
-            if frame.command_payload.is_empty() && !frame.items.is_empty() => None,
+        WAL_COMMAND_ENCODING_JSON_SERDE if command_payload.is_empty() && has_items => Ok(None),
         WAL_COMMAND_ENCODING_SDK_PROTO => {
-            let command = v1::Command::decode(frame.command_payload.as_slice())?;
-            Some(sdk::sdk_command_to_types(command).map_err(|status| {
-                SharedStoreReplicationError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    status.to_string(),
-                ))
-            })?)
+            let command = v1::Command::decode(command_payload)?;
+            Ok(Some(sdk::sdk_command_to_types(command).map_err(
+                |status| {
+                    SharedStoreReplicationError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        status.to_string(),
+                    ))
+                },
+            )?))
         }
-        WAL_COMMAND_ENCODING_JSON_SERDE => Some(serde_json::from_slice(&frame.command_payload)?),
-        other => {
-            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("unsupported protobuf WAL command encoding {other}"),
-            )));
-        }
-    };
-    let implied_length = if frame.items.len() == 1 && frame.staged_blocks.len() == 1 {
-        let carried =
-            frame.staged_blocks[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+        WAL_COMMAND_ENCODING_JSON_SERDE => Ok(Some(serde_json::from_slice(command_payload)?)),
+        other => Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unsupported protobuf WAL command encoding {other}"),
+        ))),
+    }
+}
+
+/// Assemble a record from the parts a frame and a container entry both carry.
+///
+/// Extracted for the same reason as [`wal_command_from_payload`]: the implied-length rule and the
+/// command key an item is resolved against are properties of the record, not of the shape it
+/// arrived in, so one copy means a container cannot resolve an item differently from a frame.
+fn wal_entry_from_parts(
+    shard_id: u64,
+    wal_index: u64,
+    command: Option<Command>,
+    staged_blocks: Vec<SharedStoreStagedBlockProto>,
+    items: Vec<crate::sdk::v1::EngineWalItem>,
+) -> SharedStoreWalEntry {
+    let implied_length = if items.len() == 1 && staged_blocks.len() == 1 {
+        let carried = staged_blocks[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
         Some(carried as u64)
     } else {
         None
     };
     // Worked out before the command is moved into the record, and once rather than per item.
     let command_key = crate::wal_proto::command_object_key(command.as_ref());
-    Ok(SharedStoreWalEntry {
-        shard_id: frame.shard_id,
-        wal_index: frame.wal_index,
+    SharedStoreWalEntry {
+        shard_id,
+        wal_index,
         command,
-        outcomes: frame
-            .items
+        outcomes: items
             .into_iter()
             .map(|item| {
                 crate::wal_proto::item_from_proto(
                     item,
-                    frame.shard_id,
+                    shard_id,
                     implied_length,
                     command_key.as_deref(),
                 )
             })
             .collect(),
-        staged_blocks: frame
-            .staged_blocks
+        staged_blocks: staged_blocks
             .into_iter()
             .map(|block| crate::wal::StagedBlock {
                 object_id: block.object_id,
@@ -3626,7 +3789,202 @@ fn decode_wal_proto_frame_exact(
                 bytes: block.bytes,
             })
             .collect(),
-    })
+    }
+}
+
+/// THE ONE CONTAINER SHAPE THIS BUILD UNDERSTANDS: the hoisted header described on
+/// [`SharedStoreWalBatchProto`].
+///
+/// One is the first value and zero is not a format, so a container whose `batch_format` field is
+/// absent is refused by the same arm that refuses a format from the future. There is no older
+/// container for absent-is-zero to mean.
+const WAL_BATCH_FORMAT_HOISTED: u32 = 1;
+
+/// HOW A CONTAINER IS TOLD APART FROM A FRAME IN THE SAME LOG, which is the whole of the framing
+/// question and the thing to get right.
+///
+/// A log frame is `[4-byte big-endian body length][body]`, and the walk over a log reads that
+/// prefix to find the next record. A container has to be distinguishable from a frame at exactly
+/// that position, by its first byte, with no second guess -- the same rule a container member
+/// component follows, where one reserved leading byte makes the first byte a total discriminator.
+///
+/// So a container is `[0xff][3-byte big-endian body length][body]`. The first byte of a frame
+/// prefix is the HIGH byte of its body length, so it is `0xff` only for a frame body of at least
+/// `0xff000000` bytes -- a little under four gibibytes in one log record. Nothing in this path can
+/// produce one: a frame is built in memory, appended whole, and range-read whole.
+///
+/// THE WRITER OWES THE OTHER HALF OF THIS. A writer emitting frames must refuse a frame whose
+/// declared length reaches [`WAL_BATCH_FRAME_LENGTH_CEILING`] rather than emit one that would be
+/// read back as a container. This build writes no containers at all, so the obligation arrives
+/// with the writer; the reader states the bound it relies on and
+/// `a_container_is_told_apart_from_a_frame_by_its_first_byte` pins it.
+const WAL_BATCH_CONTAINER_MARKER: u8 = 0xff;
+
+/// The container framing length: the marker byte and three length bytes.
+const WAL_BATCH_CONTAINER_PREFIX_LEN: usize = 4;
+
+/// A frame body of this length or more would be read back as a container, so no writer may emit
+/// one. Equal to `0xff000000`, the smallest body length whose big-endian high byte is
+/// [`WAL_BATCH_CONTAINER_MARKER`].
+const WAL_BATCH_FRAME_LENGTH_CEILING: u64 = 0xff00_0000;
+
+/// The largest container body three length bytes can describe: 16 MiB less one byte.
+///
+/// Gated to tests because only a WRITER can exceed it: three length bytes cannot describe a
+/// larger body, so a reader has no reachable case to check and shipping the constant unread would
+/// make it a setting nothing consults. The writer half un-gates it and enforces it.
+#[cfg(test)]
+const WAL_BATCH_CONTAINER_MAX_BODY: usize = 0x00ff_ffff;
+
+/// Does this record begin a container rather than a frame? See [`WAL_BATCH_CONTAINER_MARKER`] for
+/// why one byte settles it.
+fn is_wal_batch_container(bytes: &[u8]) -> bool {
+    matches!(bytes.first(), Some(&WAL_BATCH_CONTAINER_MARKER))
+}
+
+/// The declared body length of a container, without decoding the body.
+fn wal_batch_container_body_len(
+    bytes: &[u8],
+    source: &str,
+) -> Result<usize, SharedStoreReplicationError> {
+    if bytes.len() < WAL_BATCH_CONTAINER_PREFIX_LEN {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("truncated shared-store WAL batch container length at {source}"),
+        )));
+    }
+    Ok(((bytes[1] as usize) << 16) | ((bytes[2] as usize) << 8) | (bytes[3] as usize))
+}
+
+/// Decode a container header and refuse a shape this build does not know, WITHOUT verifying any
+/// payload.
+///
+/// Verification is per entry and the two callers want different amounts of it: a replay wants
+/// every entry, a single-entry range read wants exactly one. Splitting the walk from the check is
+/// what lets the point read stay a point read.
+fn decode_wal_batch_container_header(
+    body: &[u8],
+    source: &str,
+) -> Result<SharedStoreWalBatchProto, SharedStoreReplicationError> {
+    let container = SharedStoreWalBatchProto::decode(body)?;
+    // REFUSED, not guessed, and for the reason the unknown-frame-format arm gives: a container
+    // shape this build does not know puts its fields somewhere this build cannot see, and decoding
+    // it as the shape we happen to have would report corrupt data for a version skew. Naming the
+    // format is the difference between "this log is corrupt" and "this node is too old for this
+    // log".
+    if container.batch_format != WAL_BATCH_FORMAT_HOISTED {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "unsupported shared-store WAL batch format {} at {source}: this build understands \
+                 {WAL_BATCH_FORMAT_HOISTED}",
+                container.batch_format
+            ),
+        )));
+    }
+    Ok(container)
+}
+
+/// Which log index the entry at `position` carries: the base plus its position, unless the entry
+/// overrides it. See `wal_index_plus_one` for why the override is biased.
+fn wal_batch_entry_index(
+    container: &SharedStoreWalBatchProto,
+    position: usize,
+    entry: &SharedStoreWalBatchEntryProto,
+) -> u64 {
+    match entry.wal_index_plus_one {
+        0 => container.first_wal_index.saturating_add(position as u64),
+        biased => biased - 1,
+    }
+}
+
+/// Which encoding the entry carries: the container encoding, unless the entry overrides it. See
+/// `command_encoding_plus_one` for why the override is biased.
+fn wal_batch_entry_encoding(
+    container: &SharedStoreWalBatchProto,
+    entry: &SharedStoreWalBatchEntryProto,
+) -> u32 {
+    match entry.command_encoding_plus_one {
+        0 => container.command_encoding,
+        biased => biased - 1,
+    }
+}
+
+/// Turn one container entry into a record, verifying THAT ENTRY payload and no other.
+fn wal_batch_entry_to_record(
+    container: &SharedStoreWalBatchProto,
+    position: usize,
+    entry: SharedStoreWalBatchEntryProto,
+    source: &str,
+) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
+    let wal_index = wal_batch_entry_index(container, position, &entry);
+    let encoding = wal_batch_entry_encoding(container, &entry);
+    // The container format declares one check shape: a CRC32C over the payload with no declared
+    // length, which is what `WAL_FRAME_FORMAT_NO_SIZE` settled on for a frame.
+    verify_crc32c(source, &entry.command_payload, None, entry.command_crc32c)?;
+    let command =
+        wal_command_from_payload(&entry.command_payload, encoding, !entry.items.is_empty())?;
+    Ok(wal_entry_from_parts(
+        container.shard_id,
+        wal_index,
+        command,
+        entry.staged_blocks,
+        entry.items,
+    ))
+}
+
+/// Every entry of one container, each verified against its own checksum.
+fn decode_wal_batch_container_body(
+    body: &[u8],
+    source: &str,
+) -> Result<Vec<SharedStoreWalEntry>, SharedStoreReplicationError> {
+    let container = decode_wal_batch_container_header(body, source)?;
+    let mut records = Vec::with_capacity(container.entries.len());
+    for (position, entry) in container.entries.iter().cloned().enumerate() {
+        records.push(wal_batch_entry_to_record(
+            &container, position, entry, source,
+        )?);
+    }
+    Ok(records)
+}
+
+/// ONE entry of a container addressed by its log index, hashing only that entry payload.
+///
+/// This is the single-entry range read path, and the reason `command_crc32c` stayed per entry: the
+/// container is decoded -- protobuf, so no payload is hashed by decoding at all -- and then
+/// exactly one payload is checked.
+fn decode_wal_batch_container_entry_exact(
+    bytes: &[u8],
+    source: &str,
+    wal_index: u64,
+) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
+    let len = wal_batch_container_body_len(bytes, source)?;
+    if bytes.len() != len + WAL_BATCH_CONTAINER_PREFIX_LEN {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("shared-store WAL batch container range does not match its length at {source}"),
+        )));
+    }
+    let container =
+        decode_wal_batch_container_header(&bytes[WAL_BATCH_CONTAINER_PREFIX_LEN..], source)?;
+    let found = container
+        .entries
+        .iter()
+        .enumerate()
+        .find(|(position, entry)| wal_batch_entry_index(&container, *position, entry) == wal_index);
+    let Some((position, entry)) = found else {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "shared-store WAL batch container at {source} holds no index {wal_index}; it \
+                 carries {} entries from index {}",
+                container.entries.len(),
+                container.first_wal_index
+            ),
+        )));
+    };
+    let entry = entry.clone();
+    wal_batch_entry_to_record(&container, position, entry, source)
 }
 
 fn decode_wal_proto_blob(
@@ -3635,6 +3993,25 @@ fn decode_wal_proto_blob(
     let mut cursor = 0usize;
     let mut entries = Vec::new();
     while cursor < bytes.len() {
+        // ONE LOG MAY HOLD BOTH SHAPES -- what a rolling restart leaves behind, and the same
+        // reason the digest format is dispatched per frame rather than per log. The first byte
+        // settles which this record is; see [`WAL_BATCH_CONTAINER_MARKER`] for why one byte can.
+        if is_wal_batch_container(&bytes[cursor..]) {
+            let len = wal_batch_container_body_len(&bytes[cursor..], "protobuf-wal-blob")?;
+            let body_at = cursor + WAL_BATCH_CONTAINER_PREFIX_LEN;
+            if bytes.len().saturating_sub(body_at) < len {
+                return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "truncated shared-store WAL batch container body",
+                )));
+            }
+            entries.extend(decode_wal_batch_container_body(
+                &bytes[body_at..body_at + len],
+                "protobuf-wal-blob",
+            )?);
+            cursor = body_at + len;
+            continue;
+        }
         if bytes.len().saturating_sub(cursor) < 4 {
             return Err(SharedStoreReplicationError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -4239,6 +4616,135 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// A forwarding `ObjectStore` wrapper must not drop a DEFAULTED trait method.
+    ///
+    /// `ObjectStore` gives six of its methods a default body, and two of those defaults
+    /// REFUSE: `append_blob` returns `Unsupported` and `compare_and_swap` returns
+    /// `ConditionFailed`. A wrapper enum that forwards only the methods it happens to
+    /// need therefore compiles clean, with no warning of any kind, and then refuses at
+    /// run time -- reporting that the store "does not implement append_blob" when the
+    /// store underneath implements it perfectly well. `FileObjectStore` does.
+    ///
+    /// That is what `ScaleObjectStore` in `scale_harness` did: it forwarded eight
+    /// methods and dropped three, and because the shared store's protobuf WAL path
+    /// appends unconditionally, `scale_harness --compare-shared-store` could not
+    /// succeed against ANY backend it offers. Nothing failed to build and no test
+    /// covered it, so the flag shipped unrunnable.
+    ///
+    /// The defaulted set is read out of the trait rather than written down here, so
+    /// adding a new defaulted method tightens this guard instead of escaping it.
+    #[test]
+    fn a_forwarding_object_store_wrapper_cannot_drop_a_defaulted_method() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let trait_src =
+            std::fs::read_to_string(manifest.join("../temporalstore-snapshot/src/object_store.rs"))
+                .expect("the ObjectStore trait source");
+
+        let start = trait_src
+            .find("pub trait ObjectStore")
+            .expect("the trait declaration");
+        let body = &trait_src[start..];
+        let body_end = body.find("\n}\n").expect("the trait's closing brace");
+        let body = &body[..body_end];
+
+        // Chunk the trait body by METHOD START, not by indentation. Splitting on a
+        // 4-space indent cannot work here: a multi-line signature's continuation lines
+        // are indented 8 spaces, so such a split fires on their first 4 and truncates
+        // every wrapped signature at its opening paren -- which silently dropped the
+        // three methods this guard exists to protect. Mark each `fn` at method indent
+        // and take each chunk up to the next mark, so a signature may wrap freely.
+        let mut starts: Vec<(usize, usize)> = Vec::new();
+        for marker in ["
+    async fn ", "
+    fn "] {
+            let mut from = 0usize;
+            while let Some(found) = body[from..].find(marker) {
+                let at = from + found;
+                starts.push((at, at + marker.len()));
+                from = at + marker.len();
+            }
+        }
+        starts.sort_unstable();
+
+        // A REQUIRED method's signature ends in `;`, a DEFAULTED one's in `{`; inside a
+        // whole-method chunk the signature's terminator is whichever comes first.
+        let mut required: Vec<String> = Vec::new();
+        let mut defaulted: Vec<String> = Vec::new();
+        for (index, (_, decl_at)) in starts.iter().enumerate() {
+            let chunk_end = starts
+                .get(index + 1)
+                .map(|(next, _)| *next)
+                .unwrap_or(body.len());
+            let chunk = &body[*decl_at..chunk_end];
+            let Some(paren) = chunk.find('(') else { continue };
+            let name = chunk[..paren].trim();
+            if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            match (chunk.find(';'), chunk.find('{')) {
+                (Some(semi), Some(brace)) if semi < brace => required.push(name.to_string()),
+                (Some(_), None) => required.push(name.to_string()),
+                (_, Some(_)) => defaulted.push(name.to_string()),
+                _ => {}
+            }
+        }
+
+        assert!(
+            defaulted.len() >= 5,
+            "the scan found only {} defaulted methods ({defaulted:?}) -- it has stopped \
+             parsing the trait, so it would pass against any wrapper",
+            defaulted.len()
+        );
+        assert!(
+            required.len() >= 3,
+            "the scan found only {} required methods ({required:?}) -- control dimension failed",
+            required.len()
+        );
+        assert!(
+            defaulted.iter().any(|m| m == "append_blob"),
+            "append_blob is no longer seen as defaulted; this guard's premise moved: {defaulted:?}"
+        );
+
+        let harness = std::fs::read_to_string(manifest.join("src/bin/scale_harness.rs"))
+            .expect("the scale harness source");
+        let impl_at = harness
+            .find("impl ObjectStore for ScaleObjectStore {")
+            .expect("the wrapper's ObjectStore impl");
+        let rest = &harness[impl_at..];
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (i, ch) in rest.char_indices() {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    end = i + 1;
+                    break;
+                }
+            }
+        }
+        let block = &rest[..end];
+        assert!(
+            block.len() > 500,
+            "the wrapper impl block scanned to {} bytes -- the brace match failed",
+            block.len()
+        );
+
+        let missing: Vec<&String> = defaulted
+            .iter()
+            .filter(|m| !block.contains(&format!("fn {m}(")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "ScaleObjectStore drops {} defaulted ObjectStore method(s): {missing:?}. Each \
+             falls back to the trait's default, and the defaults for append_blob and \
+             compare_and_swap REFUSE -- so the wrapper reports a capability the inner \
+             store may well have as missing. Forward them.",
+            missing.len()
+        );
+    }
+
     use std::path::Path;
     use std::sync::Arc;
 
@@ -4494,6 +5000,375 @@ mod tests {
     /// Each term is measured independently and the residue is asserted to be what is left.
     /// Without that identity a term could be dropped from the table and the table would still
     /// look complete.
+    /// WHAT A GROUP COMMIT STOPS RESTATING, AND THE READER THAT UNDERSTANDS IT.
+    ///
+    /// # WHY A CONTAINER OF FRAMES WAS NOT ENOUGH, MEASURED BEFORE THIS WAS BUILT
+    ///
+    /// The first attempt put N complete frames under one outer length prefix, on the theory that
+    /// the fixed term of an append is a per-frame HEADER that a container divides. Swept at a
+    /// 16-byte payload it saved 1.9 B per entry and COST 4 B at a batch of one:
+    ///
+    /// ```text
+    ///   N:  1   separate 43.00   batched 47.00   (-4.00)
+    ///   N:  4            43.00           42.50   (+0.50)
+    ///   N: 16            43.44           41.81   (+1.62)
+    ///   N: 64            43.86           41.95   (+1.91)
+    /// ```
+    ///
+    /// A container divides only the 4-byte outer prefix, and hands two of those four straight
+    /// back as the nested field tag and length. The fixed term is not a header. It is per-entry
+    /// FIELDS -- the shard, the index, the encoding, the digest shape -- restated by every entry
+    /// of a batch that shares them. Dividing it needs entries that are NOT frames, which is what
+    /// [`SharedStoreWalBatchEntryProto`] is.
+    ///
+    /// # WHAT THIS BUILD DOES WITH ONE
+    ///
+    /// Reads it, and nothing else. No writer in this tree emits a container, and that ordering is
+    /// deliberate rather than unfinished: a reader that does not know a durable shape must never
+    /// meet it, so the reader ships first and alone. The dispatch IS wired into both production
+    /// readers -- the log walk and the single-entry range read -- so the writer that follows
+    /// needs no reader change to be read back.
+    mod a_group_commit_container {
+        use super::*;
+
+        /// One container, framed the way the log frames one: see
+        /// [`WAL_BATCH_CONTAINER_MARKER`] for why the marker byte comes first.
+        ///
+        /// Test-only ON PURPOSE. This is the shape the writer half will emit; having it here and
+        /// nowhere else is what makes this change reader-only in production while still being
+        /// driven by real bytes rather than by a mocked decoder.
+        fn container_bytes(container: &SharedStoreWalBatchProto) -> Vec<u8> {
+            let body = container.encode_to_vec();
+            assert!(
+                body.len() <= WAL_BATCH_CONTAINER_MAX_BODY,
+                "a container body of {} bytes cannot be described by three length bytes",
+                body.len()
+            );
+            let mut out = vec![
+                WAL_BATCH_CONTAINER_MARKER,
+                (body.len() >> 16) as u8,
+                (body.len() >> 8) as u8,
+                body.len() as u8,
+            ];
+            out.extend(body);
+            out
+        }
+
+        /// An entry carrying a string write, with the checksum the container format requires.
+        fn batch_entry(key: &str, value: &[u8]) -> (SharedStoreWalBatchEntryProto, Command) {
+            let command = Command::StringSet {
+                key: key.to_string(),
+                value: value.to_vec(),
+            };
+            let payload = command_to_sdk_proto(&command)
+                .expect("a string write has a proto form")
+                .encode_to_vec();
+            (
+                SharedStoreWalBatchEntryProto {
+                    command_crc32c: crate::checksum::crc32c(&payload),
+                    command_payload: payload,
+                    command_encoding_plus_one: 0,
+                    wal_index_plus_one: 0,
+                    staged_blocks: Vec::new(),
+                    items: Vec::new(),
+                },
+                command,
+            )
+        }
+
+        fn container_of(
+            shard_id: u64,
+            first_wal_index: u64,
+            entries: Vec<SharedStoreWalBatchEntryProto>,
+        ) -> SharedStoreWalBatchProto {
+            SharedStoreWalBatchProto {
+                batch_format: WAL_BATCH_FORMAT_HOISTED,
+                shard_id,
+                first_wal_index,
+                command_encoding: WAL_COMMAND_ENCODING_SDK_PROTO,
+                entries,
+            }
+        }
+
+        fn record(shard_id: u64, wal_index: u64, command: Command) -> SharedStoreWalEntry {
+            SharedStoreWalEntry {
+                shard_id,
+                wal_index,
+                command: Some(command),
+                outcomes: Vec::new(),
+                staged_blocks: Vec::new(),
+            }
+        }
+
+        /// Four writes committed together come back as four records, in order, with the shard and
+        /// the indices the header states once between them.
+        #[test]
+        fn a_container_replays_every_entry_it_carries() {
+            let built = (0..4)
+                .map(|at| batch_entry(&format!("key-{at}"), format!("value-{at}").as_bytes()))
+                .collect::<Vec<_>>();
+            let container = container_of(
+                7,
+                100,
+                built.iter().map(|(entry, _)| entry.clone()).collect(),
+            );
+            let blob = container_bytes(&container);
+
+            let replayed = decode_wal_proto_blob(&blob).expect("a container must replay whole");
+            let expected = built
+                .iter()
+                .enumerate()
+                .map(|(at, (_, command))| record(7, 100 + at as u64, command.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                replayed, expected,
+                "the log walk must recover every entry of a container, with the shard and index \
+                 the header carries once"
+            );
+        }
+
+        /// A point read of one index lands on the container and picks exactly its entry out.
+        #[test]
+        fn a_container_entry_is_addressed_by_the_index_the_header_implies() {
+            let built = (0..4)
+                .map(|at| batch_entry(&format!("key-{at}"), b"v"))
+                .collect::<Vec<_>>();
+            let blob = container_bytes(&container_of(
+                7,
+                100,
+                built.iter().map(|(entry, _)| entry.clone()).collect(),
+            ));
+
+            for (at, (_, command)) in built.iter().enumerate() {
+                let wal_index = 100 + at as u64;
+                let one = decode_wal_batch_container_entry_exact(&blob, "test", wal_index)
+                    .expect("the entry the header names must decode");
+                assert_eq!(one, record(7, wal_index, command.clone()));
+            }
+
+            // An index the container does not hold is refused, not answered with a neighbour.
+            let err = decode_wal_batch_container_entry_exact(&blob, "a-log-key", 104)
+                .expect_err("an index outside the container must be refused");
+            let text = err.to_string();
+            assert!(
+                text.contains("holds no index 104") && text.contains("a-log-key"),
+                "the refusal must name the index and where it was read: {text}"
+            );
+        }
+
+        /// An entry whose index is not its position says so, rather than being renumbered.
+        ///
+        /// Index ZERO is the case the bias exists for: an override field that used zero as
+        /// "absent" could not express it, which is the obstruction
+        /// [`WAL_FRAME_FORMAT_NO_SIZE`] records against the sidecar shard field.
+        #[test]
+        fn an_entry_that_broke_the_sequence_carries_its_own_index() {
+            let (plain, plain_command) = batch_entry("key-a", b"v");
+            let (mut moved, moved_command) = batch_entry("key-b", b"v");
+            moved.wal_index_plus_one = 1; // index ZERO, biased
+            let blob = container_bytes(&container_of(7, 100, vec![plain, moved]));
+
+            let replayed = decode_wal_proto_blob(&blob).expect("it replays");
+            assert_eq!(
+                replayed,
+                vec![
+                    record(7, 100, plain_command),
+                    record(7, 0, moved_command.clone()),
+                ],
+                "an entry carrying its own index must keep it, including index zero"
+            );
+            assert_eq!(
+                decode_wal_batch_container_entry_exact(&blob, "test", 0).expect("index zero reads"),
+                record(7, 0, moved_command),
+                "index zero must be addressable, which is the whole reason the override is biased"
+            );
+        }
+
+        /// An entry encoded differently from its batch says so, and the shared encoding is the
+        /// default for the rest.
+        #[test]
+        fn an_entry_that_differs_in_encoding_carries_its_own_encoding() {
+            let (shared, shared_command) = batch_entry("key-a", b"v");
+            let odd_command = Command::StringSet {
+                key: "key-b".to_string(),
+                value: b"v".to_vec(),
+            };
+            let odd_payload =
+                serde_json::to_vec(&odd_command).expect("a command serialises as json");
+            let odd = SharedStoreWalBatchEntryProto {
+                command_crc32c: crate::checksum::crc32c(&odd_payload),
+                command_payload: odd_payload,
+                // JSON is encoding ZERO, so an unbiased override could not express it either.
+                command_encoding_plus_one: WAL_COMMAND_ENCODING_JSON_SERDE + 1,
+                wal_index_plus_one: 0,
+                staged_blocks: Vec::new(),
+                items: Vec::new(),
+            };
+            let blob = container_bytes(&container_of(7, 100, vec![shared, odd]));
+
+            assert_eq!(
+                decode_wal_proto_blob(&blob).expect("a mixed-encoding container replays"),
+                vec![
+                    record(7, 100, shared_command),
+                    record(7, 101, odd_command),
+                ],
+                "the header encoding must apply to the entries that omit one, and the override to \
+                 the entry that carries one"
+            );
+        }
+
+        /// A CONTAINER SHAPE THIS BUILD DOES NOT KNOW IS REFUSED BY NAME, with the shape it does
+        /// know as the control.
+        ///
+        /// Without the control a reader that refused every container would pass this.
+        #[test]
+        fn a_reader_without_this_batch_format_refuses_the_container_by_name() {
+            let (entry, _) = batch_entry("key-a", b"v");
+            let mut container = container_of(7, 100, vec![entry]);
+
+            // THE CONTROL: the shape this build writes is accepted.
+            assert!(
+                decode_wal_proto_blob(&container_bytes(&container)).is_ok(),
+                "the container shape this build understands must decode, or the refusals below \
+                 are measuring a broken reader"
+            );
+
+            // Absent is zero and zero is NOT a format: there is no older container to mean.
+            for unknown in [0, 2, 99] {
+                container.batch_format = unknown;
+                let err = decode_wal_proto_blob(&container_bytes(&container))
+                    .expect_err("an unknown container format must be refused");
+                let text = err.to_string();
+                assert!(
+                    text.contains(&format!("unsupported shared-store WAL batch format {unknown}")),
+                    "the refusal must NAME the format rather than report corrupt data, so a \
+                     mis-ordered deploy is loud: {text}"
+                );
+            }
+        }
+
+        /// ONE CHECKSUM PER ENTRY, AND THIS IS WHAT IT BUYS: a damaged entry is refused and its
+        /// neighbours are still readable without hashing it.
+        ///
+        /// The checksum is the largest per-entry field left, so hoisting it into the header looks
+        /// like the next economy. It is not: a point read verifies the bytes it just read, and a
+        /// container-wide digest would make it hash every other entry of the batch to check its
+        /// own. This test is that property rather than the paragraph on the field.
+        #[test]
+        fn a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not() {
+            let built = (0..3)
+                .map(|at| batch_entry(&format!("key-{at}"), b"a value"))
+                .collect::<Vec<_>>();
+            let mut entries = built
+                .iter()
+                .map(|(entry, _)| entry.clone())
+                .collect::<Vec<_>>();
+            // Flip a payload bit in the MIDDLE entry, leaving its checksum as written.
+            let last = entries[1].command_payload.len() - 1;
+            entries[1].command_payload[last] ^= 0x01;
+            let blob = container_bytes(&container_of(7, 100, entries));
+
+            let err = decode_wal_batch_container_entry_exact(&blob, "a-log-key", 101)
+                .expect_err("a tampered payload must be refused");
+            assert!(
+                err.to_string().contains("a-log-key"),
+                "the refusal must name where the bytes came from: {err}"
+            );
+
+            // THE PROPERTY: the neighbours verify on their own, with the damaged entry present.
+            for at in [0usize, 2] {
+                let wal_index = 100 + at as u64;
+                assert_eq!(
+                    decode_wal_batch_container_entry_exact(&blob, "test", wal_index)
+                        .expect("an undamaged neighbour must still read"),
+                    record(7, wal_index, built[at].1.clone()),
+                    "entry {at} shares a container with a damaged entry and must be unaffected"
+                );
+            }
+
+            // A whole replay DOES refuse, because a replay wants every entry.
+            assert!(
+                decode_wal_proto_blob(&blob).is_err(),
+                "a replay must not skip a damaged entry and carry on"
+            );
+        }
+
+        /// A LOG HOLDING BOTH SHAPES WALKS END TO END, which is what a rolling restart leaves.
+        #[test]
+        fn a_log_holding_both_plain_frames_and_containers_walks_end_to_end() {
+            let (first, first_command) = batch_entry("key-0", b"v");
+            let (second, second_command) = batch_entry("key-1", b"v");
+            let old = record(7, 100, first_command);
+            let mut blob = encode_wal_proto_frame(&old, WAL_FRAME_FORMAT_NO_SIZE)
+                .expect("a plain frame encodes");
+            blob.extend(container_bytes(&container_of(7, 101, vec![second.clone()])));
+            let tail = record(7, 103, Command::StringSet {
+                key: "key-2".to_string(),
+                value: b"v".to_vec(),
+            });
+            blob.extend(
+                encode_wal_proto_frame(&tail, WAL_FRAME_FORMAT_NO_SIZE)
+                    .expect("a plain frame encodes"),
+            );
+            // Unused in the blob, but it is the same entry the container carries.
+            let _ = first;
+
+            assert_eq!(
+                decode_wal_proto_blob(&blob).expect("a mixed log must replay whole"),
+                vec![old, record(7, 101, second_command), tail],
+                "a log carrying a frame, then a container, then a frame must walk end to end"
+            );
+        }
+
+        /// THE DISCRIMINATOR, as arithmetic rather than as prose: one byte decides which shape a
+        /// record is, and no frame this path can write collides with it.
+        #[test]
+        fn a_container_is_told_apart_from_a_frame_by_its_first_byte() {
+            assert_eq!(
+                (WAL_BATCH_FRAME_LENGTH_CEILING as u32).to_be_bytes()[0],
+                WAL_BATCH_CONTAINER_MARKER,
+                "the ceiling must be the smallest frame body whose high length byte is the marker"
+            );
+            assert_eq!(
+                ((WAL_BATCH_FRAME_LENGTH_CEILING - 1) as u32).to_be_bytes()[0],
+                WAL_BATCH_CONTAINER_MARKER - 1,
+                "one byte below the ceiling must NOT look like a container"
+            );
+
+            let (entry, command) = batch_entry("key-0", b"a value");
+            let frame = encode_wal_proto_frame(
+                &record(7, 100, command),
+                WAL_FRAME_FORMAT_NO_SIZE,
+            )
+            .expect("a plain frame encodes");
+            assert!(
+                !is_wal_batch_container(&frame),
+                "a frame this path writes must never be read back as a container"
+            );
+            assert!(
+                is_wal_batch_container(&container_bytes(&container_of(7, 100, vec![entry]))),
+                "a container must announce itself"
+            );
+            assert!(
+                !is_wal_batch_container(&[]),
+                "an empty record is neither shape"
+            );
+
+            // AND THE COLLIDING LENGTH IS REFUSED, which is what makes the discriminator a
+            // property rather than an assumption about what writers happen to emit.
+            let mut colliding = (WAL_BATCH_FRAME_LENGTH_CEILING as u32).to_be_bytes().to_vec();
+            colliding.extend([0u8; 4]);
+            let err = decode_wal_proto_frame_exact(&colliding, "a-log-key")
+                .expect_err("a frame declaring the colliding length must be refused");
+            let text = err.to_string();
+            assert!(
+                text.contains("indistinguishable from a batch container")
+                    && text.contains("a-log-key"),
+                "the refusal must say WHY the length is unusable, and where: {text}"
+            );
+        }
+    }
+
     mod one_append_envelope_terms {
         use super::*;
 

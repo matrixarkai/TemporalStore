@@ -328,7 +328,7 @@ fn the_published_set_against_its_envelope() {
 ///
 /// rust-internal: measures this crate's own published counters, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib amplification_counted_in_items_moves_and_a_dump_resets_it -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::the_published_set_against_its_envelope::amplification_counted_in_items_moves_and_a_dump_resets_it -- --exact --nocapture
 #[test]
 fn amplification_counted_in_items_moves_and_a_dump_resets_it() {
     const KEYS: usize = 200;
@@ -469,7 +469,7 @@ fn amplification_counted_in_items_moves_and_a_dump_resets_it() {
 ///
 /// rust-internal: drives this crate's own lifecycle plan, no product surface
 ///
-///   cargo test -p temporalstore-rust --lib the_item_cap_fires_declines_and_clears_itself -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::the_published_set_against_its_envelope::the_item_cap_fires_declines_and_clears_itself -- --exact --nocapture
 #[test]
 fn the_item_cap_fires_declines_and_clears_itself() {
     const KEYS: usize = 200;

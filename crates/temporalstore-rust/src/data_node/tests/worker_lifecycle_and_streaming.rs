@@ -7,6 +7,54 @@ use super::*;
 use super::helpers::*;
 
 #[test]
+fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+
+    let written = runtime.batch_write(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet {
+                key: "a".to_string(),
+                value: b"one".to_vec(),
+            },
+            Command::StringSet {
+                key: "b".to_string(),
+                value: b"two".to_vec(),
+            },
+        ],
+    });
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 2);
+    assert!(written.errors.is_empty());
+
+    let rejected = runtime.batch_write(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![Command::StringGet {
+            key: "a".to_string(),
+        }],
+    });
+    assert!(!rejected.status.ok);
+    assert_eq!(rejected.status.code, "read_in_write_batch");
+    assert_eq!(rejected.applied, 0);
+    assert!(rejected.errors.is_empty());
+
+    let stored = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "a".to_string(),
+        },
+    });
+    assert_eq!(
+        stored.response,
+        CommandResponse::Bytes {
+            value: Some(b"one".to_vec())
+        }
+    );
+}
+
+#[test]
 fn runtime_reports_style_shard_worker_ownership() {
     let runtime = DataNodeRuntime::new(
         TemporalEngine::default(),

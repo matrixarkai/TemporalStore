@@ -1520,7 +1520,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // filing to be the whole story. The ref total goes back to the zero a fresh index carries, for
     // the same reason: `insert_object_block_lookup` counts up from it, and a total carried over
     // from the emptied map would count blocks twice.
-    shard.bucket_index.clear_object_pages();
+    shard.bucket_index.clear_object_blocks();
     shard.bucket_index.object_component_block_refs = Some(0);
     // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
     // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
@@ -2165,7 +2165,7 @@ fn released_model_kind_is_addressable(kind: &str) -> bool {
 ///
 /// # THE SPELLINGS ARE THE WRITE PATH'S, AND AN UNREADABLE ONE ANSWERS FALSE
 ///
-/// `hex::encode` for a set member and for a zset member, base sixteen for a list's biased
+/// `member_component` for a set member and for a zset member, base sixteen for a list's biased
 /// sequence, the field itself for a hash -- each the same rendering the write path files. A name
 /// this cannot parse answers FALSE rather than defaulting to element zero or to the empty member:
 /// an unreadable name names nothing, which is the rule every arm of the derived view already
@@ -2472,7 +2472,7 @@ pub(super) fn release_bucket_blocks(
     // `refuse` is a set of counters with no ordering, and `released_buckets` is still pushed in
     // candidate order.
     let mut derived: Option<BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>>> = None;
-    let lookup_established = !shard.bucket_index.names_no_object_pages();
+    let lookup_established = !shard.bucket_index.names_no_object_blocks();
     // The shard's own range, for the per-block routing term below.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     // Iterated by reference rather than consumed, because the derivation below is handed the same
@@ -3530,7 +3530,7 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
 /// `accept` is given the OBJECT KEY AND THE ADDRESS, and the key is what a routing-bucket filter
 /// needs now that a block's bucket is `block_routing_bucket(object_key, ..)` rather than a field on
 /// the address. Everything owned is still built after it: several arms compose their component with
-/// `format!` or `hex::encode`, and a `LiveBlockEntry` costs four allocations -- an owned key and an
+/// `format!` or `member_component`, and a `LiveBlockEntry` costs four allocations -- an owned key and an
 /// owned kind, each built as a `String` and then copied into an `Arc<str>`. None of that runs for a
 /// block the caller is not going to keep.
 ///
@@ -3760,7 +3760,8 @@ fn visit_model_live_blocks(
                         // single member at a time). `_biased` stays bound and unused rather than
                         // dropped from the pattern, so a future reader finds the score sitting
                         // right beside the render that no longer spells it.
-                        let component = hex::encode(member);
+                        let component =
+                            crate::engine::execute_on_shard::zset_component(member);
                         emit(ModelKind::Zset, KeyRef::Shared(key), Some(component.as_str()), address);
                     }
                 }
@@ -3790,7 +3791,8 @@ fn visit_model_live_blocks(
         // compaction sweep. So changing how a container is FILED anywhere else is undone before the
         // sweep returns, and changing it HERE is the whole change.
         //
-        // UNDER THE GATE THE BLOCK ID IS THE IDENTITY. A set's component is `hex::encode(member)`,
+        // UNDER THE GATE THE BLOCK ID IS THE IDENTITY. A set's component is
+        // `set_component(member)`,
         // and it exists only because the entry is per-element: something has to tell two entries of
         // one object apart. One entry per BLOCK needs no such name -- the block already carries each
         // element's key in its payload, written there by `container_blocks` precisely so a block is
@@ -3818,7 +3820,8 @@ fn visit_model_live_blocks(
             } else {
                 for (member, address) in members.iter() {
                     if accept(key, address) {
-                        let component = hex::encode(member);
+                        let component =
+                            crate::engine::execute_on_shard::set_component(member);
                         emit(ModelKind::Set, KeyRef::Shared(key), Some(component.as_str()), address);
                     }
                 }
@@ -4196,7 +4199,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// # BOTH REFUSALS WERE RE-DRIVEN WITH THAT WORK DONE, AND BOTH STILL REFUSE
 ///
 /// The two paragraphs above each name a prerequisite, and BOTH have since landed: a zset component
-/// is `hex::encode(member)` with the score on the WAL outcome's `value` slot, and hash's four
+/// is `member_component(member)` with the score on the WAL outcome's `value` slot, and hash's four
 /// index-by-component readers answer from `shard.hashes`. So the flip was attempted again with
 /// both in hand. IT WAS REFUSED AGAIN, ON MEASUREMENT, and the prerequisites are not what is left
 /// over -- what refuses it now is a THIRD obstacle that neither paragraph above is about and that
@@ -5133,7 +5136,7 @@ fn upsert_bucket_index_block_inner(
     // Buckets whose blocks this upsert disturbs. Collected while the bucket borrows are live and
     // recorded once they end, so the per-write refresh can skip the rest of the shard.
     let mut touched_buckets: Vec<u32> = Vec::new();
-    let lookup_enabled = !shard.bucket_index.names_no_object_pages();
+    let lookup_enabled = !shard.bucket_index.names_no_object_blocks();
     // CONVERGE ON THE BLOCK WHEN THE BLOCK IS THE IDENTITY, AND ON THE SLOT WHEN THE ELEMENT IS.
     //
     // The slot-wide removal is right while an entry's identity is its element: a new filing for
@@ -5520,7 +5523,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // CoreIndex` starts it at `Some(0)` and the decoder assigns `Some(0)` before it files. It is
     // kept in the expression because the claim belongs where the condition is read, not because
     // it can still be true.
-    let lookup_can_target = !(shard.bucket_index.names_no_object_pages()
+    let lookup_can_target = !(shard.bucket_index.names_no_object_blocks()
         || shard.bucket_index.object_component_block_refs.is_none());
     // Components whose blocks this call drops, so the lookup can be corrected for exactly those
     // instead of being rebuilt from every block in the shard.

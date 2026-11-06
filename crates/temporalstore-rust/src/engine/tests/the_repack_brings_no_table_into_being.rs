@@ -114,7 +114,7 @@ fn table_names(state: &crate::engine::state::ShardState) -> Vec<String> {
 /// An absent kind table means a shard holding no objects of that kind, which means no blocks of
 /// that kind either. Dropping both is what makes the removal a state a decode could actually
 /// produce, and the test's question -- does the repack bring a table into being -- is unchanged.
-fn remove_pages_of_kind(
+fn remove_blocks_of_kind(
     state: &mut crate::engine::state::ShardState,
     kind: crate::engine::storage_bucket_internals::StoredModelKind,
 ) {
@@ -148,13 +148,13 @@ fn remove_table(state: &mut crate::engine::state::ShardState, target: &str) {
             const KIND: crate::engine::storage_bucket_internals::StoredModelKind =
                 crate::engine::storage_bucket_internals::StoredModelKind::String;
             state.bucket_index.objects.remove(&KIND);
-            remove_pages_of_kind(state, KIND);
+            remove_blocks_of_kind(state, KIND);
         }
         "objects/feature" => {
             const KIND: crate::engine::storage_bucket_internals::StoredModelKind =
                 crate::engine::storage_bucket_internals::StoredModelKind::Feature;
             state.bucket_index.objects.remove(&KIND);
-            remove_pages_of_kind(state, KIND);
+            remove_blocks_of_kind(state, KIND);
         }
         other => panic!("unknown target {other}"),
     }

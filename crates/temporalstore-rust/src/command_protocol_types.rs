@@ -33,6 +33,7 @@ impl Status {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FeaturePoint {
     pub timestamp_ms: u64,
+    #[serde(with = "crate::bytes_serde::binary")]
     pub value: Vec<u8>,
 }
 
@@ -2507,6 +2508,65 @@ pub(crate) mod cached_payload_bytes {
     }
 }
 
+/// Compact JSON bytes inside a list of optional values while retaining binary
+/// byte strings for non-human-readable serializers. The reader accepts both
+/// the encoded string and the older integer-array shape.
+mod response_values {
+    use serde::ser::SerializeSeq;
+
+    struct Encoded<'a>(&'a [u8]);
+
+    impl serde::Serialize for Encoded<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            crate::bytes_serde::serialize(self.0, serializer)
+        }
+    }
+
+    struct Binary<'a>(&'a [u8]);
+
+    impl serde::Serialize for Binary<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_bytes(self.0)
+        }
+    }
+
+    pub fn serialize<S: serde::Serializer>(
+        values: &[Option<Vec<u8>>],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let human_readable = serializer.is_human_readable();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            match value {
+                Some(bytes) if human_readable => seq.serialize_element(&Some(Encoded(bytes)))?,
+                Some(bytes) => seq.serialize_element(&Some(Binary(bytes)))?,
+                None => seq.serialize_element(&Option::<Encoded<'_>>::None)?,
+            }
+        }
+        seq.end()
+    }
+
+    struct Decoded(Vec<u8>);
+
+    impl<'de> serde::Deserialize<'de> for Decoded {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer
+                .deserialize_any(crate::bytes_serde::EitherShape)
+                .map(Decoded)
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Option<Vec<u8>>>, D::Error> {
+        let values = <Vec<Option<Decoded>> as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(values
+            .into_iter()
+            .map(|value| value.map(|decoded| decoded.0))
+            .collect())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CommandResponse {
@@ -2524,9 +2584,8 @@ pub enum CommandResponse {
         /// `b'v'` is below the line, where the toll is exactly zero, which is why every fixture in
         /// this area had seen 1.0x and the toll went unpriced.
         ///
-        /// SISTER VARIANTS STILL PAY IT. `Members` and `Values` carry bulk payloads through
-        /// `Vec<Vec<u8>>` and `Vec<Option<Vec<u8>>>`; a field-level annotation does not reach
-        /// inside a container, so they need their own wrapper and are deliberately unchanged.
+        /// `Members` still needs its own wrapper because a field-level annotation does not reach
+        /// inside `Vec<Vec<u8>>`. `Values` uses `response_values` below.
         #[serde(with = "cached_payload_bytes")]
         value: Option<Vec<u8>>,
     },
@@ -2537,6 +2596,7 @@ pub enum CommandResponse {
         members: Vec<Vec<u8>>,
     },
     Values {
+        #[serde(with = "response_values")]
         values: Vec<Option<Vec<u8>>>,
     },
     HashEntries {
@@ -2817,9 +2877,68 @@ pub struct BatchExecuteResponse {
     pub responses: Vec<ExecuteResponse>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchWriteError {
+    pub index: usize,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchWriteResponse {
+    pub status: Status,
+    pub applied: usize,
+    pub errors: Vec<BatchWriteError>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_batch_write_success_does_not_grow_per_command() {
+        let one = serde_json::to_vec(&BatchWriteResponse {
+            status: Status::ok(),
+            applied: 1,
+            errors: Vec::new(),
+        })
+        .unwrap();
+        let many = serde_json::to_vec(&BatchWriteResponse {
+            status: Status::ok(),
+            applied: 10_000,
+            errors: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(many.len() < 100, "compact response was {} bytes", many.len());
+        assert!(many.len() <= one.len() + 4, "{one:?} -> {many:?}");
+    }
+
+    #[test]
+    fn values_use_compact_json_bytes_and_accept_integer_arrays() {
+        let response = CommandResponse::Values {
+            values: vec![Some(vec![0, 255]), None],
+        };
+        let encoded = serde_json::to_value(&response).unwrap();
+        assert_eq!(encoded["values"][0], "AP8=");
+        assert!(encoded["values"][1].is_null());
+        assert_eq!(serde_json::from_value::<CommandResponse>(encoded).unwrap(), response);
+
+        let older = serde_json::json!({
+            "kind": "values",
+            "values": [[0, 255], null]
+        });
+        assert_eq!(serde_json::from_value::<CommandResponse>(older).unwrap(), response);
+    }
+
+    #[test]
+    fn values_remain_binary_in_msgpack() {
+        let response = CommandResponse::Values {
+            values: vec![Some(vec![0, 255]), None],
+        };
+        let encoded = rmp_serde::to_vec_named(&response).unwrap();
+        assert!(!encoded.windows(4).any(|window| window == b"AP8="));
+        assert_eq!(rmp_serde::from_slice::<CommandResponse>(&encoded).unwrap(), response);
+    }
 
     /// A RECORD WRITTEN IN THE OLD SHAPE STILL REPLAYS, BYTE FOR BYTE.
     ///

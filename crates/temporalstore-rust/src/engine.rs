@@ -1030,6 +1030,11 @@ impl TemporalEngine {
                 (key, size, deadline)
             })
             .collect();
+        let feature_trimmed_membership = command_will_trim_feature_membership(
+            &command,
+            shard,
+            config.feature_max_size,
+        );
 
         let outcome = execute_on_shard(
             &self.cache,
@@ -1471,7 +1476,8 @@ impl TemporalEngine {
                 // key, so appending to a node that held 850 events serialized all 850 -- 8,647 of
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
-                let key_state_changed = delta_key_state_change(shard, &membership_before);
+                let key_state_changed = feature_trimmed_membership
+                    || delta_key_state_change(shard, &membership_before);
                 let mut key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
@@ -3646,6 +3652,25 @@ fn command_upsert_components(
                     .collect(),
             )
         }
+        Command::FeatureAppendWithPolicy { key, points, .. } => {
+            let mut seen = std::collections::BTreeSet::new();
+            Some(
+                points
+                    .iter()
+                    .filter(|point| seen.insert(point.timestamp_ms))
+                    .map(|point| {
+                        (
+                            "feature",
+                            key.clone(),
+                            Some(crate::engine::packed_blocks::timestamped_component(
+                                point.timestamp_ms,
+                                None,
+                            )),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         // A zset add writes exactly one component, and it is derivable from the command. Declaring
         // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
@@ -3655,7 +3680,11 @@ fn command_upsert_components(
             Some(crate::engine::execute_on_shard::zset_component(member)),
         )]),
         Command::SetAdd { key, member } => {
-            Some(vec![("set", key.clone(), Some(hex::encode(member)))])
+            Some(vec![(
+                "set",
+                key.clone(),
+                Some(crate::engine::execute_on_shard::set_component(member)),
+            )])
         }
         // A push files its block under its sequence number, which is only knowable once the
         // write has landed: post-apply the pushed element is the list's FIRST entry for a left
@@ -3726,10 +3755,10 @@ fn collect_upsert_index_items(
                         .and_then(|series| series.get(at))
                         .cloned()
                 }),
-            // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
-            // -- so the member the map is keyed by is recoverable from the whole of it.
-            ("zset", Some(component)) => hex::decode(component)
-                .ok()
+            // `zset_component` is `member_component(member)` -- one tag byte then the member,
+            // with the score long since off this string -- so the member the map is keyed by is
+            // recoverable from the whole of it, in EITHER spelling, by `member_from_component`.
+            ("zset", Some(component)) => container_blocks::member_from_component(component)
                 .and_then(|member| {
                     shard
                         .zsets
@@ -3737,7 +3766,7 @@ fn collect_upsert_index_items(
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
                 }),
-            // `hex::encode(member)` is the component a set add files its block under, so
+            // `set_component(member)` is the component a set add files its block under, so
             // the member the map is keyed by is recoverable from the component itself.
             // `{biased:016x}` of the entry's sequence, so the key the list map is keyed by
             // is recoverable from the component it was filed under.
@@ -3751,8 +3780,7 @@ fn collect_upsert_index_items(
                         .and_then(|entries| entries.get(&seq))
                         .cloned()
                 }),
-            ("set", Some(component)) => hex::decode(component)
-                .ok()
+            ("set", Some(component)) => container_blocks::member_from_component(component)
                 .and_then(|member| {
                     shard
                         .sets
@@ -3817,7 +3845,10 @@ fn collect_upsert_index_items(
 /// keep restating the whole object until the component is carried out of the arm.
 fn command_removed_component(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
-        Command::SetRemove { member, .. } => Some(("set", Some(hex::encode(member)))),
+        Command::SetRemove { member, .. } => Some((
+            "set",
+            Some(crate::engine::execute_on_shard::set_component(member)),
+        )),
         Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
         _ => None,
     }
@@ -3975,6 +4006,43 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_entities().get(key).map_or(0, |v| v.len())
 }
 
+/// Whether applying this command can exceed the retained feature count and remove timestamps.
+/// A trim can replace one timestamp with another without changing the series length, so the
+/// ordinary before/after membership count cannot identify it.
+fn command_will_trim_feature_membership(
+    command: &Command,
+    shard: &ShardState,
+    feature_max_size: usize,
+) -> bool {
+    let (key, points, may_add) = match command {
+        Command::FeatureAppend { key, points } => (key, points, true),
+        Command::FeatureAppendWithPolicy { key, points, policy } => (
+            key,
+            points,
+            matches!(
+                policy,
+                FeatureWritePolicy::Upsert | FeatureWritePolicy::InsertIfAbsent
+            ),
+        ),
+        _ => return false,
+    };
+    let series = shard.features().get(key.as_str());
+    let current_len = series.map_or(0, |series| series.len());
+    if current_len > feature_max_size {
+        return true;
+    }
+    if !may_add {
+        return false;
+    }
+    let mut new_timestamps = std::collections::BTreeSet::new();
+    for point in points {
+        if series.map_or(true, |series| series.get(point.timestamp_ms).is_none()) {
+            new_timestamps.insert(point.timestamp_ms);
+        }
+    }
+    current_len.saturating_add(new_timestamps.len()) > feature_max_size
+}
+
 /// Did this write produce per-key state that reconstruction from physical blocks cannot redo?
 ///
 /// TWO REASONS, AND THE SECOND ONE COVERS THE HALF THE FIRST CANNOT SEE.
@@ -4057,8 +4125,9 @@ impl TouchedContainerElement {
 ///
 /// THE IDENTITY COMES FROM THE COMMAND, NOT FROM THE COMPONENT, and that is the difference between
 /// this and `command_upsert_components` beside it. That function answers the same question in the
-/// block index's vocabulary and spells each element as a component -- `hex::encode(member)` for a
-/// set, sixteen hex digits of score followed by the member for a zset. Recovering the member back
+/// block index's vocabulary and spells each element as a component -- `member_component(member)`
+/// for a set and for a zset alike, the score having left the zset string. Recovering the member
+/// back
 /// out of one of those is what the reconcile does, and it is precisely the dependency this removes:
 /// here the member is the `Vec<u8>` the caller asked to store.
 ///
@@ -5439,8 +5508,16 @@ pub(crate) fn evict_sampler_config() -> eviction_sampler::EvictionSamplerConfig 
             .unwrap_or(default)
     }
     eviction_sampler::EvictionSamplerConfig {
-        samples: parse("TS_EVICT_SAMPLES", 5),
+        // Sixteen buckets looked at per wanted victim. A shard holds at most 1,024 routing buckets,
+        // so a larger sample count is bounded by the shard rather than by the store, and more
+        // candidates per victim means colder victims.
+        samples: parse("TS_EVICT_SAMPLES", 16),
         pool_size: parse("TS_EVICT_POOL_SIZE", 64),
+        // NOT 1. The ceiling `samples * batch_limit * scan_turns` has to sit well above the
+        // minimum scan `samples * batch_limit`, because the pass keeps walking past the minimum
+        // while the buckets it holds are in use; with one turn the two coincide and the pass ranks
+        // whatever the lowest-numbered window happens to hold. Pinned by
+        // `a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted`.
         scan_turns: parse("TS_EVICT_SCAN_TURNS", 4),
     }
 }
@@ -6046,7 +6123,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // AND DROPPING AN ENTRY THE LOOKUP DOES NOT HOLD IS A NO-OP, so the branch is not replaced
         // by a condition -- it is replaced by nothing.
         debug_assert!(
-            !shard.bucket_index.names_no_object_pages()
+            !shard.bucket_index.names_no_object_blocks()
                 || !shard
                     .bucket_index
                     .bucket_map
@@ -6064,7 +6141,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
-    if shard.bucket_index.names_no_object_pages() {
+    if shard.bucket_index.names_no_object_blocks() {
         return shard.bucket_index.bucket_map.keys().copied().collect();
     }
     let mut buckets = BTreeSet::new();
@@ -6235,7 +6312,7 @@ fn mark_bucket_index_block_deleted_recording(
     // refs is the lowest-numbered bucket holding a live block of it, asserted against the walk on
     // every debug run for as long as the blocks carried a key to walk by. There is no second source
     // to compare against now, so the claim is spent rather than weakened.
-    let target_buckets = if shard.bucket_index.names_no_object_pages() {
+    let target_buckets = if shard.bucket_index.names_no_object_blocks() {
         shard
             .bucket_index
             .bucket_map
@@ -6746,7 +6823,10 @@ fn append_value_inner(
     async_storage: bool,
     block_ordinal: u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    if !async_storage {
+    // Large async values can evict thousands of smaller hot blocks before a
+    // dump. Give them a real readable address immediately, while the WAL still
+    // carries the block for recovery if that append has not reached storage.
+    if !async_storage || bytes.len() >= 8 * 1024 {
         // Carry the block in this write's record, the same as the asynchronous arm below.
         //
         // The record is allowed to state its results and drop the operation only when the blocks
@@ -7024,7 +7104,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     // sites rather than by a type -- there is no door that installs AND files -- and that is filed
     // as its own design change rather than carried by a width step.
     debug_assert!(
-        !shard.bucket_index.names_no_object_pages()
+        !shard.bucket_index.names_no_object_blocks()
             || !shard
                 .bucket_index
                 .bucket_map
@@ -7051,13 +7131,40 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     // one allocation sized by the entries held.
     //
     // The walk itself is unchanged: the same refs, in the same order, marking the same blocks.
+    // BOTH REF HOMES ARE ASKED, AND ASKING ONLY THE LOOKUP MADE THIS WALK SILENTLY PARTIAL.
+    //
+    // This bound `lookup` alone and iterated it per kind. That was the whole of the answer while
+    // every object's refs lived in `object_block_lookup` -- and since the block refs were folded
+    // into the slot, an object WITH A ROW carries them on the row instead, and the lookup holds
+    // nothing for it. So for every kind that has rows this walk found no refs and marked no
+    // blocks: the object went dirty, its blocks stayed clean, and the bucket predicate -- which
+    // reads only `block.dirty` -- answered false for a dirty object. A silent wrong answer, which
+    // is the exact failure this module's header says it exists to prevent.
+    //
+    // WHICH KINDS THAT IS, rather than a guess: every kind whose rows are `ObjectSlot`s, so
+    // `string`, `control_state`, the context kinds and the series kinds. The four container kinds
+    // keep their refs in the lookup, because their rows live in `RecordedMap` and are not
+    // `ObjectSlot`s at all -- so the lookup arm below is still load-bearing and is not a fallback.
+    //
+    // THREE DISJOINT FIELDS, NAMED SEPARATELY, which is what lets the row be read while the
+    // buckets are held mutably. The comment below already explains why this cannot go through a
+    // `&self` method such as `block_refs_for`: that borrows the whole index and collides with the
+    // mutable borrow of `bucket_map` however disjoint the fields really are. Naming a third field
+    // costs nothing the first two did not already establish.
     let index = &mut shard.bucket_index;
+    let objects = &index.objects;
     let lookup = &index.object_block_lookup;
     let buckets = &mut index.bucket_map;
     for kind in storage_model_kinds() {
-        let Some(entry) = lookup.get(kind, object_key) else {
-            continue;
-        };
+        // THE ROW FIRST, THEN THE LOOKUP, and the two are chained rather than chosen between: an
+        // object can legitimately have refs in both while its row is being adopted into, and
+        // taking only the first non-empty home would drop the other's blocks.
+        let from_row = storage_bucket_internals::StoredModelKind::from_stored_name(kind)
+            .and_then(|stored| objects.get(&stored))
+            .and_then(|table| table.get(object_key))
+            .and_then(|slot| slot.refs());
+        let from_lookup = lookup.get(kind, object_key);
+        for entry in from_row.into_iter().chain(from_lookup) {
         for block_ref in entry.iter() {
             let Some(mut bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
                 continue;
@@ -7065,6 +7172,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
             if let Some(block) = bucket.block_index.get_mut(&block_ref.block_ref_key) {
                 block.set_dirty(true);
             }
+        }
         }
     }
 }
@@ -7749,12 +7857,12 @@ fn object_manager_stats(
 ) -> ObjectManagerStats {
     if !shard.bucket_index.bucket_map.is_empty() {
         let (bucket_object_count, bucket_block_ref_count, bucket_dirty_object_count) =
-            if !shard.bucket_index.names_no_object_pages() {
+            if !shard.bucket_index.names_no_object_blocks() {
                 (
                     // The map is keyed by OBJECT now, so its length is the object count directly.
                     // It used to be the length of a second map kept alongside this one, which is
                     // the question that stopped that map from simply being deleted.
-                    shard.bucket_index.objects_naming_pages(),
+                    shard.bucket_index.objects_naming_blocks(),
                     // Maintained incrementally; the walk is the fallback for an index that has
                     // been deserialized but not yet rebuilt. This runs on the heartbeat timer
                     // under the shard read lock, so walking here shows up as write contention.
@@ -7869,7 +7977,7 @@ fn object_manager_stats(
                 .values()
                 .map(|slot| slot.owned_element_count())
                 .sum::<usize>();
-        let dirty_bucket_count = if !shard.bucket_index.names_no_object_pages() {
+        let dirty_bucket_count = if !shard.bucket_index.names_no_object_blocks() {
             // COUNTED BEFORE ANY SET IS BUILT, because in two cases the set cannot change the
             // answer and building it is the whole allocation of this function.
             //

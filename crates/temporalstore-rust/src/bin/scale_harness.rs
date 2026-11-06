@@ -16,7 +16,7 @@ use temporalstore_rust::types::{
     Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
 };
 use temporalstore_snapshot::object_store::{
-    FileObjectStore, MatrixObjectHttpStore, ObjectStore, ObjectStoreError,
+    AppendBlobReceipt, FileObjectStore, MatrixObjectHttpStore, ObjectStore, ObjectStoreError,
 };
 
 #[derive(Debug, Clone)]
@@ -605,6 +605,52 @@ impl ObjectStore for ScaleObjectStore {
         match self {
             Self::File(store) => store.uri(key),
             Self::MatrixObject(store) => store.uri(key),
+        }
+    }
+
+    // `append_blob` and `compare_and_swap` carry a DEFAULT body on the trait, and that
+    // default returns an error. A forwarding wrapper that leaves them out therefore
+    // compiles clean and refuses at run time, reporting that the store "does not
+    // implement append_blob" when the store underneath may implement it perfectly
+    // well -- `FileObjectStore` does. Forwarding them makes this enum report the
+    // inner store's own answer instead of inventing one, which is the only way the
+    // caller can tell a backend that cannot append from a wrapper that forgot to ask.
+    async fn append_blob(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.append_blob(key, bytes).await,
+            Self::MatrixObject(store) => store.append_blob(key, bytes).await,
+        }
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<Bytes>,
+        new: Bytes,
+    ) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::File(store) => store.compare_and_swap(key, expected, new).await,
+            Self::MatrixObject(store) => store.compare_and_swap(key, expected, new).await,
+        }
+    }
+
+    // Forwarded for the same reason, though neither backend overrides it today: the
+    // trait's default fetches the WHOLE object and slices it, so if either store ever
+    // gains a real ranged read, a wrapper that dropped this would keep paying the
+    // whole-object cost while looking correct.
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::File(store) => store.get_range(key, offset, length).await,
+            Self::MatrixObject(store) => store.get_range(key, offset, length).await,
         }
     }
 }

@@ -13229,7 +13229,7 @@ mod tests {
     /// Process-global counters, so this is `#[ignore]`d and run by name: a barrier from any
     /// other test running beside it would land in the same tally.
     ///
-    ///   cargo test -p temporalstore-rust --lib what_the_commit_window_buys_in_fsyncs_per_write -- --exact --ignored --nocapture --test-threads=1
+    ///   cargo test -p temporalstore-rust --lib wal::tests::what_the_commit_window_buys_in_fsyncs_per_write -- --exact --ignored --nocapture --test-threads=1
     #[test]
     #[ignore = "drives concurrent durable barriers and sleeps; run by name"]
     fn what_the_commit_window_buys_in_fsyncs_per_write() {

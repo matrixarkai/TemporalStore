@@ -1237,7 +1237,7 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
 ///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib what_the_slots_owned_element_headroom_costs -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::flat_block_list::what_the_slots_owned_element_headroom_costs -- --exact --nocapture
 #[test]
 fn what_the_slots_owned_element_headroom_costs() {
     use crate::engine::object_record::ObjectSlot;
@@ -1361,7 +1361,7 @@ fn what_the_slots_owned_element_headroom_costs() {
 ///
 /// rust-internal: measures container footprint, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib what_the_published_arm_cannot_see_in_container_capacity -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::flat_block_list::what_the_published_arm_cannot_see_in_container_capacity -- --exact --nocapture
 #[test]
 fn what_the_published_arm_cannot_see_in_container_capacity() {
     const SHIPPED_END: u32 = 1_023;
@@ -1452,7 +1452,7 @@ fn what_the_published_arm_cannot_see_in_container_capacity() {
 ///
 /// rust-internal: measures container footprint, no product behaviour
 ///
-///   cargo test -p temporalstore-rust --lib what_a_retain_leaves_in_the_block_lists_capacity -- --exact --nocapture
+///   cargo test -p temporalstore-rust --lib engine::tests::flat_block_list::what_a_retain_leaves_in_the_block_lists_capacity -- --exact --nocapture
 #[test]
 fn what_a_retain_leaves_in_the_block_lists_capacity() {
     const STEP: usize = crate::engine::state::BLOCK_LIST_GROWTH_STEP;

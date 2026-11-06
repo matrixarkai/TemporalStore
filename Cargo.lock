@@ -793,7 +793,7 @@ dependencies = [
 [[package]]
 name = "matrixobjectstore-rs"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=5e1ce6c2406fe2a3e3250e267c8d767e8914757d#5e1ce6c2406fe2a3e3250e267c8d767e8914757d"
+source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=ae89af9b61179d78697b6a93b516933796fe82bb#ae89af9b61179d78697b6a93b516933796fe82bb"
 dependencies = [
  "fs2",
  "libc",

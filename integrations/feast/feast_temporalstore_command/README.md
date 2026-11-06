@@ -1,8 +1,9 @@
 # TemporalStore as a Feast online store — over the native command surface
 
 A [Feast](https://github.com/feast-dev/feast) **online store** that talks to a
-TemporalStore data node over its own command surface: `POST /batch_execute`
-with `HashMultiSet` / `HashMultiGet` commands.
+TemporalStore data node over its own command surface: binary
+`POST /batch_write_msgpack` writes and `POST /batch_execute_msgpack` reads,
+with compatible JSON routing for older nodes.
 
 ## Which integration point this is
 
@@ -37,6 +38,8 @@ online_store:
   host: 127.0.0.1
   port: 17102
   shard_id: 1
+  max_batch_commands: 512
+  max_batch_request_bytes: 4194304
   skip_dedup: false          # see "Writes" below
   key_ttl_seconds: null      # see "Teardown" below
   write_feature_history: false
@@ -57,8 +60,8 @@ to want. It costs three things this one does not:
    serve, so it needs `metaserver` + `datanode` + `proxy` behind it.
 2. **One HTTP round trip per Redis command.** `serve_redis_proxy` issues one
    `/execute` per command it decodes, so a pipelined `HMGET` over N entities
-   becomes N sequential round trips. This package issues **one**
-   `/batch_execute` for the whole entity list, whatever N is.
+   becomes N sequential round trips. This package groups entity reads into
+   bounded `/batch_execute_msgpack` requests.
 3. **A byte-encoding workaround.** Feast's Redis store names a hash field by
    the 4-byte little-endian murmur3 of `"{view}:{feature}"` — arbitrary bytes.
    A hash field on the command surface is a `String`, so this package uses the
@@ -84,8 +87,11 @@ footprint ratio without knowing.
 
 ## Reads
 
-`online_read` over N entity keys is **one** `/batch_execute` carrying N
-`HashMultiGet` commands. The answers are positional; a short answer is refused
+`online_read` over N entity keys uses ordered binary
+`/batch_execute_msgpack` requests and responses bounded by command count and
+encoded request bytes. Nodes without that route are detected once per client
+and use `/batch_execute`. The answers are
+positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
 
@@ -94,25 +100,40 @@ empty values.
 
 ## Writes
 
-`online_write_batch` is one `/batch_execute` of `HashMultiSet` commands, plus
-one extra batched read first unless `skip_dedup` is set:
+`online_write_batch` uses bounded binary `/batch_write_msgpack` requests for
+`HashMultiSet` commands, plus a batched timestamp read first unless
+`skip_dedup` is set. Nodes without the binary write route are detected once
+per client and use `/batch_write` or `/batch_execute`:
 
 * **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then
-  write only the rows whose event time is newer. Two round trips for the whole
-  call, not two per row. This is what stops an out-of-order materialization
+  write only the rows whose event time is newer. The number of round trips is
+  bounded by batch size, not by the number of rows. This stops an out-of-order materialization
   moving a feature backwards, and it also deduplicates *within* the call, so
   two rows sharing an entity key keep the newer one regardless of which was
   queued last.
-* **`skip_dedup: true`** — one round trip. Right for an initial load or an
+* **`skip_dedup: true`** — skips the timestamp read. Right for an initial load or an
   append-only pipeline whose rows arrive in order.
 
 ### `write_feature_history`
 
 Off by default. When on, every value is *also* appended to a feature series
 keyed by `(view, entity, feature)` at its event timestamp, so the history
-behind the served value stays queryable through `FeatureQuery` and
-`FeatureAggQuery` — windowed aggregates over the same data the online store is
-serving, which a plain key-value online store cannot offer.
+behind the served value stays queryable through `FeatureQuery`. Scalar Int32
+and Int64 values also get an ASCII-integer projection for native windowed
+`FeatureAggQuery`; the raw serialized history remains unchanged. The adapter's
+`query_feature_aggregate` accepts `sum`, `avg`, `min`, `max`, `first`, `last`,
+`count`, and `events`. Numeric operations require an integer feature; counts
+read the raw series. Existing history written before the numeric projection
+needs backfilling before numeric queries can include it.
+
+`query_feature_aggregates` sends many windows through bounded ordered batches.
+The repeat-gated 1,024-entity benchmark measured a median 4,207 aggregate
+queries/s at batch 64, with every full-window and tail-window result verified.
+
+Repeated events for the same entity-feature within one Feast write batch are
+consolidated into one multi-point history command. The latest-value hash is
+also written once per entity, using the newest accepted event in that batch.
+This preserves every history timestamp without paying three commands per event.
 
 Serving reads do not change: `online_read` always answers from the hash. That
 is deliberate, and it is worth knowing why. `FeatureQuery` returns a window in
@@ -128,8 +149,9 @@ TemporalStore's command surface has **no key-space scan** — there is no `SCAN`
 what was written unless something recorded it.
 
 * `track_keys_for_teardown: true` records each entity key in a per-view set, so
-  `teardown` enumerates and deletes exactly the rows the view wrote. It costs
-  one extra write per row to a single hot key, so it is off by default.
+  `teardown` enumerates and deletes exactly the rows the view wrote. Tracking
+  is distributed over 1,024 deterministic sets to keep each container small.
+  It still costs one extra write per row, so it is off by default.
 * With it off, `teardown` **logs a warning and leaves the rows**. It does not
   report success for work it did not do. Set `key_ttl_seconds` if you want rows
   to age out on their own.
@@ -145,10 +167,10 @@ Partial is written as partial below. Nothing here is rounded up.
 
 | method | required? | status |
 | --- | --- | --- |
-| `online_write_batch` | **abstract** | **implemented** — one `/batch_execute`; parameters identical to the base class |
-| `online_read` | **abstract** | **implemented** — one `/batch_execute` for N entities |
+| `online_write_batch` | **abstract** | **implemented** — bounded `/batch_write` calls with a compatibility fallback; parameters identical to the base class |
+| `online_read` | **abstract** | **implemented** — bounded binary batch calls for N entities with a compatibility fallback |
 | `update` | **abstract** | **implemented** — nothing to create (the surface is schemaless); views being removed are swept through the teardown path |
-| `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which is off by default and **must not be combined with async commit** (see that option's docs: 17,500 of 20,000 rows were lost). With it off, teardown logs that it cannot enumerate instead of claiming success |
+| `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which spreads keys over 1,024 deterministic sets and is off by default because it adds one write per row. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
 | `online_read_async` | optional, **base raises** | **implemented** — without it `get_online_features_async` fails outright |
 | `online_write_batch_async` | optional, **base raises** | **implemented** |
 | `close` | optional, base is `pass` | **implemented** — the base no-op leaks a keep-alive connection per thread |
@@ -253,14 +275,15 @@ PYTEST_PLUGINS=feast_temporalstore_command.feast_online_store_creator \
 The command surface is asymmetric about byte payloads, and it matters to
 anyone reading a latency or bandwidth number off this path:
 
-* **Requests are base64.** `HashMultiSet.entries` carries the bytes codec, so
-  values go out base64 — a flat 1.33x.
-* **Responses are decimal arrays.** `CommandResponse::Values` carries no such
-  codec, so a byte comes back as the characters `104,`. That is roughly **3.8x
-  the payload** for protobuf-serialized feature values. A read's wire cost is
-  therefore about 4x its payload, and that is the **transport**, not the
-  engine. The client decodes both shapes, so a node that gains the codec later
-  needs no change here.
+* **Binary batch requests keep byte strings binary.** For 4,096 commands with
+  12,296-byte values, the encoded request stream measured 50,605,338 bytes,
+  versus 67,460,469 bytes through JSON: 24.99% fewer wire bytes. Median client
+  encoding time was 55.41 ms versus 273.01 ms for the exact same command set.
+* **Binary batch responses keep byte strings binary.** A measured response
+  carrying ten 12 KiB values is 123,551 bytes, versus 164,811 bytes through
+  JSON base64: 25.03% fewer wire bytes. The compatibility routes still encode
+  requests as JSON base64, and the client accepts JSON base64 and the older
+  decimal-array response shape.
 
 ## Tests
 
@@ -272,15 +295,9 @@ python integrations/feast/run_tests.py
 cd integrations/feast && PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_online_store.py
 ```
 
-**18 tests, no running store needed**: the transport is replaced with a
-recording stub and the assertions are about the commands this integration
-emits, which is the part that can be wrong in a way a live smoke test would not
-notice. Counts, as measured rather than estimated:
-
-| environment | collected | executed | skipped |
-| --- | --: | --: | --: |
-| Feast installed | 18 | 18 | 0 |
-| Feast absent | 18 | 9 | 9 |
+**The current offline run executes 52 checks:** 45 command-provider tests plus
+7 wire tests. The transport is replaced with a recording stub in that tier;
+the five-case Feast API conformance tier runs separately against a live node.
 
 The runner asserts the **executed** count, not the collected one, and that
 distinction is the whole guard: `unittest` collects a class decorated with
@@ -301,3 +318,10 @@ arm by an `online_store` block, so it measures any Feast online store,
 including the RESP path. See
 [`../../../docs/feast_online_store_benchmark.md`](../../../docs/feast_online_store_benchmark.md)
 for the method, what the harness refuses to report, and the measured tables.
+The accepted 4,096-entity long-sequence run served 12,296-byte values at
+12,289 async and 6,204 durable warm rows/s at batch 10; eight-reader throughput
+was 4,585 and 9,344 rows/s. The control drift was 2.1%, every sampled value was
+exact, and teardown returned both stores from 4,096 records to zero. The
+repeat-gated entity-scale sweep with a fixed 512-row hot set served 21,070 rows/s
+at 5,000 resident rows and about 10,400 rows/s at both 20,000 and 50,000 rows;
+repeat drift stayed below 2.9% and every value matched.
