@@ -187,6 +187,17 @@ and tail-window sums before timing, then returned the shard to zero records.
 These are same-store, local single-node measurements. They do not establish
 multi-node capacity or a comparison with another online store.
 
+The aggregate harness now also measures the bounded batch API at 64 queries
+per call. It discards one cache-fill control pass, runs the batch phase three
+times, reports the median, and marks the run void when any repeat differs from
+that median by more than 25%. One accepted run on the same 1,024 × 64 workload
+measured **4,207 aggregate queries/s**, with repeats 4,207 / 4,714 / 4,187
+(12.0% maximum median drift). Batch-call p50 was 13,327 us and p99 16,906 us;
+the eight-worker one-query path in that run served 1,914 queries/s. Every
+latest value, full and tail sum, and history count matched, and cleanup returned
+the shard to zero records. Other attempts whose controls or batch repeats moved
+beyond tolerance were rejected rather than averaged into this result.
+
 ## Measured: single-client read latency
 
 **Conditions for both tables below**, identical except the payload: 5,000
@@ -256,8 +267,9 @@ side.
 One dimension varied — entity count — with payload, hot set, read count, batch
 width and client concurrency all fixed, each point starting from an empty shard.
 
-**The read-latency half of this sweep is incomplete, and the reason is a defect
-this run found.** Only the 5,000-entity point produced usable read figures:
+The original read-latency half of this sweep was incomplete because the former
+tracking layout failed before the larger points could be measured. Only the
+5,000-entity point produced usable read figures at that time:
 
 | entities | control drift | outcome |
 |---:|---:|---|
@@ -290,8 +302,10 @@ and teardown still reads the former unsharded key for rolling upgrades.
 The focused benchmark at
 `integrations/feast/benchmarks/bench_teardown_tracking.py` drives the Feast
 command provider against a release node on a fresh tmpfs-backed shard. Batch
-width is 500, every value is read back and compared, and each point starts from
-empty directories:
+width is 500, every value is read back and compared, each point starts from
+empty directories, and warm serving uses a fixed 512-entity hot set. Each warm
+point runs three times and is rejected when throughput differs from its median
+by more than 25%:
 
 | entities | write | write rows/s | read rows/s | largest tracking set | missing or mismatched |
 |---:|---:|---:|---:|---:|---:|
@@ -306,6 +320,21 @@ average 48.83 members, so the largest container is close to the expected
 default because it adds one write per row, not because its container size is
 unbounded.
 
+The repeat-gated warm read sweep closes the earlier entity-count question.
+Every point uses batch 10, eight concurrent readers, 500 calls per repeat and
+the same 512 hot entities:
+
+| entities | warm rows/s | call p50 | call p99 | repeat throughput | max median drift |
+|---:|---:|---:|---:|---|---:|
+| 5,000 | 21,070 | 3,488 us | 8,562 us | 20,610 / 21,070 / 21,175 | 2.18% |
+| 20,000 | 10,428 | 6,852 us | 17,838 us | 10,428 / 10,463 / 10,364 | 0.62% |
+| 50,000 | 10,316 | 6,892 us | 20,060 us | 10,316 / 10,606 / 10,096 | 2.81% |
+
+There is a clear serving step between 5,000 and 20,000 resident rows, followed
+by a plateau: 20,000 and 50,000 have effectively the same throughput and p50.
+The measurement establishes the shape but does not assign a cause; distinguishing
+an index-residency boundary from a cache-tier boundary needs a capacity sweep.
+
 The benchmark's `--verify-teardown` arm also ran 1,000 rows through the full
 cleanup path in 0.184 s. A post-cleanup read found zero remaining feature rows
 and all 1,024 tracking sets contained zero members.
@@ -313,7 +342,8 @@ and all 1,024 tracking sets contained zero members.
 The historical readback failure at 20,000 and 50,000 is attributed below.
 Those runs had
 `track_keys_for_teardown` on against a shard configured for async commit, and
-that pair loses rows. It took four probes to get there, and the first three
+that pair lost rows before the WAL container lookup change. It took four probes
+to get there, and the first three
 were worthless for a specific reason worth recording: each of them left
 `async_storage` at the node's default of `false` while the failing arm had
 forced it to `true`, so all three varied the wrong dimension and "not
@@ -325,8 +355,8 @@ reproduced" meant only that they had not tested the configuration that failed.
 **Conditions.** Release build, a freshly created shard asserted at
 `total_records = 0`, 5,000 entities, hot set 512, batch width 10, 1,200 read
 calls per cell (12,000 rows), `track_keys_for_teardown` **off** — the default,
-and the only safe setting under async commit (see below). Every cell's rows were
-read back and byte-compared before any clock started, and every cell served
+so tracking work is outside these serving figures. Every cell's rows were read
+back and byte-compared before any clock started, and every cell served
 12,000/12,000. 16-core shared host, 1-minute load 6.1 falling to 4.4, one
 compiler running. Concurrency is coroutines over `online_read_async`.
 

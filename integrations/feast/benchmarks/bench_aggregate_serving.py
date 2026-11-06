@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -18,6 +19,7 @@ from feast import Entity, FeatureStore, FeatureView, Field, FileSource, RepoConf
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey
 from feast.protos.feast.types.Value_pb2 import Value
 from feast.types import Int64
+from feast.value_type import ValueType
 
 from feast_temporalstore_command import TemporalStoreCommandOnlineStore
 
@@ -71,6 +73,7 @@ def main() -> None:
     parser.add_argument("--write-batch", type=int, default=256)
     parser.add_argument("--reads", type=int, default=1000)
     parser.add_argument("--aggregate-batch", type=int, default=64)
+    parser.add_argument("--batch-repeats", type=int, default=3)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     parser.add_argument("--control-tolerance", type=float, default=0.25)
@@ -83,11 +86,12 @@ def main() -> None:
         args.write_batch,
         args.reads,
         args.aggregate_batch,
+        args.batch_repeats,
         args.concurrency,
     ) < 1:
         parser.error(
-            "entities, events, write-batch, reads, aggregate-batch, and concurrency "
-            "must be positive"
+            "entities, events, write-batch, reads, aggregate-batch, batch-repeats, "
+            "and concurrency must be positive"
         )
     if not 0 <= args.control_tolerance < 1:
         parser.error("control-tolerance must be in [0, 1)")
@@ -118,7 +122,9 @@ def main() -> None:
                 "timeout_seconds": args.timeout_seconds,
             },
         )
-        entity = Entity(name="eid", join_keys=["eid"])
+        entity = Entity(
+            name="eid", join_keys=["eid"], value_type=ValueType.INT64
+        )
         view = FeatureView(
             name="aggregate_view",
             entities=[entity],
@@ -206,6 +212,10 @@ def main() -> None:
                     [read_one(index) for index in range(min(args.entities, 128))], 0.50
                 )
 
+            # The first pass can materialize log-backed blocks into the serving
+            # cache. It is initialization, not a control observation, so warm
+            # once before comparing the two measured control samples.
+            control_sample()
             control_before = control_sample()
             with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
                 next_call = iter(range(args.reads))
@@ -224,9 +234,7 @@ def main() -> None:
                             pending.add(pool.submit(read_one, call_index))
                 read_seconds = time.perf_counter() - started
 
-            batch_latencies_us: List[float] = []
-            batched_reads = 0
-            batch_started = time.perf_counter()
+            batch_cases = []
             for start in range(0, args.reads, args.aggregate_batch):
                 call_indices = list(
                     range(start, min(start + args.aggregate_batch, args.reads))
@@ -249,16 +257,41 @@ def main() -> None:
                         args.events * index
                         + args.events * (args.events - 1) // 2
                     )
-                begin = time.perf_counter()
-                observed = adapter.query_feature_aggregates(config, view, queries)
-                batch_latencies_us.append((time.perf_counter() - begin) * 1_000_000)
-                if observed != expected:
-                    raise RuntimeError(
-                        f"batched aggregate differs for calls {start}.."
-                        f"{start + len(call_indices) - 1}"
+                batch_cases.append((start, call_indices, queries, expected))
+
+            batch_repeat_reads_per_second = []
+            batch_repeat_p50_us = []
+            batch_repeat_p99_us = []
+            for _repeat in range(args.batch_repeats):
+                batch_latencies_us: List[float] = []
+                batched_reads = 0
+                batch_started = time.perf_counter()
+                for start, call_indices, queries, expected in batch_cases:
+                    begin = time.perf_counter()
+                    observed = adapter.query_feature_aggregates(config, view, queries)
+                    batch_latencies_us.append(
+                        (time.perf_counter() - begin) * 1_000_000
                     )
-                batched_reads += len(call_indices)
-            batch_read_seconds = time.perf_counter() - batch_started
+                    if observed != expected:
+                        raise RuntimeError(
+                            f"batched aggregate differs for calls {start}.."
+                            f"{start + len(call_indices) - 1}"
+                        )
+                    batched_reads += len(call_indices)
+                batch_read_seconds = time.perf_counter() - batch_started
+                batch_repeat_reads_per_second.append(
+                    batched_reads / batch_read_seconds
+                )
+                batch_repeat_p50_us.append(percentile(batch_latencies_us, 0.50))
+                batch_repeat_p99_us.append(percentile(batch_latencies_us, 0.99))
+
+            batched_reads_per_second = statistics.median(
+                batch_repeat_reads_per_second
+            )
+            batch_control_drift = max(
+                abs(value - batched_reads_per_second) / batched_reads_per_second
+                for value in batch_repeat_reads_per_second
+            )
             control_after = control_sample()
             control_drift = abs(control_after - control_before) / control_before
 
@@ -277,17 +310,25 @@ def main() -> None:
                 "aggregate_p99_us": percentile(latencies_us, 0.99),
                 "read_seconds": read_seconds,
                 "aggregate_batch_size": args.aggregate_batch,
+                "aggregate_batch_repeats": args.batch_repeats,
                 "batched_aggregate_reads": batched_reads,
-                "batched_aggregate_reads_per_second": batched_reads
-                / batch_read_seconds,
-                "aggregate_batch_call_p50_us": percentile(batch_latencies_us, 0.50),
-                "aggregate_batch_call_p99_us": percentile(batch_latencies_us, 0.99),
-                "batch_read_seconds": batch_read_seconds,
+                "batched_aggregate_reads_per_second": batched_reads_per_second,
+                "batched_aggregate_repeat_reads_per_second": batch_repeat_reads_per_second,
+                "aggregate_batch_call_p50_us": statistics.median(
+                    batch_repeat_p50_us
+                ),
+                "aggregate_batch_call_p99_us": statistics.median(
+                    batch_repeat_p99_us
+                ),
+                "batch_control_drift": batch_control_drift,
+                "batch_read_seconds": batched_reads / batched_reads_per_second,
                 "verified_entities": args.entities,
                 "control_before_p50_us": control_before,
                 "control_after_p50_us": control_after,
                 "control_drift": control_drift,
-                "status": "void" if control_drift > args.control_tolerance else "valid",
+                "status": "void"
+                if max(control_drift, batch_control_drift) > args.control_tolerance
+                else "valid",
             }
         finally:
             commands = []

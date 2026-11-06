@@ -203,8 +203,8 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             # The dedup read is for out-of-order materialization. The fixture
             # arrives in order, so omit it from the measured write path.
             "skip_dedup": True,
-            # Async commit and key tracking together can lose writes. The
-            # harness knows every entity key and deletes those keys directly.
+            # The harness knows every entity key and deletes those keys
+            # directly, so tracking would add work without helping cleanup.
             "timeout_seconds": 120.0,
         }
     if arm == "ts_proxy":
