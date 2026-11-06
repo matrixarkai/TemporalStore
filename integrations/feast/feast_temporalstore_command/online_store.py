@@ -292,7 +292,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     stored.ParseFromString(raw)
                     stored_nanos[key] = stored.seconds * 1_000_000_000 + stored.nanos
 
-        latest_commands: Dict[str, Dict[str, Any]] = {}
+        latest_timestamps: Dict[str, Timestamp] = {}
+        latest_values: Dict[str, Dict[str, ValueProto]] = {}
+        latest_serialized_values: Dict[
+            str, List[Tuple[str, ValueProto, bytes]]
+        ] = {}
         history_points: Dict[str, List[Dict[str, Any]]] = {}
         numeric_points: Dict[str, List[Dict[str, Any]]] = {}
         expiry_keys: Dict[str, None] = {}
@@ -323,26 +327,17 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 continue
             queued_nanos[hash_key] = event_nanos
 
-            serialized_values = [
-                (feature_name, value, value.SerializeToString())
-                for feature_name, value in values.items()
-            ]
-            entries = [(ts_field, proto_ts.SerializeToString())]
-            for feature_name, _value, serialized_value in serialized_values:
-                entries.append(
-                    (
-                        _feature_field(view_name, feature_name),
-                        serialized_value,
-                    )
-                )
             # A Feast batch can contain many events for one entity. Only its
             # newest accepted row belongs in the latest-value hash; history
             # below retains every accepted timestamp.
-            latest_commands[hash_key] = {
-                "kind": "hash_multi_set", "key": hash_key, "entries": entries
-            }
+            latest_timestamps[hash_key] = proto_ts
 
             if online_config.write_feature_history:
+                serialized_values = [
+                    (feature_name, value, value.SerializeToString())
+                    for feature_name, value in values.items()
+                ]
+                latest_serialized_values[hash_key] = serialized_values
                 timestamp_ms = proto_ts.seconds * 1000 + proto_ts.nanos // 1_000_000
                 for feature_name, value, serialized_value in serialized_values:
                     history_key = self._history_key_from_hex(
@@ -365,6 +360,8 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                                 "value": str(getattr(value, numeric_field)).encode("ascii"),
                             }
                         )
+            else:
+                latest_values[hash_key] = values
 
             if online_config.key_ttl_seconds:
                 expiry_keys[hash_key] = None
@@ -372,7 +369,22 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 tracked_keys.append(hash_key)
             written += 1
 
-        commands: List[Dict[str, Any]] = list(latest_commands.values())
+        commands: List[Dict[str, Any]] = []
+        for hash_key, proto_ts in latest_timestamps.items():
+            serialized_values = latest_serialized_values.get(hash_key)
+            if serialized_values is None:
+                serialized_values = [
+                    (feature_name, value, value.SerializeToString())
+                    for feature_name, value in latest_values[hash_key].items()
+                ]
+            entries = [(ts_field, proto_ts.SerializeToString())]
+            entries.extend(
+                (_feature_field(view_name, feature_name), serialized_value)
+                for feature_name, _value, serialized_value in serialized_values
+            )
+            commands.append(
+                {"kind": "hash_multi_set", "key": hash_key, "entries": entries}
+            )
         commands.extend(
             {"kind": "feature_append", "key": key, "points": points}
             for key, points in history_points.items()

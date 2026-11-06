@@ -845,6 +845,41 @@ class OnlineStoreTest(unittest.TestCase):
             encode_bytes(ValueProto(int64_val=1).SerializeToString()),
         )
 
+    def test_latest_only_writes_serialize_only_the_winning_row(self):
+        class CountingValue:
+            def __init__(self, number):
+                self.number = number
+                self.serialize_calls = 0
+
+            def SerializeToString(self):
+                self.serialize_calls += 1
+                return str(self.number).encode("ascii")
+
+        client = self._install()
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = False
+        values = [CountingValue(number) for number in (1, 2, 3)]
+        base = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [
+                (
+                    self._entity_key(1),
+                    {"trips": value},
+                    base.replace(month=index + 1),
+                    None,
+                )
+                for index, value in enumerate(values)
+            ],
+            None,
+        )
+
+        self.assertEqual([value.serialize_calls for value in values], [0, 0, 1])
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(dict(commands[0]["entries"])["stats:trips"], encode_bytes(b"3"))
+
     def test_a_read_is_one_round_trip_and_answers_positionally(self):
         from google.protobuf.timestamp_pb2 import Timestamp
 
