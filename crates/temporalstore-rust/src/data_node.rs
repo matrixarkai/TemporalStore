@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -2003,7 +2003,8 @@ struct DataNodeRuntimeInner {
     next_job_id: AtomicU64,
     /// Optional durable shared-storage sink; when set, accepted writes are
     /// mirrored to shared storage for cross-restart / local-loss recovery.
-    shared_wal_sink: Mutex<Option<Arc<dyn SharedWalSink>>>,
+    /// A read guard spans unmirrored execution so attachment cannot race a moved request.
+    shared_wal_sink: RwLock<Option<Arc<dyn SharedWalSink>>>,
     /// Who answers "do I lead this shard". `None` means nobody has been told to answer, which
     /// reads as [`ShardLeadership::Unknown`] and NOT as "not the leader".
     shard_leadership: Mutex<Option<Arc<dyn ShardLeadershipSource>>>,
@@ -2310,7 +2311,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: Mutex::new(None),
+            shared_wal_sink: RwLock::new(None),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2361,15 +2362,16 @@ impl DataNodeRuntime {
     }
 
     pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
+        let mut shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .write()
+            .expect("shared wal sink lock poisoned");
         // The engine emits deletions of its own -- eviction drops, expiry sweeps -- that never
         // pass through this layer. Give it the same sink, or those deletions reach the local
         // log alone and a successor replaying the shared log resurrects the keys.
         self.inner.engine.set_maintenance_wal_mirror(Arc::clone(&sink));
-        *self
-            .inner
-            .shared_wal_sink
-            .lock()
-            .expect("shared wal sink lock poisoned") = Some(sink);
+        *shared_wal_sink = Some(sink);
     }
 
     fn mirror_write(&self, shard_id: ShardId, command: &Command) {
@@ -2379,7 +2381,7 @@ impl DataNodeRuntime {
         let sink = self
             .inner
             .shared_wal_sink
-            .lock()
+            .read()
             .expect("shared wal sink lock poisoned")
             .clone();
         if let Some(sink) = sink {
@@ -2396,7 +2398,7 @@ impl DataNodeRuntime {
         let sink = self
             .inner
             .shared_wal_sink
-            .lock()
+            .read()
             .expect("shared wal sink lock poisoned")
             .clone();
         let Some(sink) = sink else {
@@ -2466,7 +2468,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: Mutex::new(None),
+            shared_wal_sink: RwLock::new(None),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2582,6 +2584,25 @@ impl DataNodeRuntime {
                 response: CommandResponse::Empty,
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_key = if is_write_command(&request.command) {
+                command_key(&request.command)
+            } else {
+                None
+            };
+            let response = self.inner.engine.execute(request);
+            if response.status.ok {
+                mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.execute(request.clone());
         if response.status.ok && is_write_command(&request.command) {
             mark_dirty(
@@ -2608,6 +2629,25 @@ impl DataNodeRuntime {
                 },
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_key = if is_write_command(&request.command) {
+                command_key(&request.command)
+            } else {
+                None
+            };
+            let response = self.inner.engine.execute_checked(request);
+            if response.status.ok {
+                mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.execute_checked(request.clone());
         if response.status.ok && is_write_command(&request.command) {
             mark_dirty(
@@ -2631,6 +2671,24 @@ impl DataNodeRuntime {
                 responses: Vec::new(),
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_keys = write_command_keys(&request.commands);
+            let response = self.inner.engine.batch_execute(request);
+            mark_dirty_for_successful_keys(
+                &self.inner.dirty,
+                shard_id,
+                &dirty_keys,
+                &response.responses,
+            );
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.batch_execute(request.clone());
         mark_dirty_for_successful_commands(
             &self.inner.dirty,
@@ -2708,6 +2766,26 @@ impl DataNodeRuntime {
                 },
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_keys = write_command_keys(&request.commands);
+            let response = self.inner.engine.batch_execute_checked(request);
+            if response.status.ok {
+                mark_dirty_for_successful_keys(
+                    &self.inner.dirty,
+                    shard_id,
+                    &dirty_keys,
+                    &response.response.responses,
+                );
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.batch_execute_checked(request.clone());
         if response.status.ok {
             mark_dirty_for_successful_commands(
