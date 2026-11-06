@@ -250,7 +250,7 @@ jobs:
             meta::tests::a_record_that_does_not_parse_with_records_after_it_is_still_an_error \
             meta::tests::a_complete_record_with_a_bad_checksum_is_refused_and_not_truncated \
             shared_store::tests::the_widened_object_readers_accept_both_shapes \
-            shared_store::tests::the_object_writer_is_json_until_asked_and_the_reader_never_cares \
+            shared_store::tests::the_object_writers_are_binary_and_planted_json_objects_are_still_read \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
             shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
