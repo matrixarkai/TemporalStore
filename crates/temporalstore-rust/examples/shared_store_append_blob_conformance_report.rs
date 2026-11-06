@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
+// The read-cache counters this report reads are named for PAGES on the store's side and for
+// BLOCKS here, because `page` and `block` are one tier under two spellings and `block` is the
+// canonical one in this crate. That is why the fields below read `*_pages` into `*_blocks`.
+//
+// `rustc` suggests `*_bytes` for the missing `*_blocks`, which compiles and is WRONG: it would
+// file a byte count in a field every reader takes for a count of pages. This target carries
+// `required-features = ["matrixobject"]`, so no default `cargo check --all-targets` builds it and
+// nothing caught the three broken field names until something built it with the feature on.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -878,11 +886,11 @@ fn matrixobject_cache_stats(store: &MatrixObjectObjectStore) -> MatrixObjectCach
         //
         // The report's own keys stay spelled `_blocks` because they are an output surface and
         // the quantity has not changed; only the upstream field's name did.
-        direct_fill_blocks: stats.direct_fill_blocks,
+        direct_fill_blocks: stats.direct_fill_pages,
         direct_fill_bytes: stats.direct_fill_bytes,
-        compressed_fill_blocks: stats.compressed_fill_blocks,
+        compressed_fill_blocks: stats.compressed_fill_pages,
         compressed_fill_bytes: stats.compressed_fill_bytes,
-        ec_fill_blocks: stats.ec_fill_blocks,
+        ec_fill_blocks: stats.ec_fill_pages,
         ec_fill_bytes: stats.ec_fill_bytes,
         pressure: stats.pressure,
     }

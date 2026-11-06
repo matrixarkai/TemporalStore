@@ -7864,153 +7864,43 @@ mod tests {
     }
 
     // ---- Networked matrixobject lazy data-follow ----
-    // Faithful in-process loopback server speaking the SAME `MORP1` TcpStream
-    // request/response frames MatrixObjectHttpStore speaks, so the networked
-    // lazy-recovery path is exercised end to end over real sockets (no enterprise
-    // crate needed). Each connection is served on its own thread and loops over
-    // pooled/keep-alive requests until the client drops it.
-    const MOCK_RPC_MAGIC: &[u8; 5] = b"MORP1";
+    //
+    // SERVED BY THE REAL DOOR, not a mock of a protocol nobody ships.
+    //
+    // This used to stand up a loopback server speaking `MORP1`, a bespoke binary framing that
+    // `MatrixObjectHttpStore` spoke and that NOTHING else implemented -- so these tests passed
+    // against a fiction while `TS_SHARED_STORE_URI=matrixobject://host:port` could not work
+    // against anything real. The client speaks S3 now, so the fixture is matrixobject's own
+    // `ObjectHttpServer`, in this process on an ephemeral port. These tests therefore exercise
+    // the server an operator actually runs.
+    //
+    // Feature-gated because the server comes from the optional dependency. That is a real
+    // reduction in what a default-feature run covers, and it is the right trade: what it
+    // covered before was a protocol with no counterpart.
+    #[cfg(feature = "matrixobject")]
+    fn spawn_matrixobject_object_server() -> (matrixobjectstore_rs::net::ServerHandle, String) {
+        use matrixobjectstore_rs::net::{ObjectHttpServer, ServerOptions};
+        use matrixobjectstore_rs::{MatrixObjectStore, StoreOptions};
 
-    fn spawn_mock_matrixobject_store() -> String {
-        use std::collections::BTreeMap;
-        use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let uri = format!("matrixobject://{addr}");
-        let store: Arc<Mutex<BTreeMap<String, Vec<u8>>>> = Arc::default();
-
-        fn serve_conn(mut stream: TcpStream, store: Arc<Mutex<BTreeMap<String, Vec<u8>>>>) {
-            loop {
-                let mut header = [0u8; 18];
-                if stream.read_exact(&mut header).is_err() {
-                    return; // client dropped the pooled connection
-                }
-                if &header[..5] != MOCK_RPC_MAGIC {
-                    return;
-                }
-                let op = header[5];
-                let key_len = u32::from_le_bytes(header[6..10].try_into().unwrap()) as usize;
-                let value_len = u64::from_le_bytes(header[10..18].try_into().unwrap()) as usize;
-                let mut key_bytes = vec![0u8; key_len];
-                if stream.read_exact(&mut key_bytes).is_err() {
-                    return;
-                }
-                let mut value = vec![0u8; value_len];
-                if stream.read_exact(&mut value).is_err() {
-                    return;
-                }
-                let key = String::from_utf8_lossy(&key_bytes).to_string();
-                let (status, body) = {
-                    let mut map = store.lock().unwrap();
-                    match op {
-                        1 => {
-                            // PUT
-                            map.insert(key, value);
-                            (0u8, Vec::new())
-                        }
-                        2 => match map.get(&key) {
-                            // GET
-                            Some(bytes) => (0u8, bytes.clone()),
-                            None => (1u8, key.into_bytes()),
-                        },
-                        3 => {
-                            // DELETE
-                            map.remove(&key);
-                            (0u8, Vec::new())
-                        }
-                        4 => {
-                            // LIST prefix
-                            let mut keys: Vec<String> =
-                                map.keys().filter(|k| k.starts_with(&key)).cloned().collect();
-                            keys.sort();
-                            (0u8, keys.join("\n").into_bytes())
-                        }
-                        5 => {
-                            // LIST_AFTER prefix=key, after=value
-                            let after = String::from_utf8_lossy(&value).to_string();
-                            let mut keys: Vec<String> = map
-                                .keys()
-                                .filter(|k| k.starts_with(&key) && k.as_str() > after.as_str())
-                                .cloned()
-                                .collect();
-                            keys.sort();
-                            (0u8, keys.join("\n").into_bytes())
-                        }
-                        6 => {
-                            // GET_MANY: value = keys joined by '\n'
-                            let mut out = Vec::new();
-                            let mut entries = Vec::new();
-                            for k in String::from_utf8_lossy(&value)
-                                .split('\n')
-                                .filter(|k| !k.is_empty())
-                            {
-                                if let Some(bytes) = map.get(k) {
-                                    entries.push((k.to_string(), bytes.clone()));
-                                }
-                            }
-                            out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-                            for (k, v) in entries {
-                                out.extend_from_slice(&(k.len() as u32).to_le_bytes());
-                                out.extend_from_slice(&(v.len() as u64).to_le_bytes());
-                                out.extend_from_slice(k.as_bytes());
-                                out.extend_from_slice(&v);
-                            }
-                            (0u8, out)
-                        }
-                        7 => {
-                            // PUT_MANY: value = count u32 + [key_len u32, value_len u64, key, value]*
-                            if value.len() >= 4 {
-                                let count =
-                                    u32::from_le_bytes(value[0..4].try_into().unwrap()) as usize;
-                                let mut off = 4usize;
-                                for _ in 0..count {
-                                    let kl = u32::from_le_bytes(
-                                        value[off..off + 4].try_into().unwrap(),
-                                    ) as usize;
-                                    off += 4;
-                                    let vl = u64::from_le_bytes(
-                                        value[off..off + 8].try_into().unwrap(),
-                                    ) as usize;
-                                    off += 8;
-                                    let k =
-                                        String::from_utf8_lossy(&value[off..off + kl]).to_string();
-                                    off += kl;
-                                    let v = value[off..off + vl].to_vec();
-                                    off += vl;
-                                    map.insert(k, v);
-                                }
-                            }
-                            (0u8, Vec::new())
-                        }
-                        _ => (2u8, b"unknown op".to_vec()),
-                    }
-                };
-                let mut resp = Vec::with_capacity(14 + body.len());
-                resp.extend_from_slice(MOCK_RPC_MAGIC);
-                resp.push(status);
-                resp.extend_from_slice(&(body.len() as u64).to_le_bytes());
-                resp.extend_from_slice(&body);
-                if stream.write_all(&resp).is_err() {
-                    return;
-                }
-                let _ = stream.flush();
-            }
-        }
-
-        std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                match conn {
-                    Ok(stream) => {
-                        let store = Arc::clone(&store);
-                        std::thread::spawn(move || serve_conn(stream, store));
-                    }
-                    Err(_) => return,
-                }
-            }
-        });
-        uri
+        let mut store = MatrixObjectStore::new(StoreOptions::default()).expect("the store starts");
+        store
+            .create_bucket(temporalstore_snapshot::object_store::DEFAULT_HTTP_BUCKET)
+            .expect("the bucket the client will address");
+        let server = ObjectHttpServer::bind(
+            "127.0.0.1:0",
+            Arc::new(Mutex::new(store)),
+            ServerOptions {
+                worker_threads: 2,
+                read_timeout: Duration::from_secs(10),
+                write_timeout: Duration::from_secs(10),
+                accept_poll_interval: Duration::from_millis(5),
+                ..ServerOptions::default()
+            },
+        )
+        .expect("binding loopback on an ephemeral port");
+        let handle = server.spawn().expect("the accept threads start");
+        let uri = format!("matrixobject://{}", handle.local_addr);
+        (handle, uri)
     }
 
     fn networked_replicator(
@@ -8025,11 +7915,100 @@ mod tests {
         (store, replicator)
     }
 
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn an_append_over_the_shared_path_costs_one_request_not_two() {
+        // WHAT THE SHARED PATH SPENDS OVER A NETWORK IS REQUESTS, NOT ONLY BYTES.
+        //
+        // The byte envelope of a WAL frame has been measured down to where its only remaining
+        // lever is a batch header, but an append that asks the store how long the object is
+        // before writing to it spends two round trips per record. The object's new length
+        // comes back from the append itself, so after the first one this client already knows
+        // the next offset and the ask is redundant.
+        //
+        // Asserted as a COUNT rather than a duration, deliberately: wall-clock on a shared box
+        // cannot tell a saved round trip from a quiet neighbour, and a count can.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let key = "shared/wal/one-request-per-append";
+        const RECORDS: usize = 16;
+
+        let mut expected_offset = 0u64;
+        for index in 0..RECORDS {
+            let body = format!("record-{index:02}").into_bytes();
+            let written = body.len() as u64;
+            let receipt = store
+                .append_blob(key, Bytes::from(body))
+                .await
+                .expect("the append should publish");
+            // THE RECEIPT MUST DESCRIBE WHERE THE BYTES WENT. A cached offset is only safe
+            // because the server appends at the offset it is given or refuses, so if the
+            // cache were ever believed over the server this is what would drift.
+            assert_eq!(
+                receipt.start_offset, expected_offset,
+                "append {index} reports starting at {} and should be {expected_offset}",
+                receipt.start_offset
+            );
+            expected_offset += written;
+            assert_eq!(receipt.end_offset, expected_offset, "append {index} end");
+            assert_eq!(
+                receipt.object_length, expected_offset,
+                "append {index} object length"
+            );
+        }
+
+        let after_appends = store.requests_issued();
+
+        // AND THE BYTES ARE REALLY THERE, IN ORDER -- every assertion above would hold of a
+        // store that reported plausible offsets and wrote nothing.
+        let whole = store.get(key).await.expect("the object should read back");
+        let mut want: Vec<u8> = Vec::new();
+        for index in 0..RECORDS {
+            want.extend_from_slice(format!("record-{index:02}").as_bytes());
+        }
+        assert_eq!(
+            whole.as_ref(),
+            want.as_slice(),
+            "the appended records are not what the object holds"
+        );
+
+        // ---- THE POINT: N appends cost N + 1 requests, not 2N.
+        //
+        // One HEAD, because the object does not exist when the first append runs and nothing
+        // is known about it, then one PUT per record.
+        let expected = 1 + RECORDS as u64;
+        assert_eq!(
+            after_appends, expected,
+            "{RECORDS} appends spent {after_appends} requests and should spend {expected}: one \
+             ask for an object this client had never seen, then one write each. {} would mean \
+             the length is being asked for every time again",
+            2 * RECORDS
+        );
+
+        // ---- CONTROL: a client that has NOT seen the object pays the ask.
+        //
+        // Without this, the assertion above is satisfied by a store that never asks at all --
+        // which would be a store that guesses, and a guessed offset is how an append lands
+        // somewhere other than the end.
+        let cold = MatrixObjectHttpStore::new(&uri).unwrap();
+        cold.append_blob(key, Bytes::from_static(b"cold"))
+            .await
+            .expect("a cold client should still append");
+        assert_eq!(
+            cold.requests_issued(),
+            2,
+            "a client with no remembered length must ask first and then write, which is two \
+             requests; {} means it is not asking at all",
+            cold.requests_issued()
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_get_blocking_round_trips_over_the_socket() {
         // The sync accessor the lazy slab source relies on must round-trip a real
         // object across the networked MORP1 wire, and surface NotFound for absent keys.
-        let uri = spawn_mock_matrixobject_store();
+        let (_object_server, uri) = spawn_matrixobject_object_server();
         let store = MatrixObjectHttpStore::new(&uri).unwrap();
         store
             .put("k/one", Bytes::from_static(b"hello-networked"))
@@ -8045,13 +8024,14 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_reads_old_block_on_demand() {
         // Conformance lazy data-follow over the NETWORK: a fresh node with only
         // the networked matrixobject store restores the served index + a slab ADDRESS
         // map (no slab bytes), replays the WAL tail, and fetches an old (pre-checkpoint)
         // slab ON DEMAND over the socket the first time a read needs it.
-        let uri = spawn_mock_matrixobject_store();
+        let (_object_server, uri) = spawn_matrixobject_object_server();
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -8168,10 +8148,11 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_replays_only_wal_tail() {
         // Networked WAL-tail replay is O(recent): applied == post-checkpoint records.
-        let uri = spawn_mock_matrixobject_store();
+        let (_object_server, uri) = spawn_matrixobject_object_server();
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -8239,11 +8220,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn matrixobject_networked_lazy_restore_no_checkpoint_falls_back_to_full_replay() {
         // Backward compatible over the network: with no checkpoint published, the lazy
         // restore reports CheckpointNotFound and the caller replays the full shared WAL.
-        let uri = spawn_mock_matrixobject_store();
+        let (_object_server, uri) = spawn_matrixobject_object_server();
         let dir = tempfile::tempdir().unwrap();
         let (_store, replicator) = networked_replicator(&uri);
         for (wal_index, key, value) in
