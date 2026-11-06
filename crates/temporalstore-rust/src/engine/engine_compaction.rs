@@ -699,11 +699,16 @@ fn read_block_bytes_for_compaction(
     // A WHOLE OBJECT. Compaction walks the model maps, and for the container kinds those maps
     // are keyed by the element's VALUE (a set's member bytes, a zset's member, a list's
     // sequence) rather than by the component the index filed the block under -- which is a
-    // rendering of it: `hex::encode(member)` for a set, `{score:016x}` before that hex for a
-    // zset, `{:016x}` of the biased sequence for a list. There is no shared renderer to call;
-    // each write site spells it out inline. Re-spelling them here would be a second copy of
-    // four rules, free to drift from the four originals, and a component that drifted would
-    // be indistinguishable from this `None` in its effect.
+    // rendering of it: `member_component(member)` for a set and for a zset alike -- one tag byte
+    // then the member, the score having left the zset string -- and `{:016x}` of the biased
+    // sequence for a list.
+    //
+    // SET AND ZSET DO HAVE A SHARED RENDERER NOW, which this comment used to deny: both reach
+    // `member_component` through `set_component` and `zset_component`. List and hash are still
+    // spelled inline, so the drift argument below holds over those two rather than over all
+    // four. Re-spelling them here would be a second copy of those rules, free to drift from the
+    // originals, and a component that drifted would be indistinguishable from this `None` in its
+    // effect -- which is why the decision is unchanged even though one of its two reasons is.
     //
     // WHAT IT COSTS, stated rather than implied: the in-log fallback inside `read_block_bytes`
     // will not resolve a container ELEMENT block whose only durable copy is still a WAL record,

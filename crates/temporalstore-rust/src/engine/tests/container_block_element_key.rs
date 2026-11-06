@@ -69,11 +69,17 @@ use crate::engine::container_blocks::{
 };
 
 /// Every spelling, so a test over "all of them" cannot silently stop covering one that is added.
-const EVERY_SPELLING: [ElementKeySpelling; 4] = [
+const EVERY_SPELLING: [ElementKeySpelling; 6] = [
     ElementKeySpelling::Utf8,
     ElementKeySpelling::Hex,
     ElementKeySpelling::ScoreThenMember,
     ElementKeySpelling::BiasedWord,
+    // The two spellings no kind emits YET. They are in this ladder anyway, because the round trip
+    // is the property the reader half rests on and a spelling that is not in the ladder is a
+    // spelling nothing checks: by the time a writer is flipped to emit one, the check has to
+    // already be here rather than arrive with the flip.
+    ElementKeySpelling::Name,
+    ElementKeySpelling::ScoreThenMemberName,
 ];
 
 /// Every kind that frames its pages, beside the spelling it uses.
@@ -159,6 +165,13 @@ fn component_for(spelling: ElementKeySpelling, width: usize, index: usize) -> St
             key
         }
         ElementKeySpelling::BiasedWord => (index as u64).to_be_bytes().to_vec(),
+        ElementKeySpelling::Name => bytes_of(width, index),
+        ElementKeySpelling::ScoreThenMemberName => {
+            let mut key = Vec::new();
+            key.extend_from_slice(&(0x8000_0000_0000_0000_u64 + index as u64).to_be_bytes());
+            key.extend_from_slice(&bytes_of(width, index));
+            key
+        }
     };
     component_from_element_key(spelling, &key)
         .expect("a key built by this fixture spells a component")
@@ -221,8 +234,8 @@ fn a_component_survives_the_round_trip_to_a_block_key_for_every_spelling() {
         }
     }
     assert!(
-        checked >= 4 * 3,
-        "the round trip exercised {checked} components, which is too few to cover four spellings"
+        checked >= EVERY_SPELLING.len() * 3,
+        "the round trip exercised {checked} components, which is too few to cover every spelling"
     );
     println!("  round trips checked: {checked}");
 }
@@ -462,7 +475,7 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
         }
         cases += 1;
     }
-    assert_eq!(4, cases, "every spelling must be covered");
+    assert_eq!(EVERY_SPELLING.len(), cases, "every spelling must be covered");
 }
 
 /// A VALUE THAT IS THE KEY'S TAIL IS NOT STORED TWICE, AND ONE THAT IS NOT IS.
@@ -701,7 +714,7 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
         );
         covered += 1;
     }
-    assert_eq!(4, covered, "every spelling must be covered");
+    assert_eq!(EVERY_SPELLING.len(), covered, "every spelling must be covered");
 }
 
 /// A FRAME WHOSE SPELLING CANNOT NAME THE COMPONENT ASKED FOR ANSWERS ABSENT, NOT THE FIRST ITEM.
@@ -1066,7 +1079,16 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     // exactly the defect the shared helper exists to prevent, and it would show only here.
     let stored: [(&str, &str, String); 4] = [
         ("hash", "hash-key", fields[0].0.clone()),
-        ("set", "set-key", hex::encode(&members[0])),
+        (
+            "set",
+            "set-key",
+            // BY THE ENGINE'S OWN FUNCTION, for the reason the zset arm below already gives. This
+            // was a hand-written `hex::encode` and it went stale the moment the set writers
+            // flipped: the fixture asked for a component no write site files any more, so the
+            // lookup found no block and the test failed on a missing block rather than on the
+            // spelling it is about.
+            crate::engine::execute_on_shard::set_component(&members[0]),
+        ),
         (
             "zset",
             "zset-key",

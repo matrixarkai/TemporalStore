@@ -8649,7 +8649,7 @@ pub(super) fn next_block_index_for_object(
 /// three times, because several copies of a condition is how most of them come to agree and the
 /// rest do not, which this series has already hit with two filers disagreeing.
 ///
-/// `hex::encode` for a set member and for a zset member, base sixteen plus the two's-complement
+/// `member_component` for a set member and for a zset member, base sixteen plus the two's-complement
 /// bias for a list sequence, the field itself for a hash -- each the SAME rendering the write path
 /// files. A component this cannot parse answers `None` rather than defaulting to the empty member
 /// or to sequence zero: an unreadable name names nothing, which is the rule every arm of the
@@ -8664,11 +8664,11 @@ pub(super) fn resident_component_address<'a>(
     match model_id {
         "hash" => shard.hashes.get(object_key)?.get(component),
         "set" => {
-            let member = hex::decode(component).ok()?;
+            let member = super::container_blocks::member_from_component(component)?;
             shard.sets.get(object_key)?.get(&member)
         }
         "zset" => {
-            let member = hex::decode(component).ok()?;
+            let member = super::container_blocks::member_from_component(component)?;
             shard
                 .zsets
                 .get(object_key)?

@@ -1030,6 +1030,11 @@ impl TemporalEngine {
                 (key, size, deadline)
             })
             .collect();
+        let feature_trimmed_membership = command_will_trim_feature_membership(
+            &command,
+            shard,
+            config.feature_max_size,
+        );
 
         let outcome = execute_on_shard(
             &self.cache,
@@ -1471,7 +1476,8 @@ impl TemporalEngine {
                 // key, so appending to a node that held 850 events serialized all 850 -- 8,647 of
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
-                let key_state_changed = delta_key_state_change(shard, &membership_before);
+                let key_state_changed = feature_trimmed_membership
+                    || delta_key_state_change(shard, &membership_before);
                 let mut key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
@@ -3646,6 +3652,25 @@ fn command_upsert_components(
                     .collect(),
             )
         }
+        Command::FeatureAppendWithPolicy { key, points, .. } => {
+            let mut seen = std::collections::BTreeSet::new();
+            Some(
+                points
+                    .iter()
+                    .filter(|point| seen.insert(point.timestamp_ms))
+                    .map(|point| {
+                        (
+                            "feature",
+                            key.clone(),
+                            Some(crate::engine::packed_blocks::timestamped_component(
+                                point.timestamp_ms,
+                                None,
+                            )),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         // A zset add writes exactly one component, and it is derivable from the command. Declaring
         // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
@@ -3655,7 +3680,11 @@ fn command_upsert_components(
             Some(crate::engine::execute_on_shard::zset_component(member)),
         )]),
         Command::SetAdd { key, member } => {
-            Some(vec![("set", key.clone(), Some(hex::encode(member)))])
+            Some(vec![(
+                "set",
+                key.clone(),
+                Some(crate::engine::execute_on_shard::set_component(member)),
+            )])
         }
         // A push files its block under its sequence number, which is only knowable once the
         // write has landed: post-apply the pushed element is the list's FIRST entry for a left
@@ -3726,10 +3755,10 @@ fn collect_upsert_index_items(
                         .and_then(|series| series.get(at))
                         .cloned()
                 }),
-            // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
-            // -- so the member the map is keyed by is recoverable from the whole of it.
-            ("zset", Some(component)) => hex::decode(component)
-                .ok()
+            // `zset_component` is `member_component(member)` -- one tag byte then the member,
+            // with the score long since off this string -- so the member the map is keyed by is
+            // recoverable from the whole of it, in EITHER spelling, by `member_from_component`.
+            ("zset", Some(component)) => container_blocks::member_from_component(component)
                 .and_then(|member| {
                     shard
                         .zsets
@@ -3737,7 +3766,7 @@ fn collect_upsert_index_items(
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
                 }),
-            // `hex::encode(member)` is the component a set add files its block under, so
+            // `set_component(member)` is the component a set add files its block under, so
             // the member the map is keyed by is recoverable from the component itself.
             // `{biased:016x}` of the entry's sequence, so the key the list map is keyed by
             // is recoverable from the component it was filed under.
@@ -3751,8 +3780,7 @@ fn collect_upsert_index_items(
                         .and_then(|entries| entries.get(&seq))
                         .cloned()
                 }),
-            ("set", Some(component)) => hex::decode(component)
-                .ok()
+            ("set", Some(component)) => container_blocks::member_from_component(component)
                 .and_then(|member| {
                     shard
                         .sets
@@ -3817,7 +3845,10 @@ fn collect_upsert_index_items(
 /// keep restating the whole object until the component is carried out of the arm.
 fn command_removed_component(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
-        Command::SetRemove { member, .. } => Some(("set", Some(hex::encode(member)))),
+        Command::SetRemove { member, .. } => Some((
+            "set",
+            Some(crate::engine::execute_on_shard::set_component(member)),
+        )),
         Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
         _ => None,
     }
@@ -3975,6 +4006,43 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_entities().get(key).map_or(0, |v| v.len())
 }
 
+/// Whether applying this command can exceed the retained feature count and remove timestamps.
+/// A trim can replace one timestamp with another without changing the series length, so the
+/// ordinary before/after membership count cannot identify it.
+fn command_will_trim_feature_membership(
+    command: &Command,
+    shard: &ShardState,
+    feature_max_size: usize,
+) -> bool {
+    let (key, points, may_add) = match command {
+        Command::FeatureAppend { key, points } => (key, points, true),
+        Command::FeatureAppendWithPolicy { key, points, policy } => (
+            key,
+            points,
+            matches!(
+                policy,
+                FeatureWritePolicy::Upsert | FeatureWritePolicy::InsertIfAbsent
+            ),
+        ),
+        _ => return false,
+    };
+    let series = shard.features().get(key.as_str());
+    let current_len = series.map_or(0, |series| series.len());
+    if current_len > feature_max_size {
+        return true;
+    }
+    if !may_add {
+        return false;
+    }
+    let mut new_timestamps = std::collections::BTreeSet::new();
+    for point in points {
+        if series.map_or(true, |series| series.get(point.timestamp_ms).is_none()) {
+            new_timestamps.insert(point.timestamp_ms);
+        }
+    }
+    current_len.saturating_add(new_timestamps.len()) > feature_max_size
+}
+
 /// Did this write produce per-key state that reconstruction from physical blocks cannot redo?
 ///
 /// TWO REASONS, AND THE SECOND ONE COVERS THE HALF THE FIRST CANNOT SEE.
@@ -4057,8 +4125,9 @@ impl TouchedContainerElement {
 ///
 /// THE IDENTITY COMES FROM THE COMMAND, NOT FROM THE COMPONENT, and that is the difference between
 /// this and `command_upsert_components` beside it. That function answers the same question in the
-/// block index's vocabulary and spells each element as a component -- `hex::encode(member)` for a
-/// set, sixteen hex digits of score followed by the member for a zset. Recovering the member back
+/// block index's vocabulary and spells each element as a component -- `member_component(member)`
+/// for a set and for a zset alike, the score having left the zset string. Recovering the member
+/// back
 /// out of one of those is what the reconcile does, and it is precisely the dependency this removes:
 /// here the member is the `Vec<u8>` the caller asked to store.
 ///
@@ -5439,8 +5508,16 @@ pub(crate) fn evict_sampler_config() -> eviction_sampler::EvictionSamplerConfig 
             .unwrap_or(default)
     }
     eviction_sampler::EvictionSamplerConfig {
-        samples: parse("TS_EVICT_SAMPLES", 5),
+        // Sixteen buckets looked at per wanted victim. A shard holds at most 1,024 routing buckets,
+        // so a larger sample count is bounded by the shard rather than by the store, and more
+        // candidates per victim means colder victims.
+        samples: parse("TS_EVICT_SAMPLES", 16),
         pool_size: parse("TS_EVICT_POOL_SIZE", 64),
+        // NOT 1. The ceiling `samples * batch_limit * scan_turns` has to sit well above the
+        // minimum scan `samples * batch_limit`, because the pass keeps walking past the minimum
+        // while the buckets it holds are in use; with one turn the two coincide and the pass ranks
+        // whatever the lowest-numbered window happens to hold. Pinned by
+        // `a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted`.
         scan_turns: parse("TS_EVICT_SCAN_TURNS", 4),
     }
 }
@@ -6746,7 +6823,10 @@ fn append_value_inner(
     async_storage: bool,
     block_ordinal: u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    if !async_storage {
+    // Large async values can evict thousands of smaller hot blocks before a
+    // dump. Give them a real readable address immediately, while the WAL still
+    // carries the block for recovery if that append has not reached storage.
+    if !async_storage || bytes.len() >= 8 * 1024 {
         // Carry the block in this write's record, the same as the asynchronous arm below.
         //
         // The record is allowed to state its results and drop the operation only when the blocks

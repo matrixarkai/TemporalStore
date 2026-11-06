@@ -17,9 +17,9 @@ classifiers = [
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
 ]
-# The transport is `http.client` from the standard library, so the only
-# dependency is Feast itself.
-dependencies = ["feast>=0.40"]
+# HTTP uses the standard library; MessagePack keeps long feature responses as
+# byte strings instead of expanding them through JSON base64.
+dependencies = ["feast>=0.40", "msgpack>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/matrixarkai/TemporalStore"

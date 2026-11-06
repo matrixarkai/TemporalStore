@@ -8761,6 +8761,73 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     );
 }
 
+#[test]
+fn large_async_hash_values_remain_readable_after_cache_eviction() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+
+    for index in 0..64u8 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiSet {
+                key: format!("sequence/{index}"),
+                entries: vec![
+                    ("timestamp".to_string(), vec![index.wrapping_add(1); 16]),
+                    ("timestamp".to_string(), vec![index; 16]),
+                    ("values".to_string(), vec![index; 12 * 1024]),
+                ],
+            },
+        });
+        assert!(response.status.ok, "write {index} failed: {response:?}");
+    }
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let fields = shards
+            .get(&1)
+            .unwrap()
+            .hashes
+            .get("sequence/0")
+            .unwrap();
+        assert!(fields
+            .values()
+            .all(|address| address.block_slab_id() != HOT_BLOCK_SLAB_ID));
+        let mut addresses = fields.values();
+        let first = addresses.next().unwrap();
+        assert!(addresses.all(|address| address == first));
+    }
+    engine.cache().invalidate_shard(1).unwrap();
+    for index in 0..64u8 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiGet {
+                key: format!("sequence/{index}"),
+                fields: vec!["timestamp".to_string(), "values".to_string()],
+            },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::Values {
+                values: vec![Some(vec![index; 16]), Some(vec![index; 12 * 1024])],
+            },
+            "large value {index} must survive cache eviction",
+        );
+    }
+}
+
 
 /// A write handed its blocks must log THOSE blocks, not the ones it would have derived.
 ///
@@ -17488,15 +17555,11 @@ fn what_a_feature_write_costs_against_its_series() {
     );
 }
 
-/// The four commands that hand a WHOLE address list to `sync_bucket_index_object_blocks`
-/// (execute_on_shard lines ~1334, ~1402, ~1566, ~1727) -- do they all cost their series?
-///
-/// FeatureAppend is carried as a KNOWN-amplifying control (15.20x, mx#793) and SetAdd as the
-/// flat one. Source agreement is not evidence: the same survey shape has twice reported a
-/// command as cheap when its work had merely moved somewhere the grep could not see.
+/// Both feature append forms must stay bounded by the points in the request, rather than the
+/// points already retained by the series.
 #[test]
 #[cfg(feature = "alloc-probe")]
-fn which_series_writers_cost_their_series() {
+fn feature_append_cost_stays_bounded_by_request() {
     const REPS: usize = 20;
     let cost = |family: &str, fill: usize| -> u64 {
         let dir = tempfile::tempdir().unwrap();
@@ -17555,35 +17618,29 @@ fn which_series_writers_cost_their_series() {
     };
 
     println!("  family                    bytes/write @200     @3200      ratio");
-    let mut amplifying = 0.0f64;
-    let mut flat = 0.0f64;
-    for family in [
-        "SetAdd",
-        "FeatureAppend",
-        "FeatureAppendWithPolicy",
-        "FeatureReplace",
-        "SequenceAdd",
-    ] {
+    let mut append_ratio = 0.0f64;
+    let mut policy_append_ratio = 0.0f64;
+    for family in ["SetAdd", "FeatureAppend", "FeatureAppendWithPolicy"] {
         let small = cost(family, 200);
         let large = cost(family, 3200);
         assert!(small > 0, "{family}: measured zero bytes, the probe never reached the path");
         let ratio = large as f64 / small as f64;
         match family {
-            "FeatureAppend" => amplifying = ratio,
-            "SetAdd" => flat = ratio,
+            "FeatureAppend" => append_ratio = ratio,
+            "FeatureAppendWithPolicy" => policy_append_ratio = ratio,
             _ => {}
         }
         println!("  {family:24}  {small:10}  {large:10}   {ratio:8.2}x");
     }
     assert!(
-        amplifying > 3.0,
-        "FeatureAppend is known to cost its series (15.20x); it reported {amplifying:.2}x, so \
-         this probe cannot see amplification and no row above means anything"
+        append_ratio < 1.5,
+        "FeatureAppend must stay bounded by its request; history growth produced \
+         {append_ratio:.2}x allocation growth"
     );
     assert!(
-        flat < 1.5,
-        "SetAdd declares its component and must stay flat; it reported {flat:.2}x, so this probe \
-         reports amplification where there is none"
+        policy_append_ratio < 1.5,
+        "FeatureAppendWithPolicy must stay bounded by its request; history growth produced \
+         {policy_append_ratio:.2}x allocation growth"
     );
 }
 
@@ -17922,8 +17979,7 @@ fn does_a_narrow_read_pay_for_the_whole_collection() {
 /// Bytes are a different axis: four defects this sweep moved megabytes while barely moving a
 /// count, because one big serialisation is one allocation. This asks the byte question.
 ///
-/// Two-sided control, both asserted: SetAdd declares its component and must stay flat;
-/// FeatureAppend clones its whole series and must scale.
+/// SetAdd and FeatureAppend both declare their changed component and must stay flat.
 #[test]
 #[cfg(feature = "alloc-probe")]
 fn what_a_message_write_costs_in_bytes_as_history_grows() {
@@ -17998,7 +18054,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
 
     println!("  command               bytes @200    bytes @1600     ratio   held");
     let mut flat = 0.0f64;
-    let mut scaling = 0.0f64;
+    let mut feature_flat = 0.0f64;
     for kind in ["SetAdd", "FeatureAppend", "ContextWriteEvent"] {
         let (small, small_held) = cost(kind, 200);
         let (large, large_held) = cost(kind, 1600);
@@ -18007,7 +18063,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
         let ratio = large as f64 / small as f64;
         match kind {
             "SetAdd" => flat = ratio,
-            "FeatureAppend" => scaling = ratio,
+            "FeatureAppend" => feature_flat = ratio,
             _ => {}
         }
         println!("  {kind:20}  {small:10}  {large:13}   {ratio:6.2}x   {small_held} -> {large_held}");
@@ -18027,8 +18083,9 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
     // is not this change's business -- but if it ever moves, look at the roll before the ratio.
     assert!(flat < 1.5, "the flat control reported {flat:.2}x");
     assert!(
-        scaling > 3.0,
-        "the scaling control reported {scaling:.2}x, so this probe cannot see amplification"
+        feature_flat < 1.5,
+        "FeatureAppend must stay bounded by its request; history growth produced \
+         {feature_flat:.2}x allocation growth"
     );
     println!("  An 8x fill range: a ratio near 8 is linear in history, near 1 is flat.");
 }

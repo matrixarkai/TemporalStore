@@ -178,8 +178,14 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 }
 
 /// The component name a zset member is filed under, as the write path spells it.
+/// BY THE ENGINE'S OWN FUNCTION, not a second implementation of the encoding. This was
+/// `hex::encode(member)` and it went stale the moment the set and zset writers flipped off hex:
+/// a needle spelled by hand searches a served index for text no write site files any more, and
+/// an absence-asserting test like `member_hits` below would then pass for the wrong reason --
+/// finding nothing because it asked for the wrong string, not because no component text is
+/// stored.
 fn zset_name(member: &[u8]) -> String {
-    hex::encode(member)
+    crate::engine::execute_on_shard::zset_component(member)
 }
 
 /// The component name a zset member USED TO be filed under, before the score left it. Kept only
@@ -1232,12 +1238,17 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         );
         zset_name(&empty).len()
     };
-    // CHECKED, NOT ADJUSTED: an empty member's component is still zero characters, so there is no
-    // length boundary for two readers to disagree about. That was the finding and it still holds.
+    // ADJUSTED THIS TIME, AND THE FINDING IS STRONGER FOR IT. The component used to be
+    // `hex::encode(b"")`, which is the EMPTY STRING -- and a zero-length component was exactly the
+    // boundary two readers could disagree about, one treating "" as "no component" and the other
+    // as "the component of the empty member". `member_component` puts an unconditional tag in
+    // front, so the empty member now has a ONE-character component and no component is ever empty.
+    // The ambiguity is not guarded against any more; it is gone.
     assert_eq!(
-        empty_component_len, 0,
-        "an empty member's component is {empty_component_len} characters, not the zero this \
-         finding rests on -- re-read `zset_component` before trusting the boundary below"
+        empty_component_len, 1,
+        "an empty member's component is {empty_component_len} characters, not the one tag byte \
+         `member_component` always writes -- re-read `zset_component` before trusting the \
+         boundary below"
     );
 
     // THE BOUNDARY, RE-ATTRIBUTED TO THE BLOCKS. The blocks are where a component still exists, and
@@ -1280,16 +1291,31 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
             derived.unframed,
             derived.unrenderable_items
         );
+        // THE BOUNDARY MOVED OFF ZERO, AND THAT IS THE RESOLUTION RATHER THAN A RELAXATION. The
+        // empty member derived a ZERO-LENGTH component while the spelling was hex, and a
+        // zero-length component is exactly what a reader can mistake for "no component". The
+        // tagged spelling writes one tag byte unconditionally, so the empty member derives a
+        // ONE-character component and no component in the store is ever empty. The defect this
+        // arm exists for cannot be reintroduced by a short-component reader, because there is no
+        // longer a shortest case for one to trip on.
+        let empty_component = crate::engine::container_blocks::member_component(b"");
+        assert_eq!(
+            empty_component.len(),
+            1,
+            "the empty member's component is {} characters, not the single tag byte -- if this is \
+             zero the spelling has gone back to hex and the ambiguity is back with it",
+            empty_component.len()
+        );
         assert!(
-            derived.live.contains_key(""),
-            "the blocks do not derive the empty member as a zero-length component: {:?}. A reader \
-             that treats a short component as an absent one has come back -- which is the defect \
-             this arm exists for, now one layer down",
+            derived.live.contains_key(empty_component.as_str()),
+            "the blocks do not derive the empty member at all: {:?}. A reader that treats a short \
+             component as an absent one has come back -- which is the defect this arm exists for, \
+             now one layer down",
             derived.live.keys().collect::<Vec<_>>()
         );
         println!(
-            "[empty-member] the blocks derive {} live element(s) and the empty member is among them \
-             as a zero-length component",
+            "[empty-member] the blocks derive {} live element(s) and the empty member is among \
+             them as a one-character component, the tag alone",
             derived.live.len()
         );
     }
