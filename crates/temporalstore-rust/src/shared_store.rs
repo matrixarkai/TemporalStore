@@ -7967,6 +7967,94 @@ mod tests {
 
     #[cfg(feature = "matrixobject")]
     #[tokio::test]
+    async fn an_async_flush_is_one_group_commit_not_one_per_entry() {
+        // THE QUEUE WAS ASSEMBLING A BATCH AND SPENDING IT SINGLY.
+        //
+        // `flush_pending` drains up to `max_entries` and used to publish them one at a time, so
+        // a flush of N entries cost N durable barriers -- and over a network 2N requests, since
+        // every entry writes a WAL frame and an offset-index frame.
+        // `publish_wal_entries_batch` already coalesces a run into one append of the
+        // concatenated frames plus one of the concatenated offset metadata.
+        //
+        // The sync path had a group commit for this and the async path was exempted, on the
+        // grounds that it is off the ack critical path. That is true of LATENCY and says nothing
+        // about REQUESTS, which is what a networked shared store is billed in.
+        //
+        // The durable bytes are unchanged: appending frames in order and appending their
+        // concatenation produce the same object. Only the request count moves, which is why that
+        // is what this asserts.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = Arc::new(MatrixObjectHttpStore::new(&uri).unwrap());
+        // No `with_wal_append_mode` override: the default is `ProtobufAppendBlob`, which is the
+        // mode that can coalesce at all. `JsonPerKey` writes a key per entry and the batch call
+        // correctly refuses to pretend otherwise.
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+
+        const ENTRIES: usize = 24;
+        for index in 0..ENTRIES {
+            writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: format!("batched-{index:02}"),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .await
+                .expect("an async write should queue");
+        }
+
+        // Measured across the FLUSH only: the queueing above must not be counted, or the figure
+        // describes the wrong thing.
+        let before = store.requests_issued();
+        let report = writer
+            .flush_pending(ENTRIES)
+            .await
+            .expect("the flush should publish");
+        let spent = store.requests_issued() - before;
+
+        assert_eq!(
+            report.flushed, ENTRIES,
+            "the flush reported {} entries and should have flushed {ENTRIES}",
+            report.flushed
+        );
+        println!("ASYNCFLUSH entries={ENTRIES} requests={spent}");
+
+        // THE POINT: a flush of N entries costs a handful of requests, not two per entry.
+        // Bounded rather than pinned at exactly two, because the fence and the offset index are
+        // their own requests and a retry is legitimate -- what must not come back is one barrier
+        // per entry.
+        assert!(
+            spent < ENTRIES as u64,
+            "flushing {ENTRIES} entries spent {spent} requests; coalesced it should be a handful, \
+             and {} would mean one durable barrier per entry again",
+            2 * ENTRIES
+        );
+
+        // NOT VACUOUS: the flush really did talk to the store, and the entries really landed.
+        assert!(spent >= 1, "the flush spent no requests at all, so nothing was published");
+        assert!(
+            report.last_wal_index >= ENTRIES as u64,
+            "the last wal index is {} after {ENTRIES} entries, so they did not all go through",
+            report.last_wal_index
+        );
+        // AND THE BYTES ARE READABLE AS ONE LOG -- a coalesced append must leave the same object
+        // a sequence of appends would, not a batch blob only this writer can parse.
+        let replayed = replicator
+            .replay_wal(1)
+            .await
+            .expect("the shared WAL should replay");
+        assert_eq!(
+            replayed.len(),
+            ENTRIES,
+            "replay found {} entries in the coalesced log and should find {ENTRIES}",
+            replayed.len()
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
     async fn the_shared_path_opens_one_connection_not_one_per_request() {
         // WHAT CONNECTION REUSE BUYS IS INVISIBLE TO THE BYTE COUNTERS.
         //
