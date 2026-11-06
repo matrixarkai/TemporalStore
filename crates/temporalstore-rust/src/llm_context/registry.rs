@@ -61,6 +61,13 @@ impl EmbeddingIndexRegistry {
             model_hash,
             dimensions: first.values.len(),
         };
+        for (existing_space, index) in &mut self.spaces {
+            if existing_space.channel == channel && *existing_space != space {
+                for row in batch {
+                    index.remove(row.key);
+                }
+            }
+        }
         let index = self.spaces.entry(space).or_insert(EmbeddingIndex::new(
             EmbeddingIndexConfig::new(space.dimensions, self.max_entries_per_space)
                 .with_model_hash(model_hash),
@@ -132,6 +139,16 @@ impl EmbeddingIndexRegistry {
             }
         }
         Ok(hits)
+    }
+
+    pub fn remove(&mut self, channel: EmbeddingChannel, key: EmbeddingKey) -> bool {
+        let mut removed = false;
+        for (space, index) in &mut self.spaces {
+            if space.channel == channel {
+                removed |= index.remove(key);
+            }
+        }
+        removed
     }
 
     pub fn len(&self) -> usize {
@@ -220,7 +237,7 @@ mod tests {
             .upsert_batch(EmbeddingChannel::Node, 1, &[row(&x)])
             .unwrap();
         registry
-            .upsert_batch(EmbeddingChannel::Node, 2, &[row(&y)])
+            .upsert_missing_batch(EmbeddingChannel::Node, 2, &[row(&y)])
             .unwrap();
 
         assert!(registry
@@ -260,5 +277,30 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].key.item_id, 9);
+    }
+
+    #[test]
+    fn removing_a_key_clears_its_channel() {
+        let mut registry = EmbeddingIndexRegistry::new(4);
+        let x = [1.0, 0.0];
+        let key = EmbeddingKey {
+            tenant_id: 3,
+            item_id: 9,
+        };
+        for model_hash in [0, 17] {
+            registry
+                .upsert_missing_batch(
+                    EmbeddingChannel::Summary,
+                    model_hash,
+                    &[EmbeddingVector { key, values: &x }],
+                )
+                .unwrap();
+        }
+
+        assert!(registry.remove(EmbeddingChannel::Summary, key));
+        assert!(registry
+            .score_candidates(EmbeddingChannel::Summary, 3, 0, &x, &[9])
+            .unwrap()
+            .is_empty());
     }
 }
