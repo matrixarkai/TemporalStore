@@ -30,6 +30,7 @@ pub struct EmbeddingHit {
 pub struct EmbeddingIndexConfig {
     pub dimensions: usize,
     pub max_entries: usize,
+    pub model_hash: u64,
 }
 
 impl EmbeddingIndexConfig {
@@ -37,7 +38,86 @@ impl EmbeddingIndexConfig {
         Self {
             dimensions,
             max_entries,
+            model_hash: 0,
         }
+    }
+
+    pub fn with_model_hash(mut self, model_hash: u64) -> Self {
+        self.model_hash = model_hash;
+        self
+    }
+}
+
+/// Quantized rows prepared once for durable storage and hot-index publication.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactEmbeddingBatch {
+    dimensions: usize,
+    model_hash: u64,
+    keys: Vec<EmbeddingKey>,
+    scales: Vec<f32>,
+    vectors: Vec<i8>,
+}
+
+impl CompactEmbeddingBatch {
+    pub fn dimensions(&self) -> usize {
+        self.dimensions
+    }
+
+    pub fn model_hash(&self) -> u64 {
+        self.model_hash
+    }
+
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    pub fn key(&self, row: usize) -> EmbeddingKey {
+        self.keys[row]
+    }
+
+    pub fn scale(&self, row: usize) -> f32 {
+        self.scales[row]
+    }
+
+    pub fn vector(&self, row: usize) -> &[i8] {
+        let start = row * self.dimensions;
+        &self.vectors[start..start + self.dimensions]
+    }
+
+    pub(crate) fn from_compact_rows(
+        dimensions: usize,
+        model_hash: u64,
+        keys: Vec<EmbeddingKey>,
+        scales: Vec<f32>,
+        vectors: Vec<i8>,
+    ) -> Result<Self, EmbeddingIndexError> {
+        if dimensions == 0 || dimensions > MAX_EMBEDDING_DIMENSIONS {
+            return Err(EmbeddingIndexError::InvalidDimensions);
+        }
+        if keys.len() != scales.len() || vectors.len() != keys.len().saturating_mul(dimensions) {
+            return Err(EmbeddingIndexError::CompactBatchShape);
+        }
+        let mut unique = HashSet::with_capacity(keys.len());
+        for (row, key) in keys.iter().copied().enumerate() {
+            if !unique.insert(key) {
+                return Err(EmbeddingIndexError::DuplicateKey { key });
+            }
+            let scale = scales[row];
+            if !scale.is_finite() || scale <= 0.0 {
+                return Err(EmbeddingIndexError::InvalidCompactScale { key });
+            }
+        }
+        Ok(Self {
+            dimensions,
+            model_hash,
+            keys,
+            scales,
+            vectors,
+        })
     }
 }
 
@@ -69,6 +149,12 @@ pub enum EmbeddingIndexError {
     ZeroNorm { key: EmbeddingKey },
     #[error("embedding batch contains key {key:?} more than once")]
     DuplicateKey { key: EmbeddingKey },
+    #[error("compact embedding batch has inconsistent row storage")]
+    CompactBatchShape,
+    #[error("compact embedding row for {key:?} has an invalid scale")]
+    InvalidCompactScale { key: EmbeddingKey },
+    #[error("embedding model hash {actual} does not match index model hash {expected}")]
+    ModelMismatch { expected: u64, actual: u64 },
     #[error("query vector has {actual} dimensions; expected {expected}")]
     QueryDimensionMismatch { expected: usize, actual: usize },
     #[error("query vector contains a non-finite value at dimension {dimension}")]
@@ -115,6 +201,10 @@ impl EmbeddingIndex {
         self.config.dimensions
     }
 
+    pub fn model_hash(&self) -> u64 {
+        self.config.model_hash
+    }
+
     pub fn len(&self) -> usize {
         self.total_entries
     }
@@ -132,6 +222,14 @@ impl EmbeddingIndex {
         &mut self,
         batch: &[EmbeddingVector<'_>],
     ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
+        let compact = self.prepare_batch(batch)?;
+        self.upsert_compact_batch(&compact)
+    }
+
+    pub fn prepare_batch(
+        &self,
+        batch: &[EmbeddingVector<'_>],
+    ) -> Result<CompactEmbeddingBatch, EmbeddingIndexError> {
         let mut batch_keys = HashSet::with_capacity(batch.len());
         let mut new_entries = 0usize;
         for input in batch {
@@ -156,24 +254,78 @@ impl EmbeddingIndex {
             });
         }
 
+        let mut keys = Vec::with_capacity(batch.len());
+        let mut scales = Vec::with_capacity(batch.len());
+        let mut vectors = Vec::with_capacity(batch.len().saturating_mul(self.config.dimensions));
+        for input in batch {
+            keys.push(input.key);
+            scales.push(quantize_unit_vector(input.values, &mut vectors));
+        }
+        CompactEmbeddingBatch::from_compact_rows(
+            self.config.dimensions,
+            self.config.model_hash,
+            keys,
+            scales,
+            vectors,
+        )
+    }
+
+    pub fn upsert_compact_batch(
+        &mut self,
+        batch: &CompactEmbeddingBatch,
+    ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
+        if batch.dimensions != self.config.dimensions {
+            return Err(EmbeddingIndexError::DimensionMismatch {
+                key: batch.keys.first().copied().unwrap_or(EmbeddingKey {
+                    tenant_id: 0,
+                    item_id: 0,
+                }),
+                expected: self.config.dimensions,
+                actual: batch.dimensions,
+            });
+        }
+        if batch.model_hash != self.config.model_hash {
+            return Err(EmbeddingIndexError::ModelMismatch {
+                expected: self.config.model_hash,
+                actual: batch.model_hash,
+            });
+        }
+        let new_entries = batch
+            .keys
+            .iter()
+            .filter(|key| {
+                !self
+                    .tenants
+                    .get(&key.tenant_id)
+                    .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
+            })
+            .count();
+        let requested = self.len().saturating_add(new_entries);
+        if requested > self.config.max_entries {
+            return Err(EmbeddingIndexError::CapacityExceeded {
+                capacity: self.config.max_entries,
+                requested,
+            });
+        }
+
         let mut inserted = 0usize;
         let mut updated = 0usize;
-        let mut quantized = Vec::with_capacity(self.config.dimensions);
-        for input in batch {
-            quantized.clear();
-            let scale = quantize_unit_vector(input.values, &mut quantized);
-            let rows = self.tenants.entry(input.key.tenant_id).or_default();
-            if let Some(&position) = rows.positions.get(&input.key.item_id) {
+        for row in 0..batch.len() {
+            let key = batch.key(row);
+            let scale = batch.scale(row);
+            let vector = batch.vector(row);
+            let rows = self.tenants.entry(key.tenant_id).or_default();
+            if let Some(&position) = rows.positions.get(&key.item_id) {
                 rows.scales[position] = scale;
                 let start = position * self.config.dimensions;
-                rows.vectors[start..start + self.config.dimensions].copy_from_slice(&quantized);
+                rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
                 updated += 1;
             } else {
                 let position = rows.item_ids.len();
-                rows.item_ids.push(input.key.item_id);
-                rows.positions.insert(input.key.item_id, position);
+                rows.item_ids.push(key.item_id);
+                rows.positions.insert(key.item_id, position);
                 rows.scales.push(scale);
-                rows.vectors.extend_from_slice(&quantized);
+                rows.vectors.extend_from_slice(vector);
                 inserted += 1;
             }
         }
