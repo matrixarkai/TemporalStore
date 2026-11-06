@@ -1180,6 +1180,122 @@ where
     ///
     /// Every guard from the single-lookup path is here rather than there, so neither
     /// caller can be the one without them.
+    /// Reads a CONTIGUOUS RUN of entries with one ranged read.
+    ///
+    /// # WHY A RUN CAN BE ONE READ
+    ///
+    /// In `ProtobufAppendBlob` mode the shared WAL is one appendable object per shard, and
+    /// `publish_wal_entries_batch` derives each entry's `[start, end)` by advancing a cursor
+    /// through the payload it just appended -- so entry k's `end_offset` IS entry k+1's
+    /// `start_offset`, by construction rather than by luck, and a sequence of single appends
+    /// leaves the same shape. N adjacent entries are therefore N slices of ONE byte range, and
+    /// reading them one at a time spends N request envelopes on bytes one request covers.
+    /// Measured before this: 24 entries cost 26 requests and 2.77x the bytes they wanted.
+    ///
+    /// # WHAT IS NOT COALESCED, AND WHY THAT IS THE SAFE DEFAULT
+    ///
+    /// The caller groups only entries whose ranges are STRICTLY adjacent within one blob. A
+    /// batch container records the SAME range for every entry it carries, so its entries are
+    /// not adjacent -- they are identical -- and they fall out of a run and keep the point read
+    /// they have today. A hole, a different blob, or a zero-length range does the same. An
+    /// uncoalesced log is therefore slower and never wrong.
+    ///
+    /// Every per-entry guard the point reader applies is applied here, per slice: the declared
+    /// byte count against its own range, and the decoded entry's shard and index against what
+    /// the index claimed. Those are what stop a replay applying another shard's entry, and
+    /// reading in bulk must not become a way around them.
+    async fn read_wal_entries_in_run(
+        &self,
+        shard_id: ShardId,
+        run: &[(u64, &SharedStoreWalOffsetMetadata)],
+    ) -> Result<Vec<(SharedStoreWalEntry, u64)>, SharedStoreReplicationError> {
+        let invalid = |message: String| {
+            SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                message,
+            ))
+        };
+        let first = run
+            .first()
+            .map(|(_, metadata)| *metadata)
+            .ok_or_else(|| invalid("an empty run cannot be read".to_string()))?;
+        let last = run
+            .last()
+            .map(|(_, metadata)| *metadata)
+            .ok_or_else(|| invalid("an empty run cannot be read".to_string()))?;
+        let span = last
+            .wal_blob_end_offset
+            .checked_sub(first.wal_blob_start_offset)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "invalid WAL offset metadata run for shard {shard_id}: {}..{}",
+                    first.wal_blob_start_offset, last.wal_blob_end_offset
+                ))
+            })?;
+
+        let bytes = self
+            .object_store
+            .get_range(&first.wal_blob_key, first.wal_blob_start_offset, span)
+            .await?;
+        if bytes.len() as u64 != span {
+            return Err(invalid(format!(
+                "a run read of shard {shard_id} asked for {span} bytes and got {}",
+                bytes.len()
+            )));
+        }
+
+        let mut out = Vec::with_capacity(run.len());
+        for (wal_index, metadata) in run {
+            let length = metadata
+                .wal_blob_end_offset
+                .checked_sub(metadata.wal_blob_start_offset)
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "invalid WAL offset metadata range for shard {shard_id} index {wal_index}"
+                    ))
+                })?;
+            if length != metadata.wal_blob_bytes_written {
+                return Err(invalid(format!(
+                    "WAL offset metadata bytes mismatch for shard {shard_id} index {wal_index}"
+                )));
+            }
+            let from = metadata
+                .wal_blob_start_offset
+                .checked_sub(first.wal_blob_start_offset)
+                .and_then(|offset| usize::try_from(offset).ok())
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "shard {shard_id} index {wal_index} sits outside its own run"
+                    ))
+                })?;
+            let width = usize::try_from(length)
+                .map_err(|_| invalid(format!("shard {shard_id} index {wal_index} range too large")))?;
+            let to = from.checked_add(width).ok_or_else(|| {
+                invalid(format!("shard {shard_id} index {wal_index} overflows its run"))
+            })?;
+            if to > bytes.len() {
+                return Err(invalid(format!(
+                    "shard {shard_id} index {wal_index} ends at {to} in a run of {} bytes",
+                    bytes.len()
+                )));
+            }
+            let slice = bytes.slice(from..to);
+            let entry = if is_wal_batch_container(&slice) {
+                decode_wal_batch_container_entry_exact(&slice, &metadata.wal_blob_key, *wal_index)?
+            } else {
+                decode_wal_proto_frame_exact(&slice, &metadata.wal_blob_key)?
+            };
+            if entry.shard_id != shard_id || entry.wal_index != *wal_index {
+                return Err(invalid(format!(
+                    "WAL offset metadata points to shard {} index {}, expected shard {shard_id} index {wal_index}",
+                    entry.shard_id, entry.wal_index
+                )));
+            }
+            out.push((entry, length));
+        }
+        Ok(out)
+    }
+
     async fn read_wal_entry_with_offset_metadata(
         &self,
         shard_id: ShardId,
@@ -1801,7 +1917,14 @@ where
         // window is as strong as one per entry -- see `apply_one_coalesced_batch`, which is also
         // why the window is buffered rather than the scope held across the read below: the scope
         // is a thread-local and this loop awaits.
-        let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
+        // ---- A HOLE IS FOUND BEFORE ANY BYTE IS FETCHED.
+        //
+        // The gap check used to sit inside the read loop, so a replay read and applied every
+        // entry up to a hole before reporting it. Hoisting it changes nothing a caller sees --
+        // a gap is still an error and the applies below only run over a sequence that passed --
+        // and it is what makes grouping possible at all: a run cannot be cut from a sequence
+        // not yet known to be whole.
+        let mut ordered: Vec<(u64, &SharedStoreWalOffsetMetadata)> = Vec::new();
         for (wal_index, metadata) in offset_metadata.range((after_wal_index + 1)..) {
             if *wal_index != expected {
                 return Err(SharedStoreReplicationError::ReplayGap {
@@ -1809,17 +1932,50 @@ where
                     actual: *wal_index,
                 });
             }
-            let (entry, range_bytes_read) = self
-                .read_wal_entry_with_offset_metadata(shard_id, *wal_index, metadata)
-                .await?;
-            window.push((*wal_index, entry));
-            report.applied += 1;
-            report.last_wal_index = *wal_index;
-            report.offset_index_reads += 1;
-            report.range_bytes_read += range_bytes_read;
             expected += 1;
-            if window.len() >= REPLAY_APPLY_WINDOW {
-                Self::apply_replayed_window(shard_id, &mut window, engine)?;
+            ordered.push((*wal_index, metadata));
+        }
+
+        let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
+        let mut position = 0usize;
+        while position < ordered.len() {
+            // A RUN REACHES AS FAR AS THE BYTES STAY ADJACENT IN ONE BLOB.
+            //
+            // Bounded by the apply window as well, so a long log is still read and applied in
+            // steps rather than pulled into memory whole.
+            let mut end = position + 1;
+            while end < ordered.len()
+                && ordered[end].1.wal_blob_key == ordered[position].1.wal_blob_key
+                && ordered[end].1.wal_blob_start_offset == ordered[end - 1].1.wal_blob_end_offset
+                && ordered[end].1.wal_blob_end_offset > ordered[end].1.wal_blob_start_offset
+                && end - position < REPLAY_APPLY_WINDOW
+            {
+                end += 1;
+            }
+            let run = &ordered[position..end];
+            // A RUN OF ONE KEEPS THE POINT READ, so the single-entry path stays the one that
+            // has always served it, guards and all, rather than becoming a special case of a
+            // bulk reader.
+            let read = if run.len() == 1 {
+                let (wal_index, metadata) = run[0];
+                let (entry, length) = self
+                    .read_wal_entry_with_offset_metadata(shard_id, wal_index, metadata)
+                    .await?;
+                vec![(entry, length)]
+            } else {
+                self.read_wal_entries_in_run(shard_id, run).await?
+            };
+            position = end;
+
+            for ((wal_index, _), (entry, range_bytes_read)) in run.iter().zip(read) {
+                window.push((*wal_index, entry));
+                report.applied += 1;
+                report.last_wal_index = *wal_index;
+                report.offset_index_reads += 1;
+                report.range_bytes_read += range_bytes_read;
+                if window.len() >= REPLAY_APPLY_WINDOW {
+                    Self::apply_replayed_window(shard_id, &mut window, engine)?;
+                }
             }
         }
         Self::apply_replayed_window(shard_id, &mut window, engine)?;
@@ -7979,6 +8135,85 @@ mod tests {
         let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
             .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
         (store, replicator)
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn a_replay_reads_a_contiguous_run_in_one_request() {
+        // A REPLAY USED TO SPEND A REQUEST PER ENTRY ON BYTES ONE REQUEST COVERS.
+        //
+        // The shared WAL is one appendable object per shard and entries land back to back, so a
+        // run of them is a run of slices of a single byte range. Reading each on its own spent
+        // an envelope per entry: measured at 26 requests for 24 entries and 2.77x the bytes the
+        // replay actually wanted.
+        //
+        // Asserted as a COUNT, because that is what changed. The byte ratio is printed and not
+        // pinned: it moves with the header set and with entry size, and pinning it would break
+        // on changes the claim survives.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = Arc::new(MatrixObjectHttpStore::new(&uri).unwrap());
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+
+        const ENTRIES: usize = 24;
+        for index in 0..ENTRIES {
+            writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: format!("run-{index:02}"),
+                        value: vec![b'v'; 280],
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        writer.flush_pending(ENTRIES).await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let follower = test_engine(dir.path(), "run-follower");
+        follower.load_shard(1);
+
+        let before = store.requests_issued();
+        let sent_before = store.wire_bytes_sent();
+        let recv_before = store.wire_bytes_received();
+        let report = replicator.replay_wal(1, 0, &follower).await.unwrap();
+        let requests = store.requests_issued() - before;
+        let wire = (store.wire_bytes_sent() - sent_before) + (store.wire_bytes_received() - recv_before);
+
+        println!(
+            "REPLAYRUN entries={ENTRIES} applied={} requests={requests} range_bytes={} \
+             wire_per_range_byte={:.2}",
+            report.applied,
+            report.range_bytes_read,
+            wire as f64 / report.range_bytes_read.max(1) as f64,
+        );
+
+        // EVERY ENTRY STILL ARRIVES. A coalesced read that dropped or duplicated one would
+        // satisfy any request-count assertion.
+        assert_eq!(
+            report.applied, ENTRIES,
+            "replay applied {} of {ENTRIES} entries",
+            report.applied
+        );
+
+        // THE POINT: far fewer requests than entries. A bound, not an exact number -- the
+        // offset-index load and the prefix listing are their own requests, and a run is capped
+        // by the apply window, so a longer log legitimately takes more than one.
+        assert!(
+            requests < ENTRIES as u64 / 4,
+            "replaying {ENTRIES} entries spent {requests} requests; coalesced it should be a \
+             handful, and anything near {ENTRIES} means a request per entry again"
+        );
+
+        // NOT VACUOUS: it did talk to the store, and it did fetch the entries' bytes.
+        assert!(requests >= 1, "the replay spent no requests, so it read nothing");
+        assert!(
+            report.range_bytes_read >= (ENTRIES as u64) * 200,
+            "only {} range bytes for {ENTRIES} entries of ~300 bytes, so the run read did not \
+             fetch what the entries need",
+            report.range_bytes_read
+        );
     }
 
     #[cfg(feature = "matrixobject")]
