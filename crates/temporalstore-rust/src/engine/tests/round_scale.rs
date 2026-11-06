@@ -10,30 +10,44 @@
 //!
 //! ```text
 //!   records   live-block entries materialised by ONE round   ratio
-//!     2,000                                        26,000   13.00x
-//!    20,000                                       260,000   13.00x
+//!     2,000                                        24,000   12.00x
+//!    20,000                                       240,000   12.00x
 //! ```
 //!
-//! Exactly 13.00 at both, and the per-site split is identical at both sizes -- seven call sites,
-//! summing to 13. The split is PRINTED by `steady_walks_per_record` rather than maintained here
-//! by hand, because a table beside a total is a list that goes stale without anything failing:
+//! Exactly 12.00 at both, and the per-site split is identical at both sizes -- seven call sites,
+//! summing to 12. The split is PRINTED by `steady_walks_per_record` rather than maintained here
+//! by hand, because a table beside a total is a list that goes stale without anything failing --
+//! which is what the copy below did twice over, once when these files were renamed and again when
+//! a pass was removed. So it is keyed by FUNCTION now: a function name survives a rename campaign
+//! and a line number does not, and pairing line numbers across one has already produced a wrong
+//! answer about this very constant. The locations are in the test's own output.
 //!
 //! ```text
-//!   storage_reporting.rs:171  bucket_storage_summaries            5.00x
-//!   recovery_sweep_compact.rs:334 object lifecycle snapshot       2.00x
-//!   storage_lifecycle_methods.rs:873 sampling snapshots           2.00x
-//!   compaction.rs:61          compaction_utility_report           1.00x
-//!   storage_reporting.rs:801  bucket generation fingerprints      1.00x
-//!   recovery_sweep_compact.rs:461 the recovery report             1.00x
-//!   storage_reporting.rs:1029 feature block layout report         1.00x
+//!   bucket_storage_summaries                           5.00x
+//!   storage_object_lifecycle_snapshot                  2.00x
+//!   apply_storage_lifecycle, its sampling walk         1.00x
+//!   compaction_utility_report                          1.00x
+//!   storage_recovery_report_without_boundary_sampled   1.00x
+//!   bucket_generation_fingerprints_by_bucket           1.00x
+//!   storage_feature_block_layout_report                1.00x
 //! ```
 //!
-//! IT READ TWELVE, AND IT WAS ALWAYS THIRTEEN. The last row is not a pass that was added; it is
-//! one that could not be counted. `LIVE_BLOCK_SCAN_ENTRIES` was charged in
+//! IT ONCE READ TWELVE BECAUSE A PASS WAS NOT CHARGED (#1899). That row was not a pass that had
+//! been added; it was one that could not be counted. `LIVE_BLOCK_SCAN_ENTRIES` was charged in
 //! `collect_live_block_entries` and nowhere else, and `storage_feature_block_layout_report`
 //! calls `collect_bucket_index_live_block_entries` directly -- so a whole-store pass made on
 //! every periodic round was charged to nothing, and the guard here that exists to notice a walk
 //! being added could not see it. The charge now happens inside the walks themselves.
+//!
+//! AND IT READS TWELVE AGAIN, FOR THE OPPOSITE REASON: A PASS WAS REMOVED (#2504). THESE ARE TWO
+//! DIFFERENT TWELVES, and keeping them apart is the whole content of this constant's history. The
+//! first was thirteen passes with one of them uncharged. This one is twelve passes with all of
+//! them charged. `apply_storage_lifecycle` ran TWICE in a cycle -- at `reclaim_wal`, and again
+//! inside `storage_merged_dump_load_policy_report`, whose second apply did the whole-shard work
+//! the first had just finished. One apply carries one `collect_live_block_entries`, so dropping
+//! the redundant apply dropped exactly one charged whole-store pass, and the round's wall clock
+//! moved with it. Every site #1899 charged is STILL charged, the layout report included; see
+//! `WALKS_PER_ROUND` for why that site is easy to misread as having left.
 //!
 //! IT WAS FOURTEEN. Three of those passes were made by ONE function,
 //! `storage_recovery_report_without_boundary_sampled`, under ONE shard-table read guard: once for
@@ -49,10 +63,10 @@
 //! round the shard's dirty-bucket flags were measured moving 0 -> 2,000 -> 0 WITHIN one round.
 //! `bucket_storage_summaries` reports `dirty_object_count`, so a snapshot taken before that
 //! clear and served after it would report dirty buckets that are no longer dirty. The five
-//! `storage_reporting.rs:171` passes are five different answers, not one answer fetched five
+//! `bucket_storage_summaries` passes are five different answers, not one answer fetched five
 //! times.
 //!
-//! So the round is proportional to the store with a constant of 13, and no stage budget bounds
+//! So the round is proportional to the store with a constant of 12, and no stage budget bounds
 //! it: the budgets in this round bound the DUMP (buckets per round), the EXPIRE sweep (buckets per
 //! round) and the readability probe (512 blocks), none of which is the walk above. The wall clock
 //! corroborates -- a steady round took 1,352-1,625 ms at 8,000 and 8,117-9,657 ms at 80,000, at
@@ -62,7 +76,7 @@
 //! AN IDLE SHARD DOES NOT ESCAPE IT. The plan's own whole-shard walk is skipped when no object is
 //! dirty, which is true and is what makes `bucket_summaries` an `Option`. It does not make the
 //! ROUND cheap: measured on a shard whose dirty set had drained to zero and which had taken no
-//! write since, the round still materialised 14.00x the record count, because the other walks
+//! write since, the round still materialised 13.00x the record count, because the other walks
 //! never consult the dirty set. `an_idle_round_still_walks_the_live_block_set` is that number.
 //!
 //! WHAT THESE TESTS ARE FOR. The ratio is asserted at TWO sizes, so the two failures read
@@ -79,36 +93,58 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// ordinary state of a shard written to in batches, see
 /// `the_dump_threshold_counts_log_records_not_dirty_objects`.
 ///
-/// # 13 -> 12 IS A RECLASSIFICATION, NOT THE ROUND GETTING CHEAPER
+/// # 13 -> 12 IS ONE FEWER LIFECYCLE APPLY PER ROUND
 ///
 /// The value history is 14 (#1866), 12 (#1892, one function went from three passes to one), 13
 /// (#1899, which FIXED THE COUNTER -- a live-block scan counter was seeing two of its nine call
-/// sites, and charging the other seven raised the number). So a reader who sees 14, 12, 13, 12
-/// with no explanation will read this last step as the one before it, and it is not.
+/// sites, and charging the other seven raised the number), 12 (here). A reader who sees
+/// 14, 12, 13, 12 has seen TWO DIFFERENT TWELVES: #1899's was thirteen passes with one of them
+/// uncharged, and this one is twelve passes with all of them charged. Say which kind it is or the
+/// next reader will restore the wrong one.
 ///
-/// The site that left is `storage_feature_block_layout_report`, called from
-/// `recovery_sweep_compact.rs`, which #1899 named as "the seventh call site, at 1.00x, on every
-/// periodic round". IT STILL DOES THAT WORK. What changed is that it no longer does it by
-/// materialising `LiveBlockEntry` values: it walks `timestamped_kv_series(shard)` and reads each
-/// address from the block store directly. This counter measures live-block-entry walks, so the
-/// site left the POPULATION, not the round. Measured on this tree at both corpus sizes, seven
-/// charged call sites sum to 12.00x, and `recovery_sweep_compact.rs:758` is absent from the list
-/// while `:453` and `:580` in the same file are present.
+/// The row that moved is `apply_storage_lifecycle`'s sampling walk -- the one the module doc above
+/// lists at 1.00x, charged at 2.00x before. #2504, "a maintenance round applies the storage
+/// lifecycle once, not twice", is why: a cycle called `apply_storage_lifecycle` at `reclaim_wal`
+/// and again inside `storage_merged_dump_load_policy_report`, and that second apply repeated the
+/// whole-shard work the first had just done. One apply carries one `collect_live_block_entries`,
+/// so removing the redundant apply removes exactly one charged whole-store pass. #2504 measured
+/// the round moving with it -- 1,799 -> 1,405 ms at 8,000 records and 7,382 -> 5,204 ms at 32,000,
+/// against a boundary-report column it held as a contention control -- so unlike a counter fix
+/// this one IS the round costing less.
 ///
-/// So this number going down is NOT evidence the periodic round costs less. If you want that
-/// claim, measure the round, not this constant -- and if the layout report is ever put back on a
-/// `collect_live_block_entries` path, this returns to 13 without the round getting worse.
+/// # THE LAYOUT REPORT IS STILL CHARGED, AND IS EASY TO READ AS GONE
+///
+/// `storage_feature_block_layout_report` is the site #1899 added as "the seventh call site, at
+/// 1.00x, on every periodic round", and it is STILL in the census at 1.00x. Two things make it
+/// look absent:
+///
+/// - It charges through `collect_bucket_index_live_block_entries`, which is a THIRD collector. A
+///   check that looks only for `collect_live_block_entries` and `collect_model_live_block_entries`
+///   finds neither in it and concludes it has stopped walking. It has not: the charge shows up in
+///   the census at the `collect_bucket_index_live_block_entries` call inside this function, and
+///   the function also walks `timestamped_kv_series(shard)` for a separate purpose, which is the
+///   part that reads each address from the block store directly.
+/// - `recovery_sweep_compact.rs`'s line is the CALL to the report, not a charge site. The counter
+///   is charged where a collector is called, so that line never appears in the census and its
+///   absence says nothing.
+///
+/// The census is keyed by the source location that asked, so the way to settle where a pass went
+/// is to run the test and read the sites it prints, then name the ENCLOSING FUNCTION of each.
+/// Matching the printed line numbers against an older table instead has already produced a wrong
+/// answer about this constant, because the files were renamed wholesale underneath it.
 const WALKS_PER_ROUND: u64 = 12;
 
 /// The same, once the dirty set has drained. HIGHER, not lower: a shard that has taken a dump has
 /// a manifest, and validating it walks the live set again.
 ///
 /// 14 -> 13 FOR THE SAME REASON AS `WALKS_PER_ROUND` ABOVE, AND IT WAS MEASURED, NOT INFERRED.
-/// The idle round could have been unaffected -- the layout report might not have been on that
-/// path at all, in which case 14 would still have been right and changing it would have been a
-/// fresh error. Driven three times on this tree, the idle round materialises exactly 26,000
-/// live-block entries over 2,000 records on every run, which is 13x. So the same site left this
-/// path's population too, and the idle round is no cheaper than it was.
+/// The idle round could have been unaffected -- the redundant lifecycle apply might not have been
+/// on this path at all, in which case 14 would still have been right and changing it would have
+/// been a fresh error. Measured on this tree, the idle round materialises 26,000 live-block
+/// entries over 2,000 records, which is 13x. So the apply #2504 removed was on this path too.
+///
+/// It stays ONE HIGHER than the steady round for the reason above, which the removed apply does
+/// not touch: the manifest a dumped shard has is validated against the live set either way.
 const WALKS_PER_IDLE_ROUND: u64 = 13;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
