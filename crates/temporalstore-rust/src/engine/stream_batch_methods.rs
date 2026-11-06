@@ -4,86 +4,6 @@
 //! Stream read/scan + batch execute + index snapshot publish methods for TemporalEngine, split from engine.rs.
 use super::*;
 
-fn clone_command_for_batch_post_write(
-    command: &Command,
-    elide_packed_hash_payload: bool,
-) -> (Command, bool) {
-    if elide_packed_hash_payload {
-        if let Command::HashMultiSetIfTimestampOlder {
-            key,
-            timestamp_field,
-            timestamp_seconds,
-            timestamp_nanos,
-            entries,
-        } = command
-        {
-            return (
-                Command::HashMultiSetIfTimestampOlder {
-                    key: key.clone(),
-                    timestamp_field: timestamp_field.clone(),
-                    timestamp_seconds: *timestamp_seconds,
-                    timestamp_nanos: *timestamp_nanos,
-                    entries: entries
-                        .iter()
-                        .map(|(field, _)| (field.clone(), Vec::new()))
-                        .collect(),
-                },
-                true,
-            );
-        }
-    }
-    (command.clone(), false)
-}
-
-#[cfg(test)]
-mod packed_hash_post_write_tests {
-    use super::*;
-
-    fn command() -> Command {
-        Command::HashMultiSetIfTimestampOlder {
-            key: "entity".to_string(),
-            timestamp_field: "event_timestamp".to_string(),
-            timestamp_seconds: 42,
-            timestamp_nanos: 7,
-            entries: vec![
-                ("event_timestamp".to_string(), vec![1; 32]),
-                ("embedding".to_string(), vec![2; 256 * 1024]),
-            ],
-        }
-    }
-
-    #[test]
-    fn packed_hash_post_write_metadata_omits_only_value_payloads() {
-        let original = command();
-        let (metadata, elided) = clone_command_for_batch_post_write(&original, true);
-        assert!(elided);
-        let Command::HashMultiSetIfTimestampOlder {
-            key,
-            timestamp_field,
-            timestamp_seconds,
-            timestamp_nanos,
-            entries,
-        } = metadata
-        else {
-            panic!("conditional hash metadata changed command kind");
-        };
-        assert_eq!(key, "entity");
-        assert_eq!(timestamp_field, "event_timestamp");
-        assert_eq!((timestamp_seconds, timestamp_nanos), (42, 7));
-        assert_eq!(
-            entries
-                .iter()
-                .map(|(field, value)| (field.as_str(), value.len()))
-                .collect::<Vec<_>>(),
-            vec![("event_timestamp", 0), ("embedding", 0)],
-        );
-
-        let (fallback, elided) = clone_command_for_batch_post_write(&original, false);
-        assert!(!elided);
-        assert_eq!(fallback, original);
-    }
-}
-
 impl TemporalEngine {
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
@@ -716,11 +636,7 @@ impl TemporalEngine {
                 });
                 continue;
             }
-            let (command_for_post_write, payload_elided) = clone_command_for_batch_post_write(
-                &command,
-                elide_packed_hash_payloads,
-            );
-            let object_keys = command_object_keys(&command_for_post_write);
+            let object_keys = command_object_keys(&command);
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
             let membership_before: Vec<(String, usize, Option<u64>)> = object_keys
@@ -732,26 +648,61 @@ impl TemporalEngine {
                 })
                 .collect();
             let feature_trimmed_membership = command_will_trim_feature_membership(
-                &command_for_post_write,
+                &command,
                 shard,
                 config.feature_max_size,
             );
-            let outcome = execute_on_shard(
-                &self.cache,
-                &self.block_store,
-                config.feature_max_size,
-                config.async_storage,
-                config.control_rollup_enabled(),
-                config.control_coalesce_persist_enabled(),
-                config.control_state_max_size(),
-                config.control_distinct_sketch_enabled(),
-                config.trim_boundary_record_enabled(),
-                request.shard_id,
-                start_routing_bucket,
-                end_routing_bucket,
-                shard,
-                command,
-            );
+            let reuse_consumed_metadata = elide_packed_hash_payloads
+                && matches!(&command, Command::HashMultiSetIfTimestampOlder { .. });
+            let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
+            let (outcome, returned_post_write) = match command {
+                Command::HashMultiSetIfTimestampOlder {
+                    key,
+                    timestamp_field,
+                    timestamp_seconds,
+                    timestamp_nanos,
+                    entries,
+                } if reuse_consumed_metadata => {
+                    let (outcome, metadata) =
+                        execute_on_shard::execute_packed_conditional_hash_write(
+                            &self.cache,
+                            &self.block_store,
+                            request.shard_id,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            shard,
+                            key,
+                            timestamp_field,
+                            timestamp_seconds,
+                            timestamp_nanos,
+                            entries,
+                        );
+                    (outcome, Some(metadata))
+                }
+                command => (
+                    execute_on_shard(
+                        &self.cache,
+                        &self.block_store,
+                        config.feature_max_size,
+                        config.async_storage,
+                        config.control_rollup_enabled(),
+                        config.control_coalesce_persist_enabled(),
+                        config.control_state_max_size(),
+                        config.control_distinct_sketch_enabled(),
+                        config.trim_boundary_record_enabled(),
+                        request.shard_id,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        shard,
+                        command,
+                    ),
+                    None,
+                ),
+            };
+            let command_for_post_write = returned_post_write
+                .or(cloned_post_write)
+                .expect("every batch command keeps post-write metadata");
+            let payload_elided = reuse_consumed_metadata;
             if Self::command_updates_context_embedding(&command_for_post_write) {
                 context_embedding_commands.push(command_for_post_write.clone());
             }
