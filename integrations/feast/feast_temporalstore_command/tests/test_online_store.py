@@ -213,6 +213,19 @@ class ClientProtocolTest(unittest.TestCase):
             [str(i) for i in range(5)],
         )
 
+    def test_writes_can_use_wider_batches_than_reads(self):
+        client = RecordingClient()
+        client.max_batch_commands = 2
+        client.max_write_batch_commands = 5
+        commands = [
+            {"kind": "hash_multi_set", "key": str(i), "entries": [["f", b"v"]]}
+            for i in range(5)
+        ]
+        client.batch_write(commands)
+        self.assertEqual(
+            [len(document["commands"]) for _, document in client.sent], [5]
+        )
+
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_binary_batch_keeps_long_values_as_bytes(self):
         payload = bytes(range(256)) * 16
@@ -446,10 +459,21 @@ class ClientProtocolTest(unittest.TestCase):
                 return super()._post_encoded(path, body)
 
         client = OlderNodeClient()
-        client.batch_write([{"kind": "common_delete", "key": "a"}])
-        client.batch_write([{"kind": "common_delete", "key": "b"}])
+        client.max_batch_commands = 2
+        client.max_write_batch_commands = 5
+        client.batch_write(
+            [{"kind": "common_delete", "key": str(i)} for i in range(5)]
+        )
+        client.batch_write([{"kind": "common_delete", "key": "next"}])
         self.assertEqual(client.attempts, 1)
-        self.assertEqual([path for path, _ in client.sent], ["/batch_execute", "/batch_execute"])
+        self.assertEqual(
+            [path for path, _ in client.sent],
+            ["/batch_execute"] * 4,
+        )
+        self.assertEqual(
+            [len(document["commands"]) for _, document in client.sent],
+            [2, 2, 1, 1],
+        )
 
     def test_the_command_document_is_json_serialisable_as_sent(self):
         client = RecordingClient()
@@ -618,6 +642,7 @@ class OnlineStoreTest(unittest.TestCase):
             self.config.online_store.timeout_seconds,
             self.config.online_store.max_batch_commands,
             self.config.online_store.max_batch_request_bytes,
+            self.config.online_store.max_write_batch_commands,
         )
         return client
 
