@@ -652,6 +652,41 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 updated_at_ms: command.updated_at_ms,
             }
         }
+        v1::command::Kind::ContextWriteEvent(command) => {
+            // Refused rather than defaulted: a write with no event would file a record of all
+            // zeros, and a fabricated zero on disk cannot be told from a real one.
+            let event = command
+                .event
+                .ok_or_else(|| TonicStatus::invalid_argument("context event record missing"))?;
+            types::Command::ContextWriteEvent {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                event: Box::new(context_event_record_from_proto(event)),
+                first_write_only: command.first_write_only,
+                cold_storage: command.cold_storage,
+            }
+        }
+        v1::command::Kind::ContextWriteExtractedEvent(command) => {
+            let event = command
+                .event
+                .ok_or_else(|| TonicStatus::invalid_argument("context event record missing"))?;
+            // DEFAULTED, not refused, and the difference is read off the Rust declaration rather
+            // than decided here: `indexes` is `#[serde(default)]` over a type with a `Default`, so
+            // the JSON reader this replaces already takes an absent block as the empty default.
+            // `event` above has no default and no absence the JSON form accepts.
+            let indexes = match command.indexes {
+                Some(indexes) => context_extracted_event_indexes_from_proto(indexes)?,
+                None => types::ContextExtractedEventIndexes::default(),
+            };
+            types::Command::ContextWriteExtractedEvent {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                event: Box::new(context_event_record_from_proto(event)),
+                indexes,
+                first_write_only: command.first_write_only,
+                cold_storage: command.cold_storage,
+            }
+        }
         v1::command::Kind::ContextWriteIndexRef(command) => {
             let index_ref = command
                 .index_ref
@@ -669,6 +704,136 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 },
             }
         }
+    })
+}
+
+/// THE DURABLE EVENT, RUST TO WIRE. ALL FIFTEEN FIELDS.
+///
+/// There is no client projection of `ContextEvent` to be tempted by, but the rule is the one
+/// `context_node_record_to_proto` below follows: a durable record gets its own message. Seven of
+/// the fifteen are `skip_serializing` in the JSON form and are carried anyway, because the WAL's
+/// contract is to reproduce the COMMAND rather than the JSON form's write policy.
+///
+/// `vector` passes through unchanged -- no quantisation -- and carries no model hash, which is
+/// this record's existing design and not a guard dropped here.
+#[allow(deprecated)]
+pub(crate) fn context_event_record_to_proto(
+    event: &types::ContextEvent,
+) -> v1::ContextEventRecord {
+    v1::ContextEventRecord {
+        event_id_hash: event.event_id_hash,
+        event_time_ms: event.event_time_ms,
+        ingestion_time_ms: event.ingestion_time_ms,
+        kind: event.kind,
+        event_type: event.event_type,
+        actor_hash: event.actor_hash,
+        status: event.status,
+        valid_until_ms: event.valid_until_ms,
+        confidence: event.confidence,
+        importance: event.importance,
+        text: event.text.clone(),
+        source_ref: event.source_ref.clone(),
+        related_node_hashes: event.related_node_hashes.clone(),
+        compact_attrs: event.compact_attrs.clone(),
+        vector: event.vector.clone(),
+    }
+}
+
+/// THE DURABLE EVENT, WIRE TO RUST. ALL FIFTEEN FIELDS.
+#[allow(deprecated)]
+pub(crate) fn context_event_record_from_proto(
+    event: v1::ContextEventRecord,
+) -> types::ContextEvent {
+    types::ContextEvent {
+        event_id_hash: event.event_id_hash,
+        event_time_ms: event.event_time_ms,
+        ingestion_time_ms: event.ingestion_time_ms,
+        kind: event.kind,
+        event_type: event.event_type,
+        actor_hash: event.actor_hash,
+        status: event.status,
+        valid_until_ms: event.valid_until_ms,
+        confidence: event.confidence,
+        importance: event.importance,
+        text: event.text,
+        source_ref: event.source_ref,
+        related_node_hashes: event.related_node_hashes,
+        compact_attrs: event.compact_attrs,
+        vector: event.vector,
+    }
+}
+
+/// One of the five internal secondary indexes, Rust to wire.
+fn internal_context_index_to_proto(
+    index: types::InternalContextIndex,
+) -> v1::InternalContextIndex {
+    match index {
+        types::InternalContextIndex::EventKind => v1::InternalContextIndex::EventKind,
+        types::InternalContextIndex::Entity => v1::InternalContextIndex::Entity,
+        types::InternalContextIndex::Status => v1::InternalContextIndex::Status,
+        types::InternalContextIndex::Source => v1::InternalContextIndex::Source,
+        types::InternalContextIndex::EventTimeBucket => {
+            v1::InternalContextIndex::EventTimeBucket
+        }
+    }
+}
+
+/// One of the five, wire to Rust, with every other number REFUSED.
+///
+/// A repeated proto enum is open and arrives as `i32`. Mapping an unknown number onto the first
+/// variant would switch off whichever index happens to sort first rather than the one asked for,
+/// and UNSPECIFIED -- which exists only because proto3 requires a zero value -- is not one of the
+/// five at all.
+fn internal_context_index_from_proto(
+    index: i32,
+) -> Result<types::InternalContextIndex, TonicStatus> {
+    match v1::InternalContextIndex::try_from(index) {
+        Ok(v1::InternalContextIndex::EventKind) => Ok(types::InternalContextIndex::EventKind),
+        Ok(v1::InternalContextIndex::Entity) => Ok(types::InternalContextIndex::Entity),
+        Ok(v1::InternalContextIndex::Status) => Ok(types::InternalContextIndex::Status),
+        Ok(v1::InternalContextIndex::Source) => Ok(types::InternalContextIndex::Source),
+        Ok(v1::InternalContextIndex::EventTimeBucket) => {
+            Ok(types::InternalContextIndex::EventTimeBucket)
+        }
+        Ok(v1::InternalContextIndex::Unspecified) | Err(_) => Err(
+            TonicStatus::invalid_argument(format!("unknown internal context index {index}")),
+        ),
+    }
+}
+
+/// The extracted-event index block, Rust to wire.
+pub(crate) fn context_extracted_event_indexes_to_proto(
+    indexes: &types::ContextExtractedEventIndexes,
+) -> v1::ContextExtractedEventIndexesRecord {
+    v1::ContextExtractedEventIndexesRecord {
+        scope_hash: indexes.scope_hash,
+        entity_hashes: indexes.entity_hashes.clone(),
+        status_hash: indexes.status_hash,
+        source_hash: indexes.source_hash,
+        event_time_bucket_ms: indexes.event_time_bucket_ms,
+        disabled_indexes: indexes
+            .disabled_indexes
+            .iter()
+            .map(|index| internal_context_index_to_proto(*index) as i32)
+            .collect(),
+    }
+}
+
+/// The extracted-event index block, wire to Rust.
+pub(crate) fn context_extracted_event_indexes_from_proto(
+    indexes: v1::ContextExtractedEventIndexesRecord,
+) -> Result<types::ContextExtractedEventIndexes, TonicStatus> {
+    let mut disabled_indexes = Vec::with_capacity(indexes.disabled_indexes.len());
+    for index in indexes.disabled_indexes {
+        disabled_indexes.push(internal_context_index_from_proto(index)?);
+    }
+    Ok(types::ContextExtractedEventIndexes {
+        scope_hash: indexes.scope_hash,
+        entity_hashes: indexes.entity_hashes,
+        status_hash: indexes.status_hash,
+        source_hash: indexes.source_hash,
+        event_time_bucket_ms: indexes.event_time_bucket_ms,
+        disabled_indexes,
     })
 }
 
