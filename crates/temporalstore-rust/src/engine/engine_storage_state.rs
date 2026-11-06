@@ -489,6 +489,13 @@ pub(super) struct ShardState {
     // control_state_changes/fol sub-stores already do. Serde-skipped; set on every execute.
     #[serde(skip)]
     pub(super) control_coalesce_persist: bool,
+    // Transient per-execute hint: retained points per counter series, from
+    // Config::control_state_max_size(). Serde-skipped and set on EVERY execute, which is what
+    // makes it replay-correct: the WAL replay loop installs the config effective at each
+    // record's frontier before executing it, so a replayed increment trims with the cap that was
+    // in force when it was first written -- no resurrection, no over-trim. 0 means unbounded.
+    #[serde(skip)]
+    pub(super) control_state_max_size: usize,
     // Transient per-execute hint: gate for converting oversized exact distinct sets to HLL
     // sketches on the CHANGE write path. Serde-skipped; set on every execute.
     #[serde(skip)]
@@ -9679,6 +9686,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         expiry_by_deadline: _,
         rollups: _,
         control_coalesce_persist: _,
+        control_state_max_size: _,
         control_distinct_sketch: _,
         dirty_objects: _,
         // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value

@@ -640,6 +640,7 @@ pub(crate) fn execute_on_shard(
     async_storage: bool,
     control_rollup_enabled: bool,
     control_coalesce_persist: bool,
+    control_state_max_size: usize,
     control_distinct_sketch: bool,
     trim_boundary_record: bool,
     shard_id: ShardId,
@@ -651,6 +652,7 @@ pub(crate) fn execute_on_shard(
     // Publish per-execute hints so the write helpers don't need the flags threaded through
     // every control-state write arm.
     shard.control_coalesce_persist = control_coalesce_persist;
+    shard.control_state_max_size = control_state_max_size;
     shard.control_distinct_sketch = control_distinct_sketch;
     let mut mutated = false;
     let mut conditional_hash_write = false;

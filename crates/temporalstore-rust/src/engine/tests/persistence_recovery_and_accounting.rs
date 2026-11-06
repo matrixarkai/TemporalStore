@@ -16857,6 +16857,124 @@ fn the_counter_coalesce_cure_is_inert_under_default_config() {
     );
 }
 
+/// A counter series is bounded by a WRITE, and deliberately not by a RELOAD.
+///
+/// THE DEFECT. `persist_control_state_block` serialises the whole series on every Counter write
+/// and nothing trimmed it, so a counter holding n points rewrote all n on the n+1th -- measured
+/// at 313,309 bytes per increment on a 3,200-point series. No `control_state_max` existed, so
+/// that cost had no ceiling. `Config::control_state_max_size()` is now the ceiling, applied in
+/// `persist_control_state_block`: the one function all five Counter write arms call, and that no
+/// load path calls.
+///
+/// THE SHAPE OF THE BOUND IS THE POINT OF THIS TEST, and it is two-sided.
+///
+/// A reload MUST NOT trim. A series longer than the cap -- written before the cap existed, or by
+/// a node configured higher -- is durable data, and trimming it on load would silently delete
+/// points that a node with a larger cap still answers from, with nothing to distinguish an
+/// operator lowering the cap from a node whose config was lost and defaulted. `feature_max_size`
+/// takes exactly this position: its trim runs in the write path, WAL replay re-derives the
+/// historical trim at each record's config frontier, and no load-time pass applies the current
+/// cap to resident series. This follows it.
+///
+/// So the invariant is "a WRITE will not leave a series longer than the cap", NOT "a resident
+/// series is never longer than the cap". The three phases below assert both halves: over-cap data
+/// survives a reload untouched, and the next write brings it to the bound.
+///
+/// Phase one doubles as the fixture check: `ControlStateIncrement` and `ControlStateCount` both
+/// take the key verbatim where `ControlStateSet` files under a family prefix, so a count of five
+/// is what proves the writes landed where the read looks.
+#[test]
+fn a_counter_series_is_bounded_by_a_write_and_not_by_a_reload() {
+    const CAP: usize = 3;
+    const POINTS: u64 = 5;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+
+    let bump = |engine: &TemporalEngine, timestamp_ms: u64| {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateIncrement {
+                key: "c".to_string(),
+                timestamp_ms,
+                amount: 1,
+            },
+        });
+    };
+    // Every point carries amount 1 at a distinct timestamp, so the summed count over the whole
+    // range IS the number of retained points -- which is the quantity the cap governs.
+    let retained = |engine: &TemporalEngine| -> i64 {
+        let answer = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateCount {
+                key: "c".to_string(),
+                start_ms: 0,
+                end_ms: 1_000_000,
+            },
+        });
+        match answer.response {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected an integer count, got {other:?}"),
+        }
+    };
+    let configure = |engine: &TemporalEngine, version: u64, cap: &str| {
+        let mut config = Config {
+            version,
+            ..Config::default()
+        };
+        config
+            .extend_config
+            .insert("control_state_max".to_string(), cap.to_string());
+        assert!(
+            engine.set_config(SetConfigRequest { shard_id: 1, config }).ok,
+            "set_config must be accepted, or the cap under test is not the cap in force"
+        );
+    };
+
+    // PHASE 1 -- build an over-cap series while the cap is unbounded. `0` is the pre-cap
+    // behaviour, so this is the series a store written before the bound existed would hold.
+    let original = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    original.load_shard(1);
+    configure(&original, 2, "0");
+    for i in 0..POINTS {
+        bump(&original, 1_000 + i);
+    }
+    assert_eq!(
+        retained(&original),
+        POINTS as i64,
+        "an unbounded cap must retain every point, and the count must see them: a lower number          here means the writes and the read disagree about the key, not that a trim ran"
+    );
+
+    // PHASE 2 -- lower the cap below what is already stored, then reload from disk.
+    configure(&original, 3, "3");
+    drop(original);
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(1);
+    assert_eq!(
+        retained(&restarted),
+        POINTS as i64,
+        "A RELOAD MUST NOT TRIM. The cap is {CAP} and {POINTS} points are on disk; a reload that          returned {CAP} would have silently deleted durable points that a node configured higher          still answers from. The two load paths must reinstate what is stored, untouched"
+    );
+
+    // PHASE 3 -- one write, at the bound.
+    bump(&restarted, 2_000);
+    assert_eq!(
+        retained(&restarted),
+        CAP as i64,
+        "the WRITE bound: one increment past the cap must leave exactly {CAP} points, oldest          first out, which is what keeps the whole-series rewrite from costing an unbounded history"
+    );
+}
+
 /// One counter increment rewrites the WHOLE counter series.
 ///
 /// `persist_control_state_block` runs on every `ControlStateIncrement` and calls
