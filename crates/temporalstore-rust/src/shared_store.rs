@@ -7948,6 +7948,63 @@ mod tests {
 
     #[cfg(feature = "matrixobject")]
     #[tokio::test]
+    async fn the_shared_path_opens_one_connection_not_one_per_request() {
+        // WHAT CONNECTION REUSE BUYS IS INVISIBLE TO THE BYTE COUNTERS.
+        //
+        // A handshake moves no HTTP bytes, so reuse took the wire figure from 2.619 to 2.572 --
+        // which is the `Connection: close` header no longer being sent, and nothing else. The
+        // saving is a TCP round trip per request: free on loopback, a full RTT over a network,
+        // and paid twice per shared-store record because an entry writes a WAL frame and an
+        // offset-index frame.
+        //
+        // So it is asserted as a COUNT of sockets, which is the only thing here that actually
+        // measures it.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let key = "shared/wal/one-connection";
+        const RECORDS: usize = 32;
+
+        for index in 0..RECORDS {
+            store
+                .append_blob(key, Bytes::from(format!("record-{index:02}").into_bytes()))
+                .await
+                .expect("the append should publish");
+        }
+        // A read too, so the pool is exercised by more than one request shape -- a GET carries
+        // a body back where a PUT reply does not, and a pooled socket is only safe if the body
+        // was read to the byte.
+        let whole = store.get(key).await.expect("the object should read back");
+        assert_eq!(
+            whole.len(),
+            RECORDS * "record-00".len(),
+            "the object is not the size the appends should have made it"
+        );
+
+        let requests = store.requests_issued();
+        let opened = store.connections_opened();
+        println!("SHAREDPATHCONNS records={RECORDS} requests={requests} connections={opened}");
+
+        // THE POINT: far fewer sockets than requests. Pinned as a bound rather than exactly
+        // one, because a server may close an idle keep-alive connection whenever it likes and
+        // this client correctly opens another -- so demanding exactly one would make a
+        // legitimate server behaviour fail the suite.
+        assert!(
+            opened < requests / 4,
+            "{requests} requests opened {opened} connections; with reuse that should be a small \
+             fraction. Equal to the request count means every request is paying a handshake, \
+             which is what this client used to do"
+        );
+
+        // NOT VACUOUS: something was actually opened, and the requests really happened.
+        assert!(opened >= 1, "no connection was opened at all, so nothing was measured");
+        assert!(
+            requests >= RECORDS as u64,
+            "{requests} requests for {RECORDS} appends cannot have done the work"
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
     async fn what_the_shared_path_spends_on_the_wire_per_record() {
         // WHAT A RECORD COSTS OVER A NETWORK, which no instrument here measured.
         //
