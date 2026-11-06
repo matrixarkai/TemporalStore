@@ -77,6 +77,37 @@ pub(super) fn mark_dirty_for_successful_commands(
     }
 }
 
+pub(super) fn write_command_keys(commands: &[Command]) -> Vec<(usize, String)> {
+    commands
+        .iter()
+        .enumerate()
+        .filter_map(|(index, command)| {
+            if is_write_command(command) {
+                command_key(command).map(|key| (index, key))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub(super) fn mark_dirty_for_successful_keys(
+    dirty: &Mutex<DirtyTracker>,
+    shard_id: ShardId,
+    keys: &[(usize, String)],
+    responses: &[ExecuteResponse],
+) {
+    for (index, key) in keys {
+        if responses
+            .get(*index)
+            .map(|response| response.status.ok)
+            .unwrap_or(false)
+        {
+            mark_dirty(dirty, shard_id, Some(key));
+        }
+    }
+}
+
 // Delegate to the engine's canonical object-key extractor (same one used for validation), so
 // the dirty tracker records a key for EVERY write command -- including the ones this used to
 // omit (context, control-state change/selection, conditional string). Those

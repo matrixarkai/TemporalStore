@@ -4600,6 +4600,34 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             vector: vector.clone(),
             updated_at_ms: *updated_at_ms,
         }),
+        Command::ContextUpsertEntity {
+            tenant_hash,
+            entity,
+        } => v1::command::Kind::ContextUpsertEntity(v1::ContextUpsertEntity {
+            tenant_hash: *tenant_hash,
+            entity: Some(sdk::context_entity_record_to_proto(entity)),
+        }),
+        Command::ContextUpsertSummary {
+            tenant_hash,
+            summary,
+        } => v1::command::Kind::ContextUpsertSummary(v1::ContextUpsertSummary {
+            tenant_hash: *tenant_hash,
+            // The summary's OWN model hash travels with its OWN vector. It is not the node's, and
+            // it is not shared with `ContextSetNodeEmbedding.model_hash`.
+            summary: Some(sdk::context_summary_record_to_proto(summary)),
+        }),
+        Command::ContextWriteCompressionEvent { tenant_hash, event } => {
+            v1::command::Kind::ContextWriteCompressionEvent(v1::ContextWriteCompressionEvent {
+                tenant_hash: *tenant_hash,
+                event: Some(sdk::context_compression_event_record_to_proto(event)),
+            })
+        }
+        Command::ContextWritePackAudit { tenant_hash, audit } => {
+            v1::command::Kind::ContextWritePackAudit(v1::ContextWritePackAudit {
+                tenant_hash: *tenant_hash,
+                audit: Some(sdk::context_pack_audit_record_to_proto(audit)),
+            })
+        }
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
@@ -12298,12 +12326,13 @@ mod tests {
 /// THE LIST ONLY SHRINKS. Adding a write command without a proto mapping fails this test, and
 /// covering one requires deleting its name here, in the same change. So the work left is visible
 /// in the tree instead of in a plan, and progress cannot be undone quietly.
-const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
-    "ContextUpsertEntity",
-    "ContextUpsertSummary",
-    "ContextWriteCompressionEvent",
-    "ContextWritePackAudit",
-];
+///
+/// EMPTY. Every write command the shared WAL can carry now has a protobuf mapping, so the JSON arm
+/// of `encode_wal_proto_frame` is reached by no write. The list is kept rather than deleted
+/// because `no_write_command_quietly_joins_the_json_fallback` recomputes the intersection from
+/// source text on every run and compares it against this: an empty roster is now the assertion
+/// that the set is empty, and a write command added without a mapping fails against it.
+const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[];
 
 /// THE NINE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
 ///
@@ -12369,6 +12398,599 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
             Some(&command),
             "{name} did not survive the round trip"
         );
+    }
+}
+
+/// A `ContextEntity` with all ten fields set, distinctly.
+fn a_fully_populated_context_entity() -> crate::types::ContextEntity {
+    crate::types::ContextEntity {
+        entity_hash: 0x2122_2324_2526_2728,
+        node_hash: 0x3132_3334_3536_3738,
+        entity_type: 44,
+        name: "entity name".to_string(),
+        value: "entity value".to_string(),
+        updated_at_ms: 1_700_000_000_011,
+        valid_from_ms: 1_700_000_000_012,
+        confidence: 0.125,
+        source_event_hashes: vec![201, 202, 203],
+        // NOT quantised, and no model hash: `ContextEntity` has never carried one. `1.0e-7` is the
+        // element that says so -- it is exact in `f32` and would not survive int8 quantisation.
+        vector: vec![0.5, -0.25, 1.0e-7, 3.5],
+    }
+}
+
+/// A `ContextSummary` with all six fields set, the encoder guard among them.
+fn a_fully_populated_context_summary() -> crate::types::ContextSummary {
+    crate::types::ContextSummary {
+        node_hash: 0x4142_4344_4546_4748,
+        level: crate::types::CONTEXT_SUMMARY_LEVEL_L1,
+        text: "the summary text".to_string(),
+        valid_from_ms: 1_700_000_000_013,
+        vector: vec![-1.0, 0.75, 1.0e-7, 2.0],
+        // DISTINCT from every other encoder guard in this file. See
+        // `each_encoder_guard_is_its_own_field_and_carries_its_own_value`.
+        embedding_model_hash: 0xDDDD_0004_0004_0004,
+    }
+}
+
+/// A `ContextCompressionEvent` with all six fields set.
+fn a_fully_populated_compression_event() -> crate::types::ContextCompressionEvent {
+    crate::types::ContextCompressionEvent {
+        compression_id_hash: 0x5152_5354_5556_5758,
+        node_hash: 0x6162_6364_6566_6768,
+        source_start_ms: 1_700_000_000_020,
+        source_end_ms: 1_700_000_000_030,
+        compressed_time_ms: 1_700_000_000_040,
+        summary: "what the compression rolled up".to_string(),
+    }
+}
+
+/// A `ContextPackAudit` with all eight fields set, and the two ref lists DIFFERENT.
+///
+/// Selected and blocked are the two halves of the verdict. Lists that merely had the same length,
+/// or the same contents, could not tell a converter that crossed them from one that did not.
+fn a_fully_populated_pack_audit() -> crate::types::ContextPackAudit {
+    use crate::types::ContextAuditRef;
+    crate::types::ContextPackAudit {
+        query_id: "query-7".to_string(),
+        session_hash: 0x7172_7374_7576_7778,
+        request_time_ms: 1_700_000_000_050,
+        query_hash: 0x8182_8384_8586_8788,
+        max_prompt_tokens: 4096,
+        selected_tokens: 1234,
+        selected_refs: vec![ContextAuditRef {
+            node_hash: 901,
+            event_time_ms: 1_700_000_000_060,
+            reason: "selected: highest score".to_string(),
+        }],
+        blocked_refs: vec![
+            ContextAuditRef {
+                node_hash: 902,
+                event_time_ms: 1_700_000_000_070,
+                reason: "blocked: over budget".to_string(),
+            },
+            ContextAuditRef {
+                node_hash: 903,
+                event_time_ms: 1_700_000_000_080,
+                reason: "blocked: encoder declined".to_string(),
+            },
+        ],
+    }
+}
+
+/// THE LAST FOUR WRITES, DRIVEN THROUGH THE REAL FRAME, AND THE ROSTER REACHES ZERO.
+///
+/// A MAPPING IS NOT A FORMAT. `command_to_sdk_proto` compiling proves only that a mapping exists;
+/// `encode_wal_proto_frame` is what chooses the arm. Every case goes through the real frame and is
+/// checked three ways: the frame DECLARES protobuf, the payload does NOT parse as JSON, and the
+/// command comes back field for field.
+///
+/// FIVE CLAUSES:
+///
+///   1. `COMMANDS_STILL_ENCODED_AS_JSON` is EMPTY, in this same change -- that roster only shrinks
+///      and covering a command means deleting its name from it;
+///   2. the frame declares protobuf and the payload is not JSON;
+///   3. the command round-trips field for field, through the path replay uses;
+///   4. the pack audit's two ref lists come back on the right side of the verdict;
+///   5. the durable JSON tagging is pinned for each of the four, so the old-format reader is driven
+///      on the shape it will actually meet on disk.
+#[test]
+fn the_last_context_record_writes_are_framed_as_protobuf_and_round_trip() {
+    // ---- CLAUSE 1: THE ROSTER REACHED ZERO ----
+    assert!(
+        COMMANDS_STILL_ENCODED_AS_JSON.is_empty(),
+        "COMMANDS_STILL_ENCODED_AS_JSON still holds {:?}. Every write the shared WAL can carry is \
+         mapped as of this change, so the roster is empty and stays the assertion that it is",
+        COMMANDS_STILL_ENCODED_AS_JSON
+    );
+
+    let cases: Vec<(&str, &str, Command)> = vec![
+        (
+            "ContextUpsertEntity",
+            "context_upsert_entity",
+            Command::ContextUpsertEntity {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1011,
+                entity: a_fully_populated_context_entity(),
+            },
+        ),
+        (
+            "ContextUpsertSummary",
+            "context_upsert_summary",
+            Command::ContextUpsertSummary {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1012,
+                summary: a_fully_populated_context_summary(),
+            },
+        ),
+        (
+            "ContextWriteCompressionEvent",
+            "context_write_compression_event",
+            Command::ContextWriteCompressionEvent {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1013,
+                event: a_fully_populated_compression_event(),
+            },
+        ),
+        (
+            "ContextWritePackAudit",
+            "context_write_pack_audit",
+            Command::ContextWritePackAudit {
+                tenant_hash: 0x0A0B_0C0D_0E0F_1014,
+                audit: a_fully_populated_pack_audit(),
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: four is the number this batch covered, and a shorter list would make
+    // every assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 4, "this batch covers the last four context writes");
+
+    for (name, tag, command) in &cases {
+        assert!(
+            crate::engine::is_write_command(command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // ---- CLAUSE 2 ----
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // ---- CLAUSE 3 ----
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(command),
+            "{name} did not survive the round trip"
+        );
+
+        // ---- CLAUSE 5: THE DURABLE JSON TAGGING, PER COMMAND ----
+        //
+        // `Command` is `#[serde(tag = "kind", rename_all = "snake_case")]`, so a record an older
+        // build wrote is ONE FLAT OBJECT with a discriminator beside the variant's own fields, not
+        // `{"ContextUpsertEntity": {..}}`. The JSON arm is still the reader for every record
+        // written before this change, so it is driven on that shape here.
+        let json = serde_json::to_value(command).expect("the command must serialize");
+        let object = json
+            .as_object()
+            .expect("a durable record is ONE flat object, not a map from variant name to body");
+        assert_eq!(
+            object.get("kind").and_then(|kind| kind.as_str()),
+            Some(*tag),
+            "{name}'s durable discriminator is not `kind: {tag}`: {json}"
+        );
+        assert!(
+            object.contains_key("tenant_hash") && !object.contains_key(*name),
+            "{name}'s variant fields are not SIBLINGS of the `kind` discriminator: {json}"
+        );
+        let through_json: Command = serde_json::from_value(json.clone()).unwrap_or_else(|err| {
+            panic!(
+                "a {name} record written by an older build must still decode through the JSON \
+                 arm: {err}"
+            )
+        });
+        assert_eq!(
+            &through_json, command,
+            "{name} did not survive the JSON round trip either. None of its fields is \
+             `skip_serializing`, so unlike `ContextEvent` this one loses nothing through JSON, and \
+             a difference here means the durable JSON shape has moved"
+        );
+    }
+
+    // ---- CLAUSE 4: THE AUDIT'S TWO REF LISTS DID NOT CROSS ----
+    let audit = a_fully_populated_pack_audit();
+    assert_ne!(
+        audit.selected_refs, audit.blocked_refs,
+        "the fixture gives the two halves of the verdict the same contents, so a converter that \
+         crossed them would pass"
+    );
+    let entry = SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index: 1,
+        command: Some(Command::ContextWritePackAudit {
+            tenant_hash: 1,
+            audit: audit.clone(),
+        }),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+    let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT).expect("must frame");
+    let back = decode_wal_proto_frame_exact(&bytes, "verdict test").expect("must decode");
+    match back.command {
+        Some(Command::ContextWritePackAudit { audit: got, .. }) => {
+            assert_eq!(
+                got.selected_refs, audit.selected_refs,
+                "the SELECTED refs came back as {:?}",
+                got.selected_refs
+            );
+            assert_eq!(
+                got.blocked_refs, audit.blocked_refs,
+                "the BLOCKED refs came back as {:?}",
+                got.blocked_refs
+            );
+        }
+        other => panic!("decoded to the wrong variant: {other:?}"),
+    }
+}
+
+/// EACH OF THE FOUR ENCODER GUARDS IS ITS OWN FIELD AND CARRIES ITS OWN VALUE.
+///
+/// # WHAT THE GUARDS ARE FOR
+///
+/// A vector read under the wrong encoder produces NO error. Two encoders truncated to the same
+/// width give no length mismatch, only a cosine computed across two different vector spaces. The
+/// model hash is the whole check, so zeroing one, defaulting one from another, or folding two into
+/// one field does not lose a datum -- it disarms the check.
+///
+/// # WHY THEY CANNOT BE SHARED
+///
+/// There are FOUR, and each covers a vector that can be replaced independently of the others:
+///
+///   * `ContextNodeRecord.embedding_model_hash` -- the node's own vector;
+///   * `ContextNodeRecord.summary_vector_model_hash` -- the node's CACHED COPY of a summary vector,
+///     deliberately separate because a re-embed can replace one without touching the other;
+///   * `ContextSetNodeEmbedding.model_hash` -- the write that sets a node vector;
+///   * `ContextSummaryRecord.embedding_model_hash` -- the summary record's own vector, which the
+///     retrieve pass scores into the SAME score map as the node's, so a summary scored under a
+///     replaced encoder marks the node scored and withdraws the lexical fallback that a declined
+///     node was routed to.
+///
+/// # HOW THIS CANNOT PASS BY ACCIDENT
+///
+/// All four are given DIFFERENT values, and every pair is asserted distinct before the round trip
+/// runs. A shared field, a defaulted one or a crossed pair makes two of the four equal on the way
+/// back, and the clause that fails names which. Driven through the real frame, so this is a fact
+/// about the bytes rather than about the converter signature.
+#[test]
+fn each_encoder_guard_is_its_own_field_and_carries_its_own_value() {
+    const NODE_VECTOR_ENCODER: u64 = 0xAAAA_0001_0001_0001;
+    const NODE_SUMMARY_COPY_ENCODER: u64 = 0xBBBB_0002_0002_0002;
+    const SET_EMBEDDING_ENCODER: u64 = 0xCCCC_0003_0003_0003;
+    const SUMMARY_RECORD_ENCODER: u64 = 0xDDDD_0004_0004_0004;
+
+    // The four values are distinct, asserted rather than assumed: if two of them were equal every
+    // clause below would hold on a build that had folded those two fields into one.
+    let guards = [
+        ("ContextNodeRecord.embedding_model_hash", NODE_VECTOR_ENCODER),
+        (
+            "ContextNodeRecord.summary_vector_model_hash",
+            NODE_SUMMARY_COPY_ENCODER,
+        ),
+        ("ContextSetNodeEmbedding.model_hash", SET_EMBEDDING_ENCODER),
+        (
+            "ContextSummaryRecord.embedding_model_hash",
+            SUMMARY_RECORD_ENCODER,
+        ),
+    ];
+    assert_eq!(guards.len(), 4, "there are four encoder guards");
+    for (left_index, (left_name, left)) in guards.iter().enumerate() {
+        for (right_name, right) in guards.iter().skip(left_index + 1) {
+            assert_ne!(
+                left, right,
+                "{left_name} and {right_name} are given the same value in this test, so a build \
+                 that shared one field between them would pass"
+            );
+        }
+    }
+    assert_eq!(
+        a_fully_populated_context_summary().embedding_model_hash,
+        SUMMARY_RECORD_ENCODER,
+        "the summary fixture no longer carries the value this test distinguishes it by"
+    );
+
+    // Vectors that would NOT survive int8 quantisation, so the round trip says something about
+    // precision as well as about the guard beside it.
+    let fine_grained = vec![0.5f32, -0.25, 1.0e-7, 3.5];
+
+    // ALL FIFTEEN FIELDS WRITTEN OUT. `ContextNode` has no `Default`, and that is just as well:
+    // a `..Default::default()` fixture leaves the fields around the two guards at zero, so a
+    // converter that read a guard out of a neighbouring field would still come back right.
+    let node = crate::types::ContextNode {
+        node_hash: 0x9192_9394_9596_9798,
+        parent_hash: 0x9192_9394_9596_9799,
+        kind: 5,
+        canonical_name: "canonical node name".to_string(),
+        l0: "the l0 text".to_string(),
+        status: 6,
+        last_event_time_ms: 1_700_000_000_100,
+        l1_ref: "l1://ref".to_string(),
+        raw_metadata_ref: "raw://ref".to_string(),
+        vector: fine_grained.clone(),
+        embedding_model_hash: NODE_VECTOR_ENCODER,
+        embedding_updated_at_ms: 1_700_000_000_101,
+        summary_vector: vec![1.0, -1.0, 1.0e-7],
+        summary_vector_valid_from_ms: 1_700_000_000_102,
+        summary_vector_model_hash: NODE_SUMMARY_COPY_ENCODER,
+    };
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ContextUpsertNode",
+            Command::ContextUpsertNode {
+                tenant_hash: 1,
+                node: Box::new(node.clone()),
+            },
+        ),
+        (
+            "ContextSetNodeEmbedding",
+            Command::ContextSetNodeEmbedding {
+                tenant_hash: 2,
+                node_hash: node.node_hash,
+                model_hash: SET_EMBEDDING_ENCODER,
+                vector: fine_grained.clone(),
+                updated_at_ms: 1_700_000_000_090,
+            },
+        ),
+        (
+            "ContextUpsertSummary",
+            Command::ContextUpsertSummary {
+                tenant_hash: 3,
+                summary: a_fully_populated_context_summary(),
+            },
+        ),
+    ];
+    // All three vector-carrying commands, so every one of the four guards is driven through the
+    // frame rather than only the one this batch added.
+    assert_eq!(cases.len(), 3, "the four guards live on three commands");
+
+    for (name, command) in &cases {
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is not framed as protobuf, so this says nothing about the proto record"
+        );
+        let back = decode_wal_proto_frame_exact(&bytes, "encoder guard test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+
+        // Field for field, which carries every guard AND every vector element with it.
+        assert_eq!(
+            back.command.as_ref(),
+            Some(command),
+            "{name} did not survive the round trip, so one of its guards or one of its vector \
+             elements moved"
+        );
+
+        // And then each guard READ OFF the decoded command by name, so the failure says which one.
+        match back.command.as_ref() {
+            Some(Command::ContextUpsertNode { node, .. }) => {
+                assert_eq!(
+                    node.embedding_model_hash, NODE_VECTOR_ENCODER,
+                    "the node's own encoder guard came back as {:#x}",
+                    node.embedding_model_hash
+                );
+                assert_eq!(
+                    node.summary_vector_model_hash, NODE_SUMMARY_COPY_ENCODER,
+                    "the node's SUMMARY-COPY encoder guard came back as {:#x}. It is deliberately \
+                     separate from the field above, because a re-embed can replace one vector \
+                     without touching the copy",
+                    node.summary_vector_model_hash
+                );
+                assert_ne!(
+                    node.embedding_model_hash, node.summary_vector_model_hash,
+                    "the node's two guards came back equal, so one field is serving both vectors"
+                );
+            }
+            Some(Command::ContextSetNodeEmbedding { model_hash, .. }) => assert_eq!(
+                *model_hash, SET_EMBEDDING_ENCODER,
+                "the set-embedding guard came back as {model_hash:#x}"
+            ),
+            Some(Command::ContextUpsertSummary { summary, .. }) => assert_eq!(
+                summary.embedding_model_hash, SUMMARY_RECORD_ENCODER,
+                "the summary record's own encoder guard came back as {:#x}. It is the fourth guard \
+                 and is not the node's: the retrieve pass scores this vector into the same score \
+                 map, so sharing it would let a summary written by a replaced encoder mark its \
+                 node scored",
+                summary.embedding_model_hash
+            ),
+            other => panic!("{name} decoded to the wrong variant: {other:?}"),
+        }
+    }
+}
+
+/// EACH OF THE FOUR WRITES REFUSES AN ABSENT RECORD BY NAME, AND EACH REFUSAL HAS A CONTROL.
+///
+/// A proto message field is ALWAYS optional on the wire, so every nested record arrives as an
+/// `Option`. None of these four has a `#[serde(default)]` on the Rust side and none of them means
+/// anything without the record it carries, so an absent one is REFUSED BY NAME rather than
+/// defaulted: filing an all-zero entity, summary, compression event or pack audit would put a
+/// record on disk that cannot afterwards be told from a real one.
+///
+/// Every refusal sits beside a PRESENT record that must still decode, because a decode that
+/// refused everything would satisfy the refusal arms on its own.
+#[test]
+fn the_last_context_record_writes_refuse_an_absent_record_by_name() {
+    use crate::sdk::{sdk_command_to_types, v1};
+
+    let wrap = |kind: v1::command::Kind| v1::Command { kind: Some(kind) };
+
+    let absent: Vec<(&str, &str, v1::command::Kind)> = vec![
+        (
+            "ContextUpsertEntity",
+            "context entity record missing",
+            v1::command::Kind::ContextUpsertEntity(v1::ContextUpsertEntity {
+                tenant_hash: 1,
+                entity: None,
+            }),
+        ),
+        (
+            "ContextUpsertSummary",
+            "context summary record missing",
+            v1::command::Kind::ContextUpsertSummary(v1::ContextUpsertSummary {
+                tenant_hash: 1,
+                summary: None,
+            }),
+        ),
+        (
+            "ContextWriteCompressionEvent",
+            "context compression event record missing",
+            v1::command::Kind::ContextWriteCompressionEvent(v1::ContextWriteCompressionEvent {
+                tenant_hash: 1,
+                event: None,
+            }),
+        ),
+        (
+            "ContextWritePackAudit",
+            "context pack audit record missing",
+            v1::command::Kind::ContextWritePackAudit(v1::ContextWritePackAudit {
+                tenant_hash: 1,
+                audit: None,
+            }),
+        ),
+    ];
+    assert_eq!(absent.len(), 4, "all four of this batch's writes are covered");
+
+    for (name, says, kind) in absent {
+        let error = sdk_command_to_types(wrap(kind)).expect_err(&format!(
+            "{name} with no record decoded, so an all-zero record was filed as if real"
+        ));
+        assert!(
+            error.message().contains(says),
+            "{name}'s refusal does not name what was missing -- it said {error}, and a refusal \
+             that does not name the field is a refusal nobody can act on"
+        );
+    }
+
+    // ---- THE CONTROLS: a PRESENT record decodes, field for field, on all four. ----
+    let present: Vec<(&str, v1::command::Kind, Command)> = vec![
+        (
+            "ContextUpsertEntity",
+            v1::command::Kind::ContextUpsertEntity(v1::ContextUpsertEntity {
+                tenant_hash: 11,
+                entity: Some(sdk::context_entity_record_to_proto(
+                    &a_fully_populated_context_entity(),
+                )),
+            }),
+            Command::ContextUpsertEntity {
+                tenant_hash: 11,
+                entity: a_fully_populated_context_entity(),
+            },
+        ),
+        (
+            "ContextUpsertSummary",
+            v1::command::Kind::ContextUpsertSummary(v1::ContextUpsertSummary {
+                tenant_hash: 12,
+                summary: Some(sdk::context_summary_record_to_proto(
+                    &a_fully_populated_context_summary(),
+                )),
+            }),
+            Command::ContextUpsertSummary {
+                tenant_hash: 12,
+                summary: a_fully_populated_context_summary(),
+            },
+        ),
+        (
+            "ContextWriteCompressionEvent",
+            v1::command::Kind::ContextWriteCompressionEvent(v1::ContextWriteCompressionEvent {
+                tenant_hash: 13,
+                event: Some(sdk::context_compression_event_record_to_proto(
+                    &a_fully_populated_compression_event(),
+                )),
+            }),
+            Command::ContextWriteCompressionEvent {
+                tenant_hash: 13,
+                event: a_fully_populated_compression_event(),
+            },
+        ),
+        (
+            "ContextWritePackAudit",
+            v1::command::Kind::ContextWritePackAudit(v1::ContextWritePackAudit {
+                tenant_hash: 14,
+                audit: Some(sdk::context_pack_audit_record_to_proto(
+                    &a_fully_populated_pack_audit(),
+                )),
+            }),
+            Command::ContextWritePackAudit {
+                tenant_hash: 14,
+                audit: a_fully_populated_pack_audit(),
+            },
+        ),
+    ];
+    assert_eq!(present.len(), 4, "every refusal above has a control");
+
+    for (name, kind, expected) in present {
+        let decoded = sdk_command_to_types(wrap(kind))
+            .unwrap_or_else(|err| panic!("{name} with a present record must decode: {err}"));
+        assert_eq!(
+            decoded, expected,
+            "{name}'s control decoded to something other than the command it was built from"
+        );
+    }
+
+    // ---- AN EMPTY REF LIST IS NOT AN ABSENT RECORD ----
+    //
+    // `selected_refs` and `blocked_refs` are REPEATED, which has no presence on the wire in
+    // proto3, and `#[serde(default)]` on the Rust side already takes an absent list as empty. So
+    // an empty audit decodes rather than being refused -- the refusal above is about the AUDIT,
+    // not about what is in it.
+    let empty_lists = sdk_command_to_types(wrap(v1::command::Kind::ContextWritePackAudit(
+        v1::ContextWritePackAudit {
+            tenant_hash: 15,
+            audit: Some(v1::ContextPackAuditRecord {
+                query_id: "query-empty".to_string(),
+                session_hash: 5,
+                request_time_ms: 6,
+                query_hash: 7,
+                max_prompt_tokens: 8,
+                selected_tokens: 0,
+                selected_refs: Vec::new(),
+                blocked_refs: Vec::new(),
+            }),
+        },
+    )))
+    .expect("an audit that selected and blocked nothing is a real audit, not a missing one");
+    match empty_lists {
+        Command::ContextWritePackAudit { audit, .. } => {
+            assert!(audit.selected_refs.is_empty() && audit.blocked_refs.is_empty());
+            assert_eq!(audit.query_id, "query-empty");
+        }
+        other => panic!("decoded to the wrong variant: {other:?}"),
     }
 }
 
