@@ -200,6 +200,14 @@ pub struct MatrixObjectHttpStore {
     ///
     /// Bounded, because an unbounded pool is a file-descriptor leak wearing a cache's clothes.
     connections: Arc<Mutex<Vec<TcpStream>>>,
+    /// How many sockets this store has OPENED.
+    ///
+    /// The byte counters cannot see what connection reuse buys, because a handshake moves no
+    /// HTTP bytes -- reuse took the wire figure from 2.619 to 2.572, which is the
+    /// `Connection: close` header no longer being sent and nothing else. What it actually
+    /// saved is a TCP round trip per request, invisible on loopback and a full RTT over a
+    /// network. This counts it, so the saving is a number rather than an argument.
+    connections_opened: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Idle sockets kept per store. Small on purpose: this client issues requests from one task
@@ -245,6 +253,7 @@ impl MatrixObjectHttpStore {
             wire_sent: Arc::default(),
             wire_received: Arc::default(),
             connections: Arc::default(),
+            connections_opened: Arc::default(),
         })
     }
 
@@ -285,6 +294,23 @@ impl MatrixObjectHttpStore {
     /// Bytes read from the socket, response heads included.
     pub fn wire_bytes_received(&self) -> u64 {
         self.wire_received.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many TCP connections this store has opened.
+    ///
+    /// With reuse this should be far below `requests_issued`; equal to it means every request
+    /// is paying a handshake, which is what this client used to do.
+    pub fn connections_opened(&self) -> u64 {
+        self.connections_opened
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Open a socket and count it. The single door through which this store connects, so a
+    /// handshake cannot happen without being counted.
+    fn open_connection(&self) -> Result<TcpStream, ObjectStoreError> {
+        self.connections_opened
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        connect(&self.addr)
     }
 
     fn take_connection(&self) -> Option<TcpStream> {
@@ -339,7 +365,7 @@ impl MatrixObjectHttpStore {
                         // is real. Without that distinction a healthy store reports io errors
                         // in proportion to how long it was idle.
                         Err(_) => {
-                            let mut fresh = connect(&self.addr)?;
+                            let mut fresh = self.open_connection()?;
                             let response =
                                 http_exchange(&mut fresh, &self.addr, method, target, extra, body)?;
                             if response.reusable {
@@ -350,7 +376,7 @@ impl MatrixObjectHttpStore {
                     }
                 }
                 None => {
-                    let mut fresh = connect(&self.addr)?;
+                    let mut fresh = self.open_connection()?;
                     let response =
                         http_exchange(&mut fresh, &self.addr, method, target, extra, body)?;
                     if response.reusable {
