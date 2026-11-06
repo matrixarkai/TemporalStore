@@ -1939,15 +1939,15 @@ where
         let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
         let mut position = 0usize;
         while position < ordered.len() {
-            // A RUN REACHES AS FAR AS THE BYTES STAY ADJACENT IN ONE BLOB.
+            // A RUN REACHES AS FAR AS THE BYTES STAY IN ONE RANGE OF ONE BLOB.
             //
             // Bounded by the apply window as well, so a long log is still read and applied in
-            // steps rather than pulled into memory whole.
+            // steps rather than pulled into memory whole. Which pairs of entries a run may
+            // reach across is [`wal_run_may_extend`]; there are two shapes and it names both.
             let mut end = position + 1;
             while end < ordered.len()
                 && ordered[end].1.wal_blob_key == ordered[position].1.wal_blob_key
-                && ordered[end].1.wal_blob_start_offset == ordered[end - 1].1.wal_blob_end_offset
-                && ordered[end].1.wal_blob_end_offset > ordered[end].1.wal_blob_start_offset
+                && wal_run_may_extend(ordered[end - 1].1, ordered[end].1)
                 && end - position < REPLAY_APPLY_WINDOW
             {
                 end += 1;
@@ -2820,6 +2820,140 @@ where
 /// roughly 800 us of the 900 us an entry measured on the scale report -- while the buffer is
 /// bounded at 256 entries of already-read bytes rather than the whole log.
 const REPLAY_APPLY_WINDOW: usize = 256;
+
+/// May a run that one request will read reach from `previous` to `next`?
+///
+/// Two shapes qualify, and a writer can produce only these two:
+///
+/// * **Bytes that follow.** `next` begins exactly where `previous` ended -- a log of frames
+///   appended back to back. Coalescing this is what turned a request per entry into a request
+///   per run.
+/// * **Bytes that coincide.** `next` records the SAME range as `previous`. A container carries
+///   several entries in one record and every entry in it addresses the whole container, so
+///   consecutive entries repeat a range instead of advancing it. Admitting this is what stops a
+///   container costing one request -- and one whole-container fetch -- per entry it holds.
+///
+/// Anything else ends the run. A range that neither follows nor coincides means a hole, a
+/// partial overlap, or bytes out of order, and one range read cannot serve those. The caller has
+/// already required a single blob key across the whole run, so this answers only about offsets.
+///
+/// An empty range never extends a run, whichever shape it would otherwise match: it carries no
+/// frame, and admitting one would let the run's span stop describing what the run holds.
+fn wal_run_may_extend(
+    previous: &SharedStoreWalOffsetMetadata,
+    next: &SharedStoreWalOffsetMetadata,
+) -> bool {
+    if next.wal_blob_end_offset <= next.wal_blob_start_offset {
+        return false;
+    }
+    let follows = next.wal_blob_start_offset == previous.wal_blob_end_offset;
+    let coincides = next.wal_blob_start_offset == previous.wal_blob_start_offset
+        && next.wal_blob_end_offset == previous.wal_blob_end_offset;
+    follows || coincides
+}
+
+#[cfg(test)]
+mod wal_run_extension {
+    use super::*;
+
+    /// An entry occupying `start..end` of its shard's own log. Only the offsets matter here --
+    /// the run rule is told the blob key is already settled by its caller.
+    fn at(start: u64, end: u64) -> SharedStoreWalOffsetMetadata {
+        SharedStoreWalOffsetMetadata {
+            shard_id: 1,
+            wal_index: 0,
+            wal_blob_key: "shard-1/wal".to_string(),
+            wal_blob_start_offset: start,
+            wal_blob_end_offset: end,
+            wal_blob_bytes_written: end.saturating_sub(start),
+            wal_blob_object_length: end,
+            wal_blob_physical_slab_count: 0,
+            wal_blob_first_physical_offset: None,
+            command_byte_size: 0,
+            command_encoding: 0,
+        }
+    }
+
+    /// A plain log: each frame begins where the last one ended.
+    #[test]
+    fn bytes_that_follow_extend_a_run() {
+        assert!(
+            wal_run_may_extend(&at(0, 300), &at(300, 640)),
+            "a frame beginning where the last ended is the adjacent case a run is built from"
+        );
+    }
+
+    /// A container: every entry in it addresses the whole container, so the range repeats.
+    #[test]
+    fn bytes_that_coincide_extend_a_run_because_a_container_repeats_its_range() {
+        assert!(
+            wal_run_may_extend(&at(4096, 20480), &at(4096, 20480)),
+            "two entries of one container record one range between them, and a run that \
+             refused it would spend a request -- and a whole-container fetch -- per entry"
+        );
+    }
+
+    /// THE CONTROL, and the reason this change is not decoration.
+    ///
+    /// A container's entries share a run ONLY because of the coincide arm: they are not
+    /// adjacent, so the arm that was already here refuses them. Were this to fail, the new arm
+    /// would be taking credit for runs adjacency already allowed, and the container case --
+    /// the whole point -- would be untested.
+    #[test]
+    fn a_container_run_is_admitted_by_coincidence_and_not_by_adjacency() {
+        let previous = at(4096, 20480);
+        let next = at(4096, 20480);
+        assert!(wal_run_may_extend(&previous, &next), "the rule admits the container pair");
+        assert_ne!(
+            next.wal_blob_start_offset, previous.wal_blob_end_offset,
+            "a container pair must NOT be adjacent, or this test is proving nothing about the \
+             arm that admits it"
+        );
+    }
+
+    /// Neither shape: a hole, a partial overlap, and a rewind each end the run, because one
+    /// range read cannot serve bytes that are missing, doubled, or out of order.
+    #[test]
+    fn a_hole_a_partial_overlap_or_a_rewind_ends_a_run() {
+        let previous = at(0, 300);
+        for (case, next) in [
+            ("a hole", at(301, 600)),
+            ("a partial overlap", at(150, 600)),
+            ("a rewind", at(0, 150)),
+            ("a shared start but a different end", at(0, 600)),
+            ("a shared end but a different start", at(100, 300)),
+        ] {
+            assert!(
+                !wal_run_may_extend(&previous, &next),
+                "{case} must end a run: {}..{} after {}..{}",
+                next.wal_blob_start_offset,
+                next.wal_blob_end_offset,
+                previous.wal_blob_start_offset,
+                previous.wal_blob_end_offset
+            );
+        }
+    }
+
+    /// An empty range carries no frame, so it never extends a run -- INCLUDING when it would
+    /// otherwise match a shape. Both arms are checked, because an empty range can satisfy
+    /// either one and a guard that tested only the adjacent case would miss the container arm.
+    #[test]
+    fn an_empty_range_never_extends_a_run() {
+        assert!(
+            !wal_run_may_extend(&at(0, 300), &at(300, 300)),
+            "an empty range that follows is still empty"
+        );
+        let empty = SharedStoreWalOffsetMetadata {
+            wal_blob_start_offset: 4096,
+            wal_blob_end_offset: 4096,
+            ..at(4096, 4096)
+        };
+        assert!(
+            !wal_run_may_extend(&empty, &empty),
+            "an empty range that coincides with itself is still empty"
+        );
+    }
+}
 
 // WHAT THE MID-LOOP APPLY IS FOR, said because a plant showed it is not what it looks like.
 // Removing it -- leaving only the apply after the loop -- loses NO entries: the window simply
