@@ -85,6 +85,9 @@ use self::resource::{
 
 use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
+use crate::llm_context::{
+    score_embedding_candidates_exact, EmbeddingChannel, EmbeddingKey, EmbeddingVector,
+};
 use crate::types::{
     context_model_descriptors, context_node_summary_vector_enabled, Command, CommandResponse,
     ContextAuditRef, ContextChildRef, CONTEXT_SUMMARY_LEVEL_L1,
@@ -1585,7 +1588,7 @@ pub(crate) fn extract_context_gated(
         canonical_name: request.title.clone(),
         l0: l0.clone(),
         status: 1,
-        last_event_time_ms: timestamp_ms,
+            last_event_time_ms: timestamp_ms,
         l1_ref: l1.clone(),
         raw_metadata_ref: request.source_id.clone(),
         vector: Vec::new(),
@@ -1627,7 +1630,7 @@ pub(crate) fn extract_context_gated(
     let dirty_marker = ContextDirtyNode {
         node_hash,
         first_event_time_ms: timestamp_ms,
-            last_event_time_ms: timestamp_ms,
+        last_event_time_ms: timestamp_ms,
         reason: 1,
         propagate_depth: 1,
         mark_count: 1,
@@ -1851,6 +1854,35 @@ pub(crate) fn extract_context_gated(
         }
     }
 
+    if !node.vector.is_empty() {
+        let row = EmbeddingVector {
+            key: EmbeddingKey {
+                tenant_id: request.tenant_hash,
+                item_id: node_hash,
+            },
+            values: &node.vector,
+        };
+        let _ = engine.cache_context_embeddings(
+            EmbeddingChannel::Node,
+            node.embedding_model_hash,
+            &[row],
+        );
+    }
+    if !node.summary_vector.is_empty() {
+        let row = EmbeddingVector {
+            key: EmbeddingKey {
+                tenant_id: request.tenant_hash,
+                item_id: node_hash,
+            },
+            values: &node.summary_vector,
+        };
+        let _ = engine.cache_context_embeddings(
+            EmbeddingChannel::Summary,
+            node.summary_vector_model_hash,
+            &[row],
+        );
+    }
+
     ContextExtractReport {
         status: Status::ok(),
         provider,
@@ -1944,6 +1976,8 @@ pub fn retrieve_context(
     let active_embedding_model_hash =
         context_embedding_model_hash(request.provider.embedding_model.trim());
     let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
+    let mut exact_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
+    let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
     // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
@@ -1974,7 +2008,9 @@ pub fn retrieve_context(
         });
         let mut returned = BTreeSet::new();
         if let CommandResponse::ContextNodes { nodes } = response.response {
-            for node in nodes {
+            let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
+            let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
+            for node in &nodes {
                 returned.insert(node.node_hash);
                 // The node's own copy of its L1 summary vector, when it has one that covers this
                 // query's point in time. Taking it here is the whole saving: this fetch was going
@@ -1997,13 +2033,16 @@ pub fn retrieve_context(
                             // said.
                             model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                         } else {
-                            let score = context_embedding_similarity_micros(
-                                &query_embedding,
-                                summary_vector,
-                            );
-                            let entry = summary_scores_by_node.entry(node.node_hash).or_default();
-                            entry.0 = entry.0.max(score);
-                            entry.1 = entry.1.saturating_add(1);
+                            summary_rows
+                                .entry((node.summary_vector_model_hash, summary_vector.len()))
+                                .or_default()
+                                .push(EmbeddingVector {
+                                    key: EmbeddingKey {
+                                        tenant_id: request.tenant_hash,
+                                        item_id: node.node_hash,
+                                    },
+                                    values: summary_vector,
+                                });
                         }
                     }
                     None => summary_lookup_nodes.push(node.node_hash),
@@ -2028,12 +2067,34 @@ pub fn retrieve_context(
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     l0_row_fallback.push(node.node_hash);
                 } else {
-                    let score =
-                        context_embedding_similarity_micros(&query_embedding, &node.vector);
-                    let entry = summary_scores_by_node.entry(node.node_hash).or_default();
-                    entry.0 = entry.0.max(score);
-                    entry.1 = entry.1.saturating_add(1);
+                    node_rows
+                        .entry((node.embedding_model_hash, node.vector.len()))
+                        .or_default()
+                        .push(EmbeddingVector {
+                            key: EmbeddingKey {
+                                tenant_id: request.tenant_hash,
+                                item_id: node.node_hash,
+                            },
+                            values: &node.vector,
+                        });
                 }
+            }
+            for ((model_hash, _), rows) in node_rows {
+                let _ = engine.cache_missing_context_embeddings(
+                    EmbeddingChannel::Node,
+                    model_hash,
+                    &rows,
+                );
+            }
+            for ((model_hash, _), rows) in summary_rows {
+                let _ = engine.cache_missing_context_embeddings(
+                    EmbeddingChannel::Summary,
+                    model_hash,
+                    &rows,
+                );
+            }
+            for node in nodes {
+                prefetched_nodes.insert(node.node_hash, node);
             }
         }
         // A node the engine did not return cannot carry a vector either.
@@ -2072,7 +2133,8 @@ pub fn retrieve_context(
             },
         });
         if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
-            for entry in vectors {
+            let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
+            for entry in &vectors {
                 if context_embedding_width_conflicts(&query_embedding, &entry.vector) {
                     // Same reasoning as the node pass: skip entirely rather than record a zero,
                     // so the count stays at zero and the lexical pass still owns this node.
@@ -2092,13 +2154,115 @@ pub fn retrieve_context(
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     continue;
                 }
-                let score =
-                    context_embedding_similarity_micros(&query_embedding, &entry.vector);
-                let scores = summary_scores_by_node.entry(entry.node_hash).or_default();
-                scores.0 = scores.0.max(score);
+                summary_rows
+                    .entry((entry.embedding_model_hash, entry.vector.len()))
+                    .or_default()
+                    .push(EmbeddingVector {
+                        key: EmbeddingKey {
+                            tenant_id: request.tenant_hash,
+                            item_id: entry.node_hash,
+                        },
+                        values: &entry.vector,
+                    });
+            }
+            for ((model_hash, _), rows) in summary_rows {
+                if let Ok(hits) = score_embedding_candidates_exact(&query_embedding, &rows) {
+                    for hit in hits {
+                        let score = exact_scores_by_node.entry(hit.key.item_id).or_default();
+                        score.0 = score.0.max((hit.score * 1_000_000.0) as i64);
+                        score.1 = score.1.saturating_add(1);
+                    }
+                }
+                let _ = engine.cache_missing_context_embeddings(
+                    EmbeddingChannel::Summary,
+                    model_hash,
+                    &rows,
+                );
+            }
+        }
+    }
+    for channel in [EmbeddingChannel::Node, EmbeddingChannel::Summary] {
+        if let Ok(hits) = engine.score_context_embedding_candidates(
+            channel,
+            request.tenant_hash,
+            active_embedding_model_hash,
+            &query_embedding,
+            &node_hashes,
+        ) {
+            for hit in hits {
+                let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
+                scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
                 scores.1 = scores.1.saturating_add(1);
             }
         }
+    }
+    let mut rerank_nodes = summary_scores_by_node
+        .iter()
+        .map(|(node_hash, (score, _))| (*node_hash, *score))
+        .collect::<Vec<_>>();
+    rerank_nodes.sort_unstable_by_key(|(node_hash, score)| (Reverse(*score), *node_hash));
+    let rerank_limit = request
+        .max_summary_nodes
+        .max(1)
+        .saturating_mul(4)
+        .min(64)
+        .min(rerank_nodes.len());
+    let rerank_nodes = rerank_nodes
+        .into_iter()
+        .take(rerank_limit)
+        .map(|(node_hash, _)| node_hash)
+        .collect::<BTreeSet<_>>();
+    let mut exact_node_rows = Vec::with_capacity(rerank_nodes.len());
+    let mut exact_summary_rows = Vec::with_capacity(rerank_nodes.len());
+    for node_hash in &rerank_nodes {
+        let Some(node) = prefetched_nodes.get(node_hash) else {
+            continue;
+        };
+        if !node.vector.is_empty()
+            && !context_embedding_width_conflicts(&query_embedding, &node.vector)
+            && !context_embedding_model_conflicts(
+                node.embedding_model_hash,
+                active_embedding_model_hash,
+            )
+        {
+            exact_node_rows.push(EmbeddingVector {
+                key: EmbeddingKey {
+                    tenant_id: request.tenant_hash,
+                    item_id: *node_hash,
+                },
+                values: &node.vector,
+            });
+        }
+        if let Some(vector) = node.summary_vector_as_of(summary_as_of_ms) {
+            if !context_embedding_width_conflicts(&query_embedding, vector)
+                && !context_embedding_model_conflicts(
+                    node.summary_vector_model_hash,
+                    active_embedding_model_hash,
+                )
+            {
+                exact_summary_rows.push(EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: request.tenant_hash,
+                        item_id: *node_hash,
+                    },
+                    values: vector,
+                });
+            }
+        }
+    }
+    for rows in [&exact_node_rows, &exact_summary_rows] {
+        if let Ok(hits) = score_embedding_candidates_exact(&query_embedding, rows) {
+            for hit in hits {
+                let score = exact_scores_by_node.entry(hit.key.item_id).or_default();
+                score.0 = score.0.max((hit.score * 1_000_000.0) as i64);
+                score.1 = score.1.saturating_add(1);
+            }
+        }
+    }
+    for (node_hash, exact) in exact_scores_by_node {
+        let score = summary_scores_by_node.entry(node_hash).or_default();
+        score.0 = exact.0;
+        score.1 = score.1.max(exact.1);
     }
     // Set after BOTH vector passes -- the node pass and the summary pass each contribute, and the
     // node pass alone would under-report.
@@ -2111,7 +2275,6 @@ pub fn retrieve_context(
     // query/text lexical overlap, normalized into the same micros scale as cosine.
     // Embedded nodes keep their cosine score untouched, so when every node is
     // embedded this pass does nothing and behavior is identical to before.
-    let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
     let mut lexical_scores_by_node = BTreeMap::<u64, i64>::new();
     // Every retrieve does this. `MATRIXARK_CONTEXT_HYBRID_LEXICAL` could skip it and
     // defaulted on; nothing set it, so a node with no stored summary embedding has
@@ -2142,8 +2305,7 @@ pub fn retrieve_context(
                 for node in nodes {
                     let text = format!("{} {} {}", node.canonical_name, node.l0, node.l1_ref);
                     let lexical = context_relevance_score_plan(&query_plan, &text);
-                    lexical_scores_by_node
-                        .insert(node.node_hash, lexical_score_to_micros(lexical));
+                    lexical_scores_by_node.insert(node.node_hash, lexical_score_to_micros(lexical));
                     prefetched_nodes.insert(node.node_hash, node);
                 }
             }
@@ -2659,7 +2821,11 @@ fn context_fact_score(sentence: &str) -> i32 {
     score += sentence
         .split_whitespace()
         .skip(1)
-        .filter(|word| word.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()))
+        .filter(|word| {
+            word.chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_uppercase())
+        })
         .count() as i32;
     for marker in [
         "now",

@@ -503,6 +503,7 @@ impl TemporalEngine {
             configs: Arc::default(),
             infos: Arc::default(),
             admissions: Arc::default(),
+            context_embedding_indexes: Arc::default(),
             promote_scans: Arc::default(),
             replay_installs: Arc::default(),
             maintenance_mirror: Arc::default(),

@@ -275,12 +275,12 @@ pub fn drain_embedding_dirty_once(
         };
         let commands: Vec<Command> = chunk
             .iter()
-            .zip(vectors.into_iter())
+            .zip(vectors.iter())
             .map(|(item, vector)| Command::ContextSetNodeEmbedding {
                 tenant_hash: item.tenant_hash,
                 node_hash: item.node_hash,
                 model_hash,
-                vector,
+                vector: vector.clone(),
                 updated_at_ms,
             })
             .collect();
@@ -288,6 +288,24 @@ pub fn drain_embedding_dirty_once(
             shard_id: config.shard_id,
             commands,
         });
+        let mut cache_rows = BTreeMap::<u64, Vec<EmbeddingVector<'_>>>::new();
+        for ((item, vector), entry) in chunk.iter().zip(vectors.iter()).zip(&response.responses) {
+            if entry.status.ok {
+                cache_rows
+                    .entry(item.tenant_hash)
+                    .or_default()
+                    .push(EmbeddingVector {
+                        key: EmbeddingKey {
+                            tenant_id: item.tenant_hash,
+                            item_id: item.node_hash,
+                        },
+                        values: vector,
+                    });
+            }
+        }
+        for rows in cache_rows.values() {
+            let _ = engine.cache_context_embeddings(EmbeddingChannel::Node, model_hash, rows);
+        }
         for (item, entry) in chunk.iter().zip(response.responses.iter()) {
             if entry.status.ok {
                 report.embedded += 1;

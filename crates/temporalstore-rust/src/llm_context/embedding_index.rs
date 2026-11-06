@@ -26,6 +26,56 @@ pub struct EmbeddingHit {
     pub score: f32,
 }
 
+/// Exact cosine scores for a bounded rerank set.
+///
+/// The compact index should select the set. This function is deliberately
+/// allocation-light and does not own or retain application vectors.
+pub fn score_embedding_candidates_exact(
+    query: &[f32],
+    candidates: &[EmbeddingVector<'_>],
+) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+    let mut query_norm_squared = 0.0f32;
+    for (dimension, value) in query.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(EmbeddingIndexError::QueryNonFiniteValue { dimension });
+        }
+        query_norm_squared += value * value;
+    }
+    if query_norm_squared <= f32::EPSILON {
+        return Err(EmbeddingIndexError::QueryZeroNorm);
+    }
+    let mut hits = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if candidate.values.len() != query.len() {
+            return Err(EmbeddingIndexError::DimensionMismatch {
+                key: candidate.key,
+                expected: query.len(),
+                actual: candidate.values.len(),
+            });
+        }
+        let mut dot = 0.0f32;
+        let mut norm_squared = 0.0f32;
+        for (dimension, value) in candidate.values.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(EmbeddingIndexError::NonFiniteValue {
+                    key: candidate.key,
+                    dimension,
+                });
+            }
+            dot += query[dimension] * value;
+            norm_squared += value * value;
+        }
+        if norm_squared <= f32::EPSILON {
+            return Err(EmbeddingIndexError::ZeroNorm { key: candidate.key });
+        }
+        hits.push(EmbeddingHit {
+            key: candidate.key,
+            score: dot / (query_norm_squared.sqrt() * norm_squared.sqrt()),
+        });
+    }
+    Ok(hits)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmbeddingIndexConfig {
     pub dimensions: usize,
@@ -216,6 +266,12 @@ impl EmbeddingIndex {
     pub fn quantized_vector_bytes(&self) -> usize {
         self.total_entries
             .saturating_mul(self.config.dimensions + std::mem::size_of::<f32>())
+    }
+
+    pub fn contains(&self, key: EmbeddingKey) -> bool {
+        self.tenants
+            .get(&key.tenant_id)
+            .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
     }
 
     pub fn upsert_batch(
@@ -415,6 +471,38 @@ impl EmbeddingIndex {
         Ok(hits)
     }
 
+    /// Score only the requested item ids without scanning the rest of the tenant.
+    ///
+    /// Results preserve candidate order so callers that already own a ranking
+    /// pipeline can merge scores without paying for an extra sort.
+    pub fn score_candidates(
+        &self,
+        tenant_id: u64,
+        query: &[f32],
+        candidate_item_ids: &[u64],
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        let Some(rows) = self.tenants.get(&tenant_id) else {
+            return Ok(Vec::new());
+        };
+        let query = self.normalized_query(query)?;
+        let mut hits = Vec::with_capacity(candidate_item_ids.len().min(rows.item_ids.len()));
+        for item_id in candidate_item_ids {
+            let Some(&position) = rows.positions.get(item_id) else {
+                continue;
+            };
+            let start = position * self.config.dimensions;
+            let row = &rows.vectors[start..start + self.config.dimensions];
+            hits.push(EmbeddingHit {
+                key: EmbeddingKey {
+                    tenant_id,
+                    item_id: *item_id,
+                },
+                score: (dot_i8_f32(row, &query) * rows.scales[position]).clamp(-1.0, 1.0),
+            });
+        }
+        Ok(hits)
+    }
+
     fn validate_vector(
         &self,
         key: EmbeddingKey,
@@ -441,25 +529,32 @@ impl EmbeddingIndex {
     }
 
     fn normalized_query(&self, query: &[f32]) -> Result<Vec<f32>, EmbeddingIndexError> {
-        if query.len() != self.config.dimensions {
-            return Err(EmbeddingIndexError::QueryDimensionMismatch {
-                expected: self.config.dimensions,
-                actual: query.len(),
-            });
-        }
-        let mut norm_squared = 0.0f64;
-        for (dimension, value) in query.iter().enumerate() {
-            if !value.is_finite() {
-                return Err(EmbeddingIndexError::QueryNonFiniteValue { dimension });
-            }
-            norm_squared += f64::from(*value) * f64::from(*value);
-        }
-        if norm_squared <= f64::EPSILON {
-            return Err(EmbeddingIndexError::QueryZeroNorm);
-        }
-        let inverse_norm = norm_squared.sqrt().recip() as f32;
-        Ok(query.iter().map(|value| value * inverse_norm).collect())
+        normalize_query(query, self.config.dimensions)
     }
+}
+
+fn normalize_query(
+    query: &[f32],
+    expected_dimensions: usize,
+) -> Result<Vec<f32>, EmbeddingIndexError> {
+    if query.len() != expected_dimensions {
+        return Err(EmbeddingIndexError::QueryDimensionMismatch {
+            expected: expected_dimensions,
+            actual: query.len(),
+        });
+    }
+    let mut norm_squared = 0.0f64;
+    for (dimension, value) in query.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(EmbeddingIndexError::QueryNonFiniteValue { dimension });
+        }
+        norm_squared += f64::from(*value) * f64::from(*value);
+    }
+    if norm_squared <= f64::EPSILON {
+        return Err(EmbeddingIndexError::QueryZeroNorm);
+    }
+    let inverse_norm = norm_squared.sqrt().recip() as f32;
+    Ok(query.iter().map(|value| value * inverse_norm).collect())
 }
 
 #[derive(Debug, Clone, Copy)]
