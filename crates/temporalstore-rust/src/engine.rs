@@ -1048,6 +1048,7 @@ impl TemporalEngine {
             config.async_storage,
             config.control_rollup_enabled(),
             config.control_coalesce_persist_enabled(),
+            config.control_state_max_size(),
             config.control_distinct_sketch_enabled(),
                 config.trim_boundary_record_enabled(),
             request.shard_id,
@@ -6891,6 +6892,35 @@ fn append_value_inner(
     Ok(address)
 }
 
+/// Bound one counter series to `max_size`, oldest first, reporting whether anything went.
+///
+/// `BTreeMap` iterates its keys ascending, so the first `len - max_size` of them ARE the oldest
+/// points; `max_size == 0` means unbounded and trims nothing.
+///
+/// NEITHER DURABLE REPRESENTATION RESURRECTS WHAT THIS DROPS, which is why the trim needs no
+/// removal record of its own. In block mode the whole series is re-serialised immediately below,
+/// so the persisted block already excludes the trimmed points and a rebuild from it finds
+/// nothing to bring back. In coalesced mode durability is the index snapshot plus WAL replay,
+/// and replay re-executes each increment through this same trim with the config effective at
+/// that record's frontier, so it converges on the same series.
+fn trim_control_state_series(shard: &mut ShardState, key: &str, max_size: usize) -> bool {
+    if max_size == 0 {
+        return false;
+    }
+    let Some(series) = shard.control_state_mut().get_mut(key) else {
+        return false;
+    };
+    if series.len() <= max_size {
+        return false;
+    }
+    let excess = series.len() - max_size;
+    let victims: Vec<u64> = series.keys().copied().take(excess).collect();
+    for timestamp_ms in &victims {
+        series.remove(timestamp_ms);
+    }
+    !victims.is_empty()
+}
+
 fn persist_control_state_block(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -6901,6 +6931,12 @@ fn persist_control_state_block(
     end_routing_bucket: u32,
     async_storage: bool,
 ) -> bool {
+    // Bound the series BEFORE the coalesce escape returns and before the serialisation below.
+    // This is the one function all five Counter write arms call and no load path calls, which is
+    // exactly where a WRITE bound belongs: the five arms get the cap from one edit, and the two
+    // reload paths (index-item install, and the wholesale merge on load) reinstate what is on
+    // disk untouched.
+    trim_control_state_series(shard, key, shard.control_state_max_size);
     let Some(series) = shard.control_state().get(key) else {
         shard.remove_control_state_block(key);
         return false;
