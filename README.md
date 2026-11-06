@@ -26,7 +26,7 @@ rather than a footnote.
 | **Event sequences per entity that grow without bound** — clickstreams, session histories, interaction logs — read as a recent window | Keeps one sorted array per key, so a window read is a binary search plus the points in the window and does **not** grow with the tail. Retains by **count** (10,000 points a series by default), trimmed oldest-first on every write. No per-point age policy. | [§1](#1-long-sequences-per-entity) |
 | **Many millions of distinct entities, each with few values** | **39.4 B of resident index per key** at 20,000 keys in one shard, falling from 86.3 B/key at 2,000 as per-bucket rows amortise. A 64 MiB per-shard resident bound is reached at roughly 1.7 M keys. | [§2](#2-high-cardinality-features) |
 | **Rollups over a window** — counts, sums, min/max/avg | Exact, recomputed from the points on each read; an exact incremental ladder at 1 s / 1 m / 1 h / 1 d is available for sum-family counters. **No decayed scores, no top-k, no percentiles.** | [§3](#3-aggregated-features) |
-| **Plain online feature serving** — point reads at serving latency | Addresses from a DRAM-resident index, bytes from a memory cache tier, disk only on a miss. Reads are cheap and local; writes pay a consensus round trip. Measured 21x apart at p50 on one box. | [§4](#4-online-feature-serving) |
+| **Plain online feature serving** — point reads at serving latency | Addresses from a DRAM-resident index, bytes from a memory cache tier, disk only on a miss. Reads are cheap and local; writes pay a consensus round trip. Measured 21x apart at p50 on one box. Ships as a **Feast online store**. | [§4](#4-online-feature-serving) |
 | **Context for an LLM application** under a token budget | Retrieve, rank, and pack to `max_prompt_tokens`; the prompt is charged first and blocks are taken greedily in ranked order, with what did not fit recorded. Ranking is lexical plan score plus cosine over per-node vectors. **No ANN index** — scoring is linear in the candidate set the caller names. | [§5](#5-context-for-llm-applications) |
 | **Frequency caps, quotas, pacing, blobs, stream ingestion** | Single-key atomic counters with windowed sums, a multipart blob path with range reads, and batch/stream ingestion with a dead-letter export. | [§6](#6-what-else-the-engine-actually-does) |
 
@@ -262,6 +262,131 @@ resident index at **64 MiB a shard**, which at the 39.4 B/key of [§2](#2-high-c
 is reached at roughly 1.7 M keys in one shard. A shard under the bound declines to evict, and that
 is correct — a cap firing at a few percent of its limit would be a thrash rather than a bound.
 
+**TemporalStore as a Feast online store.** [Feast](https://github.com/feast-dev/feast) is the
+open-source feature store. It resolves its online store through a plugin class named in
+`feature_store.yaml`, and this repository ships two of them under
+[`integrations/feast/`](integrations/feast/), because the engine exposes two surfaces with
+different trade-offs. Pick by surface:
+
+| package | surface | pick it when |
+|---|---|---|
+| `feast_temporalstore` | RESP, port 6399 | you already run the proxy, or you want Feast's Redis tooling and mental model |
+| `feast_temporalstore_command` | binary batch writes and reads on the data node | you want bounded round trips, one process instead of three, readable hash fields, and optionally a queryable feature history behind each served value |
+
+Both store values identically (`ValueProto.SerializeToString()`) but **do not share a key space**:
+rows written through one are not readable through the other, so choose one per project rather than
+switching under a populated store.
+
+```yaml
+# feature_store.yaml, command-surface plugin
+project: my_project
+provider: local
+registry: data/registry.db
+entity_key_serialization_version: 3
+online_store:
+  type: feast_temporalstore_command.TemporalStoreCommandOnlineStore
+  host: 127.0.0.1
+  port: 17102      # served by `docker compose -f docker-compose.single-node.yml up`
+  shard_id: 1
+```
+
+**Which Feast slot this is.** The online store only. It is not an offline store and not a
+materialization engine: the stock engines write *into* it by calling `online_write_batch`, so
+`feast materialize` works unchanged and TemporalStore becomes a materialization target as a
+consequence of being the online store.
+
+**Why there are two, and what the RESP one works around.** Pointing Feast's stock Redis store at
+the RESP port does not fail; it returns wrong answers, for two server behaviours the
+`feast_temporalstore` plugin routes around. Keys and hash fields are decoded lossily, and Feast
+names a field with four arbitrary bytes (a murmur3 digest): **91.08%** of 4-byte names do not
+survive as UTF-8, and two distinct names then collide **1 time in 1,042** against 1 in
+4,294,967,296 for a correct store. That puts a 50-feature view at a **69.1%** chance of at least one
+silent collision and a 100-feature view at 99.1%. Separately, `SCAN` cannot see another
+connection's keys, so Feast's `teardown` finds nothing to remove and reports success. The plugin
+encodes keys and fields to survive the first and keeps its own row registry for the second; the
+command-surface plugin needs neither. Both findings and the deletion condition for the encoding are
+in [`integrations/feast/README.md`](integrations/feast/README.md).
+
+**Measured through Feast itself.** `bench_feature_serving.py` drives each store through Feast, so
+the only difference between two rows is the `online_store` block. Conditions: Feast 0.67.0, 5,000 entities, hot
+set 512, 1,500 reads per cell, one client thread, 20 B of feature payload per row (ten int64
+features), a 16-core shared host at 1-minute load 3 with no compiler running, TemporalStore a
+**release** build on a freshly created empty shard. Every arm's rows were read back and compared
+byte for byte before any clock started, and the SQLite control re-run held within tolerance (drift
+17.3% and 13.0% against a 25% limit).
+
+| store | durability | cold p50 | warm p50, batch 1 | warm p50, batch 10 | warm rows/s, batch 10 |
+|---|---|---:|---:|---:|---:|
+| SQLite | rollback journal, in-process (control) | 72 µs | 73 µs | 452 µs | 20,053 |
+| Valkey 8.1.10 | no persistence | 479 µs | 477 µs | 925 µs | 10,486 |
+| PostgreSQL 16.15 | `synchronous_commit=on`, tmpfs | 703 µs | 825 µs | 1,192 µs | 7,076 |
+| **TemporalStore** | **async commit** | **396 µs** | **355 µs** | 970 µs | 10,130 |
+| **TemporalStore** | **durable commit** | 656 µs | 410 µs | 933 µs | 10,204 |
+
+At this payload the async configuration answered a single-entity read faster than Valkey in every
+percentile measured: cold p50 17% lower (396 vs 479 µs), warm p50 26% lower (355 vs 477 µs). At
+batch width 10 the two are level (warm p50 970 vs 925 µs, throughput 3% lower). Durable commit costs
+37% on the cold p50 against its own async configuration, which is the price of the fsync and is why
+durability is a column rather than a footnote.
+
+**And the result that goes the other way.** At 1,035 B per row (four int64 features and a 1 KiB
+blob) and batch width 10, the async configuration measured **1,614 µs warm p50 against Valkey's
+861 µs**, and 5,923 against 11,381 rows/s: 88% behind on p50 and 48% behind on throughput. At batch
+width 1 the two stay level (445 vs 455 µs). That table was taken over the JSON `/batch_execute`
+surface, whose response is a decimal array of about 3.8 characters per byte. The benchmark's own
+follow-up found the number of field slots fetched to be a first-order cost and payload width a
+second-order one: 110 slots holding 376 B cost more than 60 slots holding 10,490 B, and a
+ten-command batch that returns nothing at all costs 1,026.6 µs.
+
+The command-surface plugin has since moved to MessagePack in both directions. For 4,096 commands
+carrying 12,296-byte values that is **24.99% fewer request bytes** (50,605,338 against 67,460,469)
+and a client encode **4.93x faster** (55.41 against 273.01 ms), and 25.03% fewer response bytes. Those
+are wire and client-encoding figures; **no cross-store table has been taken on the binary path yet**,
+so the 1 KiB comparison above has not been re-measured on it.
+
+On that binary path, with 4,096 entities each holding one 12,296-byte sequence, batch 10, 500
+measured read calls and eight concurrent readers (release build, isolated tmpfs, storage maintenance
+disabled so the figures price the command API and codec rather than a maintenance cycle):
+
+| mode | write rows/s | warm rows/s, batch 10 | concurrent rows/s, 8 workers | concurrent p50 | concurrent p99 |
+|---|---:|---:|---:|---:|---:|
+| async commit | 4,985 | 12,289 | 4,585 | 14,500 µs | 36,781 µs |
+| durable commit | 3,437 | 6,204 | 9,344 | 8,086 µs | 15,885 µs |
+
+Durable commit served more concurrent rows than async in the last column, the opposite of what the
+write and warm-read columns show, and the benchmark document does not explain it; treat the
+commit-mode ordering of that one column as unresolved rather than as a property of the modes. With
+`write_feature_history` on, a separate run on a release standalone node with durable commit
+sustained about **15,000 history events/s** and **1,482 to 1,552 aggregate queries/s** across two
+valid runs (p50 4,566 to 4,848 µs, p99 12,737 to 13,106 µs) on 1,024 entities with 64 events each,
+and one accepted run served **4,207 aggregate queries/s** through the bounded batch API at 64
+queries per call. Those are single-node figures, not a comparison with another store.
+*(Method, the checks the harness refuses to run without, and every table:
+[`docs/feast_online_store_benchmark.md`](docs/feast_online_store_benchmark.md). The offline suites,
+standard library only: `python integrations/feast/run_tests.py`.)*
+
+**What to know before relying on it.**
+
+- **The cross-store tables are single-client latencies**, driven from one thread because Feast's
+  serving path is synchronous. None is a saturation throughput. A concurrency sweep under async
+  commit peaked near **8,900 rows/s from one client process** at concurrency 4 for the 20 B payload,
+  and p99 grew 12x between concurrency 4 and 16.
+- **Exact `teardown` needs `track_keys_for_teardown`, which is off by default**, because the command
+  surface has no keyspace scan and cannot enumerate what to delete otherwise. Turning it on adds one
+  write per row, spread over 1,024 tracking sets: ten times the rows now costs 8.3 times the write
+  time where a single shared set cost 152 times. Combined with async commit it **lost 17,500 of
+  20,000 rows** before the WAL container lookup was fixed; the same workload now retains
+  20,000 of 20,000, and the regression script is `tools/repro_async_commit_row_loss.py`.
+- **A delete batch costs what the shard holds, not what the batch deletes.** The same 2,000 deletes
+  measured 2.24 ms per key on a shard holding only those keys and 69.17 ms per key beside 20,000
+  filler keys, 31x for identical work. The benchmark document records the measurement and not a fix,
+  so tearing down a view on a large store should be planned as slow.
+- **`/health` reports process liveness, not shard serviceability.** It answered 200 in 1.0 ms while
+  every data operation on the same node was blocked behind a hot-key write storm, so an orchestrator
+  watching it will neither restart that node nor take it out of rotation.
+- **No offline store and no materialization engine ship here.** Historical point-in-time queries
+  for training stay with whichever offline store the project already uses.
+
 ## 5. Context for LLM applications
 
 This is the workload the project was built around, and it is the one with the most surface.
@@ -408,6 +533,8 @@ feedback, the agent hooks and the MCP server — lives in
 Use this repository when you want the engine: embed the crate, run the binaries, or talk to a node
 over RESP or HTTP. Use `matrixark` when you want the Python client, the extraction and retrieval
 pipeline, or an agent integration.
+
+The exception is the Feast online store: it is a client of the engine's own surfaces, so it lives here under [`integrations/feast/`](integrations/feast/); see [§4](#4-online-feature-serving).
 
 ## Deploy: laptop → replicated cluster
 
