@@ -83,20 +83,53 @@ tables can be used for:
 Stated here so nobody reads a bandwidth number off the command surface without
 it:
 
-* **Requests are base64.** `HashMultiSet.entries` carries a bytes codec, so
-  values go out base64 — a flat 1.33x on the payload.
-* **Responses are decimal arrays.** `CommandResponse::Values`,
-  `CommandResponse::Members` and `FeaturePoint.value` carry no such codec, so a
-  byte comes back as the characters `104,`. For protobuf-serialized feature
-  values that is roughly 3.8x the payload, so a read's wire cost is about 4x
-  what it returns. The client decodes both shapes, so a node that gains the
-  codec later needs no change.
+* **Binary requests preserve byte strings.** For 4,096 commands carrying
+  12,296-byte values, MessagePack produced 50,605,338 bytes versus 67,460,469
+  bytes for JSON, a 24.99% reduction. Median client encoding time for that
+  exact command set was 55.41 ms versus 273.01 ms.
+* **Binary responses preserve byte strings.** A ten-row response carrying
+  12 KiB per row measured 123,551 bytes versus 164,811 bytes through JSON
+  base64, a 25.03% reduction. Older nodes remain usable through the JSON
+  compatibility routes.
+
+### Binary read/write scale result
+
+Release build, 4,096 entities, one 12,296-byte sequence per entity, batch 10,
+500 measured read calls, and eight concurrent readers. All 256 sampled values
+matched exactly in every arm, and teardown removed all 4,096 records in both
+TemporalStore modes. The SQLite control moved 2.1% from the first run to the
+last, inside the 25% rejection threshold.
+
+The server used isolated tmpfs cache, block, index, and Raft directories.
+Storage maintenance was disabled for this run so it measures the command API
+and codec rather than a maintenance cycle; these are transport-serving
+figures, not a maintenance-under-load claim.
+
+| mode | write rows/s | warm rows/s, batch 10 | concurrent rows/s, 8 workers | concurrent p50 | concurrent p99 |
+|---|---:|---:|---:|---:|---:|
+| async commit | 4,985 | 12,289 | 4,585 | 14,500 us | 36,781 us |
+| durable commit | 3,437 | 6,204 | 9,344 | 8,086 us | 15,885 us |
+
+One exact 4,096-command encoding probe, using the same 12,296-byte payload,
+produced 50,605,338 MessagePack request bytes in a median 55.41 ms versus
+67,460,469 JSON bytes in 273.01 ms: 24.99% fewer bytes and 4.93x faster client
+encoding for that command set. This isolates the request-encoding change from
+server and host scheduling.
 
 ## Reproducing
 
 ```bash
-# a data node, a Valkey, a PostgreSQL
-TS_SERVER_BIND_ADDR=127.0.0.1:17502 TS_SHARD_ID=1 ./target/release/server &
+# a data node with every persistent directory isolated for this run
+BENCH_NODE=/dev/shm/feast-command-benchmark-node
+rm -rf "$BENCH_NODE"
+mkdir -p "$BENCH_NODE"/{cache,blocks,indexes,raft-wal}
+MATRIXARK_STORAGE_MANAGER_INTERVAL_MS=0 \
+TS_CACHE_DIR="$BENCH_NODE/cache" \
+TS_BLOCK_STORE_DIR="$BENCH_NODE/blocks" \
+TS_INDEX_DIR="$BENCH_NODE/indexes" \
+TS_RAFT_WAL_DIR="$BENCH_NODE/raft-wal" \
+TS_SERVER_BIND_ADDR=127.0.0.1:17502 TS_SHARD_ID=1 \
+  ./target/release/server &
 docker run -d --name bench-redis -p 127.0.0.1:6380:6379 valkey/valkey:8-alpine \
   valkey-server --save '' --appendonly no
 docker run -d --name bench-pg -p 127.0.0.1:55432:5432 \
@@ -333,21 +366,17 @@ ten-command batch that returns nothing at all**, about 63% of the wide-row
 read's p50 and 58% of the narrow one's. Reducing per-call and per-field
 overhead is worth more than any payload encoding at this batch width.
 
-### The response-encoding change, specified and handed over
+### Binary batch transport
 
-This section is a **specification, not an implementation** — the codec is owned
-elsewhere, and response encoding is a client contract on a public repository.
+The native command integration now uses MessagePack in both directions for
+bounded read and compact-write batches. Byte-bearing command fields remain
+byte strings rather than expanding to base64 on the request side, and response
+values remain byte strings on the response side. JSON routes remain a
+one-time-detected compatibility path for older nodes.
 
-Measured, at batch 10 and 1,035 B/row: the response is **38,421 B to deliver
-10,490 B of feature values, 3.66x**. Giving `CommandResponse::Values` the bytes
-codec that `HashMultiSet.entries` already carries on the request side would
-send those values as 13,987 B of base64, making the response about **15,478 B —
-60% fewer response bytes**. At 20 B/row the same change saves about **15%**,
-because there the envelope rather than the payload is most of the response.
-
-The latency expected from it is bounded by the +604.9 us the payload adds over
-the floor, not by the byte ratio, so it should be justified as bandwidth and
-tail relief under load rather than as p50.
+The measured reductions above describe wire and client-encoding work. They do
+not by themselves establish a server-latency multiplier; latency and QPS are
+reported separately from full Feast serving runs.
 
 ### Writes
 

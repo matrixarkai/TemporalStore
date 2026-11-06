@@ -1,23 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""HTTP/JSON command client for a TemporalStore data node.
+"""HTTP command client for a TemporalStore data node.
 
-The data node serves the command surface at ``POST /execute``, the binary-read
-``POST /batch_execute_msgpack``, the JSON-compatible ``POST /batch_execute``,
-and the compact write-only ``POST /batch_write``. They take a shard id and one
-or more ``Command`` documents; ``Command`` is a serde-tagged enum, so a command
-is a JSON object whose ``kind`` is the snake_case variant name and whose
-remaining fields are the variant's fields.
+The data node serves binary ``POST /batch_execute_msgpack`` and
+``POST /batch_write_msgpack`` routes, plus JSON-compatible ``POST /execute``,
+``POST /batch_execute``, and ``POST /batch_write`` routes. They take a shard id
+and one or more ``Command`` documents; ``Command`` is a serde-tagged enum whose
+``kind`` is the snake_case variant name.
 
 Two asymmetries in that wire format are load-bearing for anyone measuring it,
 so they are stated here rather than discovered later:
 
-* **Request payloads are base64.** ``HashMultiSet.entries`` carries a
-  ``bytes_serde`` annotation, so values go out as base64 strings -- a flat
-  1.33x on the bytes, whatever they are.
-* **JSON response payloads are base64.** The binary batch response keeps them
-  as byte strings. :func:`decode_bytes` accepts both plus the older decimal-array
-  shape, so clients can read responses from every node version.
+* **Binary request and response payloads stay binary.** MessagePack byte
+  strings avoid base64 expansion for long feature values.
+* **JSON compatibility payloads use the established byte encodings.**
+  :func:`decode_bytes` accepts base64 strings and the older decimal-array
+  response shape, so clients can read responses from every node version.
 """
 
 from __future__ import annotations
@@ -55,7 +53,7 @@ class TemporalStoreCommandError(RuntimeError):
 
 
 def encode_bytes(value: bytes) -> str:
-    """Encode a payload the way the request side of the command surface wants it."""
+    """Encode a payload for the JSON-compatible command routes."""
     return base64.b64encode(value).decode("ascii")
 
 
@@ -71,6 +69,63 @@ def decode_bytes(value: Union[None, str, Sequence[int]]) -> Optional[bytes]:
     if isinstance(value, str):
         return base64.b64decode(value)
     return bytes(value)
+
+
+def _required_binary(value: Any) -> bytes:
+    decoded = decode_bytes(value)
+    if decoded is None:
+        raise TypeError("required byte payload is null")
+    return decoded
+
+
+def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
+    """Return one command with byte-bearing fields represented as bytes."""
+    encoded = dict(command)
+    kind = encoded.get("kind")
+    if kind == "hash_multi_set":
+        encoded["entries"] = [
+            (name, _required_binary(value))
+            for name, value in encoded.get("entries", [])
+        ]
+    elif kind in {"string_set", "string_set_ex", "string_set_conditional", "hash_set"}:
+        encoded["value"] = _required_binary(encoded["value"])
+    elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
+        encoded["member"] = _required_binary(encoded["member"])
+    elif kind in {"feature_append", "feature_append_with_policy", "feature_replace"}:
+        encoded["points"] = [
+            {**point, "value": _required_binary(point["value"])}
+            for point in encoded.get("points", [])
+        ]
+    return encoded
+
+
+def _json_command(command: Dict[str, Any]) -> Dict[str, Any]:
+    """Return one command in the established JSON byte encoding."""
+    encoded = dict(command)
+    kind = encoded.get("kind")
+    if kind == "hash_multi_set":
+        encoded["entries"] = [
+            (name, encode_bytes(_required_binary(value)))
+            for name, value in encoded.get("entries", [])
+        ]
+    elif kind in {"string_set", "string_set_ex", "string_set_conditional", "hash_set"}:
+        encoded["value"] = encode_bytes(_required_binary(encoded["value"]))
+    elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
+        encoded["member"] = encode_bytes(_required_binary(encoded["member"]))
+    elif kind in {"feature_append", "feature_append_with_policy", "feature_replace"}:
+        encoded["points"] = [
+            {**point, "value": list(_required_binary(point["value"]))}
+            for point in encoded.get("points", [])
+        ]
+    return encoded
+
+
+def _msgpack_array_header(length: int) -> bytes:
+    if length < 16:
+        return bytes((0x90 | length,))
+    if length <= 0xFFFF:
+        return b"\xdc" + length.to_bytes(2, "big")
+    return b"\xdd" + length.to_bytes(4, "big")
 
 
 class TemporalStoreClient:
@@ -112,6 +167,7 @@ class TemporalStoreClient:
         self._registry_lock = threading.Lock()
         self._batch_write_supported: Optional[bool] = None
         self._binary_batch_supported: Optional[bool] = False if msgpack is None else None
+        self._binary_write_supported: Optional[bool] = False if msgpack is None else None
 
     # -- connection handling -------------------------------------------------
 
@@ -165,8 +221,10 @@ class TemporalStoreClient:
                 pass
         self._local = threading.local()
 
-    def _request_encoded(self, path: str, body: bytes) -> bytes:
-        headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
+    def _request_encoded(
+        self, path: str, body: bytes, content_type: str = "application/json"
+    ) -> bytes:
+        headers = {"Content-Type": content_type, "Content-Length": str(len(body))}
         # A timeout can happen after the server applied a write but before its
         # response arrives. Do not resend an ambiguous request: FeatureAppend
         # and other commands are not generally idempotent.
@@ -216,10 +274,78 @@ class TemporalStoreClient:
         ``commands``. An empty list is answered without a round trip: the node
         would accept it, but a caller that batched nothing wants nothing.
         """
-        results: List[Dict[str, Any]] = []
+        if not commands:
+            return []
+        if msgpack is not None and self._binary_batch_supported is not False:
+            results: List[Dict[str, Any]] = []
+            try:
+                for chunk, body in self._binary_batches(commands):
+                    raw = self._request_encoded(
+                        "/batch_execute_msgpack", body, "application/msgpack"
+                    )
+                    envelope = msgpack.unpackb(raw, raw=False)
+                    results.extend(self._decode_batch_envelope(envelope, chunk))
+            except TemporalStoreCommandError as error:
+                if error.code != "http_404" or results:
+                    raise
+                self._binary_batch_supported = False
+            except (ValueError, msgpack.UnpackException) as error:
+                raise TemporalStoreCommandError(
+                    "invalid_binary_response", str(error)
+                ) from error
+            else:
+                self._binary_batch_supported = True
+                return results
+
+        results = []
         for chunk, body in self._encoded_batches(commands):
-            results.extend(self._batch_once(chunk, body))
+            results.extend(self._batch_once_json(chunk, body))
         return results
+
+    def _binary_batches(
+        self, commands: List[Dict[str, Any]]
+    ) -> Iterator[Tuple[List[Dict[str, Any]], bytes]]:
+        if msgpack is None:
+            return
+        prefix = (
+            b"\x82"
+            + msgpack.packb("shard_id", use_bin_type=True)
+            + msgpack.packb(self.shard_id, use_bin_type=True)
+            + msgpack.packb("commands", use_bin_type=True)
+        )
+        chunk: List[Dict[str, Any]] = []
+        encoded_chunk: List[bytes] = []
+        command_bytes = 0
+        for command in commands:
+            encoded = msgpack.packb(_binary_command(command), use_bin_type=True)
+            next_count = len(chunk) + 1
+            next_bytes = (
+                len(prefix)
+                + len(_msgpack_array_header(next_count))
+                + command_bytes
+                + len(encoded)
+            )
+            if chunk and (
+                len(chunk) >= self.max_batch_commands
+                or next_bytes > self.max_batch_request_bytes
+            ):
+                yield (
+                    chunk,
+                    prefix
+                    + _msgpack_array_header(len(chunk))
+                    + b"".join(encoded_chunk),
+                )
+                chunk = []
+                encoded_chunk = []
+                command_bytes = 0
+            chunk.append(command)
+            encoded_chunk.append(encoded)
+            command_bytes += len(encoded)
+        if chunk:
+            yield (
+                chunk,
+                prefix + _msgpack_array_header(len(chunk)) + b"".join(encoded_chunk),
+            )
 
     def _encoded_batches(
         self, commands: List[Dict[str, Any]]
@@ -237,7 +363,9 @@ class TemporalStoreClient:
             # Keep the exact encoding used for the request. Long feature values
             # dominate the body; encoding them again while building the envelope
             # doubles client CPU and temporary memory for no change on the wire.
-            encoded = json.dumps(command, separators=(",", ":")).encode("utf-8")
+            encoded = json.dumps(
+                _json_command(command), separators=(",", ":")
+            ).encode("utf-8")
             separator_bytes = 1 if chunk else 0
             if chunk and (
                 len(chunk) >= self.max_batch_commands
@@ -255,29 +383,17 @@ class TemporalStoreClient:
         if chunk:
             yield chunk, prefix + b",".join(encoded_chunk) + b"]}"
 
-    def _batch_once(
+    def _batch_once_json(
         self,
         commands: List[Dict[str, Any]],
         body: bytes,
     ) -> List[Dict[str, Any]]:
-        envelope = None
-        if msgpack is not None and self._binary_batch_supported is not False:
-            try:
-                raw = self._request_encoded("/batch_execute_msgpack", body)
-            except TemporalStoreCommandError as error:
-                if error.code != "http_404":
-                    raise
-                self._binary_batch_supported = False
-            else:
-                try:
-                    envelope = msgpack.unpackb(raw, raw=False)
-                except (ValueError, msgpack.UnpackException) as error:
-                    raise TemporalStoreCommandError(
-                        "invalid_binary_response", str(error)
-                    ) from error
-                self._binary_batch_supported = True
-        if envelope is None:
-            envelope = self._post_encoded("/batch_execute", body)
+        envelope = self._post_encoded("/batch_execute", body)
+        return self._decode_batch_envelope(envelope, commands)
+
+    def _decode_batch_envelope(
+        self, envelope: Dict[str, Any], commands: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         status = envelope.get("status") or {}
         if not status.get("ok", False):
             raise TemporalStoreCommandError(
@@ -301,9 +417,33 @@ class TemporalStoreClient:
         that response is safe to fall back from to the regular batch endpoint. Other
         transport errors remain ambiguous and are never retried.
         """
+        if not commands:
+            return
+        if msgpack is not None and self._binary_write_supported is not False:
+            applied_any = False
+            try:
+                for chunk, body in self._binary_batches(commands):
+                    raw = self._request_encoded(
+                        "/batch_write_msgpack", body, "application/msgpack"
+                    )
+                    envelope = msgpack.unpackb(raw, raw=False)
+                    self._check_write_envelope(envelope, chunk)
+                    applied_any = True
+            except TemporalStoreCommandError as error:
+                if error.code != "http_404" or applied_any:
+                    raise
+                self._binary_write_supported = False
+            except (ValueError, msgpack.UnpackException) as error:
+                raise TemporalStoreCommandError(
+                    "invalid_binary_response", str(error)
+                ) from error
+            else:
+                self._binary_write_supported = True
+                return
+
         for chunk, body in self._encoded_batches(commands):
             if self._batch_write_supported is False:
-                self._batch_once(chunk, body)
+                self._batch_once_json(chunk, body)
                 continue
             try:
                 envelope = self._post_encoded("/batch_write", body)
@@ -311,31 +451,36 @@ class TemporalStoreClient:
                 if error.code != "http_404":
                     raise
                 self._batch_write_supported = False
-                self._batch_once(chunk, body)
+                self._batch_once_json(chunk, body)
                 continue
 
             self._batch_write_supported = True
-            status = envelope.get("status") or {}
-            if not status.get("ok", False):
-                raise TemporalStoreCommandError(
-                    status.get("code", "unknown"), status.get("message", "")
-                )
-            errors = envelope.get("errors") or []
-            applied = int(envelope.get("applied", 0))
-            if applied + len(errors) != len(chunk):
-                raise TemporalStoreCommandError(
-                    "batch_length_mismatch",
-                    f"sent {len(chunk)} writes, got {applied} successes and "
-                    f"{len(errors)} errors",
-                )
-            if errors:
-                first = errors[0]
-                item_status = first.get("status") or {}
-                raise TemporalStoreCommandError(
-                    item_status.get("code", "unknown"),
-                    f"command {first.get('index', '?')}: "
-                    f"{item_status.get('message', '')}",
-                )
+            self._check_write_envelope(envelope, chunk)
+
+    def _check_write_envelope(
+        self, envelope: Dict[str, Any], commands: List[Dict[str, Any]]
+    ) -> None:
+        status = envelope.get("status") or {}
+        if not status.get("ok", False):
+            raise TemporalStoreCommandError(
+                status.get("code", "unknown"), status.get("message", "")
+            )
+        errors = envelope.get("errors") or []
+        applied = int(envelope.get("applied", 0))
+        if applied + len(errors) != len(commands):
+            raise TemporalStoreCommandError(
+                "batch_length_mismatch",
+                f"sent {len(commands)} writes, got {applied} successes and "
+                f"{len(errors)} errors",
+            )
+        if errors:
+            first = errors[0]
+            item_status = first.get("status") or {}
+            raise TemporalStoreCommandError(
+                item_status.get("code", "unknown"),
+                f"command {first.get('index', '?')}: "
+                f"{item_status.get('message', '')}",
+            )
 
     def health(self) -> bool:
         try:

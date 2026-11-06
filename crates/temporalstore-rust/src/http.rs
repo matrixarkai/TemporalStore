@@ -333,6 +333,10 @@ pub fn parse_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, HttpError> {
     Ok(serde_json::from_slice(body)?)
 }
 
+pub fn parse_msgpack<T: DeserializeOwned>(body: &[u8]) -> Result<T, HttpError> {
+    rmp_serde::from_slice(body).map_err(|err| HttpError::BadResponse(err.to_string()))
+}
+
 /// Like `parse_json`, but for a request type that BORROWS from the body.
 ///
 /// The caller keeps the body alive for as long as the parsed value, so serde can point at it
@@ -944,6 +948,91 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(buffered_content_type(&body), "application/msgpack");
         assert_eq!(rmp_serde::from_slice::<crate::types::Status>(&body).unwrap(), expected);
+    }
+
+    #[test]
+    fn msgpack_request_keeps_binary_command_values() {
+        struct Binary<'a>(&'a [u8]);
+        impl serde::Serialize for Binary<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_bytes(self.0)
+            }
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryCommand<'a> {
+            kind: &'a str,
+            key: &'a str,
+            entries: Vec<(&'a str, Binary<'a>)>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryRequest<'a> {
+            shard_id: u64,
+            commands: Vec<BinaryCommand<'a>>,
+        }
+
+        let payload = [0, 1, 2, 127, 128, 255];
+        let body = rmp_serde::to_vec_named(&BinaryRequest {
+            shard_id: 7,
+            commands: vec![BinaryCommand {
+                kind: "hash_multi_set",
+                key: "entity",
+                entries: vec![("sequence", Binary(&payload))],
+            }],
+        })
+        .unwrap();
+        let request = parse_msgpack::<crate::types::BatchExecuteRequest>(&body).unwrap();
+        assert_eq!(request.shard_id, 7);
+        match &request.commands[0] {
+            crate::types::Command::HashMultiSet { key, entries } => {
+                assert_eq!(key, "entity");
+                assert_eq!(entries, &vec![("sequence".to_string(), payload.to_vec())]);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryPoint<'a> {
+            timestamp_ms: u64,
+            value: Binary<'a>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryFeatureCommand<'a> {
+            kind: &'a str,
+            key: &'a str,
+            points: Vec<BinaryPoint<'a>>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryFeatureRequest<'a> {
+            shard_id: u64,
+            commands: Vec<BinaryFeatureCommand<'a>>,
+        }
+
+        let body = rmp_serde::to_vec_named(&BinaryFeatureRequest {
+            shard_id: 8,
+            commands: vec![BinaryFeatureCommand {
+                kind: "feature_append",
+                key: "history",
+                points: vec![BinaryPoint {
+                    timestamp_ms: 123,
+                    value: Binary(&payload),
+                }],
+            }],
+        })
+        .unwrap();
+        let request = parse_msgpack::<crate::types::BatchExecuteRequest>(&body).unwrap();
+        assert_eq!(request.shard_id, 8);
+        match &request.commands[0] {
+            crate::types::Command::FeatureAppend { key, points } => {
+                assert_eq!(key, "history");
+                assert_eq!(points[0].timestamp_ms, 123);
+                assert_eq!(points[0].value, payload);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

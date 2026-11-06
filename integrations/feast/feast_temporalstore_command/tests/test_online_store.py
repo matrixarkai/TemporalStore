@@ -56,6 +56,7 @@ class RecordingClient(TemporalStoreClient):
     def __init__(self, answers=None):
         super().__init__()
         self._binary_batch_supported = False
+        self._binary_write_supported = False
         self.sent = []
         self.answers = list(answers or [])
 
@@ -187,8 +188,10 @@ class ClientProtocolTest(unittest.TestCase):
         class BinaryClient(TemporalStoreClient):
             paths = []
 
-            def _request_encoded(self, path, body):  # type: ignore[override]
-                self.paths.append(path)
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                self.paths.append((path, content_type))
                 return msgpack.packb(
                     {
                         "status": {"ok": True, "code": "ok", "message": ""},
@@ -203,9 +206,45 @@ class ClientProtocolTest(unittest.TestCase):
         answer = client.batch_execute(
             [{"kind": "hash_multi_get", "key": "a", "fields": ["f", "missing"]}]
         )[0]
-        self.assertEqual(client.paths, ["/batch_execute_msgpack"])
+        self.assertEqual(
+            client.paths, [("/batch_execute_msgpack", "application/msgpack")]
+        )
         self.assertEqual(decode_bytes(answer["values"][0]), payload)
         self.assertIsNone(decode_bytes(answer["values"][1]))
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_binary_batch_request_keeps_long_values_as_bytes(self):
+        payload = bytes(range(256)) * 16
+
+        class BinaryClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                self.documents.append((path, content_type, msgpack.unpackb(body, raw=False)))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "responses": [ok({"kind": "empty"})],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = BinaryClient()
+        client.batch_execute(
+            [
+                {
+                    "kind": "hash_multi_set",
+                    "key": "a",
+                    "entries": [["sequence", encode_bytes(payload)]],
+                }
+            ]
+        )
+        path, content_type, document = client.documents[0]
+        self.assertEqual(path, "/batch_execute_msgpack")
+        self.assertEqual(content_type, "application/msgpack")
+        self.assertEqual(document["commands"][0]["entries"][0][1], payload)
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_binary_batch_endpoint_falls_back_once(self):
@@ -216,11 +255,13 @@ class ClientProtocolTest(unittest.TestCase):
                 super().__init__()
                 self._binary_batch_supported = None
 
-            def _request_encoded(self, path, body):  # type: ignore[override]
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
                 if path == "/batch_execute_msgpack":
                     self.attempts += 1
                     raise TemporalStoreCommandError("http_404", "not found")
-                return super()._request_encoded(path, body)
+                return super()._request_encoded(path, body, content_type)
 
         client = OlderNodeClient()
         command = {"kind": "hash_multi_get", "key": "a", "fields": ["f"]}
@@ -273,6 +314,65 @@ class ClientProtocolTest(unittest.TestCase):
         ]
         client.batch_write(commands)
         self.assertEqual(client.sent, [("/batch_write", {"shard_id": 1, "commands": commands})])
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_binary_write_request_keeps_values_as_bytes(self):
+        payload = bytes(range(256)) * 16
+
+        class BinaryWriteClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.documents.append((path, content_type, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["commands"]),
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = BinaryWriteClient()
+        client.batch_write(
+            [
+                {
+                    "kind": "hash_multi_set",
+                    "key": "a",
+                    "entries": [["sequence", encode_bytes(payload)]],
+                }
+            ]
+        )
+        path, content_type, document = client.documents[0]
+        self.assertEqual(path, "/batch_write_msgpack")
+        self.assertEqual(content_type, "application/msgpack")
+        self.assertEqual(document["commands"][0]["entries"][0][1], payload)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_binary_write_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def __init__(self):
+                super().__init__()
+                self._binary_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                if path == "/batch_write_msgpack":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._request_encoded(path, body, content_type)
+
+        client = OlderNodeClient()
+        client.batch_write([{"kind": "common_delete", "key": "a"}])
+        client.batch_write([{"kind": "common_delete", "key": "b"}])
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual([path for path, _ in client.sent], ["/batch_write", "/batch_write"])
 
     def test_compact_write_surfaces_an_indexed_command_error(self):
         client = RecordingClient(

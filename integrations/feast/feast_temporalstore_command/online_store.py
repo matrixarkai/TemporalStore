@@ -40,10 +40,10 @@ event timestamp are one key's worth of work:
   across stores by construction, which is the only reason a latency comparison
   between them means anything.
 
-Reads use bounded ``/batch_execute_msgpack`` responses and fall back once to
-the JSON-compatible ``/batch_execute`` route when needed. Writes use the
-compact ``/batch_write`` acknowledgment with the same compatibility behavior,
-so serving groups entities instead of issuing one request per entity.
+Reads use bounded binary ``/batch_execute_msgpack`` requests and responses.
+Writes use bounded binary ``/batch_write_msgpack`` requests and compact
+responses. Both paths fall back once to JSON-compatible routes when needed, so
+serving groups entities instead of issuing one request per entity.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 from feast.repo_config import FeastConfigBaseModel
 from feast.types import Int32, Int64
 
-from .client import TemporalStoreClient, decode_bytes, encode_bytes
+from .client import TemporalStoreClient, decode_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -344,12 +344,12 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 continue
             queued_nanos[hash_key] = event_nanos
 
-            entries = [(ts_field, encode_bytes(proto_ts.SerializeToString()))]
+            entries = [(ts_field, proto_ts.SerializeToString())]
             for feature_name, value in values.items():
                 entries.append(
                     (
                         _feature_field(view_name, feature_name),
-                        encode_bytes(value.SerializeToString()),
+                        value.SerializeToString(),
                     )
                 )
             # A Feast batch can contain many events for one entity. Only its
@@ -368,8 +368,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     history_points.setdefault(history_key, []).append(
                         {
                             "timestamp_ms": timestamp_ms,
-                            # FeaturePoint.value carries no base64 annotation.
-                            "value": list(value.SerializeToString()),
+                            "value": value.SerializeToString(),
                         }
                     )
                     numeric_field = value.WhichOneof("val")
@@ -380,9 +379,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         numeric_points.setdefault(aggregate_key, []).append(
                             {
                                 "timestamp_ms": timestamp_ms,
-                                "value": list(
-                                    str(getattr(value, numeric_field)).encode("ascii")
-                                ),
+                                "value": str(getattr(value, numeric_field)).encode("ascii"),
                             }
                         )
 
@@ -414,7 +411,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 {
                     "kind": "set_add",
                     "key": self._teardown_set_key(config, view_name),
-                    "member": encode_bytes(key.encode("utf-8")),
+                    "member": key.encode("utf-8"),
                 }
             )
 

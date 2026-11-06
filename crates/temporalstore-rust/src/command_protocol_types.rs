@@ -33,6 +33,7 @@ impl Status {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FeaturePoint {
     pub timestamp_ms: u64,
+    #[serde(with = "crate::bytes_serde::binary")]
     pub value: Vec<u8>,
 }
 

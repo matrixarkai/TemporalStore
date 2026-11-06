@@ -1,9 +1,9 @@
 # TemporalStore as a Feast online store — over the native command surface
 
 A [Feast](https://github.com/feast-dev/feast) **online store** that talks to a
-TemporalStore data node over its own command surface: compact `POST /batch_write`
-requests and binary `POST /batch_execute_msgpack` responses, with compatible
-JSON routing for older nodes.
+TemporalStore data node over its own command surface: binary
+`POST /batch_write_msgpack` writes and `POST /batch_execute_msgpack` reads,
+with compatible JSON routing for older nodes.
 
 ## Which integration point this is
 
@@ -87,9 +87,10 @@ footprint ratio without knowing.
 
 ## Reads
 
-`online_read` over N entity keys uses ordered `/batch_execute_msgpack` requests
-bounded by command count and encoded request bytes. Nodes without that route
-are detected once per client and use `/batch_execute`. The answers are
+`online_read` over N entity keys uses ordered binary
+`/batch_execute_msgpack` requests and responses bounded by command count and
+encoded request bytes. Nodes without that route are detected once per client
+and use `/batch_execute`. The answers are
 positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
@@ -99,10 +100,10 @@ empty values.
 
 ## Writes
 
-`online_write_batch` uses bounded `/batch_write` requests for `HashMultiSet`
-commands, plus a batched timestamp read first unless `skip_dedup` is set. Nodes
-without the compact write route are detected once per client and use
-`/batch_execute`:
+`online_write_batch` uses bounded binary `/batch_write_msgpack` requests for
+`HashMultiSet` commands, plus a batched timestamp read first unless
+`skip_dedup` is set. Nodes without the binary write route are detected once
+per client and use `/batch_write` or `/batch_execute`:
 
 * **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then
   write only the rows whose event time is newer. The number of round trips is
@@ -269,12 +270,15 @@ PYTEST_PLUGINS=feast_temporalstore_command.feast_online_store_creator \
 The command surface is asymmetric about byte payloads, and it matters to
 anyone reading a latency or bandwidth number off this path:
 
-* **Requests are base64.** `HashMultiSet.entries` carries the bytes codec, so
-  values go out base64 — a flat 1.33x.
+* **Binary batch requests keep byte strings binary.** For 4,096 commands with
+  12,296-byte values, the encoded request stream measured 50,605,338 bytes,
+  versus 67,460,469 bytes through JSON: 24.99% fewer wire bytes. Median client
+  encoding time was 55.41 ms versus 273.01 ms for the exact same command set.
 * **Binary batch responses keep byte strings binary.** A measured response
   carrying ten 12 KiB values is 123,551 bytes, versus 164,811 bytes through
-  JSON base64: 25.03% fewer wire bytes. The client still accepts JSON base64
-  and the older decimal-array shape.
+  JSON base64: 25.03% fewer wire bytes. The compatibility routes still encode
+  requests as JSON base64, and the client accepts JSON base64 and the older
+  decimal-array response shape.
 
 ## Tests
 
@@ -286,7 +290,7 @@ python integrations/feast/run_tests.py
 cd integrations/feast && PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_online_store.py
 ```
 
-**The current offline run executes 49 checks:** 42 command-provider tests plus
+**The current offline run executes 52 checks:** 45 command-provider tests plus
 7 wire tests. The transport is replaced with a recording stub in that tier;
 the five-case Feast API conformance tier runs separately against a live node.
 
@@ -309,3 +313,7 @@ arm by an `online_store` block, so it measures any Feast online store,
 including the RESP path. See
 [`../../../docs/feast_online_store_benchmark.md`](../../../docs/feast_online_store_benchmark.md)
 for the method, what the harness refuses to report, and the measured tables.
+The accepted 4,096-entity long-sequence run served 12,296-byte values at
+12,289 async and 6,204 durable warm rows/s at batch 10; eight-reader throughput
+was 4,585 and 9,344 rows/s. The control drift was 2.1%, every sampled value was
+exact, and teardown returned both stores from 4,096 records to zero.
