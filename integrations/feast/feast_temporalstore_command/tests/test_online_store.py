@@ -1086,6 +1086,29 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertTrue(document["commands"][0]["key"].startswith("fa:"))
         self.assertTrue(document["commands"][1]["key"].startswith("fh:"))
 
+    def test_repeated_windowed_aggregates_share_one_command(self):
+        self.config.online_store.write_feature_history = True
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [ok({"kind": "aggregate", "value": 13})],
+                }
+            ]
+        )
+        key = self._entity_key(1)
+        query = (key, "trips", 1, 100, "sum", None)
+
+        values = self.store.query_feature_aggregates(
+            self.config,
+            self.view,
+            [query, query, query],
+        )
+
+        self.assertEqual(values, [13, 13, 13])
+        self.assertEqual(len(client.sent), 1)
+        self.assertEqual(len(client.sent[0][1]["commands"]), 1)
+
     def test_list_history_keeps_original_value_without_numeric_projection(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
