@@ -573,19 +573,32 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         ts_field = _ts_field(view_name)
         fields = [_feature_field(view_name, name) for name in feature_names] + [ts_field]
 
+        unique_hash_keys: List[str] = []
+        response_index_by_hash_key: Dict[str, int] = {}
+        response_indices: List[int] = []
+        for entity_key in entity_keys:
+            hash_key = self._entity_hash_key(config, entity_key)
+            response_index = response_index_by_hash_key.get(hash_key)
+            if response_index is None:
+                response_index = len(unique_hash_keys)
+                response_index_by_hash_key[hash_key] = response_index
+                unique_hash_keys.append(hash_key)
+            response_indices.append(response_index)
+
         responses = client.batch_execute(
             [
                 {
                     "kind": "hash_multi_get",
-                    "key": self._entity_hash_key(config, entity_key),
+                    "key": hash_key,
                     "fields": fields,
                 }
-                for entity_key in entity_keys
+                for hash_key in unique_hash_keys
             ]
         )
 
         results: List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]] = []
-        for response in responses:
+        for response_index in response_indices:
+            response = responses[response_index]
             raw_values = response.get("values") or []
             # HashMultiGet answers positionally, one slot per requested field,
             # with null for a field the hash does not hold. A short answer would
