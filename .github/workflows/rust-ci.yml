@@ -221,6 +221,7 @@ jobs:
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
             engine::tests::part4::the_counter_coalesce_cure_is_inert_under_default_config \
             engine::tests::part4::a_counter_series_is_bounded_by_a_write_and_not_by_a_reload \
+            engine::tests::a_key_already_in_the_map_is_not_allocated_again::a_recorded_install_looks_its_key_up_borrowed_before_it_builds_one \
             engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_byte_ceiling_is_a_spending_bound_in_slab_units \
             block_store::tests::a_sub_slab_byte_budget_admits_one_slab_then_yields \
             block_store::tests::policy_gc_plans_and_applies_byte_bounded_destroy \
