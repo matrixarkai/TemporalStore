@@ -300,7 +300,7 @@ jobs:
             snapshot_store::tests::list_snapshots_finds_a_manifest_filed_under_the_binary_suffix \
             snapshot_store::tests::a_manifest_decodes_from_both_shapes_and_the_encoding_does_not_change_it \
             snapshot_store::tests::an_unknown_compression_tag_is_refused_rather_than_defaulted \
-            snapshot_store::tests::a_binary_manifest_is_written_only_when_asked_and_read_without_the_gate \
+            snapshot_store::tests::a_manifest_is_written_binary_and_a_planted_json_one_is_still_read \
             snapshot_store::tests::a_staged_manifest_is_still_excluded_under_either_suffix ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-snapshot --lib "$t" \
