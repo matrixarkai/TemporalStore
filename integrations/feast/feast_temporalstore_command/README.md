@@ -126,6 +126,10 @@ and Int64 values also get an ASCII-integer projection for native windowed
 read the raw series. Existing history written before the numeric projection
 needs backfilling before numeric queries can include it.
 
+`query_feature_aggregates` sends many windows through bounded ordered batches.
+The repeat-gated 1,024-entity benchmark measured a median 4,207 aggregate
+queries/s at batch 64, with every full-window and tail-window result verified.
+
 Repeated events for the same entity-feature within one Feast write batch are
 consolidated into one multi-point history command. The latest-value hash is
 also written once per entity, using the newest accepted event in that batch.
@@ -317,4 +321,7 @@ for the method, what the harness refuses to report, and the measured tables.
 The accepted 4,096-entity long-sequence run served 12,296-byte values at
 12,289 async and 6,204 durable warm rows/s at batch 10; eight-reader throughput
 was 4,585 and 9,344 rows/s. The control drift was 2.1%, every sampled value was
-exact, and teardown returned both stores from 4,096 records to zero.
+exact, and teardown returned both stores from 4,096 records to zero. The
+repeat-gated entity-scale sweep with a fixed 512-row hot set served 21,070 rows/s
+at 5,000 resident rows and about 10,400 rows/s at both 20,000 and 50,000 rows;
+repeat drift stayed below 2.9% and every value matched.

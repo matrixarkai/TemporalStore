@@ -12,8 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from feast import Entity, FeatureView, Field, FileSource, RepoConfig
@@ -33,6 +35,12 @@ def node_records(host: str, port: int, shard_id: int) -> int:
     raise RuntimeError(f"shard {shard_id} is not loaded")
 
 
+def percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, round(fraction * (len(ordered) - 1)))
+    return ordered[index]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1")
@@ -40,14 +48,30 @@ def main() -> int:
     parser.add_argument("--shard-id", type=int, default=1)
     parser.add_argument("--entities", type=int, default=50_000)
     parser.add_argument("--batch", type=int, default=500)
+    parser.add_argument("--warm-calls", type=int, default=500)
+    parser.add_argument("--warm-batch", type=int, default=10)
+    parser.add_argument("--hot", type=int, default=512)
+    parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--warm-repeats", type=int, default=3)
+    parser.add_argument("--control-tolerance", type=float, default=0.25)
     parser.add_argument(
         "--verify-teardown",
         action="store_true",
         help="run exact teardown and verify that feature fields and tracking sets are empty",
     )
     args = parser.parse_args()
-    if args.entities < 1 or args.batch < 1:
-        parser.error("--entities and --batch must be positive")
+    if min(
+        args.entities,
+        args.batch,
+        args.warm_calls,
+        args.warm_batch,
+        args.hot,
+        args.concurrency,
+        args.warm_repeats,
+    ) < 1:
+        parser.error("entity, batch, hot-set, call, and concurrency values must be positive")
+    if not 0 <= args.control_tolerance < 1:
+        parser.error("--control-tolerance must be in [0, 1)")
     if node_records(args.host, args.port, args.shard_id) != 0:
         parser.error("the target shard is not empty")
 
@@ -133,6 +157,63 @@ def main() -> int:
                 mismatched += 1
     read_seconds = time.perf_counter() - read_started
 
+    hot_indices = list(range(min(args.hot, args.entities)))
+    store.online_read(
+        config,
+        view,
+        [entity_key(index) for index in hot_indices],
+        ["trips"],
+    )
+
+    def warm_read(call_index: int) -> float:
+        indices = [
+            hot_indices[(call_index * args.warm_batch + offset) % len(hot_indices)]
+            for offset in range(args.warm_batch)
+        ]
+        started = time.perf_counter()
+        answers = store.online_read(
+            config,
+            view,
+            [entity_key(index) for index in indices],
+            ["trips"],
+        )
+        elapsed_us = (time.perf_counter() - started) * 1_000_000
+        if len(answers) != len(indices):
+            raise RuntimeError(
+                f"warm read returned {len(answers)} of {len(indices)} rows"
+            )
+        for index, (_timestamp, values) in zip(indices, answers):
+            if not values or values["trips"].int64_val != index:
+                raise RuntimeError(f"warm read returned the wrong value for entity {index}")
+        return elapsed_us
+
+    warm_repeat_rows_per_second = []
+    warm_repeat_p50_us = []
+    warm_repeat_p99_us = []
+    for repeat in range(args.warm_repeats):
+        first_call = repeat * args.warm_calls
+        warm_started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            warm_latencies_us = list(
+                pool.map(
+                    warm_read,
+                    range(first_call, first_call + args.warm_calls),
+                )
+            )
+        warm_seconds = time.perf_counter() - warm_started
+        warm_repeat_rows_per_second.append(
+            args.warm_calls * args.warm_batch / warm_seconds
+        )
+        warm_repeat_p50_us.append(percentile(warm_latencies_us, 0.50))
+        warm_repeat_p99_us.append(percentile(warm_latencies_us, 0.99))
+
+    warm_rows_per_second = statistics.median(warm_repeat_rows_per_second)
+    warm_control_drift = max(
+        abs(value - warm_rows_per_second) / warm_rows_per_second
+        for value in warm_repeat_rows_per_second
+    )
+    warm_stable = warm_control_drift <= args.control_tolerance
+
     tracked_members = sum(shard_sizes)
     occupied = sum(size > 0 for size in shard_sizes)
     result = {
@@ -142,6 +223,19 @@ def main() -> int:
         "write_rows_per_second": round(args.entities / write_seconds, 1),
         "read_seconds": round(read_seconds, 4),
         "read_rows_per_second": round(args.entities / read_seconds, 1),
+        "warm_calls": args.warm_calls,
+        "warm_batch": args.warm_batch,
+        "warm_hot_entities": len(hot_indices),
+        "warm_concurrency": args.concurrency,
+        "warm_repeats": args.warm_repeats,
+        "warm_call_p50_us": round(statistics.median(warm_repeat_p50_us), 1),
+        "warm_call_p99_us": round(statistics.median(warm_repeat_p99_us), 1),
+        "warm_rows_per_second": round(warm_rows_per_second, 1),
+        "warm_repeat_rows_per_second": [
+            round(value, 1) for value in warm_repeat_rows_per_second
+        ],
+        "warm_control_drift": round(warm_control_drift, 4),
+        "warm_stable": warm_stable,
         "missing_rows": missing,
         "mismatched_rows": mismatched,
         "tracked_members": tracked_members,
@@ -183,7 +277,12 @@ def main() -> int:
         )
     print(json.dumps(result, indent=2, sort_keys=True))
     store.close()
-    valid = missing == 0 and mismatched == 0 and tracked_members == args.entities
+    valid = (
+        missing == 0
+        and mismatched == 0
+        and tracked_members == args.entities
+        and warm_stable
+    )
     if args.verify_teardown:
         valid = valid and remaining_feature_rows == 0 and remaining_tracking_members == 0
     return 0 if valid else 2
