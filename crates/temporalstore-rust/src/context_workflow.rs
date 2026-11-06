@@ -120,6 +120,7 @@ pub enum ContextSourceKind {
 pub enum ContextProviderKind {
     Mock,
     OpenAiCompatible,
+    Ollama,
 }
 
 impl Default for ContextProviderKind {
@@ -3150,6 +3151,7 @@ fn default_allowed_context_provider_kinds() -> Vec<ContextProviderKind> {
     vec![
         ContextProviderKind::Mock,
         ContextProviderKind::OpenAiCompatible,
+        ContextProviderKind::Ollama,
     ]
 }
 

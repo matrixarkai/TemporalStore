@@ -266,6 +266,61 @@ impl OllamaProvider {
         Ok(EmbeddingBatch { dimensions, values })
     }
 
+    pub fn generate_structured_json(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &Value,
+    ) -> Result<Value, OllamaError> {
+        for (index, prompt) in [system_prompt, user_prompt].into_iter().enumerate() {
+            if prompt.len() > self.config.max_input_bytes {
+                return Err(OllamaError::InputTooLarge {
+                    index,
+                    bytes: prompt.len(),
+                    limit: self.config.max_input_bytes,
+                });
+            }
+        }
+        let request_bytes = system_prompt.len().saturating_add(user_prompt.len());
+        if request_bytes > self.config.max_request_bytes {
+            return Err(OllamaError::InputTooLarge {
+                index: 1,
+                bytes: request_bytes,
+                limit: self.config.max_request_bytes,
+            });
+        }
+        let request_messages = [
+            OllamaChatMessage {
+                role: "system",
+                content: system_prompt,
+            },
+            OllamaChatMessage {
+                role: "user",
+                content: user_prompt,
+            },
+        ];
+        let request = OllamaChatRequest {
+            model: &self.config.extraction_model,
+            messages: &request_messages,
+            format: schema,
+            stream: false,
+            keep_alive: &self.config.keep_alive,
+            options: OllamaChatOptions { temperature: 0.0 },
+        };
+        let response: OllamaChatResponse = post_json_with_options(
+            &self.addr,
+            &self.endpoint("/api/chat"),
+            &request,
+            self.request_options(),
+        )
+        .map_err(OllamaError::Http)?;
+        let content = response
+            .message
+            .map(|message| message.content)
+            .ok_or(OllamaError::MissingMessageContent)?;
+        serde_json::from_str(&content).map_err(OllamaError::ContentJson)
+    }
+
     fn extract(&self, messages: &[ContextMessage]) -> Result<Vec<ExtractedContext>, OllamaError> {
         let mut message_ids = HashSet::with_capacity(messages.len());
         for message in messages {
@@ -279,37 +334,13 @@ impl OllamaProvider {
         while start < messages.len() {
             let end = self.batch_end(messages, start, |message| message.text.len())?;
             let prompt = extraction_prompt(&messages[start..end])?;
-            let request_messages = [
-                OllamaChatMessage {
-                    role: "system",
-                    content: EXTRACTION_SYSTEM_PROMPT,
-                },
-                OllamaChatMessage {
-                    role: "user",
-                    content: &prompt,
-                },
-            ];
-            let request = OllamaChatRequest {
-                model: &self.config.extraction_model,
-                messages: &request_messages,
-                format: extraction_schema(),
-                stream: false,
-                keep_alive: &self.config.keep_alive,
-                options: OllamaChatOptions { temperature: 0.0 },
-            };
-            let response: OllamaChatResponse = post_json_with_options(
-                &self.addr,
-                &self.endpoint("/api/chat"),
-                &request,
-                self.request_options(),
-            )
-            .map_err(OllamaError::Http)?;
-            let content = response
-                .message
-                .map(|message| message.content)
-                .ok_or(OllamaError::MissingMessageContent)?;
             let output: OllamaExtractionOutput =
-                serde_json::from_str(&content).map_err(OllamaError::ContentJson)?;
+                serde_json::from_value(self.generate_structured_json(
+                    EXTRACTION_SYSTEM_PROMPT,
+                    &prompt,
+                    extraction_schema(),
+                )?)
+                .map_err(OllamaError::ContentJson)?;
             for item in output.items {
                 let source = messages[start..end]
                     .iter()
