@@ -7917,6 +7917,94 @@ mod tests {
 
     #[cfg(feature = "matrixobject")]
     #[tokio::test]
+    async fn an_append_over_the_shared_path_costs_one_request_not_two() {
+        // WHAT THE SHARED PATH SPENDS OVER A NETWORK IS REQUESTS, NOT ONLY BYTES.
+        //
+        // The byte envelope of a WAL frame has been measured down to where its only remaining
+        // lever is a batch header, but an append that asks the store how long the object is
+        // before writing to it spends two round trips per record. The object's new length
+        // comes back from the append itself, so after the first one this client already knows
+        // the next offset and the ask is redundant.
+        //
+        // Asserted as a COUNT rather than a duration, deliberately: wall-clock on a shared box
+        // cannot tell a saved round trip from a quiet neighbour, and a count can.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let key = "shared/wal/one-request-per-append";
+        const RECORDS: usize = 16;
+
+        let mut expected_offset = 0u64;
+        for index in 0..RECORDS {
+            let body = format!("record-{index:02}").into_bytes();
+            let written = body.len() as u64;
+            let receipt = store
+                .append_blob(key, Bytes::from(body))
+                .await
+                .expect("the append should publish");
+            // THE RECEIPT MUST DESCRIBE WHERE THE BYTES WENT. A cached offset is only safe
+            // because the server appends at the offset it is given or refuses, so if the
+            // cache were ever believed over the server this is what would drift.
+            assert_eq!(
+                receipt.start_offset, expected_offset,
+                "append {index} reports starting at {} and should be {expected_offset}",
+                receipt.start_offset
+            );
+            expected_offset += written;
+            assert_eq!(receipt.end_offset, expected_offset, "append {index} end");
+            assert_eq!(
+                receipt.object_length, expected_offset,
+                "append {index} object length"
+            );
+        }
+
+        let after_appends = store.requests_issued();
+
+        // AND THE BYTES ARE REALLY THERE, IN ORDER -- every assertion above would hold of a
+        // store that reported plausible offsets and wrote nothing.
+        let whole = store.get(key).await.expect("the object should read back");
+        let mut want: Vec<u8> = Vec::new();
+        for index in 0..RECORDS {
+            want.extend_from_slice(format!("record-{index:02}").as_bytes());
+        }
+        assert_eq!(
+            whole.as_ref(),
+            want.as_slice(),
+            "the appended records are not what the object holds"
+        );
+
+        // ---- THE POINT: N appends cost N + 1 requests, not 2N.
+        //
+        // One HEAD, because the object does not exist when the first append runs and nothing
+        // is known about it, then one PUT per record.
+        let expected = 1 + RECORDS as u64;
+        assert_eq!(
+            after_appends, expected,
+            "{RECORDS} appends spent {after_appends} requests and should spend {expected}: one \
+             ask for an object this client had never seen, then one write each. {} would mean \
+             the length is being asked for every time again",
+            2 * RECORDS
+        );
+
+        // ---- CONTROL: a client that has NOT seen the object pays the ask.
+        //
+        // Without this, the assertion above is satisfied by a store that never asks at all --
+        // which would be a store that guesses, and a guessed offset is how an append lands
+        // somewhere other than the end.
+        let cold = MatrixObjectHttpStore::new(&uri).unwrap();
+        cold.append_blob(key, Bytes::from_static(b"cold"))
+            .await
+            .expect("a cold client should still append");
+        assert_eq!(
+            cold.requests_issued(),
+            2,
+            "a client with no remembered length must ask first and then write, which is two \
+             requests; {} means it is not asking at all",
+            cold.requests_issued()
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
     async fn matrixobject_get_blocking_round_trips_over_the_socket() {
         // The sync accessor the lazy slab source relies on must round-trip a real
         // object across the networked MORP1 wire, and surface NotFound for absent keys.

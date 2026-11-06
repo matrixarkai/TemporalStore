@@ -158,6 +158,37 @@ pub struct MatrixObjectHttpStore {
     addr: String,
     uri: String,
     bucket: String,
+    /// Object lengths this client last observed, so an append can skip asking.
+    ///
+    /// # WHY A CACHE IS SAFE HERE, WHEN A CACHED OFFSET NORMALLY WOULD NOT BE
+    ///
+    /// An append sends the offset it believes is the end, and the server appends THERE or
+    /// refuses -- the offset is a condition, not a destination. So a stale entry here cannot
+    /// place bytes anywhere wrong; the worst it can do is earn a 412, which the append path
+    /// already re-reads and retries. That is what makes this an optimisation rather than a
+    /// correctness risk: being wrong costs a round trip, not an object.
+    ///
+    /// Shared through the `Arc` every caller holds this store behind, so appends from one
+    /// process cooperate instead of each paying its own HEAD.
+    known_lengths: Arc<Mutex<std::collections::HashMap<String, u64>>>,
+    /// How many HTTP requests this store has issued.
+    ///
+    /// The shared path's cost over a network is REQUESTS, not just bytes: the byte envelope
+    /// has been measured down to where its only remaining lever is a batch header, while an
+    /// append that asks for the object's length before writing it spends two round trips per
+    /// record. Counting them makes that visible and keeps it that way -- a wall-clock figure
+    /// on a shared box cannot tell a round trip from a busy neighbour, and this can.
+    requests: Arc<std::sync::atomic::AtomicU64>,
+    /// Bytes this store has put ON the wire and taken OFF it, headers included.
+    ///
+    /// Read amplification on the shared path has only ever been measured in process, where
+    /// the figure is page fetches against bytes returned. Over a network the quantity that
+    /// matters is different and was not measured at all: what a request costs INCLUDING its
+    /// head. An S3 GET carries a request line, a Host, a Range and a reply head, and at WAL
+    /// record sizes that envelope is not a rounding error -- so it is counted at the wire
+    /// rather than inferred from the payload.
+    wire_sent: Arc<std::sync::atomic::AtomicU64>,
+    wire_received: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Bucket a URI that names none will use.
@@ -194,6 +225,10 @@ impl MatrixObjectHttpStore {
             addr: authority.to_string(),
             uri: trimmed.trim_end_matches('/').to_string(),
             bucket: bucket.to_string(),
+            known_lengths: Arc::default(),
+            requests: Arc::default(),
+            wire_sent: Arc::default(),
+            wire_received: Arc::default(),
         })
     }
 
@@ -219,6 +254,23 @@ impl MatrixObjectHttpStore {
         format!("/{}/{}", self.bucket, encode_key(key))
     }
 
+    /// How many HTTP requests this store has issued since it was built.
+    ///
+    /// Counted at the single place requests are sent, so nothing can route around it.
+    pub fn requests_issued(&self) -> u64 {
+        self.requests.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Bytes written to the socket, request heads included.
+    pub fn wire_bytes_sent(&self) -> u64 {
+        self.wire_sent.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Bytes read from the socket, response heads included.
+    pub fn wire_bytes_received(&self) -> u64 {
+        self.wire_received.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn send(
         &self,
         method: &str,
@@ -226,13 +278,50 @@ impl MatrixObjectHttpStore {
         extra: &[(&str, String)],
         body: &[u8],
     ) -> Result<HttpResponse, ObjectStoreError> {
-        http_request(&self.addr, method, target, extra, body)
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let response = http_request(&self.addr, method, target, extra, body)?;
+        // COUNTED FROM WHAT THE TRANSPORT ACTUALLY MOVED, not from the payload: the head is
+        // most of a small request and all of a HEAD reply, and a figure that leaves it out
+        // would report the shared path as cheaper than it is.
+        self.wire_sent
+            .fetch_add(response.request_len as u64, std::sync::atomic::Ordering::Relaxed);
+        self.wire_received
+            .fetch_add(response.raw_len as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(response)
     }
 
     /// The object's current length, or zero when it does not exist yet.
     ///
     /// An append to a key nothing has written is how an append-only object is created, so a
     /// missing key is a length here and not an error.
+    fn cached_length(&self, key: &str) -> Option<u64> {
+        self.known_lengths
+            .lock()
+            .expect("matrixobject known lengths poisoned")
+            .get(key)
+            .copied()
+    }
+
+    fn remember_length(&self, key: &str, length: u64) {
+        self.known_lengths
+            .lock()
+            .expect("matrixobject known lengths poisoned")
+            .insert(key.to_string(), length);
+    }
+
+    /// Drop a remembered length, because something other than an append changed the object.
+    ///
+    /// A `put` replaces it and a `delete` removes it, and either leaves a remembered end
+    /// describing an object that no longer has one. Forgetting costs the next append a HEAD;
+    /// not forgetting costs it a refusal and a retry, which is slower and noisier.
+    fn forget_length(&self, key: &str) {
+        self.known_lengths
+            .lock()
+            .expect("matrixobject known lengths poisoned")
+            .remove(key);
+    }
+
     fn object_length_blocking(&self, key: &str) -> Result<u64, ObjectStoreError> {
         let response = self.send("HEAD", &self.object_target(key), &[], &[])?;
         match response.status {
@@ -310,7 +399,11 @@ impl ObjectStore for MatrixObjectHttpStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         let response = self.send("PUT", &self.object_target(key), &[], bytes.as_ref())?;
         match response.status {
-            200 | 201 | 204 => Ok(()),
+            200 | 201 | 204 => {
+                // A put REPLACES, so any remembered end is now wrong.
+                self.remember_length(key, bytes.len() as u64);
+                Ok(())
+            }
             status => Err(response.failure(status, key)),
         }
     }
@@ -341,8 +434,19 @@ impl ObjectStore for MatrixObjectHttpStore {
         let bytes_written = bytes.len() as u64;
         let mut last_conflict: Option<ObjectStoreError> = None;
 
-        for _ in 0..APPEND_ATTEMPTS {
-            let start_offset = self.object_length_blocking(key)?;
+        for attempt in 0..APPEND_ATTEMPTS {
+            // ONE ROUND TRIP INSTEAD OF TWO, when this client already knows the end.
+            //
+            // An append used to HEAD and then PUT every time, so the shared path paid two
+            // requests per record. A successful append already reports the object's new
+            // length, which is the next append's offset -- so the HEAD is only needed when
+            // this client has not seen the object yet, or when a remembered length has just
+            // been proved wrong. The first attempt may use the cache; a retry never does,
+            // because a retry exists precisely because the end moved.
+            let start_offset = match self.cached_length(key) {
+                Some(length) if attempt == 0 => length,
+                _ => self.object_length_blocking(key)?,
+            };
             let response = self.send(
                 "PUT",
                 &self.object_target(key),
@@ -368,6 +472,7 @@ impl ObjectStore for MatrixObjectHttpStore {
                             "{key}: appended {bytes_written} bytes at {start_offset}, so the                              object should be {end_offset} bytes and the server reports                              {object_length}"
                         )));
                     }
+                    self.remember_length(key, object_length);
                     return Ok(AppendBlobReceipt {
                         key: key.to_string(),
                         start_offset,
@@ -382,8 +487,12 @@ impl ObjectStore for MatrixObjectHttpStore {
                         first_physical_offset: None,
                     });
                 }
-                // Someone else appended between the two round trips. Re-read and try again.
-                412 => last_conflict = Some(response.failure(412, key)),
+                // The end moved -- either someone else appended, or a remembered length was
+                // stale. Forget it so the retry asks, and try again.
+                412 => {
+                    self.forget_length(key);
+                    last_conflict = Some(response.failure(412, key));
+                }
                 status => return Err(response.failure(status, key)),
             }
         }
@@ -483,7 +592,10 @@ impl ObjectStore for MatrixObjectHttpStore {
         let response = self.send("DELETE", &self.object_target(key), &[], &[])?;
         match response.status {
             // A delete of something already gone is a success, as S3 has it.
-            200 | 202 | 204 | 404 => Ok(()),
+            200 | 202 | 204 | 404 => {
+                self.forget_length(key);
+                Ok(())
+            }
             status => Err(response.failure(status, key)),
         }
     }
@@ -498,6 +610,10 @@ struct HttpResponse {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    /// Bytes read off the socket for this exchange, head included.
+    raw_len: usize,
+    /// Bytes written to the socket for it, head included.
+    request_len: usize,
 }
 
 impl HttpResponse {
@@ -577,6 +693,8 @@ fn http_request(
         status,
         headers,
         body: raw[header_end + marker.len()..].to_vec(),
+        raw_len: raw.len(),
+        request_len: head.len() + body.len(),
     })
 }
 
