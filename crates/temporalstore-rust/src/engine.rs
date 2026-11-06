@@ -24,6 +24,7 @@ mod container_blocks;
 mod execute_on_shard;
 #[path = "engine/engine_context.rs"]
 mod context;
+mod context_embedding_index;
 #[path = "engine/engine_lifecycle.rs"]
 mod lifecycle;
 mod object_manager;
@@ -185,6 +186,7 @@ pub struct TemporalEngine {
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
+    context_embedding_indexes: Arc<RwLock<crate::llm_context::EmbeddingIndexRegistry>>,
     /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
     /// environment carries a default.
     quotas: Arc<RwLock<quota::QuotaTable>>,

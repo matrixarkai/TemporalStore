@@ -9,14 +9,16 @@
 
 mod embedding_index;
 mod ingest;
+mod registry;
 mod storage;
 
 pub use embedding_index::{
-    CompactEmbeddingBatch, EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError,
-    EmbeddingKey, EmbeddingVector, EmbeddingWriteReport,
+    score_embedding_candidates_exact, CompactEmbeddingBatch, EmbeddingHit, EmbeddingIndex,
+    EmbeddingIndexConfig, EmbeddingIndexError, EmbeddingKey, EmbeddingVector, EmbeddingWriteReport,
 };
 pub use ingest::{
     BatchEmbedder, BatchExtractor, ContextEngineError, ContextIngestReport, ContextMessage,
     ContextRole, EmbeddingBatch, ExtractedContext, LlmContextEngine,
 };
+pub use registry::{EmbeddingChannel, EmbeddingIndexRegistry};
 pub use storage::{EmbeddingRecoveryReport, TemporalEmbeddingStore, TemporalEmbeddingStoreError};
