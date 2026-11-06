@@ -2916,6 +2916,8 @@ pub(crate) fn execute_on_shard(
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
+            let mut published: Vec<ElementEntry> = Vec::new();
+            let mut replaced_any = false;
             if let Ok(addresses) = append_timestamped_kv_blocks(
                 cache,
                 block_store,
@@ -2929,11 +2931,19 @@ pub(crate) fn execute_on_shard(
                 next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    series.set(timestamp_ms, address);
+                    // A replaced timestamp supersedes a block, and a superseded block must be
+                    // dropped rather than joined -- so record it and take the restating path.
+                    // `set` returns nothing where `insert` returned the superseded value, so
+                    // the question has to be asked BEFORE the write rather than read off it.
+                    if series.get(timestamp_ms).is_some() {
+                        replaced_any = true;
+                    }
+                    series.set(timestamp_ms, address.clone());
+                    published.push(address);
                     mutated = true;
                 }
             }
-            mutated |= trim_timestamped_series(
+            let trimmed = trim_timestamped_series(
                 shard_id,
                 "feature",
                 &key,
@@ -2941,15 +2951,31 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
             );
-            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_blocks(
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
-                mutated,
-            );
+            mutated |= trimmed;
+            if replaced_any || trimmed {
+                // Something was superseded or evicted: the live set has to be restated in full.
+                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
+                sync_bucket_index_object_blocks(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    live_addresses,
+                    mutated,
+                );
+            } else {
+                // A pure append. Publishing only the new blocks leaves the index in the same
+                // state, and stops a row append costing the length of the series it joins.
+                sync_bucket_index_object_blocks_with_mode(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    published,
+                    mutated,
+                    false,
+                );
+            }
             CommandResponse::Empty
         }
         Command::SequenceQuery {
