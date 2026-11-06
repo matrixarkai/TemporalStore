@@ -759,9 +759,7 @@ impl TemporalEngine {
             }
         }
         drop(shards);
-        for command in &context_embedding_commands {
-            self.publish_context_embedding_command(command);
-        }
+        self.publish_context_embedding_commands(&context_embedding_commands);
         BatchExecuteResponse {
             status: Status::ok(),
             responses,
