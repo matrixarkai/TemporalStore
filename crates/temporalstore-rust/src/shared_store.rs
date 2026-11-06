@@ -3011,32 +3011,51 @@ where
             }
         }
 
-        let mut last_wal_index = 0;
-        let mut last_receipt = None;
-        for (index, entry) in drained.iter().cloned().enumerate() {
-            last_wal_index = entry.wal_index;
-            match self.replicator.publish_wal_entry(entry).await {
-                Ok(receipt) => last_receipt = receipt,
-                Err(err) => {
-                    let mut pending = self
-                        .pending
-                        .lock()
-                        .expect("shared-store async queue lock poisoned");
-                    for entry in drained[index..].iter().rev().cloned() {
-                        pending.push_front(entry);
-                    }
-                    return Err(err);
+        // ONE GROUP COMMIT, NOT ONE PER ENTRY.
+        //
+        // This drained up to `max_entries` and then published them one at a time, so a flush of
+        // 256 entries cost 256 durable barriers -- and over a network, 512 requests, because
+        // every entry writes a WAL frame and an offset-index frame. `publish_wal_entries_batch`
+        // already coalesces a run into ONE append of the concatenated frames plus ONE append of
+        // the concatenated offset metadata, deriving each entry's offsets from the single
+        // receipt. So the queue was assembling a batch and then spending it singly.
+        //
+        // THE DURABLE BYTES ARE THE SAME. Appending frames one after another and appending their
+        // concatenation produce the same object, in the same order, and the offset index gets the
+        // same per-entry records either way. This changes how many requests that costs, not what
+        // ends up on disk.
+        //
+        // Nothing here needs to sort the batch by shard: the batch call refuses to coalesce a
+        // mixed-shard run (and a non-append-blob mode) and falls back to per-entry publishing
+        // itself, which it documents as "correct, just uncoalesced". So a mixed queue is slower
+        // and never wrong.
+        //
+        // ALL-OR-NOTHING ON FAILURE, which is simpler than the index arithmetic it replaces: the
+        // coalesced write is one append, so it either landed or it did not, and there is no
+        // prefix of it to keep. The whole run goes back on the queue in its original order.
+        let reports = match self.replicator.publish_wal_entries_batch(&drained).await {
+            Ok(reports) => reports,
+            Err(err) => {
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .expect("shared-store async queue lock poisoned");
+                for entry in drained.iter().rev().cloned() {
+                    pending.push_front(entry);
                 }
+                return Err(err);
             }
-        }
+        };
+
+        let last = reports.last();
         let remaining = self.queued_len();
         Ok(SharedStoreFlushReport {
             flushed: drained.len(),
             remaining,
-            last_wal_index,
-            last_wal_blob_start_offset: last_receipt.as_ref().map(|receipt| receipt.start_offset),
-            last_wal_blob_end_offset: last_receipt.as_ref().map(|receipt| receipt.end_offset),
-            last_wal_blob_object_length: last_receipt.as_ref().map(|receipt| receipt.object_length),
+            last_wal_index: last.map(|report| report.wal_index).unwrap_or(0),
+            last_wal_blob_start_offset: last.and_then(|report| report.wal_blob_start_offset),
+            last_wal_blob_end_offset: last.and_then(|report| report.wal_blob_end_offset),
+            last_wal_blob_object_length: last.and_then(|report| report.wal_blob_object_length),
         })
     }
 }
@@ -7972,6 +7991,102 @@ mod tests {
         let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
             .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
         (store, replicator)
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn an_async_flush_is_one_group_commit_not_one_per_entry() {
+        // THE QUEUE WAS ASSEMBLING A BATCH AND SPENDING IT SINGLY.
+        //
+        // `flush_pending` drains up to `max_entries` and used to publish them one at a time, so
+        // a flush of N entries cost N durable barriers -- and over a network 2N requests, since
+        // every entry writes a WAL frame and an offset-index frame.
+        // `publish_wal_entries_batch` already coalesces a run into one append of the
+        // concatenated frames plus one of the concatenated offset metadata.
+        //
+        // The sync path had a group commit for this and the async path was exempted, on the
+        // grounds that it is off the ack critical path. That is true of LATENCY and says nothing
+        // about REQUESTS, which is what a networked shared store is billed in.
+        //
+        // The durable bytes are unchanged: appending frames in order and appending their
+        // concatenation produce the same object. Only the request count moves, which is why that
+        // is what this asserts.
+        let (_object_server, uri) = spawn_matrixobject_object_server();
+        let store = Arc::new(MatrixObjectHttpStore::new(&uri).unwrap());
+        // No `with_wal_append_mode` override: the default is `ProtobufAppendBlob`, which is the
+        // mode that can coalesce at all. `JsonPerKey` writes a key per entry and the batch call
+        // correctly refuses to pretend otherwise.
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+
+        const ENTRIES: usize = 24;
+        for index in 0..ENTRIES {
+            writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: format!("batched-{index:02}"),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .await
+                .expect("an async write should queue");
+        }
+
+        // Measured across the FLUSH only: the queueing above must not be counted, or the figure
+        // describes the wrong thing.
+        let before = store.requests_issued();
+        let report = writer
+            .flush_pending(ENTRIES)
+            .await
+            .expect("the flush should publish");
+        let spent = store.requests_issued() - before;
+
+        assert_eq!(
+            report.flushed, ENTRIES,
+            "the flush reported {} entries and should have flushed {ENTRIES}",
+            report.flushed
+        );
+        println!("ASYNCFLUSH entries={ENTRIES} requests={spent}");
+
+        // THE POINT: a flush of N entries costs a handful of requests, not two per entry.
+        // Bounded rather than pinned at exactly two, because the fence and the offset index are
+        // their own requests and a retry is legitimate -- what must not come back is one barrier
+        // per entry.
+        assert!(
+            spent < ENTRIES as u64,
+            "flushing {ENTRIES} entries spent {spent} requests; coalesced it should be a handful, \
+             and {} would mean one durable barrier per entry again",
+            2 * ENTRIES
+        );
+
+        // NOT VACUOUS: the flush really did talk to the store, and the entries really landed.
+        assert!(spent >= 1, "the flush spent no requests at all, so nothing was published");
+        assert!(
+            report.last_wal_index >= ENTRIES as u64,
+            "the last wal index is {} after {ENTRIES} entries, so they did not all go through",
+            report.last_wal_index
+        );
+        // AND THE BYTES ARE READABLE AS ONE LOG -- a coalesced append must leave the same object
+        // a sequence of appends would, not a batch blob only this writer can parse. An ordinary
+        // follower replay is the check for that, and it also prices the READ side of a coalesced
+        // log: how many offset-index reads and range bytes it takes to walk.
+        let dir = tempfile::tempdir().unwrap();
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal(1, 0, &follower)
+            .await
+            .expect("the shared WAL should replay");
+        println!(
+            "ASYNCFLUSHREPLAY applied={} last={} offset_index_reads={} range_bytes={}",
+            report.applied, report.last_wal_index, report.offset_index_reads, report.range_bytes_read
+        );
+        assert_eq!(
+            report.applied, ENTRIES,
+            "replay applied {} of {ENTRIES} entries from the coalesced log",
+            report.applied
+        );
     }
 
     #[cfg(feature = "matrixobject")]
