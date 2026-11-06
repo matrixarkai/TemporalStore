@@ -22022,3 +22022,94 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
         }
     }
 }
+
+/// The round's pressure snapshot reads cache STATS; it does not list the cache.
+///
+/// `storage_cache_inspection_report` materialises one entry per cached record for the shard and
+/// folds them into a per-bucket `BTreeMap`, falling through to a filesystem `metadata()` for every
+/// entry the disk index does not hold. Its `stats` field is filled from `self.cache.stats()`, which
+/// is O(1) -- so a caller wanting only `.stats` paid for a whole listing and discarded it. The
+/// cycle did that TWICE per round (the pressure snapshot and the post-warm re-measure).
+///
+/// WHY THIS IS COUNTED AND NOT TIMED, and why the cache is warmed first: the cost is a function of
+/// cache occupancy, so on an idle fixture with an EMPTY cache the discarded listings are nearly
+/// free and a timing shows nothing. The stage-clock fixture measured 0 listed entries for exactly
+/// that reason. Warming first gives the listing something to return, and then the ENTRY count is
+/// the load-independent statement of what was being paid.
+///
+/// THE BOUND AND ITS OWN POSITIVE CONTROL ARE THE SAME NUMBER. One listing remains, inside
+/// `apply_storage_eviction`, which needs the per-bucket entries and cannot use the stats. That
+/// surviving 1 is what proves the thread-local counter is still wired to the round: a regression
+/// that stopped instrumenting the round would read 0 and fail here, rather than passing as a
+/// vacuous zero.
+#[test]
+fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
+    const KEYS: usize = 400;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..KEYS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{index:06}"),
+                value: vec![118u8; 128],
+            },
+        });
+    }
+    // Drain to an idle round first: this test is about what a round with nothing to do still pays.
+    for _ in 0..4 {
+        engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            ..Default::default()
+        });
+    }
+    // WARM BY READING. The write path leaves the record cache empty, and a listing of an empty
+    // cache returns nothing -- which would make the entry counts below prove nothing at all.
+    for index in 0..KEYS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("k{index:06}"),
+            },
+        });
+    }
+    let occupancy = engine.cache().entries_for_shard(1).len() as u64;
+    assert!(
+        occupancy > 0,
+        "the shard's cache is empty, so the listed-entry counts below would prove nothing"
+    );
+
+    crate::engine::reset_storage_cache_inspection_listings();
+    let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    let listings = crate::engine::storage_cache_inspection_listings();
+    let listed_entries = crate::engine::storage_cache_inspection_listing_entries();
+    assert!(!cycle.stages.is_empty(), "the cycle should have run stages");
+
+    eprintln!(
+        "  [cache-listing] occupancy={occupancy} entries  round made {listings} listing(s), \
+         {listed_entries} listed entries"
+    );
+
+    assert_eq!(
+        listings, 1,
+        "the round made {listings} cache listings, not the single one `apply_storage_eviction` \
+         needs. A count of 3 is the pre-fix shape (pressure snapshot + post-warm re-measure both \
+         listed the cache to read `.stats`); a count of 0 means the round is no longer instrumented \
+         and this bound has gone vacuous, which is just as much a failure."
+    );
+    assert!(
+        listed_entries <= occupancy,
+        "one listing returned {listed_entries} entries against a cache holding {occupancy}, so \
+         more than one listing's worth was paid"
+    );
+}
