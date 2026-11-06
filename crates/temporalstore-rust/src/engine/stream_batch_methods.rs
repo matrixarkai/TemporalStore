@@ -4,6 +4,86 @@
 //! Stream read/scan + batch execute + index snapshot publish methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+fn clone_command_for_batch_post_write(
+    command: &Command,
+    elide_packed_hash_payload: bool,
+) -> (Command, bool) {
+    if elide_packed_hash_payload {
+        if let Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        } = command
+        {
+            return (
+                Command::HashMultiSetIfTimestampOlder {
+                    key: key.clone(),
+                    timestamp_field: timestamp_field.clone(),
+                    timestamp_seconds: *timestamp_seconds,
+                    timestamp_nanos: *timestamp_nanos,
+                    entries: entries
+                        .iter()
+                        .map(|(field, _)| (field.clone(), Vec::new()))
+                        .collect(),
+                },
+                true,
+            );
+        }
+    }
+    (command.clone(), false)
+}
+
+#[cfg(test)]
+mod packed_hash_post_write_tests {
+    use super::*;
+
+    fn command() -> Command {
+        Command::HashMultiSetIfTimestampOlder {
+            key: "entity".to_string(),
+            timestamp_field: "event_timestamp".to_string(),
+            timestamp_seconds: 42,
+            timestamp_nanos: 7,
+            entries: vec![
+                ("event_timestamp".to_string(), vec![1; 32]),
+                ("embedding".to_string(), vec![2; 256 * 1024]),
+            ],
+        }
+    }
+
+    #[test]
+    fn packed_hash_post_write_metadata_omits_only_value_payloads() {
+        let original = command();
+        let (metadata, elided) = clone_command_for_batch_post_write(&original, true);
+        assert!(elided);
+        let Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        } = metadata
+        else {
+            panic!("conditional hash metadata changed command kind");
+        };
+        assert_eq!(key, "entity");
+        assert_eq!(timestamp_field, "event_timestamp");
+        assert_eq!((timestamp_seconds, timestamp_nanos), (42, 7));
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(field, value)| (field.as_str(), value.len()))
+                .collect::<Vec<_>>(),
+            vec![("event_timestamp", 0), ("embedding", 0)],
+        );
+
+        let (fallback, elided) = clone_command_for_batch_post_write(&original, false);
+        assert!(!elided);
+        assert_eq!(fallback, original);
+    }
+}
+
 impl TemporalEngine {
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
@@ -375,6 +455,31 @@ impl TemporalEngine {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        self.batch_execute_inner(request, false)
+    }
+
+    /// Execute timestamp-conditioned packed hash rows without retaining a second copy of every
+    /// value solely for the command-WAL fallback. Applied rows stage a complete packed block, so
+    /// the default data-only WAL can recover them from outcomes; rejected rows never enter the
+    /// WAL. The caller keeps this mode limited to that homogeneous request shape.
+    pub(crate) fn batch_execute_packed_hash_rows(
+        &self,
+        request: BatchExecuteRequest,
+    ) -> BatchExecuteResponse {
+        debug_assert!(request
+            .commands
+            .iter()
+            .all(|command| matches!(command, Command::HashMultiSetIfTimestampOlder { .. })));
+        self.batch_execute_inner(request, true)
+    }
+
+    fn batch_execute_inner(
+        &self,
+        request: BatchExecuteRequest,
+        elide_packed_hash_payloads: bool,
+    ) -> BatchExecuteResponse {
+        let elide_packed_hash_payloads =
+            elide_packed_hash_payloads && crate::wal::wal_data_only_enabled();
         // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
         // and the records this path appends are built from the commands -- so nothing ever took
         // what was staged. Those items stayed in the thread's buffer, and the next write on that
@@ -502,6 +607,7 @@ impl TemporalEngine {
         // per-batch record of touched buckets and forces the full sweep below.
         let mut rebuilt_bucket_index = false;
         let mut wal_commands = Vec::new();
+        let mut wal_payloads_elided = false;
         let mut context_embedding_commands = Vec::new();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
@@ -610,7 +716,10 @@ impl TemporalEngine {
                 });
                 continue;
             }
-            let command_for_post_write = command.clone();
+            let (command_for_post_write, payload_elided) = clone_command_for_batch_post_write(
+                &command,
+                elide_packed_hash_payloads,
+            );
             let object_keys = command_object_keys(&command_for_post_write);
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
@@ -758,6 +867,7 @@ impl TemporalEngine {
                     rebuilt_bucket_index = true;
                 }
                 if write_command {
+                    wal_payloads_elided |= payload_elided;
                     wal_commands.push(command_for_post_write);
                 }
             }
@@ -805,10 +915,18 @@ impl TemporalEngine {
             // address and nothing else while the rule called the batch recoverable.
             let recoverable =
                 crate::wal::every_result_can_be_found_again(&staged_outcomes, &staged_blocks);
-            let batch_result = if crate::wal::wal_data_only_enabled()
-                && !staged_outcomes.is_empty()
-                && recoverable
-            {
+            let use_data_only =
+                crate::wal::wal_data_only_enabled() && !staged_outcomes.is_empty() && recoverable;
+            if wal_payloads_elided && !use_data_only {
+                return BatchExecuteResponse {
+                    status: Status::error(
+                        "wal_commit_failed",
+                        "packed hash outcomes were not recoverable from the data-only WAL",
+                    ),
+                    responses,
+                };
+            }
+            let batch_result = if use_data_only {
                 self.wal_store
                     .append_batch_as_one_record(
                         request.shard_id,
