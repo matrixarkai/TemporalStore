@@ -2683,18 +2683,88 @@ impl DataNodeRuntime {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
-        self.batch_execute_inner(request, false)
+        self.batch_execute_inner(request)
     }
 
-    fn batch_execute_packed_hash_rows(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
-        self.batch_execute_inner(request, true)
-    }
-
-    fn batch_execute_inner(
+    fn batch_execute_packed_hash_rows(
         &self,
-        request: BatchExecuteRequest,
-        packed_hash_rows: bool,
+        request: BatchHashTimestampSetRequest,
     ) -> BatchExecuteResponse {
+        let lifecycle_marker = Command::HashMultiSetIfTimestampOlder {
+            key: String::new(),
+            timestamp_field: String::new(),
+            timestamp_seconds: 0,
+            timestamp_nanos: 0,
+            entries: Vec::new(),
+        };
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            std::slice::from_ref(&lifecycle_marker),
+        ) {
+            return BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            };
+        }
+
+        let unique_fields = request
+            .fields
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == request.fields.len();
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none()
+            && crate::wal::wal_data_only_enabled()
+            && unique_fields
+        {
+            let shard_id = request.shard_id;
+            let dirty_keys = request
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (index, row.0.clone(), true))
+                .collect::<Vec<_>>();
+            let response = self.inner.engine.batch_execute_packed_hash_rows(request);
+            mark_dirty_for_successful_keys(
+                &self.inner.dirty,
+                shard_id,
+                &dirty_keys,
+                &response.responses,
+            );
+            return response;
+        }
+        drop(shared_wal_sink);
+
+        let fields = request.fields;
+        let timestamp_field = request.timestamp_field;
+        self.batch_execute_inner(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSetIfTimestampOlder {
+                    key: row.0,
+                    timestamp_field: timestamp_field.clone(),
+                    timestamp_seconds: row.1,
+                    timestamp_nanos: row.2,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.3.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    fn batch_execute_inner(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             request.shard_id,
@@ -2713,11 +2783,7 @@ impl DataNodeRuntime {
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
             let dirty_keys = write_command_keys(&request.commands);
-            let response = if packed_hash_rows {
-                self.inner.engine.batch_execute_packed_hash_rows(request)
-            } else {
-                self.inner.engine.batch_execute(request)
-            };
+            let response = self.inner.engine.batch_execute(request);
             mark_dirty_for_successful_keys(
                 &self.inner.dirty,
                 shard_id,
@@ -2727,13 +2793,7 @@ impl DataNodeRuntime {
             return response;
         }
         drop(shared_wal_sink);
-        let response = if packed_hash_rows {
-            self.inner
-                .engine
-                .batch_execute_packed_hash_rows(request.clone())
-        } else {
-            self.inner.engine.batch_execute(request.clone())
-        };
+        let response = self.inner.engine.batch_execute(request.clone());
         mark_dirty_for_successful_commands(
             &self.inner.dirty,
             request.shard_id,
@@ -2866,26 +2926,7 @@ impl DataNodeRuntime {
             };
         }
 
-        let fields = request.fields;
-        let timestamp_field = request.timestamp_field;
-        let response = self.batch_execute_packed_hash_rows(BatchExecuteRequest {
-            shard_id: request.shard_id,
-            commands: request
-                .rows
-                .into_iter()
-                .map(|row| Command::HashMultiSetIfTimestampOlder {
-                    key: row.0,
-                    timestamp_field: timestamp_field.clone(),
-                    timestamp_seconds: row.1,
-                    timestamp_nanos: row.2,
-                    entries: fields
-                        .iter()
-                        .cloned()
-                        .zip(row.3.into_iter().map(|value| value.0))
-                        .collect(),
-                })
-                .collect(),
-        });
+        let response = self.batch_execute_packed_hash_rows(request);
         if !response.status.ok {
             return BatchConditionalWriteResponse {
                 status: response.status,
