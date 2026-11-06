@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 try:
     import msgpack
@@ -940,17 +941,31 @@ class OnlineStoreTest(unittest.TestCase):
             ]
         )
         entity_key = self._entity_key(1)
-        results = self.store.online_read(
-            self.config,
-            self.view,
-            [entity_key, self._entity_key(1), entity_key],
-            ["trips"],
-        )
+        with mock.patch.object(
+            self.store,
+            "_decode_online_response",
+            wraps=self.store._decode_online_response,
+        ) as decode_online_response:
+            results = self.store.online_read(
+                self.config,
+                self.view,
+                [entity_key, self._entity_key(1), entity_key],
+                ["trips"],
+            )
 
         commands = client.sent[0][1]["commands"]
         self.assertEqual(len(commands), 1)
+        self.assertEqual(
+            decode_online_response.call_count,
+            1,
+            "one unique stored row should be decoded once",
+        )
         self.assertEqual([row[1]["trips"].int64_val for row in results], [42, 42, 42])
-        self.assertIsNot(results[0][1]["trips"], results[1][1]["trips"])
+        self.assertEqual(
+            len({id(row[1]["trips"]) for row in results}),
+            3,
+            "repeated positions must not share mutable protobuf messages",
+        )
 
     def test_a_short_field_answer_does_not_shift_values_onto_other_features(self):
         # A node that answers with fewer slots than fields requested must not
