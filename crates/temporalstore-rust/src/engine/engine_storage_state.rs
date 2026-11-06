@@ -7955,10 +7955,32 @@ impl CoreIndex {
     /// Pulled out of `prune_refs_to_the_pages_the_index_holds`'s own closure so the ROW prune can
     /// ask the same question. Both pruners must agree about what "the index holds it" means, and
     /// the way to guarantee that is one predicate rather than two that look alike.
-    pub(super) fn holds_block_ref(&self, block_ref: &BlockLookupRef) -> bool {
-        self.bucket_map
+    /// WHETHER THE BLOCK INDEX STILL HOLDS THIS REF, FROM THE BUCKET MAP ALONE.
+    ///
+    /// THE ONE IMPLEMENTATION, AND IT TAKES THE FIELD RATHER THAN `&self` ON PURPOSE.
+    /// `holds_block_ref` below delegates here, and so does
+    /// `recorded_map::prune_row_refs_to_the_blocks_the_index_holds`, which CANNOT call the method:
+    /// it destructures `CoreIndex` so `bucket_map` can be borrowed immutably while the four
+    /// container maps are borrowed mutably, and once the struct is taken apart there is no `self`
+    /// left to call. Taking `&BucketMap` keeps that caller on this implementation instead of
+    /// copying two lines into a second home, where a change to what "holds" means would reach one
+    /// and not the other.
+    ///
+    /// An associated fn rather than a module-level one because a module-level item placed near a
+    /// declaration inherits whatever attributes sit above it: the first attempt landed between
+    /// `#[derive(..)]` and `struct CoreIndex` and the derive applied to the function, which cost
+    /// the struct its `Debug` and `Clone`. Inside the impl there is no attribute to orphan.
+    pub(super) fn bucket_map_holds_block_ref(
+        bucket_map: &BucketMap,
+        block_ref: &BlockLookupRef,
+    ) -> bool {
+        bucket_map
             .get(&block_ref.routing_bucket)
             .is_some_and(|bucket| bucket.block_index.get(&block_ref.block_ref_key).is_some())
+    }
+
+    pub(super) fn holds_block_ref(&self, block_ref: &BlockLookupRef) -> bool {
+        Self::bucket_map_holds_block_ref(&self.bucket_map, block_ref)
     }
 
     fn index_object_block_refs_inner(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {

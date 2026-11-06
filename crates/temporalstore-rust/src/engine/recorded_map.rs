@@ -404,13 +404,13 @@ pub(super) fn row_refs<'a>(
     object_key: &str,
 ) -> Option<&'a crate::engine::state::BlockRefs> {
     if kind == HashKind::KIND {
-        shard.hashes.refs(object_key)
+        shard.bucket_index.hashes.refs(object_key)
     } else if kind == SetKind::KIND {
-        shard.sets.refs(object_key)
+        shard.bucket_index.sets.refs(object_key)
     } else if kind == ZSetKind::KIND {
-        shard.zsets.refs(object_key)
+        shard.bucket_index.zsets.refs(object_key)
     } else if kind == ListKind::KIND {
-        shard.lists.refs(object_key)
+        shard.bucket_index.lists.refs(object_key)
     } else {
         None
     }
@@ -487,20 +487,29 @@ pub(super) fn adopt_every_lookup_ref_into_its_row(shard: &mut ShardState) -> usi
 /// so a row ref naming a block the NEW index does not hold names nothing at all -- and a reader
 /// that chains the row home would hand that dead ref out.
 pub(super) fn prune_row_refs_to_the_blocks_the_index_holds(shard: &mut ShardState) -> usize {
-    // DESTRUCTURED so the predicate can borrow `bucket_index` while the four maps are borrowed
+    // DESTRUCTURED so `bucket_map` can be borrowed immutably while the four maps are borrowed
     // mutably. They are disjoint fields, which the compiler can only see if they are named.
-    let ShardState {
-        bucket_index,
+    //
+    // IT IS `CoreIndex` THAT IS TAKEN APART NOW, NOT `ShardState`. This read
+    // `let ShardState { bucket_index, hashes, sets, zsets, lists, .. }` while the four container
+    // maps were top-level `ShardState` fields, siblings of `bucket_index`. They are fields OF the
+    // index since `SHARD_INDEX_FORMAT_VERSION` 31, so the sibling destructure names fields that no
+    // longer exist there and the disjoint borrow has to be taken one level down.
+    //
+    // AND THE PREDICATE IS A FREE FUNCTION FOR THAT REASON: `CoreIndex::holds_block_ref` is
+    // unavailable here precisely because the struct it is a method on has just been destructured,
+    // so both callers share `bucket_map_holds_block_ref` rather than the two lines being copied.
+    let crate::engine::state::CoreIndex {
+        bucket_map,
         hashes,
         sets,
         zsets,
         lists,
         ..
-    } = shard;
-    let holds =
-        |block_ref: &crate::engine::state::BlockLookupRef| -> bool {
-            bucket_index.holds_block_ref(block_ref)
-        };
+    } = &mut shard.bucket_index;
+    let holds = |block_ref: &crate::engine::state::BlockLookupRef| -> bool {
+        crate::engine::state::CoreIndex::bucket_map_holds_block_ref(bucket_map, block_ref)
+    };
     hashes.retain_refs(&holds)
         + sets.retain_refs(&holds)
         + zsets.retain_refs(&holds)
@@ -518,13 +527,13 @@ pub(super) fn remove_row_ref(
     block_ref: &crate::engine::state::BlockLookupRef,
 ) -> bool {
     if model_id == HashKind::KIND {
-        shard.hashes.remove_ref(object_key, block_ref)
+        shard.bucket_index.hashes.remove_ref(object_key, block_ref)
     } else if model_id == SetKind::KIND {
-        shard.sets.remove_ref(object_key, block_ref)
+        shard.bucket_index.sets.remove_ref(object_key, block_ref)
     } else if model_id == ZSetKind::KIND {
-        shard.zsets.remove_ref(object_key, block_ref)
+        shard.bucket_index.zsets.remove_ref(object_key, block_ref)
     } else if model_id == ListKind::KIND {
-        shard.lists.remove_ref(object_key, block_ref)
+        shard.bucket_index.lists.remove_ref(object_key, block_ref)
     } else {
         false
     }
@@ -536,13 +545,13 @@ pub(super) fn remove_row_ref(
 /// entire entry. A row's refs go to `None` rather than to an empty set, which `take_refs` does.
 pub(super) fn clear_row_refs(shard: &mut ShardState, model_id: &str, object_key: &str) -> bool {
     if model_id == HashKind::KIND {
-        shard.hashes.take_refs(object_key).is_some()
+        shard.bucket_index.hashes.take_refs(object_key).is_some()
     } else if model_id == SetKind::KIND {
-        shard.sets.take_refs(object_key).is_some()
+        shard.bucket_index.sets.take_refs(object_key).is_some()
     } else if model_id == ZSetKind::KIND {
-        shard.zsets.take_refs(object_key).is_some()
+        shard.bucket_index.zsets.take_refs(object_key).is_some()
     } else if model_id == ListKind::KIND {
-        shard.lists.take_refs(object_key).is_some()
+        shard.bucket_index.lists.take_refs(object_key).is_some()
     } else {
         false
     }
