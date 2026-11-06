@@ -2871,6 +2871,15 @@ pub struct BatchExecuteRequest {
     pub commands: Vec<Command>,
 }
 
+/// Read the same hash fields from many keys without repeating the field names
+/// in every command on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatchHashMultiGetRequest {
+    pub shard_id: ShardId,
+    pub keys: Vec<String>,
+    pub fields: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BatchExecuteResponse {
     pub status: Status,
@@ -2893,6 +2902,44 @@ pub struct BatchWriteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_hash_fields_are_encoded_once_per_batch() {
+        let keys: Vec<String> = (0..512)
+            .map(|index| format!("entity-{index:04}"))
+            .collect();
+        let fields: Vec<String> = (0..64)
+            .map(|index| format!("feature-{index:02}"))
+            .collect();
+        let compact = BatchHashMultiGetRequest {
+            shard_id: 1,
+            keys: keys.clone(),
+            fields: fields.clone(),
+        };
+        let expanded = BatchExecuteRequest {
+            shard_id: 1,
+            commands: keys
+                .iter()
+                .map(|key| Command::HashMultiGet {
+                    key: key.clone(),
+                    fields: fields.clone(),
+                })
+                .collect(),
+        };
+
+        let compact_bytes = rmp_serde::to_vec_named(&compact).unwrap();
+        let expanded_bytes = rmp_serde::to_vec_named(&expanded).unwrap();
+        assert!(
+            compact_bytes.len() * 20 < expanded_bytes.len(),
+            "shared={} expanded={}",
+            compact_bytes.len(),
+            expanded_bytes.len()
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<BatchHashMultiGetRequest>(&compact_bytes).unwrap(),
+            compact
+        );
+    }
 
     #[test]
     fn compact_batch_write_success_does_not_grow_per_command() {

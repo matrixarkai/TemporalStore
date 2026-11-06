@@ -40,7 +40,8 @@ event timestamp are one key's worth of work:
   across stores by construction, which is the only reason a latency comparison
   between them means anything.
 
-Reads use bounded binary ``/batch_execute_msgpack`` requests and responses.
+Reads use bounded binary ``/batch_hash_multi_get_msgpack`` requests with one
+shared field projection per batch.
 Writes use bounded binary ``/batch_write_msgpack`` requests and compact
 responses. Both paths fall back once to JSON-compatible routes when needed, so
 serving groups entities instead of issuing one request per entity.
@@ -278,12 +279,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         if not online_config.skip_dedup:
             # Read just the timestamp field before the bounded write batches.
             unique_hash_keys = list(dict.fromkeys(hash_keys))
-            reads = client.batch_execute(
-                [
-                    {"kind": "hash_multi_get", "key": key, "fields": [ts_field]}
-                    for key in unique_hash_keys
-                ]
-            )
+            reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
             for key, response in zip(unique_hash_keys, reads):
                 values = response.get("values") or []
                 raw = decode_bytes(values[0]) if values else None
@@ -656,16 +652,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 unique_hash_keys.append(hash_key)
             response_indices.append(response_index)
 
-        responses = client.batch_execute(
-            [
-                {
-                    "kind": "hash_multi_get",
-                    "key": hash_key,
-                    "fields": fields,
-                }
-                for hash_key in unique_hash_keys
-            ]
-        )
+        responses = client.batch_hash_multi_get(unique_hash_keys, fields)
 
         # Storage commands are already coalesced by entity key. Decode on that same
         # unique cardinality instead of reparsing every protobuf for every repeated

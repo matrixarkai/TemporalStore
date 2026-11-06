@@ -2,11 +2,12 @@
 # Copyright 2026 MatrixArkAI
 """HTTP command client for a TemporalStore data node.
 
-The data node serves binary ``POST /batch_execute_msgpack`` and
-``POST /batch_write_msgpack`` routes, plus JSON-compatible ``POST /execute``,
-``POST /batch_execute``, and ``POST /batch_write`` routes. They take a shard id
-and one or more ``Command`` documents; ``Command`` is a serde-tagged enum whose
-``kind`` is the snake_case variant name.
+The data node serves binary ``POST /batch_execute_msgpack``,
+``POST /batch_hash_multi_get_msgpack``, and ``POST /batch_write_msgpack``
+routes, plus JSON-compatible ``POST /execute``, ``POST /batch_execute``, and
+``POST /batch_write`` routes. They take a shard id and one or more command
+documents; ``Command`` is a serde-tagged enum whose ``kind`` is the snake_case
+variant name.
 
 Two asymmetries in that wire format are load-bearing for anyone measuring it,
 so they are stated here rather than discovered later:
@@ -179,6 +180,9 @@ class TemporalStoreClient:
         self._batch_write_supported: Optional[bool] = None
         self._binary_batch_supported: Optional[bool] = False if msgpack is None else None
         self._binary_write_supported: Optional[bool] = False if msgpack is None else None
+        self._shared_field_read_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
 
     # -- connection handling -------------------------------------------------
 
@@ -314,6 +318,101 @@ class TemporalStoreClient:
         for chunk, body in self._encoded_batches(commands, self.max_batch_commands):
             results.extend(self._batch_once_json(chunk, body))
         return results
+
+    def batch_hash_multi_get(
+        self, keys: List[str], fields: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Read one field projection from many hashes with shared wire metadata.
+
+        Feature serving asks for the same fields from every entity. Sending
+        that projection once avoids repeating every field name in every
+        command. Nodes without the compact route fall back to the established
+        command batch before any request has been applied.
+        """
+        if not keys:
+            return []
+        if msgpack is not None and self._shared_field_read_supported is not False:
+            results: List[Dict[str, Any]] = []
+            try:
+                for chunk, body in self._shared_field_read_batches(keys, fields):
+                    raw = self._request_encoded(
+                        "/batch_hash_multi_get_msgpack",
+                        body,
+                        "application/msgpack",
+                    )
+                    envelope = msgpack.unpackb(raw, raw=False)
+                    results.extend(self._decode_batch_envelope(envelope, chunk))
+            except TemporalStoreCommandError as error:
+                if error.code != "http_404" or results:
+                    raise
+                self._shared_field_read_supported = False
+            except (ValueError, msgpack.UnpackException) as error:
+                raise TemporalStoreCommandError(
+                    "invalid_binary_response", str(error)
+                ) from error
+            else:
+                self._shared_field_read_supported = True
+                return results
+
+        return self.batch_execute(
+            [
+                {"kind": "hash_multi_get", "key": key, "fields": fields}
+                for key in keys
+            ]
+        )
+
+    def _shared_field_read_batches(
+        self, keys: List[str], fields: List[str]
+    ) -> Iterator[Tuple[List[str], bytes]]:
+        if msgpack is None:
+            return
+        prefix = (
+            b"\x83"
+            + msgpack.packb("shard_id", use_bin_type=True)
+            + msgpack.packb(self.shard_id, use_bin_type=True)
+            + msgpack.packb("keys", use_bin_type=True)
+        )
+        suffix = msgpack.packb("fields", use_bin_type=True) + msgpack.packb(
+            fields, use_bin_type=True
+        )
+        chunk: List[str] = []
+        packer = msgpack.Packer(use_bin_type=True, autoreset=False)
+
+        def body_for(key_count: int, payload_end: Optional[int] = None) -> bytes:
+            view = packer.getbuffer()
+            payload = view if payload_end is None else view[:payload_end]
+            body = b"".join(
+                (prefix, _msgpack_array_header(key_count), payload, suffix)
+            )
+            del payload, view
+            return body
+
+        for key in keys:
+            if chunk and len(chunk) >= self.max_batch_commands:
+                completed = chunk
+                body = body_for(len(completed))
+                packer.reset()
+                chunk = []
+                yield completed, body
+
+            previous_payload_bytes = len(packer.getbuffer())
+            packer.pack(key)
+            next_body_bytes = (
+                len(prefix)
+                + len(_msgpack_array_header(len(chunk) + 1))
+                + len(packer.getbuffer())
+                + len(suffix)
+            )
+            if chunk and next_body_bytes > self.max_batch_request_bytes:
+                completed = chunk
+                body = body_for(len(completed), previous_payload_bytes)
+                packer.reset()
+                chunk = []
+                yield completed, body
+                packer.pack(key)
+            chunk.append(key)
+        if chunk:
+            yield chunk, body_for(len(chunk))
 
     def _binary_batches(
         self, commands: List[Dict[str, Any]], max_commands: int

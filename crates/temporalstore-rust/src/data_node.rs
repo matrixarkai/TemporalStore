@@ -49,8 +49,8 @@ use crate::meta::{
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchWriteError, BatchWriteResponse, Command,
-    CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
+    BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetRequest, BatchWriteError,
+    BatchWriteResponse, Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
 #[path = "data_node/data_node_lifecycle.rs"]
@@ -2698,6 +2698,29 @@ impl DataNodeRuntime {
         );
         self.mirror_writes(request.shard_id, &request.commands, &response.responses);
         response
+    }
+
+    /// Read one shared field projection from many hashes.
+    ///
+    /// The regular batch command remains the execution path, so admission,
+    /// expiry, cache, and response ordering stay identical. Only the request
+    /// representation is compact: field names cross the network once.
+    pub fn batch_hash_multi_get(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchExecuteResponse {
+        let fields = request.fields;
+        self.batch_execute(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .keys
+                .into_iter()
+                .map(|key| Command::HashMultiGet {
+                    key,
+                    fields: fields.clone(),
+                })
+                .collect(),
+        })
     }
 
     /// Execute a write-only batch and return only its count plus sparse failures.
