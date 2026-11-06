@@ -155,8 +155,9 @@ use crate::index_log::LocalIndexLogStore;
 use crate::block_store::{BlockStore, ElementEntry, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetError, BatchHashMultiGetRequest,
-    BatchHashMultiGetResponse, BatchHashMultiGetRow, BatchHashTimestampSetRequest,
-    BatchHashTimestampSetRow, Command, CommandResponse,
+    BatchHashMultiGetResponse, BatchHashMultiGetRow, BatchHashMultiSetRequest,
+    BatchHashMultiSetRow, BatchHashTimestampSetRequest, BatchHashTimestampSetRow, Command,
+    CommandResponse,
     ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
     context_node_summary_vector_enabled, context_vector_as_stored, ContextSummaryVector,
     CONTEXT_SUMMARY_LEVEL_L1,

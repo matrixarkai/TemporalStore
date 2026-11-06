@@ -6,8 +6,12 @@ use super::*;
 
 enum BatchCommandSource {
     Commands(std::vec::IntoIter<Command>),
+    SharedHashRows {
+        entries: Vec<(String, Vec<u8>)>,
+        rows: std::vec::IntoIter<BatchHashMultiSetRow>,
+    },
     SharedTimestampRows {
-        fields: Vec<String>,
+        entries: Vec<(String, Vec<u8>)>,
         timestamp_field: Option<String>,
         rows: std::vec::IntoIter<BatchHashTimestampSetRow>,
     },
@@ -17,6 +21,7 @@ impl BatchCommandSource {
     fn command_count(&self) -> usize {
         match self {
             Self::Commands(commands) => commands.len(),
+            Self::SharedHashRows { rows, .. } => rows.len(),
             Self::SharedTimestampRows { rows, .. } => rows.len(),
         }
     }
@@ -24,8 +29,19 @@ impl BatchCommandSource {
     fn next_command(&mut self) -> Option<Command> {
         match self {
             Self::Commands(commands) => commands.next(),
+            Self::SharedHashRows { entries, rows } => {
+                let BatchHashMultiSetRow(key, values) = rows.next()?;
+                debug_assert_eq!(entries.len(), values.len());
+                for ((_, slot), value) in entries.iter_mut().zip(values) {
+                    *slot = value.0;
+                }
+                Some(Command::HashMultiSet {
+                    key,
+                    entries: std::mem::take(entries),
+                })
+            }
             Self::SharedTimestampRows {
-                fields,
+                entries,
                 timestamp_field,
                 rows,
             } => {
@@ -35,7 +51,10 @@ impl BatchCommandSource {
                     timestamp_nanos,
                     values,
                 ) = rows.next()?;
-                debug_assert_eq!(fields.len(), values.len());
+                debug_assert_eq!(entries.len(), values.len());
+                for ((_, slot), value) in entries.iter_mut().zip(values) {
+                    *slot = value.0;
+                }
                 Some(Command::HashMultiSetIfTimestampOlder {
                     key,
                     timestamp_field: timestamp_field
@@ -43,39 +62,47 @@ impl BatchCommandSource {
                         .expect("shared timestamp field returned after every row"),
                     timestamp_seconds,
                     timestamp_nanos,
-                    entries: std::mem::take(fields)
-                        .into_iter()
-                        .zip(values.into_iter().map(|value| value.0))
-                        .collect(),
+                    entries: std::mem::take(entries),
                 })
             }
         }
     }
 
     fn recycle(&mut self, command: Command) {
-        let Self::SharedTimestampRows {
-            fields,
-            timestamp_field,
-            ..
-        } = self
-        else {
-            return;
-        };
-        let Command::HashMultiSetIfTimestampOlder {
-            timestamp_field: returned_timestamp_field,
-            entries,
-            ..
-        } = command
-        else {
-            panic!("shared timestamp batch returned a different command kind");
-        };
-        debug_assert!(fields.is_empty());
-        fields.extend(entries.into_iter().map(|(field, _)| field));
-        *timestamp_field = Some(returned_timestamp_field);
+        match self {
+            Self::Commands(_) => {}
+            Self::SharedHashRows {
+                entries: shared_entries,
+                ..
+            } => {
+                let Command::HashMultiSet { entries, .. } = command else {
+                    panic!("shared hash batch returned a different command kind");
+                };
+                debug_assert!(shared_entries.is_empty());
+                *shared_entries = entries;
+            }
+            Self::SharedTimestampRows {
+                entries: shared_entries,
+                timestamp_field,
+                ..
+            } => {
+                let Command::HashMultiSetIfTimestampOlder {
+                    timestamp_field: returned_timestamp_field,
+                    entries,
+                    ..
+                } = command
+                else {
+                    panic!("shared timestamp batch returned a different command kind");
+                };
+                debug_assert!(shared_entries.is_empty());
+                *shared_entries = entries;
+                *timestamp_field = Some(returned_timestamp_field);
+            }
+        }
     }
 
     fn recycles_commands(&self) -> bool {
-        matches!(self, Self::SharedTimestampRows { .. })
+        !matches!(self, Self::Commands(_))
     }
 }
 
@@ -85,9 +112,63 @@ mod shared_timestamp_source_tests {
     use crate::types::BatchHashMultiSetValue;
 
     #[test]
+    fn reuses_unconditional_field_name_allocations_across_rows() {
+        let mut source = BatchCommandSource::SharedHashRows {
+            entries: vec![
+                ("score".to_owned(), Vec::new()),
+                ("embedding".to_owned(), Vec::new()),
+            ],
+            rows: vec![
+                BatchHashMultiSetRow(
+                    "feature:1".to_owned(),
+                    vec![
+                        BatchHashMultiSetValue(vec![1]),
+                        BatchHashMultiSetValue(vec![2]),
+                    ],
+                ),
+                BatchHashMultiSetRow(
+                    "feature:2".to_owned(),
+                    vec![
+                        BatchHashMultiSetValue(vec![3]),
+                        BatchHashMultiSetValue(vec![4]),
+                    ],
+                ),
+            ]
+            .into_iter(),
+        };
+
+        let first = source.next_command().expect("first row");
+        let Command::HashMultiSet { entries, .. } = &first else {
+            panic!("unexpected command kind");
+        };
+        let field_ptrs = entries
+            .iter()
+            .map(|(field, _)| field.as_ptr())
+            .collect::<Vec<_>>();
+        let entries_ptr = entries.as_ptr();
+        source.recycle(first);
+
+        let second = source.next_command().expect("second row");
+        let Command::HashMultiSet { entries, .. } = second else {
+            panic!("unexpected command kind");
+        };
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(field, _)| field.as_ptr())
+                .collect::<Vec<_>>(),
+            field_ptrs
+        );
+        assert_eq!(entries.as_ptr(), entries_ptr);
+    }
+
+    #[test]
     fn reuses_shared_field_name_allocations_across_rows() {
         let mut source = BatchCommandSource::SharedTimestampRows {
-            fields: vec!["event_time".to_owned(), "score".to_owned()],
+            entries: vec![
+                ("event_time".to_owned(), Vec::new()),
+                ("score".to_owned(), Vec::new()),
+            ],
             timestamp_field: Some("event_time".to_owned()),
             rows: vec![
                 BatchHashTimestampSetRow(
@@ -122,6 +203,7 @@ mod shared_timestamp_source_tests {
             panic!("unexpected command kind");
         };
         let timestamp_ptr = timestamp_field.as_ptr();
+        let entries_ptr = entries.as_ptr();
         let field_ptrs = entries
             .iter()
             .map(|(field, _)| field.as_ptr())
@@ -138,6 +220,7 @@ mod shared_timestamp_source_tests {
             panic!("unexpected command kind");
         };
         assert_eq!(timestamp_field.as_ptr(), timestamp_ptr);
+        assert_eq!(entries.as_ptr(), entries_ptr);
         assert_eq!(
             entries
                 .iter()
@@ -526,6 +609,33 @@ impl TemporalEngine {
         )
     }
 
+    pub(crate) fn batch_execute_shared_hash_rows(
+        &self,
+        request: BatchHashMultiSetRequest,
+    ) -> BatchExecuteResponse {
+        if !crate::wal::wal_data_only_enabled() {
+            return BatchExecuteResponse {
+                status: Status::error(
+                    "data_only_wal_required",
+                    "shared hash rows require the data-only WAL",
+                ),
+                responses: Vec::new(),
+            };
+        }
+        self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::SharedHashRows {
+                entries: request
+                    .fields
+                    .into_iter()
+                    .map(|field| (field, Vec::new()))
+                    .collect(),
+                rows: request.rows.into_iter(),
+            },
+            true,
+        )
+    }
+
     /// Execute timestamp-conditioned packed hash rows without retaining a second copy of every
     /// value solely for the command-WAL fallback. Applied rows stage a complete packed block, so
     /// the default data-only WAL can recover them from outcomes; rejected rows never enter the
@@ -546,7 +656,11 @@ impl TemporalEngine {
         self.batch_execute_inner(
             request.shard_id,
             BatchCommandSource::SharedTimestampRows {
-                fields: request.fields,
+                entries: request
+                    .fields
+                    .into_iter()
+                    .map(|field| (field, Vec::new()))
+                    .collect(),
                 timestamp_field: Some(request.timestamp_field),
                 rows: request.rows.into_iter(),
             },
@@ -558,10 +672,10 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         mut command_source: BatchCommandSource,
-        elide_packed_hash_payloads: bool,
+        reuse_hash_command_metadata: bool,
     ) -> BatchExecuteResponse {
-        let elide_packed_hash_payloads =
-            elide_packed_hash_payloads && crate::wal::wal_data_only_enabled();
+        let reuse_hash_command_metadata =
+            reuse_hash_command_metadata && crate::wal::wal_data_only_enabled();
         // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
         // and the records this path appends are built from the commands -- so nothing ever took
         // what was staged. Those items stayed in the thread's buffer, and the next write on that
@@ -819,10 +933,29 @@ impl TemporalEngine {
                 shard,
                 config.feature_max_size,
             );
-            let reuse_consumed_metadata = elide_packed_hash_payloads
-                && matches!(&command, Command::HashMultiSetIfTimestampOlder { .. });
+            let reuse_consumed_metadata = reuse_hash_command_metadata
+                && matches!(
+                    &command,
+                    Command::HashMultiSet { .. }
+                        | Command::HashMultiSetIfTimestampOlder { .. }
+                );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
             let (outcome, returned_post_write) = match command {
+                Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
+                    let (outcome, metadata) =
+                        execute_on_shard::execute_hash_multi_set_reusing_metadata(
+                            &self.cache,
+                            &self.block_store,
+                            shard_id,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            shard,
+                            config.async_storage,
+                            key,
+                            entries,
+                        );
+                    (outcome, Some(metadata))
+                }
                 Command::HashMultiSetIfTimestampOlder {
                     key,
                     timestamp_field,
