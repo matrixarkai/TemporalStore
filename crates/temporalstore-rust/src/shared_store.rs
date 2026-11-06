@@ -3011,32 +3011,51 @@ where
             }
         }
 
-        let mut last_wal_index = 0;
-        let mut last_receipt = None;
-        for (index, entry) in drained.iter().cloned().enumerate() {
-            last_wal_index = entry.wal_index;
-            match self.replicator.publish_wal_entry(entry).await {
-                Ok(receipt) => last_receipt = receipt,
-                Err(err) => {
-                    let mut pending = self
-                        .pending
-                        .lock()
-                        .expect("shared-store async queue lock poisoned");
-                    for entry in drained[index..].iter().rev().cloned() {
-                        pending.push_front(entry);
-                    }
-                    return Err(err);
+        // ONE GROUP COMMIT, NOT ONE PER ENTRY.
+        //
+        // This drained up to `max_entries` and then published them one at a time, so a flush of
+        // 256 entries cost 256 durable barriers -- and over a network, 512 requests, because
+        // every entry writes a WAL frame and an offset-index frame. `publish_wal_entries_batch`
+        // already coalesces a run into ONE append of the concatenated frames plus ONE append of
+        // the concatenated offset metadata, deriving each entry's offsets from the single
+        // receipt. So the queue was assembling a batch and then spending it singly.
+        //
+        // THE DURABLE BYTES ARE THE SAME. Appending frames one after another and appending their
+        // concatenation produce the same object, in the same order, and the offset index gets the
+        // same per-entry records either way. This changes how many requests that costs, not what
+        // ends up on disk.
+        //
+        // Nothing here needs to sort the batch by shard: the batch call refuses to coalesce a
+        // mixed-shard run (and a non-append-blob mode) and falls back to per-entry publishing
+        // itself, which it documents as "correct, just uncoalesced". So a mixed queue is slower
+        // and never wrong.
+        //
+        // ALL-OR-NOTHING ON FAILURE, which is simpler than the index arithmetic it replaces: the
+        // coalesced write is one append, so it either landed or it did not, and there is no
+        // prefix of it to keep. The whole run goes back on the queue in its original order.
+        let reports = match self.replicator.publish_wal_entries_batch(&drained).await {
+            Ok(reports) => reports,
+            Err(err) => {
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .expect("shared-store async queue lock poisoned");
+                for entry in drained.iter().rev().cloned() {
+                    pending.push_front(entry);
                 }
+                return Err(err);
             }
-        }
+        };
+
+        let last = reports.last();
         let remaining = self.queued_len();
         Ok(SharedStoreFlushReport {
             flushed: drained.len(),
             remaining,
-            last_wal_index,
-            last_wal_blob_start_offset: last_receipt.as_ref().map(|receipt| receipt.start_offset),
-            last_wal_blob_end_offset: last_receipt.as_ref().map(|receipt| receipt.end_offset),
-            last_wal_blob_object_length: last_receipt.as_ref().map(|receipt| receipt.object_length),
+            last_wal_index: last.map(|report| report.wal_index).unwrap_or(0),
+            last_wal_blob_start_offset: last.and_then(|report| report.wal_blob_start_offset),
+            last_wal_blob_end_offset: last.and_then(|report| report.wal_blob_end_offset),
+            last_wal_blob_object_length: last.and_then(|report| report.wal_blob_object_length),
         })
     }
 }
