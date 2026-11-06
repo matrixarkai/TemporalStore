@@ -4,7 +4,7 @@
 //! Context model-provider calls for summaries and embeddings across supported provider protocols.
 use std::sync::OnceLock;
 
-use crate::llm_context::{BatchEmbedder, OllamaConfig, OllamaProvider};
+use crate::llm_context::{BatchEmbedder, EmbeddingBatch, OllamaConfig, OllamaProvider};
 
 use super::*;
 
@@ -213,14 +213,14 @@ pub fn context_backfill_embeddings(
         .iter()
         .map(|text| ("node_l0", 0u64, 1u32, *text))
         .collect();
-    let (vectors, _report) = context_embeddings_for_extract(provider, &inputs)?;
-    Ok(vectors)
+    let (batch, _report) = context_embeddings_for_extract(provider, &inputs)?;
+    Ok(batch.into_rows())
 }
 
 pub(crate) fn context_embeddings_for_extract(
     provider: &ContextModelProviderConfig,
     inputs: &[(&str, u64, u32, &str)],
-) -> Result<(Vec<Vec<f32>>, ContextEmbeddingGenerationReport), Status> {
+) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
     let provider = normalize_provider(provider.clone());
     if provider.mock_mode || provider.provider_kind == ContextProviderKind::Mock {
         if context_require_model_embeddings() {
@@ -229,13 +229,10 @@ pub(crate) fn context_embeddings_for_extract(
                 "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is set but the context provider is mock/deterministic; configure a real OpenAI-compatible (OSS) embedding provider with mock_mode=false",
             ));
         }
-        let vectors = inputs
-            .iter()
-            .map(|(_, _, _, text)| deterministic_context_embedding(&provider.embedding_model, text))
-            .collect::<Vec<_>>();
-        let vector_dimension = vectors.first().map(Vec::len).unwrap_or_default();
+        let batch = deterministic_embedding_batch(&provider.embedding_model, inputs);
+        let vector_dimension = batch.dimensions;
         return Ok((
-            vectors,
+            batch,
             ContextEmbeddingGenerationReport {
                 status: Status::ok(),
                 provider_name: provider.provider_name,
@@ -253,31 +250,31 @@ pub(crate) fn context_embeddings_for_extract(
         ));
     }
 
-    let vectors = match provider.provider_kind {
+    let batch = match provider.provider_kind {
         ContextProviderKind::OpenAiCompatible => {
             call_openai_compatible_embedding_provider(&provider, inputs)?
         }
         ContextProviderKind::Ollama => call_ollama_embedding_provider(&provider, inputs)?,
-        ContextProviderKind::Mock => inputs
-            .iter()
-            .map(|(_, _, _, text)| deterministic_context_embedding(&provider.embedding_model, text))
-            .collect(),
+        ContextProviderKind::Mock => {
+            deterministic_embedding_batch(&provider.embedding_model, inputs)
+        }
     };
-    let vector_dimension = vectors.first().map(Vec::len).unwrap_or_default();
-    if vectors.len() != inputs.len() || vector_dimension == 0 {
+    let vector_dimension = batch.dimensions;
+    if vector_dimension == 0
+        || batch.values.len() % vector_dimension != 0
+        || batch.rows() != inputs.len()
+    {
         return Err(Status::error(
             "embedding_provider_bad_response",
             format!(
                 "embedding provider {} returned {} vectors for {} inputs",
                 provider.provider_name,
-                vectors.len(),
+                batch.rows(),
                 inputs.len()
             ),
         ));
     }
-    if !vectors.iter().all(|vector| {
-        vector.len() == vector_dimension && vector.iter().all(|value| value.is_finite())
-    }) {
+    if !batch.values.iter().all(|value| value.is_finite()) {
         return Err(Status::error(
             "embedding_provider_bad_response",
             format!(
@@ -287,7 +284,7 @@ pub(crate) fn context_embeddings_for_extract(
         ));
     }
     Ok((
-        vectors,
+        batch,
         ContextEmbeddingGenerationReport {
             status: Status::ok(),
             provider_name: provider.provider_name,
@@ -303,6 +300,20 @@ pub(crate) fn context_embeddings_for_extract(
             production_evidence_ready: true,
         },
     ))
+}
+
+fn deterministic_embedding_batch(model: &str, inputs: &[(&str, u64, u32, &str)]) -> EmbeddingBatch {
+    let mut dimensions = 0usize;
+    let mut values = Vec::new();
+    for (_, _, _, text) in inputs {
+        let vector = deterministic_context_embedding(model, text);
+        if dimensions == 0 {
+            dimensions = vector.len();
+            values.reserve(inputs.len().saturating_mul(dimensions));
+        }
+        values.extend(vector);
+    }
+    EmbeddingBatch { dimensions, values }
 }
 
 pub(crate) fn mock_context_summaries(
@@ -348,13 +359,13 @@ fn ollama_provider(provider: &ContextModelProviderConfig) -> Result<OllamaProvid
 fn call_ollama_embedding_provider(
     provider: &ContextModelProviderConfig,
     inputs: &[(&str, u64, u32, &str)],
-) -> Result<Vec<Vec<f32>>, Status> {
+) -> Result<EmbeddingBatch, Status> {
     let client = ollama_provider(provider)?;
     let texts = inputs
         .iter()
         .map(|(_, _, _, text)| *text)
         .collect::<Vec<_>>();
-    let batch = client.embed_batch(&texts).map_err(|err| {
+    client.embed_batch(&texts).map_err(|err| {
         Status::error(
             "embedding_provider_request_failed",
             format!(
@@ -362,21 +373,7 @@ fn call_ollama_embedding_provider(
                 provider.provider_name
             ),
         )
-    })?;
-    if batch.dimensions == 0 || batch.values.len() % batch.dimensions != 0 {
-        return Err(Status::error(
-            "embedding_provider_bad_response",
-            format!(
-                "embedding provider {} returned an invalid flat embedding batch",
-                provider.provider_name
-            ),
-        ));
-    }
-    Ok(batch
-        .values
-        .chunks_exact(batch.dimensions)
-        .map(<[f32]>::to_vec)
-        .collect())
+    })
 }
 
 fn call_ollama_context_provider(
@@ -406,7 +403,7 @@ fn call_ollama_context_provider(
 pub(crate) fn call_openai_compatible_embedding_provider(
     provider: &ContextModelProviderConfig,
     inputs: &[(&str, u64, u32, &str)],
-) -> Result<Vec<Vec<f32>>, Status> {
+) -> Result<EmbeddingBatch, Status> {
     let (addr, path_prefix) = parse_openai_compatible_base_url(&provider.base_url)?;
     let api_key = if provider.api_key_env.trim().is_empty() {
         None
@@ -450,45 +447,52 @@ pub(crate) fn call_openai_compatible_embedding_provider(
             ),
         )
     })?;
-    response["data"]
-        .as_array()
-        .ok_or_else(|| {
+    let data = response["data"].as_array().ok_or_else(|| {
+        Status::error(
+            "embedding_provider_bad_response",
+            format!(
+                "embedding provider {} response missing data",
+                provider.provider_name
+            ),
+        )
+    })?;
+    let mut dimensions = 0usize;
+    let mut values = Vec::new();
+    for item in data {
+        let embedding = item["embedding"].as_array().ok_or_else(|| {
             Status::error(
                 "embedding_provider_bad_response",
                 format!(
-                    "embedding provider {} response missing data",
+                    "embedding provider {} response missing data[].embedding",
                     provider.provider_name
                 ),
             )
-        })?
-        .iter()
-        .map(|item| {
-            item["embedding"]
-                .as_array()
-                .ok_or_else(|| {
-                    Status::error(
-                        "embedding_provider_bad_response",
-                        format!(
-                            "embedding provider {} response missing data[].embedding",
-                            provider.provider_name
-                        ),
-                    )
-                })?
-                .iter()
-                .map(|value| {
-                    value.as_f64().map(|value| value as f32).ok_or_else(|| {
-                        Status::error(
-                            "embedding_provider_bad_response",
-                            format!(
-                                "embedding provider {} returned a non-float embedding value",
-                                provider.provider_name
-                            ),
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .collect::<Result<Vec<_>, _>>()
+        })?;
+        if dimensions == 0 {
+            dimensions = embedding.len();
+            values.reserve(data.len().saturating_mul(dimensions));
+        } else if embedding.len() != dimensions {
+            return Err(Status::error(
+                "embedding_provider_bad_response",
+                format!(
+                    "embedding provider {} returned inconsistent embedding dimensions",
+                    provider.provider_name
+                ),
+            ));
+        }
+        for value in embedding {
+            values.push(value.as_f64().map(|value| value as f32).ok_or_else(|| {
+                Status::error(
+                    "embedding_provider_bad_response",
+                    format!(
+                        "embedding provider {} returned a non-float embedding value",
+                        provider.provider_name
+                    ),
+                )
+            })?);
+        }
+    }
+    Ok(EmbeddingBatch { dimensions, values })
 }
 
 pub(crate) fn call_openai_compatible_context_provider(

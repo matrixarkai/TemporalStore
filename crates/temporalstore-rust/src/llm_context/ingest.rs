@@ -38,7 +38,7 @@ pub struct ExtractedContext {
 }
 
 /// Flat row-major embedding output avoids one allocation per extracted item.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EmbeddingBatch {
     pub dimensions: usize,
     pub values: Vec<f32>,
@@ -54,8 +54,25 @@ impl EmbeddingBatch {
     }
 
     fn row(&self, index: usize) -> &[f32] {
+        self.get_row(index).expect("embedding row is in bounds")
+    }
+
+    pub(crate) fn get_row(&self, index: usize) -> Option<&[f32]> {
+        if self.dimensions == 0 || index >= self.rows() {
+            return None;
+        }
         let start = index * self.dimensions;
-        &self.values[start..start + self.dimensions]
+        Some(&self.values[start..start + self.dimensions])
+    }
+
+    pub(crate) fn into_rows(self) -> Vec<Vec<f32>> {
+        if self.dimensions == 0 {
+            return Vec::new();
+        }
+        self.values
+            .chunks_exact(self.dimensions)
+            .map(<[f32]>::to_vec)
+            .collect()
     }
 }
 
@@ -299,6 +316,20 @@ mod tests {
 
     use super::*;
     use crate::TemporalEngine;
+
+    #[test]
+    fn flat_embedding_batch_borrows_rows_and_materializes_on_demand() {
+        let batch = EmbeddingBatch {
+            dimensions: 2,
+            values: vec![1.0, 2.0, 3.0, 4.0],
+        };
+
+        assert_eq!(batch.rows(), 2);
+        assert_eq!(batch.get_row(0), Some([1.0, 2.0].as_slice()));
+        assert_eq!(batch.get_row(1), Some([3.0, 4.0].as_slice()));
+        assert_eq!(batch.get_row(2), None);
+        assert_eq!(batch.into_rows(), vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+    }
 
     struct ExtractEveryMessage;
 
