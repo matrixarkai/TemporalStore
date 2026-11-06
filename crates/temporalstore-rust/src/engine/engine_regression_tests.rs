@@ -701,3 +701,5 @@ mod what_each_maintenance_bound_costs_per_round;
 mod what_one_hash_field_write_costs_durably;
 #[path = "tests/a_reconstruct_prunes_the_refs_it_invalidates.rs"]
 mod a_reconstruct_prunes_the_refs_it_invalidates;
+#[path = "tests/the_holders_of_a_key_allocation.rs"]
+mod the_holders_of_a_key_allocation;
