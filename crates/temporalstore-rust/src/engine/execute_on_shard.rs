@@ -1065,14 +1065,14 @@ pub(crate) fn execute_on_shard(
                     .iter()
                     .find_map(|(field, _)| {
                         shard
-                            .hashes
+                            .bucket_index.hashes
                             .get(&key)
                             .and_then(|fields| fields.get(field))
                             .and_then(ElementEntry::block_id)
                     })
                     .or_else(|| {
                         shard
-                            .hashes
+                            .bucket_index.hashes
                             .get(&key)
                             .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
                             .map(|held| held.saturating_add(1))

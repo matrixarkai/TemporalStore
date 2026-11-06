@@ -8799,7 +8799,7 @@ fn large_async_hash_values_remain_readable_after_cache_eviction() {
         let fields = shards
             .get(&1)
             .unwrap()
-            .hashes
+            .bucket_index.hashes
             .get("sequence/0")
             .unwrap();
         assert!(fields
