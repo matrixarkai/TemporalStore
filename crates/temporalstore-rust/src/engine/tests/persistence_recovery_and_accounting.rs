@@ -17555,15 +17555,11 @@ fn what_a_feature_write_costs_against_its_series() {
     );
 }
 
-/// The four commands that hand a WHOLE address list to `sync_bucket_index_object_blocks`
-/// (execute_on_shard lines ~1334, ~1402, ~1566, ~1727) -- do they all cost their series?
-///
-/// FeatureAppend is carried as a KNOWN-amplifying control (15.20x, mx#793) and SetAdd as the
-/// flat one. Source agreement is not evidence: the same survey shape has twice reported a
-/// command as cheap when its work had merely moved somewhere the grep could not see.
+/// Both feature append forms must stay bounded by the points in the request, rather than the
+/// points already retained by the series.
 #[test]
 #[cfg(feature = "alloc-probe")]
-fn which_series_writers_cost_their_series() {
+fn feature_append_cost_stays_bounded_by_request() {
     const REPS: usize = 20;
     let cost = |family: &str, fill: usize| -> u64 {
         let dir = tempfile::tempdir().unwrap();
@@ -17622,35 +17618,29 @@ fn which_series_writers_cost_their_series() {
     };
 
     println!("  family                    bytes/write @200     @3200      ratio");
-    let mut amplifying = 0.0f64;
-    let mut flat = 0.0f64;
-    for family in [
-        "SetAdd",
-        "FeatureAppend",
-        "FeatureAppendWithPolicy",
-        "FeatureReplace",
-        "SequenceAdd",
-    ] {
+    let mut append_ratio = 0.0f64;
+    let mut policy_append_ratio = 0.0f64;
+    for family in ["SetAdd", "FeatureAppend", "FeatureAppendWithPolicy"] {
         let small = cost(family, 200);
         let large = cost(family, 3200);
         assert!(small > 0, "{family}: measured zero bytes, the probe never reached the path");
         let ratio = large as f64 / small as f64;
         match family {
-            "FeatureAppend" => amplifying = ratio,
-            "SetAdd" => flat = ratio,
+            "FeatureAppend" => append_ratio = ratio,
+            "FeatureAppendWithPolicy" => policy_append_ratio = ratio,
             _ => {}
         }
         println!("  {family:24}  {small:10}  {large:10}   {ratio:8.2}x");
     }
     assert!(
-        amplifying > 3.0,
-        "FeatureAppend is known to cost its series (15.20x); it reported {amplifying:.2}x, so \
-         this probe cannot see amplification and no row above means anything"
+        append_ratio < 1.5,
+        "FeatureAppend must stay bounded by its request; history growth produced \
+         {append_ratio:.2}x allocation growth"
     );
     assert!(
-        flat < 1.5,
-        "SetAdd declares its component and must stay flat; it reported {flat:.2}x, so this probe \
-         reports amplification where there is none"
+        policy_append_ratio < 1.5,
+        "FeatureAppendWithPolicy must stay bounded by its request; history growth produced \
+         {policy_append_ratio:.2}x allocation growth"
     );
 }
 
@@ -17989,8 +17979,7 @@ fn does_a_narrow_read_pay_for_the_whole_collection() {
 /// Bytes are a different axis: four defects this sweep moved megabytes while barely moving a
 /// count, because one big serialisation is one allocation. This asks the byte question.
 ///
-/// Two-sided control, both asserted: SetAdd declares its component and must stay flat;
-/// FeatureAppend clones its whole series and must scale.
+/// SetAdd and FeatureAppend both declare their changed component and must stay flat.
 #[test]
 #[cfg(feature = "alloc-probe")]
 fn what_a_message_write_costs_in_bytes_as_history_grows() {
@@ -18065,7 +18054,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
 
     println!("  command               bytes @200    bytes @1600     ratio   held");
     let mut flat = 0.0f64;
-    let mut scaling = 0.0f64;
+    let mut feature_flat = 0.0f64;
     for kind in ["SetAdd", "FeatureAppend", "ContextWriteEvent"] {
         let (small, small_held) = cost(kind, 200);
         let (large, large_held) = cost(kind, 1600);
@@ -18074,7 +18063,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
         let ratio = large as f64 / small as f64;
         match kind {
             "SetAdd" => flat = ratio,
-            "FeatureAppend" => scaling = ratio,
+            "FeatureAppend" => feature_flat = ratio,
             _ => {}
         }
         println!("  {kind:20}  {small:10}  {large:13}   {ratio:6.2}x   {small_held} -> {large_held}");
@@ -18094,8 +18083,9 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
     // is not this change's business -- but if it ever moves, look at the roll before the ratio.
     assert!(flat < 1.5, "the flat control reported {flat:.2}x");
     assert!(
-        scaling > 3.0,
-        "the scaling control reported {scaling:.2}x, so this probe cannot see amplification"
+        feature_flat < 1.5,
+        "FeatureAppend must stay bounded by its request; history growth produced \
+         {feature_flat:.2}x allocation growth"
     );
     println!("  An 8x fill range: a ratio near 8 is linear in history, near 1 is flat.");
 }
