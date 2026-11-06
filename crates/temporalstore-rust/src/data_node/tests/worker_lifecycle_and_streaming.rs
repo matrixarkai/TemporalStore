@@ -5,6 +5,7 @@
 #![allow(clippy::all)]
 use super::*;
 use super::helpers::*;
+use crate::types::{BatchHashMultiSetRow, BatchHashMultiSetValue};
 
 #[test]
 fn compact_batch_write_accepts_writes_and_rejects_reads_before_execution() {
@@ -139,6 +140,66 @@ fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
             values: vec![None, None]
         }
     );
+}
+
+#[test]
+fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["a".to_string(), "b".to_string()],
+        rows: vec![
+            BatchHashMultiSetRow(
+                "first".to_string(),
+                vec![
+                    BatchHashMultiSetValue(b"one".to_vec()),
+                    BatchHashMultiSetValue(b"two".to_vec()),
+                ],
+            ),
+            BatchHashMultiSetRow(
+                "second".to_string(),
+                vec![
+                    BatchHashMultiSetValue(b"three".to_vec()),
+                    BatchHashMultiSetValue(b"four".to_vec()),
+                ],
+            ),
+        ],
+    });
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 2);
+    assert_eq!(runtime.dirty_shards(), vec![1]);
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["first".to_string(), "second".to_string()],
+        fields: vec!["b".to_string(), "a".to_string()],
+    });
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+        }
+    );
+    assert_eq!(
+        read.responses[1].response,
+        CommandResponse::Values {
+            values: vec![Some(b"four".to_vec()), Some(b"three".to_vec())]
+        }
+    );
+
+    let rejected = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["a".to_string(), "b".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "bad".to_string(),
+            vec![BatchHashMultiSetValue(b"only-one".to_vec())],
+        )],
+    });
+    assert_eq!(rejected.status.code, "field_value_count_mismatch");
+    assert_eq!(rejected.applied, 0);
 }
 
 #[test]

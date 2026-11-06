@@ -42,9 +42,11 @@ event timestamp are one key's worth of work:
 
 Reads use bounded binary ``/batch_hash_multi_get_msgpack`` requests with one
 shared field projection per batch.
-Writes use bounded binary ``/batch_write_msgpack`` requests and compact
-responses. Both paths fall back once to JSON-compatible routes when needed, so
-serving groups entities instead of issuing one request per entity.
+The common latest-value write uses ``/batch_hash_multi_set_msgpack`` with the
+field projection encoded once; augmented or mixed-layout writes use bounded
+``/batch_write_msgpack`` command batches. Both paths fall back once to
+compatible command routes when needed, so serving groups entities instead of
+issuing one request per entity.
 """
 
 from __future__ import annotations
@@ -365,7 +367,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 tracked_keys.append(hash_key)
             written += 1
 
-        commands: List[Dict[str, Any]] = []
+        hash_rows: List[Tuple[str, List[Tuple[str, bytes]]]] = []
+        shared_fields: Optional[Tuple[str, ...]] = None
+        shared_layout = True
         for hash_key, proto_ts in latest_timestamps.items():
             serialized_values = latest_serialized_values.get(hash_key)
             if serialized_values is None:
@@ -378,9 +382,13 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 (_feature_field(view_name, feature_name), serialized_value)
                 for feature_name, _value, serialized_value in serialized_values
             )
-            commands.append(
-                {"kind": "hash_multi_set", "key": hash_key, "entries": entries}
-            )
+            hash_rows.append((hash_key, entries))
+            row_fields = tuple(field for field, _value in entries)
+            if shared_fields is None:
+                shared_fields = row_fields
+            elif row_fields != shared_fields:
+                shared_layout = False
+        commands: List[Dict[str, Any]] = []
         commands.extend(
             {"kind": "feature_append", "key": key, "points": points}
             for key, points in history_points.items()
@@ -406,8 +414,22 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 }
             )
 
-        if commands:
-            client.batch_write(commands)
+        if shared_fields is not None and shared_layout and not commands:
+            client.batch_hash_multi_set(
+                list(shared_fields),
+                [
+                    (hash_key, [value for _field, value in entries])
+                    for hash_key, entries in hash_rows
+                ],
+            )
+        elif hash_rows or commands:
+            client.batch_write(
+                [
+                    {"kind": "hash_multi_set", "key": key, "entries": entries}
+                    for key, entries in hash_rows
+                ]
+                + commands
+            )
         if progress and written:
             progress(written)
         logger.debug(

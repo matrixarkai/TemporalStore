@@ -59,14 +59,20 @@ class RecordingClient(TemporalStoreClient):
         self._binary_batch_supported = False
         self._binary_write_supported = False
         self._shared_field_read_supported = False
+        self._shared_field_write_supported = False
         self.sent = []
         self.shared_reads = []
+        self.shared_writes = []
         self.answers = list(answers or [])
         self.tracking_members = None
 
     def batch_hash_multi_get(self, keys, fields):  # type: ignore[override]
         self.shared_reads.append((list(keys), list(fields)))
         return super().batch_hash_multi_get(keys, fields)
+
+    def batch_hash_multi_set(self, fields, rows):  # type: ignore[override]
+        self.shared_writes.append((list(fields), list(rows)))
+        return super().batch_hash_multi_set(fields, rows)
 
     def _answer(self, path, document):
         self.sent.append((path, document))
@@ -534,6 +540,97 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertEqual(document["commands"][0]["entries"][0][1], payload)
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_shared_field_write_keeps_fields_once_and_values_binary(self):
+        payload = bytes(range(256)) * 4
+
+        class SharedWriteClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.documents.append((path, content_type, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["rows"]),
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = SharedWriteClient()
+        client.batch_hash_multi_set(
+            ["feature-a", "feature-b"],
+            [("entity-a", [payload, b"small"]), ("entity-b", [b"x", payload])],
+        )
+
+        path, content_type, document = client.documents[0]
+        self.assertEqual(path, "/batch_hash_multi_set_msgpack")
+        self.assertEqual(content_type, "application/msgpack")
+        self.assertEqual(document["fields"], ["feature-a", "feature-b"])
+        self.assertEqual(document["rows"][0], ["entity-a", [payload, b"small"]])
+        self.assertEqual(document["rows"][1], ["entity-b", [b"x", payload]])
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_shared_field_write_batches_keep_row_order(self):
+        class SharedWriteClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.documents.append(document)
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["rows"]),
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = SharedWriteClient(max_write_batch_commands=2)
+        rows = [(str(index), [bytes([index])]) for index in range(5)]
+        client.batch_hash_multi_set(["f"], rows)
+
+        self.assertEqual([len(document["rows"]) for document in client.documents], [2, 2, 1])
+        self.assertEqual(
+            [row[0] for document in client.documents for row in document["rows"]],
+            [str(index) for index in range(5)],
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_shared_field_write_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def __init__(self):
+                super().__init__()
+                self._shared_field_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                if path == "/batch_hash_multi_set_msgpack":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._request_encoded(path, body, content_type)
+
+        client = OlderNodeClient()
+        client.batch_hash_multi_set(["f"], [("a", [b"one"])])
+        client.batch_hash_multi_set(["f"], [("b", [b"two"])])
+
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual([path for path, _document in client.sent], ["/batch_write", "/batch_write"])
+        self.assertEqual(
+            [document["commands"][0]["key"] for _path, document in client.sent],
+            ["a", "b"],
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_binary_write_endpoint_falls_back_once(self):
         class OlderNodeClient(RecordingClient):
             attempts = 0
@@ -791,7 +888,7 @@ class OnlineStoreTest(unittest.TestCase):
             client.tracking_members[legacy_key] = list(legacy_members)
         return client
 
-    def test_a_write_sends_one_hash_multi_set_per_row_in_one_round_trip(self):
+    def test_a_write_shares_fields_across_rows_in_one_round_trip(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
         client = self._install()
@@ -803,6 +900,12 @@ class OnlineStoreTest(unittest.TestCase):
         ]
         self.store.online_write_batch(self.config, self.view, rows, None)
 
+        self.assertEqual(len(client.shared_writes), 1)
+        shared_fields, shared_rows = client.shared_writes[0]
+        self.assertEqual(shared_fields, ["_ts:stats", "stats:trips"])
+        self.assertEqual([key for key, _values in shared_rows], [
+            self.store._entity_hash_key(self.config, self._entity_key(i)) for i in range(3)
+        ])
         self.assertEqual(len(client.sent), 1, "a write should be ONE round trip")
         path, document = client.sent[0]
         self.assertEqual(path, "/batch_write")
@@ -812,6 +915,26 @@ class OnlineStoreTest(unittest.TestCase):
         fields = dict(commands[0]["entries"])
         self.assertIn("_ts:stats", fields)
         self.assertIn("stats:trips", fields)
+
+    def test_mixed_feature_layouts_keep_the_regular_write_batch(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._install()
+        self.config.online_store.skip_dedup = True
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [
+            (self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None),
+            (self._entity_key(2), {"fares": ValueProto(int64_val=2)}, now, None),
+        ]
+
+        self.store.online_write_batch(self.config, self.view, rows, None)
+
+        self.assertEqual(client.shared_writes, [])
+        self.assertEqual(len(client.sent), 1)
+        self.assertEqual(
+            [command["kind"] for command in client.sent[0][1]["commands"]],
+            ["hash_multi_set", "hash_multi_set"],
+        )
 
     def test_history_serializes_each_entity_and_value_once(self):
         from unittest.mock import patch
@@ -857,6 +980,7 @@ class OnlineStoreTest(unittest.TestCase):
 
         self.assertEqual(entity_serialize_calls, 1)
         self.assertTrue(all(value.serialize_calls == 1 for value in values.values()))
+        self.assertEqual(client.shared_writes, [])
         self.assertEqual(len(client.sent[0][1]["commands"]), 5)
 
     def test_a_write_without_skip_dedup_reads_only_the_timestamp_field(self):

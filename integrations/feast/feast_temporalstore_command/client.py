@@ -2,12 +2,11 @@
 # Copyright 2026 MatrixArkAI
 """HTTP command client for a TemporalStore data node.
 
-The data node serves binary ``POST /batch_execute_msgpack``,
-``POST /batch_hash_multi_get_msgpack``, and ``POST /batch_write_msgpack``
-routes, plus JSON-compatible ``POST /execute``, ``POST /batch_execute``, and
-``POST /batch_write`` routes. They take a shard id and one or more command
-documents; ``Command`` is a serde-tagged enum whose ``kind`` is the snake_case
-variant name.
+The data node serves binary ``POST /batch_execute_msgpack``, shared-field hash
+read/write routes, and ``POST /batch_write_msgpack``, plus JSON-compatible
+``POST /execute``, ``POST /batch_execute``, and ``POST /batch_write`` routes.
+They take a shard id and one or more command documents; ``Command`` is a
+serde-tagged enum whose ``kind`` is the snake_case variant name.
 
 Two asymmetries in that wire format are load-bearing for anyone measuring it,
 so they are stated here rather than discovered later:
@@ -181,6 +180,9 @@ class TemporalStoreClient:
         self._binary_batch_supported: Optional[bool] = False if msgpack is None else None
         self._binary_write_supported: Optional[bool] = False if msgpack is None else None
         self._shared_field_read_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
+        self._shared_field_write_supported: Optional[bool] = (
             False if msgpack is None else None
         )
 
@@ -464,6 +466,101 @@ class TemporalStoreClient:
         if chunk:
             yield chunk, body_for(len(chunk))
 
+    def batch_hash_multi_set(
+        self, fields: List[str], rows: List[Tuple[str, List[bytes]]]
+    ) -> None:
+        """Write one field projection to many hashes with shared wire metadata.
+
+        Nodes without the compact route fall back once to the regular write
+        batch. A transport failure after any compact chunk is never retried:
+        the server may already have applied that chunk.
+        """
+        if not rows:
+            return
+        if msgpack is not None and self._shared_field_write_supported is not False:
+            applied_any = False
+            try:
+                for chunk, body in self._shared_field_write_batches(fields, rows):
+                    raw = self._request_encoded(
+                        "/batch_hash_multi_set_msgpack",
+                        body,
+                        "application/msgpack",
+                    )
+                    envelope = msgpack.unpackb(raw, raw=False)
+                    self._check_write_count(envelope, len(chunk))
+                    applied_any = True
+            except TemporalStoreCommandError as error:
+                if error.code != "http_404" or applied_any:
+                    raise
+                self._shared_field_write_supported = False
+            except (ValueError, msgpack.UnpackException) as error:
+                raise TemporalStoreCommandError(
+                    "invalid_binary_response", str(error)
+                ) from error
+            else:
+                self._shared_field_write_supported = True
+                return
+
+        self.batch_write(
+            [
+                {
+                    "kind": "hash_multi_set",
+                    "key": key,
+                    "entries": list(zip(fields, values)),
+                }
+                for key, values in rows
+            ]
+        )
+
+    def _shared_field_write_batches(
+        self, fields: List[str], rows: List[Tuple[str, List[bytes]]]
+    ) -> Iterator[Tuple[List[Tuple[str, List[bytes]]], bytes]]:
+        if msgpack is None:
+            return
+        prefix = (
+            b"\x83"
+            + msgpack.packb("shard_id", use_bin_type=True)
+            + msgpack.packb(self.shard_id, use_bin_type=True)
+            + msgpack.packb("fields", use_bin_type=True)
+            + msgpack.packb(fields, use_bin_type=True)
+            + msgpack.packb("rows", use_bin_type=True)
+        )
+        chunk: List[Tuple[str, List[bytes]]] = []
+        packer = msgpack.Packer(use_bin_type=True, autoreset=False)
+
+        def body_for(row_count: int, payload_end: Optional[int] = None) -> bytes:
+            view = packer.getbuffer()
+            payload = view if payload_end is None else view[:payload_end]
+            body = b"".join((prefix, _msgpack_array_header(row_count), payload))
+            del payload, view
+            return body
+
+        for row in rows:
+            if chunk and len(chunk) >= self.max_write_batch_commands:
+                completed = chunk
+                body = body_for(len(completed))
+                packer.reset()
+                chunk = []
+                yield completed, body
+
+            previous_payload_bytes = len(packer.getbuffer())
+            packer.pack(row)
+            next_body_bytes = (
+                len(prefix)
+                + len(_msgpack_array_header(len(chunk) + 1))
+                + len(packer.getbuffer())
+            )
+            if chunk and next_body_bytes > self.max_batch_request_bytes:
+                completed = chunk
+                body = body_for(len(completed), previous_payload_bytes)
+                packer.reset()
+                chunk = []
+                yield completed, body
+                packer.pack(row)
+            chunk.append(row)
+        if chunk:
+            yield chunk, body_for(len(chunk))
+
     def _encoded_batches(
         self, commands: List[Dict[str, Any]], max_commands: int
     ) -> Iterator[Tuple[List[Dict[str, Any]], bytes]]:
@@ -587,6 +684,11 @@ class TemporalStoreClient:
     def _check_write_envelope(
         self, envelope: Dict[str, Any], commands: List[Dict[str, Any]]
     ) -> None:
+        self._check_write_count(envelope, len(commands))
+
+    def _check_write_count(
+        self, envelope: Dict[str, Any], expected_count: int
+    ) -> None:
         status = envelope.get("status") or {}
         if not status.get("ok", False):
             raise TemporalStoreCommandError(
@@ -594,10 +696,10 @@ class TemporalStoreClient:
             )
         errors = envelope.get("errors") or []
         applied = int(envelope.get("applied", 0))
-        if applied + len(errors) != len(commands):
+        if applied + len(errors) != expected_count:
             raise TemporalStoreCommandError(
                 "batch_length_mismatch",
-                f"sent {len(commands)} writes, got {applied} successes and "
+                f"sent {expected_count} writes, got {applied} successes and "
                 f"{len(errors)} errors",
             )
         if errors:
