@@ -8761,6 +8761,73 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     );
 }
 
+#[test]
+fn large_async_hash_values_remain_readable_after_cache_eviction() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+
+    for index in 0..64u8 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiSet {
+                key: format!("sequence/{index}"),
+                entries: vec![
+                    ("timestamp".to_string(), vec![index.wrapping_add(1); 16]),
+                    ("timestamp".to_string(), vec![index; 16]),
+                    ("values".to_string(), vec![index; 12 * 1024]),
+                ],
+            },
+        });
+        assert!(response.status.ok, "write {index} failed: {response:?}");
+    }
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let fields = shards
+            .get(&1)
+            .unwrap()
+            .hashes
+            .get("sequence/0")
+            .unwrap();
+        assert!(fields
+            .values()
+            .all(|address| address.block_slab_id() != HOT_BLOCK_SLAB_ID));
+        let mut addresses = fields.values();
+        let first = addresses.next().unwrap();
+        assert!(addresses.all(|address| address == first));
+    }
+    engine.cache().invalidate_shard(1).unwrap();
+    for index in 0..64u8 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiGet {
+                key: format!("sequence/{index}"),
+                fields: vec!["timestamp".to_string(), "values".to_string()],
+            },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::Values {
+                values: vec![Some(vec![index; 16]), Some(vec![index; 12 * 1024])],
+            },
+            "large value {index} must survive cache eviction",
+        );
+    }
+}
+
 
 /// A write handed its blocks must log THOSE blocks, not the ones it would have derived.
 ///

@@ -11,7 +11,7 @@ preference:
 | package | surface | pick it when |
 |---|---|---|
 | **`feast_temporalstore`** (this file) | RESP, port 6399 | you already run the proxy, or you want Feast's own Redis tooling and mental model |
-| **`feast_temporalstore_command`** ([its README](feast_temporalstore_command/README.md)) | the data node's own `POST /batch_execute` | you want one round trip per `get_online_features` call, one process instead of three, readable hash fields with no encoding workaround, and optionally a queryable feature history behind each served value |
+| **`feast_temporalstore_command`** ([its README](feast_temporalstore_command/README.md)) | binary batch writes and reads on the data node | you want bounded round trips, one process instead of three, readable hash fields with no encoding workaround, and optionally a queryable feature history behind each served value |
 
 The two store **values** identically — `ValueProto.SerializeToString()` either way, which is what
 makes a latency comparison between them, or against any other Feast online store, mean anything.

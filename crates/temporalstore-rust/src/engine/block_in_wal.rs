@@ -398,15 +398,13 @@ pub(super) fn read_block(
     object_id: u64,
     component: Option<&str>,
 ) -> Option<Vec<u8>> {
-    let (store, log_id, _) = registry()
-        .lock()
-        .ok()?
-        .get(&(
-            block_store.store_id(),
-            shard_id,
-            block_key(object_id, component),
-        ))?
-        .clone();
+    let (store, log_id, _) = {
+        let map = registry().lock().ok()?;
+        let owner = block_store.store_id();
+        map.get(&(owner, shard_id, block_key(object_id, component)))
+            .or_else(|| map.get(&(owner, shard_id, block_key(object_id, None))))?
+            .clone()
+    };
     // One batch record carries many blocks, and an ingest reads several of the fields its own
     // batch just wrote -- so the same record used to be pread and re-parsed once per block. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
@@ -418,7 +416,11 @@ pub(super) fn read_block(
             .iter()
             .find(|(s, shard, l, _)| *shard == shard_id && *l == log_id && s.same_log(&store))
         {
-            if let Some(block) = blocks.iter().find(|block| names_block(block, object_id, component)) {
+            if let Some(block) = blocks
+                .iter()
+                .find(|block| names_block(block, object_id, component))
+                .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
+            {
                 return Some(block.bytes.clone());
             }
         }
@@ -454,9 +456,10 @@ pub(super) fn read_block(
         cache.push((store.clone(), shard_id, log_id, blocks.clone()));
     }
     blocks
-        .into_iter()
-        .find(|block| names_block(&block, object_id, component))
-        .map(|block| block.bytes)
+        .iter()
+        .find(|block| names_block(block, object_id, component))
+        .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
+        .map(|block| block.bytes.clone())
 }
 
 /// Whether this carried block is the one the read asked for.

@@ -6761,7 +6761,10 @@ fn append_value_inner(
     async_storage: bool,
     block_ordinal: u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    if !async_storage {
+    // Large async values can evict thousands of smaller hot blocks before a
+    // dump. Give them a real readable address immediately, while the WAL still
+    // carries the block for recovery if that append has not reached storage.
+    if !async_storage || bytes.len() >= 8 * 1024 {
         // Carry the block in this write's record, the same as the asynchronous arm below.
         //
         // The record is allowed to state its results and drop the operation only when the blocks

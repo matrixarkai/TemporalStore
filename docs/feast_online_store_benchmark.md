@@ -25,8 +25,8 @@ check that fails the run rather than a warning in the output.
 | **Matched payloads across arms.** The per-row payload width is measured and asserted equal across every arm before any arm is compared. | A latency ratio between two stores holding different bytes. |
 | **A control that the measurement cannot influence.** The SQLite arm runs first and again last. SQLite is untouched by anything the other arms do, so if its two p50s disagree by more than `--control-tolerance` (default 25%), the run is marked **VOID** and no cross-store comparison from it is usable. | Attributing a host's movement, or the harness's own drift, to a store. |
 | **One control check per payload group.** | A guard that filters its own population down to one group and is then disarmed by adding a second. An earlier version of this block compared only the first payload's two SQLite runs and broke out of the loop, so a second payload's control could drift arbitrarily and the run still reported itself usable. |
-| **Load stamped on every phase; `--max-load` marks the run PROVISIONAL.** | A p99 that measures a contended box rather than a store. This matters here: the host is shared, and figures taken while other work is building are not comparable with figures taken idle. |
-| **Teardown checked against the shard's record count.** | A `teardown` that deleted nothing looking identical to a working one — and leaving every later point in a sweep reading a larger store. |
+| **Load stamped on every phase; `--max-io-pressure` marks the run PROVISIONAL.** | A p99 that measures a contended box rather than a store. This matters here: the host is shared, and figures taken while other work is building are not comparable with figures taken idle. |
+| **Exact fixture cleanup checked against the shard's record count.** The command-surface arms delete the known entity keys after measurement. | A cleanup that deleted nothing looking identical to a working one — and leaving every later point in a sweep reading a larger store. |
 | **Warm and cold are separate columns, never averaged.** | A single number that is neither. |
 | **A fresh requested-feature list per read.** | Feast 0.67.0's Redis online store appends the timestamp key to the list the caller passed. Reusing one list grows the requested field set by one entry per read, so that arm would answer a longer and longer `HMGET` while every other arm answered a fixed one — the measurement quietly becoming a comparison of different work. It surfaced as an error thousands of reads later, which is the lucky outcome. |
 
@@ -83,20 +83,53 @@ tables can be used for:
 Stated here so nobody reads a bandwidth number off the command surface without
 it:
 
-* **Requests are base64.** `HashMultiSet.entries` carries a bytes codec, so
-  values go out base64 — a flat 1.33x on the payload.
-* **Responses are decimal arrays.** `CommandResponse::Values`,
-  `CommandResponse::Members` and `FeaturePoint.value` carry no such codec, so a
-  byte comes back as the characters `104,`. For protobuf-serialized feature
-  values that is roughly 3.8x the payload, so a read's wire cost is about 4x
-  what it returns. The client decodes both shapes, so a node that gains the
-  codec later needs no change.
+* **Binary requests preserve byte strings.** For 4,096 commands carrying
+  12,296-byte values, MessagePack produced 50,605,338 bytes versus 67,460,469
+  bytes for JSON, a 24.99% reduction. Median client encoding time for that
+  exact command set was 55.41 ms versus 273.01 ms.
+* **Binary responses preserve byte strings.** A ten-row response carrying
+  12 KiB per row measured 123,551 bytes versus 164,811 bytes through JSON
+  base64, a 25.03% reduction. Older nodes remain usable through the JSON
+  compatibility routes.
+
+### Binary read/write scale result
+
+Release build, 4,096 entities, one 12,296-byte sequence per entity, batch 10,
+500 measured read calls, and eight concurrent readers. All 256 sampled values
+matched exactly in every arm, and teardown removed all 4,096 records in both
+TemporalStore modes. The SQLite control moved 2.1% from the first run to the
+last, inside the 25% rejection threshold.
+
+The server used isolated tmpfs cache, block, index, and Raft directories.
+Storage maintenance was disabled for this run so it measures the command API
+and codec rather than a maintenance cycle; these are transport-serving
+figures, not a maintenance-under-load claim.
+
+| mode | write rows/s | warm rows/s, batch 10 | concurrent rows/s, 8 workers | concurrent p50 | concurrent p99 |
+|---|---:|---:|---:|---:|---:|
+| async commit | 4,985 | 12,289 | 4,585 | 14,500 us | 36,781 us |
+| durable commit | 3,437 | 6,204 | 9,344 | 8,086 us | 15,885 us |
+
+One exact 4,096-command encoding probe, using the same 12,296-byte payload,
+produced 50,605,338 MessagePack request bytes in a median 55.41 ms versus
+67,460,469 JSON bytes in 273.01 ms: 24.99% fewer bytes and 4.93x faster client
+encoding for that command set. This isolates the request-encoding change from
+server and host scheduling.
 
 ## Reproducing
 
 ```bash
-# a data node, a Valkey, a PostgreSQL
-TS_SERVER_BIND_ADDR=127.0.0.1:17502 TS_SHARD_ID=1 ./target/release/server &
+# a data node with every persistent directory isolated for this run
+BENCH_NODE=/dev/shm/feast-command-benchmark-node
+rm -rf "$BENCH_NODE"
+mkdir -p "$BENCH_NODE"/{cache,blocks,indexes,raft-wal}
+MATRIXARK_STORAGE_MANAGER_INTERVAL_MS=0 \
+TS_CACHE_DIR="$BENCH_NODE/cache" \
+TS_BLOCK_STORE_DIR="$BENCH_NODE/blocks" \
+TS_INDEX_DIR="$BENCH_NODE/indexes" \
+TS_RAFT_WAL_DIR="$BENCH_NODE/raft-wal" \
+TS_SERVER_BIND_ADDR=127.0.0.1:17502 TS_SHARD_ID=1 \
+  ./target/release/server &
 docker run -d --name bench-redis -p 127.0.0.1:6380:6379 valkey/valkey:8-alpine \
   valkey-server --save '' --appendonly no
 docker run -d --name bench-pg -p 127.0.0.1:55432:5432 \
@@ -112,6 +145,47 @@ PYTHONPATH="$PWD" python benchmarks/bench_feature_serving.py \
 ```
 
 The harness exits non-zero when a run is PROVISIONAL or VOID, so it can gate.
+
+For long list-valued features, use `--payloads sequence`. That profile writes
+one 4,096-element Feast `Array(Int64)` per entity, verifies serialized values
+after materialization, and reports both write rows/s and concurrent read rows/s
+when `--concurrency` exceeds one. The command-surface arms use bounded HTTP
+batches and delete the fixture's known keys after timing; they do not enable
+key tracking on an async-commit shard.
+
+The separate aggregate workload exercises the Feast command adapter's
+`write_feature_history` path. It streams integer event batches, verifies the
+latest served value plus full and tail-window sums and raw-history counts for
+every entity, measures concurrent native aggregate queries, and removes all
+known hash and history keys afterward:
+
+```bash
+cd integrations/feast
+PYTHONPATH="$PWD" python benchmarks/bench_aggregate_serving.py \
+  --host 127.0.0.1 --port 17502 --entities 256 --events 64 \
+  --reads 2000 --concurrency 4
+```
+
+The resulting QPS is a single-node measurement, not a cross-store comparison;
+the benchmark marks the run `void` if the same-path control p50 drifts beyond
+`--control-tolerance` (25% by default). Repeat under a controlled host load
+before using the number for a capacity decision.
+
+### Measured aggregate history serving
+
+Two consecutive valid runs used a release standalone data node with durable
+commit (`async_storage=false`), its default 16 MiB cache, 1,024 entities, 64
+events per entity, write batches of 256 rows, 4,000 aggregate reads, and eight
+read workers. Every run verified latest values, full-window sums and counts,
+and tail-window sums before timing, then returned the shard to zero records.
+
+| run | history events/s | aggregate queries/s | p50 | p99 | control drift |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 14,965 | 1,482 | 4,848 us | 12,737 us | 0.28% |
+| 2 | 15,260 | 1,552 | 4,566 us | 13,106 us | 15.80% |
+
+These are same-store, local single-node measurements. They do not establish
+multi-node capacity or a comparison with another online store.
 
 ## Measured: single-client read latency
 
@@ -292,21 +366,17 @@ ten-command batch that returns nothing at all**, about 63% of the wide-row
 read's p50 and 58% of the narrow one's. Reducing per-call and per-field
 overhead is worth more than any payload encoding at this batch width.
 
-### The response-encoding change, specified and handed over
+### Binary batch transport
 
-This section is a **specification, not an implementation** — the codec is owned
-elsewhere, and response encoding is a client contract on a public repository.
+The native command integration now uses MessagePack in both directions for
+bounded read and compact-write batches. Byte-bearing command fields remain
+byte strings rather than expanding to base64 on the request side, and response
+values remain byte strings on the response side. JSON routes remain a
+one-time-detected compatibility path for older nodes.
 
-Measured, at batch 10 and 1,035 B/row: the response is **38,421 B to deliver
-10,490 B of feature values, 3.66x**. Giving `CommandResponse::Values` the bytes
-codec that `HashMultiSet.entries` already carries on the request side would
-send those values as 13,987 B of base64, making the response about **15,478 B —
-60% fewer response bytes**. At 20 B/row the same change saves about **15%**,
-because there the envelope rather than the payload is most of the response.
-
-The latency expected from it is bounded by the +604.9 us the payload adds over
-the floor, not by the byte ratio, so it should be justified as bandwidth and
-tail relief under load rather than as p50.
+The measured reductions above describe wire and client-encoding work. They do
+not by themselves establish a server-latency multiplier; latency and QPS are
+reported separately from full Feast serving runs.
 
 ### Writes
 

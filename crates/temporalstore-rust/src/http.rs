@@ -322,8 +322,19 @@ pub fn json_response<T: Serialize>(status: u16, value: &T) -> (u16, Vec<u8>) {
     )
 }
 
+pub fn msgpack_response<T: Serialize>(status: u16, value: &T) -> (u16, Vec<u8>) {
+    let body = rmp_serde::to_vec_named(value).unwrap_or_else(|_| {
+        rmp_serde::to_vec_named(&serde_json::json!({"ok": false})).unwrap_or_default()
+    });
+    (status, body)
+}
+
 pub fn parse_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, HttpError> {
     Ok(serde_json::from_slice(body)?)
+}
+
+pub fn parse_msgpack<T: DeserializeOwned>(body: &[u8]) -> Result<T, HttpError> {
+    rmp_serde::from_slice(body).map_err(|err| HttpError::BadResponse(err.to_string()))
 }
 
 /// Like `parse_json`, but for a request type that BORROWS from the body.
@@ -485,11 +496,7 @@ fn write_buffered_response(
     keep_alive: bool,
 ) -> Result<(), HttpError> {
     let status_text = if status == 200 { "OK" } else { "ERROR" };
-    let content_type = if body.starts_with(b"# HELP ") || body.starts_with(b"# TYPE ") {
-        "text/plain; version=0.0.4"
-    } else {
-        "application/json"
-    };
+    let content_type = buffered_content_type(body);
     let connection = if keep_alive { "keep-alive" } else { "close" };
     let header = format!(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
@@ -501,6 +508,19 @@ fn write_buffered_response(
     stream.write_all(&response)?;
     stream.flush()?;
     Ok(())
+}
+
+fn buffered_content_type(body: &[u8]) -> &'static str {
+    if body.starts_with(b"# HELP ") || body.starts_with(b"# TYPE ") {
+        "text/plain; version=0.0.4"
+    } else if matches!(
+        body.first(),
+        Some(&first) if (0x80..=0x8f).contains(&first) || first == 0xde || first == 0xdf
+    ) {
+        "application/msgpack"
+    } else {
+        "application/json"
+    }
 }
 
 /// Read one HTTP request's head (up to and including the `\r\n\r\n` terminator)
@@ -920,6 +940,100 @@ mod tests {
     use serde_json::Value;
     use std::net::TcpListener;
     use std::time::Instant;
+
+    #[test]
+    fn msgpack_response_is_named_binary_with_the_binary_content_type() {
+        let expected = crate::types::Status::ok();
+        let (status, body) = msgpack_response(200, &expected);
+        assert_eq!(status, 200);
+        assert_eq!(buffered_content_type(&body), "application/msgpack");
+        assert_eq!(rmp_serde::from_slice::<crate::types::Status>(&body).unwrap(), expected);
+    }
+
+    #[test]
+    fn msgpack_request_keeps_binary_command_values() {
+        struct Binary<'a>(&'a [u8]);
+        impl serde::Serialize for Binary<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_bytes(self.0)
+            }
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryCommand<'a> {
+            kind: &'a str,
+            key: &'a str,
+            entries: Vec<(&'a str, Binary<'a>)>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryRequest<'a> {
+            shard_id: u64,
+            commands: Vec<BinaryCommand<'a>>,
+        }
+
+        let payload = [0, 1, 2, 127, 128, 255];
+        let body = rmp_serde::to_vec_named(&BinaryRequest {
+            shard_id: 7,
+            commands: vec![BinaryCommand {
+                kind: "hash_multi_set",
+                key: "entity",
+                entries: vec![("sequence", Binary(&payload))],
+            }],
+        })
+        .unwrap();
+        let request = parse_msgpack::<crate::types::BatchExecuteRequest>(&body).unwrap();
+        assert_eq!(request.shard_id, 7);
+        match &request.commands[0] {
+            crate::types::Command::HashMultiSet { key, entries } => {
+                assert_eq!(key, "entity");
+                assert_eq!(entries, &vec![("sequence".to_string(), payload.to_vec())]);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryPoint<'a> {
+            timestamp_ms: u64,
+            value: Binary<'a>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryFeatureCommand<'a> {
+            kind: &'a str,
+            key: &'a str,
+            points: Vec<BinaryPoint<'a>>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct BinaryFeatureRequest<'a> {
+            shard_id: u64,
+            commands: Vec<BinaryFeatureCommand<'a>>,
+        }
+
+        let body = rmp_serde::to_vec_named(&BinaryFeatureRequest {
+            shard_id: 8,
+            commands: vec![BinaryFeatureCommand {
+                kind: "feature_append",
+                key: "history",
+                points: vec![BinaryPoint {
+                    timestamp_ms: 123,
+                    value: Binary(&payload),
+                }],
+            }],
+        })
+        .unwrap();
+        let request = parse_msgpack::<crate::types::BatchExecuteRequest>(&body).unwrap();
+        assert_eq!(request.shard_id, 8);
+        match &request.commands[0] {
+            crate::types::Command::FeatureAppend { key, points } => {
+                assert_eq!(key, "history");
+                assert_eq!(points[0].timestamp_ms, 123);
+                assert_eq!(points[0].value, payload);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 
     #[test]
     fn request_head_parses_a_bearer_token() {
