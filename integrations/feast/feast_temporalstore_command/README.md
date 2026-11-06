@@ -165,7 +165,7 @@ Partial is written as partial below. Nothing here is rounded up.
 | `online_write_batch` | **abstract** | **implemented** — bounded `/batch_write` calls with a compatibility fallback; parameters identical to the base class |
 | `online_read` | **abstract** | **implemented** — bounded binary batch calls for N entities with a compatibility fallback |
 | `update` | **abstract** | **implemented** — nothing to create (the surface is schemaless); views being removed are swept through the teardown path |
-| `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which is off by default and **must not be combined with async commit** (see that option's docs: 17,500 of 20,000 rows were lost). With it off, teardown logs that it cannot enumerate instead of claiming success |
+| `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which is off by default because its single shared set becomes expensive at large view sizes. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
 | `online_read_async` | optional, **base raises** | **implemented** — without it `get_online_features_async` fails outright |
 | `online_write_batch_async` | optional, **base raises** | **implemented** |
 | `close` | optional, base is `pass` | **implemented** — the base no-op leaks a keep-alive connection per thread |

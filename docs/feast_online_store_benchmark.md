@@ -396,9 +396,25 @@ host; what these do establish is the **order of magnitude: a few thousand rows
 per second per client at a batch width of 500**, with the earlier latency table
 showing durable commit costing 37% on the cold read p50.
 
-## A correctness defect that disqualifies one option, measured
+## Async commit with exact teardown tracking
 
-`track_keys_for_teardown` combined with `async_storage=true` **loses rows.**
+The original measurement below found a data-loss defect when one shared set
+was updated beside asynchronously committed feature hashes. Container blocks
+under cache pressure could not always locate the WAL record carrying their
+bytes. The read path now falls back from an element-specific registration to
+the owning container record and selects the requested block within that record.
+
+The same standalone workload was rerun after that change with a release build,
+a freshly created empty shard, 20,000 feature-shaped rows, batch width 500,
+`async_storage=true`, and one shared tracking set. It retained **20,000 of
+20,000 rows** and reported `LOST=0/20000`. Exact teardown tracking and async
+commit are therefore supported together. The option remains off by default
+because the shared-set write scales poorly, as measured above.
+
+### Original failure measurement
+
+Before the WAL container lookup change, `track_keys_for_teardown` combined
+with `async_storage=true` lost rows.
 Release build, a freshly created shard asserted empty, 20,000 entities at batch
 width 500:
 
@@ -421,18 +437,15 @@ cleared both.
 | true | false | 0 |
 | **true** | **true** | **17,500** |
 
-The default serving path is unaffected: the flag is off by default, and async
-commit with it off lost nothing in any run. Every QPS figure above was taken
-with it off, which is also what a deployment runs. The option's own
-documentation now carries this table, and the earlier entity-count sweep's
-refusals at 20,000 and 50,000 entities are explained by it — those runs had the
-flag on.
+Every QPS figure above was taken with tracking off. The historical table is
+kept here because it defines the workload used by the regression script and
+shows why a smaller smoke test was insufficient.
 
-### Reproduced with no Feast code at all
+### Standalone regression workload
 
 `tools/repro_async_commit_row_loss.py` drives the data node's own command
 surface with the standard library only — no Feast, no client library, no
-third-party package — and reproduces it:
+third-party package. Before the fix it reproduced the failure:
 
 ```
 async_storage=True  hot_set=True   N=20000  (fresh empty shard)
@@ -441,10 +454,9 @@ async_storage=True  hot_set=True   N=20000  (fresh empty shard)
   after 20s: STILL LOST
 ```
 
-16,000 of 20,000 here against 17,500 through the provider: same magnitude, same
-shape — the early batches are lost and the last 4,000 rows (eight batches of
-500) survive. So this is not something a Python integration does to itself; the
-provider's option is only the workload that reaches it.
+That result was the same magnitude and shape as the provider failure: early
+batches disappeared and the last rows survived. The current release-build run
+of the identical script reports zero loss.
 
 **One property of the reproduction is worth stating because it cost two runs:
 the failing workload has to be the FIRST thing on the shard.** Run third, after
