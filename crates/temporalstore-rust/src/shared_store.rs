@@ -8040,16 +8040,24 @@ mod tests {
             report.last_wal_index
         );
         // AND THE BYTES ARE READABLE AS ONE LOG -- a coalesced append must leave the same object
-        // a sequence of appends would, not a batch blob only this writer can parse.
-        let replayed = replicator
-            .replay_wal(1)
+        // a sequence of appends would, not a batch blob only this writer can parse. An ordinary
+        // follower replay is the check for that, and it also prices the READ side of a coalesced
+        // log: how many offset-index reads and range bytes it takes to walk.
+        let dir = tempfile::tempdir().unwrap();
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal(1, 0, &follower)
             .await
             .expect("the shared WAL should replay");
+        println!(
+            "ASYNCFLUSHREPLAY applied={} last={} offset_index_reads={} range_bytes={}",
+            report.applied, report.last_wal_index, report.offset_index_reads, report.range_bytes_read
+        );
         assert_eq!(
-            replayed.len(),
-            ENTRIES,
-            "replay found {} entries in the coalesced log and should find {ENTRIES}",
-            replayed.len()
+            report.applied, ENTRIES,
+            "replay applied {} of {ENTRIES} entries from the coalesced log",
+            report.applied
         );
     }
 
