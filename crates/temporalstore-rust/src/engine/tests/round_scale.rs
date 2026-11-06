@@ -78,11 +78,38 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// Measured, at 4,000 / 8,000 / 80,000 records, on a shard whose dump is delayed -- which is the
 /// ordinary state of a shard written to in batches, see
 /// `the_dump_threshold_counts_log_records_not_dirty_objects`.
-const WALKS_PER_ROUND: u64 = 13;
+///
+/// # 13 -> 12 IS A RECLASSIFICATION, NOT THE ROUND GETTING CHEAPER
+///
+/// The value history is 14 (#1866), 12 (#1892, one function went from three passes to one), 13
+/// (#1899, which FIXED THE COUNTER -- a live-block scan counter was seeing two of its nine call
+/// sites, and charging the other seven raised the number). So a reader who sees 14, 12, 13, 12
+/// with no explanation will read this last step as the one before it, and it is not.
+///
+/// The site that left is `storage_feature_block_layout_report`, called from
+/// `recovery_sweep_compact.rs`, which #1899 named as "the seventh call site, at 1.00x, on every
+/// periodic round". IT STILL DOES THAT WORK. What changed is that it no longer does it by
+/// materialising `LiveBlockEntry` values: it walks `timestamped_kv_series(shard)` and reads each
+/// address from the block store directly. This counter measures live-block-entry walks, so the
+/// site left the POPULATION, not the round. Measured on this tree at both corpus sizes, seven
+/// charged call sites sum to 12.00x, and `recovery_sweep_compact.rs:758` is absent from the list
+/// while `:453` and `:580` in the same file are present.
+///
+/// So this number going down is NOT evidence the periodic round costs less. If you want that
+/// claim, measure the round, not this constant -- and if the layout report is ever put back on a
+/// `collect_live_block_entries` path, this returns to 13 without the round getting worse.
+const WALKS_PER_ROUND: u64 = 12;
 
 /// The same, once the dirty set has drained. HIGHER, not lower: a shard that has taken a dump has
 /// a manifest, and validating it walks the live set again.
-const WALKS_PER_IDLE_ROUND: u64 = 14;
+///
+/// 14 -> 13 FOR THE SAME REASON AS `WALKS_PER_ROUND` ABOVE, AND IT WAS MEASURED, NOT INFERRED.
+/// The idle round could have been unaffected -- the layout report might not have been on that
+/// path at all, in which case 14 would still have been right and changing it would have been a
+/// fresh error. Driven three times on this tree, the idle round materialises exactly 26,000
+/// live-block entries over 2,000 records on every run, which is 13x. So the same site left this
+/// path's population too, and the idle round is no cheaper than it was.
+const WALKS_PER_IDLE_ROUND: u64 = 13;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
