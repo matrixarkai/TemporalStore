@@ -422,6 +422,33 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+          # AND THE ALLOCATION GUARDS, which need --features alloc-probe ON TOP of --ignored.
+          # Without the feature the counting allocator is not installed, every counter reads zero,
+          # and an allocation assertion passes on a zero that means nothing -- so these cannot
+          # share either loop above. One name at a time under the feature, deliberately:
+          # installing the counting allocator process-wide turns a number of other tests red, and
+          # a filtered run never reaches them.
+          #
+          # an_element_write_into_a_live_object_does_not_copy_its_key pins that an install into an
+          # object that ALREADY EXISTS reaches it through a borrow. `Arc::from(&str)` always mallocs
+          # and copies and `entry()` takes its key by value, so the pre-fix path allocated, copied
+          # and dropped the key on every element write: 413 allocations for 400 installs, and
+          # 264.9 B per write at a 208-byte key against 64.9 B at an 8-byte one. The guard varies
+          # KEY LENGTH, because only a key copy can make per-write bytes depend on it.
+          for t in \
+            engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key ; do
+            echo "--- $t (ignored, alloc-probe) ---"
+            cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
+              -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
+            ran=$(grep -oE '^running [0-9]+ tests?$' /tmp/ratio_gate.log | head -1 | awk '{print $2}')
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or no longer #[ignore]d"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/ratio_gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
       # Bin unit tests are not covered by --lib/--tests, so a failing test in a
       # service binary can sit on main unnoticed. Run the proxy bin's suite as a
       # hard gate. Deliberately NOT --bins: some bin test harnesses run servers
