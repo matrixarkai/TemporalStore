@@ -58,9 +58,15 @@ class RecordingClient(TemporalStoreClient):
         super().__init__()
         self._binary_batch_supported = False
         self._binary_write_supported = False
+        self._shared_field_read_supported = False
         self.sent = []
+        self.shared_reads = []
         self.answers = list(answers or [])
         self.tracking_members = None
+
+    def batch_hash_multi_get(self, keys, fields):  # type: ignore[override]
+        self.shared_reads.append((list(keys), list(fields)))
+        return super().batch_hash_multi_get(keys, fields)
 
     def _answer(self, path, document):
         self.sent.append((path, document))
@@ -291,6 +297,83 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertEqual(path, "/batch_execute_msgpack")
         self.assertEqual(content_type, "application/msgpack")
         self.assertEqual(document["commands"][0]["entries"][0][1], payload)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_shared_field_batch_sends_the_projection_once(self):
+        class SharedFieldClient(TemporalStoreClient):
+            documents = []
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.documents.append((path, content_type, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "responses": [
+                            ok({"kind": "values", "values": [key.encode()]})
+                            for key in document["keys"]
+                        ],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = SharedFieldClient()
+        keys = [f"entity-{index}" for index in range(5)]
+        fields = [f"feature-{index}" for index in range(64)]
+        answers = client.batch_hash_multi_get(keys, fields)
+
+        self.assertEqual(len(client.documents), 1)
+        path, content_type, document = client.documents[0]
+        self.assertEqual(path, "/batch_hash_multi_get_msgpack")
+        self.assertEqual(content_type, "application/msgpack")
+        self.assertEqual(document, {"shard_id": 1, "keys": keys, "fields": fields})
+        self.assertEqual(
+            [decode_bytes(answer["values"][0]).decode() for answer in answers],
+            keys,
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_shared_field_batches_keep_order_across_command_boundaries(self):
+        client = TemporalStoreClient(max_batch_commands=2)
+        keys = [f"entity-{index}" for index in range(5)]
+        fields = ["f0", "f1"]
+
+        batches = list(client._shared_field_read_batches(keys, fields))
+
+        self.assertEqual([len(chunk) for chunk, _body in batches], [2, 2, 1])
+        documents = [msgpack.unpackb(body, raw=False) for _chunk, body in batches]
+        self.assertEqual(
+            [key for document in documents for key in document["keys"]], keys
+        )
+        self.assertTrue(all(document["fields"] == fields for document in documents))
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_missing_shared_field_endpoint_falls_back_once(self):
+        class OlderNodeClient(RecordingClient):
+            attempts = 0
+
+            def __init__(self):
+                super().__init__()
+                self._shared_field_read_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                if path == "/batch_hash_multi_get_msgpack":
+                    self.attempts += 1
+                    raise TemporalStoreCommandError("http_404", "not found")
+                return super()._request_encoded(path, body, content_type)
+
+        client = OlderNodeClient()
+        client.batch_hash_multi_get(["a"], ["f"])
+        client.batch_hash_multi_get(["b"], ["f"])
+        self.assertEqual(client.attempts, 1)
+        self.assertEqual(
+            [path for path, _document in client.sent],
+            ["/batch_execute", "/batch_execute"],
+        )
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_binary_batch_uses_one_streaming_packer(self):
@@ -803,6 +886,7 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(len(client.sent), 2, "dedup costs one extra round trip, not N")
         read_commands = client.sent[0][1]["commands"]
         self.assertEqual(read_commands[0]["fields"], ["_ts:stats"])
+        self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
 
     def test_repeated_entity_writes_share_one_timestamp_read(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
@@ -963,6 +1047,7 @@ class OnlineStoreTest(unittest.TestCase):
             self.config, self.view, [self._entity_key(1), self._entity_key(2)], ["trips"]
         )
         self.assertEqual(len(client.sent), 1, "a read over N entities is ONE round trip")
+        self.assertEqual(client.shared_reads[0][1], ["stats:trips", "_ts:stats"])
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0][1]["trips"].int64_val, 42)
         # An entity that was never written must read as (None, None), not as a

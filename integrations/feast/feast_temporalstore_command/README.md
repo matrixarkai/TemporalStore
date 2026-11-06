@@ -2,8 +2,9 @@
 
 A [Feast](https://github.com/feast-dev/feast) **online store** that talks to a
 TemporalStore data node over its own command surface: binary
-`POST /batch_write_msgpack` writes and `POST /batch_execute_msgpack` reads,
-with compatible JSON routing for older nodes.
+`POST /batch_write_msgpack` writes and shared-field
+`POST /batch_hash_multi_get_msgpack` reads, with compatible command-batch
+routing for older nodes.
 
 ## Which integration point this is
 
@@ -62,7 +63,7 @@ to want. It costs three things this one does not:
 2. **One HTTP round trip per Redis command.** `serve_redis_proxy` issues one
    `/execute` per command it decodes, so a pipelined `HMGET` over N entities
    becomes N sequential round trips. This package groups entity reads into
-   bounded `/batch_execute_msgpack` requests.
+   bounded `/batch_hash_multi_get_msgpack` requests.
 3. **A byte-encoding workaround.** Feast's Redis store names a hash field by
    the 4-byte little-endian murmur3 of `"{view}:{feature}"` — arbitrary bytes.
    A hash field on the command surface is a `String`, so this package uses the
@@ -89,9 +90,11 @@ footprint ratio without knowing.
 ## Reads
 
 `online_read` over N entity keys uses ordered binary
-`/batch_execute_msgpack` requests and responses bounded by command count and
-encoded request bytes. Nodes without that route are detected once per client
-and use `/batch_execute`. The answers are
+`/batch_hash_multi_get_msgpack` requests and responses bounded by key count and
+encoded request bytes. The projection is encoded once per batch instead of
+repeating every feature field beside every entity key. Nodes without that
+route are detected once per client and use `/batch_execute_msgpack` or
+`/batch_execute`. The answers are
 positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
@@ -103,7 +106,9 @@ empty values.
 
 `online_write_batch` uses bounded binary `/batch_write_msgpack` requests for
 `HashMultiSet` commands, plus a batched timestamp read first unless
-`skip_dedup` is set. Reads retain the 512-command response bound while writes
+`skip_dedup` is set. That timestamp projection also uses
+`/batch_hash_multi_get_msgpack`, so `_ts` crosses the wire once per batch.
+Reads retain the 512-command response bound while writes
 default to 4,096 commands and remain capped at 4 MiB of encoded request data.
 Nodes without the binary write route are detected once per client and use
 `/batch_write` or `/batch_execute`:

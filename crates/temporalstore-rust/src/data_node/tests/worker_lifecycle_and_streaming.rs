@@ -103,6 +103,45 @@ fn compact_batch_write_keeps_shared_wal_mirroring() {
 }
 
 #[test]
+fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let written = runtime.batch_write(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![Command::HashMultiSet {
+            key: "present".to_string(),
+            entries: vec![
+                ("a".to_string(), b"one".to_vec()),
+                ("b".to_string(), b"two".to_vec()),
+            ],
+        }],
+    });
+    assert!(written.status.ok, "{written:?}");
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["present".to_string(), "missing".to_string()],
+        fields: vec!["b".to_string(), "a".to_string()],
+    });
+
+    assert!(read.status.ok, "{read:?}");
+    assert_eq!(read.responses.len(), 2);
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+        }
+    );
+    assert_eq!(
+        read.responses[1].response,
+        CommandResponse::Values {
+            values: vec![None, None]
+        }
+    );
+}
+
+#[test]
 fn runtime_reports_style_shard_worker_ownership() {
     let runtime = DataNodeRuntime::new(
         TemporalEngine::default(),
