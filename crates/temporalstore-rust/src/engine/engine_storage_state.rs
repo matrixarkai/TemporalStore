@@ -1410,6 +1410,72 @@ impl<'a> BlockKeysByPosition<'a> {
     /// rebuild in `storage_bucket_internals` holds `bucket_map` mutably while this inversion is
     /// alive, and only a caller naming the fields can split those borrows apart. Both fields here
     /// are disjoint from `bucket_map`, so that still works.
+    /// THE INVERSION OVER ALL THREE HOMES, FROM DISJOINT FIELD BORROWS.
+    ///
+    /// `CoreIndex::block_identities` is the convenient form and borrows the WHOLE index, which
+    /// several maintenance paths cannot afford: they destructure it so `bucket_map` can be read
+    /// while a container map is borrowed mutably, and `&self` would hold all of it. Taking one
+    /// parameter per home lets those callers keep the borrows disjoint, which is the only reason
+    /// this exists beside the method.
+    ///
+    /// All six homes are fields of `CoreIndex`. While the four container maps were siblings of
+    /// `bucket_index` on `ShardState` this doc named a free `block_identities_of(shard)` that took
+    /// the whole shard to reach them; that function is gone with its reason.
+    pub(super) fn from_homes<H, S, Z, L>(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        hashes: &'a super::recorded_map::RecordedMap<H>,
+        sets: &'a super::recorded_map::RecordedMap<S>,
+        zsets: &'a super::recorded_map::RecordedMap<Z>,
+        lists: &'a super::recorded_map::RecordedMap<L>,
+    ) -> Self
+    where
+        H: super::recorded_map::RecordedKind,
+        S: super::recorded_map::RecordedKind,
+        Z: super::recorded_map::RecordedKind,
+        L: super::recorded_map::RecordedKind,
+    {
+        let mut keys = Self::from_parts(objects, lookup);
+        for (object_key, refs) in hashes.rows_holding_refs() {
+            keys.file_identity(H::KIND, object_key, refs);
+        }
+        for (object_key, refs) in sets.rows_holding_refs() {
+            keys.file_identity(S::KIND, object_key, refs);
+        }
+        for (object_key, refs) in zsets.rows_holding_refs() {
+            keys.file_identity(Z::KIND, object_key, refs);
+        }
+        for (object_key, refs) in lists.rows_holding_refs() {
+            keys.file_identity(L::KIND, object_key, refs);
+        }
+        keys
+    }
+
+    /// FILE ONE OBJECT'S REFS INTO THE INVERSION, so a home outside `CoreIndex` can be walked in.
+    ///
+    /// `from_parts` walks the two homes it can see. This is how the third — a `RecordedMap` row,
+    /// which is a sibling of `bucket_index` — gets filed, from a caller that holds the whole
+    /// `ShardState`. Same insert the builder's own closure does, so the three homes cannot disagree
+    /// about what filing means.
+    pub(super) fn file_identity(
+        &mut self,
+        model_id: &'a str,
+        object_key: &'a Arc<str>,
+        refs: &'a BlockRefs,
+    ) {
+        for block_ref in refs.iter() {
+            self.by_position.insert(
+                (block_ref.routing_bucket, block_ref.block_ref_key),
+                (model_id, object_key),
+            );
+            self.by_handle
+                .insert(block_ref.block_ref_key, (model_id, object_key));
+        }
+    }
+
     pub(super) fn from_parts(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
@@ -8413,8 +8479,32 @@ impl CoreIndex {
         Some(stored.as_ptr())
     }
 
+    /// EVERY HOME A BLOCK'S IDENTITY CAN BE IN, COMPOSED FROM THE INDEX ALONE.
+    ///
+    /// `impl Serialize for CoreIndex` composes each live block's written key from this and refuses
+    /// a block it cannot name, so a ref whose home this does not walk is a block the encoder
+    /// cannot write.
+    ///
+    /// THREE HOMES NOW: an object's `ObjectSlot`, the container kinds' per-object rows, and the
+    /// lookup. The row home is reachable from here only because the four container maps are FIELDS
+    /// of `CoreIndex` as of `SHARD_INDEX_FORMAT_VERSION` 31 -- while they were siblings of
+    /// `bucket_index` on `ShardState`, a method on this struct could not see them, which is why
+    /// this was briefly a two-home method with a free function beside it for the other four. That
+    /// reason is gone and so is the free function.
+    ///
+    /// `from_homes` takes a parameter per home rather than `&self` BY DESIGN: several maintenance
+    /// paths destructure the index so `bucket_map` can be borrowed while a container map is
+    /// borrowed mutably, and they call it directly. This method is the convenient form for the
+    /// callers that hold the whole index.
     pub(super) fn block_identities(&self) -> BlockKeysByPosition<'_> {
-        BlockKeysByPosition::from_parts(&self.objects, &self.object_block_lookup)
+        BlockKeysByPosition::from_homes(
+            &self.objects,
+            &self.object_block_lookup,
+            &self.hashes,
+            &self.sets,
+            &self.zsets,
+            &self.lists,
+        )
     }
 
     /// EVERY OBJECT THAT HOLDS BLOCK REFS, WHICHEVER HOME HOLDS THEM.
@@ -8754,6 +8844,17 @@ pub(super) fn remove_object_block_lookup_ref_from_shard(
     let from_row = super::recorded_map::remove_row_ref(shard, model_id, object_key, block_ref);
     from_index || from_row
 }
+
+/// THE BLOCK-TO-OBJECT INVERSION OVER ALL THREE REF HOMES.
+///
+/// # WHY THIS IS THE FOURTH CONSUMER CLASS AND THE EASIEST ONE TO MISS
+///
+/// A ref has three homes, and each needs a writer, a reader, a deleter AND an inversion. The
+/// inversion is the one that hides, because by its nature it reads the HOMES THEMSELVES rather than
+/// calling the reader — `from_parts` takes `&objects` and `&object_block_lookup` directly. So every
+/// search for "who reads refs" that looks for the reader's name misses it, and adding a home breaks
+/// it without breaking the build.
+///
 
 /// INSTALL A RECONSTRUCTED INDEX AND BRING THE ROW HOME INTO LINE WITH IT.
 ///

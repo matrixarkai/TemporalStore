@@ -3902,7 +3902,7 @@ fn collect_command_index_items_for(
     // its own copy, so the source is the object lookup inverted by position -- built ONCE here and
     // queried per block, never built per block. `shard` is held immutably throughout, so there is no
     // borrow to split.
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let identities = shard.bucket_index.block_identities();
     let mut items = Vec::new();
     for routing_bucket in buckets {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
@@ -6045,15 +6045,25 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
     let target_buckets = bucket_index_target_buckets_for_object_key(shard, key);
     for routing_bucket in target_buckets {
+        // NAMED BEFORE THE MUTATION, AND THE BORROW SCOPED SO IT ENDS WITH THE NAMING.
+        //
+        // `block_identities_in` returns an OWNED projection, so the index only has to be borrowed
+        // while it is built. The lookup here is the IMMUTABLE one; the mutable `get_mut` below is
+        // what the retain needs. Both are necessary since `SHARD_INDEX_FORMAT_VERSION` 31 made the
+        // four container maps fields OF `bucket_index` rather than siblings of it: the inversion
+        // now reads places inside the very struct the bucket is borrowed out of, so `&self` on the
+        // index cannot coexist with `&mut` on its `bucket_map`.
+        let names = {
+            let keys = shard.bucket_index.block_identities();
+            let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+                continue;
+            };
+            crate::engine::state::block_identities_in(bucket, &keys)
+        };
         let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
-        // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
-        let names = crate::engine::state::block_identities_in(
-            &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
-        );
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
             crate::engine::state::StaleCause::Removed,
@@ -6328,16 +6338,26 @@ fn mark_bucket_index_block_deleted_recording(
             .unwrap_or_default()
     };
     for routing_bucket in target_buckets {
+        // NAMED BEFORE THE MUTATION, AND THE BORROW SCOPED SO IT ENDS WITH THE NAMING.
+        //
+        // `block_identities_in` returns an OWNED projection, so the index only has to be borrowed
+        // while it is built. The lookup here is the IMMUTABLE one; the mutable `get_mut` below is
+        // what the retain needs. Both are necessary since `SHARD_INDEX_FORMAT_VERSION` 31 made the
+        // four container maps fields OF `bucket_index` rather than siblings of it: the inversion
+        // now reads places inside the very struct the bucket is borrowed out of, so `&self` on the
+        // index cannot coexist with `&mut` on its `bucket_map`.
+        let names = {
+            let keys = shard.bucket_index.block_identities();
+            let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+                continue;
+            };
+            crate::engine::state::block_identities_in(bucket, &keys)
+        };
         let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
-        // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
-        let names = crate::engine::state::block_identities_in(
-            &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
-        );
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
             crate::engine::state::StaleCause::Removed,

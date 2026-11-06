@@ -1016,6 +1016,20 @@ impl<K: RecordedKind> RecordedMap<K> {
         removed
     }
 
+    /// EVERY ROW THAT CARRIES REFS, for the INVERSION to file.
+    ///
+    /// `BlockKeysByPosition` maps a block handle back to its object key, and it builds that by
+    /// walking the ref homes. It had two to walk; this is the third. Without it the inversion stops
+    /// naming any block whose ref sits on a row, and a caller that asks "which object owns this
+    /// block" gets `None` -- which an object deletion reads as "not mine" and skips.
+    pub(super) fn rows_holding_refs(
+        &self,
+    ) -> impl Iterator<Item = (&ModelKey, &crate::engine::state::BlockRefs)> {
+        self.entries
+            .iter()
+            .filter_map(|(key, row)| row.refs.as_ref().map(|refs| (key, refs)))
+    }
+
     /// HOW MANY ROWS CARRY REFS, which is what a probe needs to tell a populated row apart from a
     /// row that merely exists.
     ///
