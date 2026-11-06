@@ -7938,6 +7938,34 @@ impl CoreIndex {
     /// object has is served from whichever home holds them, and [`Self::object_block_refs`] is the
     /// door that tries both. Keeping the distinction inside this file is what stops every reader
     /// having to know which kinds have rows.
+    /// THE INDEX'S OWN TWO HOMES ONLY -- THE SLOT AND THE LOOKUP, NOT A `RecordedMap` ROW.
+    ///
+    /// PREFER THE FREE `state::object_block_refs(shard, ..)` IN PRODUCTION. There is a third home
+    /// now: the four container kinds keep their refs on a `RecordedMap` row, and a `RecordedMap`
+    /// is a SIBLING of `bucket_index` on `ShardState`, so this method cannot reach it and never
+    /// will. A caller that uses this one for `hash`, `set`, `zset` or `list` silently misses every
+    /// ref that has been adopted onto a row.
+    ///
+    /// It stays because the index's own behaviour is worth testing on its own, and because
+    /// `contains_object_block_address` and the removal doors are index-internal.
+    /// `the_refs_readers_that_see_every_home_are_the_ones_production_uses` pins that no production
+    /// site calls it directly.
+    /// Whether this index holds the block a ref names.
+    ///
+    /// Pulled out of `prune_refs_to_the_pages_the_index_holds`'s own closure so the ROW prune can
+    /// ask the same question. Both pruners must agree about what "the index holds it" means, and
+    /// the way to guarantee that is one predicate rather than two that look alike.
+    pub(super) fn holds_block_ref(&self, block_ref: &BlockLookupRef) -> bool {
+        self.bucket_map
+            .get(&block_ref.routing_bucket)
+            .is_some_and(|bucket| bucket.block_index.get(&block_ref.block_ref_key).is_some())
+    }
+
+    fn index_object_block_refs_inner(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
+        self.slot_refs(model_id, object_key)
+            .or_else(|| self.object_block_lookup.get(model_id, object_key))
+    }
+
     fn slot_refs(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
         let kind =
             super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)?;
@@ -8440,8 +8468,12 @@ impl CoreIndex {
         // picks by whether the row exists and the adoption moves a set when a row arrives -- so
         // the order is for determinism rather than to resolve a disagreement. A reader must not
         // have to know which home a kind uses.
-        self.slot_refs(model_id, object_key)
-            .or_else(|| self.object_block_lookup.get(model_id, object_key))
+        //
+        // THERE IS A THIRD HOME THIS CANNOT SEE, and the sentence above is exactly why that
+        // matters: a reader must not have to know which home a kind uses, so the complete reader
+        // is the free `state::object_block_refs(shard, ..)` below and not this. See
+        // `index_object_block_refs_inner`.
+        self.index_object_block_refs_inner(model_id, object_key)
     }
 
     pub(super) fn remove_object_block_lookup_entry(
@@ -8655,6 +8687,122 @@ pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> S
 ///
 /// Read from the blocks the object already has rather than from a counter, so it survives a
 /// restart without anything having to be persisted for it.
+/// DROP AN OBJECT'S WHOLE REF SET FROM EVERY HOME IT COULD BE IN.
+///
+/// `CoreIndex::remove_object_block_lookup_entry` reaches the slot and the lookup and cannot reach a
+/// `RecordedMap` row. A removal that misses a home leaves a ref naming a block that is gone, which
+/// a reader chaining three homes will then hand out -- so the DELETER has to span exactly the homes
+/// the reader does. That symmetry is the invariant; this function is how it is kept.
+pub(super) fn remove_object_block_lookup_entry_from_shard(
+    shard: &mut ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) {
+    shard
+        .bucket_index
+        .remove_object_block_lookup_entry(model_id, object_key, component);
+    // A NAMED COMPONENT REMOVES NOTHING, which is the rule the index door states for itself; the
+    // row home must answer the same way or the two disagree about what a component means.
+    if names_the_only_slot(component) {
+        super::recorded_map::clear_row_refs(shard, model_id, object_key);
+    }
+}
+
+/// DROP ONE REF FROM EVERY HOME IT COULD BE IN, and answer whether any home held it.
+pub(super) fn remove_object_block_lookup_ref_from_shard(
+    shard: &mut ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+    block_ref: &BlockLookupRef,
+) -> bool {
+    let from_index = shard.bucket_index.remove_object_block_lookup_ref(
+        model_id,
+        object_key,
+        component,
+        block_ref,
+    );
+    if !names_the_only_slot(component) {
+        return from_index;
+    }
+    // BOTH ARE ASKED AND THE ANSWERS ARE OR-ED, not short-circuited. An object has one home, so at
+    // most one should answer -- but a `||` that skipped the row when the index answered would hide
+    // a double-homed ref rather than clean it up, and this door is the one place that can.
+    let from_row = super::recorded_map::remove_row_ref(shard, model_id, object_key, block_ref);
+    from_index || from_row
+}
+
+/// INSTALL A RECONSTRUCTED INDEX AND BRING THE ROW HOME INTO LINE WITH IT.
+///
+/// `CoreIndex::install_reconstructed` runs two sweeps of its own -- adopt every lookup ref into its
+/// slot, then prune every ref to the blocks the new index holds -- and NEITHER CAN REACH A
+/// `RecordedMap` ROW, because the maps are siblings of `bucket_index` on `ShardState`. So the row
+/// home needs the same two sweeps run for it, from a level that can see both sides, and this is
+/// the only door through which a reconstruct reaches a live shard.
+///
+/// ORDER MATTERS AND IT IS THE INDEX'S OWN ORDER: adopt first, prune second. Adopting after a prune
+/// would move refs the prune had already judged, and the prune is the one that knows what the new
+/// index holds.
+///
+/// Answers `(adopted, pruned)` so a guard can assert the sweeps did something rather than merely
+/// ran -- an empty population is the failure mode a sweep like this always has.
+pub(super) fn install_reconstructed_into_shard(
+    shard: &mut ShardState,
+    rebuilt: CoreIndex,
+) -> (usize, usize) {
+    shard.bucket_index.install_reconstructed(rebuilt);
+    let adopted = super::recorded_map::adopt_every_lookup_ref_into_its_row(shard);
+    let pruned = super::recorded_map::prune_row_refs_to_the_blocks_the_index_holds(shard);
+    (adopted, pruned)
+}
+
+/// EVERY BLOCK REF OF THIS OBJECT, FROM WHICHEVER OF THE THREE HOMES HOLDS THEM.
+///
+/// # WHY THIS IS A FREE FUNCTION AND NOT A METHOD ON `CoreIndex`
+///
+/// There are three homes for an object's refs and `CoreIndex` can see only two. `string`,
+/// `control_state` and `feature` keep theirs on an `ObjectSlot` inside `CoreIndex::objects`;
+/// `hash`, `set`, `zset` and `list` keep theirs on a `RecordedMap` row, and the `RecordedMap`s are
+/// SIBLINGS of `bucket_index` on `ShardState`. No method on `CoreIndex` can reach a sibling -- the
+/// same wall `BucketNodeAt` documents for the encoder -- so the reader that sees everything has to
+/// take the `ShardState`.
+///
+/// It is a free function taking `&ShardState` because that is the shape this module already uses
+/// for exactly this situation: [`next_block_index_for_object`] below is one, called as
+/// `state::next_block_index_for_object(&shard, ..)` from twenty sites.
+///
+/// THE ORDER IS FOR DETERMINISM, NOT TO RESOLVE A DISAGREEMENT. An object has at most one home:
+/// the filing route picks by whether a row exists, and the adoption moves a set when a row
+/// arrives. If two homes ever answered at once, that would be a bug in the adoption rather than
+/// something for a reader to arbitrate.
+pub(super) fn object_block_refs<'a>(
+    shard: &'a ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Option<&'a BlockRefs> {
+    shard
+        .bucket_index
+        .index_object_block_refs_inner(model_id, object_key)
+        .or_else(|| super::recorded_map::row_refs(shard, model_id, object_key))
+}
+
+/// The refs this component resolves to, across all three homes.
+///
+/// The component filter is unchanged: an entry under one block names no element, so only the
+/// unnamed component resolves the object's whole set. See `names_the_only_slot`.
+pub(super) fn block_refs_for<'a>(
+    shard: &'a ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> Option<&'a [BlockLookupRef]> {
+    if !names_the_only_slot(component) {
+        return None;
+    }
+    object_block_refs(shard, model_id, object_key).map(BlockRefs::as_slice)
+}
+
 pub(super) fn next_block_index_for_object(
     bucket_index: &CoreIndex,
     routing_bucket: u32,

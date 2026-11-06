@@ -6146,7 +6146,7 @@ fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> 
     }
     let mut buckets = BTreeSet::new();
     for kind in storage_model_kinds() {
-        if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
+        if let Some(entry) = crate::engine::state::object_block_refs(shard, kind, key) {
             buckets.extend(entry.iter().map(|block_ref| block_ref.routing_bucket));
         }
     }
@@ -6298,9 +6298,7 @@ fn mark_bucket_index_block_deleted_recording(
     // exactly the live blocks of that object -- `insert_object_block_lookup` returns early on a
     // deleted one -- so the minimum routing bucket among its refs is that same bucket, without a
     // walk over every block in the shard.
-    let tombstone_bucket_for_a_block_named_kind: Option<u32> = shard
-        .bucket_index
-        .block_refs_for(model_id, key, None)
+    let tombstone_bucket_for_a_block_named_kind: Option<u32> = crate::engine::state::block_refs_for(shard, model_id, key, None)
         .and_then(|block_refs| {
             block_refs
                 .iter()
@@ -6320,9 +6318,7 @@ fn mark_bucket_index_block_deleted_recording(
             .copied()
             .collect::<BTreeSet<_>>()
     } else {
-        shard
-            .bucket_index
-            .block_refs_for(model_id, key, component)
+        crate::engine::state::block_refs_for(shard, model_id, key, component)
             .map(|block_refs| {
                 block_refs
                     .iter()
@@ -6465,9 +6461,7 @@ fn mark_bucket_index_block_deleted_recording(
         // has always maintained the lookup. The whole-object deleter above still rebuilds; it
         // drops every component of a key at once, so the entry-at-a-time inverse does not apply
         // to it unchanged.
-        shard
-            .bucket_index
-            .remove_object_block_lookup_entry(model_id, key, component);
+        crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, model_id, key, component);
     }
     // THE ENTRY THAT KEEPS THE TOMBSTONE BLOCK REACHABLE, filed after the drop above rather than
     // instead of it -- see this function's doc comment on why the two halves of the slab-live
@@ -6966,9 +6960,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
     // object's own ref list -- while the KIND still is, because the ref was keyed by it and a
     // handle collision could hand back a block of another kind.
     let bucket_index_exists = storage_model_kinds().iter().any(|kind| {
-        shard
-            .bucket_index
-            .object_block_refs(kind, key)
+        crate::engine::state::object_block_refs(shard, kind, key)
             .map(|block_refs| {
                 block_refs.iter().any(|block_ref| {
                     shard
