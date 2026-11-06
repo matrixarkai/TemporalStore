@@ -568,6 +568,71 @@ pub(super) fn execute_hash_multi_get(
     }
 }
 
+fn deduplicate_hash_entries(mut entries: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    let mut first_positions =
+        std::collections::HashMap::<&str, usize>::with_capacity(entries.len());
+    let mut has_duplicate = false;
+    for (index, (field, _)) in entries.iter().enumerate() {
+        match first_positions.entry(field.as_str()) {
+            std::collections::hash_map::Entry::Occupied(_) => has_duplicate = true,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(index);
+            }
+        }
+    }
+    if !has_duplicate {
+        drop(first_positions);
+        return entries;
+    }
+
+    // Preserve the first occurrence's position while moving the last occurrence's value into it.
+    // The table borrows the names already owned by `entries`; no second copy of every field is
+    // needed just to collapse a row before encoding it.
+    let mut last_for_first = vec![None; entries.len()];
+    for (index, (field, _)) in entries.iter().enumerate() {
+        last_for_first[first_positions[field.as_str()]] = Some(index);
+    }
+    drop(first_positions);
+
+    for (first, last) in last_for_first.iter().copied().enumerate() {
+        let Some(last) = last else {
+            continue;
+        };
+        if first != last {
+            entries[first].1 = std::mem::take(&mut entries[last].1);
+        }
+    }
+    let mut index = 0;
+    entries.retain(|_| {
+        let keep = last_for_first[index].is_some();
+        index += 1;
+        keep
+    });
+    entries
+}
+
+#[cfg(test)]
+mod packed_hash_entry_tests {
+    use super::deduplicate_hash_entries;
+
+    #[test]
+    fn duplicate_fields_keep_first_position_and_last_value() {
+        let entries = vec![
+            ("a".to_string(), b"old-a".to_vec()),
+            ("b".to_string(), b"only-b".to_vec()),
+            ("a".to_string(), b"new-a".to_vec()),
+        ];
+
+        assert_eq!(
+            deduplicate_hash_entries(entries),
+            vec![
+                ("a".to_string(), b"new-a".to_vec()),
+                ("b".to_string(), b"only-b".to_vec()),
+            ],
+        );
+    }
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -1201,16 +1266,7 @@ pub(crate) fn execute_on_shard(
             // per scalar while preserving field-addressed reads. Generic small
             // hash writes retain their existing per-field representation.
             if contains_large_value || conditional_hash_write {
-                let mut positions = std::collections::HashMap::<String, usize>::new();
-                let mut packed_entries = Vec::<(String, Vec<u8>)>::with_capacity(entries.len());
-                for (field, value) in entries {
-                    if let Some(position) = positions.get(&field).copied() {
-                        packed_entries[position].1 = value;
-                    } else {
-                        positions.insert(field.clone(), packed_entries.len());
-                        packed_entries.push((field, value));
-                    }
-                }
+                let packed_entries = deduplicate_hash_entries(entries);
                 let block_ordinal = packed_entries
                     .iter()
                     .find_map(|(field, _)| {
@@ -1230,14 +1286,8 @@ pub(crate) fn execute_on_shard(
                     .filter(|ordinal| *ordinal <= crate::block_store::MAX_ADDRESSABLE_BLOCK_ID)
                     .and_then(|ordinal| u32::try_from(ordinal).ok())
                     .unwrap_or(0);
-                let items = packed_entries
-                    .iter()
-                    .map(|(field, value)| (field.as_bytes(), value.as_slice()))
-                    .collect::<Vec<_>>();
-                let block = crate::engine::container_blocks::encode_container_block(
-                    crate::engine::container_blocks::ElementKeySpelling::Utf8,
-                    &items,
-                );
+                let block =
+                    crate::engine::container_blocks::encode_utf8_container_block(&packed_entries);
                 block_in_wal::stage(object_id, None, &block);
                 let address = crate::alloc_probe::in_class(
                     crate::alloc_probe::AllocClass::SlabAppend,
