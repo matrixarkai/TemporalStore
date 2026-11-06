@@ -196,7 +196,7 @@ fn load_context_node(
     // MISSING for a durably acknowledged write on that path. The identity cannot be built without
     // naming a kind, so the arms had to separate.
     shard
-        .hashes
+        .bucket_index.hashes
         .get(object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .map(|address| (address, BlockIdentity::of(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD))))
@@ -488,7 +488,7 @@ pub(crate) fn execute_on_shard(
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let stored_timestamp = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .and_then(|fields| fields.get(&timestamp_field))
                 .and_then(|address| {
@@ -1043,7 +1043,7 @@ pub(crate) fn execute_on_shard(
                     // `Serialize`) and already the address `HashMultiGet` reads a field from --
                     // same lookup, used here as the point read's source of truth under the gate.
                     value: shard
-                        .hashes
+                        .bucket_index.hashes
                         .get(&key)
                         .and_then(|fields| fields.get(&field))
                         .and_then(|address| {
@@ -1199,14 +1199,14 @@ pub(crate) fn execute_on_shard(
                     .iter()
                     .find_map(|(field, _)| {
                         shard
-                            .hashes
+                            .bucket_index.hashes
                             .get(&key)
                             .and_then(|fields| fields.get(field))
                             .and_then(ElementEntry::block_id)
                     })
                     .or_else(|| {
                         shard
-                            .hashes
+                            .bucket_index.hashes
                             .get(&key)
                             .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
                             .map(|held| held.saturating_add(1))
@@ -1337,7 +1337,7 @@ pub(crate) fn execute_on_shard(
             // the wrong answer is not just served, it is persisted. `shard.bucket_index.hashes` is durable and
             // already the address `HashMultiGet`/the gated `HashGet` read a field from.
             let current = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .and_then(|fields| fields.get(&field))
                 .and_then(|address| {
@@ -1453,7 +1453,7 @@ pub(crate) fn execute_on_shard(
             // Copied out before the block reads: those borrow the cache and the block store while
             // this borrows the shard, and the addresses are what both halves of the union need.
             let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .map(|fields| {
                     fields
@@ -1687,7 +1687,7 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let biased = zset_score_bits(score);
             let existed = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(old_biased, _)| *old_biased);
@@ -1780,7 +1780,7 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::Bytes {
                 value: shard
-                    .zsets
+                    .bucket_index.zsets
                     .get(&key)
                     .and_then(|members| members.get(&member))
                     .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
@@ -1797,7 +1797,7 @@ pub(crate) fn execute_on_shard(
             // container exists to make unrepresentable. Reading the score with `get` costs one
             // lookup and lets the record go first.
             let biased = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| *biased);
@@ -2060,7 +2060,7 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let old = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| *biased);
@@ -2173,14 +2173,14 @@ pub(crate) fn execute_on_shard(
         Command::ZSetRank { key, member, rev } => {
             remove_if_expired(shard, &key);
             let target = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| (*biased, member.clone()));
             CommandResponse::Bytes {
                 value: target.map(|(biased, member)| {
                     let before = shard
-                        .zsets
+                        .bucket_index.zsets
                         .get(&key)
                         .map(|members| {
                             members
@@ -2487,7 +2487,7 @@ pub(crate) fn execute_on_shard(
                 GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 CommandResponse::Members {
                     members: shard
-                        .sets
+                        .bucket_index.sets
                         .get(&key)
                         .map(|members| {
                             members.iter().map(|(member, _)| member.clone()).collect()
@@ -3866,7 +3866,7 @@ pub(crate) fn execute_on_shard(
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     let node = shard
-                        .hashes
+                        .bucket_index.hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -3969,7 +3969,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_node_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let node = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&object_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -4021,7 +4021,7 @@ pub(crate) fn execute_on_shard(
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     shard
-                        .hashes
+                        .bucket_index.hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -5410,7 +5410,7 @@ pub(crate) fn execute_on_shard(
             let node_key = context_node_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &node_key);
             let node = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&node_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, BlockIdentity::of(shard_id, "hash", &node_key, Some(CONTEXT_NODE_FIELD))))
@@ -5550,7 +5550,7 @@ fn zset_members_in_score_range(
     max_exclusive: bool,
 ) -> Vec<(Vec<u8>, u64)> {
     let mut ordered: Vec<(Vec<u8>, u64)> = shard
-        .zsets
+        .bucket_index.zsets
         .get(key)
         .map(|members| {
             members
@@ -5578,7 +5578,7 @@ fn zset_members_in_score_range(
 
 fn zset_ordered_members(shard: &ShardState, key: &str) -> Vec<(Vec<u8>, u64)> {
     let mut ordered: Vec<(Vec<u8>, u64)> = shard
-        .zsets
+        .bucket_index.zsets
         .get(key)
         .map(|members| {
             members
