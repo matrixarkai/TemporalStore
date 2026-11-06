@@ -2487,6 +2487,8 @@ pub(crate) fn execute_on_shard(
             let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
+            let mut published: Vec<ElementEntry> = Vec::new();
+            let mut replaced_any = false;
             // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
             // FIRST policy walks the point list in order and
             // skips any ts already present, so for an in-batch duplicate timestamp the FIRST
@@ -2518,15 +2520,19 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage,
                     true,
-                next_block_index,
-            ) {
+                    next_block_index,
+                ) {
                     for (timestamp_ms, address) in addresses {
-                        series.set(timestamp_ms, address);
+                        if series.get(timestamp_ms).is_some() {
+                            replaced_any = true;
+                        }
+                        series.set(timestamp_ms, address.clone());
+                        published.push(address);
                         mutated = true;
                     }
                 }
             }
-            mutated |= trim_timestamped_series(
+            let trimmed = trim_timestamped_series(
                 shard_id,
                 "feature",
                 &key,
@@ -2534,15 +2540,28 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
             );
-            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_blocks(
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
-                mutated,
-            );
+            mutated |= trimmed;
+            if replaced_any || trimmed {
+                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
+                sync_bucket_index_object_blocks(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    live_addresses,
+                    mutated,
+                );
+            } else {
+                sync_bucket_index_object_blocks_with_mode(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    published,
+                    mutated,
+                    false,
+                );
+            }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },

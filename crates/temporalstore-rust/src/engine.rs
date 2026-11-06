@@ -1030,6 +1030,11 @@ impl TemporalEngine {
                 (key, size, deadline)
             })
             .collect();
+        let feature_trimmed_membership = command_will_trim_feature_membership(
+            &command,
+            shard,
+            config.feature_max_size,
+        );
 
         let outcome = execute_on_shard(
             &self.cache,
@@ -1471,7 +1476,8 @@ impl TemporalEngine {
                 // key, so appending to a node that held 850 events serialized all 850 -- 8,647 of
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
-                let key_state_changed = delta_key_state_change(shard, &membership_before);
+                let key_state_changed = feature_trimmed_membership
+                    || delta_key_state_change(shard, &membership_before);
                 let mut key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
@@ -3646,6 +3652,25 @@ fn command_upsert_components(
                     .collect(),
             )
         }
+        Command::FeatureAppendWithPolicy { key, points, .. } => {
+            let mut seen = std::collections::BTreeSet::new();
+            Some(
+                points
+                    .iter()
+                    .filter(|point| seen.insert(point.timestamp_ms))
+                    .map(|point| {
+                        (
+                            "feature",
+                            key.clone(),
+                            Some(crate::engine::packed_blocks::timestamped_component(
+                                point.timestamp_ms,
+                                None,
+                            )),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         // A zset add writes exactly one component, and it is derivable from the command. Declaring
         // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
@@ -3979,6 +4004,43 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_summaries().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_compressions().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_entities().get(key).map_or(0, |v| v.len())
+}
+
+/// Whether applying this command can exceed the retained feature count and remove timestamps.
+/// A trim can replace one timestamp with another without changing the series length, so the
+/// ordinary before/after membership count cannot identify it.
+fn command_will_trim_feature_membership(
+    command: &Command,
+    shard: &ShardState,
+    feature_max_size: usize,
+) -> bool {
+    let (key, points, may_add) = match command {
+        Command::FeatureAppend { key, points } => (key, points, true),
+        Command::FeatureAppendWithPolicy { key, points, policy } => (
+            key,
+            points,
+            matches!(
+                policy,
+                FeatureWritePolicy::Upsert | FeatureWritePolicy::InsertIfAbsent
+            ),
+        ),
+        _ => return false,
+    };
+    let series = shard.features().get(key.as_str());
+    let current_len = series.map_or(0, |series| series.len());
+    if current_len > feature_max_size {
+        return true;
+    }
+    if !may_add {
+        return false;
+    }
+    let mut new_timestamps = std::collections::BTreeSet::new();
+    for point in points {
+        if series.map_or(true, |series| series.get(point.timestamp_ms).is_none()) {
+            new_timestamps.insert(point.timestamp_ms);
+        }
+    }
+    current_len.saturating_add(new_timestamps.len()) > feature_max_size
 }
 
 /// Did this write produce per-key state that reconstruction from physical blocks cannot redo?
