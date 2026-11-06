@@ -145,8 +145,9 @@ TemporalStore's command surface has **no key-space scan** — there is no `SCAN`
 what was written unless something recorded it.
 
 * `track_keys_for_teardown: true` records each entity key in a per-view set, so
-  `teardown` enumerates and deletes exactly the rows the view wrote. It costs
-  one extra write per row to a single hot key, so it is off by default.
+  `teardown` enumerates and deletes exactly the rows the view wrote. Tracking
+  is distributed over 1,024 deterministic sets to keep each container small.
+  It still costs one extra write per row, so it is off by default.
 * With it off, `teardown` **logs a warning and leaves the rows**. It does not
   report success for work it did not do. Set `key_ttl_seconds` if you want rows
   to age out on their own.
@@ -165,7 +166,7 @@ Partial is written as partial below. Nothing here is rounded up.
 | `online_write_batch` | **abstract** | **implemented** — bounded `/batch_write` calls with a compatibility fallback; parameters identical to the base class |
 | `online_read` | **abstract** | **implemented** — bounded binary batch calls for N entities with a compatibility fallback |
 | `update` | **abstract** | **implemented** — nothing to create (the surface is schemaless); views being removed are swept through the teardown path |
-| `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which is off by default because its single shared set becomes expensive at large view sizes. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
+| `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which spreads keys over 1,024 deterministic sets and is off by default because it adds one write per row. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
 | `online_read_async` | optional, **base raises** | **implemented** — without it `get_online_features_async` fails outright |
 | `online_write_batch_async` | optional, **base raises** | **implemented** |
 | `close` | optional, base is `pass` | **implemented** — the base no-op leaks a keep-alive connection per thread |
