@@ -1854,35 +1854,6 @@ pub(crate) fn extract_context_gated(
         }
     }
 
-    if !node.vector.is_empty() {
-        let row = EmbeddingVector {
-            key: EmbeddingKey {
-                tenant_id: request.tenant_hash,
-                item_id: node_hash,
-            },
-            values: &node.vector,
-        };
-        let _ = engine.cache_context_embeddings(
-            EmbeddingChannel::Node,
-            node.embedding_model_hash,
-            &[row],
-        );
-    }
-    if !node.summary_vector.is_empty() {
-        let row = EmbeddingVector {
-            key: EmbeddingKey {
-                tenant_id: request.tenant_hash,
-                item_id: node_hash,
-            },
-            values: &node.summary_vector,
-        };
-        let _ = engine.cache_context_embeddings(
-            EmbeddingChannel::Summary,
-            node.summary_vector_model_hash,
-            &[row],
-        );
-    }
-
     ContextExtractReport {
         status: Status::ok(),
         provider,
@@ -1978,6 +1949,8 @@ pub fn retrieve_context(
     let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
     let mut exact_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
     let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
+    let mut node_score_candidates = Vec::<u64>::new();
+    let mut summary_score_candidates = Vec::<u64>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
     // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
@@ -2033,6 +2006,7 @@ pub fn retrieve_context(
                             // said.
                             model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                         } else {
+                            summary_score_candidates.push(node.node_hash);
                             summary_rows
                                 .entry((node.summary_vector_model_hash, summary_vector.len()))
                                 .or_default()
@@ -2067,6 +2041,7 @@ pub fn retrieve_context(
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     l0_row_fallback.push(node.node_hash);
                 } else {
+                    node_score_candidates.push(node.node_hash);
                     node_rows
                         .entry((node.embedding_model_hash, node.vector.len()))
                         .or_default()
@@ -2154,6 +2129,7 @@ pub fn retrieve_context(
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     continue;
                 }
+                summary_score_candidates.push(entry.node_hash);
                 summary_rows
                     .entry((entry.embedding_model_hash, entry.vector.len()))
                     .or_default()
@@ -2181,13 +2157,19 @@ pub fn retrieve_context(
             }
         }
     }
-    for channel in [EmbeddingChannel::Node, EmbeddingChannel::Summary] {
+    for (channel, candidates) in [
+        (EmbeddingChannel::Node, node_score_candidates.as_slice()),
+        (
+            EmbeddingChannel::Summary,
+            summary_score_candidates.as_slice(),
+        ),
+    ] {
         if let Ok(hits) = engine.score_context_embedding_candidates(
             channel,
             request.tenant_hash,
             active_embedding_model_hash,
             &query_embedding,
-            &node_hashes,
+            candidates,
         ) {
             for hit in hits {
                 let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();

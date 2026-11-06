@@ -1037,6 +1037,8 @@ impl TemporalEngine {
             shard,
             config.feature_max_size,
         );
+        let context_embedding_command =
+            Self::command_updates_context_embedding(&command).then(|| command.clone());
 
         let outcome = execute_on_shard(
             &self.cache,
@@ -1586,6 +1588,9 @@ impl TemporalEngine {
                     RESIDENT_SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+        }
+        if let Some(command) = &context_embedding_command {
+            self.publish_context_embedding_command(command);
         }
         ExecuteResponse {
             status: Status::ok(),
