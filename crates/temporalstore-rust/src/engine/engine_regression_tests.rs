@@ -268,3 +268,5 @@ fn bucket_take_arithmetic_with_explicit_clocks() {
     assert!(!allowed);
     assert_eq!(u64::MAX, retry);
 }
+#[path = "tests/a_row_append_publishes_only_what_it_added.rs"]
+mod a_row_append_publishes_only_what_it_added;
