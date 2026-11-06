@@ -147,12 +147,14 @@ pub trait ObjectStore: Send + Sync {
 /// `DeleteObject` and `ListObjectsV2`, and -- since it learned `x-amz-write-offset-bytes` -- an
 /// append. This speaks S3 to that, and the two protocols nobody served are gone.
 ///
-/// # ONE REQUEST, ONE CONNECTION
+/// # CONNECTIONS ARE REUSED
 ///
-/// Every call opens a socket and sends `Connection: close`. The protocol this replaced pooled
-/// connections, and pooling here means parsing keep-alive framing correctly for every response
-/// shape -- worth doing deliberately and measuring, not inheriting. On loopback a handshake is
-/// tens of microseconds.
+/// Requests go on a pooled keep-alive socket. This began as one connection per request with
+/// `Connection: close`, because pooling means framing every reply correctly and that was worth
+/// doing deliberately rather than inheriting -- and it turned out to be small, because the door
+/// frames bodies with `Content-Length` and refuses `Transfer-Encoding` outright, so there is no
+/// chunked decoder to write. What a handshake per request costs is invisible on loopback and a
+/// round trip each over a network, twice per shared-store record.
 #[derive(Debug, Clone)]
 pub struct MatrixObjectHttpStore {
     addr: String,
@@ -189,7 +191,20 @@ pub struct MatrixObjectHttpStore {
     /// rather than inferred from the payload.
     wire_sent: Arc<std::sync::atomic::AtomicU64>,
     wire_received: Arc<std::sync::atomic::AtomicU64>,
+    /// Idle sockets kept for reuse.
+    ///
+    /// Every request used to open its own connection and send `Connection: close`, so the
+    /// shared path paid a TCP handshake per request -- two per record, since an entry writes
+    /// a WAL frame and an offset-index frame. On loopback that is cheap; over a real network
+    /// it is a round trip each, before any byte of the request is read.
+    ///
+    /// Bounded, because an unbounded pool is a file-descriptor leak wearing a cache's clothes.
+    connections: Arc<Mutex<Vec<TcpStream>>>,
 }
+
+/// Idle sockets kept per store. Small on purpose: this client issues requests from one task
+/// at a time per object, so a deep pool would hold descriptors open to no benefit.
+const MAX_IDLE_CONNECTIONS: usize = 8;
 
 /// Bucket a URI that names none will use.
 ///
@@ -229,6 +244,7 @@ impl MatrixObjectHttpStore {
             requests: Arc::default(),
             wire_sent: Arc::default(),
             wire_received: Arc::default(),
+            connections: Arc::default(),
         })
     }
 
@@ -271,6 +287,23 @@ impl MatrixObjectHttpStore {
         self.wire_received.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn take_connection(&self) -> Option<TcpStream> {
+        self.connections
+            .lock()
+            .expect("matrixobject connections poisoned")
+            .pop()
+    }
+
+    fn return_connection(&self, stream: TcpStream) {
+        let mut pool = self
+            .connections
+            .lock()
+            .expect("matrixobject connections poisoned");
+        if pool.len() < MAX_IDLE_CONNECTIONS {
+            pool.push(stream);
+        }
+    }
+
     fn send(
         &self,
         method: &str,
@@ -280,7 +313,53 @@ impl MatrixObjectHttpStore {
     ) -> Result<HttpResponse, ObjectStoreError> {
         self.requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let response = http_request(&self.addr, method, target, extra, body)?;
+
+        // A POOLED SOCKET MAY HAVE DIED WHILE IT SAT IDLE, and nothing tells the holder: the
+        // server can close an idle keep-alive connection whenever it likes. So a failure on a
+        // reused socket is not an error to report -- it is retried once on a fresh one, and
+        // only a failure on a CONNECTION THIS CALL OPENED is real. Without that distinction a
+        // perfectly healthy store reports io errors in proportion to how long it was idle.
+        // Yields the response directly rather than a nested `Result`: `?` inside the arms
+        // keeps the error type unambiguous, where `Ok(..)` in each arm left it for inference
+        // to guess between every `From` impl on the error.
+        let response = {
+            match self.take_connection() {
+                Some(mut pooled) => {
+                    match http_exchange(&mut pooled, &self.addr, method, target, extra, body) {
+                        Ok(response) => {
+                            if response.reusable {
+                                self.return_connection(pooled);
+                            }
+                            response
+                        }
+                        // A POOLED SOCKET MAY HAVE DIED WHILE IT SAT IDLE, and nothing tells
+                        // the holder: a server may close an idle keep-alive connection
+                        // whenever it likes. So a failure on a REUSED socket is retried once
+                        // on a fresh one, and only a failure on a connection this call opened
+                        // is real. Without that distinction a healthy store reports io errors
+                        // in proportion to how long it was idle.
+                        Err(_) => {
+                            let mut fresh = connect(&self.addr)?;
+                            let response =
+                                http_exchange(&mut fresh, &self.addr, method, target, extra, body)?;
+                            if response.reusable {
+                                self.return_connection(fresh);
+                            }
+                            response
+                        }
+                    }
+                }
+                None => {
+                    let mut fresh = connect(&self.addr)?;
+                    let response =
+                        http_exchange(&mut fresh, &self.addr, method, target, extra, body)?;
+                    if response.reusable {
+                        self.return_connection(fresh);
+                    }
+                    response
+                }
+            }
+        };
         // COUNTED FROM WHAT THE TRANSPORT ACTUALLY MOVED, not from the payload: the head is
         // most of a small request and all of a HEAD reply, and a figure that leaves it out
         // would report the shared path as cheaper than it is.
@@ -614,6 +693,8 @@ struct HttpResponse {
     raw_len: usize,
     /// Bytes written to the socket for it, head included.
     request_len: usize,
+    /// Whether this socket may be kept for another request.
+    reusable: bool,
 }
 
 impl HttpResponse {
@@ -642,22 +723,41 @@ impl HttpResponse {
     }
 }
 
-fn http_request(
+fn connect(addr: &str) -> Result<TcpStream, ObjectStoreError> {
+    let socket_addr = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| ObjectStoreError::Http(format!("cannot resolve {addr}")))?;
+    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_nodelay(true)?;
+    Ok(stream)
+}
+
+/// One request and its reply on a socket that may be used again.
+///
+/// # WHY THIS CAN READ THE BODY BY LENGTH AND NOTHING ELSE
+///
+/// The door frames every reply with `Content-Length` and refuses `Transfer-Encoding` of any
+/// kind with a 501 -- so there is no chunked decoder to get right, which is the thing that
+/// makes keep-alive worth doing here rather than an open-ended risk. Reading to end-of-stream
+/// is what is no longer possible: the socket stays open, so a read-to-end would block until
+/// the server gave up on it.
+///
+/// A HEAD REPLY CARRIES `Content-Length` AND NO BODY. The door suppresses the body while
+/// keeping the header, exactly as HTTP requires, so a reader that believed the header on a
+/// HEAD would wait for bytes that are never coming and time out. The method decides, not the
+/// header.
+fn http_exchange(
+    stream: &mut TcpStream,
     addr: &str,
     method: &str,
     target: &str,
     extra: &[(&str, String)],
     body: &[u8],
 ) -> Result<HttpResponse, ObjectStoreError> {
-    let socket_addr = addr
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| ObjectStoreError::Http(format!("cannot resolve {addr}")))?;
-    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500))?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-
-    let mut head = format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    let mut head = format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\n");
     for (name, value) in extra {
         head.push_str(name);
         head.push_str(": ");
@@ -671,13 +771,26 @@ fn http_request(
     }
     stream.flush()?;
 
-    let mut raw = Vec::new();
-    stream.read_to_end(&mut raw)?;
+    // Read until the head is complete, keeping whatever body bytes arrived with it.
     let marker = b"\r\n\r\n";
-    let header_end = raw
-        .windows(marker.len())
-        .position(|window| window == marker)
-        .ok_or_else(|| ObjectStoreError::Http("missing response headers".to_string()))?;
+    let mut raw: Vec<u8> = Vec::with_capacity(512);
+    let mut chunk = [0u8; 4096];
+    let header_end = loop {
+        if let Some(at) = raw
+            .windows(marker.len())
+            .position(|window| window == marker)
+        {
+            break at;
+        }
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            return Err(ObjectStoreError::Http(
+                "the store closed the connection before finishing its response head".to_string(),
+            ));
+        }
+        raw.extend_from_slice(&chunk[..read]);
+    };
+
     let head_text = String::from_utf8_lossy(&raw[..header_end]).into_owned();
     let mut lines = head_text.lines();
     let status = lines
@@ -685,16 +798,56 @@ fn http_request(
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| ObjectStoreError::Http("unparseable status line".to_string()))?;
-    let headers = lines
+    let headers: Vec<(String, String)> = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
         .collect();
+
+    let header_of = |want: &str| {
+        headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(want))
+            .map(|(_, value)| value.as_str())
+    };
+
+    // A HEAD has no body however long it says it is; 204 and 304 never carry one either.
+    let expected = if method.eq_ignore_ascii_case("HEAD") || status == 204 || status == 304 {
+        0
+    } else {
+        header_of("content-length")
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .ok_or_else(|| {
+                ObjectStoreError::Http(format!(
+                    "the store gave no Content-Length on a {status} reply, and this client reads \
+                     bodies by length because the door frames them that way"
+                ))
+            })?
+    };
+
+    let body_start = header_end + marker.len();
+    while raw.len() - body_start < expected {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            return Err(ObjectStoreError::Http(format!(
+                "the store closed the connection with {} of {expected} body bytes delivered",
+                raw.len() - body_start
+            )));
+        }
+        raw.extend_from_slice(&chunk[..read]);
+    }
+
+    // KEEP THE SOCKET ONLY IF THE SERVER SAID SO, and only if the body was read to the byte:
+    // a socket with unread bytes on it would hand them to the next request as its reply head.
+    let reusable = !header_of("connection").is_some_and(|value| value.eq_ignore_ascii_case("close"))
+        && raw.len() - body_start == expected;
+
     Ok(HttpResponse {
         status,
         headers,
-        body: raw[header_end + marker.len()..].to_vec(),
+        body: raw[body_start..body_start + expected].to_vec(),
         raw_len: raw.len(),
         request_len: head.len() + body.len(),
+        reusable,
     })
 }
 
