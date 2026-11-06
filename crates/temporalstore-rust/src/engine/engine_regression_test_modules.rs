@@ -177,6 +177,8 @@ mod bucket_mark_in_place_budget;
 mod bucket_dirty_share_under_dumps;
 #[path = "tests/model_map_container_cost.rs"]
 mod model_map_container_cost;
+#[path = "tests/a_key_already_in_the_map_is_not_allocated_again.rs"]
+mod a_key_already_in_the_map_is_not_allocated_again;
 #[path = "tests/container_block_ordinal.rs"]
 mod container_block_ordinal;
 #[path = "tests/what_a_new_container_element_scans.rs"]
