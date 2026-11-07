@@ -12,9 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    context_scope_nodes, extract_context, inject_context, remember_context_scope_node,
-    ContextExtractRequest, ContextIndexRef, ContextInjectRequest, ContextModelProviderConfig,
-    ContextRetrieveRequest, ContextSourceKind, ContextTier, TemporalEngine,
+    context_scope_nodes, extract_context, inject_context, remember_context_scope,
+    remember_context_scope_node, ContextExtractRequest, ContextIndexRef, ContextInjectRequest,
+    ContextModelProviderConfig, ContextRetrieveRequest, ContextSourceKind, ContextTier, TemporalEngine,
     CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT,
 };
 
@@ -70,6 +70,11 @@ fn main() {
         "{}:{}:{}:{}",
         args.account_id, args.tenant_id, args.user_id, args.session_id
     ));
+    let catalog_hash = stable_hash64(&format!(
+        "{}:{}:{}",
+        args.account_id, args.tenant_id, args.user_id
+    ));
+    let _ = remember_context_scope(&engine, 1, catalog_hash, &args.session_id);
     let now_ms = now_ms();
     let source_id = format!(
         "{}:{}:{}:{:016x}",
@@ -120,6 +125,7 @@ fn main() {
     let mut node_hashes = scope_nodes_with_legacy_import(
         &engine,
         tenant_hash,
+        catalog_hash,
         &args.root,
         &args.agent_name,
         &args.session_id,
@@ -151,6 +157,7 @@ fn main() {
         let global_nodes = scope_nodes_with_legacy_import(
             &engine,
             global_tenant_hash,
+            catalog_hash,
             &args.root,
             &args.agent_name,
             "_global",
@@ -375,6 +382,7 @@ fn legacy_session_nodes(root: &PathBuf, agent_name: &str, session_id: &str) -> V
 fn scope_nodes_with_legacy_import(
     engine: &TemporalEngine,
     tenant_hash: u64,
+    catalog_hash: u64,
     root: &PathBuf,
     agent_name: &str,
     session_id: &str,
@@ -384,7 +392,11 @@ fn scope_nodes_with_legacy_import(
         return nodes;
     }
 
-    for node_hash in legacy_session_nodes(root, agent_name, session_id) {
+    let legacy_nodes = legacy_session_nodes(root, agent_name, session_id);
+    if !legacy_nodes.is_empty() {
+        let _ = remember_context_scope(engine, 1, catalog_hash, session_id);
+    }
+    for node_hash in legacy_nodes {
         let _ = remember_context_scope_node(
             engine,
             1,

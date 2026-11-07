@@ -164,6 +164,57 @@ pub fn context_scope_nodes(
     nodes
 }
 
+fn context_scope_catalog_key(catalog_hash: u64) -> String {
+    format!("ctx:scope_catalog:{catalog_hash}")
+}
+
+/// Register a durable scope name for user-level enumeration and maintenance.
+pub fn remember_context_scope(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    catalog_hash: u64,
+    scope: &str,
+) -> bool {
+    if scope.trim().is_empty() {
+        return false;
+    }
+    engine
+        .execute(ExecuteRequest {
+            shard_id,
+            command: Command::SetAdd {
+                key: context_scope_catalog_key(catalog_hash),
+                member: scope.as_bytes().to_vec(),
+            },
+        })
+        .status
+        .ok
+}
+
+/// List durable scope names without relying on a process-local sidecar.
+pub fn context_scopes(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    catalog_hash: u64,
+) -> Vec<String> {
+    let response = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::SetMembers {
+            key: context_scope_catalog_key(catalog_hash),
+        },
+    });
+    let mut scopes = match response.response {
+        CommandResponse::Members { members } => members
+            .into_iter()
+            .filter_map(|member| String::from_utf8(member).ok())
+            .filter(|scope| !scope.trim().is_empty())
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    scopes.sort_unstable();
+    scopes.dedup();
+    scopes
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextTier {
