@@ -985,6 +985,7 @@ impl TemporalEngine {
                             end_routing_bucket,
                             shard,
                             config.async_storage,
+                            !config.async_storage,
                             key,
                             entries,
                         );
@@ -1005,6 +1006,7 @@ impl TemporalEngine {
                             start_routing_bucket,
                             end_routing_bucket,
                             shard,
+                            config.async_storage,
                             key,
                             timestamp_field,
                             timestamp_seconds,
