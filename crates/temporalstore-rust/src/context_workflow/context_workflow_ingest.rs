@@ -108,10 +108,9 @@ pub fn ingest_extract_context_with_l1_gate(
         }
     }
 
-    // Summary generation is source-specific, but embedding endpoints natively accept batches.
-    // Group prepared sources by their normalized provider so a large ingest does not pay one
-    // network round trip for every pair of node/event vectors. Provider clients retain their own
-    // request-size limits and split this logical batch when needed.
+    // Embedding endpoints natively accept batches. Group by normalized provider, then bound each
+    // request by both item count and input bytes. Besides protecting the endpoint, processing one
+    // chunk at a time avoids retaining the full returned matrix while source-local rows are copied.
     let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
     for (source_index, (_, summaries)) in prepared_sources.iter().enumerate() {
         if let Some((_, source_indexes)) = provider_groups
@@ -128,42 +127,80 @@ pub fn ingest_extract_context_with_l1_gate(
             .take(prepared_sources.len())
             .collect();
     for (provider, source_indexes) in provider_groups {
-        let mut embedding_inputs = Vec::with_capacity(source_indexes.len().saturating_mul(2));
-        for source_index in &source_indexes {
-            let (source, summaries) = &prepared_sources[*source_index];
-            let node_hash = stable_hash64(&format!(
-                "{}:{}:{}",
-                source.tenant_hash, source.source_kind as u8, source.source_id
-            ));
-            let event_id_hash =
-                stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
-            let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
-            let node_embedding_text = if emit_l1 {
-                summaries.l1.as_str()
-            } else {
-                summaries.l0.as_str()
-            };
-            embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
-            embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
-        }
-        let (batch, report, deferred) =
-            context_embeddings_with_fallback(&provider, &embedding_inputs);
-        for (group_offset, source_index) in source_indexes.into_iter().enumerate() {
-            let source_batch = if deferred {
-                EmbeddingBatch::default()
-            } else {
-                let row_start = group_offset.saturating_mul(2);
-                let value_start = row_start.saturating_mul(batch.dimensions);
-                let value_end = value_start.saturating_add(batch.dimensions.saturating_mul(2));
-                EmbeddingBatch {
-                    dimensions: batch.dimensions,
-                    values: batch.values[value_start..value_end].to_vec(),
+        let limits = context_embedding_batch_limits(&provider);
+        let mut chunk_start = 0usize;
+        while chunk_start < source_indexes.len() {
+            let mut chunk_end = chunk_start;
+            let mut input_count = 0usize;
+            let mut input_bytes = 0usize;
+            while chunk_end < source_indexes.len() {
+                let (source, summaries) = &prepared_sources[source_indexes[chunk_end]];
+                let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
+                let node_embedding_text = if emit_l1 {
+                    summaries.l1.as_str()
+                } else {
+                    summaries.l0.as_str()
+                };
+                let pair_bytes = node_embedding_text.len().saturating_add(source.body.len());
+                let candidate_count = input_count.saturating_add(2);
+                let candidate_bytes = input_bytes.saturating_add(pair_bytes);
+                if chunk_end > chunk_start
+                    && (candidate_count > limits.max_items
+                        || candidate_bytes > limits.max_request_bytes)
+                {
+                    break;
                 }
-            };
-            let mut source_report = report.clone();
-            source_report.requested_vector_count = 2;
-            source_report.generated_vector_count = if deferred { 0 } else { 2 };
-            embedding_outcomes[source_index] = Some((source_batch, source_report, deferred));
+                input_count = candidate_count;
+                input_bytes = candidate_bytes;
+                chunk_end += 1;
+                if node_embedding_text.len() > limits.max_input_bytes
+                    || source.body.len() > limits.max_input_bytes
+                    || input_count > limits.max_items
+                    || input_bytes > limits.max_request_bytes
+                {
+                    break;
+                }
+            }
+
+            let chunk_indexes = &source_indexes[chunk_start..chunk_end];
+            let mut embedding_inputs = Vec::with_capacity(chunk_indexes.len().saturating_mul(2));
+            for source_index in chunk_indexes {
+                let (source, summaries) = &prepared_sources[*source_index];
+                let node_hash = stable_hash64(&format!(
+                    "{}:{}:{}",
+                    source.tenant_hash, source.source_kind as u8, source.source_id
+                ));
+                let event_id_hash =
+                    stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
+                let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
+                let node_embedding_text = if emit_l1 {
+                    summaries.l1.as_str()
+                } else {
+                    summaries.l0.as_str()
+                };
+                embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
+                embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
+            }
+            let (batch, report, deferred) =
+                context_embeddings_with_fallback(&provider, &embedding_inputs);
+            for (chunk_offset, source_index) in chunk_indexes.iter().copied().enumerate() {
+                let source_batch = if deferred {
+                    EmbeddingBatch::default()
+                } else {
+                    let row_start = chunk_offset.saturating_mul(2);
+                    let value_start = row_start.saturating_mul(batch.dimensions);
+                    let value_end = value_start.saturating_add(batch.dimensions.saturating_mul(2));
+                    EmbeddingBatch {
+                        dimensions: batch.dimensions,
+                        values: batch.values[value_start..value_end].to_vec(),
+                    }
+                };
+                let mut source_report = report.clone();
+                source_report.requested_vector_count = 2;
+                source_report.generated_vector_count = if deferred { 0 } else { 2 };
+                embedding_outcomes[source_index] = Some((source_batch, source_report, deferred));
+            }
+            chunk_start = chunk_end;
         }
     }
 

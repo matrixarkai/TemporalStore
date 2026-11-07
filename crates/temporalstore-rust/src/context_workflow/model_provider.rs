@@ -11,6 +11,9 @@ use super::*;
 
 const CONTEXT_SUMMARY_SYSTEM_PROMPT: &str = "You generate TemporalStore ContextNode traversal summaries. Be faithful to the supplied source; prefer current state and resolved contradictions; never invent facts. l0 is a compact routing abstract; l1 is a richer synthesis whose length scales to the source's information.";
 const CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX: &str = "Generate an independent hierarchical summary for every source below. Return one item for every source_index and preserve each ordinal exactly. l0 is a routing abstract of at most 220 characters. For rich_source=true, l1 is a semantic synthesis of at most 1200 characters; otherwise l1 is one distilled fact line of at most 220 characters. Do not combine facts between sources or invent facts. Sources: ";
+const DEFAULT_EMBED_MAX_BATCH_ITEMS: usize = 128;
+const DEFAULT_EMBED_MAX_INPUT_BYTES: usize = 64 * 1024;
+const DEFAULT_EMBED_MAX_REQUEST_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ContextExtractSummaries {
@@ -31,6 +34,43 @@ struct ContextSummaryBatchItem {
     source_index: usize,
     l0: String,
     l1: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ContextEmbeddingBatchLimits {
+    pub(crate) max_items: usize,
+    pub(crate) max_input_bytes: usize,
+    pub(crate) max_request_bytes: usize,
+}
+
+pub(crate) fn context_embedding_batch_limits(
+    provider: &ContextModelProviderConfig,
+) -> ContextEmbeddingBatchLimits {
+    if provider.provider_kind == ContextProviderKind::Ollama {
+        let config = OllamaConfig::from_env();
+        return ContextEmbeddingBatchLimits {
+            max_items: config.max_batch_items.max(1),
+            max_input_bytes: config.max_input_bytes.max(1),
+            max_request_bytes: config.max_request_bytes.max(1),
+        };
+    }
+    ContextEmbeddingBatchLimits {
+        max_items: crate::env_flag::env_number(
+            "MATRIXARK_EMBED_MAX_BATCH_ITEMS",
+            DEFAULT_EMBED_MAX_BATCH_ITEMS,
+        )
+        .max(1),
+        max_input_bytes: crate::env_flag::env_number(
+            "MATRIXARK_EMBED_MAX_INPUT_BYTES",
+            DEFAULT_EMBED_MAX_INPUT_BYTES,
+        )
+        .max(1),
+        max_request_bytes: crate::env_flag::env_number(
+            "MATRIXARK_EMBED_MAX_REQUEST_BYTES",
+            DEFAULT_EMBED_MAX_REQUEST_BYTES,
+        )
+        .max(1),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -331,6 +371,108 @@ pub(crate) fn context_embeddings_for_extract(
     inputs: &[(&str, u64, u32, &str)],
 ) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
     let provider = normalize_provider(provider.clone());
+    if inputs.is_empty() {
+        return context_embeddings_for_extract_one_batch(&provider, inputs);
+    }
+
+    let mut start = 0usize;
+    let mut combined = EmbeddingBatch::default();
+    let mut combined_report: Option<ContextEmbeddingGenerationReport> = None;
+    while start < inputs.len() {
+        let end = context_embedding_batch_end(&provider, inputs, start);
+        let (batch, report) =
+            context_embeddings_for_extract_one_batch(&provider, &inputs[start..end])?;
+        if combined.dimensions == 0 {
+            combined.dimensions = batch.dimensions;
+            combined
+                .values
+                .reserve(inputs.len().saturating_mul(batch.dimensions));
+        } else if batch.dimensions != combined.dimensions {
+            return Err(Status::error(
+                "embedding_provider_bad_response",
+                format!(
+                    "embedding provider {} changed dimensions between request batches",
+                    provider.provider_name
+                ),
+            ));
+        }
+        combined.values.extend(batch.values);
+        if let Some(total) = combined_report.as_mut() {
+            total.requested_vector_count = total
+                .requested_vector_count
+                .saturating_add(report.requested_vector_count);
+            total.generated_vector_count = total
+                .generated_vector_count
+                .saturating_add(report.generated_vector_count);
+            total.batch_count = total.batch_count.saturating_add(report.batch_count);
+            total.live_call_count = total
+                .live_call_count
+                .saturating_add(report.live_call_count);
+            total.production_evidence_ready &= report.production_evidence_ready;
+        } else {
+            combined_report = Some(report);
+        }
+        start = end;
+    }
+    Ok((
+        combined,
+        combined_report.expect("non-empty embedding input produces a report"),
+    ))
+}
+
+fn context_embedding_batch_end(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+    start: usize,
+) -> usize {
+    let limits = context_embedding_batch_limits(provider);
+    let mut end = start;
+    let mut bytes = 0usize;
+    while end < inputs.len() && end - start < limits.max_items {
+        let input_bytes = inputs[end].3.len();
+        if end > start && bytes.saturating_add(input_bytes) > limits.max_request_bytes {
+            break;
+        }
+        bytes = bytes.saturating_add(input_bytes);
+        end += 1;
+        if input_bytes > limits.max_input_bytes || bytes > limits.max_request_bytes {
+            break;
+        }
+    }
+    end.max(start + 1).min(inputs.len())
+}
+
+fn context_embeddings_for_extract_one_batch(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    let limits = context_embedding_batch_limits(provider);
+    if let Some((index, input)) = inputs
+        .iter()
+        .enumerate()
+        .find(|(_, input)| input.3.len() > limits.max_input_bytes)
+    {
+        return Err(Status::error(
+            "embedding_input_too_large",
+            format!(
+                "embedding input {index} is {} bytes; limit is {}",
+                input.3.len(), limits.max_input_bytes
+            ),
+        ));
+    }
+    let request_bytes = inputs.iter().fold(0usize, |bytes, input| {
+        bytes.saturating_add(input.3.len())
+    });
+    if inputs.len() > limits.max_items || request_bytes > limits.max_request_bytes {
+        return Err(Status::error(
+            "embedding_request_too_large",
+            format!(
+                "embedding request has {} items and {request_bytes} input bytes; limits are {} items and {} bytes",
+                inputs.len(), limits.max_items, limits.max_request_bytes
+            ),
+        ));
+    }
+
     if provider.mock_mode || provider.provider_kind == ContextProviderKind::Mock {
         if context_require_model_embeddings() {
             return Err(Status::error(
@@ -344,9 +486,9 @@ pub(crate) fn context_embeddings_for_extract(
             batch,
             ContextEmbeddingGenerationReport {
                 status: Status::ok(),
-                provider_name: provider.provider_name,
-                provider_kind: provider.provider_kind,
-                embedding_model: provider.embedding_model,
+                provider_name: provider.provider_name.clone(),
+                provider_kind: provider.provider_kind.clone(),
+                embedding_model: provider.embedding_model.clone(),
                 vector_dimension,
                 requested_vector_count: inputs.len(),
                 generated_vector_count: inputs.len(),
@@ -396,9 +538,9 @@ pub(crate) fn context_embeddings_for_extract(
         batch,
         ContextEmbeddingGenerationReport {
             status: Status::ok(),
-            provider_name: provider.provider_name,
-            provider_kind: provider.provider_kind,
-            embedding_model: provider.embedding_model,
+            provider_name: provider.provider_name.clone(),
+            provider_kind: provider.provider_kind.clone(),
+            embedding_model: provider.embedding_model.clone(),
             vector_dimension,
             requested_vector_count: inputs.len(),
             generated_vector_count: inputs.len(),
