@@ -264,7 +264,7 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
     // which sorts by `append_position` and dedups on it before reading anything. Its own note
     // says so -- "ORDER FIRST, THEN READ".
     let mut addresses = Vec::new();
-    if let Some(block_refs) = crate::engine::state::object_block_refs(shard, model_id, object_key) {
+    if let Some(block_refs) = shard.bucket_index.object_block_refs(model_id, object_key) {
         for block_ref in block_refs.iter() {
             let Some(block) = shard
                 .bucket_index
@@ -303,7 +303,7 @@ pub(super) fn bucket_index_element_name_block_addresses(
     model_id: &str,
     object_key: &str,
 ) -> Vec<(Option<Arc<str>>, ElementEntry)> {
-    if let Some(object_refs) = crate::engine::state::object_block_refs(shard, model_id, object_key) {
+    if let Some(object_refs) = shard.bucket_index.object_block_refs(model_id, object_key) {
         let mut refs = object_refs
             .iter()
             .filter_map(|block_ref| {

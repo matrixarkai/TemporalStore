@@ -1150,13 +1150,14 @@ impl<K: RecordedKind> RecordedMap<K> {
         element: <K::Elements as ElementMap>::Element,
         value: <K::Elements as ElementMap>::Value,
     ) {
-        if let Some(elements) = self.entries.get_mut(object_key) {
-            elements.insert_element(element, value);
+        if let Some(row) = self.entries.get_mut(object_key) {
+            row.elements.insert_element(element, value);
             return;
         }
         self.entries
             .entry(std::sync::Arc::from(object_key))
             .or_default()
+            .elements
             .insert_element(element, value);
     }
 

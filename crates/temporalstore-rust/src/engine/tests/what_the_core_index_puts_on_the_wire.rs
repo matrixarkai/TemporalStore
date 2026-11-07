@@ -854,6 +854,13 @@ fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does
     fields
         .remove("objects")
         .expect("the second wire field is written under its only spelling");
+    // THE FOUR CONTAINER MAPS ARRIVED AT 31 under the names they had on `ShardState`, and have no
+    // second spelling either, so they leave the set the same way and a SEVENTH field still fails.
+    for name in ["hashes", "sets", "zsets", "lists"] {
+        fields
+            .remove(name)
+            .unwrap_or_else(|| panic!("{name} is written under its only spelling"));
+    }
     assert!(
         fields.is_empty(),
         "nothing else is on the wire, so nothing else needs re-spelling here: {:?}",

@@ -216,10 +216,10 @@ fn where_each_kinds_refs_end_up() {
         );
     }
 
-    // AND A COMPONENT-NAMED REF REACHES NEITHER HOME, WHICH IS WHY THE COUNTS ABOVE ARE COMPLETE.
+    // AND A NAMED-ELEMENT REF REACHES NO HOME, WHICH IS WHY THE COUNTS ABOVE ARE COMPLETE.
     //
-    // `names_the_only_slot(component)` is `component.is_none()`, and a named component is refused
-    // by design on both the read and the removal doors. So a `Some` component contributes to no
+    // `names_the_only_slot(element_name)` is `element_name.is_none()`, and a named element is refused
+    // by design on both the read and the removal doors. So a `Some` element name contributes to no
     // home at all, and the per-kind totals are not quietly excluding a population they should
     // count. Asserted rather than assumed, because if that refusal ever softened the census would
     // start missing refs without any column going to zero.
@@ -227,10 +227,10 @@ fn where_each_kinds_refs_end_up() {
         assert!(
             shard
                 .bucket_index
-                .block_refs_for(kind, "a-key-that-need-not-exist", Some("a-named-component"))
+                .block_refs_for(kind, "a-key-that-need-not-exist", Some("a-named-element"))
                 .is_none(),
-            "a component-named read resolved for {kind}; the per-kind totals above assume a named \
-             component reaches NO home, so this census would be missing refs"
+            "a named-element read resolved for {kind}; the per-kind totals above assume a named \
+             element reaches NO home, so this census would be missing refs"
         );
     }
     // AND THE SINGLE-BLOCK STRING CASE SPECIFICALLY, because it is the one the published figure is

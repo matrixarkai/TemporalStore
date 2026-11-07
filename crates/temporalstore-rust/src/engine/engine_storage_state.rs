@@ -8068,6 +8068,7 @@ impl CoreIndex {
     fn index_object_block_refs_inner(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
         self.slot_refs(model_id, object_key)
             .or_else(|| self.object_block_lookup.get(model_id, object_key))
+            .or_else(|| self.row_refs(model_id, object_key))
     }
 
     fn slot_refs(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
@@ -8586,6 +8587,54 @@ impl CoreIndex {
             .map(BlockRefs::as_slice)
     }
 
+    /// The refs a container kind keeps on its row, if it is one of the four and the row has any.
+    pub(super) fn row_refs(&self, kind: &str, object_key: &str) -> Option<&BlockRefs> {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.refs(object_key)
+        } else if kind == SetKind::KIND {
+            self.sets.refs(object_key)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.refs(object_key)
+        } else if kind == ListKind::KIND {
+            self.lists.refs(object_key)
+        } else {
+            None
+        }
+    }
+
+    /// Drop one ref from the object's row, whichever of the four kinds it is.
+    fn remove_row_ref(&mut self, kind: &str, object_key: &str, block_ref: &BlockLookupRef) -> bool {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.remove_ref(object_key, block_ref)
+        } else if kind == SetKind::KIND {
+            self.sets.remove_ref(object_key, block_ref)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.remove_ref(object_key, block_ref)
+        } else if kind == ListKind::KIND {
+            self.lists.remove_ref(object_key, block_ref)
+        } else {
+            false
+        }
+    }
+
+    /// Drop the object's whole ref set from its row; the row's refs go to `None`, not to empty.
+    fn clear_row_refs(&mut self, kind: &str, object_key: &str) -> bool {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.take_refs(object_key).is_some()
+        } else if kind == SetKind::KIND {
+            self.sets.take_refs(object_key).is_some()
+        } else if kind == ZSetKind::KIND {
+            self.zsets.take_refs(object_key).is_some()
+        } else if kind == ListKind::KIND {
+            self.lists.take_refs(object_key).is_some()
+        } else {
+            false
+        }
+    }
+
     /// Every block ref of this object, whatever its element name.
     pub(super) fn object_block_refs(
         &self,
@@ -8643,6 +8692,8 @@ impl CoreIndex {
                 *total = total.saturating_sub(removed);
             }
         }
+        // The row home too: a deleter must span the homes the reader does.
+        self.clear_row_refs(model_id, object_key);
     }
 
     /// Drop ONE ref an object holds under one element name, leaving that element name's other refs and
@@ -8723,7 +8774,9 @@ impl CoreIndex {
                 *total = total.saturating_sub(1);
             }
         }
-        removed
+        // Asked too, not short-circuited: a double-homed ref is cleaned here, not hidden.
+        let from_row = self.remove_row_ref(model_id, object_key, block_ref);
+        removed || from_row
     }
 
     /// Drop every ref an object holds under one kind.
@@ -8805,62 +8858,6 @@ pub(super) fn object_element_name_lookup_key(model_id: &str, object_key: &str) -
     key
 }
 
-/// The next block index this object may use, which is one past the highest it holds.
-///
-/// A block id is an index INSIDE its object, which is what keeps it small. It must never be
-/// REUSED, and that is a different requirement from being small: this store keeps a rewritten
-/// block's predecessor live -- still referenced by the points it holds that were not rewritten --
-/// so an object numbering its new blocks from zero again would have two live blocks claiming the
-/// same position, and a reload would serve whichever it reached first.
-///
-/// Read from the blocks the object already has rather than from a counter, so it survives a
-/// restart without anything having to be persisted for it.
-/// DROP AN OBJECT'S WHOLE REF SET FROM EVERY HOME IT COULD BE IN.
-///
-/// `CoreIndex::remove_object_block_lookup_entry` reaches the slot and the lookup and cannot reach a
-/// `RecordedMap` row. A removal that misses a home leaves a ref naming a block that is gone, which
-/// a reader chaining three homes will then hand out -- so the DELETER has to span exactly the homes
-/// the reader does. That symmetry is the invariant; this function is how it is kept.
-pub(super) fn remove_object_block_lookup_entry_from_shard(
-    shard: &mut ShardState,
-    model_id: &str,
-    object_key: &str,
-    component: Option<&str>,
-) {
-    shard
-        .bucket_index
-        .remove_object_block_lookup_entry(model_id, object_key, component);
-    // A NAMED COMPONENT REMOVES NOTHING, which is the rule the index door states for itself; the
-    // row home must answer the same way or the two disagree about what a component means.
-    if names_the_only_slot(component) {
-        super::recorded_map::clear_row_refs(shard, model_id, object_key);
-    }
-}
-
-/// DROP ONE REF FROM EVERY HOME IT COULD BE IN, and answer whether any home held it.
-pub(super) fn remove_object_block_lookup_ref_from_shard(
-    shard: &mut ShardState,
-    model_id: &str,
-    object_key: &str,
-    component: Option<&str>,
-    block_ref: &BlockLookupRef,
-) -> bool {
-    let from_index = shard.bucket_index.remove_object_block_lookup_ref(
-        model_id,
-        object_key,
-        component,
-        block_ref,
-    );
-    if !names_the_only_slot(component) {
-        return from_index;
-    }
-    // BOTH ARE ASKED AND THE ANSWERS ARE OR-ED, not short-circuited. An object has one home, so at
-    // most one should answer -- but a `||` that skipped the row when the index answered would hide
-    // a double-homed ref rather than clean it up, and this door is the one place that can.
-    let from_row = super::recorded_map::remove_row_ref(shard, model_id, object_key, block_ref);
-    from_index || from_row
-}
-
 /// THE BLOCK-TO-OBJECT INVERSION OVER ALL THREE REF HOMES.
 ///
 /// # WHY THIS IS THE FOURTH CONSUMER CLASS AND THE EASIEST ONE TO MISS
@@ -8894,52 +8891,6 @@ pub(super) fn install_reconstructed_into_shard(
     let adopted = super::recorded_map::adopt_every_lookup_ref_into_its_row(shard);
     let pruned = super::recorded_map::prune_row_refs_to_the_blocks_the_index_holds(shard);
     (adopted, pruned)
-}
-
-/// EVERY BLOCK REF OF THIS OBJECT, FROM WHICHEVER OF THE THREE HOMES HOLDS THEM.
-///
-/// # WHY THIS IS A FREE FUNCTION AND NOT A METHOD ON `CoreIndex`
-///
-/// There are three homes for an object's refs and `CoreIndex` can see only two. `string`,
-/// `control_state` and `feature` keep theirs on an `ObjectSlot` inside `CoreIndex::objects`;
-/// `hash`, `set`, `zset` and `list` keep theirs on a `RecordedMap` row, and the `RecordedMap`s are
-/// SIBLINGS of `bucket_index` on `ShardState`. No method on `CoreIndex` can reach a sibling -- the
-/// same wall `BucketNodeAt` documents for the encoder -- so the reader that sees everything has to
-/// take the `ShardState`.
-///
-/// It is a free function taking `&ShardState` because that is the shape this module already uses
-/// for exactly this situation: [`next_block_index_for_object`] below is one, called as
-/// `state::next_block_index_for_object(&shard, ..)` from twenty sites.
-///
-/// THE ORDER IS FOR DETERMINISM, NOT TO RESOLVE A DISAGREEMENT. An object has at most one home:
-/// the filing route picks by whether a row exists, and the adoption moves a set when a row
-/// arrives. If two homes ever answered at once, that would be a bug in the adoption rather than
-/// something for a reader to arbitrate.
-pub(super) fn object_block_refs<'a>(
-    shard: &'a ShardState,
-    model_id: &str,
-    object_key: &str,
-) -> Option<&'a BlockRefs> {
-    shard
-        .bucket_index
-        .index_object_block_refs_inner(model_id, object_key)
-        .or_else(|| super::recorded_map::row_refs(shard, model_id, object_key))
-}
-
-/// The refs this component resolves to, across all three homes.
-///
-/// The component filter is unchanged: an entry under one block names no element, so only the
-/// unnamed component resolves the object's whole set. See `names_the_only_slot`.
-pub(super) fn block_refs_for<'a>(
-    shard: &'a ShardState,
-    model_id: &str,
-    object_key: &str,
-    component: Option<&str>,
-) -> Option<&'a [BlockLookupRef]> {
-    if !names_the_only_slot(component) {
-        return None;
-    }
-    object_block_refs(shard, model_id, object_key).map(BlockRefs::as_slice)
 }
 
 pub(super) fn next_block_index_for_object(

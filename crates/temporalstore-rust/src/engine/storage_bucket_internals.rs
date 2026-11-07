@@ -2558,7 +2558,7 @@ pub(super) fn release_bucket_blocks(
         let lookup_is_local = !lookup_established
             || bucket.block_index.iter().all(|(handle, block)| {
                 names.get(handle).is_some_and(|beside| {
-                    crate::engine::state::block_refs_for(shard, block.model_id().as_str(), beside, None)
+                    shard.bucket_index.block_refs_for(block.model_id().as_str(), beside, None)
                         .map(|refs| {
                             refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket)
                         })
@@ -2609,8 +2609,7 @@ pub(super) fn release_bucket_blocks(
         let block_count = dropped.len();
         if lookup_established {
             for (model_id, object_key) in &dropped {
-                crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, 
-                    model_id.as_str(),
+                shard.bucket_index.remove_object_block_lookup_entry(model_id.as_str(),
                     object_key,
                     // `None` -- the slot the lookup filed every block of this object under. The
                     // triple this walked used to carry `block.element_name` as its third term and the
@@ -4407,7 +4406,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
     // against the key. The old predicate retained a deleted block of the object and removed the
     // live ones, and the lookup names exactly the live ones -- so the set it hands back IS the set
     // that predicate removed.
-    let targets: Vec<(u32, u64)> = crate::engine::state::object_block_refs(shard, model_id.as_str(), object_key)
+    let targets: Vec<(u32, u64)> = shard.bucket_index.object_block_refs(model_id.as_str(), object_key)
         .map(|refs| {
             refs.iter()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
@@ -4885,8 +4884,7 @@ fn upsert_bucket_index_block_inner(
         match mine {
             Some(mine) => {
                 for block_ref in &mine {
-                    crate::engine::state::remove_object_block_lookup_ref_from_shard(shard, 
-                        entry.kind.as_str(),
+                    shard.bucket_index.remove_object_block_lookup_ref(entry.kind.as_str(),
                         &entry.object_key,
                         None,
                         block_ref,
@@ -4895,8 +4893,7 @@ fn upsert_bucket_index_block_inner(
                 Some(mine)
             }
             None => {
-                crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, 
-                    entry.kind.as_str(),
+                shard.bucket_index.remove_object_block_lookup_entry(entry.kind.as_str(),
                     &entry.object_key,
                     None,
                 );
@@ -4916,8 +4913,7 @@ fn upsert_bucket_index_block_inner(
         } else {
             None
         };
-        crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, 
-            entry.kind.as_str(),
+        shard.bucket_index.remove_object_block_lookup_entry(entry.kind.as_str(),
             &entry.object_key,
             None,
         );
@@ -5271,7 +5267,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             .copied()
             .collect::<BTreeSet<_>>()
     } else {
-        crate::engine::state::object_block_refs(shard, kind, object_key)
+        shard.bucket_index.object_block_refs(kind, object_key)
             .map(|block_refs| {
                 block_refs
                     .iter()
@@ -5356,7 +5352,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         // `names_the_only_slot(None)` is TRUE, so the un-filing ran then and runs now. Reading
         // that guard on its own suggests the opposite; the value the caller passes is what
         // decides, and dropping this would leave the lookup naming blocks just removed.
-        crate::engine::state::remove_object_block_lookup_entry_from_shard(shard, kind, object_key, None);
+        shard.bucket_index.remove_object_block_lookup_entry(kind, object_key, None);
     }
 
     let mut unique_addresses = BTreeMap::<
@@ -6399,7 +6395,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     // the bucket dirty on a published object.
     let mut live_targets: Vec<(u32, u64)> = Vec::new();
     for kind in super::storage_model_kinds() {
-        if let Some(refs) = crate::engine::state::object_block_refs(shard, kind, object_key) {
+        if let Some(refs) = shard.bucket_index.object_block_refs(kind, object_key) {
             live_targets.extend(
                 refs.iter()
                     .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key)),
