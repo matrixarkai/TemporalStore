@@ -245,7 +245,7 @@ fn no_production_signature_names_the_series_representation() {
     for path in &files {
         if path
             .components()
-            .any(|component| component.as_os_str() == "tests")
+            .any(|element_name| element_name.as_os_str() == "tests")
         {
             continue;
         }

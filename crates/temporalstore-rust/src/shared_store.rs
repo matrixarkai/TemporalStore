@@ -479,7 +479,7 @@ struct SharedStoreStagedBlockProto {
     /// `optional`, so a frame written for a whole-object block omits it and stays
     /// byte-identical to one written before this field existed.
     #[prost(string, optional, tag = "3")]
-    component: Option<String>,
+    element_name: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -4097,7 +4097,7 @@ fn encode_wal_proto_frame(
             .map(|block| SharedStoreStagedBlockProto {
                 object_id: block.object_id,
                 bytes: block.bytes.clone(),
-                component: block.component.as_deref().map(str::to_string),
+                element_name: block.element_name.as_deref().map(str::to_string),
             })
             .collect(),
         items: entry
@@ -4339,7 +4339,7 @@ fn wal_entry_from_parts(
                 object_id: block.object_id,
                 // Never defaulted: an absent element MEANS a whole-object block, and
                 // inventing one would make a string block claim to be an element.
-                component: block.component.map(std::sync::Arc::from),
+                element_name: block.element_name.map(std::sync::Arc::from),
                 bytes: block.bytes,
             })
             .collect(),
@@ -4456,7 +4456,7 @@ fn encode_wal_batch_container(
                 .map(|block| SharedStoreStagedBlockProto {
                     object_id: block.object_id,
                     bytes: block.bytes.clone(),
-                    component: block.component.as_deref().map(str::to_string),
+                    element_name: block.element_name.as_deref().map(str::to_string),
                 })
                 .collect(),
             items: entry
@@ -5568,7 +5568,7 @@ mod tests {
                     if let Some(address) = item.resolved_address() {
                         staged_blocks.push(crate::wal::StagedBlock {
                             object_id: item.object_id,
-                            component: item.component.as_deref().map(Arc::from),
+                            element_name: item.element_name.as_deref().map(Arc::from),
                             bytes: primary.block_store().read(&address).unwrap(),
                         });
                     }
@@ -5652,7 +5652,7 @@ mod tests {
             outcomes: vec![crate::wal::WalOutcomeItem {
                 kind: "string".to_string(),
                 object_key: key.to_string(),
-                component: None,
+                element_name: None,
                 object_id: crate::engine::hashing::stable_block_object_id(1, "string", key),
                 routing_bucket: 7,
                 address: None,
@@ -7895,8 +7895,8 @@ mod tests {
                                 object_id: item.object_id,
                                 // The outcome has named its element all along; the BLOCK is
                                 // what could not say so, and a read picks the block.
-                                component: item
-                                    .component
+                                element_name: item
+                                    .element_name
                                     .as_deref()
                                     .map(std::sync::Arc::from),
                                 bytes,
@@ -8026,8 +8026,8 @@ mod tests {
                     if let Ok(bytes) = primary.block_store().read(&address) {
                         carried.push(crate::wal::StagedBlock {
                             object_id: item.object_id,
-                            component: item
-                                .component
+                            element_name: item
+                                .element_name
                                 .as_deref()
                                 .map(std::sync::Arc::from),
                             bytes,
@@ -9334,7 +9334,7 @@ mod tests {
             }),
             staged_blocks: vec![crate::wal::StagedBlock {
                 object_id: 77,
-                component: None,
+                element_name: None,
                 bytes: b"derived-block-bytes".to_vec(),
             }],
                     outcomes: Vec::new(),
@@ -11530,7 +11530,7 @@ mod tests {
                         if let Ok(bytes) = primary.block_store().read(&address) {
                             carried.push(crate::wal::StagedBlock {
                                 object_id: item.object_id,
-                                component: item.component.as_deref().map(std::sync::Arc::from),
+                                element_name: item.element_name.as_deref().map(std::sync::Arc::from),
                                 bytes,
                             });
                         }

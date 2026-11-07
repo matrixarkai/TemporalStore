@@ -496,7 +496,7 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
 /// rust-internal: reads the engine's own placement functions, no product behaviour
 #[test]
 #[ignore = "seeds a container store; run by name"]
-fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_bucket() {
+fn routing_never_sees_the_element_name_which_is_why_a_containers_blocks_share_one_bucket() {
     // --- Against the functions themselves, at both widths. ---
     for end_routing_bucket in [WIDE_END, NARROW_END] {
         let key = "bag-000000";
@@ -1459,7 +1459,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
     #[derive(Default)]
     struct Walk {
         lengths: Vec<usize>,
-        components: Vec<usize>,
+        element_names: Vec<usize>,
         scattered: usize,
         objects: usize,
     }
@@ -1486,7 +1486,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
                 walk.objects += 1;
                 // A walk cannot stop before the end: it has no count to stop on.
                 walk.lengths.push(entries.len());
-                walk.components.push(positions.len());
+                walk.element_names.push(positions.len());
                 let first = *positions.first().expect("non-empty");
                 let last = *positions.last().expect("non-empty");
                 if last - first + 1 != positions.len() {
@@ -1509,12 +1509,12 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         let mut sorted = walk.lengths.clone();
         sorted.sort_unstable();
         let mean = sorted.iter().sum::<usize>() as f64 / sorted.len() as f64;
-        let blocks: usize = walk.components.iter().sum();
+        let blocks: usize = walk.element_names.iter().sum();
         let mean_blocks = blocks as f64 / walk.objects as f64;
         // What the shipped shape probes: the `One` arm is inline and probes nothing, the `Many`
         // arm bisects.
         let probes: f64 = walk
-            .components
+            .element_names
             .iter()
             .map(|n| if *n <= 1 { 0.0 } else { (*n as f64).log2().ceil() })
             .sum::<f64>()
@@ -1524,7 +1524,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
              examines p50 {} p90 {} p99 {} MAX {} mean {mean:.4} entries | the shipped lookup \
              probes {probes:.4} | {} of {} objects have their blocks SCATTERED through the list",
             walk.objects,
-            walk.components.iter().copied().max().unwrap_or(0),
+            walk.element_names.iter().copied().max().unwrap_or(0),
             pct(&sorted, 0.50),
             pct(&sorted, 0.90),
             pct(&sorted, 0.99),
@@ -1550,11 +1550,11 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         "the routed arm measured no objects, so every figure it reports is vacuous"
     );
     assert_eq!(
-        routed.components.iter().copied().max(),
+        routed.element_names.iter().copied().max(),
         Some(1),
         "the routed arm's widest object holds {:?} blocks; this population is defined by holding \
          one, and if it does not the two populations below are the same population",
-        routed.components.iter().copied().max()
+        routed.element_names.iter().copied().max()
     );
 
     // POPULATION TWO: containers on the same range -- a hundred blocks an object.
@@ -1569,11 +1569,11 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         walk
     };
     assert_eq!(
-        container.components.iter().copied().max(),
+        container.element_names.iter().copied().max(),
         Some(100),
         "the container arm's widest object holds {:?} blocks rather than 100, so it is not the \
          population it claims to be",
-        container.components.iter().copied().max()
+        container.element_names.iter().copied().max()
     );
 
     // NEITHER ARM ABOVE CAN ANSWER WHETHER AN OBJECT'S BLOCKS ARE CONTIGUOUS IN THE LIST, and

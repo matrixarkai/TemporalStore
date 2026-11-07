@@ -275,8 +275,8 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     };
 
     println!("[fold-hash] the {} block entries this object holds:", blocks.len());
-    for (handle, component, address) in &blocks {
-        println!("    handle {handle:>20}  component {component:<10}  address {address}");
+    for (handle, element_name, address) in &blocks {
+        println!("    handle {handle:>20}  component {element_name:<10}  address {address}");
     }
     assert_eq!(
         FIELDS,

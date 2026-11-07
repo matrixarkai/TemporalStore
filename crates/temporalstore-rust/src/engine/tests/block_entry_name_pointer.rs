@@ -262,7 +262,7 @@ struct MirrorAddressSixteenBitObject {
 #[allow(dead_code)]
 struct MirrorEntryBothOrdinals {
     model_id: StoredModelKind,
-    component: u16,
+    element_name: u16,
     address: MirrorAddressEightBitObject,
     dirty: bool,
     deleted: bool,
@@ -274,7 +274,7 @@ struct MirrorEntryBothOrdinals {
 #[repr(packed)]
 struct MirrorEntryBothOrdinalsPacked {
     model_id: StoredModelKind,
-    component: u16,
+    element_name: u16,
     address: MirrorAddressEightBitObject,
     dirty: bool,
     deleted: bool,
@@ -447,7 +447,7 @@ fn a_packed_entry_reads_its_address_by_value_because_a_borrow_of_it_is_undefined
     };
     let entry = MirrorEntryBothOrdinalsPacked {
         model_id: StoredModelKind::String,
-        component: 9,
+        element_name: 9,
         address: written,
         dirty: true,
         deleted: false,

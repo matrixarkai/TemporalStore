@@ -294,8 +294,8 @@ mod gated_corpus_across_a_store_boundary;
 mod write_after_fold;
 #[path = "tests/collapse_for_list.rs"]
 mod collapse_for_list;
-#[path = "tests/zset_component_drops_the_score.rs"]
-mod zset_component_drops_the_score;
+#[path = "tests/zset_element_name_drops_the_score.rs"]
+mod zset_element_name_drops_the_score;
 #[path = "tests/entry_width_at_each_step.rs"]
 mod entry_width_at_each_step;
 #[path = "tests/an_assigned_durable_id_defeats_ground_one_only.rs"]

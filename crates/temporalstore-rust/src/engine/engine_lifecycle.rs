@@ -389,7 +389,7 @@ pub(crate) mod restore_phase_probe {
 /// whether a test exercised the fallback at all -- a fallback nothing reaches is a fallback nothing
 /// has checked.
 static OUTCOME_NAME_FROM_BLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static OUTCOME_NAME_FROM_COMPONENT: std::sync::atomic::AtomicU64 =
+static OUTCOME_NAME_FROM_ELEMENT_NAME: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static OUTCOME_NAME_DISAGREED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -397,7 +397,7 @@ static OUTCOME_NAME_DISAGREED: std::sync::atomic::AtomicU64 = std::sync::atomic:
 pub fn outcome_element_name_sources() -> (u64, u64, u64) {
     (
         OUTCOME_NAME_FROM_BLOCK.load(std::sync::atomic::Ordering::Relaxed),
-        OUTCOME_NAME_FROM_COMPONENT.load(std::sync::atomic::Ordering::Relaxed),
+        OUTCOME_NAME_FROM_ELEMENT_NAME.load(std::sync::atomic::Ordering::Relaxed),
         OUTCOME_NAME_DISAGREED.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
@@ -405,7 +405,7 @@ pub fn outcome_element_name_sources() -> (u64, u64, u64) {
 /// Reset the three, so a test measures its own replays and not another test's.
 pub fn reset_outcome_element_name_sources() {
     OUTCOME_NAME_FROM_BLOCK.store(0, std::sync::atomic::Ordering::Relaxed);
-    OUTCOME_NAME_FROM_COMPONENT.store(0, std::sync::atomic::Ordering::Relaxed);
+    OUTCOME_NAME_FROM_ELEMENT_NAME.store(0, std::sync::atomic::Ordering::Relaxed);
     OUTCOME_NAME_DISAGREED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -463,8 +463,8 @@ impl OutcomeBlockElements {
     ) -> Option<Vec<String>> {
         match self {
             OutcomeBlockElements::Named(named) => {
-                if let Some(component) = item.component.as_deref() {
-                    if !named.iter().any(|(name, _)| name == component) {
+                if let Some(element_name) = item.element_name.as_deref() {
+                    if !named.iter().any(|(name, _)| name == element_name) {
                         OUTCOME_NAME_DISAGREED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return None;
                     }
@@ -481,9 +481,9 @@ impl OutcomeBlockElements {
                 Some(wanted)
             }
             OutcomeBlockElements::Unreadable(_) => {
-                let component = item.component.clone()?;
-                OUTCOME_NAME_FROM_COMPONENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(vec![component])
+                let element_name = item.element_name.clone()?;
+                OUTCOME_NAME_FROM_ELEMENT_NAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(vec![element_name])
             }
         }
     }
@@ -721,7 +721,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         model_id: &str,
         object_key: &str,
-        component: Option<&str>,
+        element_name: Option<&str>,
     ) -> Option<Vec<u8>> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
@@ -740,16 +740,16 @@ impl TemporalEngine {
         // engine no longer has. The index is still asked as a FALLBACK, because it is the door for
         // a kind that has no resident element map -- and because a caller naming a component for
         // such a kind should get the same answer it always did.
-        let address = match component {
-            Some(component) => {
-                super::state::resident_component_address(shard, model_id, object_key, component)
+        let address = match element_name {
+            Some(element_name) => {
+                super::state::resident_element_name_address(shard, model_id, object_key, element_name)
                     .cloned()
                     .or_else(|| {
                         super::bucket_store::bucket_index_block_address(
                             shard,
                             model_id,
                             object_key,
-                            Some(component),
+                            Some(element_name),
                         )
                     })?
             }
@@ -768,7 +768,7 @@ impl TemporalEngine {
             shard_id,
             &address,
             // The same three terms `bucket_index_block_address` was just asked, above.
-            BlockIdentity::of(shard_id, model_id, object_key, component),
+            BlockIdentity::of(shard_id, model_id, object_key, element_name),
             Some(routing_bucket),
         )
     }
@@ -1683,7 +1683,7 @@ impl TemporalEngine {
                 item.resolved_address(),
                 carried.iter().find(|block| {
                     block.object_id == item.object_id
-                        && block.component.as_deref() == item.component.as_deref()
+                        && block.element_name.as_deref() == item.element_name.as_deref()
                 }),
             ) {
                 if !matches!(self.block_store.read(&address), Ok(bytes) if bytes == block.bytes) {
@@ -1698,7 +1698,7 @@ impl TemporalEngine {
                         // Taken off the carried block rather than re-derived: this arm is
                         // installing the block the record carried, so the element it is
                         // installing is the one the record says it is.
-                        block.component.as_deref(),
+                        block.element_name.as_deref(),
                         Some(item.routing_bucket),
                         false,
                     ) {
@@ -1851,8 +1851,8 @@ impl TemporalEngine {
             } if written == spelling => {
                 let mut named = Vec::with_capacity(items.len());
                 for element in &items {
-                    match super::container_blocks::component_from_element_key(written, &element.key) {
-                        Some(component) => named.push((component, element.deleted)),
+                    match super::container_blocks::element_name_from_element_key(written, &element.key) {
+                        Some(element_name) => named.push((element_name, element.deleted)),
                         None => {
                             return OutcomeBlockElements::Unreadable(
                                 "a block key does not render back as a component",
@@ -1978,11 +1978,11 @@ impl TemporalEngine {
                 // block that names several. A tombstone block is written per removal and holds
                 // exactly one removed item; a frame naming two would mean one outcome stood for two
                 // removals, and dropping both from a record that recorded one is a guess.
-                let component = match removed.as_deref() {
+                let element_name = match removed.as_deref() {
                     Some([only]) => Some(only.clone()),
                     _ => None,
                 };
-                match (item.kind.as_str(), component.as_deref()) {
+                match (item.kind.as_str(), element_name.as_deref()) {
                     ("string", _) => {
                         super::mark_bucket_index_object_deleted(shard, &item.object_key);
                         shard.remove_string_row(item.object_key.as_str());
@@ -2000,7 +2000,7 @@ impl TemporalEngine {
                     }
                     ("set", Some(encoded)) => {
                         let Some(member) =
-                            super::container_blocks::member_from_component(encoded)
+                            super::container_blocks::member_from_element_name(encoded)
                         else {
                             return false;
                         };
@@ -2020,7 +2020,7 @@ impl TemporalEngine {
                     // does.
                     ("zset", Some(encoded)) => {
                         let Some(member) =
-                            super::container_blocks::member_from_component(encoded)
+                            super::container_blocks::member_from_element_name(encoded)
                         else {
                             return false;
                         };
@@ -2052,7 +2052,7 @@ impl TemporalEngine {
                         shard_id,
                         &item.kind,
                         &item.object_key,
-                        component.as_deref(),
+                        element_name.as_deref(),
                         false,
                         item.address.clone(),
                     );
@@ -2189,12 +2189,12 @@ impl TemporalEngine {
                 let (Some(address), Some(members)) = (item.resolved_address(), live.as_ref()) else {
                     return false;
                 };
-                for component in members {
-                    let Some(member) = super::container_blocks::member_from_component(component)
+                for element_name in members {
+                    let Some(member) = super::container_blocks::member_from_element_name(element_name)
                     else {
                         return false;
                     };
-                    let component = component.clone();
+                    let element_name = element_name.clone();
                     let address = address.clone();
                 // RECORDED, NOT AN EXCEPTION. This arm re-files the block in the bucket index
                 // before installing, so it goes through the ordinary recorded path. Hash's
@@ -2204,7 +2204,7 @@ impl TemporalEngine {
                         shard,
                         shard_id,
                         &item.object_key,
-                        Some(component),
+                        Some(element_name),
                         member,
                         address.clone(),
                         true,
@@ -2221,12 +2221,12 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                for component in positions {
-                    let Ok(biased) = u64::from_str_radix(component, 16) else {
+                for element_name in positions {
+                    let Ok(biased) = u64::from_str_radix(element_name, 16) else {
                         return false;
                     };
                     let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                    let component = component.clone();
+                    let element_name = element_name.clone();
                     let address = address.clone();
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
                 // filed the record twice, which a replay would then install twice -- the mirror
@@ -2236,7 +2236,7 @@ impl TemporalEngine {
                         shard,
                         shard_id,
                         &item.object_key,
-                        Some(component),
+                        Some(element_name),
                         sequence,
                         address.clone(),
                         true,
@@ -2273,12 +2273,12 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                for component in members {
-                    let Some(member) = super::container_blocks::member_from_component(component)
+                for element_name in members {
+                    let Some(member) = super::container_blocks::member_from_element_name(element_name)
                     else {
                         return false;
                     };
-                    let component = component.clone();
+                    let element_name = element_name.clone();
                     let address = address.clone();
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
                 // filed the record twice, which a replay would then install twice -- the mirror
@@ -2288,7 +2288,7 @@ impl TemporalEngine {
                         shard,
                         shard_id,
                         &item.object_key,
-                        Some(component),
+                        Some(element_name),
                         member,
                         (biased, address.clone()),
                         true,
@@ -2311,14 +2311,14 @@ impl TemporalEngine {
             | "context_summary"
             | "context_compression" => {
                 // No component on a removal means the whole series went, not one point of it.
-                if item.deleted && item.component.is_none() {
+                if item.deleted && item.element_name.is_none() {
                     // The kind is one of the six matched above, so a `false` here can only mean
                     // the key held no series -- which a removal has nothing to do about.
                     remove_timestamped_series(shard, &item.kind, &item.object_key);
                     super::mark_bucket_index_object_deleted(shard, &item.object_key);
                     return true;
                 }
-                let Some(component) = item.component.clone() else {
+                let Some(element_name) = item.element_name.clone() else {
                     return false;
                 };
                 // A TRIM STATES ITS BOUNDARY, not every point it dropped: one record stands for as
@@ -2327,7 +2327,7 @@ impl TemporalEngine {
                 // with it.
                 if item.deleted {
                     if let Some(through) = super::packed_blocks::timestamped_boundary_through(
-                        Some(component.as_str()),
+                        Some(element_name.as_str()),
                     ) {
                         let Some(instants) = timestamped_instants_through(
                             shard,
@@ -2363,7 +2363,7 @@ impl TemporalEngine {
                         return true;
                     }
                 }
-                let Ok(stored_key) = component.parse::<u64>() else {
+                let Ok(stored_key) = element_name.parse::<u64>() else {
                     return false;
                 };
                 if !item.deleted && item.address.is_none() {
@@ -2399,13 +2399,13 @@ impl TemporalEngine {
             // index that every windowed read goes through. Installing only the primary leaves a
             // shard whose events exist and whose time queries return nothing.
             "context_event" => {
-                let Some(component) = item.component.clone() else {
+                let Some(element_name) = item.element_name.clone() else {
                     return false;
                 };
-                if component.len() != 32 {
+                if element_name.len() != 32 {
                     return false;
                 }
-                let (timeline_hex, id_hex) = component.split_at(16);
+                let (timeline_hex, id_hex) = element_name.split_at(16);
                 let (Ok(timeline_key), Ok(event_id_hash)) = (
                     u64::from_str_radix(timeline_hex, 16),
                     u64::from_str_radix(id_hex, 16),
@@ -2490,12 +2490,12 @@ impl TemporalEngine {
                 true
             }
             "context_entity" => {
-                let (Some(address), Some(component)) =
-                    (item.resolved_address(), item.component.clone())
+                let (Some(address), Some(element_name)) =
+                    (item.resolved_address(), item.element_name.clone())
                 else {
                     return false;
                 };
-                let Ok(entity_hash) = component.parse::<u64>() else {
+                let Ok(entity_hash) = element_name.parse::<u64>() else {
                     return false;
                 };
                 shard
@@ -2506,7 +2506,7 @@ impl TemporalEngine {
                 true
             }
             "context_node" => {
-                let (Some(address), Some(field)) = (item.resolved_address(), item.component.clone())
+                let (Some(address), Some(field)) = (item.resolved_address(), item.element_name.clone())
                 else {
                     return false;
                 };
@@ -2537,12 +2537,12 @@ impl TemporalEngine {
             // result; replaying an increment twice is not, which is the whole reason the record
             // carries the total rather than the delta.
             "control_counter" => {
-                let (Some(bytes), Some(component)) = (item.value.as_ref(), item.component.clone())
+                let (Some(bytes), Some(element_name)) = (item.value.as_ref(), item.element_name.clone())
                 else {
                     return false;
                 };
                 let (Ok(bucket_ms), Ok(total)) = (
-                    component.parse::<u64>(),
+                    element_name.parse::<u64>(),
                     bytes.as_slice().try_into().map(i64::from_le_bytes),
                 ) else {
                     return false;
@@ -2557,11 +2557,11 @@ impl TemporalEngine {
             // A distinct member. Installed through the write path's own producer so the exact-set
             // and sketch representations are chosen the same way they were originally.
             "control_change" => {
-                let (Some(value), Some(component)) = (item.value.clone(), item.component.clone())
+                let (Some(value), Some(element_name)) = (item.value.clone(), item.element_name.clone())
                 else {
                     return false;
                 };
-                let Ok(bucket_ms) = component.parse::<u64>() else {
+                let Ok(bucket_ms) = element_name.parse::<u64>() else {
                     return false;
                 };
                 super::hll::record_change(shard, &item.object_key, bucket_ms, value);
@@ -2570,11 +2570,11 @@ impl TemporalEngine {
             // The value that won a first/last comparison. The winner is installed directly rather
             // than re-comparing against whatever this shard happens to hold.
             "control_selection" => {
-                let (Some(value), Some(component)) = (item.value.clone(), item.component.clone())
+                let (Some(value), Some(element_name)) = (item.value.clone(), item.element_name.clone())
                 else {
                     return false;
                 };
-                let selection_type = match component.as_str() {
+                let selection_type = match element_name.as_str() {
                     "first" => crate::types::ControlStateSelectionType::First,
                     "last" => crate::types::ControlStateSelectionType::Last,
                     _ => return false,
@@ -2865,8 +2865,8 @@ impl TemporalEngine {
                 let object_id = block.object_id(shard_id, beside.object_key);
                 // `None`: an entry names a block, not an element. See this function's doc for what
                 // that skips and why skipping is the safe direction.
-                let component = None;
-                let folded = super::block_in_wal::wal_resident_key(object_id, component);
+                let element_name = None;
+                let folded = super::block_in_wal::wal_resident_key(object_id, element_name);
                 let Some(placement) = shard.wal_resident_blocks.get(&folded) else {
                     continue;
                 };
@@ -2874,7 +2874,7 @@ impl TemporalEngine {
                     &self.block_store,
                     shard_id,
                     object_id,
-                    component,
+                    element_name,
                     placement.log_id,
                     placement.sequence,
                     &self.wal_store,
@@ -3117,7 +3117,7 @@ impl TemporalEngine {
                                 // that lost would be unreachable after the next reload.
                                 super::block_in_wal::wal_resident_key(
                                     block.object_id,
-                                    block.component.as_deref(),
+                                    block.element_name.as_deref(),
                                 ),
                                 crate::engine::state::WalResidentBlock {
                                     log_id,
@@ -3148,7 +3148,7 @@ impl TemporalEngine {
                             // The component VALUE is deliberately not printed: for a zset it is the
                             // member, which is caller data. Present-or-missing and its length localise
                             // the failure without putting a record key into an error string.
-                            let component = match item.component.as_deref() {
+                            let element_name = match item.element_name.as_deref() {
                                 None => "missing".to_string(),
                                 Some(value) => format!("present, {} chars", value.len()),
                             };
@@ -3174,7 +3174,7 @@ impl TemporalEngine {
                                     record.sequence,
                                     if item.resolved_address().is_some() { "resolved" } else { "UNRESOLVED" },
                                     block,
-                                    component
+                                    element_name
                                 ),
                             ));
                         }

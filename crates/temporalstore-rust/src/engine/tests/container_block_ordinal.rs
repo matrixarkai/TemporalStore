@@ -186,7 +186,7 @@ fn tombstone_blocks_of(
                 held.push((
                     bucket
                         .tombstone_element_at(&block.address)
-                        .map(|row| row.component.to_string()),
+                        .map(|row| row.element_name.to_string()),
                     block.address.block_id(),
                 ));
             }
@@ -257,15 +257,15 @@ fn resident_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<O
 ///
 /// The two layers of `Option` are kept and mean what they did: the outer is whether the object
 /// holds this element at all, the inner is whether its address carries an ordinal.
-fn ordinal_for_component(
+fn ordinal_for_element_name(
     engine: &TemporalEngine,
     kind: &str,
     key: &str,
-    component: &str,
+    element_name: &str,
 ) -> Option<Option<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    crate::engine::state::resident_component_address(shard, kind, key, component)
+    crate::engine::state::resident_element_name_address(shard, kind, key, element_name)
         .map(crate::block_store::ElementEntry::block_id)
 }
 
@@ -455,7 +455,7 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
 
     const REWRITES: usize = 5;
     let member = b"the-one-member".to_vec();
-    let component = hex::encode(&member);
+    let element_name = hex::encode(&member);
 
     // One element, written REWRITES times.
     for _ in 0..REWRITES {
@@ -475,7 +475,7 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
          measuring an overwrite",
         set_blocks.len()
     );
-    let set_ordinal = ordinal_for_component(&engine, "set", "cpo-ow-set", &component)
+    let set_ordinal = ordinal_for_element_name(&engine, "set", "cpo-ow-set", &element_name)
         .expect("the member's block is present");
 
     for i in 0..REWRITES {
@@ -495,7 +495,7 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
         "a hash of one field rewritten {REWRITES} times holds {} blocks, not 1",
         hash_blocks.len()
     );
-    let hash_ordinal = ordinal_for_component(&engine, "hash", "cpo-ow-hash", "the-one-field")
+    let hash_ordinal = ordinal_for_element_name(&engine, "hash", "cpo-ow-hash", "the-one-field")
         .expect("the field's block is present");
 
     println!(
@@ -635,8 +635,8 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     );
 
     // AND THE REUSED ORDINAL NAMES THE NEW MEMBER, because identity lives in the component.
-    let m9_component = crate::engine::execute_on_shard::zset_component(b"m9");
-    let reused = ordinal_for_component(&engine, "zset", key, &m9_component)
+    let m9_element_name = crate::engine::execute_on_shard::zset_element_name(b"m9");
+    let reused = ordinal_for_element_name(&engine, "zset", key, &m9_element_name)
         .expect("the new member is held");
     assert_eq!(
         reused,
@@ -651,9 +651,9 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     // component ended in `6d32` -- the hex of `m2` -- and [`blocks_of`]'s component column had
     // become a hardcoded `None`, so the filter matched nothing and the count was 0 for a reason
     // that had nothing to do with m2. Asked of `shard.zsets` it is a real question.
-    let m2_component = crate::engine::execute_on_shard::zset_component(b"m2");
+    let m2_element_name = crate::engine::execute_on_shard::zset_element_name(b"m2");
     assert!(
-        ordinal_for_component(&engine, "zset", key, &m2_component).is_none(),
+        ordinal_for_element_name(&engine, "zset", key, &m2_element_name).is_none(),
         "the DELETED member m2 is still held by the resident map, so the reuse above is two live \
          elements sharing one ordinal rather than one position being refilled"
     );
@@ -711,20 +711,20 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     );
     // The tombstone and the arrival differ in COMPONENT, which is where identity lives. If they
     // agreed, the tombstone would be saying the new member is gone.
-    let tombstoned_component = tombstoned
+    let tombstoned_element_name = tombstoned
         .iter()
         .find(|(_, ordinal)| *ordinal == Some(2))
-        .and_then(|(component, _)| component.clone())
+        .and_then(|(element_name, _)| element_name.clone())
         .expect("the tombstone at ordinal 2 names a component");
     assert_ne!(
-        m9_component, tombstoned_component,
+        m9_element_name, tombstoned_element_name,
         "the tombstone at ordinal 2 names the SAME component as the live arrival, so the blocks say \
          the arrival was removed"
     );
     assert_eq!(
-        m2_component, tombstoned_component,
-        "the tombstone at ordinal 2 names {tombstoned_component:?} and the member removed was \
-         {m2_component:?}, so the removal is recorded against the wrong element"
+        m2_element_name, tombstoned_element_name,
+        "the tombstone at ordinal 2 names {tombstoned_element_name:?} and the member removed was \
+         {m2_element_name:?}, so the removal is recorded against the wrong element"
     );
 }
 
@@ -752,7 +752,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
 ///
 /// rust-internal: drives SetAdd x4 then SetRemove, no external surface
 #[test]
-fn deletion_still_finds_its_element_by_component() {
+fn deletion_still_finds_its_element_by_element_name() {
     // ITS INSTRUMENT USED TO ASK WHICH ENTRY NAMES A COMPONENT, and no entry carries one, so it
     // reported every member as missing -- including ones that are present and served. It asks
     // `state::resident_component_address`, which is the door the allocator and the removal both
@@ -781,9 +781,9 @@ fn deletion_still_finds_its_element_by_component() {
     // TOMBSTONE records the component the write path files, which is the tagged spelling now. So
     // the live-set half of this test passed and the blocks half failed, which is precisely the
     // split the tombstone assertion was added to catch.
-    let doomed_component = crate::engine::execute_on_shard::set_component(doomed);
+    let doomed_element_name = crate::engine::execute_on_shard::set_element_name(doomed);
     assert!(
-        ordinal_for_component(&engine, "set", key, &doomed_component).is_some(),
+        ordinal_for_element_name(&engine, "set", key, &doomed_element_name).is_some(),
         "the member about to be deleted has no block, so the delete below would prove nothing"
     );
 
@@ -803,7 +803,7 @@ fn deletion_still_finds_its_element_by_component() {
         before.len(),
         resident_after.len(),
         after.len(),
-        if ordinal_for_component(&engine, "set", key, &doomed_component).is_none() {
+        if ordinal_for_element_name(&engine, "set", key, &doomed_element_name).is_none() {
             "gone"
         } else {
             "STILL PRESENT"
@@ -835,7 +835,7 @@ fn deletion_still_finds_its_element_by_component() {
         after.len()
     );
     assert!(
-        ordinal_for_component(&engine, "set", key, &doomed_component).is_none(),
+        ordinal_for_element_name(&engine, "set", key, &doomed_element_name).is_none(),
         "the deleted member is still held; deletion no longer finds its element by component"
     );
     // AND EXACTLY ONE TOMBSTONE, NAMING EXACTLY THAT COMPONENT.
@@ -853,9 +853,9 @@ fn deletion_still_finds_its_element_by_component() {
         tombstoned.len()
     );
     assert_eq!(
-        Some(doomed_component.clone()),
+        Some(doomed_element_name.clone()),
         tombstoned[0].0,
-        "the tombstone names component {:?} and the member deleted was {doomed_component:?}, so the \
+        "the tombstone names component {:?} and the member deleted was {doomed_element_name:?}, so the \
          removal is recorded against the wrong element",
         tombstoned[0].0
     );
@@ -864,7 +864,7 @@ fn deletion_still_finds_its_element_by_component() {
             continue;
         }
         assert!(
-            ordinal_for_component(&engine, "set", key, &hex::encode(member)).is_some(),
+            ordinal_for_element_name(&engine, "set", key, &hex::encode(member)).is_some(),
             "member {i} was removed by a delete that named a different member"
         );
     }
@@ -1073,15 +1073,15 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
         "the fixture member is not actually at the ceiling, so nothing below is at the boundary"
     );
     let resident_member = b"already-at-the-ceiling".to_vec();
-    let resident_component = hex::encode(&resident_member);
+    let resident_element_name = hex::encode(&resident_member);
     shard
         .sets
         .insert_element_for_test(key, resident_member.clone(), at_ceiling.clone());
 
     // A NEW member of the same object: one past the ceiling.
-    let fresh_component = hex::encode(b"a-brand-new-member");
+    let fresh_element_name = hex::encode(b"a-brand-new-member");
     let assigned =
-        crate::engine::state::container_block_ordinal(&shard, kind, key, &fresh_component);
+        crate::engine::state::container_block_ordinal(&shard, kind, key, &fresh_element_name);
     println!(
         "\n=== ceiling === a member at {MAX_ADDRESSABLE_BLOCK_ID} is held; the next new member is \
          assigned {assigned} (saturating would say {MAX_ADDRESSABLE_BLOCK_ID})"
@@ -1100,7 +1100,7 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
 
     // AND THE EXISTING MEMBER STILL ANSWERS ITS OWN ORDINAL, at the ceiling, unharmed.
     let held =
-        crate::engine::state::container_block_ordinal(&shard, kind, key, &resident_component);
+        crate::engine::state::container_block_ordinal(&shard, kind, key, &resident_element_name);
     assert_eq!(
         u64::from(held),
         MAX_ADDRESSABLE_BLOCK_ID,

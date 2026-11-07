@@ -466,8 +466,8 @@ pub(crate) fn every_result_can_be_found_again(
             || item.value.as_ref().map(|value| !value.is_empty()).unwrap_or(false)
             || blocks.iter().any(|block| {
                 block.object_id == item.object_id
-                    && (block.component.as_deref() == item.component.as_deref()
-                        || block.component.is_none())
+                    && (block.element_name.as_deref() == item.element_name.as_deref()
+                        || block.element_name.is_none())
             })
     })
 }
@@ -477,11 +477,11 @@ mod every_result_can_be_found_again_tests {
     use super::{every_result_can_be_found_again, StagedBlock, WalOutcomeItem};
 
     /// A result that names an address and states nothing about itself.
-    fn names_only_an_address(object_id: u64, component: &str) -> WalOutcomeItem {
+    fn names_only_an_address(object_id: u64, element_name: &str) -> WalOutcomeItem {
         WalOutcomeItem {
             kind: "page".to_string(),
             object_key: format!("object/{object_id}"),
-            component: Some(component.to_string()),
+            element_name: Some(element_name.to_string()),
             object_id,
             routing_bucket: 7,
             address: None,
@@ -492,10 +492,10 @@ mod every_result_can_be_found_again_tests {
         }
     }
 
-    fn block_for(object_id: u64, component: &str) -> StagedBlock {
+    fn block_for(object_id: u64, element_name: &str) -> StagedBlock {
         StagedBlock {
             object_id,
-            component: Some(std::sync::Arc::from(component)),
+            element_name: Some(std::sync::Arc::from(element_name)),
             bytes: vec![b'p'; 8],
         }
     }
@@ -763,7 +763,7 @@ pub struct WalOutcomeItem {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub component: Option<String>,
+    pub element_name: Option<String>,
     #[serde(rename = "i", alias = "object_id")]
     pub object_id: u64,
     #[serde(rename = "b", alias = "routing_bucket")]
@@ -880,7 +880,7 @@ pub struct StagedBlock {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub component: Option<std::sync::Arc<str>>,
+    pub element_name: Option<std::sync::Arc<str>>,
     /// The block contents.
     ///
     /// Carried beside the document when that is smaller, and encoded into it otherwise -- the same
@@ -5776,7 +5776,7 @@ mod tests {
             WalOutcomeItem {
                 kind: "string".to_string(),
                 object_key: format!("ingest-00042/{index}"),
-                component: None,
+                element_name: None,
                 object_id: 1000 + index as u64,
                 routing_bucket: 7,
                 address: None,
@@ -7059,7 +7059,7 @@ mod tests {
                     outcomes: vec![WalOutcomeItem {
                         kind: "string".to_string(),
                         object_key: KEY.to_string(),
-                        component: None,
+                        element_name: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
                             1, "string", KEY,
                         ),
@@ -8954,7 +8954,7 @@ mod tests {
                     .map(|index| WalOutcomeItem {
                         kind: "string".to_string(),
                         object_key: format!("batch-key-{index:09}"),
-                        component: None,
+                        element_name: None,
                         object_id: index as u64,
                         routing_bucket: index as u32,
                         address: None,
@@ -10927,7 +10927,7 @@ mod tests {
             metadata: None,
             staged_blocks: vec![StagedBlock {
                 object_id: 7,
-                component: None,
+                element_name: None,
                 bytes: block.clone(),
             }],
             outcomes: Vec::new(),

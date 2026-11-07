@@ -797,7 +797,7 @@ impl Reading {
 struct KeySlots {
     kind: String,
     object_key: String,
-    component: String,
+    element_name: String,
     block_slab_id: String,
     offset: String,
     length: String,
@@ -823,14 +823,14 @@ fn split_written_key(key: &str) -> KeySlots {
     let rest = from_left.next().unwrap_or_default();
     // The component slot is the LAST colon-separated run of the head's tail, and the object key is
     // everything before it -- so an object key holding a colon stays in one slot.
-    let (object_key, component) = match rest.rfind(':') {
+    let (object_key, element_name) = match rest.rfind(':') {
         Some(at) => (rest[..at].to_string(), rest[at + 1..].to_string()),
         None => (rest.to_string(), String::new()),
     };
     let slots = KeySlots {
         kind,
         object_key,
-        component,
+        element_name,
         block_slab_id,
         offset,
         length,
@@ -841,7 +841,7 @@ fn split_written_key(key: &str) -> KeySlots {
         "{}:{}:{}:{}:{}:{}:{}:{}",
         slots.kind,
         slots.object_key,
-        slots.component,
+        slots.element_name,
         slots.block_slab_id,
         slots.offset,
         slots.length,
@@ -1062,7 +1062,7 @@ fn walk(reading: &Reading) -> Walked {
             let slots = split_written_key(block_key);
             tally.add("block/map_key/kind", slots.kind.len(), 0);
             tally.add("block/map_key/object_key", slots.object_key.len(), 0);
-            tally.add("block/map_key/component_slot", slots.component.len(), 0);
+            tally.add("block/map_key/component_slot", slots.element_name.len(), 0);
             tally.add("block/map_key/block_slab_id", slots.block_slab_id.len(), 0);
             tally.add("block/map_key/offset", slots.offset.len(), 0);
             tally.add("block/map_key/length", slots.length.len(), 0);
@@ -1398,10 +1398,10 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                     Candidate::BlockKeyDropsTheEmptySlot => {
                         let slots = split_written_key(block_key);
                         assert!(
-                            slots.component.is_empty(),
+                            slots.element_name.is_empty(),
                             "[CLAUSE empty-slot-is-empty] the component slot of `{block_key}` holds \
                              `{}`, so dropping it would drop a term rather than a hole",
-                            slots.component
+                            slots.element_name
                         );
                         format!(
                             "{}:{}:{}:{}:{}:{}:{}",
@@ -2425,7 +2425,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
                 "{}:{}:{}:{}:{}:{}:{}:{}",
                 slots.kind,
                 object_key,
-                slots.component,
+                slots.element_name,
                 slots.block_slab_id,
                 slots.offset,
                 slots.length,

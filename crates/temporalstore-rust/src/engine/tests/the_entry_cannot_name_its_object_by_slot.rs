@@ -252,7 +252,7 @@ struct OrdinalEntry {
     _routing_bucket: u32,
     _object_ordinal: u32,
     _model_id: StoredModelKind,
-    _component: Option<Arc<str>>,
+    _element_name: Option<Arc<str>>,
     _address: ElementEntry,
     _dirty: bool,
     _deleted: bool,
@@ -300,7 +300,7 @@ fn ordinal_entry_field_sum() -> usize {
         _routing_bucket: 0,
         _object_ordinal: 0,
         _model_id: StoredModelKind::String,
-        _component: None,
+        _element_name: None,
         _address: an_address(),
         _dirty: false,
         _deleted: false,
@@ -309,7 +309,7 @@ fn ordinal_entry_field_sum() -> usize {
         + std::mem::size_of_val(&probe._routing_bucket)
         + std::mem::size_of_val(&probe._object_ordinal)
         + std::mem::size_of_val(&probe._model_id)
-        + std::mem::size_of_val(&probe._component)
+        + std::mem::size_of_val(&probe._element_name)
         + std::mem::size_of_val(&probe._address)
         + std::mem::size_of_val(&probe._dirty)
         + std::mem::size_of_val(&probe._deleted)
@@ -525,7 +525,7 @@ fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
                 _routing_bucket: u32,
                 _object_ordinal: $width,
                 _model_id: StoredModelKind,
-                _component: Option<Arc<str>>,
+                _element_name: Option<Arc<str>>,
                 _address: ElementEntry,
                 _dirty: bool,
                 _deleted: bool,

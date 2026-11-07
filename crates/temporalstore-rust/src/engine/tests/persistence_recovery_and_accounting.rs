@@ -4740,7 +4740,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 /// shape is being used. A structure that silently spilled every time would measure identically
 /// from the outside and cost an allocation each, so the arm is asserted directly.
 #[test]
-fn single_block_components_are_held_inline() {
+fn single_block_element_names_are_held_inline() {
     use crate::engine::state::{BlockLookupRef, BlockRefs};
 
     let dir = tempfile::tempdir().unwrap();
@@ -8117,7 +8117,7 @@ fn dirty_bucket_count_matches_the_unshortened_scan() {
 /// inserts, superseding overwrites that remove block refs, hash fields with components, expiries
 /// and deletes, then compares the maintained value against the sum it is meant to equal.
 #[test]
-fn maintained_component_block_ref_total_matches_the_walk() {
+fn maintained_element_name_block_ref_total_matches_the_walk() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -8198,7 +8198,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
         .sum();
     let maintained = shard
         .bucket_index
-        .object_component_block_refs
+        .object_element_name_block_refs
         .expect("the total should be established once the lookup has been built");
     assert!(walked > 0, "workload produced no component block refs to compare");
     assert_eq!(
@@ -8862,7 +8862,7 @@ fn a_carried_block_is_what_reaches_the_log_record() {
 
     let carried = vec![crate::wal::StagedBlock {
         object_id: 4242,
-        component: None,
+        element_name: None,
         bytes: b"pages-from-somewhere-else".to_vec(),
     }];
     let write = engine.execute_with_carried_blocks(
@@ -11465,7 +11465,7 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
 /// saving and, more importantly, that the round trip is unchanged -- a smaller encoding that
 /// loses a key is not a saving.
 #[test]
-fn a_numeric_component_travels_as_a_number_and_returns_intact() {
+fn a_numeric_element_name_travels_as_a_number_and_returns_intact() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -15780,7 +15780,7 @@ fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
-fn does_a_write_cost_track_an_objects_component_count() {
+fn does_a_write_cost_track_an_objects_element_name_count() {
     let canary = crate::alloc_probe::Probe::start();
     let sink: Vec<u8> = Vec::with_capacity(8192);
     assert!(

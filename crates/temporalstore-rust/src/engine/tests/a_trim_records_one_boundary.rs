@@ -264,10 +264,10 @@ fn a_boundary_record_replays_to_the_same_series() {
 /// The spelling is the contract between the writer and the apply path, and it is what makes an
 /// older build DECLINE the record instead of mis-reading it.
 #[test]
-fn a_boundary_component_is_not_read_as_an_instant() {
+fn a_boundary_element_name_is_not_read_as_an_instant() {
     assert_eq!(
         packed_blocks::timestamped_boundary_through(Some(
-            &packed_blocks::timestamped_boundary_component(42)
+            &packed_blocks::timestamped_boundary_element_name(42)
         )),
         Some(42),
         "a boundary component has to round trip"
@@ -286,11 +286,11 @@ fn a_boundary_component_is_not_read_as_an_instant() {
     // whole-series removal would delete a LIVE series, which is why the boundary is spelled into
     // the component rather than left out of it.
     assert!(
-        !packed_blocks::timestamped_boundary_component(42).is_empty(),
+        !packed_blocks::timestamped_boundary_element_name(42).is_empty(),
         "a boundary record must carry a component"
     );
     assert!(
-        packed_blocks::timestamped_boundary_component(42).parse::<u64>().is_err(),
+        packed_blocks::timestamped_boundary_element_name(42).parse::<u64>().is_err(),
         "an older build must FAIL to read a boundary as an instant, not read it as a different one"
     );
 }

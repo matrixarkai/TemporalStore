@@ -5933,7 +5933,7 @@ fn what_one_hash_field_write_allocates() {
     }
     let counter_counts = counter_probe.stop();
     println!();
-    println!("  {OBJECTS} control-state increments (through stage_component_outcome), warmed first");
+    println!("  {OBJECTS} control-state increments (through stage_element_name_outcome), warmed first");
     println!("    allocations      : {}", counter_counts.allocs);
     println!(
         "    allocations/write: {:.2}",

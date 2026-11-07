@@ -729,8 +729,10 @@ impl serde::Serialize for SummaryNamed<'_> {
 pub struct StoragePhysicalBlockIndex {
     pub object_key: String,
     pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub component: Option<String>,
+    /// Published under the key `component`, which is what every consumer of this report reads. The
+    /// Rust field is the element name; the key is the contract and does not move with it.
+    #[serde(rename = "component", default, skip_serializing_if = "Option::is_none")]
+    pub element_name: Option<String>,
     #[serde(rename = "routing_slot")]
     pub routing_bucket: u32,
     #[serde(rename = "block_segment_id", alias = "page_segment_id")]

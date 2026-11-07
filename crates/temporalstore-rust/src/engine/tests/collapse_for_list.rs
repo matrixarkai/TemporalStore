@@ -920,7 +920,7 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     let score_bytes: [u8; 8] = 0x0123_4567_89ab_cdefu64.to_be_bytes();
     let mut block_key = score_bytes.to_vec();
     block_key.extend_from_slice(&member);
-    let rendered = crate::engine::container_blocks::component_from_element_key(
+    let rendered = crate::engine::container_blocks::element_name_from_element_key(
         crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
         &block_key,
     )

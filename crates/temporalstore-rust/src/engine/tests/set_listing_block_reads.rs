@@ -211,8 +211,8 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
                     if item.deleted {
                         continue;
                     }
-                    if let Some(component) =
-                        crate::engine::container_blocks::component_from_element_key(
+                    if let Some(element_name) =
+                        crate::engine::container_blocks::element_name_from_element_key(
                             spelling, &item.key,
                         )
                     {
@@ -222,7 +222,7 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
                         // component: the payload members came back empty and the equality below
                         // failed against a listing that was perfectly correct.
                         if let Some(member) =
-                            crate::engine::container_blocks::member_from_component(&component)
+                            crate::engine::container_blocks::member_from_element_name(&element_name)
                         {
                             stated.insert(member);
                         }
@@ -536,7 +536,7 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 ///
 /// rust-internal: reads the engine's own block index and block store over a seeded store
 #[test]
-fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
+fn every_member_a_set_listing_returns_is_already_spelled_by_its_element_name() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -573,7 +573,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         let (pairs, named) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let walk = crate::engine::bucket_store::bucket_index_component_block_addresses(
+            let walk = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
                 shard, "set", &key,
             );
             let named = walk.iter().filter(|(c, _)| c.is_some()).count();
@@ -651,7 +651,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
     let folded_pairs = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        crate::engine::bucket_store::bucket_index_component_block_addresses(
+        crate::engine::bucket_store::bucket_index_element_name_block_addresses(
             shard,
             "set",
             &folded_key,
@@ -845,9 +845,9 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         // decoded into members; it is reported so that the reason this arm changed shape is a
         // number in the output and not only a paragraph above.
         let named =
-            crate::engine::bucket_store::bucket_index_component_block_addresses(shard, "set", &key)
+            crate::engine::bucket_store::bucket_index_element_name_block_addresses(shard, "set", &key)
                 .iter()
-                .filter(|(component, _)| component.is_some())
+                .filter(|(element_name, _)| element_name.is_some())
                 .count();
         println!("\n=== after a removal and a reconcile against a snapshot that predates it ===");
         println!("  index walk pairs carrying a member name: {named}");

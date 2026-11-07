@@ -190,7 +190,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
 /// A free-standing entry at a FIXED address, whose object id is the one the engine would compute
 /// for it. Taken from `stable_block_object_id` rather than invented, so a comparison between two of
 /// these is about the field that differs and the id that follows from it.
-fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockIndex) {
+fn entry_named(object_key: &str, element_name: Option<&str>) -> (Arc<str>, BlockIndex) {
     let object_id = stable_block_object_id(1, FIXTURE_KIND.as_str(), object_key);
     (
         Arc::from(object_key),
@@ -224,27 +224,27 @@ fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockInd
 #[test]
 fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     // --- 1. FROM THE AUTHORITY, WITH THE EXPECTATION DERIVED. ---
-    let components: Vec<String> = (0..MEMBERS_PER_KEY).map(|f| format!("f{f}")).collect();
+    let element_names: Vec<String> = (0..MEMBERS_PER_KEY).map(|f| format!("f{f}")).collect();
     assert!(
-        components.len() > 1,
+        element_names.len() > 1,
         "DENOMINATOR: {} component(s) generated. One id out of one component is arithmetic \
          rather than a collapse, and every row below would be vacuous",
-        components.len()
+        element_names.len()
     );
     // The id no longer TAKES a component, so the component is varied by asking once per
     // component and counting how many DISTINCT answers come back.
-    let folded: BTreeSet<u64> = components
+    let folded: BTreeSet<u64> = element_names
         .iter()
         .map(|_| stable_block_object_id(1, FIXTURE_KIND.as_str(), "h0"))
         .collect();
     println!(
         "\n=== stable_block_object_id over ONE key and {} components ===",
-        components.len()
+        element_names.len()
     );
     println!(
         "  distinct ids: {} over {} components",
         folded.len(),
-        components.len()
+        element_names.len()
     );
     assert_eq!(
         1,
@@ -252,7 +252,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
         "one key and {} distinct components produced {} distinct ids, not 1. The component has \
          left the identity, so every element of this key is the SAME object and a \
          component-blind reader can be served by the id rather than only by the key",
-        components.len(),
+        element_names.len(),
         folded.len()
     );
     // AND THE TERMS THAT REMAIN STILL SEPARATE, or the assertion above would also pass for a
@@ -497,7 +497,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
 ///
 /// rust-internal: drives one index read over a seeded store
 #[test]
-fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
+fn the_whole_object_read_path_asks_for_every_element_name_of_one_key() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = identity_engine(dir.path());
     load_operator_shard(&engine);
@@ -507,12 +507,12 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
     let shard = shards.get(&1).expect("shard is loaded");
 
     println!(
-        "\n=== bucket_index_component_block_addresses over {CONTAINER_KEYS} container keys ==="
+        "\n=== bucket_index_element_name_block_addresses over {CONTAINER_KEYS} container keys ==="
     );
     let mut answered = 0usize;
     for k in 0..CONTAINER_KEYS {
         let object_key = format!("h{k}");
-        let pairs = crate::engine::bucket_store::bucket_index_component_block_addresses(
+        let pairs = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
             shard,
             FIXTURE_KIND.as_str(),
             &object_key,

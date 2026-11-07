@@ -106,14 +106,14 @@ pub(super) struct IndexWalk {
     /// The same names charged once per ENTRY rather than once per allocation -- what a walk with
     /// no set of seen pointers would charge.
     pub(super) key_request_per_entry: u64,
-    pub(super) component_allocs: u64,
-    pub(super) component_request: u64,
-    pub(super) component_request_per_entry: u64,
+    pub(super) element_name_allocs: u64,
+    pub(super) element_name_request: u64,
+    pub(super) element_name_request_per_entry: u64,
     /// Distinct key allocations whose strong count exceeds the number of index entries holding
     /// them -- that is, which something OUTSIDE this index also owns.
     pub(super) keys_held_outside: u64,
     /// The same census for component names.
-    pub(super) components_held_outside: u64,
+    pub(super) element_names_held_outside: u64,
     /// Block-list length histogram over the `Many` arms: length -> how many buckets.
     pub(super) list_lengths: BTreeMap<usize, u64>,
     /// The REQUEST size of every allocation the block index owns, one entry per allocation.
@@ -141,7 +141,7 @@ impl IndexWalk {
 
     /// Everything the containers hold out of line that the entry width excludes.
     pub(super) fn out_of_line_request(&self) -> u64 {
-        self.key_request.saturating_add(self.component_request)
+        self.key_request.saturating_add(self.element_name_request)
     }
 
     pub(super) fn percentile(&self, q: f64) -> usize {
@@ -173,7 +173,7 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
     // Distinct allocations, by DATA POINTER. Two entries of one object share one allocation and it
     // must be charged once, which is exactly what a per-entry charge gets wrong.
     let mut seen_keys: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-    let mut seen_components: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    let mut seen_element_names: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
     let pair_stride = std::mem::size_of::<(u64, BlockIndex)>() as u64;
     let entry_width = std::mem::size_of::<BlockIndex>() as u64;
 
@@ -478,10 +478,10 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     seen.key_request,
                     seen.key_request_per_entry,
                     seen.keys_held_outside,
-                    seen.component_allocs,
-                    seen.component_request,
-                    seen.component_request_per_entry,
-                    seen.components_held_outside
+                    seen.element_name_allocs,
+                    seen.element_name_request,
+                    seen.element_name_request_per_entry,
+                    seen.element_names_held_outside
                 );
                 println!(
                     "  nodes inline {} B, block heap at capacity {} B, out of line {} B",

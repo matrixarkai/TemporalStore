@@ -69,12 +69,12 @@ use crate::alloc_probe::Probe;
 struct NameSpread {
     object_key: BTreeMap<usize, usize>,
     model_id: BTreeMap<usize, usize>,
-    component: BTreeMap<usize, usize>,
+    element_name: BTreeMap<usize, usize>,
     /// Buckets keyed by blocks held, so the container case can be asserted reached.
     blocks_held: BTreeMap<usize, usize>,
     /// Buckets whose every block carries the SAME component, counted separately: a bucket holding
     /// one block trivially does, and a claim built on those would be vacuous.
-    multi_block_buckets_with_one_component: usize,
+    multi_block_buckets_with_one_element_name: usize,
     multi_block_buckets: usize,
 }
 
@@ -106,7 +106,7 @@ impl NameSpread {
         for (name, map) in [
             ("object_key", &self.object_key),
             ("model_id", &self.model_id),
-            ("component", &self.component),
+            ("component", &self.element_name),
         ] {
             let buckets = self.buckets();
             let multi = Self::buckets_with_more_than_one(map);
@@ -128,7 +128,7 @@ impl NameSpread {
         }
         println!(
             "  multi-block buckets = {}, of which all-one-component = {}",
-            self.multi_block_buckets, self.multi_block_buckets_with_one_component
+            self.multi_block_buckets, self.multi_block_buckets_with_one_element_name
         );
     }
 }
@@ -145,7 +145,7 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut keys: BTreeSet<&str> = BTreeSet::new();
         let mut models: BTreeSet<&str> = BTreeSet::new();
-        let mut components: BTreeSet<Option<&str>> = BTreeSet::new();
+        let mut element_names: BTreeSet<Option<&str>> = BTreeSet::new();
         let mut held = 0usize;
         for (handle, block) in bucket.block_index.iter() {
             held += 1;
@@ -153,16 +153,16 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
             models.insert(block.model_id().as_str());
             // Every entry's name is the same absence, so this set holds one member for any
             // non-empty bucket. The histogram it feeds is restated where it is read.
-            components.insert(None::<&str>);
+            element_names.insert(None::<&str>);
         }
         *spread.blocks_held.entry(held).or_default() += 1;
         *spread.object_key.entry(keys.len()).or_default() += 1;
         *spread.model_id.entry(models.len()).or_default() += 1;
-        *spread.component.entry(components.len()).or_default() += 1;
+        *spread.element_name.entry(element_names.len()).or_default() += 1;
         if held > 1 {
             spread.multi_block_buckets += 1;
-            if components.len() == 1 {
-                spread.multi_block_buckets_with_one_component += 1;
+            if element_names.len() == 1 {
+                spread.multi_block_buckets_with_one_element_name += 1;
             }
         }
     }
@@ -360,11 +360,11 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
     // would still refute hoisting, but it would not be the structure this engine actually has.
     for (index, spread) in wide_container.iter().chain(narrow_container.iter()).enumerate() {
         assert_eq!(
-            0, spread.multi_block_buckets_with_one_component,
+            0, spread.multi_block_buckets_with_one_element_name,
             "container arm {index}: {} multi-block buckets hold ONE distinct component; every block \
              of a container is a distinct field, member or element, so a bucket whose blocks shared \
              a component would mean the component had stopped telling blocks apart",
-            spread.multi_block_buckets_with_one_component
+            spread.multi_block_buckets_with_one_element_name
         );
         assert!(
             spread.multi_block_buckets > 0,
@@ -372,10 +372,10 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
              anything about whether a name is shared ACROSS blocks -- it would be vacuous"
         );
         assert!(
-            NameSpread::widest(&spread.component) >= 100,
+            NameSpread::widest(&spread.element_name) >= 100,
             "container arm {index}: the widest bucket holds {} distinct components; the fixture is \
              supposed to reach the container case where the per-block entry dominates at 52x",
-            NameSpread::widest(&spread.component)
+            NameSpread::widest(&spread.element_name)
         );
     }
 
@@ -679,7 +679,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
     fn block(
         key: &str,
         model: &str,
-        component: Option<&str>,
+        element_name: Option<&str>,
         slab: u64,
         offset: u64,
         length: u64,
@@ -1193,7 +1193,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
             // than by editing `Some("f0")` to `None`. Editing the table would destroy the record
             // and leave this arm asserting that an index with no element name loads as one with no
             // element name, which is a statement about nothing.
-            .map(|(key, model, _component, slab, offset, length, dirty, deleted, _log_backed)| {
+            .map(|(key, model, _element_name, slab, offset, length, dirty, deleted, _log_backed)| {
                 (
                     (*key).to_string(),
                     (*model).to_string(),

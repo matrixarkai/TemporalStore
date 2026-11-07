@@ -1022,7 +1022,7 @@ pub(super) struct CoreIndex {
     /// one. The decoder sets it to zero before it files a single block and lets each filing count,
     /// which is the same bargain `rebuild_object_block_lookup` makes -- a count that starts at
     /// "unknown" cannot be incremented into a right answer.
-    pub(super) object_component_block_refs: Option<usize>,
+    pub(super) object_element_name_block_refs: Option<usize>,
     /// Buckets whose block list has been released: present in `bucket_map`, `in_memory: false`,
     /// `block_index` empty, reloadable from the model maps on demand.
     ///
@@ -1085,7 +1085,7 @@ impl Default for CoreIndex {
             object_block_lookup: ObjectBlockLookup::default(),
             objects: BTreeMap::default(),
             kind_pool: std::collections::HashSet::default(),
-            object_component_block_refs: Some(0),
+            object_element_name_block_refs: Some(0),
             released_buckets: BTreeSet::default(),
         }
     }
@@ -1221,7 +1221,7 @@ impl<'de> Deserialize<'de> for CoreIndex {
                 // restatement rather than a second mechanism: both write the same zero, and
                 // `impl Default for CoreIndex` carries the argument for why a site list cannot be
                 // relied on to.
-                index.object_component_block_refs = Some(0);
+                index.object_element_name_block_refs = Some(0);
                 for (routing_bucket, decoded) in buckets.unwrap_or_default() {
                     for (handle, object_key) in &decoded.block_keys {
                         // THE BLOCK IS LOOKED UP BY THE HANDLE IT WAS FILED UNDER rather than
@@ -5087,8 +5087,8 @@ const _: () = assert!(std::mem::size_of::<((u8, Arc<str>), BlockRefs)>() == 48);
 /// Spelled once, because the consequence of the three callers drifting apart on it is not a bigger
 /// index: a `Some` that started hitting would serve an object's whole block as the answer to a
 /// field lookup that has always, correctly, found nothing.
-fn names_the_only_slot(component: Option<&str>) -> bool {
-    component.is_none()
+fn names_the_only_slot(element_name: Option<&str>) -> bool {
+    element_name.is_none()
 }
 
 impl ObjectBlockLookup {
@@ -5255,7 +5255,7 @@ impl From<ObjectBlockLookup> for BTreeMap<String, BlockRefs> {
         let mut flat = BTreeMap::new();
         for (model, objects) in nested.by_model {
             for (object, refs) in objects {
-                flat.insert(object_component_lookup_key(&model, &object), refs);
+                flat.insert(object_element_name_lookup_key(&model, &object), refs);
             }
         }
         flat
@@ -6227,7 +6227,10 @@ pub(super) struct BucketNode {
 pub(super) struct TombstoneElement {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    pub(super) component: Arc<str>,
+    /// Stored under the key `component`: this row is written into the index dump, and a dump an
+    /// earlier build wrote must still read. The Rust field is the element name; the key stays.
+    #[serde(rename = "component")]
+    pub(super) element_name: Arc<str>,
     #[serde(rename = "block", alias = "page")]
     pub(super) block: (u64, u64, u64),
 }
@@ -6530,14 +6533,14 @@ impl BucketNode {
         &mut self,
         object_key: &Arc<str>,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-        component: &str,
+        element_name: &str,
         address: &ElementEntry,
     ) {
         let block = tombstone_block_key(address);
         if let Some(row) = self.tombstone_elements.iter_mut().find(|row| {
             row.model_id == model_id
                 && &*row.object_key == &**object_key
-                && &*row.component == component
+                && &*row.element_name == element_name
         }) {
             row.block = block;
             return;
@@ -6546,7 +6549,7 @@ impl BucketNode {
             // CLONING A HANDLE, NOT COPYING CHARACTERS. This was `Arc::from(object_key)`.
             object_key: Arc::clone(object_key),
             model_id,
-            component: Arc::from(component),
+            element_name: Arc::from(element_name),
             block,
         });
     }
@@ -6556,14 +6559,14 @@ impl BucketNode {
         &self,
         object_key: &str,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-        component: &str,
+        element_name: &str,
     ) -> Option<(u64, u64, u64)> {
         self.tombstone_elements
             .iter()
             .find(|row| {
                 row.model_id == model_id
                     && &*row.object_key == object_key
-                    && &*row.component == component
+                    && &*row.element_name == element_name
             })
             .map(|row| row.block)
     }
@@ -6582,12 +6585,12 @@ impl BucketNode {
         &mut self,
         object_key: &str,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-        component: &str,
+        element_name: &str,
     ) {
         self.tombstone_elements.retain(|row| {
             !(row.model_id == model_id
                 && &*row.object_key == object_key
-                && &*row.component == component)
+                && &*row.element_name == element_name)
         });
     }
 
@@ -7835,7 +7838,7 @@ impl CoreIndex {
             self.object_block_lookup.file(&kind, object_key, value)
         };
         if added {
-            if let Some(total) = self.object_component_block_refs.as_mut() {
+            if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_add(1);
             }
         }
@@ -8084,7 +8087,7 @@ impl CoreIndex {
             block_slab_live,
             object_block_lookup,
             kind_pool,
-            object_component_block_refs,
+            object_element_name_block_refs,
             released_buckets,
             // ---- CARRIED: durable, and the reconstruct has no way to derive it. ----
             objects: rebuilt_objects,
@@ -8118,7 +8121,7 @@ impl CoreIndex {
         self.block_slab_live = block_slab_live;
         self.object_block_lookup = object_block_lookup;
         self.kind_pool = kind_pool;
-        self.object_component_block_refs = object_component_block_refs;
+        self.object_element_name_block_refs = object_element_name_block_refs;
         self.released_buckets = released_buckets;
         // THE RECONSTRUCT'S OWN FILINGS MOVE INTO THE ROWS THEY BELONG TO. Without this the fold
         // is undone by every rebuild: the rows would be back but every ref would sit in the
@@ -8203,7 +8206,7 @@ impl CoreIndex {
             }
             dropped += 1;
         }
-        if let Some(total) = self.object_component_block_refs.as_mut() {
+        if let Some(total) = self.object_element_name_block_refs.as_mut() {
             *total = total.saturating_sub(dropped);
         }
     }
@@ -8328,9 +8331,9 @@ impl CoreIndex {
         &self,
         model_id: &str,
         object_key: &str,
-        component: Option<&str>,
+        element_name: Option<&str>,
     ) -> Option<&[BlockLookupRef]> {
-        if !names_the_only_slot(component) {
+        if !names_the_only_slot(element_name) {
             return None;
         }
         self.object_block_refs(model_id, object_key)
@@ -8355,7 +8358,7 @@ impl CoreIndex {
         &mut self,
         model_id: &str,
         object_key: &str,
-        component: Option<&str>,
+        element_name: Option<&str>,
     ) {
 
         // ONE SLOT IS THIS OBJECT'S ENTIRE SET OF REFS, so dropping the slot is dropping the
@@ -8367,7 +8370,7 @@ impl CoreIndex {
         //
         // A NAMED COMPONENT REMOVES NOTHING, which is what the binary search over a list of one
         // already did -- see [`names_the_only_slot`].
-        if !names_the_only_slot(component) {
+        if !names_the_only_slot(element_name) {
             return;
         }
         // BOTH HOMES, AND SUMMED RATHER THAN SHORT-CIRCUITED. An object holds its refs in its
@@ -8386,7 +8389,7 @@ impl CoreIndex {
             .map_or(0, |refs| refs.len());
         let removed = from_slot + from_lookup;
         if removed > 0 {
-            if let Some(total) = self.object_component_block_refs.as_mut() {
+            if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
             }
         }
@@ -8424,11 +8427,11 @@ impl CoreIndex {
         &mut self,
         model_id: &str,
         object_key: &str,
-        component: Option<&str>,
+        element_name: Option<&str>,
         block_ref: &BlockLookupRef,
     ) -> bool {
         // A NAMED COMPONENT REMOVES NOTHING -- see [`names_the_only_slot`].
-        if !names_the_only_slot(component) {
+        if !names_the_only_slot(element_name) {
             return false;
         }
         let mut removed = false;
@@ -8466,7 +8469,7 @@ impl CoreIndex {
             }
         }
         if removed {
-            if let Some(total) = self.object_component_block_refs.as_mut() {
+            if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_sub(1);
             }
         }
@@ -8500,7 +8503,7 @@ impl CoreIndex {
             .map_or(0, |refs| refs.len());
         let removed = from_slot + from_lookup;
         if removed > 0 {
-            if let Some(total) = self.object_component_block_refs.as_mut() {
+            if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
             }
         }
@@ -8511,10 +8514,10 @@ impl CoreIndex {
         &self,
         model_id: &str,
         object_key: &str,
-        component: Option<&str>,
+        element_name: Option<&str>,
         address: &ElementEntry,
     ) -> bool {
-        if let Some(block_refs) = self.block_refs_for(model_id, object_key, component) {
+        if let Some(block_refs) = self.block_refs_for(model_id, object_key, element_name) {
             return block_refs.iter().any(|block_ref| {
                 self.bucket_map
                     .get(&block_ref.routing_bucket)
@@ -8530,7 +8533,7 @@ impl CoreIndex {
                             // The entry carries no element name; `component.is_none()` is the old
                             // `block.component.as_deref() == component` with that constant folded
                             // in, so the kinds this answers for do not move.
-                            && component.is_none()
+                            && element_name.is_none()
                             && same_block_address(&block.address, address)
                     })
                     .unwrap_or(false)
@@ -8545,7 +8548,7 @@ impl CoreIndex {
     }
 }
 
-pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> String {
+pub(super) fn object_element_name_lookup_key(model_id: &str, object_key: &str) -> String {
     let mut key = String::new();
     push_lookup_part(&mut key, model_id);
     push_lookup_part(&mut key, object_key);
@@ -8667,20 +8670,20 @@ pub(super) fn next_block_index_for_object(
 /// or to sequence zero: an unreadable name names nothing, which is the rule every arm of the
 /// derived view already follows, and the two defaults it replaces are both real elements whose
 /// address it would have taken.
-pub(super) fn resident_component_address<'a>(
+pub(super) fn resident_element_name_address<'a>(
     shard: &'a ShardState,
     model_id: &str,
     object_key: &str,
-    component: &str,
+    element_name: &str,
 ) -> Option<&'a ElementEntry> {
     match model_id {
-        "hash" => shard.hashes.get(object_key)?.get(component),
+        "hash" => shard.hashes.get(object_key)?.get(element_name),
         "set" => {
-            let member = super::container_blocks::member_from_component(component)?;
+            let member = super::container_blocks::member_from_element_name(element_name)?;
             shard.sets.get(object_key)?.get(&member)
         }
         "zset" => {
-            let member = super::container_blocks::member_from_component(component)?;
+            let member = super::container_blocks::member_from_element_name(element_name)?;
             shard
                 .zsets
                 .get(object_key)?
@@ -8688,7 +8691,7 @@ pub(super) fn resident_component_address<'a>(
                 .map(|(_, address)| address)
         }
         "list" => {
-            let biased = u64::from_str_radix(component, 16).ok()?;
+            let biased = u64::from_str_radix(element_name, 16).ok()?;
             let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
             shard.lists.get(object_key)?.get(&sequence)
         }
@@ -8826,9 +8829,9 @@ pub(super) fn container_block_ordinal(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-    component: &str,
+    element_name: &str,
 ) -> u32 {
-    if let Some(held) = resident_component_address(shard, model_id, object_key, component)
+    if let Some(held) = resident_element_name_address(shard, model_id, object_key, element_name)
         .and_then(ElementEntry::block_id)
     {
         // This element already holds a block, and the ordinal on it IS its position. An overwrite
@@ -8847,15 +8850,15 @@ pub(super) fn container_block_ordinal(
 pub(super) fn object_block_lookup_key(
     model_id: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) -> String {
     let mut key = String::new();
     push_lookup_part(&mut key, model_id);
     push_lookup_part(&mut key, object_key);
-    match component {
-        Some(component) => {
+    match element_name {
+        Some(element_name) => {
             key.push_str("1|");
-            push_lookup_part(&mut key, component);
+            push_lookup_part(&mut key, element_name);
         }
         None => key.push_str("0|"),
     }
@@ -8940,7 +8943,7 @@ pub(super) struct SeenSet {
 
 
 #[cfg(test)]
-mod component_lookup_tests {
+mod element_name_lookup_tests {
     //! WHAT HAPPENED TO THE NINE ARMS THIS MODULE HELD, AND WHAT THE EIGHT HERE NOW ARE, so the
     //! collapse is auditable rather than merely smaller. Four of the nine were deleted outright and
     //! two more lost their names to a restatement, and neither a deletion nor a rename leaves
@@ -9044,12 +9047,12 @@ mod component_lookup_tests {
     fn a_default_index_reports_a_ref_total_of_zero_by_every_route_one_is_built() {
         assert_eq!(
             Some(0),
-            CoreIndex::default().object_component_block_refs,
+            CoreIndex::default().object_element_name_block_refs,
             "the explicit route left the ref total unestablished"
         );
         assert_eq!(
             Some(0),
-            ShardState::default().bucket_index.object_component_block_refs,
+            ShardState::default().bucket_index.object_element_name_block_refs,
             "a default shard's index left the ref total unestablished, so every route through \
              `ShardState::default()` starts with a counter no filing can correct"
         );
@@ -9069,7 +9072,7 @@ mod component_lookup_tests {
             serde_json::from_value(stored).expect("a shard without the index key decodes");
         assert_eq!(
             Some(0),
-            without_the_key.bucket_index.object_component_block_refs,
+            without_the_key.bucket_index.object_element_name_block_refs,
             "a stored index with no `slot_index` key decoded to a counter no filing can correct, \
              which is the route a site list cannot cover"
         );
@@ -9081,7 +9084,7 @@ mod component_lookup_tests {
         .expect("a shard with the index key decodes");
         assert_eq!(
             Some(0),
-            with_the_key.bucket_index.object_component_block_refs,
+            with_the_key.bucket_index.object_element_name_block_refs,
             "the decoder left the ref total unestablished on an index that carried the key"
         );
     }
@@ -9140,7 +9143,7 @@ mod component_lookup_tests {
         );
         assert_eq!(
             Some(3),
-            index.object_component_block_refs,
+            index.object_element_name_block_refs,
             "the ref counter disagrees with the three refs that went in"
         );
         // AND ONE SLOT HOLDS ALL THREE. Not implied by the line above: a structure that kept three
@@ -9183,7 +9186,7 @@ mod component_lookup_tests {
         const BLOCKS: u32 = 4;
         let mut index = CoreIndex::default();
         // The counter must be established before the inserts, for the reason `core_with` gives.
-        index.object_component_block_refs = Some(0);
+        index.object_element_name_block_refs = Some(0);
         // DESCENDING: (3,3), (2,2), (1,1), (0,0).
         let object_key: Arc<str> = Arc::from("k");
         for i in (0..BLOCKS).rev() {
@@ -9248,7 +9251,7 @@ mod component_lookup_tests {
     /// straight through, so a `Some` that started hitting would serve an object's whole block as
     /// the answer to a field lookup that has always, correctly, found nothing.
     #[test]
-    fn a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything() {
+    fn a_named_element_name_resolves_nothing_while_the_unnamed_one_resolves_everything() {
         let index = core_with("k", 2);
         assert_eq!(
             None,
@@ -9267,7 +9270,7 @@ mod component_lookup_tests {
 
     /// Restated from `removing_an_absent_component_changes_nothing`.
     #[test]
-    fn a_removal_by_a_named_component_is_a_no_op() {
+    fn a_removal_by_a_named_element_name_is_a_no_op() {
         let mut index = core_with("k", 2);
         index.remove_object_block_lookup_entry("hash", "k", Some("f0"));
         assert_eq!(
@@ -9277,7 +9280,7 @@ mod component_lookup_tests {
         );
         assert_eq!(
             Some(2),
-            index.object_component_block_refs,
+            index.object_element_name_block_refs,
             "the counter moved for a removal that removed nothing"
         );
 
@@ -9311,7 +9314,7 @@ mod component_lookup_tests {
             "the object stayed in the lookup with no slot, which is a `get` that succeeds and \
              answers nothing"
         );
-        assert_eq!(Some(0), index.object_component_block_refs);
+        assert_eq!(Some(0), index.object_element_name_block_refs);
     }
 
     /// THE COUNTER AGREES WITH THE REFS THAT ARE ACTUALLY THERE, after every single-ref removal.
@@ -9332,7 +9335,7 @@ mod component_lookup_tests {
     #[test]
     fn a_single_ref_removal_keeps_the_counter_equal_to_what_is_present() {
         let mut index = core_with("k", 3);
-        index.object_component_block_refs = Some(refs_actually_present(&index));
+        index.object_element_name_block_refs = Some(refs_actually_present(&index));
         // FLOOR: there is something to remove, so the agreement below is not over an empty map.
         assert_eq!(
             3,
@@ -9354,26 +9357,26 @@ mod component_lookup_tests {
         );
         assert_eq!(
             Some(refs_actually_present(&index)),
-            index.object_component_block_refs,
+            index.object_element_name_block_refs,
             "the counter says {:?} and the lookup holds {}",
-            index.object_component_block_refs,
+            index.object_element_name_block_refs,
             refs_actually_present(&index)
         );
 
         // REMOVING A REF THAT IS NOT THERE MUST NOT MOVE THE COUNTER. A removal that reports
         // nothing and decrements anyway is the drift this guard exists for, and it is silent.
-        let before = index.object_component_block_refs;
+        let before = index.object_element_name_block_refs;
         assert!(
             !index.remove_object_block_lookup_ref("hash", "k", None, &b),
             "removing the same ref twice reported a second removal"
         );
         assert_eq!(
-            before, index.object_component_block_refs,
+            before, index.object_element_name_block_refs,
             "the counter moved for a removal that found nothing"
         );
         assert_eq!(
             Some(refs_actually_present(&index)),
-            index.object_component_block_refs
+            index.object_element_name_block_refs
         );
     }
 
@@ -9393,7 +9396,7 @@ mod component_lookup_tests {
     #[test]
     fn the_last_ref_of_the_slot_takes_the_slot_and_the_objects_key() {
         let mut index = core_with("k", 2);
-        index.object_component_block_refs = Some(refs_actually_present(&index));
+        index.object_element_name_block_refs = Some(refs_actually_present(&index));
         assert_eq!(
             2,
             refs_actually_present(&index),
@@ -9421,7 +9424,7 @@ mod component_lookup_tests {
         );
         assert_eq!(
             Some(refs_actually_present(&index)),
-            index.object_component_block_refs
+            index.object_element_name_block_refs
         );
 
         // Second: the slot must GO, not become empty -- and with it the object's whole entry,
@@ -9445,7 +9448,7 @@ mod component_lookup_tests {
             index.object_block_refs("hash", "k").is_none(),
             "the object stayed in the lookup with no slot"
         );
-        assert_eq!(Some(0), index.object_component_block_refs);
+        assert_eq!(Some(0), index.object_element_name_block_refs);
         assert_eq!(0, refs_actually_present(&index));
     }
 
@@ -9456,11 +9459,11 @@ mod component_lookup_tests {
     #[test]
     fn the_running_ref_total_is_decremented_by_what_the_slot_held() {
         let mut index = core_with("k", 3);
-        index.object_component_block_refs = Some(3);
+        index.object_element_name_block_refs = Some(3);
         index.remove_object_block_lookup_entry("hash", "k", None);
         assert_eq!(
             Some(0),
-            index.object_component_block_refs,
+            index.object_element_name_block_refs,
             "the whole-slot removal decremented by one ref rather than by the three it took"
         );
         assert_eq!(0, refs_actually_present(&index));

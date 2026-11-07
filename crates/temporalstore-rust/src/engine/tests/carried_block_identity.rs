@@ -272,7 +272,7 @@ fn carrier(label: &str) -> Command {
 ///
 /// rust-internal: drives the WAL append and the block-in-WAL read directly, no external surface
 #[test]
-fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_free_id() {
+fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_name_free_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -326,12 +326,12 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
         let staged = vec![
             StagedBlock {
                 object_id: first.0,
-                component: first.1.map(std::sync::Arc::from),
+                element_name: first.1.map(std::sync::Arc::from),
                 bytes: first_bytes.clone(),
             },
             StagedBlock {
                 object_id: second.0,
-                component: second.1.map(std::sync::Arc::from),
+                element_name: second.1.map(std::sync::Arc::from),
                 bytes: second_bytes.clone(),
             },
         ];
@@ -351,14 +351,14 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
         let mut correct = 0usize;
         let mut other_blocks_bytes = 0usize;
         let mut missing = 0usize;
-        for ((object_id, component), want) in
+        for ((object_id, element_name), want) in
             [(first, &first_bytes), (second, &second_bytes)]
         {
             match crate::engine::block_in_wal::read_block(
                 &engine.block_store,
                 1,
                 object_id,
-                component,
+                element_name,
             ) {
                 Some(got) if &got == want => correct += 1,
                 Some(_) => other_blocks_bytes += 1,
@@ -451,12 +451,12 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
         );
         for grouping in ["id alone", "id + element"] {
             let mut groups: BTreeMap<(u64, Option<String>), usize> = BTreeMap::new();
-            for (object_key, component) in &blocks {
+            for (object_key, element_name) in &blocks {
                 let id = stable_block_object_id(1, kind, object_key);
                 let term = if grouping == "id alone" {
                     None
                 } else {
-                    component.clone()
+                    element_name.clone()
                 };
                 *groups.entry((id, term)).or_default() += 1;
             }
@@ -657,10 +657,10 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
 fn what_an_element_named_block_adds_to_the_record() {
     use crate::wal::{encode_wal_line_for_test, WriteAheadLogRecord};
 
-    fn block_of(i: usize, component: Option<&str>, payload: usize) -> StagedBlock {
+    fn block_of(i: usize, element_name: Option<&str>, payload: usize) -> StagedBlock {
         StagedBlock {
             object_id: stable_block_object_id(1, "hash", "hk"),
-            component: component.map(std::sync::Arc::from),
+            element_name: element_name.map(std::sync::Arc::from),
             bytes: vec![b'v'; payload]
                 .into_iter()
                 .chain(format!("{i:04}").into_bytes())
@@ -668,7 +668,7 @@ fn what_an_element_named_block_adds_to_the_record() {
         }
     }
 
-    fn record_of(blocks: usize, component: Option<&str>, payload: usize) -> WriteAheadLogRecord {
+    fn record_of(blocks: usize, element_name: Option<&str>, payload: usize) -> WriteAheadLogRecord {
         WriteAheadLogRecord {
             shard_id: 1,
             sequence: 7,
@@ -676,7 +676,7 @@ fn what_an_element_named_block_adds_to_the_record() {
                 key: "carrier".to_string(),
             }),
             metadata: None,
-            staged_blocks: (0..blocks).map(|i| block_of(i, component, payload)).collect(),
+            staged_blocks: (0..blocks).map(|i| block_of(i, element_name, payload)).collect(),
             outcomes: Vec::new(),
         }
     }
@@ -690,8 +690,8 @@ fn what_an_element_named_block_adds_to_the_record() {
     // The writer's own measurement, for ONE block. `implied_object_id` is `None` here because a
     // record carrying many blocks never elides an object id -- which is precisely the record shape
     // this whole module is about.
-    fn wire_len(component: Option<&str>, payload: usize) -> usize {
-        crate::raft::wal_proto::staged_block_body_len(&block_of(0, component, payload), None)
+    fn wire_len(element_name: Option<&str>, payload: usize) -> usize {
+        crate::raft::wal_proto::staged_block_body_len(&block_of(0, element_name, payload), None)
     }
 
     println!("\n=== what the element identity adds to a carried block ===");
@@ -699,10 +699,10 @@ fn what_an_element_named_block_adds_to_the_record() {
     let mut wire_rows: Vec<(&str, i64)> = Vec::new();
     let mut disk_rows: Vec<(usize, &str, f64)> = Vec::new();
     for blocks in [25usize, 200usize] {
-        for (label, component) in [("hash field f7", Some("f7")), ("CONTROL: none", None)] {
-            let wire = wire_len(component, 32) as i64 - wire_len(None, 32) as i64;
+        for (label, element_name) in [("hash field f7", Some("f7")), ("CONTROL: none", None)] {
+            let wire = wire_len(element_name, 32) as i64 - wire_len(None, 32) as i64;
             let bare = disk_len(&record_of(blocks, None, 32));
-            let named = disk_len(&record_of(blocks, component, 32));
+            let named = disk_len(&record_of(blocks, element_name, 32));
             let delta = named as i64 - bare as i64;
             let per_block = delta as f64 / blocks as f64;
             let chunk = crate::alloc_probe::documented_glibc_chunk(wire.unsigned_abs() as usize);
@@ -814,11 +814,11 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
     use crate::alloc_probe::{AllocClass, ClassSpan};
     const BLOCKS: usize = 200;
 
-    let measure = |component: Option<&str>| -> (u64, u64) {
+    let measure = |element_name: Option<&str>| -> (u64, u64) {
         crate::engine::block_in_wal::begin_write();
         let span = ClassSpan::open();
         for _ in 0..BLOCKS {
-            crate::engine::block_in_wal::stage(7, component, &[b'v'; 32]);
+            crate::engine::block_in_wal::stage(7, element_name, &[b'v'; 32]);
         }
         let counts = span
             .close()
@@ -973,9 +973,9 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
         (Some(""), b"empty element name".to_vec()),
     ]
     .into_iter()
-    .map(|(component, bytes)| StagedBlock {
+    .map(|(element_name, bytes)| StagedBlock {
         object_id: stable_block_object_id(1, "hash", "hk"),
-        component: component.map(std::sync::Arc::from),
+        element_name: element_name.map(std::sync::Arc::from),
         bytes,
     })
     .collect();
@@ -1013,10 +1013,10 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
     for (i, (before, after)) in blocks.iter().zip(decoded.staged_blocks.iter()).enumerate() {
         println!(
             "  {i:>4}  {:<13} {:>9} {:>10}  {:?}",
-            format!("{:?}", before.component.as_deref()),
+            format!("{:?}", before.element_name.as_deref()),
             before.bytes.len(),
             after.bytes.len(),
-            after.component.as_deref()
+            after.element_name.as_deref()
         );
         assert_eq!(
             before.bytes, after.bytes,
@@ -1024,12 +1024,12 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
              exists to make and nothing about naming its element may touch it"
         );
         assert_eq!(
-            before.component, after.component,
+            before.element_name, after.element_name,
             "block {i}'s element came back as {:?} rather than {:?}. `Some(\"\")` and `None` are \
              different blocks, and an encoder that merges them re-creates the ambiguity this \
              change removes",
-            after.component.as_deref(),
-            before.component.as_deref()
+            after.element_name.as_deref(),
+            before.element_name.as_deref()
         );
         assert_eq!(
             before.object_id, after.object_id,
@@ -1095,7 +1095,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 ///
 /// rust-internal: drives the engine's own unload/load cycle, no external surface
 #[test]
-fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_identity() {
+fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_an_element_name_free_identity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

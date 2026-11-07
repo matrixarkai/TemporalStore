@@ -150,7 +150,7 @@ fn block_and_entry_counts(
 /// Every element key a live block of this object still states as PRESENT, read off the bytes.
 ///
 /// This is the other source. The point of the absence arm is that it disagrees with the listing.
-fn components_the_blocks_still_state(
+fn element_names_the_blocks_still_state(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> std::collections::BTreeSet<String> {
@@ -178,12 +178,12 @@ fn components_the_blocks_still_state(
                     if item.deleted {
                         continue;
                     }
-                    if let Some(component) =
-                        crate::engine::container_blocks::component_from_element_key(
+                    if let Some(element_name) =
+                        crate::engine::container_blocks::element_name_from_element_key(
                             spelling, &item.key,
                         )
                     {
-                        stated.insert(component);
+                        stated.insert(element_name);
                     }
                 }
             }
@@ -220,7 +220,7 @@ fn live_block_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<Elemen
 /// `components_the_blocks_still_state`: `drop_live_entries` removes the index ENTRY and leaves the
 /// block, so a block it un-names cannot be reached through `block_index` at all. Reading addresses
 /// captured beforehand is what lets an arm say the bytes outlived the name.
-fn components_at(
+fn element_names_at(
     engine: &TemporalEngine,
     addresses: &[ElementEntry],
 ) -> std::collections::BTreeSet<String> {
@@ -239,10 +239,10 @@ fn components_at(
                 if item.deleted {
                     continue;
                 }
-                if let Some(component) =
-                    crate::engine::container_blocks::component_from_element_key(spelling, &item.key)
+                if let Some(element_name) =
+                    crate::engine::container_blocks::element_name_from_element_key(spelling, &item.key)
                 {
-                    stated.insert(component);
+                    stated.insert(element_name);
                 }
             }
         }
@@ -325,7 +325,7 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     // blocks. That compares two independent artefacts -- the index's block count, and the bytes
     // inside those blocks -- and the UNFOLDED shape FAILS it, at MEMBERS blocks stating MEMBERS
     // members, which is what makes this a measurement of the fold rather than a restatement of it.
-    let stated = components_the_blocks_still_state(&engine, "listing/whole");
+    let stated = element_names_the_blocks_still_state(&engine, "listing/whole");
     assert_eq!(
         MEMBERS,
         stated.len(),
@@ -382,12 +382,12 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
     );
 
     // THE TWO SOURCES MUST DISAGREE, OR THIS ARM PROVES NOTHING.
-    let stated = components_the_blocks_still_state(&engine, "listing/removed");
+    let stated = element_names_the_blocks_still_state(&engine, "listing/removed");
     // BY THE ENGINE'S OWN FUNCTION: a hand-written `hex::encode` names a component no set write
     // site files any more, so the removal below would be recorded against nothing.
-    let victim_component = crate::engine::execute_on_shard::set_component(&victim);
+    let victim_element_name = crate::engine::execute_on_shard::set_element_name(&victim);
     assert!(
-        stated.contains(&victim_component),
+        stated.contains(&victim_element_name),
         "the blocks no longer state the removed member as present, so the payload and the entries \
          AGREE and this arm cannot tell a payload-enumerating reader from an entry-driven one. \
          The removal has to land after the fold for the folded block to still carry it."
@@ -475,7 +475,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     );
 
     // THE CONTROL, AND IT IS ON THE SOURCE THE SUBJECT DOES NOT USE. The bytes outlived the name.
-    let stated = components_at(&engine, &addresses);
+    let stated = element_names_at(&engine, &addresses);
     assert_eq!(
         MEMBERS,
         stated.len(),

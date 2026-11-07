@@ -315,7 +315,7 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
 /// block, which is the one thing this change removes.
 fn block(
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     slab: u64,
     offset: u64,
 ) -> (std::sync::Arc<str>, BlockIndex) {

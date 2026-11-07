@@ -1922,7 +1922,7 @@ fn block_for(seed: u64) -> (Arc<str>, BlockIndex) {
     )
 }
 
-fn component_block(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
+fn element_name_block(seed: u64, element_name: &str) -> (Arc<str>, BlockIndex) {
     (
         Arc::from("container"),
         BlockIndex::new(
@@ -2223,28 +2223,28 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // fixture passes either way. `sibling_handles` holds the same pair of claims -- that the
     // collision is real, and that `index_entry_names_a_block` keeps it unreachable -- and this is the
     // one that sits beside the bucket distribution the loss would have shown up in.
-    let mut components = BlockIndexMap::default();
-    let (alpha_key, alpha) = component_block(20, "alpha");
-    let first_component = components.insert(&alpha_key, alpha, &mut live);
-    let (beta_key, beta) = component_block(20, "beta");
-    let second_component = components.insert(&beta_key, beta, &mut live);
+    let mut element_names = BlockIndexMap::default();
+    let (alpha_key, alpha) = element_name_block(20, "alpha");
+    let first_element_name = element_names.insert(&alpha_key, alpha, &mut live);
+    let (beta_key, beta) = element_name_block(20, "beta");
+    let second_element_name = element_names.insert(&beta_key, beta, &mut live);
     assert_eq!(
-        first_component, second_component,
+        first_element_name, second_element_name,
         "two entries of one object at one address were given DIFFERENT handles. If they are \
          separable then the handle has gained a discriminator the entry's field set does not show, \
          and the two assertions below -- which expect one entry, not two -- are the wrong way round"
     );
     assert_eq!(
         1,
-        components.len(),
+        element_names.len(),
         "two entries of one object at one address are ONE block in this index, and it holds {}",
-        components.len()
+        element_names.len()
     );
     assert_same_block(
         "the surviving entry",
-        first_component,
-        &component_block(20, "alpha").1,
-        components.get(&first_component).expect("the entry is filed"),
+        first_element_name,
+        &element_name_block(20, "alpha").1,
+        element_names.get(&first_element_name).expect("the entry is filed"),
     );
 }
 
@@ -2372,7 +2372,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     // used to overwrite the entry's own copy and then read that copy back out to render with;
     // the two blocks are byte-identical by construction, so handing the SAME block under two
     // different keys says what it meant -- that the key is what moved.
-    let (here_object, here) = component_block(5, "body");
+    let (here_object, here) = element_name_block(5, "body");
     let elsewhere_object: std::sync::Arc<str> = std::sync::Arc::from("a-different-object");
     let here_key = crate::engine::state::block_index_written_key(&here_object, &here);
     let other_key = crate::engine::state::block_index_written_key(&elsewhere_object, &here);
@@ -2396,7 +2396,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
         let (object_key, entry) = block_for(seed);
         many.block_index.insert(&object_key, entry, &mut live);
     }
-    let (body_key, body) = component_block(5, "body");
+    let (body_key, body) = element_name_block(5, "body");
     many.block_index.insert(&body_key, body, &mut live);
     assert_eq!(5, many.block_index.len(), "five blocks, five entries");
     // FIVE BLOCKS OVER FIVE OBJECTS: four `block_for` keys and the container.

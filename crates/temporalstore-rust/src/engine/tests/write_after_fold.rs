@@ -407,7 +407,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
 /// every one of these writes. Measured here so the repair's condition is derived from behaviour
 /// rather than from a list of kind names someone remembers.
 #[test]
-fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
+fn an_element_name_less_kind_rewritten_still_resolves_to_one_block() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -507,7 +507,7 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
                 out.push(
                     bucket
                         .tombstone_element_at(&block.address)
-                        .map(|row| row.component.to_string()),
+                        .map(|row| row.element_name.to_string()),
                 );
             }
         }
@@ -1038,11 +1038,11 @@ fn a_re_add_clears_only_its_own_tombstone_when_two_removals_are_outstanding() {
          over-match and this arm would pass without reaching it",
         before.len()
     );
-    let returning_component = hex::encode(&returning);
-    let staying_gone_component = hex::encode(&staying_gone);
+    let returning_element_name = hex::encode(&returning);
+    let staying_gone_element_name = hex::encode(&staying_gone);
     assert!(
-        before.contains(&Some(returning_component.clone()))
-            && before.contains(&Some(staying_gone_component.clone())),
+        before.contains(&Some(returning_element_name.clone()))
+            && before.contains(&Some(staying_gone_element_name.clone())),
         "the two tombstones name {before:?}, not the two members removed -- so they are not the \
          two rows this arm is about"
     );
@@ -1060,7 +1060,7 @@ fn a_re_add_clears_only_its_own_tombstone_when_two_removals_are_outstanding() {
     );
 
     assert_eq!(
-        vec![Some(staying_gone_component.clone())],
+        vec![Some(staying_gone_element_name.clone())],
         after,
         "the re-add left tombstones {after:?}. Exactly the re-added member's row should have gone \
          and the other removal's row should still be there -- a sweep that took both has erased \
