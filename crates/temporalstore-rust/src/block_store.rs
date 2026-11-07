@@ -5377,6 +5377,30 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(reopened.read(&third).unwrap(), b"third");
     }
 
+    /// The manifest file as the store wrote it, whichever shape that is.
+    ///
+    /// A test that edits the manifest used to parse it as a JSON document and set keys by string,
+    /// which the compiler could not see. It works on the TYPE now, so a renamed field is a compile
+    /// error here instead of a test that quietly stops matching.
+    fn read_manifest_for_test(path: &std::path::Path) -> BlockStoreSlabManifest {
+        let raw = fs::read(path).expect("the manifest must be on disk");
+        if super::slab_manifest_wire::is_wire_manifest(&raw) {
+            super::slab_manifest_wire::decode_slab_manifest(&raw)
+                .expect("a binary manifest must decode")
+        } else {
+            serde_json::from_slice(&raw).expect("a JSON manifest must parse")
+        }
+    }
+
+    /// Put a manifest back on disk in the shape the store itself writes.
+    fn write_manifest_for_test(path: &std::path::Path, manifest: &BlockStoreSlabManifest) {
+        fs::write(
+            path,
+            super::slab_manifest_wire::encode_slab_manifest(manifest.version, &manifest.slabs),
+        )
+        .unwrap();
+    }
+
     // shared-corpus: storage_stream_manifest_disk_reconciliation;
     #[test]
     fn reopen_reconciles_manifest_missing_existing_stream_slab() {
@@ -5388,21 +5412,13 @@ const RETIRED_NAMES: &[&str] = &[
         drop(store);
 
         let manifest_path = slab_manifest_path(dir.path());
-        let mut manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        // THE ON-DISK KEYS, READ BY LITERAL STRING -- which is why #2487 could flip them with a
-        // clean `cargo check`. The slab list is under `slabs` and the slab id under
-        // `block_segment_id`; `bands` and `band_id` are the RETIRED spellings, accepted on read
-        // and no longer written. `a_folded_manifest_still_writes_the_keys_on_disk` is the guard
-        // that pins which of those reaches the file, and
-        // `docs/temporalstore_page_block_address_contract.md` records why the flip was available.
-        let slabs = manifest["slabs"]
-            .as_array()
-            .unwrap_or_else(|| panic!("the slab list must be under \"slabs\": {manifest}"));
+        // The manifest as a TYPE rather than a document keyed by literal strings, read in whichever
+        // shape the store wrote it.
+        let mut manifest = read_manifest_for_test(&manifest_path);
         assert_eq!(
-            slabs.len(),
+            manifest.slabs.len(),
             2,
-            "this guard drops one of two descriptors, so it needs both: {manifest}"
+            "this guard drops one of two descriptors, so it needs both: {manifest:?}"
         );
         // DROP THE SEALED SLAB'S DESCRIPTOR, NOT THE ACTIVE ONE, and that choice is the whole
         // guard. `BlockStore::new` calls `ensure_slab_descriptor` for the ACTIVE slab id
@@ -5415,16 +5431,15 @@ const RETIRED_NAMES: &[&str] = &[
         // Verified by plant: deleting the `None =>` insert in
         // `reconcile_slab_manifest_with_disk` left the active-slab version of this test green and
         // reddens this one.
-        manifest["slabs"] = serde_json::json!([slabs
-            .iter()
-            .find(|slab| slab["block_segment_id"] == serde_json::json!(second.block_slab_id()))
-            .unwrap_or_else(|| panic!("no descriptor for the active slab: {manifest}"))
-            .clone()]);
-        fs::write(
-            &manifest_path,
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
+        manifest
+            .slabs
+            .retain(|slab| slab.block_slab_id == second.block_slab_id());
+        assert_eq!(
+            manifest.slabs.len(),
+            1,
+            "no descriptor for the active slab, or more than one: {manifest:?}"
+        );
+        write_manifest_for_test(&manifest_path, &manifest);
 
         let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
@@ -5791,30 +5806,21 @@ const RETIRED_NAMES: &[&str] = &[
         drop(warm);
 
         let manifest_path = slab_manifest_path(dir.path());
-        let raw = fs::read(&manifest_path).unwrap();
-        let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let mut manifest = read_manifest_for_test(&manifest_path);
 
         // DENOMINATOR: the manifest really has descriptors, and they really agree to begin with.
         //
-        // THE KEYS READ HERE ARE THE EMITTED ON-DISK SPELLING, and as of #2487 that is the
-        // canonical one: the list is under `slabs` and the stored id under `stored_slab_id`.
-        // `bands` and `band_id` are the RETIRED spellings -- still accepted on read, never
-        // written. The comment that used to sit here said the opposite, which is what a literal
-        // string key costs: the flip compiled clean and only these two tests saw it.
-        //
-        // The slab id is read under `block_segment_id` because that name did NOT move; the
-        // contract document records it as one of the three that stayed, on a count of the live
-        // compat corpora. A manifest from an older build spells it `page_segment_id` and loads
-        // through the alias.
-        let entries = manifest["slabs"].as_array_mut().expect("slabs array");
+        // READ AS A TYPE. The keys this used to spell out by string -- `slabs`, `stored_slab_id`,
+        // `block_segment_id` -- are fields now, so a rename is a compile error here instead of a
+        // test that quietly stops matching.
         assert!(
-            entries.len() >= 3,
-            "the manifest must really carry descriptors: {entries:?}"
+            manifest.slabs.len() >= 3,
+            "the manifest must really carry descriptors: {:?}",
+            manifest.slabs
         );
-        for entry in entries.iter() {
+        for slab in manifest.slabs.iter() {
             assert_eq!(
-                entry["stored_slab_id"].as_u64(),
-                entry["block_segment_id"].as_u64(),
+                slab.stored_slab_id, slab.block_slab_id,
                 "they agree before the edit"
             );
         }
@@ -5822,14 +5828,10 @@ const RETIRED_NAMES: &[&str] = &[
         // Make EVERY descriptor disagree, exactly as a grouping id would have. The active slab is
         // always inspected and would be rewritten whatever this file said; the two sealed ones
         // are the point.
-        for entry in entries.iter_mut() {
-            // Written under the EMITTED key. Setting the retired `band_id` instead would not
-            // merely miss: the descriptor already carries `stored_slab_id`, and `band_id` is an
-            // accepted alias for that same field, so a document holding both is a DUPLICATE
-            // FIELD and the whole manifest stops decoding.
-            entry["stored_slab_id"] = serde_json::json!(999_u64);
+        for slab in manifest.slabs.iter_mut() {
+            slab.stored_slab_id = 999;
         }
-        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        write_manifest_for_test(&manifest_path, &manifest);
 
         // OPEN THREE. Editing the manifest does not touch the slab files, so every sealed slab
         // still matches what its descriptor was verified against and takes the skip.
@@ -5882,28 +5884,19 @@ const RETIRED_NAMES: &[&str] = &[
         }
     }
 
-    /// THE CODE AND THE FILE BOTH SAY SLAB NOW, and asserting which is the point.
+    /// THE FILE THE STORE WRITES IS THE BINARY SHAPE, AND THE STORE CAN READ WHAT IT WROTE.
     ///
-    /// The file used to say `band`, and this guard used to assert that. #2487 flipped the
-    /// emitted names to the canonical spelling and inverted the body of this test with them;
-    /// the doc comment that used to sit here was left describing the old direction, and that
-    /// stale text is what later got read as evidence of a writer defect. Hence this correction.
+    /// The manifest used to be JSON, and this guard asserted which key spellings reached disk,
+    /// because serde writes one name per field and a renamed Rust field changed the bytes with
+    /// nothing at the type level to notice. A protobuf file has no names to drift: what reaches
+    /// disk is a field number, and `the_stored_field_numbers_do_not_move` pins those against a
+    /// byte fixture. What is left for this test to say is that the writer really does write the
+    /// binary shape and that a store reopens from it.
     ///
-    /// WHY THE FLIP WAS AVAILABLE, since it is a published format: the three `compat/*.json`
-    /// corpora anything reads carry the retired slab names ZERO times. Counting all nine files
-    /// made them look pinned; counting the ones a test, harness or workflow actually opens put
-    /// them at zero. `docs/temporalstore_page_block_address_contract.md` records that count,
-    /// the three emitted names that did NOT move, and the reader-first ordering.
-    ///
-    /// WHY A GUARD IS STILL NEEDED EITHER WAY: a serde `alias` widens the READER only, and
-    /// serde writes exactly one name per field. Renaming a Rust field whose wire name is
-    /// IMPLICIT therefore changes the bytes on disk with nothing at the type level to notice --
-    /// it compiles, and every test that goes through the type still passes. This asserts the
-    /// bytes. It is also the test to update FIRST if the emitted names ever move again, because
-    /// the two tests repaired alongside this comment reach into the same file by literal string
-    /// key and the compiler cannot see them.
+    /// The JSON arm of the reader is held by `a_json_manifest_still_loads_through_the_same_reader`,
+    /// because this build no longer writes the shape it still reads.
     #[test]
-    fn a_folded_manifest_still_writes_the_keys_on_disk() {
+    fn a_written_manifest_is_the_binary_shape_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         store.append(b"first").unwrap();
@@ -5913,48 +5906,31 @@ const RETIRED_NAMES: &[&str] = &[
         drop(store);
 
         let raw = fs::read(slab_manifest_path(dir.path())).expect("the manifest must be on disk");
-        let manifest: serde_json::Value = serde_json::from_slice(&raw).expect("valid json");
 
-        // DENOMINATOR FIRST: read the array under the key it must be written at, and prove it is
-        // not empty. Without this every per-entry assertion below is vacuously true.
-        let entries = manifest
-            .get("slabs")
-            .unwrap_or_else(|| panic!("the slab list must be written under \"slabs\": {manifest}"))
-            .as_array()
-            .expect("an array");
-        assert!(
-            entries.len() >= 2,
-            "this guard needs descriptors to look at, and found {}: {manifest}",
-            entries.len()
+        // The container byte AND not JSON. Either alone could be an empty or truncated file;
+        // together they say the writer chose the binary shape.
+        assert_eq!(
+            raw.first(),
+            Some(&super::slab_manifest_wire::SLAB_MANIFEST_CONTAINER_PROTOBUF),
+            "the manifest must open with the binary container byte, not JSON: {:?}",
+            &raw[..raw.len().min(16)]
         );
+        assert!(serde_json::from_slice::<serde_json::Value>(&raw).is_err());
+
+        // DENOMINATOR: it holds descriptors, so the round trip below is about something.
+        let manifest = super::slab_manifest_wire::decode_slab_manifest(&raw)
+            .expect("what the store wrote must decode");
         assert!(
-            manifest.get("bands").is_none(),
-            "the retired key must not reach the file as well -- serde writes one name per field, \
-             so two would mean a second field claimed this one's key: {manifest}"
+            manifest.slabs.len() >= 2,
+            "this guard needs descriptors to look at, and found {}: {manifest:?}",
+            manifest.slabs.len()
         );
 
-        for entry in entries {
-            assert!(
-                entry.get("stored_slab_id").is_some(),
-                "every descriptor writes its id under the canonical key: {entry}"
-            );
-            assert!(
-                entry.get("band_id").is_none(),
-                "and not under the retired one too: {entry}"
-            );
-            assert!(
-                entry.get("block_segment_id").is_some(),
-                "and the slab-id key this build writes: {entry}"
-            );
-        }
-
-        // And the file this process wrote is one this process can read: the keys above are not
-        // merely present, they are the ones the deserializer binds.
         let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
         assert_eq!(
             descriptors.len(),
-            entries.len(),
+            manifest.slabs.len(),
             "every descriptor on disk must come back: {descriptors:?}"
         );
     }
@@ -9511,6 +9487,10 @@ const RETIRED_NAMES: &[&str] = &[
 
     /// One manifest persist costs the same number of `write(2)` calls at ten times the slabs.
     ///
+    /// AS OF THE BINARY WRITER THE PERSIST IS ONE `write_all`, so the flat count is one. What follows
+    /// is why the counter exists: it was put in when the manifest was a JSON document emitted in
+    /// fragments.
+    ///
     /// THIS PINS THE HALF OF THE PERSIST THAT IS NOW FLAT. `persist_slab_manifest` used to hand
     /// `serde_json` a bare `File`, and `serde_json` writes a document in fragments -- a key, a
     /// colon, a number, a comma -- one syscall each. Measured under `strace` at 8,000 slabs, two
@@ -9553,17 +9533,16 @@ const RETIRED_NAMES: &[&str] = &[
             "a persist must write the manifest at least once, not {small_writes}"
         );
 
-        // AND A SECOND DENOMINATOR: the document really is made of thousands of fragments, so an
-        // unbuffered writer would have issued thousands of syscalls here. Without this the counts
-        // could both be 1 because the manifest is trivially small, and the guard would pin
-        // nothing. Four hundred descriptors at ~350 bytes each is >= 100,000 bytes.
+        // AND A SECOND DENOMINATOR: the document is a real one. Without this the counts could
+        // both be 1 because the manifest is trivially small, and the guard would pin nothing. Four
+        // hundred descriptors at roughly fifty bytes each is about 20,000 bytes; the floor sits well
+        // under that so it fails on an empty file and not on a field being added or removed.
         let large_manifest_bytes = fs::metadata(slab_manifest_path(large_dir.path()))
             .unwrap()
             .len();
         assert!(
-            large_manifest_bytes >= 100_000,
-            "the larger manifest must be a document worth buffering, not {large_manifest_bytes} \
-             bytes"
+            large_manifest_bytes >= 8_000,
+            "the larger manifest must be a real document, not {large_manifest_bytes} bytes"
         );
 
         assert_eq!(
@@ -9577,141 +9556,6 @@ const RETIRED_NAMES: &[&str] = &[
             large_writes <= 4,
             "one persist must cost a handful of syscalls, not {large_writes}"
         );
-    }
-
-    /// The manifest is written COMPACT, and nothing outside this crate wants it otherwise.
-    ///
-    /// Pretty-printing cost bytes on a file that is rewritten on every roll and read by no person:
-    /// `load_slab_manifest_at` parses it with `from_slice`, and the one tool outside this crate
-    /// that opens it -- `tools/matrixark_merge_rust_hook_stores.py` -- parses it with
-    /// `json.loads`. Both are whitespace-insensitive, so the indentation was bytes and fragments
-    /// spent for nothing.
-    ///
-    /// Asserted on the NEWLINE COUNT rather than on the byte total: a size assertion drifts every
-    /// time a descriptor gains a field, whereas a pretty-printed document puts every one of its
-    /// tens of thousands of tokens on a line of its own, so the newline count separates the two
-    /// arrangements by four orders of magnitude and will keep doing so.
-    #[test]
-    fn the_manifest_is_written_as_one_compact_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = rolled_store_fixture(dir.path(), 40);
-        store.roll_slab().unwrap();
-
-        let bytes = fs::read(slab_manifest_path(dir.path())).unwrap();
-
-        // DENOMINATOR: there really is a manifest here, holding the descriptors this asserts
-        // about. An empty or absent file has one newline too, and would pass the claim below
-        // while proving nothing.
-        let manifest: BlockStoreSlabManifest = serde_json::from_slice(&bytes).unwrap();
-        assert!(
-            manifest.slabs.len() >= 41,
-            "the manifest must hold the forty seeded slabs and the rolled one, not {}",
-            manifest.slabs.len()
-        );
-        assert!(
-            bytes.len() >= 10_000,
-            "and it must be a real document, not {} bytes",
-            bytes.len()
-        );
-
-        let newlines = bytes.iter().filter(|byte| **byte == b'\n').count();
-        assert_eq!(
-            newlines, 1,
-            "a compact manifest is one line plus the trailing newline; {newlines} newlines over \
-             {} descriptors is a pretty-printed one",
-            manifest.slabs.len()
-        );
-    }
-
-    /// What each of the four ways to write the manifest costs, at one slab count. Prints.
-    ///
-    ///   cargo test -p temporalstore-rust --lib what_the_manifest_arrangements_cost \
-    ///       -- --ignored --nocapture --test-threads=1
-    ///
-    /// The point is to separate the two halves of the change rather than ship them as one number:
-    /// COMPACT saves bytes and fragments, BUFFERING saves syscalls, and only a measurement says
-    /// which of the two the roll was actually paying for.
-    ///
-    /// Each arm serialises the SAME descriptor set -- the one the fixture's own manifest holds --
-    /// to a fresh file with the same barrier the real persist takes, so the arms differ in
-    /// exactly the writer and the formatter and in nothing else.
-    fn manifest_arrangement_arm(slabs: u64) {
-        let dir = tempfile::tempdir().unwrap();
-        let store = rolled_store_fixture(dir.path(), slabs);
-
-        // DENOMINATOR: the manifest being re-serialised really holds `slabs` descriptors. An arm
-        // timed against a short manifest is measuring a smaller store than it claims.
-        let manifest_path = slab_manifest_path(dir.path());
-        let manifest: BlockStoreSlabManifest =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        assert_eq!(
-            manifest.slabs.len() as u64, slabs,
-            "every slab must carry a descriptor before the arms are timed"
-        );
-        drop(store);
-
-        use std::io::BufWriter;
-
-        fn arm(
-            label: &str,
-            path: &std::path::Path,
-            manifest: &BlockStoreSlabManifest,
-            buffered: bool,
-            pretty: bool,
-        ) {
-            let writes_before = manifest_file_writes();
-            let started = std::time::Instant::now();
-            {
-                let file = File::create(path).unwrap();
-                if buffered {
-                    let mut out =
-                        BufWriter::with_capacity(256 * 1024, CountedFileWrites(file));
-                    if pretty {
-                        serde_json::to_writer_pretty(&mut out, manifest).unwrap();
-                    } else {
-                        serde_json::to_writer(&mut out, manifest).unwrap();
-                    }
-                    out.write_all(b"\n").unwrap();
-                    out.flush().unwrap();
-                    let Ok(inner) = out.into_inner() else {
-                        panic!("the buffer must flush before the barrier");
-                    };
-                    inner.0.sync_all().unwrap();
-                } else {
-                    let mut out = CountedFileWrites(file);
-                    if pretty {
-                        serde_json::to_writer_pretty(&mut out, manifest).unwrap();
-                    } else {
-                        serde_json::to_writer(&mut out, manifest).unwrap();
-                    }
-                    out.write_all(b"\n").unwrap();
-                    out.flush().unwrap();
-                    out.0.sync_all().unwrap();
-                }
-            }
-            let ms = started.elapsed().as_secs_f64() * 1e3;
-            let writes = manifest_file_writes() - writes_before;
-            let bytes = fs::metadata(path).unwrap().len();
-            println!("      {label:<24} {ms:>9.2} ms   {writes:>9} writes   {bytes:>10} bytes");
-        }
-
-        println!("  {slabs} slabs:");
-        arm("File + pretty (was)", &dir.path().join("a.json"), &manifest, false, true);
-        arm("File + compact", &dir.path().join("b.json"), &manifest, false, false);
-        arm("BufWriter + pretty", &dir.path().join("c.json"), &manifest, true, true);
-        arm("BufWriter + compact (is)", &dir.path().join("d.json"), &manifest, true, false);
-    }
-
-    #[test]
-    #[ignore]
-    fn what_the_manifest_arrangements_cost() {
-        manifest_arrangement_arm(8_000);
-    }
-
-    #[test]
-    #[ignore]
-    fn what_the_manifest_arrangements_cost_at_eighty_thousand_slabs() {
-        manifest_arrangement_arm(80_000);
     }
 }
 

@@ -5,7 +5,7 @@
 //!
 //! The manifest is the record of which slabs a block store holds and what state each is in. It
 //! was a JSON document; this is the protobuf form of the same content, and this module is its
-//! READER: [`load_slab_manifest_at`](super::slab_manifest::load_slab_manifest_at) accepts either
+//! codec: [`load_slab_manifest_at`](super::slab_manifest::load_slab_manifest_at) reads either
 //! form, chosen by [`is_wire_manifest`], so a store written by an older build still opens.
 //!
 //! # WHY A CONTAINER BYTE IN FRONT OF THE FRAME
@@ -29,21 +29,19 @@
 //! build that cannot read this form pays one cold-start rebuild and rewrites the file in its own
 //! shape; it does not fail to open. The cost of a rollback is therefore time, not availability.
 //!
-//! # WHAT IS DELIBERATELY NOT HERE YET
+//! # THE WRITER
 //!
-//! The WRITER. Reader first: a build that cannot read the new form must never be handed one, so
-//! the writer flips in a later change, after this one is the build everything reads with. The
-//! encoder below exists so the reader can be tested against bytes it did not produce itself, and
-//! is compiled for tests only until the writer uses it.
+//! `persist_slab_manifest` encodes with [`encode_slab_manifest`] and writes the result in a single
+//! `write_all`. It landed after the reader, so no build that writes this form ever existed without
+//! one that reads it. The JSON arm of the reader stays for as long as any build that wrote a JSON
+//! manifest could have left one in a live store, which this tree cannot rule out.
 //!
 //! Field numbers are fixed by what is stored on disk and must not be renumbered or reused.
 
 use prost::Message;
 
 use super::{BlockStoreSlabDescriptor, BlockStoreSlabManifest, BlockStoreSlabState};
-use crate::record_framing::decode_framed_at;
-#[cfg(test)]
-use crate::record_framing::encode_framed;
+use crate::record_framing::{decode_framed_at, encode_framed};
 
 /// The first byte of a binary manifest. A JSON document opens with `{` or JSON whitespace, and
 /// `0x01` is neither, so one byte decides the shape.
@@ -190,7 +188,6 @@ fn descriptor_from_wire(wire: WireSlabDescriptor) -> Result<BlockStoreSlabDescri
     })
 }
 
-#[cfg(test)]
 fn descriptor_to_wire(descriptor: &BlockStoreSlabDescriptor) -> WireSlabDescriptor {
     let BlockStoreSlabDescriptor {
         stored_slab_id,
@@ -232,19 +229,29 @@ fn descriptor_to_wire(descriptor: &BlockStoreSlabDescriptor) -> WireSlabDescript
     }
 }
 
-#[cfg(test)]
-fn manifest_to_wire(manifest: &BlockStoreSlabManifest) -> WireSlabManifest {
+/// The whole manifest in its stored shape, built straight from the descriptors.
+///
+/// NOT FROM A `BlockStoreSlabManifest`: the writer would have to clone every descriptor into one
+/// just to read it back out, and the frame already has to hold the encoded bytes (its length and
+/// checksum come before the payload), so the alternative to taking the descriptors by reference is
+/// holding all of them twice.
+fn wire_from_slabs<'a>(
+    version: u32,
+    slabs: impl IntoIterator<Item = &'a BlockStoreSlabDescriptor>,
+) -> WireSlabManifest {
     WireSlabManifest {
-        version: manifest.version,
-        slabs: manifest.slabs.iter().map(descriptor_to_wire).collect(),
+        version,
+        slabs: slabs.into_iter().map(descriptor_to_wire).collect(),
     }
 }
 
 /// The bytes of a binary manifest: the container byte, then one checksummed frame.
-#[cfg(test)]
-pub(super) fn encode_slab_manifest(manifest: &BlockStoreSlabManifest) -> Vec<u8> {
+pub(super) fn encode_slab_manifest<'a>(
+    version: u32,
+    slabs: impl IntoIterator<Item = &'a BlockStoreSlabDescriptor>,
+) -> Vec<u8> {
     let mut out = vec![SLAB_MANIFEST_CONTAINER_PROTOBUF];
-    out.extend_from_slice(&encode_framed(&manifest_to_wire(manifest)));
+    out.extend_from_slice(&encode_framed(&wire_from_slabs(version, slabs)));
     out
 }
 
@@ -299,6 +306,14 @@ mod tests {
         BlockStoreSlabManifest { version: 1, slabs }
     }
 
+    fn encode_manifest(manifest: &BlockStoreSlabManifest) -> Vec<u8> {
+        encode_slab_manifest(manifest.version, &manifest.slabs)
+    }
+
+    fn manifest_to_wire(manifest: &BlockStoreSlabManifest) -> WireSlabManifest {
+        wire_from_slabs(manifest.version, &manifest.slabs)
+    }
+
     fn write_manifest_file(root: &std::path::Path, bytes: &[u8]) {
         let path = slab_manifest_path(root);
         std::fs::create_dir_all(path.parent().expect("a manifest path has a parent"))
@@ -331,7 +346,7 @@ mod tests {
         // DENOMINATOR: every state and both shapes of optional are in the input.
         assert_eq!(manifest.slabs.len(), 5);
 
-        let decoded = decode_slab_manifest(&encode_slab_manifest(&manifest))
+        let decoded = decode_slab_manifest(&encode_manifest(&manifest))
             .expect("what the encoder wrote must decode");
         assert_eq!(decoded, manifest);
     }
@@ -343,7 +358,7 @@ mod tests {
             full_descriptor(3, BlockStoreSlabState::Sealed),
             full_descriptor(4, BlockStoreSlabState::Active),
         ]);
-        write_manifest_file(dir.path(), &encode_slab_manifest(&manifest));
+        write_manifest_file(dir.path(), &encode_manifest(&manifest));
 
         let loaded = load(dir.path()).expect("a binary manifest must load");
         // THE SENTINELS ARE THE POINT. This reader has no rebuild-from-slabs fallback to recover
@@ -382,7 +397,7 @@ mod tests {
         let as_json = tempfile::tempdir().unwrap();
         let as_wire = tempfile::tempdir().unwrap();
         write_manifest_file(as_json.path(), &serde_json::to_vec(&manifest).unwrap());
-        write_manifest_file(as_wire.path(), &encode_slab_manifest(&manifest));
+        write_manifest_file(as_wire.path(), &encode_manifest(&manifest));
         let from_json = load(as_json.path()).expect("json");
         let from_wire = load(as_wire.path()).expect("wire");
         assert_eq!(from_json.len(), 2);
@@ -416,7 +431,7 @@ mod tests {
 
         // THE FIX, STATED AS BYTES: with the container byte in front the same manifest is recognised
         // and decodes.
-        let bytes = encode_slab_manifest(&manifest);
+        let bytes = encode_manifest(&manifest);
         assert!(is_wire_manifest(&bytes));
         assert_ne!(bytes[0], b'{');
         assert_eq!(decode_slab_manifest(&bytes).expect("decodes"), manifest);
@@ -444,7 +459,7 @@ mod tests {
     #[test]
     fn a_damaged_wire_manifest_is_an_error_and_never_an_empty_store() {
         let manifest = manifest_of(vec![full_descriptor(2, BlockStoreSlabState::Sealed)]);
-        let good = encode_slab_manifest(&manifest);
+        let good = encode_manifest(&manifest);
         // DENOMINATOR: the undamaged bytes load, so every failure below is the damage.
         let dir = tempfile::tempdir().unwrap();
         write_manifest_file(dir.path(), &good);
@@ -478,5 +493,61 @@ mod tests {
         wire.slabs[0].state = 99;
         let unknown = from_wire(wire).expect_err("an unknown state is refused");
         assert!(unknown.contains("does not know"), "{unknown}");
+    }
+
+    #[test]
+    fn the_stored_field_numbers_do_not_move() {
+        // EVERY FIELD A DIFFERENT NON-ZERO VALUE. Proto3 leaves a zero scalar off the wire, so a
+        // zero here would say nothing about its field number, and distinct values mean a swapped
+        // pair of numbers changes the bytes instead of exchanging two equal ones.
+        //
+        // WHAT THIS REPLACES: the manifest was JSON, where serde writes one NAME per field and a
+        // renamed Rust field silently changed the file; a guard had to assert the key spellings.
+        // A protobuf file has no names to drift. What reaches disk is a field NUMBER and a wire
+        // type, and those are what a stored manifest outlives the process on.
+        let descriptor = BlockStoreSlabDescriptor {
+            stored_slab_id: 1,
+            block_slab_id: 2,
+            state: BlockStoreSlabState::Sealed,
+            physical_bytes: 3,
+            logical_bytes: 4,
+            created_unix_ms: Some(5),
+            updated_unix_ms: Some(6),
+            first_block_id: Some(7),
+            last_block_id: Some(8),
+            readable_prefix_physical_bytes: 9,
+            verified_source_mtime_unix_ms: Some(10),
+            has_corruption: true,
+            first_error_offset: Some(11),
+            first_error: Some("e".to_string()),
+        };
+        let inner: Vec<u8> = vec![
+            0x08, 0x01, // 1  stored_slab_id
+            0x10, 0x02, // 2  block_slab_id
+            0x18, 0x02, // 3  state = Sealed
+            0x20, 0x03, // 4  physical_bytes
+            0x28, 0x04, // 5  logical_bytes
+            0x30, 0x05, // 6  created_unix_ms
+            0x38, 0x06, // 7  updated_unix_ms
+            0x40, 0x07, // 8  first_block_id
+            0x48, 0x08, // 9  last_block_id
+            0x50, 0x09, // 10 readable_prefix_physical_bytes
+            0x58, 0x0a, // 11 verified_source_mtime_unix_ms
+            0x60, 0x01, // 12 has_corruption
+            0x68, 0x0b, // 13 first_error_offset
+            0x72, 0x01, b'e', // 14 first_error
+        ];
+        // DENOMINATOR: fourteen fields were meant to be in there, so a field dropped from the
+        // message cannot leave this fixture silently shorter than the thing it describes.
+        assert_eq!(inner.len(), 13 * 2 + 3);
+        let mut expected: Vec<u8> = vec![0x08, 0x01, 0x12, inner.len() as u8];
+        expected.extend_from_slice(&inner);
+
+        let wire = wire_from_slabs(1, [&descriptor]);
+        assert_eq!(
+            wire.encode_to_vec(),
+            expected,
+            "the stored field numbers or wire types moved; a manifest on disk would read as something else"
+        );
     }
 }

@@ -285,7 +285,7 @@ jobs:
             engine::tests::the_config_log_in_either_shape::no_json_encode_path_is_left_in_the_config_log_writer \
             shared_store::tests::shared_store_rejects_corrupt_wal_checksum \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
-            block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
+            block_store::tests::a_written_manifest_is_the_binary_shape_and_reopens \
             block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
             block_store::tests::a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load \
             block_store::shorter_struct_against_an_existing_row::a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation \
@@ -463,6 +463,7 @@ jobs:
             block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
             block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
             block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
+            block_store::slab_manifest_wire::tests::the_stored_field_numbers_do_not_move \
             engine::tests::component_is_retired::the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone \
             engine::tests::component_is_retired::a_comment_or_string_edit_moves_nothing_and_a_code_edit_moves_exactly_one \
             engine::tests::component_is_retired::a_sentence_moves_only_its_own_row \
