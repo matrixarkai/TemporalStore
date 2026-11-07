@@ -274,6 +274,25 @@ impl EmbeddingIndexRegistry {
         query: &[f32],
         candidate_item_ids: &[u64],
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.score_candidate_ids(
+            channel,
+            tenant_id,
+            model_hash,
+            query,
+            candidate_item_ids.iter().copied(),
+            candidate_item_ids.len(),
+        )
+    }
+
+    pub(crate) fn score_candidate_ids(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query: &[f32],
+        candidate_item_ids: impl Clone + Iterator<Item = u64>,
+        candidate_count: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
         let mut matching = self.spaces.iter().filter(|(space, _)| {
             space.channel == channel
                 && space.dimensions == query.len()
@@ -283,17 +302,32 @@ impl EmbeddingIndexRegistry {
             return Ok(Vec::new());
         };
         let Some(second) = matching.next() else {
-            return first.score_candidates(tenant_id, query, candidate_item_ids);
+            return first.score_candidate_ids(
+                tenant_id,
+                query,
+                candidate_item_ids,
+                candidate_count,
+            );
         };
 
-        let mut hits = first.score_candidates(tenant_id, query, candidate_item_ids)?;
+        let mut hits = first.score_candidate_ids(
+            tenant_id,
+            query,
+            candidate_item_ids.clone(),
+            candidate_count,
+        )?;
         let mut positions = hits
             .iter()
             .enumerate()
             .map(|(position, hit)| (hit.key.item_id, position))
             .collect::<HashMap<_, _>>();
         for (_, index) in std::iter::once(second).chain(matching) {
-            for hit in index.score_candidates(tenant_id, query, candidate_item_ids)? {
+            for hit in index.score_candidate_ids(
+                tenant_id,
+                query,
+                candidate_item_ids.clone(),
+                candidate_count,
+            )? {
                 if let Some(&position) = positions.get(&hit.key.item_id) {
                     let existing: &mut EmbeddingHit = &mut hits[position];
                     existing.score = existing.score.max(hit.score);

@@ -2360,8 +2360,6 @@ pub fn retrieve_context(
         });
         let mut returned = HashSet::with_capacity(candidate_chunk.len());
         if let CommandResponse::ContextNodes { nodes } = response.response {
-            let mut node_score_candidates = Vec::with_capacity(nodes.len());
-            let mut summary_score_candidates = Vec::with_capacity(nodes.len());
             let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             for node in &nodes {
@@ -2387,7 +2385,6 @@ pub fn retrieve_context(
                             // said.
                             model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                         } else {
-                            summary_score_candidates.push(node.node_hash);
                             summary_rows
                                 .entry((node.summary_vector_model_hash, summary_vector.len()))
                                 .or_default()
@@ -2422,7 +2419,6 @@ pub fn retrieve_context(
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
                 } else {
-                    node_score_candidates.push(node.node_hash);
                     node_rows
                         .entry((node.embedding_model_hash, node.vector.len()))
                         .or_default()
@@ -2435,33 +2431,35 @@ pub fn retrieve_context(
                         });
                 }
             }
-            for ((model_hash, _), rows) in node_rows {
+            for ((model_hash, _), rows) in &node_rows {
                 let _ = engine.cache_missing_context_embeddings(
                     EmbeddingChannel::Node,
-                    model_hash,
-                    &rows,
+                    *model_hash,
+                    rows,
                 );
             }
-            for ((model_hash, _), rows) in summary_rows {
+            for ((model_hash, _), rows) in &summary_rows {
                 let _ = engine.cache_missing_context_embeddings(
                     EmbeddingChannel::Summary,
-                    model_hash,
-                    &rows,
+                    *model_hash,
+                    rows,
                 );
             }
-            for (channel, candidates) in [
-                (EmbeddingChannel::Node, node_score_candidates.as_slice()),
-                (
-                    EmbeddingChannel::Summary,
-                    summary_score_candidates.as_slice(),
-                ),
+            for (channel, rows_by_space) in [
+                (EmbeddingChannel::Node, &node_rows),
+                (EmbeddingChannel::Summary, &summary_rows),
             ] {
-                if let Ok(hits) = engine.score_context_embedding_candidates(
+                let candidate_count = rows_by_space.values().map(Vec::len).sum();
+                if let Ok(hits) = engine.score_context_embedding_candidate_ids(
                     channel,
                     request.tenant_hash,
                     active_embedding_model_hash,
                     &query_embedding,
-                    candidates,
+                    rows_by_space
+                        .values()
+                        .flatten()
+                        .map(|row| row.key.item_id),
+                    candidate_count,
                 ) {
                     for hit in hits {
                         let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();

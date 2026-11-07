@@ -859,13 +859,28 @@ impl EmbeddingIndex {
         query: &[f32],
         candidate_item_ids: &[u64],
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.score_candidate_ids(
+            tenant_id,
+            query,
+            candidate_item_ids.iter().copied(),
+            candidate_item_ids.len(),
+        )
+    }
+
+    pub(crate) fn score_candidate_ids(
+        &self,
+        tenant_id: u64,
+        query: &[f32],
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        candidate_count: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
         let Some(rows) = self.tenants.get(&tenant_id) else {
             return Ok(Vec::new());
         };
         let query_inverse_norm = query_inverse_norm(query, self.config.dimensions)?;
-        let mut hits = Vec::with_capacity(candidate_item_ids.len().min(rows.item_ids.len()));
+        let mut hits = Vec::with_capacity(candidate_count.min(rows.item_ids.len()));
         for item_id in candidate_item_ids {
-            let Some(&position) = rows.positions.get(item_id) else {
+            let Some(&position) = rows.positions.get(&item_id) else {
                 continue;
             };
             let start = position * self.config.dimensions;
@@ -873,7 +888,7 @@ impl EmbeddingIndex {
             hits.push(EmbeddingHit {
                 key: EmbeddingKey {
                     tenant_id,
-                    item_id: *item_id,
+                    item_id,
                 },
                 score: (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm)
                     .clamp(-1.0, 1.0),
