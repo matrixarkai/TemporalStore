@@ -38,6 +38,7 @@ pub fn ingest_extract_context_with_l1_gate(
     let source_count = request.sources.len();
     let start_time_ms = request.start_time_ms;
     let end_time_ms = request.end_time_ms;
+    let mut prepared_sources = Vec::with_capacity(source_count);
 
     for mut source in request.sources {
         source.shard_id = request.shard_id;
@@ -59,11 +60,96 @@ pub fn ingest_extract_context_with_l1_gate(
             });
             continue;
         }
+        match context_extract_summaries_with_fallback(&source) {
+            Ok(summaries) if summaries.status.ok => prepared_sources.push((source, summaries)),
+            Ok(summaries) => failed_sources.push(ContextIngestSourceFailure {
+                source_id: source.source_id,
+                status: summaries.status,
+            }),
+            Err(report) => failed_sources.push(ContextIngestSourceFailure {
+                source_id: source.source_id,
+                status: report.status,
+            }),
+        }
+    }
+
+    // Summary generation is source-specific, but embedding endpoints natively accept batches.
+    // Group prepared sources by their normalized provider so a large ingest does not pay one
+    // network round trip for every pair of node/event vectors. Provider clients retain their own
+    // request-size limits and split this logical batch when needed.
+    let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
+    for (source_index, (_, summaries)) in prepared_sources.iter().enumerate() {
+        if let Some((_, source_indexes)) = provider_groups
+            .iter_mut()
+            .find(|(provider, _)| *provider == summaries.provider)
+        {
+            source_indexes.push(source_index);
+        } else {
+            provider_groups.push((summaries.provider.clone(), vec![source_index]));
+        }
+    }
+    let mut embedding_outcomes: Vec<Option<ContextEmbeddingOutcome>> =
+        std::iter::repeat_with(|| None)
+            .take(prepared_sources.len())
+            .collect();
+    for (provider, source_indexes) in provider_groups {
+        let mut embedding_inputs = Vec::with_capacity(source_indexes.len().saturating_mul(2));
+        for source_index in &source_indexes {
+            let (source, summaries) = &prepared_sources[*source_index];
+            let node_hash = stable_hash64(&format!(
+                "{}:{}:{}",
+                source.tenant_hash, source.source_kind as u8, source.source_id
+            ));
+            let event_id_hash =
+                stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
+            let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
+            let node_embedding_text = if emit_l1 {
+                summaries.l1.as_str()
+            } else {
+                summaries.l0.as_str()
+            };
+            embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
+            embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
+        }
+        let (batch, report, deferred) =
+            context_embeddings_with_fallback(&provider, &embedding_inputs);
+        for (group_offset, source_index) in source_indexes.into_iter().enumerate() {
+            let source_batch = if deferred {
+                EmbeddingBatch::default()
+            } else {
+                let row_start = group_offset.saturating_mul(2);
+                let value_start = row_start.saturating_mul(batch.dimensions);
+                let value_end = value_start.saturating_add(batch.dimensions.saturating_mul(2));
+                EmbeddingBatch {
+                    dimensions: batch.dimensions,
+                    values: batch.values[value_start..value_end].to_vec(),
+                }
+            };
+            let mut source_report = report.clone();
+            source_report.requested_vector_count = 2;
+            source_report.generated_vector_count = if deferred { 0 } else { 2 };
+            embedding_outcomes[source_index] = Some((source_batch, source_report, deferred));
+        }
+    }
+
+    for (source_index, (source, summaries)) in prepared_sources.into_iter().enumerate() {
         let source_id = source.source_id.clone();
-        // Keep the public API's historical full-fanout default, while allowing
-        // local-context backfill to opt into the same frugal L1 gate as live
-        // hook ingestion.
-        let extract = extract_context_gated(engine, source, gate_l1);
+        let embedding_outcome = embedding_outcomes[source_index]
+            .take()
+            .unwrap_or_else(|| {
+                (
+                    EmbeddingBatch::default(),
+                    ContextEmbeddingGenerationReport::default(),
+                    true,
+                )
+            });
+        let extract = extract_context_gated_prepared(
+            engine,
+            source,
+            gate_l1,
+            summaries,
+            Some(embedding_outcome),
+        );
         if extract.status.ok {
             node_hashes.push(extract.node.node_hash);
             extracts.push(extract);
