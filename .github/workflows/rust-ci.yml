@@ -278,6 +278,8 @@ jobs:
             index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
             index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
             engine::tests::the_config_log_in_either_shape::the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_misread \
+            engine::tests::the_config_log_in_either_shape::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
+            engine::tests::the_config_log_in_either_shape::no_json_encode_path_is_left_in_the_config_log_writer \
             shared_store::tests::shared_store_rejects_corrupt_wal_checksum \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
             block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \

@@ -1974,6 +1974,18 @@ impl TemporalEngine {
     /// Append one config-log entry `{after_seq, config}` and fsync it. `after_seq` is the WAL
     /// sequence the config became effective AFTER (it applies to writes with sequence >
     /// after_seq). Append-only + fsync'd so a crash cannot lose an acked config change.
+    ///
+    /// WRITTEN AS ONE BINARY FRAME: a length, a CRC32C and a protobuf entry. There is no JSON
+    /// encode path here; `config_log_entries` keeps its JSON arm for the lines already on disk.
+    ///
+    /// A TORN TAIL IS CUT OFF BEFORE APPENDING. A line could be glued onto a partial line and cost
+    /// only that line. A frame appended behind a partial frame is swallowed by it: the partial
+    /// frame declares more bytes than it has, so the reader would take the new entry as the rest of
+    /// the old one, fail its checksum, and stop -- and the entry it lost is the NEWEST config. So
+    /// the tail is walked first and anything after the last whole entry is truncated, which is safe
+    /// because an entry that did not finish was never acknowledged (the caller returns only after
+    /// the fsync below). A frame that is complete but fails its checksum is NOT cut: that is
+    /// committed corruption, and the file is left intact for an operator.
     pub(super) fn append_config_log_entry(
         &self,
         shard_id: ShardId,
@@ -1986,13 +1998,24 @@ impl TemporalEngine {
             after_seq,
             config: config.clone(),
         };
-        let mut bytes = serde_json::to_vec(&entry)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        bytes.push(b'\n');
+        let path = self.config_log_path(shard_id);
+        let existing = std::fs::read(&path).unwrap_or_default();
+        let walk = walk_config_log(&existing, shard_id);
+        if walk.torn_tail {
+            let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+            file.set_len(walk.good_end as u64)?;
+            file.sync_all()?;
+        }
+        let mut bytes = Vec::new();
+        // A complete JSON line with no terminator would have the frame glued onto it.
+        if walk.unterminated_json_tail {
+            bytes.push(b'\n');
+        }
+        bytes.extend(encode_config_log_frame(&entry));
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.config_log_path(shard_id))?;
+            .open(&path)?;
         file.write_all(&bytes)?;
         file.flush()?;
         file.sync_data()?;
@@ -2002,61 +2025,13 @@ impl TemporalEngine {
     /// Read the config-log entries for a shard, sorted by ascending `after_seq` (stable). Empty
     /// when the shard has no config-log (no single-barrier config change was ever persisted).
     pub(super) fn config_log_entries(&self, shard_id: ShardId) -> Vec<ConfigLogEntry> {
-        let path = self.config_log_path(shard_id);
         // BYTES, NOT A STRING: a framed entry's payload is binary and is not required to be valid
         // UTF-8, so `read_to_string` would refuse the whole file for one such entry.
-        let data = match std::fs::read(&path) {
+        let data = match std::fs::read(self.config_log_path(shard_id)) {
             Ok(data) => data,
             Err(_) => return Vec::new(),
         };
-        let mut entries: Vec<ConfigLogEntry> = Vec::new();
-        let mut offset = 0usize;
-        while offset < data.len() {
-            // A blank separator is not an entry: the line format leaves bare newlines between them.
-            if data[offset] == b'\n' || data[offset] == b'\r' {
-                offset += 1;
-                continue;
-            }
-            match crate::log_framing::next_frame(&data[offset..]) {
-                // A whole framed entry whose checksum matched, or an unframed JSON line ending at
-                // its newline. An entry that does not parse is SKIPPED and the next is read, as a
-                // JSON line that did not parse always was.
-                Ok(Some((consumed, payload))) => {
-                    offset += consumed;
-                    match decode_config_log_payload(payload) {
-                        Some(entry) => entries.push(entry),
-                        None => tracing::warn!(
-                            shard_id,
-                            "a config-log entry did not parse and was skipped"
-                        ),
-                    }
-                }
-                // What remains is shorter than the entry it declares: a torn tail. A final JSON
-                // line with no terminator that is nonetheless complete is still taken, which is
-                // what reading it line by line always did.
-                Ok(None) => {
-                    let rest = &data[offset..];
-                    if rest.first() == Some(&b'{') {
-                        if let Some(entry) = decode_config_log_payload(rest.trim_ascii_end()) {
-                            entries.push(entry);
-                        }
-                    }
-                    break;
-                }
-                // A COMPLETE framed entry whose checksum failed. Its declared length cannot be
-                // trusted to step over it, so nothing after it can be found: reading stops here
-                // and says so, instead of resynchronising on a byte that may be inside a payload.
-                Err(error) => {
-                    tracing::warn!(
-                        shard_id,
-                        error = %error.0,
-                        entries_read = entries.len(),
-                        "a framed config-log entry failed its checksum; entries after it were not read"
-                    );
-                    break;
-                }
-            }
-        }
+        let mut entries = walk_config_log(&data, shard_id).entries;
         entries.sort_by_key(|entry| entry.after_seq);
         entries
     }
@@ -5702,8 +5677,88 @@ fn decode_config_log_payload(payload: &[u8]) -> Option<ConfigLogEntry> {
     serde_json::from_slice::<ConfigLogEntry>(payload).ok()
 }
 
-/// One config-log entry as a binary frame. Test-only until the writer flips.
-#[cfg(test)]
+/// What one pass over a config-log file found.
+struct ConfigLogWalk {
+    entries: Vec<ConfigLogEntry>,
+    /// Where the last WHOLE record ends. The only point the file may be cut back to.
+    good_end: usize,
+    /// The file ends in a record shorter than it declares: a write that did not finish.
+    torn_tail: bool,
+    /// The file ends in a complete JSON line with no newline after it.
+    unterminated_json_tail: bool,
+}
+
+/// Walk a config log once: unframed JSON lines and length-prefixed checksummed frames, from one
+/// file, by the same reader the metadata log uses.
+///
+/// An entry that does not parse is SKIPPED and the next is read, as an unparsable JSON line always
+/// was. A COMPLETE frame whose checksum fails stops the walk and says so: its declared length
+/// cannot be trusted to step over it, so nothing after it can be found, and resynchronising on a
+/// byte could land inside a payload.
+fn walk_config_log(data: &[u8], shard_id: ShardId) -> ConfigLogWalk {
+    let mut walk = ConfigLogWalk {
+        entries: Vec::new(),
+        good_end: 0,
+        torn_tail: false,
+        unterminated_json_tail: false,
+    };
+    let mut offset = 0usize;
+    while offset < data.len() {
+        // A blank separator is not an entry: the line format leaves bare newlines between them.
+        if data[offset] == b'\n' || data[offset] == b'\r' {
+            offset += 1;
+            walk.good_end = offset;
+            continue;
+        }
+        match crate::log_framing::next_frame(&data[offset..]) {
+            Ok(Some((consumed, payload))) => {
+                offset += consumed;
+                walk.good_end = offset;
+                match decode_config_log_payload(payload) {
+                    Some(entry) => walk.entries.push(entry),
+                    None => tracing::warn!(
+                        shard_id,
+                        "a config-log entry did not parse and was skipped"
+                    ),
+                }
+            }
+            // What remains is shorter than the entry it declares. A final JSON line with no
+            // terminator that is nonetheless complete is still an entry, which reading it line by
+            // line always allowed; anything else is a torn write.
+            Ok(None) => {
+                let rest = &data[offset..];
+                let complete_line = if rest.first() == Some(&b'{') {
+                    decode_config_log_payload(rest.trim_ascii_end())
+                } else {
+                    None
+                };
+                match complete_line {
+                    Some(entry) => {
+                        walk.entries.push(entry);
+                        walk.good_end = data.len();
+                        walk.unterminated_json_tail = true;
+                    }
+                    None => walk.torn_tail = true,
+                }
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    shard_id,
+                    error = %error.0,
+                    entries_read = walk.entries.len(),
+                    "a framed config-log entry failed its checksum; entries after it were not read"
+                );
+                break;
+            }
+        }
+    }
+    walk
+}
+
+/// One config-log entry as a binary frame. THE ONLY ENCODER: `append_config_log_entry` calls it and
+/// nothing writes the JSON line any more. An encoder nobody calls is how a retired format comes back;
+/// `decode_config_log_payload` keeps its JSON arm because the lines already on disk are JSON.
 pub(super) fn encode_config_log_frame(entry: &ConfigLogEntry) -> Vec<u8> {
     use prost::Message as _;
     let config = &entry.config;
