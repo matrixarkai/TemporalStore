@@ -257,6 +257,11 @@ jobs:
             shared_store::tests::the_widened_object_readers_accept_both_shapes \
             shared_store::tests::the_object_writers_are_binary_and_planted_json_objects_are_still_read \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
+            shared_store::tests::restore_reads_a_binary_dump_manifest_beside_a_json_one \
+            engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_both_shapes_and_the_digest_payload_is_the_encoding \
+            engine::tests::bucket_dump_binary_shape::each_checksum_version_verifies_its_own_manifests_and_never_the_others \
+            engine::tests::bucket_dump_binary_shape::a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trusted \
+            engine::tests::bucket_dump_binary_shape::an_install_marker_is_read_in_either_shape \
             shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \

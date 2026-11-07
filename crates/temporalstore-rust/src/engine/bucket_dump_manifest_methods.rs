@@ -171,6 +171,7 @@ impl TemporalEngine {
             object_lifecycle,
             index_bytes,
             index_sha256,
+            checksum_version: BUCKET_DUMP_CHECKSUM_LEGACY_JSON,
             checksum: String::new(),
         };
         manifest.dump_generation_id = bucket_dump_generation_id(&manifest);

@@ -52,6 +52,7 @@ mod stream_batch_methods;
 mod recovery_sweep_compact;
 #[path = "engine/engine_persistence.rs"]
 mod persistence;
+pub(crate) mod bucket_dump_codec;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
@@ -136,6 +137,7 @@ use self::hashing::*;
 use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
 use self::bucket_dump_io::*;
+use self::bucket_dump_codec::*;
 use self::bucket_store::{read_bucket_index_value, bucket_index_component_block_addresses};
 use self::state::*;
 use crate::block_store::BlockAppendRecord;

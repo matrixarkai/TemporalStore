@@ -1729,8 +1729,12 @@ where
             if !is_bucket_dump_manifest_key(&key) {
                 continue;
             }
+            // Either shape. The JSON arm is permanent: every manifest published before the
+            // binary shape existed is still in the store.
             let manifest: crate::BucketDumpManifest =
-                serde_json::from_slice(&self.object_store.get(&key).await?)?;
+                crate::engine::bucket_dump_codec::decode_bucket_dump_manifest(
+                    &self.object_store.get(&key).await?,
+                )?;
             // A manifest filed under another shard's prefix, or one this node already has,
             // is not ours to write.
             if manifest.shard_id != shard_id || existing.contains(&manifest.manifest_id) {
@@ -9537,6 +9541,77 @@ mod tests {
         let inherited = successor.list_bucket_dump_manifests(1);
         assert_eq!(inherited.len(), 1);
         assert_eq!(inherited[0].manifest_id, dumped.manifest_id);
+    }
+
+    /// A RESTORE READS A MANIFEST WHOSE BODY IS BINARY, BESIDE ONE WHOSE BODY IS JSON.
+    ///
+    /// The JSON one is a REAL published manifest (the writer still produces that shape); the binary
+    /// one is planted into the store, because no writer produces it yet. Each carries a checksum
+    /// from its own derivation, and the successor's local listing re-verifies both, so a restore
+    /// that accepted a binary body but mis-derived its digest would land a manifest the listing then
+    /// drops -- and the count of the successor's LISTING, not the restore's return value, is the
+    /// assertion that sees that.
+    #[tokio::test]
+    async fn restore_reads_a_binary_dump_manifest_beside_a_json_one() {
+        use crate::engine::bucket_dump_codec::{
+            bucket_dump_protobuf_digest, encode_bucket_dump_manifest,
+            BUCKET_DUMP_CHECKSUM_PROTOBUF, BUCKET_DUMP_CONTAINER_PROTOBUF,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        let legacy = primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+        replicator
+            .publish_bucket_dump_manifests(1, &primary.list_bucket_dump_manifests(1))
+            .await
+            .unwrap();
+
+        let mut binary = legacy.clone();
+        binary.manifest_id = format!("{}-binary", legacy.manifest_id);
+        binary.index_log_sequence = legacy.index_log_sequence + 1;
+        binary.wal_sequence = legacy.wal_sequence + 5;
+        binary.checksum_version = BUCKET_DUMP_CHECKSUM_PROTOBUF;
+        binary.checksum = bucket_dump_protobuf_digest(&binary).0;
+        let planted = encode_bucket_dump_manifest(&binary);
+        assert_eq!(planted[0], BUCKET_DUMP_CONTAINER_PROTOBUF);
+        let key = replicator.bucket_dump_manifest_key(1, &binary.manifest_id);
+        store.put(&key, Bytes::from(planted)).await.unwrap();
+        let legacy_key = replicator.bucket_dump_manifest_key(1, &legacy.manifest_id);
+        assert_eq!(
+            store.get(&legacy_key).await.unwrap()[0],
+            b'{',
+            "the published legacy manifest is not JSON, so the JSON arm is not what is read"
+        );
+
+        let successor = test_engine(dir.path(), "successor");
+        successor.load_shard(1);
+        assert!(successor.list_bucket_dump_manifests(1).is_empty());
+        let restored = replicator
+            .restore_bucket_dump_manifests(1, &successor)
+            .await
+            .unwrap();
+        assert_eq!(restored, 2, "restore skipped or refused one of the two shapes");
+
+        let inherited = successor.list_bucket_dump_manifests(1);
+        assert_eq!(
+            inherited.len(),
+            2,
+            "a restored manifest failed the successor's own checksum verification: {inherited:?}"
+        );
+        let got = inherited
+            .iter()
+            .find(|m| m.manifest_id == binary.manifest_id)
+            .expect("the binary manifest was not inherited");
+        assert_eq!(got, &binary, "the restore changed the binary manifest");
     }
 
     /// The same, for the checkpoint manifest, where the skip produces an EMPTY LIST.

@@ -462,3 +462,5 @@ mod what_a_cold_set_listing_reads;
 mod does_the_durable_map_answer_what_the_fold_answers;
 #[path = "tests/component_is_retired.rs"]
 mod component_is_retired;
+#[path = "tests/bucket_dump_binary_shape.rs"]
+mod bucket_dump_binary_shape;

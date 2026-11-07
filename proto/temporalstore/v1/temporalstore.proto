@@ -1520,3 +1520,103 @@ message DurableIngestionState {
   repeated IngestionDeadLetter dead_letters = 4;
   IngestionStats stats = 5;
 }
+
+// ===========================================================================================
+// DURABLE BUCKET-DUMP MANIFEST AND INSTALL MARKER, BINARY SHAPE.
+//
+// A dump manifest is the durable reclaim watermark plus the recovery index for the data it
+// covers; the install marker is the roll-forward record of an install in flight. Both used to be
+// JSON files. A reader decides the shape per file from the first byte (see
+// `BUCKET_DUMP_CONTAINER_PROTOBUF` in `engine/bucket_dump_codec.rs`), never from a setting.
+//
+// NO `map` FIELD, ON PURPOSE. The manifest carries a checksum, and for a binary manifest that
+// checksum is a SHA-256 over THIS message's own encoding (`checksum_version` 1). A protobuf `map`
+// has no defined iteration order, so a digest over one would depend on the encoder. Every
+// collection below is a `repeated` field, which encodes in the order the writer gave it.
+//
+// FIELD ORDER IS PART OF THE DIGEST. `index_bytes` and `checksum` take the two HIGHEST tags so a
+// writer can stream the whole-shard index image into the hash without copying it into a message
+// first: the encoding of every other field comes before it, in tag order. A field added later
+// takes a tag BELOW 22, or the streamed digest stops being the encoding of the message -- and a
+// test in `bucket_dump_codec.rs` compares the two and says so.
+// ===========================================================================================
+
+message DurableBucketStorageSummary {
+  uint32 routing_bucket = 1;
+  uint64 object_count = 2;
+  uint64 block_ref_count = 3;
+  uint64 logical_bytes = 4;
+  uint64 physical_bytes = 5;
+  uint64 dirty_object_count = 6;
+  uint64 dirty_generation = 7;
+  uint64 last_dump_sequence = 8;
+  repeated uint64 block_slab_ids = 9;
+  // Absent is not slab 0: a bucket never compacted has no value here at all.
+  optional uint64 last_compacted_slab = 10;
+}
+
+message DurableStorageObjectLifecycle {
+  uint64 live_object_ids = 1;
+  uint64 live_block_refs = 2;
+  uint64 stale_object_ids = 3;
+  uint64 delete_marked_object_ids = 4;
+  uint64 reused_object_id_conflicts = 5;
+  uint64 missing_owner_block_refs = 6;
+  uint64 owner_mismatch_block_refs = 7;
+  repeated uint64 reused_object_ids = 8;
+  repeated string delete_marked_object_keys = 9;
+}
+
+message DurableBucketDumpSourceCoverage {
+  string manifest_id = 1;
+  repeated uint32 bucket_ids = 2;
+}
+
+message DurableBucketDumpLoadVersionHandoff {
+  uint64 previous_load_version = 1;
+  uint64 next_load_version = 2;
+  bool applied = 3;
+}
+
+message DurableBucketDumpManifest {
+  uint32 version = 1;
+  uint64 shard_id = 2;
+  string manifest_id = 3;
+  string manifest_kind = 4;
+  string dump_generation_id = 5;
+  repeated string source_manifest_ids = 6;
+  repeated DurableBucketDumpSourceCoverage source_manifest_coverage = 7;
+  // `optional`: an empty parent id is a parent that was named and happens to be empty, which is
+  // not the same as no parent.
+  optional string parent_manifest_id = 8;
+  optional DurableBucketDumpLoadVersionHandoff load_version_handoff = 9;
+  uint64 created_unix_ms = 10;
+  repeated uint32 bucket_ids = 11;
+  repeated uint64 block_slab_ids = 12;
+  uint64 wal_sequence = 13;
+  uint64 index_log_sequence = 14;
+  uint64 live_block_refs = 15;
+  uint64 logical_bytes = 16;
+  uint64 physical_bytes = 17;
+  repeated DurableBucketStorageSummary bucket_summaries = 18;
+  // Absent means the all-zero report, which is what a manifest without one has always meant.
+  optional DurableStorageObjectLifecycle object_lifecycle = 19;
+  string index_sha256 = 20;
+  // Which derivation `checksum` was computed with. 0 is a manifest written before this field
+  // existed: its checksum is a SHA-256 over the manifest's canonical JSON. 1 is a SHA-256 over
+  // this message's own encoding with `checksum` empty. Any other value is refused, never guessed.
+  uint32 checksum_version = 21;
+  // The whole-shard index image. Second-highest tag: see the note above.
+  bytes index_bytes = 22;
+  // Highest tag, and EMPTY while the digest is computed.
+  string checksum = 23;
+}
+
+message DurableBucketDumpInstallMarker {
+  uint64 shard_id = 1;
+  string manifest_id = 2;
+  string phase = 3;
+  uint64 wal_sequence = 4;
+  uint64 index_log_sequence = 5;
+  uint64 created_unix_ms = 6;
+}
