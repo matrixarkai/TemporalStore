@@ -2304,23 +2304,22 @@ pub fn retrieve_context(
     let cold_node_hashes = if request.end_time_ms == u64::MAX {
         let mut cold = Vec::with_capacity(initial_candidate_capacity);
         for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
-            let summary_hits = prepared_query_embedding
-                .and_then(|prepared_query| {
-                    engine
-                        .score_context_embedding_candidates(
-                            EmbeddingChannel::Summary,
-                            request.tenant_hash,
-                            active_embedding_model_hash,
-                            prepared_query,
-                            candidate_chunk,
-                        )
-                        .ok()
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .map(|hit| (hit.key.item_id, hit.score))
-                .collect::<HashMap<_, _>>();
             if let Some(prepared_query) = prepared_query_embedding {
+                if let Ok(summary_hits) = engine.score_context_embedding_candidates(
+                    EmbeddingChannel::Summary,
+                    request.tenant_hash,
+                    active_embedding_model_hash,
+                    prepared_query,
+                    candidate_chunk,
+                ) {
+                    for summary_hit in summary_hits {
+                        // Count zero marks a summary-only warm hit until the node channel joins it.
+                        summary_scores_by_node.insert(
+                            summary_hit.key.item_id,
+                            ((summary_hit.score * 1_000_000.0) as i64, 0),
+                        );
+                    }
+                }
                 if let Ok(node_hits) = engine.score_context_embedding_candidates(
                     EmbeddingChannel::Node,
                     request.tenant_hash,
@@ -2329,27 +2328,25 @@ pub fn retrieve_context(
                     candidate_chunk,
                 ) {
                     for node_hit in node_hits {
-                        let Some(summary_score) = summary_hits.get(&node_hit.key.item_id) else {
+                        let Some(scores) = summary_scores_by_node.get_mut(&node_hit.key.item_id)
+                        else {
                             continue;
                         };
-                        let scores = summary_scores_by_node
-                            .entry(node_hit.key.item_id)
-                            .or_default();
-                        scores.0 = ((node_hit.score.max(*summary_score)) * 1_000_000.0) as i64;
+                        scores.0 = scores.0.max((node_hit.score * 1_000_000.0) as i64);
                         scores.1 = 2;
                     }
                 }
             }
-            cold.extend(
-                candidate_chunk
-                    .iter()
-                    .copied()
-                    .filter(|node_hash| {
-                        summary_scores_by_node
-                            .get(node_hash)
-                            .is_none_or(|(_, score_count)| *score_count < 2)
-                    }),
-            );
+            for node_hash in candidate_chunk {
+                let needs_storage = summary_scores_by_node
+                    .get(node_hash)
+                    .is_none_or(|(_, score_count)| *score_count < 2);
+                if needs_storage {
+                    // Do not let a partial warm hit inflate the durable-row score count below.
+                    summary_scores_by_node.remove(node_hash);
+                    cold.push(*node_hash);
+                }
+            }
         }
         Some(cold)
     } else {
