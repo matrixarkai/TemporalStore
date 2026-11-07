@@ -187,14 +187,9 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "RecordedElement",
         "RecordedElementRemoval",
         "RecordedObjectRemoval",
-        // A READ ACROSS ALL FOUR KINDS, dispatching on a kind STRING. `row_refs` answers "does this
-        // object's row hold block refs", and it exists here rather than beside the other refs
-        // readers because this is the only module that knows which `ShardState` field each kind's
-        // rows live in. `&ShardState`, borrows out, no mutation.
-        "row_refs",
         //
-        // THE NEXT FOUR ARE THE ROW HOME'S SWEEPS AND ITS DELETERS. All four MUTATE WITHOUT A
-        // RECORD and all four are on the same ground as `set_refs`: what they touch is DERIVED
+        // THE NEXT TWO ARE THE ROW HOME'S SWEEPS AND ITS DELETER. Both MUTATE WITHOUT A
+        // RECORD and both are on the same ground as `set_refs`: what they touch is DERIVED
         // state -- refs are absent from the stored bytes and re-filed by the load path -- so there
         // is no durable statement for a record to be consistent with. None can add or drop a KEY.
         //
@@ -204,9 +199,6 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         //   * `prune_row_refs_to_the_blocks_the_index_holds` -- the DELETER, mirroring
         //     `CoreIndex::prune_refs_to_the_pages_the_index_holds`, which cannot reach a row.
         //     Without it a reconstruct leaves row refs naming blocks the new index does not hold.
-        //   * `remove_row_ref` / `clear_row_refs` -- one ref and a whole set, so the removal doors
-        //     can span every home the reader spans. A deleter narrower than its reader is how a
-        //     ref outlives its block.
         //
         // THEY ARE REACHED but the WRITER they exist for is not, so today they only ever run over
         // rows whose refs are `None`. That is deliberate and is explained at `adopt_refs_into_row`
@@ -216,8 +208,6 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // again with the writer off.
         "adopt_every_lookup_ref_into_its_row",
         "prune_row_refs_to_the_blocks_the_index_holds",
-        "remove_row_ref",
-        "clear_row_refs",
         //
         // `adopt_refs_into_row` MUTATES TWO MAPS WITHOUT A RECORD, and it is NOT CALLED.
         //
@@ -324,6 +314,13 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // after which a re-add takes the wrong branch and leaks a tombstone.
         "retain_refs",
         "remove_ref",
+        // TWO MORE ON THE SAME GROUND, and the first is a read. `rows_holding_refs` lends every row
+        // that carries refs, for the inversion to file; it is `&self` and yields borrows.
+        // `take_every_refs` clears every row's refs to `None` for the whole-shard rebuild that is
+        // about to re-file them. It mutates without a record because refs are DERIVED state, and it
+        // cannot add or drop a key: the rows and their elements stay where they are.
+        "rows_holding_refs",
+        "take_every_refs",
         "rows_with_refs",
         // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
         // CLONE of an address the map already holds -- the block an element is moving off, which the

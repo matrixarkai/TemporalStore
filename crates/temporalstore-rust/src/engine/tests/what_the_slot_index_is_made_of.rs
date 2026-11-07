@@ -713,7 +713,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     // module: this is bookkeeping for a counterfactual, not the redundancy claim. The claim is
     // taken in the other direction -- the key rebuilt from the entry's WRITTEN BYTES -- because a
     // comparison against `block_index_written_key` would be a renderer compared with itself.
-    let identity_keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let identity_keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
     let mut handles_by_written_key = BTreeMap::new();
     for node in shard.bucket_index.bucket_map.values() {
         let identities = crate::engine::state::block_identities_in(node, &identity_keys);

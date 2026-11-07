@@ -2040,7 +2040,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // used rather than the live-only inversion because this walk reports on DELETED blocks too --
     // two of its rows are about zero-length tombstones -- and a tombstone's object is named by
     // the bucket's own removal row, not by the object lookup.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_homes(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup, &shard.bucket_index.hashes, &shard.bucket_index.sets, &shard.bucket_index.zsets, &shard.bucket_index.lists);
     for bucket in shard.bucket_index.bucket_map.values() {
         max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.object_count());
         let mut blocks_here = 0usize;

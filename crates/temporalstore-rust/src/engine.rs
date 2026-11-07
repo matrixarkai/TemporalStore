@@ -5051,7 +5051,7 @@ fn fold_delta_block_items(
             // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
             let names = crate::engine::state::block_identities_in(
                 &bucket,
-                &crate::engine::state::BlockKeysByPosition::from_parts(&bucket_index.objects, &bucket_index.object_block_lookup),
+                &crate::engine::state::BlockKeysByPosition::from_homes(&bucket_index.objects, &bucket_index.object_block_lookup, &bucket_index.hashes, &bucket_index.sets, &bucket_index.zsets, &bucket_index.lists),
             );
             let routing_bucket = item.routing_bucket;
             bucket.block_index.retain(
@@ -5095,11 +5095,15 @@ fn fold_delta_block_items(
             // destructure is what lets it be read while the bucket map is held mutably -- so the
             // map has to be bound here rather than reached through `bucket_index`.
             objects,
+            hashes,
+            sets,
+            zsets,
+            lists,
             ..
         } = &mut *bucket_index;
         // NAMED BEFORE THE MUTATION, for the reason at the upsert arm above. Here the destructure
         // is what lets the inversion be read while the bucket map is held mutably.
-        let identities = crate::engine::state::BlockKeysByPosition::from_parts(objects, object_block_lookup);
+        let identities = crate::engine::state::BlockKeysByPosition::from_homes(objects, object_block_lookup, hashes, sets, zsets, lists);
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
             let names = crate::engine::state::block_identities_in(bucket, &identities);
@@ -7469,7 +7473,9 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
             .and_then(|table| table.get(object_key))
             .and_then(|slot| slot.refs());
         let from_lookup = lookup.get(kind, object_key);
-        for entry in from_row.into_iter().chain(from_lookup) {
+        let from_container_row = crate::engine::state::row_refs_of(
+            &index.hashes, &index.sets, &index.zsets, &index.lists, kind, object_key);
+        for entry in from_row.into_iter().chain(from_lookup).chain(from_container_row) {
         for block_ref in entry.iter() {
             let Some(mut bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
                 continue;
@@ -8186,6 +8192,7 @@ fn object_manager_stats(
                             .values()
                             .map(crate::engine::state::BlockRefs::len)
                             .sum::<usize>()
+                            + shard.bucket_index.row_ref_total()
                     }),
                     shard.dirty_objects.len(),
                 )

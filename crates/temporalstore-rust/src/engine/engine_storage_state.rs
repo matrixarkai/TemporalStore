@@ -8177,6 +8177,7 @@ impl CoreIndex {
     /// names a block -- the decode-then-rebuild window -- and there is nothing there to walk fast.
     pub(super) fn names_no_object_blocks(&self) -> bool {
         self.object_block_lookup.is_empty()
+            && self.row_ref_objects() == 0
             && self
                 .objects
                 .values()
@@ -8191,6 +8192,7 @@ impl CoreIndex {
     /// with no block is a real state here.
     pub(super) fn objects_naming_blocks(&self) -> usize {
         self.object_block_lookup.len()
+            + self.row_ref_objects()
             + self
                 .objects
                 .values()
@@ -8207,6 +8209,10 @@ impl CoreIndex {
     /// and its new one, and `BlockKeysByPosition` would carry both.
     pub(super) fn clear_object_blocks(&mut self) {
         self.object_block_lookup.clear();
+        self.hashes.take_every_refs();
+        self.sets.take_every_refs();
+        self.zsets.take_every_refs();
+        self.lists.take_every_refs();
         for table in self.objects.values_mut() {
             for slot in table.values_mut() {
                 slot.take_refs();
@@ -8587,20 +8593,26 @@ impl CoreIndex {
             .map(BlockRefs::as_slice)
     }
 
+    /// HOW MANY OBJECTS HOLD REFS ON A CONTAINER ROW, across the four kinds.
+    pub(super) fn row_ref_objects(&self) -> usize {
+        self.hashes.rows_with_refs()
+            + self.sets.rows_with_refs()
+            + self.zsets.rows_with_refs()
+            + self.lists.rows_with_refs()
+    }
+
+    /// HOW MANY BLOCK REFS THE CONTAINER ROWS HOLD IN ALL.
+    pub(super) fn row_ref_total(&self) -> usize {
+        let sum = |rows: &mut dyn Iterator<Item = (&ModelKey, &BlockRefs)>| rows.map(|(_, refs)| refs.len()).sum::<usize>();
+        sum(&mut self.hashes.rows_holding_refs())
+            + sum(&mut self.sets.rows_holding_refs())
+            + sum(&mut self.zsets.rows_holding_refs())
+            + sum(&mut self.lists.rows_holding_refs())
+    }
+
     /// The refs a container kind keeps on its row, if it is one of the four and the row has any.
     pub(super) fn row_refs(&self, kind: &str, object_key: &str) -> Option<&BlockRefs> {
-        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
-        if kind == HashKind::KIND {
-            self.hashes.refs(object_key)
-        } else if kind == SetKind::KIND {
-            self.sets.refs(object_key)
-        } else if kind == ZSetKind::KIND {
-            self.zsets.refs(object_key)
-        } else if kind == ListKind::KIND {
-            self.lists.refs(object_key)
-        } else {
-            None
-        }
+        row_refs_of(&self.hashes, &self.sets, &self.zsets, &self.lists, kind, object_key)
     }
 
     /// Drop one ref from the object's row, whichever of the four kinds it is.
@@ -8891,6 +8903,32 @@ pub(super) fn install_reconstructed_into_shard(
     let adopted = super::recorded_map::adopt_every_lookup_ref_into_its_row(shard);
     let pruned = super::recorded_map::prune_row_refs_to_the_blocks_the_index_holds(shard);
     (adopted, pruned)
+}
+
+/// THE ROW HOME OF AN OBJECT'S REFS, TAKEN FROM THE FOUR MAPS RATHER THAN FROM THE INDEX.
+///
+/// A caller holding the bucket map mutably cannot ask `CoreIndex::row_refs`, which borrows the
+/// whole index however disjoint the fields really are; it names the four maps instead.
+pub(super) fn row_refs_of<'a>(
+    hashes: &'a super::recorded_map::RecordedMap<super::recorded_map::HashKind>,
+    sets: &'a super::recorded_map::RecordedMap<super::recorded_map::SetKind>,
+    zsets: &'a super::recorded_map::RecordedMap<super::recorded_map::ZSetKind>,
+    lists: &'a super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
+    kind: &str,
+    object_key: &str,
+) -> Option<&'a BlockRefs> {
+    use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+    if kind == HashKind::KIND {
+        hashes.refs(object_key)
+    } else if kind == SetKind::KIND {
+        sets.refs(object_key)
+    } else if kind == ZSetKind::KIND {
+        zsets.refs(object_key)
+    } else if kind == ListKind::KIND {
+        lists.refs(object_key)
+    } else {
+        None
+    }
 }
 
 pub(super) fn next_block_index_for_object(

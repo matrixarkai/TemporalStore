@@ -535,7 +535,7 @@ impl TemporalEngine {
             // order that pass already pays; built per bucket it would be that order per bucket.
             let index = &mut shard.bucket_index;
             let keys =
-                crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+                crate::engine::state::BlockKeysByPosition::from_homes(&index.objects, &index.object_block_lookup, &index.hashes, &index.sets, &index.zsets, &index.lists);
             for bucket in index.bucket_map.values_mut() {
                 update_bucket_layout(shard_id, bucket, &keys);
             }

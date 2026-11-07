@@ -327,94 +327,6 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 // only then is the field borrowed to apply the proof.
 // ---------------------------------------------------------------------------------------------
 
-/// Record an element's block and put it in the resident map, in that order, in one call.
-///
-/// `element_name` is the element rendered the way the block index names it; `element` is the level-2
-/// key. BOTH are taken rather than one derived from the other, because every caller has already
-/// computed the element name to derive the block ordinal and the block frame from it, and deriving it
-/// again here would be a second rendering of one identity -- the shape that let a claim about a
-/// hash function be relayed as a claim about a hash path.
-///
-/// # A CORRECTION TO THE VERSION OF THIS NOTE THAT LANDED FIRST
-///
-/// The paragraph that stood here said reader (1) below is "the only durable spelling of a hash
-/// field, a set member, a zset member or a list position that anything READS on the replay
-/// path". That was true of the code it was written against and is FALSE now, which is why it is
-/// quoted rather than quietly overwritten: `apply_outcome_item`'s four container arms read the
-/// element off the BLOCK, live and removed, so nothing on the replay path reads the outcome's
-/// copy for those kinds any more. What the earlier note got right is the conclusion -- the
-/// parameter stays -- and it got it right for a reason that has since changed, which is exactly
-/// the shape this tree records rather than deletes.
-///
-/// # THIS PARAMETER WAS PUT UP FOR REMOVAL TOO, AND IT IS NOT A RECONSTRUCTION OF ANYTHING
-///
-/// The reading it was proposed on was that it is "the resident map's own key spelling, so removing
-/// it removes the authority". IT IS NOT THAT, and the correction is worth having even though the
-/// conclusion survives: the map's key is `element`, the parameter beside it, and the two are
-/// different VALUES rather than two spellings of one. For `SetKind` the caller passes
-/// `Some(set_element_name(member))` here and the raw `member` bytes as `element`; the map is keyed by
-/// the bytes.
-///
-/// WHAT IT FEEDS, AFTER THE REPLAY PATH STOPPED ASKING THE OUTCOME. Both readers are inside
-/// `upsert_bucket_index_block_inner`:
-///
-///   1. `WalOutcomeItem::element_name`. The replay path no longer READS that field for a container
-///      kind -- it reads the block -- so this reader is now the record's own copy rather than
-///      something a recovery depends on. It is still written, because the field cannot be removed
-///      while six timestamped kinds read it and its absence is a meaning; the argument is set out
-///      in full at the field.
-///   2. THE TOMBSTONE SWEEP, which is the reader that makes this parameter stay. `element.as_deref()`
-///      keys `tombstone_element_block`, and that is how a re-add clears the tombstone ITS OWN element
-///      left. Narrow on purpose: the predicate it replaced widened to every tombstone of the object
-///      the moment the filed name went to `None`, which is the resurrection
-///      `engine::tests::write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_member_back`
-///      holds.
-///
-/// # AND IT COULD BE RESOLVED FROM THE BLOCK, WHICH IS EXACTLY WHY IT SHOULD NOT BE
-///
-/// The sweep runs on the WRITE path, where the element name is the caller's own input -- already
-/// computed, already in hand, one `&str` away. Decoding the block being written to recover a value
-/// the caller passed in would be the same rendering done twice, which is what the paragraph above
-/// this one exists to prevent. The rule that retires a derivable stored field does not reach a
-/// plain argument: nothing here is STORED and nothing is RECONSTRUCTED, so there is no omission to
-/// make a promise about.
-///
-/// AND NO CALLER PASSES `None`. Every arm that reaches here -- hash, set, zset and list, across
-/// `execute_on_shard`, `stream_batch_methods` and the two replay paths in `lifecycle` -- passes
-/// `Some(..)`, so the `Option` is a shape shared with the filer rather than a case this function
-/// has.
-/// THIS OBJECT'S BLOCK REFS, IF ITS ROW HOLDS THEM -- the third home, beside the slot and the
-/// lookup.
-///
-/// # WHY A KIND STRING AND NOT A TYPE PARAMETER
-///
-/// Every reader of refs has a `&str` kind in hand, not a `K`: they come from an index entry, a
-/// dump manifest row or a command, and none of them is generic. So the dispatch has to happen
-/// somewhere, and here is the only place that knows which `ShardState` field each kind's rows live
-/// in. The alternative -- making the readers generic -- would mean threading `K` through
-/// `block_refs_for`'s thirteen call sites, several of which handle several kinds in one loop.
-///
-/// A kind with no `RecordedMap` answers `None`, which is correct rather than a fallback: `string`,
-/// `control_state` and `feature` keep their refs on an `ObjectSlot` and the slot home answers for
-/// them.
-pub(super) fn row_refs<'a>(
-    shard: &'a ShardState,
-    kind: &str,
-    object_key: &str,
-) -> Option<&'a crate::engine::state::BlockRefs> {
-    if kind == HashKind::KIND {
-        shard.bucket_index.hashes.refs(object_key)
-    } else if kind == SetKind::KIND {
-        shard.bucket_index.sets.refs(object_key)
-    } else if kind == ZSetKind::KIND {
-        shard.bucket_index.zsets.refs(object_key)
-    } else if kind == ListKind::KIND {
-        shard.bucket_index.lists.refs(object_key)
-    } else {
-        None
-    }
-}
-
 // =============================================================================================
 // THE THREE DOORS THAT KEEP THE ROW HOME HONEST, and why there are exactly three.
 //
@@ -515,47 +427,6 @@ pub(super) fn prune_row_refs_to_the_blocks_the_index_holds(shard: &mut ShardStat
         + lists.retain_refs(&holds)
 }
 
-/// DROP ONE REF FROM WHICHEVER OF THE FOUR KINDS' ROWS HOLDS IT.
-///
-/// For the delta fold's un-file half, which drops a block and may place another at the same handle
-/// in the same call -- so the un-file has to reach every home the ref could be in.
-pub(super) fn remove_row_ref(
-    shard: &mut ShardState,
-    model_id: &str,
-    object_key: &str,
-    block_ref: &crate::engine::state::BlockLookupRef,
-) -> bool {
-    if model_id == HashKind::KIND {
-        shard.bucket_index.hashes.remove_ref(object_key, block_ref)
-    } else if model_id == SetKind::KIND {
-        shard.bucket_index.sets.remove_ref(object_key, block_ref)
-    } else if model_id == ZSetKind::KIND {
-        shard.bucket_index.zsets.remove_ref(object_key, block_ref)
-    } else if model_id == ListKind::KIND {
-        shard.bucket_index.lists.remove_ref(object_key, block_ref)
-    } else {
-        false
-    }
-}
-
-/// DROP THIS OBJECT'S WHOLE REF SET FROM ITS ROW, whichever of the four kinds it is.
-///
-/// The row counterpart of `CoreIndex::remove_object_block_lookup_entry`, which removes an object's
-/// entire entry. A row's refs go to `None` rather than to an empty set, which `take_refs` does.
-pub(super) fn clear_row_refs(shard: &mut ShardState, model_id: &str, object_key: &str) -> bool {
-    if model_id == HashKind::KIND {
-        shard.bucket_index.hashes.take_refs(object_key).is_some()
-    } else if model_id == SetKind::KIND {
-        shard.bucket_index.sets.take_refs(object_key).is_some()
-    } else if model_id == ZSetKind::KIND {
-        shard.bucket_index.zsets.take_refs(object_key).is_some()
-    } else if model_id == ListKind::KIND {
-        shard.bucket_index.lists.take_refs(object_key).is_some()
-    } else {
-        false
-    }
-}
-
 /// MOVE THIS OBJECT'S REFS OUT OF THE LOOKUP AND ONTO ITS ROW.
 ///
 /// The counterpart of [`CoreIndex::adopt_refs_into_slot`] for the four kinds whose rows are not
@@ -636,36 +507,11 @@ pub(super) fn install_element<K: RecordedKind>(
     // AND THEN THE ADOPTION, because the row exists only now.
     //
     // The filer above ran BEFORE this install, so at filing time this object had no row and its
-    // refs went to `object_block_lookup`. This is what moves them onto the row, and it is the whole
-    // reason the row RETIRES lookup entries rather than merely duplicating them. Same two-half
-    // shape the slot kinds use, where the second half is `CoreIndex::adopt_refs_into_slot` called
-    // by the door that installs a row.
-    //
-    // STOPPED HERE, and the reason is a FOURTH consumer class nobody had enumerated.
-    //
-    // Wiring this one line is what makes the row retire lookup entries. It was wired, and
-    // `recorded_map_invariant::every_kind_records_exactly_once_through_the_one_operation` caught
-    // what it broke: "deleting the object recorded 0 deleted object ids, not 1".
-    //
-    // The mechanism: `BlockKeysByPosition::from_parts(&objects, &object_block_lookup)` builds the
-    // INVERSION from block handle back to object key, and it reads the two homes as FIELDS rather
-    // than through `state::object_block_refs`. So the reader migration could not touch it. With
-    // refs on a row the inversion stops naming those blocks, `retain` keeps them, and a deletion
-    // marks nothing -- silently.
-    //
-    // There are 16 `from_parts` call sites and several hold a STANDALONE `CoreIndex` with no
-    // `ShardState`, so the inversion needs its own design decision rather than a mechanical
-    // migration.
-    //
-    // So the consumer census for this move is: WRITER (done), READER (done, 14 sites), DELETER
-    // (done, 6 sites plus two sweeps), INVERSION (not started, 16 sites). Each layer was found by
-    // a guard after the previous one was declared complete, which is the honest reason this is
-    // paused rather than pushed: the next layer is discovered, not predicted.
-    //
-    // AND IT IS WORTH 0.0 B/key ON THE PUBLISHED FIGURE -- that corpus is `StringSet` only, so the
-    // lookup measures 0 bytes there. The arena plus the slot's `many` field reach 4.0x at 29.7
-    // against 25.0 needed. This move is for real-workload footprint, and it should be finished
-    // deliberately rather than squeezed in.
+    // refs went to `object_block_lookup`. This moves them onto the row, which is what makes the row
+    // retire lookup entries rather than duplicate them. It was held back while the block-to-object
+    // inversion read only two homes -- a deletion marked nothing for refs that had moved -- and the
+    // inversion spans all three now, so the move can be made.
+    adopt_refs_into_row::<K>(shard, object_key);
 }
 
 /// The same, for a record that is a STAGED OUTCOME and no bucket-index entry.
@@ -1027,6 +873,13 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.entries
             .iter()
             .filter_map(|(key, row)| row.refs.as_ref().map(|refs| (key, refs)))
+    }
+
+    /// DROP EVERY ROW'S REFS, for the whole-shard rebuild that is about to re-file all of them.
+    pub(super) fn take_every_refs(&mut self) {
+        for row in self.entries.values_mut() {
+            row.refs = None;
+        }
     }
 
     /// HOW MANY ROWS CARRY REFS, which is what a probe needs to tell a populated row apart from a
