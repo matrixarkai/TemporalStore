@@ -8,6 +8,64 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Every input the loop's WAL-reclaim stage reads in O(1) before it decides whether a reclaim
+/// could do anything.
+///
+/// A shard nobody writes to asks the stage the same question every round and gets the same
+/// answer, and answering it builds the reclaim plan, which walks every live block in the shard.
+/// When the last round that asked found nothing to reclaim, this is what the next round compares
+/// against: if none of it has moved, the answer cannot have either.
+///
+/// A WRITE moves `wal_last_sequence`. A dump or an index-log truncate moves
+/// `index_log_last_sequence` or `wal_persistent_bytes`. Moving a block out of the log moves
+/// `resident_blocks`, which lowers the retention floor without touching any sequence. A change
+/// to the cursors or snapshot references the caller passes moves `retention_inputs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct QuietWalReclaimKey {
+    wal_last_sequence: u64,
+    wal_persistent_bytes: u64,
+    index_log_last_sequence: u64,
+    resident_blocks: usize,
+    dirty_buckets: usize,
+    undumped_wal_records: u64,
+    retention_inputs: u64,
+}
+
+impl DataNodeRuntime {
+    fn quiet_wal_reclaim_key(
+        &self,
+        shard_id: ShardId,
+        options: &StorageManagerOptions,
+        dirty_buckets: usize,
+        undumped_wal_records: u64,
+    ) -> QuietWalReclaimKey {
+        use std::hash::{Hash, Hasher};
+        let wal = self.inner.engine.write_ahead_log_store().stats(shard_id);
+        let retention_inputs = if options.follower_replay_cursors.is_empty()
+            && options.raft_snapshot_refs.is_empty()
+        {
+            0
+        } else {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            format!(
+                "{:?}|{:?}",
+                options.follower_replay_cursors, options.raft_snapshot_refs
+            )
+            .hash(&mut hasher);
+            hasher.finish()
+        };
+        QuietWalReclaimKey {
+            wal_last_sequence: wal.last_sequence,
+            wal_persistent_bytes: wal.persistent_bytes,
+            index_log_last_sequence: self.inner.engine.index_log_store().stats(shard_id).last_sequence,
+            resident_blocks: self.inner.engine.wal_resident_block_count(shard_id),
+            dirty_buckets,
+            undumped_wal_records,
+            retention_inputs,
+        }
+    }
+}
+
 /// The four terms of the storage-eviction loop's continue-decision, named so the count and the
 /// vacuity of individual terms can be asserted instead of described in prose.
 ///
@@ -476,17 +534,57 @@ impl DataNodeRuntime {
         // The plan is the only thing that can answer the second question, so ask it -- but only
         // when the cheap trigger has already declined, so a busy shard pays nothing. An idle
         // shard is by definition not doing anything else with this round.
-        let wal_reclaim_pressure = dump_pressure
-            || (options.enable_wal_reclaim
-                && self
-                    .inner
+        //
+        // AND NOT TWICE FOR THE SAME ANSWER. Building the plan walks every live block, so a shard
+        // that nobody writes to paid that walk on every round for an answer that could not have
+        // changed. The round that finds nothing to reclaim remembers what it read in O(1); the
+        // next round compares, and skips the question while none of it has moved.
+        let quiet_key_before = (options.enable_wal_reclaim && !dump_pressure).then(|| {
+            self.quiet_wal_reclaim_key(
+                shard_id,
+                &options,
+                pressure.dirty_bucket_count,
+                pressure.undumped_wal_records,
+            )
+        });
+        // `Some(was_reclaimable)` when nothing the stage reads has moved since a round that found
+        // nothing to do; `None` when it has, or when no such round is remembered.
+        let memo_hit: Option<bool> = quiet_key_before.as_ref().and_then(|key| {
+            self.inner
+                .quiet_wal_reclaim
+                .lock()
+                .expect("quiet wal reclaim lock poisoned")
+                .get(&shard_id)
+                .filter(|(remembered, _)| remembered == key)
+                .map(|(_, reclaimable)| *reclaimable)
+        });
+        let unchanged_since_nothing_to_reclaim = memo_hit.is_some();
+        let probe_safe = (options.enable_wal_reclaim
+            && !dump_pressure
+            && !unchanged_since_nothing_to_reclaim)
+            .then(|| {
+                self.inner
                     .engine
                     .storage_wal_reclaim_plan(
                         shard_id,
                         options.follower_replay_cursors.clone(),
                         options.raft_snapshot_refs.clone(),
                     )
-                    .safe_to_reclaim);
+                    .safe_to_reclaim
+            });
+        if probe_safe == Some(false) {
+            if let Some(key) = quiet_key_before.clone() {
+                self.inner
+                    .quiet_wal_reclaim
+                    .lock()
+                    .expect("quiet wal reclaim lock poisoned")
+                    .insert(shard_id, (key, false));
+            }
+        }
+        let wal_reclaim_pressure = dump_pressure || probe_safe == Some(true);
+        // What the decision record reports. A remembered reclaimable shard IS under reclaim
+        // pressure -- it just has nothing to free -- so the record must not read as "no pressure".
+        let wal_reclaim_reported = wal_reclaim_pressure || memo_hit == Some(true);
         if options.enable_wal_reclaim && wal_reclaim_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
@@ -523,6 +621,7 @@ impl DataNodeRuntime {
                 stats.dump_runs += 1;
                 stats.storage_manager_reclaim_wal_runs += 1;
             }
+            let dumped = response.report.dump_manifest.is_some();
             lifecycle_report = Some(response.report);
             // Move the oldest blocks that live only inside a WAL record into the block store,
             // before anything tries to reclaim the log. `min_registered_sequence` pins retention
@@ -535,6 +634,7 @@ impl DataNodeRuntime {
             // which is the other implementation of these stages -- at most
             // `max_dump_buckets_per_round` per pass, oldest first. This is the copy that runs on a
             // timer, so it is the one that decides whether an IDLE shard ever becomes reclaimable.
+            let mut moved_blocks = 0usize;
             let resident = self.inner.engine.wal_resident_block_count(shard_id);
             if resident > 0 {
                 let moved = self.inner.engine.materialize_oldest_resident_blocks(
@@ -545,6 +645,7 @@ impl DataNodeRuntime {
                         options.max_dump_buckets_per_round
                     }),
                 );
+                moved_blocks = moved;
                 tracing::debug!(
                     shard_id,
                     moved,
@@ -583,6 +684,42 @@ impl DataNodeRuntime {
                     "storage manager reclaimed write-ahead log records"
                 );
             }
+            // A pass that dumped nothing, moved nothing and freed nothing leaves the shard exactly
+            // as it found it, so the next round asking the same question reads the same inputs
+            // and gets the same answer. Anything else changed the shard, so forget.
+            let did_nothing = !dumped
+                && moved_blocks == 0
+                && wal_reclaim.wal_records_removed == 0
+                && wal_reclaim.index_log_records_removed == 0
+                && wal_reclaim.wal_segments_dropped == 0;
+            let mut memo = self
+                .inner
+                .quiet_wal_reclaim
+                .lock()
+                .expect("quiet wal reclaim lock poisoned");
+            if did_nothing && !dump_pressure {
+                memo.insert(
+                    shard_id,
+                    (
+                        self.quiet_wal_reclaim_key(
+                            shard_id,
+                            &options,
+                            pressure.dirty_bucket_count,
+                            pressure.undumped_wal_records,
+                        ),
+                        true,
+                    ),
+                );
+            } else {
+                memo.remove(&shard_id);
+            }
+            drop(memo);
+            executed_stages.push("reclaim_wal".to_string());
+        } else if memo_hit == Some(true) {
+            // Answered from what the last pass left behind, without building the plan. The shard
+            // is reclaimable and has nothing to free, which is a stage that RAN and found nothing:
+            // the stage list is how an operator reads whether maintenance is alive, and a stage
+            // that vanishes from it reads as maintenance having died.
             executed_stages.push("reclaim_wal".to_string());
         } else if !options.enable_wal_reclaim {
             skipped_stages.push("reclaim_wal_disabled".to_string());
@@ -593,8 +730,8 @@ impl DataNodeRuntime {
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_wal",
             options.enable_wal_reclaim,
-            wal_reclaim_pressure,
-            options.enable_wal_reclaim && wal_reclaim_pressure,
+            wal_reclaim_reported,
+            options.enable_wal_reclaim && wal_reclaim_reported,
             vec![
                 storage_manager_pressure_signal(
                     "dirty_slot_count",
@@ -617,13 +754,13 @@ impl DataNodeRuntime {
                     "undumped_wal_pressure",
                 ),
                 (
-                    wal_reclaim_pressure && !dump_pressure,
+                    wal_reclaim_reported && !dump_pressure,
                     "reclaimable_wal_pressure",
                 ),
             ]),
             storage_manager_skip_reason(
                 options.enable_wal_reclaim,
-                wal_reclaim_pressure,
+                wal_reclaim_reported,
                 "reclaim_wal",
             ),
         ));

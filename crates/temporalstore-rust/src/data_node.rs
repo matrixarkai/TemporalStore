@@ -2065,6 +2065,16 @@ struct DataNodeRuntimeInner {
     /// returns `None`, so at the shipped default these stay `None` and cost nothing. Live-path
     /// state, never persisted -- a reload re-derives deadlines and a fresh pass is correct.
     expiry_cursors: Mutex<HashMap<ShardId, (Option<String>, Option<String>)>>,
+    /// What the loop's WAL-reclaim stage saw the last time it found nothing to reclaim, per shard.
+    ///
+    /// A quiet shard asks the same question every round and gets the same answer; this is how the
+    /// next round knows the inputs have not moved. Live-path only and never persisted: a restart
+    /// starts empty, so the first round after one asks the question once.
+    ///
+    /// The flag is whether the shard WAS reclaimable when it was remembered. A reclaimable shard
+    /// that has nothing to free still counts as having run the stage, so the stage list keeps
+    /// saying maintenance is alive; one that is not reclaimable stays skipped, as it always was.
+    quiet_wal_reclaim: Mutex<HashMap<ShardId, (runtime_storage::QuietWalReclaimKey, bool)>>,
     lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
     lifecycle_snapshot_path: Option<PathBuf>,
     lifecycle_persistence: Mutex<DataNodeLifecyclePersistenceReport>,
@@ -2379,6 +2389,7 @@ impl DataNodeRuntime {
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
             expiry_cursors: Mutex::default(),
+            quiet_wal_reclaim: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),
@@ -2536,6 +2547,7 @@ impl DataNodeRuntime {
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
             expiry_cursors: Mutex::default(),
+            quiet_wal_reclaim: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),
