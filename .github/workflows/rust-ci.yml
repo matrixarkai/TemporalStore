@@ -456,6 +456,7 @@ jobs:
             block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
             engine::tests::component_is_retired::the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone \
             engine::tests::component_is_retired::a_comment_or_string_edit_moves_nothing_and_a_code_edit_moves_exactly_one \
+            engine::tests::component_is_retired::a_sentence_moves_only_its_own_row \
             engine::tests::component_is_retired::the_roster_matches_the_tree_in_both_directions \
             engine::tests::component_is_retired::the_files_named_for_the_word_are_the_roster \
             engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_short_key_and_the_long_key_write_one_wal_json \

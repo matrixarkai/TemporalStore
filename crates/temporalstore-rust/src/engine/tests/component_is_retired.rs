@@ -46,14 +46,21 @@
 //! split would have counted them as production. Here a hit is a hit wherever it sits, and the
 //! roster row says what it is.
 //!
-//! # WHAT THIS FILE DOES NOT COUNT, AND WHY
+//! # PROSE IS COUNTED TOO, ON ROWS OF ITS OWN
 //!
-//! COMMENTS. Prose that says "component names" becomes "element names" in a separate slice, and a
-//! prose count that rose whenever a neighbouring branch wrote a sentence would turn this guard
-//! into the thing that refused a correct change. Strings that are not in a `serde` attribute are
-//! messages and test fixtures, not the contract. THIS FILE: it names the word in its own
-//! identifiers, so it is the one file the walk skips, and the skip is asserted to point at a file
-//! that exists.
+//! The word in a comment, and the word in a message or a test fixture, are tallied per file under
+//! the tokens `//` and `<strings>`. They are never swept into a file's identifier wildcard: a
+//! sentence must not be able to hide a use in code, and a use in code must not be able to hide
+//! behind a sentence. A prose row that falls is lowered, and one that rises fails, exactly like the
+//! rest.
+//!
+//! What stays on the roster at the end is prose that is ABOUT the old word and cannot say anything
+//! else: the comment that says an alias keeps a record written under the long key readable, the
+//! fixture that spells the key a published report still carries, the sentence about a filesystem
+//! path component. Each says why.
+//!
+//! NOT COUNTED: THIS FILE. It names the word in its own identifiers and sentences, so it is the one
+//! file the walk skips, and the skip is asserted to point at a file that exists.
 //!
 //! # HOW TO READ A MISMATCH
 //!
@@ -94,14 +101,177 @@ type Row = (&'static str, &'static str, usize, Class, &'static str);
 /// zero is deleted rather than kept, because a roster that keeps its zeroes is a list nobody can
 /// tell is finished.
 const ROSTER: &[Row] = &[
+    ("crates/temporalstore-rust/src/alloc_probe.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/bin/sequence_trim_cost_harness.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/bin/upsert_reload_harness.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/bin/upsert_reload_harness.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/block_store.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/context_workflow/context_workflow_regression_tests.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine.rs", "//", 87, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/block_in_wal.rs", "//", 5, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/bucket_dump_manifest_methods.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/bucket_store.rs", "//", 12, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/container_blocks.rs", "//", 72, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/container_blocks.rs", "<strings>", 8, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/container_membership.rs", "//", 5, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/engine_compaction.rs", "//", 20, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/engine_compaction.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/engine_hashing.rs", "//", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/engine_lifecycle.rs", "//", 41, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/engine_lifecycle.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "//", 5, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "<strings>", 1, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "component_is_retired", 1, Class::OtherSense, "this guard, registered under the name of the word it counts down"),
     ("crates/temporalstore-rust/src/engine/engine_reports.rs", "\"component\"", 1, Class::PublishedKey, "the key the published block-index report writes; consumers read it, so the Rust field is renamed and the key is kept by an explicit rename"),
+    ("crates/temporalstore-rust/src/engine/engine_reports.rs", "//", 1, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/engine_storage_state.rs", "\"component\"", 1, Class::PublishedKey, "the key a tombstone row is stored under in the index dump; a dump an earlier build wrote must still read, so the key is kept by an explicit rename"),
+    ("crates/temporalstore-rust/src/engine/engine_storage_state.rs", "//", 118, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/execute_on_shard.rs", "//", 30, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/hash_field_map.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/hot_block_spill.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/object_record.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/packed_blocks.rs", "//", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/recorded_map.rs", "//", 11, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/recovery_sweep_compact.rs", "//", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/storage_bucket_internals.rs", "//", 120, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/storage_reporting.rs", "//", 8, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/stream_batch_methods.rs", "//", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/a_trim_records_one_boundary.rs", "//", 6, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/a_trim_records_one_boundary.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/address_footprint.rs", "//", 19, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/address_footprint.rs", "<strings>", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/an_assigned_durable_id_defeats_ground_one_only.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/authority_check_cost.rs", "//", 4, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/authority_check_cost.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_element_naming.rs", "//", 77, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_element_naming.rs", "<strings>", 13, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_handles.rs", "//", 50, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_handles.rs", "<strings>", 15, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_name_pointer.rs", "//", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_names.rs", "//", 34, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_names.rs", "<strings>", 26, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/blocks_per_bucket.rs", "//", 18, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/bucket_fill.rs", "//", 18, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/bucket_fill.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/bucket_node_arms.rs", "//", 12, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/campaign_end_to_end.rs", "//", 5, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/campaign_end_to_end.rs", "<strings>", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/carried_block_identity.rs", "//", 31, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/carried_block_identity.rs", "<strings>", 8, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/collapse_for_list.rs", "//", 25, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/collapse_for_list.rs", "<strings>", 8, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_block_element_key.rs", "//", 31, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_block_element_key.rs", "<strings>", 21, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_block_ordinal.rs", "//", 40, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_block_ordinal.rs", "<strings>", 6, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_blocks_are_batched.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_member_shadow.rs", "//", 51, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_member_shadow.rs", "<strings>", 6, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_tombstone_collection.rs", "//", 11, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_tombstone_collection.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_tombstone_entry.rs", "//", 12, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/container_tombstone_entry.rs", "<strings>", 6, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/context_node_survives_reload.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/durable_outranks_derived.rs", "//", 84, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/durable_outranks_derived.rs", "<strings>", 14, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/element_ordinal_reuse.rs", "//", 116, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/element_ordinal_reuse.rs", "<strings>", 38, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/entry_count_versus_block_count.rs", "//", 23, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/entry_count_versus_block_count.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/entry_object_identity.rs", "//", 41, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/entry_object_identity.rs", "<strings>", 14, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/expiry_command_boundaries.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/flat_block_list.rs", "//", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/fold_hash_map_completeness.rs", "//", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/fold_hash_map_completeness.rs", "<strings>", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/folded_block_membership.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/folded_block_membership.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/gated_corpus_across_a_store_boundary.rs", "//", 5, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/gated_listing_folds_the_blocks.rs", "//", 4, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/gated_removal.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/hash_container_reload_authority.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/hash_read_union_divergence.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/how_many_keys_a_cached_frame_serves.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/index_bytes_per_key.rs", "//", 32, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/index_bytes_per_key.rs", "<strings>", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/index_resident_truth.rs", "//", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/index_resident_truth.rs", "<strings>", 1, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/tests/index_write_amplification.rs", "components", 1, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
+    ("crates/temporalstore-rust/src/engine/tests/inline_arm_trade.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/layout_arm_selection.rs", "//", 18, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/layout_arm_selection.rs", "<strings>", 10, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/length_answer_and_listing_agree.rs", "//", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/no_signature_names_the_series.rs", "//", 1, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/tests/no_signature_names_the_series.rs", "components", 1, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
+    ("crates/temporalstore-rust/src/engine/tests/object_is_a_key_not_an_element.rs", "//", 24, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/object_is_a_key_not_an_element.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/ordinal_under_the_gate.rs", "//", 21, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/ordinal_under_the_gate.rs", "<strings>", 8, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/per_item_byte_budget.rs", "//", 21, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/persistence_recovery_and_accounting.rs", "//", 100, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/persistence_recovery_and_accounting.rs", "<strings>", 12, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/projection_names_a_block.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/recorded_map_invariant.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/removal_the_index_can_find.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/removal_the_index_can_find.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/replay_under_the_gate.rs", "//", 31, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/replay_under_the_gate.rs", "<strings>", 27, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/resident_map_readers.rs", "//", 27, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/resident_map_readers.rs", "<strings>", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/restore_scale.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/round_scale.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/routing_range_default.rs", "//", 5, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/routing_range_default.rs", "<strings>", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/set_install_census.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/set_listing_block_reads.rs", "//", 29, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/set_listing_block_reads.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/set_listing_source.rs", "//", 4, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/sibling_handles.rs", "//", 8, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/storage_maintenance_and_compaction.rs", "//", 8, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/storage_maintenance_and_compaction.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/stream_reads_and_shard_controls.rs", "//", 5, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/stream_reads_and_shard_controls.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/sweep_keeps_the_collapse.rs", "//", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_entry_cannot_name_its_object_by_slot.rs", "//", 6, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_entry_cannot_name_its_object_by_slot.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_entry_cannot_point_at_the_object_list.rs", "//", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_event_series_on_the_owned_array.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_handle_is_computed_at_the_bucket.rs", "//", 4, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_key_a_block_is_filed_under_inverts_exactly.rs", "//", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_key_a_block_is_filed_under_inverts_exactly.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/the_record_machinery_is_not_wired.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_a_cache_key_costs.rs", "<strings>", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "<strings>", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_the_core_index_puts_on_the_wire.rs", "//", 11, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_the_core_index_puts_on_the_wire.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_the_slot_index_is_made_of.rs", "//", 3, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_the_slot_index_is_made_of.rs", "<strings>", 7, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/what_the_two_cache_keys_are.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/write_after_fold.rs", "//", 18, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/write_after_fold.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/tests/zset_element_name_drops_the_score.rs", "//", 12, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/timestamped_series.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "<strings>", 3, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "components", 2, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
+    ("crates/temporalstore-rust/src/index_log.rs", "//", 31, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/index_log.rs", "<strings>", 3, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/matrixark_rust_proxy_impl.rs", "sanitize_path_component", 3, Class::OtherSense, "a filesystem path component: the directory name a namespace or table is stored under"),
+    ("crates/temporalstore-rust/src/proxy.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/proxy/proxy_context.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/raft/wal_proto.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/record_cost.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/shared_store.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/telemetry.rs", "//", 1, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/wal.rs", "\"component\"", 2, Class::LegacyAlias, "alias on the two renamed WAL record fields: a record written under the long key still decodes (an alias is deserialize-only, the written key is the short rename)"),
+    ("crates/temporalstore-rust/src/wal.rs", "//", 18, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/wal.rs", "<strings>", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/wal_proto.rs", "//", 18, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/wal_scale.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/tests/hash_set_delete_recovery.rs", "//", 2, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/tests/list_recovery.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/tests/string_delete_recovery.rs", "//", 1, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/tests/zset_recovery.rs", "//", 3, Class::ToRetire, ""),
 ];
 
 /// Files whose NAME contains the word. The module a file declares is counted as an identifier in
@@ -129,6 +299,11 @@ struct Lexed {
     code: String,
     /// The content of every string literal that sits inside an attribute whose body names `serde`.
     serde_strings: Vec<String>,
+    /// The text of every comment, doc comments and block comments included.
+    comments: Vec<String>,
+    /// The content of every other string literal: messages, fixtures, and the strings of attributes
+    /// that are not `serde` ones (a `#[path = ".."]`, a `cfg` feature name).
+    other_strings: Vec<String>,
 }
 
 fn is_ident_char(ch: char) -> bool {
@@ -185,14 +360,17 @@ fn lex(source: &str) -> Lexed {
 
         // Line comment, doc comments included. The newline is left for the next turn to emit.
         if ch == '/' && i + 1 < n && c[i + 1] == '/' {
+            let start = i;
             while i < n && c[i] != '\n' {
                 i += 1;
             }
+            out.comments.push(c[start..i].iter().collect());
             continue;
         }
 
         // Block comment. They nest in Rust, and an unbalanced `/*` inside one is not a close.
         if ch == '/' && i + 1 < n && c[i + 1] == '*' {
+            let start = i;
             let mut depth = 1usize;
             i += 2;
             while i < n && depth > 0 {
@@ -209,6 +387,7 @@ fn lex(source: &str) -> Lexed {
                     i += 1;
                 }
             }
+            out.comments.push(c[start..i.min(n)].iter().collect());
             out.code.push(' ');
             continue;
         }
@@ -248,6 +427,8 @@ fn lex(source: &str) -> Lexed {
                 if attr_depth > 0 {
                     attr_strings.push(text);
                     attr_code.push(' ');
+                } else {
+                    out.other_strings.push(text);
                 }
                 out.code.push(' ');
                 i = j;
@@ -301,6 +482,8 @@ fn lex(source: &str) -> Lexed {
                         .any(|word| word == "serde");
                     if is_serde {
                         out.serde_strings.append(&mut attr_strings);
+                    } else {
+                        out.other_strings.append(&mut attr_strings);
                     }
                     attr_strings.clear();
                 }
@@ -336,6 +519,43 @@ fn tally_text(file: &str, text: &str, into: &mut BTreeMap<(String, String), usiz
                 .or_default() += 1;
         }
     }
+    // PROSE, counted apart from code and under tokens that cannot be an identifier. The same word
+    // in a comment or in a message is not the same problem as the word in the program, and it is
+    // rostered on its own row so that a sentence cannot hide a use in code or the other way round.
+    let in_comments: usize = lexed.comments.iter().map(|text| occurrences(text)).sum();
+    if in_comments > 0 {
+        *into
+            .entry((file.to_string(), COMMENT_TOKEN.to_string()))
+            .or_default() += in_comments;
+    }
+    let in_strings: usize = lexed
+        .other_strings
+        .iter()
+        .map(|text| occurrences(text))
+        .sum();
+    if in_strings > 0 {
+        *into
+            .entry((file.to_string(), STRING_TOKEN.to_string()))
+            .or_default() += in_strings;
+    }
+}
+
+/// The token a file's comments are rostered under, and the one its non-serde strings are.
+const COMMENT_TOKEN: &str = "//";
+const STRING_TOKEN: &str = "<strings>";
+
+/// How many times the word occurs in `text`, in any case, not overlapping.
+fn occurrences(text: &str) -> usize {
+    text.to_ascii_lowercase().matches("component").count()
+}
+
+/// An identifier starts with a letter or an underscore. Everything else a row can name -- a serde
+/// string, a comment tally, a string tally -- is explicit and is never swept into a wildcard.
+fn is_identifier_token(token: &str) -> bool {
+    token
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_')
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -425,10 +645,11 @@ fn compare(
     for ((file, token), count) in actual {
         if claimed.contains_key(&(file.clone(), token.clone())) {
             seen_explicit.insert((file.clone(), token.clone()), *count);
-        } else if token.starts_with('"') {
+        } else if !is_identifier_token(token) {
             // A serde string is never swept into a wildcard: it is the contract, so it is named.
+            // The prose tallies are named too, so that a sentence cannot hide a use in code.
             problems.push(format!(
-                "{file}: the serde string {token} appears {count} time(s) and no row names it"
+                "{file}: {token} appears {count} time(s) and no row names it"
             ));
         } else {
             *residual.entry(file.clone()).or_default() += count;
@@ -475,7 +696,7 @@ fn render_actual(actual: &BTreeMap<(String, String), usize>) -> String {
     let mut by_file: BTreeMap<&str, (Vec<(&str, usize)>, usize)> = BTreeMap::new();
     for ((file, token), count) in actual {
         let slot = by_file.entry(file.as_str()).or_default();
-        if token.starts_with('"') || token == "sanitize_path_component" {
+        if !is_identifier_token(token) || token == "sanitize_path_component" {
             slot.0.push((token.as_str(), *count));
         } else {
             slot.1 += count;
@@ -588,8 +809,23 @@ fn the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone() {
     assert_eq!(bracket.serde_strings, vec!["a]b", "component"]);
     assert!(bracket.code.contains("let z = 1;"));
 
-    // A string outside any attribute is never collected.
+    // A string outside any attribute is never a serde string.
     assert!(lex("let m = \"component\";").serde_strings.is_empty());
+
+    // Comments and strings are collected for the prose tally, each under its own head.
+    let prose = lex(
+        "// one component\nlet m = \"two component\"; /* three component */ let component = 1;",
+    );
+    assert_eq!(prose.comments, vec!["// one component", "/* three component */"]);
+    assert_eq!(prose.other_strings, vec!["two component"]);
+    assert_eq!(identifiers_with_the_word(&prose.code), vec!["component"]);
+    // The strings of an attribute that is not a serde one are strings, and not the contract.
+    let path = lex("#[path = \"tests/x_component.rs\"]\nmod x;");
+    assert_eq!(path.other_strings, vec!["tests/x_component.rs"]);
+    assert!(path.serde_strings.is_empty());
+    // A nested block comment is one comment.
+    let nested = lex("/* a /* b component */ c */ let z = 1;");
+    assert_eq!(nested.comments.len(), 1);
 }
 
 /// The no-op control. A change that must not move the count does not, and a change that must move
@@ -600,10 +836,14 @@ fn the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone() {
 #[test]
 fn a_comment_or_string_edit_moves_nothing_and_a_code_edit_moves_exactly_one() {
     let base = "fn walk(path: &str) -> usize {\n    let n = path.len();\n    n\n}\n";
+    // CODE tokens only: identifiers and serde strings. Prose has its own tally, below.
     let count = |text: &str| {
         let mut t = BTreeMap::new();
         tally_text("x.rs", text, &mut t);
-        t.values().sum::<usize>()
+        t.iter()
+            .filter(|((_, token), _)| token != COMMENT_TOKEN && token != STRING_TOKEN)
+            .map(|(_, n)| *n)
+            .sum::<usize>()
     };
     assert_eq!(count(base), 0);
 
@@ -731,4 +971,45 @@ fn the_files_named_for_the_word_are_the_roster() {
             "{file}: a permanent class says why"
         );
     }
+}
+
+/// Prose is tallied apart from code: a sentence moves its own row and nothing else.
+#[test]
+fn a_sentence_moves_only_its_own_row() {
+    let tally = |text: &str| {
+        let mut t = BTreeMap::new();
+        tally_text("x.rs", text, &mut t);
+        t
+    };
+    let base = "fn f() {}\n";
+    assert!(tally(base).is_empty());
+
+    // One comment sentence naming the word twice is two on the comment row and nothing else.
+    let commented = tally(&format!("// a component and another Component\n{base}"));
+    assert_eq!(commented.len(), 1);
+    assert_eq!(commented[&("x.rs".to_string(), COMMENT_TOKEN.to_string())], 2);
+
+    // A block comment, a doc comment: the same row.
+    let docs = tally(&format!("/// the COMPONENT\n/* and a component */{base}"));
+    assert_eq!(docs[&("x.rs".to_string(), COMMENT_TOKEN.to_string())], 2);
+
+    // A message is on the string row and nowhere else.
+    let message = tally(&format!("{base}const M: &str = \"no component here\";\n"));
+    assert_eq!(message.len(), 1);
+    assert_eq!(message[&("x.rs".to_string(), STRING_TOKEN.to_string())], 1);
+
+    // An identifier is on its own row and moves neither prose row.
+    let ident = tally(&format!("{base}fn component() {{}}\n"));
+    assert_eq!(ident.len(), 1);
+    assert_eq!(ident[&("x.rs".to_string(), "component".to_string())], 1);
+
+    // A serde string is the contract: on its own row, and not also a message.
+    let serde = tally(&format!("{base}#[serde(alias = \"component\")]\nfn g() {{}}\n"));
+    assert_eq!(serde.len(), 1);
+    assert_eq!(serde[&("x.rs".to_string(), "\"component\"".to_string())], 1);
+
+    // The word inside a longer word is still the word, which is what a roster of prose wants:
+    // `components` is two syllables of the same problem.
+    let plural = tally(&format!("// many components\n{base}"));
+    assert_eq!(plural[&("x.rs".to_string(), COMMENT_TOKEN.to_string())], 1);
 }
