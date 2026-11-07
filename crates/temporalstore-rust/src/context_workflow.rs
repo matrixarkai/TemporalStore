@@ -2039,16 +2039,18 @@ pub fn retrieve_context(
         context_embedding_model_hash(request.provider.embedding_model.trim());
     let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     let mut exact_scores_by_node = HashMap::<u64, (i64, usize)>::new();
-    let mut prefetched_nodes = HashMap::<u64, ContextNode>::with_capacity(node_hashes.len());
-    let mut node_score_candidates = Vec::<u64>::with_capacity(node_hashes.len());
-    let mut summary_score_candidates = Vec::<u64>::with_capacity(node_hashes.len());
+    let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
+    let mut prefetched_nodes =
+        HashMap::<u64, ContextNode>::with_capacity(initial_candidate_capacity);
+    let mut node_score_candidates = Vec::<u64>::with_capacity(initial_candidate_capacity);
+    let mut summary_score_candidates = Vec::<u64>::with_capacity(initial_candidate_capacity);
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
     // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
     // is handed to the hybrid lexical pass below, exactly like before it was embedded. Chunked
     // because a single oversized command is rejected outright, not truncated, and an unscored
     // node silently collapses to the lexical/recency fallback.
-    let mut l0_row_fallback = Vec::<u64>::with_capacity(node_hashes.len());
+    let mut l0_row_fallback = Vec::<u64>::with_capacity(initial_candidate_capacity);
     let mut width_conflict_nodes = 0usize;
     let mut model_conflict_nodes = 0usize;
     // The point in time the L1 summary vectors are wanted as of, hoisted because the node pass
@@ -2058,19 +2060,63 @@ pub fn retrieve_context(
     // Candidates whose summary vector the node fetch did NOT supply, and which therefore still
     // need the per-node summary lookup. Every candidate is on this list until its node carries a
     // copy, so a store written before the copy existed behaves exactly as it does today.
-    let mut summary_lookup_nodes = Vec::<u64>::with_capacity(node_hashes.len());
-    for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
-        if chunk.is_empty() {
+    let mut summary_lookup_nodes = Vec::<u64>::with_capacity(initial_candidate_capacity);
+    // A current-state query can use a fully warm pair directly. Historical queries still read
+    // every row because the compact index deliberately carries no summary-validity timestamp.
+    let warm_complete_nodes = if request.end_time_ms == u64::MAX {
+        let summary_hits = engine
+            .score_context_embedding_candidates(
+                EmbeddingChannel::Summary,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                &query_embedding,
+                &node_hashes,
+            )
+            .unwrap_or_default()
+            .into_iter()
+            .map(|hit| (hit.key.item_id, hit.score))
+            .collect::<HashMap<_, _>>();
+        let mut complete = HashSet::with_capacity(summary_hits.len());
+        if let Ok(node_hits) = engine.score_context_embedding_candidates(
+            EmbeddingChannel::Node,
+            request.tenant_hash,
+            active_embedding_model_hash,
+            &query_embedding,
+            &node_hashes,
+        ) {
+            for node_hit in node_hits {
+                let Some(summary_score) = summary_hits.get(&node_hit.key.item_id) else {
+                    continue;
+                };
+                let scores = summary_scores_by_node
+                    .entry(node_hit.key.item_id)
+                    .or_default();
+                scores.0 = ((node_hit.score.max(*summary_score)) * 1_000_000.0) as i64;
+                scores.1 = 2;
+                complete.insert(node_hit.key.item_id);
+            }
+        }
+        complete
+    } else {
+        HashSet::new()
+    };
+    for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        let cold_chunk = candidate_chunk
+            .iter()
+            .copied()
+            .filter(|node_hash| !warm_complete_nodes.contains(node_hash))
+            .collect::<Vec<_>>();
+        if cold_chunk.is_empty() {
             continue;
         }
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
             command: Command::ContextGetNodes {
                 tenant_hash: request.tenant_hash,
-                node_hashes: chunk.to_vec(),
+                node_hashes: cold_chunk,
             },
         });
-        let mut returned = HashSet::with_capacity(chunk.len());
+        let mut returned = HashSet::with_capacity(candidate_chunk.len());
         if let CommandResponse::ContextNodes { nodes } = response.response {
             let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
@@ -2164,8 +2210,8 @@ pub fn retrieve_context(
             }
         }
         // A node the engine did not return cannot carry a vector either.
-        for node_hash in chunk {
-            if !returned.contains(node_hash) {
+        for node_hash in candidate_chunk {
+            if !warm_complete_nodes.contains(node_hash) && !returned.contains(node_hash) {
                 l0_row_fallback.push(*node_hash);
                 // ...and it cannot have supplied a summary vector copy either, so it keeps the
                 // lookup it has always had. A node record can be missing while its summaries are
@@ -2174,6 +2220,7 @@ pub fn retrieve_context(
             }
         }
     }
+    drop(warm_complete_nodes);
     // Diagnostic only now: candidates whose node carries no vector at all (un-embedded).
     fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
     // node_l1 comes from the L1 summaries' own vectors -- the summary record owns them, and it is
@@ -2269,21 +2316,49 @@ pub fn retrieve_context(
             }
         }
     }
-    let mut rerank_nodes = summary_scores_by_node
+    let mut ranked_embedding_nodes = summary_scores_by_node
         .iter()
         .map(|(node_hash, (score, _))| (*node_hash, *score))
         .collect::<Vec<_>>();
-    rerank_nodes.sort_unstable_by_key(|(node_hash, score)| (Reverse(*score), *node_hash));
+    ranked_embedding_nodes
+        .sort_unstable_by_key(|(node_hash, score)| (Reverse(*score), *node_hash));
     let rerank_limit = request
         .max_summary_nodes
         .max(1)
         .saturating_mul(4)
         .min(64)
-        .min(rerank_nodes.len());
-    let rerank_nodes = rerank_nodes
-        .into_iter()
+        .min(ranked_embedding_nodes.len());
+    let metadata_prefetch_limit = request
+        .max_summary_nodes
+        .max(1)
+        .saturating_mul(4)
+        .max(rerank_limit)
+        .min(ranked_embedding_nodes.len());
+    let missing_prefetch_nodes = ranked_embedding_nodes
+        .iter()
+        .take(metadata_prefetch_limit)
+        .filter_map(|(node_hash, _)| {
+            (!prefetched_nodes.contains_key(node_hash)).then_some(*node_hash)
+        })
+        .collect::<Vec<_>>();
+    for chunk in missing_prefetch_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextGetNodes {
+                tenant_hash: request.tenant_hash,
+                node_hashes: chunk.to_vec(),
+            },
+        });
+        if let CommandResponse::ContextNodes { nodes } = response.response {
+            for node in nodes {
+                prefetched_nodes.insert(node.node_hash, node);
+            }
+        }
+    }
+    let rerank_nodes = ranked_embedding_nodes
+        .iter()
         .take(rerank_limit)
-        .map(|(node_hash, _)| node_hash)
+        .map(|(node_hash, _)| *node_hash)
         .collect::<Vec<_>>();
     let mut exact_node_rows = Vec::with_capacity(rerank_nodes.len());
     let mut exact_summary_rows = Vec::with_capacity(rerank_nodes.len());
