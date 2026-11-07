@@ -470,3 +470,5 @@ mod bucket_dump_binary_shape;
 mod what_an_element_name_writes_to_disk_and_the_wire;
 #[path = "tests/routing_range_stamp_binary.rs"]
 mod routing_range_stamp_binary;
+#[path = "tests/the_config_log_in_either_shape.rs"]
+mod the_config_log_in_either_shape;
