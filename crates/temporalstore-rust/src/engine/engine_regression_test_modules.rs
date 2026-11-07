@@ -452,3 +452,5 @@ mod a_reconstruct_prunes_the_refs_it_invalidates;
 mod a_windowed_aggregate_must_be_current_and_bounded;
 #[path = "tests/a_trim_records_one_boundary.rs"]
 mod a_trim_records_one_boundary;
+#[path = "tests/one_series_two_commands_one_ceiling.rs"]
+mod one_series_two_commands_one_ceiling;
