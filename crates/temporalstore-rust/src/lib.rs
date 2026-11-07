@@ -114,7 +114,7 @@ pub use client::{
 };
 pub use context_workflow::{
     context_backfill_embeddings, context_embedding_ref_hash, context_pipeline_manage_report,
-    context_provider_from_env, context_scope_nodes, context_scopes,
+    context_provider_from_env, context_scope_all_nodes, context_scope_nodes, context_scopes,
     context_pipeline_parity_evidence,
     context_skill_registry_from_parsed,
     context_workflow_state_report, default_context_model_providers, extract_context,

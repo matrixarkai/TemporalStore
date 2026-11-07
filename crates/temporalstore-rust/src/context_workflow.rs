@@ -110,14 +110,17 @@ fn context_scope_node_index_time(event_time_ms: u64) -> u64 {
         .max(1)
 }
 
-/// Add a node to the bounded, newest-first candidate index for one durable context scope.
+/// Register a node in both the bounded retrieval index and complete maintenance ledger.
 pub fn remember_context_scope_node(
     engine: &TemporalEngine,
     shard_id: ShardId,
     tenant_hash: u64,
     index_ref: &ContextIndexRef,
 ) -> bool {
-    engine
+    if index_ref.primary_node_hash == 0 {
+        return false;
+    }
+    let candidate_written = engine
         .execute(ExecuteRequest {
             shard_id,
             command: Command::ContextWriteIndexRef {
@@ -130,7 +133,18 @@ pub fn remember_context_scope_node(
             },
         })
         .status
-        .ok
+        .ok;
+    let ledger_written = engine
+        .execute(ExecuteRequest {
+            shard_id,
+            command: Command::SetAdd {
+                key: context_scope_all_nodes_key(tenant_hash),
+                member: index_ref.primary_node_hash.to_le_bytes().to_vec(),
+            },
+        })
+        .status
+        .ok;
+    candidate_written && ledger_written
 }
 
 /// Load the newest candidate nodes for one scope without scanning context records.
@@ -156,6 +170,38 @@ pub fn context_scope_nodes(
             .into_iter()
             .map(|index_ref| index_ref.primary_node_hash)
             .filter(|node_hash| *node_hash != 0)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    nodes.sort_unstable();
+    nodes.dedup();
+    nodes
+}
+
+fn context_scope_all_nodes_key(tenant_hash: u64) -> String {
+    format!("ctx:scope_nodes:{tenant_hash}")
+}
+
+/// Load every durable node registered for one scope for maintenance work.
+pub fn context_scope_all_nodes(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    tenant_hash: u64,
+) -> Vec<u64> {
+    let response = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::SetMembers {
+            key: context_scope_all_nodes_key(tenant_hash),
+        },
+    });
+    let mut nodes = match response.response {
+        CommandResponse::Members { members } => members
+            .into_iter()
+            .filter_map(|member| {
+                let bytes: [u8; 8] = member.try_into().ok()?;
+                let node_hash = u64::from_le_bytes(bytes);
+                (node_hash != 0).then_some(node_hash)
+            })
             .collect::<Vec<_>>(),
         _ => Vec::new(),
     };
