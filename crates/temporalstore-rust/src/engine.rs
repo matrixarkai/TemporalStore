@@ -1045,14 +1045,7 @@ impl TemporalEngine {
         // change at all). Keeping the millisecond itself is what lets those two be seen. See
         // `delta_key_state_change` below.
         let object_keys = command_object_keys(&command);
-        let membership_before: Vec<(usize, Option<u64>)> = object_keys
-            .iter()
-            .map(|key| {
-                let size = key_membership_size(shard, key);
-                let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                (size, deadline)
-            })
-            .collect();
+        let membership_before = key_state_before(shard, &object_keys);
         let feature_trimmed_membership = command_will_trim_feature_membership(
             &command,
             shard,
@@ -1551,7 +1544,7 @@ impl TemporalEngine {
                     || delta_key_state_change(
                         shard,
                         &delta_command_keys,
-                        &membership_before,
+                        membership_before.as_slice(),
                     );
                 let mut key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
@@ -4189,6 +4182,34 @@ fn command_will_trim_feature_membership(
 ///
 /// The comparison is on `Option<u64>`, so a re-arm to the SAME millisecond correctly is not a
 /// change and does not capture.
+enum KeyStateBefore {
+    One([(usize, Option<u64>); 1]),
+    Many(Vec<(usize, Option<u64>)>),
+}
+
+impl KeyStateBefore {
+    fn as_slice(&self) -> &[(usize, Option<u64>)] {
+        match self {
+            Self::One(state) => state,
+            Self::Many(states) => states,
+        }
+    }
+}
+
+/// Capture pre-write membership without allocating for the ordinary one-key command.
+fn key_state_before(shard: &ShardState, keys: &[String]) -> KeyStateBefore {
+    let state = |key: &String| {
+        (
+            key_membership_size(shard, key),
+            shard.expires_at_ms().get(key.as_str()).copied(),
+        )
+    };
+    match keys {
+        [key] => KeyStateBefore::One([state(key)]),
+        keys => KeyStateBefore::Many(keys.iter().map(state).collect()),
+    }
+}
+
 fn delta_key_state_change(
     shard: &ShardState,
     keys: &[String],

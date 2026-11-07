@@ -954,14 +954,7 @@ impl TemporalEngine {
             let object_keys = command_object_keys(&command);
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(usize, Option<u64>)> = object_keys
-                .iter()
-                .map(|key| {
-                    let size = key_membership_size(shard, key);
-                    let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                    (size, deadline)
-                })
-                .collect();
+            let membership_before = key_state_before(shard, &object_keys);
             let feature_trimmed_membership = command_will_trim_feature_membership(
                 &command,
                 shard,
@@ -1077,7 +1070,7 @@ impl TemporalEngine {
                         || delta_key_state_change(
                             shard,
                             &object_keys,
-                            &membership_before,
+                            membership_before.as_slice(),
                         );
                 }
                 let written_element_names =
