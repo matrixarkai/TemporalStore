@@ -460,3 +460,5 @@ mod the_two_other_feature_arms_hold_the_ceiling;
 mod what_a_cold_set_listing_reads;
 #[path = "tests/does_the_durable_map_answer_what_the_fold_answers.rs"]
 mod does_the_durable_map_answer_what_the_fold_answers;
+#[path = "tests/component_is_retired.rs"]
+mod component_is_retired;
