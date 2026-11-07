@@ -1963,11 +1963,12 @@ fn load_lifecycle_snapshot_file(
             };
         }
     };
-    let snapshot = match serde_json::from_slice::<DataNodeLifecycleSnapshot>(&bytes) {
+    // Either shape: see `decode_lifecycle_snapshot_file`. The JSON arm is permanent.
+    let snapshot = match temporalstore_rust::data_node::decode_lifecycle_snapshot_file(&bytes) {
         Ok(snapshot) => snapshot,
         Err(err) => {
             return LifecycleSnapshotFileResponse {
-                status: Status::error("bad_lifecycle_snapshot", err.to_string()),
+                status: Status::error("bad_lifecycle_snapshot", err),
                 snapshot: None,
             };
         }

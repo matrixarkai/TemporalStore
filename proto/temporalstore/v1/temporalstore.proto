@@ -1661,3 +1661,49 @@ message DurableConfigLogEntry {
   // (a defaulted config would silently reset every flag the entry was written to carry).
   DurableShardConfig config = 2;
 }
+
+// ===========================================================================================
+// DURABLE DATA-NODE LIFECYCLE SNAPSHOT, BINARY SHAPE.
+//
+// The file a data node writes (`TS_DATA_NODE_LIFECYCLE_SNAPSHOT`, or a path an operator names) so a
+// restart knows which shard operations were in flight and which scheduler tokens fence them. A
+// reader decides the shape per file from the first byte: `0x01` is this message behind a container
+// byte, anything else is the JSON every snapshot written so far is. There is no digest in the
+// file, so nothing here depends on a particular byte encoding.
+// ===========================================================================================
+
+message DurableLifecycleStatus {
+  bool ok = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message DurableShardLifecycleState {
+  uint64 shard_id = 1;
+  string state = 2;
+  string operation = 3;
+  uint64 load_version = 4;
+  uint64 updated_at_ms = 5;
+  // `optional`: absent is not an empty status, and a scheduler id of 0 is a task, not no task.
+  optional DurableLifecycleStatus last_status = 6;
+  optional uint64 scheduler_task_id = 7;
+  optional uint64 scheduler_generation = 8;
+}
+
+message DurableSchedulerLifecycleToken {
+  uint64 task_id = 1;
+  uint64 shard_id = 2;
+  string operation = 3;
+  uint64 load_version = 4;
+  uint64 generation = 5;
+}
+
+message DurableDataNodeLifecycleSnapshot {
+  // Refused when it is not the version this build restores, never defaulted: a missing field would
+  // read as version 0 and be refused for the wrong reason.
+  uint32 format_version = 1;
+  // ORDER PRESERVED: the snapshot sorts both lists before it writes them, and a restore inserts in
+  // the order given.
+  repeated DurableShardLifecycleState transitions = 2;
+  repeated DurableSchedulerLifecycleToken tokens = 3;
+}
