@@ -318,14 +318,25 @@ impl EmbeddingIndexRegistry {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let mut matching = self.spaces.iter().filter(|(space, _)| {
+            space.channel == channel
+                && space.dimensions == query.len()
+                && (model_hash == 0 || space.model_hash == 0 || space.model_hash == model_hash)
+        });
+        let Some((_, first)) = matching.next() else {
+            return Ok(Vec::new());
+        };
+        let Some((_, second)) = matching.next() else {
+            // The index result is already top-k sorted; the normal one-space case needs no
+            // merge map, rebuilt hit vector, or second sort.
+            return first.search(tenant_id, query, limit);
+        };
+
         let mut best_by_item = HashMap::<u64, f32>::new();
-        for (space, index) in &self.spaces {
-            if space.channel != channel
-                || space.dimensions != query.len()
-                || (model_hash != 0 && space.model_hash != 0 && space.model_hash != model_hash)
-            {
-                continue;
-            }
+        for index in std::iter::once(first)
+            .chain(std::iter::once(second))
+            .chain(matching.map(|(_, index)| index))
+        {
             for hit in index.search(tenant_id, query, limit)? {
                 best_by_item
                     .entry(hit.key.item_id)

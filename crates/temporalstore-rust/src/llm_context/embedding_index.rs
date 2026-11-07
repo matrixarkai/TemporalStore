@@ -284,7 +284,8 @@ impl SignatureRouting {
         }
     }
 
-    fn candidates(&self, signature: u64, budget: usize) -> Vec<usize> {
+    fn candidates(&self, signature: u64, budget: usize) -> Vec<u32> {
+        // Routing stores u32 positions, so keep query scratch at that width until scoring.
         let mut positions = Vec::with_capacity(budget);
         let mut seen = HashSet::<u32>::with_capacity(budget);
         for distance in 0..=2 {
@@ -337,14 +338,14 @@ impl SignatureRouting {
         bucket: u16,
         budget: usize,
         seen: &mut HashSet<u32>,
-        positions: &mut Vec<usize>,
+        positions: &mut Vec<u32>,
     ) -> bool {
         let Some(bucket_positions) = self.buckets[table].get(&bucket) else {
             return false;
         };
         for position in bucket_positions {
             if seen.insert(*position) {
-                positions.push(*position as usize);
+                positions.push(*position);
                 if positions.len() >= budget {
                     return true;
                 }
@@ -753,7 +754,7 @@ impl EmbeddingIndex {
                     query,
                     query_inverse_norm,
                     limit,
-                    positions,
+                    positions.into_iter().map(|position| position as usize),
                 ));
             }
         }
