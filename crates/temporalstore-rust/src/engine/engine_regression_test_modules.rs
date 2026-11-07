@@ -472,3 +472,5 @@ mod what_an_element_name_writes_to_disk_and_the_wire;
 mod routing_range_stamp_binary;
 #[path = "tests/the_config_log_in_either_shape.rs"]
 mod the_config_log_in_either_shape;
+#[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
+mod the_served_index_encoder_has_no_json_fallback;

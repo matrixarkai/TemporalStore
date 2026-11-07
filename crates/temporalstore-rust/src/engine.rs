@@ -3562,11 +3562,14 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// from tests, which is where the claim "both shapes still load" has to be proved.
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
     if index_container_codec() == INDEX_CODEC_ZSTD_MSGPACK {
-        // A binary payload only works from the struct itself, so the version-stamping path (which
-        // patches a `Value`) keeps to JSON; both still land inside the same container.
-        if let Some(encoded) = encode_index_msgpack(shard) {
-            return encoded;
-        }
+        // NO FALLBACK TO JSON. This used to fall through to the JSON arm below when the binary
+        // encode returned `None`. The JSON arm already assumed the shard serialises (it ends in
+        // the same `expect`), and a `ShardState` that msgpack refuses and JSON accepts is not a
+        // shape any type in it can produce, so the fall-through was a second way to write the
+        // image that nothing could take. The JSON writes left in this file are chosen, not fallen
+        // into: the `TS_INDEX_CODEC=zstd-json` setting below, and `serialize_index`'s
+        // stale-version arm, which is a separate decision.
+        return encode_index_msgpack(shard).expect("shard index should serialize");
     }
     wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
 }
