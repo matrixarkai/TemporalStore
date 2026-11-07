@@ -3051,7 +3051,7 @@ pub(crate) fn execute_on_shard(
                                 )),
                             )
                             .and_then(|point| {
-                                let row = SequenceFeatureRow::decode_feature_proto_value(
+                                let row = crate::engine::decode_or_count_sequence_row(
                                     point.timestamp_ms,
                                     &point.value,
                                 )?;

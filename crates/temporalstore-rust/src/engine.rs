@@ -55,6 +55,8 @@ mod persistence;
 pub(crate) mod bucket_dump_codec;
 mod control_state_block;
 pub use self::control_state_block::control_state_blocks_unreadable;
+mod sequence_row_value;
+pub use self::sequence_row_value::sequence_rows_unreadable;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
@@ -140,6 +142,7 @@ use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
 use self::bucket_dump_io::*;
 use self::control_state_block::*;
+use self::sequence_row_value::*;
 use self::bucket_dump_codec::*;
 use self::bucket_store::{read_bucket_index_value, bucket_index_element_name_block_addresses};
 use self::state::*;
