@@ -17,7 +17,7 @@ struct HashTimestamp {
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
 ///
 /// WHAT IT COUNTS. One increment for each field a served `HashGetAll` found NAMED BY THE BLOCK
-/// INDEX and NOT HELD BY the durable container `shard.hashes`. Per (read, field), so one read of
+/// INDEX and NOT HELD BY the durable container `shard.bucket_index.hashes`. Per (read, field), so one read of
 /// an object whose container lacks three of its fields counts three.
 ///
 /// WHY ONLY THAT DIRECTION. It is the direction that loses a read once the index stops being
@@ -196,7 +196,7 @@ fn load_context_node(
     // MISSING for a durably acknowledged write on that path. The identity cannot be built without
     // naming a kind, so the arms had to separate.
     shard
-        .hashes
+        .bucket_index.hashes
         .get(object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .map(|address| (address, BlockIdentity::of(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD))))
@@ -486,7 +486,7 @@ pub(super) fn execute_hash_multi_get(
             mutated: true,
         };
     }
-    let hash_fields = shard.hashes.get(key);
+    let hash_fields = shard.bucket_index.hashes.get(key);
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     // A packed row gives every present field the same address. Detect that common case
     // without allocating a per-command address map, fetch its frame once, and project all
@@ -644,14 +644,14 @@ fn write_packed_hash_entries(
         .iter()
         .find_map(|(field, _)| {
             shard
-                .hashes
+                .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.get(field))
                 .and_then(ElementEntry::block_id)
         })
         .or_else(|| {
             shard
-                .hashes
+                .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
                 .map(|held| held.saturating_add(1))
@@ -798,7 +798,7 @@ pub(super) fn execute_packed_conditional_hash_write(
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
-        .hashes
+        .bucket_index.hashes
         .get(&key)
         .and_then(|fields| fields.get(&timestamp_field))
         .and_then(|address| {
@@ -1405,7 +1405,7 @@ pub(crate) fn execute_on_shard(
             // address, a fresh block, for a write that should land on the same one. Hash is the one
             // container kind that overwrites a field IN PLACE this way.
             //
-            // THAT IS ONE BRANCH, NOT TWO, NOW. This arm used to read `shard.hashes` itself under
+            // THAT IS ONE BRANCH, NOT TWO, NOW. This arm used to read `shard.bucket_index.hashes` itself under
             // the gate and call the function without it; the function reads the resident map
             // itself, so the two arms of that `if` computed the same value and the gate decided
             // nothing. The rule lives in one place -- see `state::container_block_ordinal`, which
@@ -1465,12 +1465,12 @@ pub(crate) fn execute_on_shard(
             cached_response(cache, CacheKey::hash(shard_id, &key, &field), || {
                 CommandResponse::Bytes {
                     // UNDER ONE ENTRY A BLOCK THE INDEX CANNOT NAME THIS FIELD, so the index-only
-                    // read would answer `None` for a field that is there. `shard.hashes` is
+                    // read would answer `None` for a field that is there. `shard.bucket_index.hashes` is
                     // durable (`#[serde(default)]`, see `RecordedMap`'s unconditional
                     // `Serialize`) and already the address `HashMultiGet` reads a field from --
                     // same lookup, used here as the point read's source of truth under the gate.
                     value: shard
-                        .hashes
+                        .bucket_index.hashes
                         .get(&key)
                         .and_then(|fields| fields.get(&field))
                         .and_then(|address| {
@@ -1531,10 +1531,10 @@ pub(crate) fn execute_on_shard(
             // UNDER ONE ENTRY A BLOCK THE INDEX CANNOT NAME THIS FIELD, so the index-only read
             // would miss a present counter through `unwrap_or_default()` and silently restart it
             // at zero -- this is the one HASH surface among the four that WRITES on a miss, so
-            // the wrong answer is not just served, it is persisted. `shard.hashes` is durable and
+            // the wrong answer is not just served, it is persisted. `shard.bucket_index.hashes` is durable and
             // already the address `HashMultiGet`/the gated `HashGet` read a field from.
             let current = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .and_then(|fields| fields.get(&field))
                 .and_then(|address| {
@@ -1624,7 +1624,7 @@ pub(crate) fn execute_on_shard(
             // THE TWO SOURCES THAT NAME THIS OBJECT'S FIELDS, AND WHY THIS READ NOW ASKS BOTH.
             //
             // The block index has always been the source this read resolves field names from, and
-            // the durable container `shard.hashes` names the same fields from the other side.
+            // the durable container `shard.bucket_index.hashes` names the same fields from the other side.
             // #2078 set out to prove the container holds every field the fold installs, and it
             // does not prove that: BOTH load-path functions in `storage_bucket_internals` derive a
             // hash field map by WALKING THE BLOCK INDEX and merge it into the container through
@@ -1650,7 +1650,7 @@ pub(crate) fn execute_on_shard(
             // Copied out before the block reads: those borrow the cache and the block store while
             // this borrows the shard, and the addresses are what both halves of the union need.
             let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .map(|fields| {
                     fields
@@ -1695,7 +1695,7 @@ pub(crate) fn execute_on_shard(
                 // it: defaulting here collides with a genuine `""` field and takes its value. This
                 // is the same `unwrap_or_default()` correction the four derived-view arms already
                 // carry, arriving on the READ path. The field a nameless block holds is named inside
-                // the block's own frame and in `shard.hashes`, and the union below serves it from
+                // the block's own frame and in `shard.bucket_index.hashes`, and the union below serves it from
                 // there -- so nothing is lost by skipping, only a name that was never written.
                 let Some(name) = element_name.as_deref().map(str::to_string) else {
                     continue;
@@ -1763,7 +1763,7 @@ pub(crate) fn execute_on_shard(
                 // and keyed by field, so it is the count. The entry-counting arm this replaces is
                 // deleted rather than left behind a condition: there is no state in which an entry
                 // names a field for it to count.
-                value: shard.hashes.get(&key).map(|fields| fields.len()).unwrap_or(0) as i64,
+                value: shard.bucket_index.hashes.get(&key).map(|fields| fields.len()).unwrap_or(0) as i64,
             }
         }
         Command::HashDelete { key, field } => {
@@ -1793,8 +1793,8 @@ pub(crate) fn execute_on_shard(
             //
             // THE PARENTHESIS THAT USED TO END THIS NOTE SAID SETS DID NOT NEED THE CLEANUP,
             // and it was wrong about this engine: `record_exists_exact` reads
-            // `shard.sets.contains_key(key)` on the line after the one it reads
-            // `shard.hashes.contains_key(key)` on, so a set left holding an empty member map is
+            // `shard.bucket_index.sets.contains_key(key)` on the line after the one it reads
+            // `shard.bucket_index.hashes.contains_key(key)` on, so a set left holding an empty member map is
             // the same phantom by the same reader. `SetRemove` does the cleanup now too.
             // FROM THE POOL RATHER THAN MINTED, even though this name is about to be
             // dropped: the write already interned it, so this is a lookup, and minting
@@ -1831,7 +1831,7 @@ pub(crate) fn execute_on_shard(
             // by element name, which a block-named entry does not carry -- so every rewrite fell
             // through to `highest + 1` and a member written five times left five blocks instead of
             // overwriting one (measured: two blocks and ordinals [0, 1] where one and [0] are
-            // right). This arm therefore carried its own `shard.sets` lookup under the gate, with
+            // right). This arm therefore carried its own `shard.bucket_index.sets` lookup under the gate, with
             // the function called only when the map had no answer.
             //
             // THAT IS ONE BRANCH, NOT TWO, NOW. The function asks the resident map itself, so the
@@ -1884,7 +1884,7 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let biased = zset_score_bits(score);
             let existed = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(old_biased, _)| *old_biased);
@@ -1977,7 +1977,7 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::Bytes {
                 value: shard
-                    .zsets
+                    .bucket_index.zsets
                     .get(&key)
                     .and_then(|members| members.get(&member))
                     .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
@@ -1994,7 +1994,7 @@ pub(crate) fn execute_on_shard(
             // container exists to make unrepresentable. Reading the score with `get` costs one
             // lookup and lets the record go first.
             let biased = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| *biased);
@@ -2027,7 +2027,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: shard.zsets.get(&key).map_or(0, BTreeMap::len) as i64,
+                value: shard.bucket_index.zsets.get(&key).map_or(0, BTreeMap::len) as i64,
             }
         }
         Command::ZSetRange {
@@ -2257,7 +2257,7 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let old = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| *biased);
@@ -2358,7 +2358,7 @@ pub(crate) fn execute_on_shard(
                     end_routing_bucket,
                     async_storage,
                 );
-                shard.zsets.replay_remove_element(&key, &member);
+                shard.bucket_index.zsets.replay_remove_element(&key, &member);
                 mutated = true;
                 members.push(member);
                 members.push(zset_score_string(biased).into_bytes());
@@ -2370,14 +2370,14 @@ pub(crate) fn execute_on_shard(
         Command::ZSetRank { key, member, rev } => {
             remove_if_expired(shard, &key);
             let target = shard
-                .zsets
+                .bucket_index.zsets
                 .get(&key)
                 .and_then(|members| members.get(&member))
                 .map(|(biased, _)| (*biased, member.clone()));
             CommandResponse::Bytes {
                 value: target.map(|(biased, member)| {
                     let before = shard
-                        .zsets
+                        .bucket_index.zsets
                         .get(&key)
                         .map(|members| {
                             members
@@ -2408,13 +2408,13 @@ pub(crate) fn execute_on_shard(
             //
             // This arm was the only container command that created its map entry BEFORE the append
             // that justifies it. A failed append therefore left an empty `BTreeMap` under the key,
-            // and `record_exists_exact` ORs `shard.lists.contains_key(key)` into its answer -- so
+            // and `record_exists_exact` ORs `shard.bucket_index.lists.contains_key(key)` into its answer -- so
             // the key reported EXISTS=1 and TYPE=list with no block behind it, and `CommonExpire`
             // gating on the same function accepted a deadline for it.
             //
             // The container makes the old shape inexpressible: reading the next sequence is a READ,
             // and the entry now comes into being only through the recorded install below.
-            let seq = match shard.lists.get(&key) {
+            let seq = match shard.bucket_index.lists.get(&key) {
                 Some(list) => {
                     if left {
                         list.keys().next().copied().map_or(0, |first| first - 1)
@@ -2479,7 +2479,7 @@ pub(crate) fn execute_on_shard(
                 );
                 mutated = true;
             }
-            let length = shard.lists.get(&key).map_or(0, BTreeMap::len) as i64;
+            let length = shard.bucket_index.lists.get(&key).map_or(0, BTreeMap::len) as i64;
             CommandResponse::Integer { value: length }
         }
         Command::ListPop { key, left } => {
@@ -2493,7 +2493,7 @@ pub(crate) fn execute_on_shard(
             // READ THE ELEMENT, THEN RECORD, THEN DROP -- the same reordering `ZSetRemove`
             // needed and for the same reason: this arm took the address out of the resident map
             // before the removal was recorded.
-            let popped = shard.lists.get(&key).and_then(|list| {
+            let popped = shard.bucket_index.lists.get(&key).and_then(|list| {
                 let seq = if left {
                     list.keys().next().copied()
                 } else {
@@ -2549,7 +2549,7 @@ pub(crate) fn execute_on_shard(
             // The length comes from the map itself -- `ListLen` below takes the same number the
             // same way. Copying every address to obtain it, and to index a slice of it, meant a
             // ten-entry block of a four-thousand-entry list copied four thousand addresses.
-            let list = shard.lists.get(&key);
+            let list = shard.bucket_index.lists.get(&key);
             let length = list.map_or(0, |list| list.len()) as i64;
             let resolve = |index: i64| -> i64 {
                 if index < 0 {
@@ -2613,7 +2613,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: shard.lists.get(&key).map_or(0, BTreeMap::len) as i64,
+                value: shard.bucket_index.lists.get(&key).map_or(0, BTreeMap::len) as i64,
             }
         }
         Command::SetMembers { key } => {
@@ -2656,7 +2656,7 @@ pub(crate) fn execute_on_shard(
                 // and a listing can never answer EMPTY for a key whose blocks say otherwise
                 // -- which is exactly the `listed=0` against 40 that killed the entries walk.
                 if shard.set_listing_from_map {
-                    if let Some(members) = shard.sets.get(&key) {
+                    if let Some(members) = shard.bucket_index.sets.get(&key) {
                         SET_LISTING_FROM_MAP
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return CommandResponse::Members {
@@ -2723,7 +2723,7 @@ pub(crate) fn execute_on_shard(
                 GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 CommandResponse::Members {
                     members: shard
-                        .sets
+                        .bucket_index.sets
                         .get(&key)
                         .map(|members| {
                             members.iter().map(|(member, _)| member.clone()).collect()
@@ -2736,7 +2736,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let member_element_name = set_element_name(&member);
             // REMOVING THE LAST MEMBER REMOVES THE KEY, as it does for the other three container
-            // kinds. `record_exists_exact` ORs `shard.sets.contains_key(key)` in beside its
+            // kinds. `record_exists_exact` ORs `shard.bucket_index.sets.contains_key(key)` in beside its
             // bucket-index answer, so an empty member map left under a live key is a key that
             // EXISTS answers 1 for while every listing answers empty for -- and `CommonExpire`
             // gates on the same function, so it accepted a deadline for it and `ttl_ms` then
@@ -4102,7 +4102,7 @@ pub(crate) fn execute_on_shard(
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     let node = shard
-                        .hashes
+                        .bucket_index.hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -4205,7 +4205,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_node_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let node = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&object_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -4257,7 +4257,7 @@ pub(crate) fn execute_on_shard(
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     shard
-                        .hashes
+                        .bucket_index.hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
@@ -5646,7 +5646,7 @@ pub(crate) fn execute_on_shard(
             let node_key = context_node_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &node_key);
             let node = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&node_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, BlockIdentity::of(shard_id, "hash", &node_key, Some(CONTEXT_NODE_FIELD))))
@@ -5744,7 +5744,7 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 ///
 /// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
 /// it bought was never built on: every zset serving arm that returns members in score order
-/// reads the score out of `shard.zsets` and sorts explicitly (`zset_members_in_score_range`,
+/// reads the score out of `shard.bucket_index.zsets` and sorts explicitly (`zset_members_in_score_range`,
 /// `zset_ordered_members`), so dropping the score from this string costs that ordering nothing.
 /// What it buys is the thing this change is for: `BlockIndex.element_name` for a zset entry is now
 /// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
@@ -5786,7 +5786,7 @@ fn zset_members_in_score_range(
     max_exclusive: bool,
 ) -> Vec<(Vec<u8>, u64)> {
     let mut ordered: Vec<(Vec<u8>, u64)> = shard
-        .zsets
+        .bucket_index.zsets
         .get(key)
         .map(|members| {
             members
@@ -5814,7 +5814,7 @@ fn zset_members_in_score_range(
 
 fn zset_ordered_members(shard: &ShardState, key: &str) -> Vec<(Vec<u8>, u64)> {
     let mut ordered: Vec<(Vec<u8>, u64)> = shard
-        .zsets
+        .bucket_index.zsets
         .get(key)
         .map(|members| {
             members

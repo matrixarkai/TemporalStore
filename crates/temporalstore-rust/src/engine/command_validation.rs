@@ -974,7 +974,7 @@ pub(super) fn validate_command_preconditions(
             return Ok(());
         }
         let Some(bytes) = shard
-            .hashes
+            .bucket_index.hashes
             .get(key)
             .and_then(|entries| entries.get(field))
             .and_then(|address| {

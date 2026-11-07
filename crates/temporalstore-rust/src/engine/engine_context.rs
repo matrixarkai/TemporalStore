@@ -925,7 +925,7 @@ pub(super) fn load_context_node_vector(
     // identity cannot be built without a kind, so the two arms had to separate -- see
     // `execute_on_shard::load_context_node` for what the single spelling cost on the in-log path.
     shard
-        .hashes
+        .bucket_index.hashes
         .get(&object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .map(|address| {
@@ -973,7 +973,7 @@ pub(super) fn load_context_node(
     ));
     // Each arm names its own object, as in `load_context_node_vector` above.
     shard
-        .hashes
+        .bucket_index.hashes
         .get(&object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .map(|address| {

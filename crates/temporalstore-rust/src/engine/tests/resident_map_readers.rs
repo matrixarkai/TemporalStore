@@ -6,7 +6,7 @@
 //! # WHERE THIS STARTS
 //!
 //! #2017 drove that a resident container map can hold an element the live block index says is gone:
-//! after a removal and a reconcile against a snapshot that predates it, `shard.sets` held 2 members
+//! after a removal and a reconcile against a snapshot that predates it, `shard.bucket_index.sets` held 2 members
 //! and the live block index held 1. It refused to serve `SMEMBERS` from that map for exactly that
 //! reason, and enumerated the map's OTHER readers without asking any of them anything:
 //!
@@ -26,7 +26,7 @@
 //!
 //! # THE LIVE ONE, AND IT IS NOT A MEMBER-LEVEL DEFECT
 //!
-//! `record_exists_exact` reads `shard.sets` at KEY granularity -- `shard.sets.contains_key(key)` --
+//! `record_exists_exact` reads `shard.bucket_index.sets` at KEY granularity -- `shard.bucket_index.sets.contains_key(key)` --
 //! so an extra MEMBER in the map cannot move its answer. The key is in both populations and EXISTS
 //! is 1 either way. Asked on #2017's state it is correct, and this module asserts that rather than
 //! implying it.
@@ -35,7 +35,7 @@
 //! removal:
 //!
 //! ```text
-//!     if let Some(set) = shard.sets.get_mut(&key) {
+//!     if let Some(set) = shard.bucket_index.sets.get_mut(&key) {
 //!         mutated |= set.remove(&member).is_some();
 //!     }
 //! ```
@@ -49,7 +49,7 @@
 //! `HashDelete` removes the key when its last field goes, `ZSetRemove` when its last member goes,
 //! `ListPop` when its last element goes. Only `SetRemove` did not -- and the note that explains the
 //! cleanup at `HashDelete` said, in a parenthesis, that sets did not need one. They do: the reader
-//! that makes a phantom hash observable is `record_exists_exact`, and it reads `shard.sets` in the
+//! that makes a phantom hash observable is `record_exists_exact`, and it reads `shard.bucket_index.sets` in the
 //! very next line of the same expression.
 //!
 //! THE DISCRIMINATOR IS A COUNT ACROSS THE FOUR KINDS, not one key's answer. A single-kind fixture
@@ -78,7 +78,7 @@
 //! way round until you find the right loop. Its preamble builds `collect_live_block_entries` reports,
 //! and that function dispatches to the BUCKET-INDEX walk whenever the index is non-empty -- which is
 //! what makes it look block-index-bounded. The relocation itself is not those reports. It is
-//! `for (key, members) in shard.sets.iter_mut()`, one arm per model, handing every address the map
+//! `for (key, members) in shard.bucket_index.sets.iter_mut()`, one arm per model, handing every address the map
 //! names to `compact_block_addresses` to be read off the old slab, appended to the fresh one and
 //! rewritten in place. So the RESIDENT MAP is compaction's work list: a ghost is a block compaction
 //! reads, copies onto every slab it ever rolls, and keeps alive for good. The test asserts the
@@ -131,8 +131,8 @@
 //!
 //! ```text
 //!     if saw_sets {
-//!         let persisted = std::mem::take(&mut shard.sets);
-//!         shard.sets = fill_absent_elements(sets, persisted);
+//!         let persisted = std::mem::take(&mut shard.bucket_index.sets);
+//!         shard.bucket_index.sets = fill_absent_elements(sets, persisted);
 //!     }
 //! ```
 //!
@@ -148,7 +148,7 @@
 //! empty derived view is safe for the same reason the filter is safe at all: it drops only an element
 //! whose address matches no live block in the finished index, which trusts the index exactly as far as
 //! this function already trusts it two arms up, where `shard.strings = strings` and
-//! `shard.hashes = hashes` assign the derived view WHOLESALE.
+//! `shard.bucket_index.hashes = hashes` assign the derived view WHOLESALE.
 //! `the_merge_runs_even_when_no_set_block_survived` drives both arms.
 //!
 //! # AND STILL NO SCAN SHIPS, FOR A SMALLER REASON THAN THE ONE THIS OPENED WITH
@@ -157,7 +157,7 @@
 //! and every reader above now agrees with the index. It does not follow that `SMEMBERS` can be served
 //! from it, and the residual is in the other direction: a live block whose element name cannot be decoded
 //! is in the index and, unless the persisted map happens to hold it, in NO map -- #1989's case, where
-//! the derived view cannot name the element. A listing served from `shard.sets` would MISS it, and a
+//! the derived view cannot name the element. A listing served from `shard.bucket_index.sets` would MISS it, and a
 //! listing that under-reports is worse than the reads it saves. Nothing in this engine writes a
 //! non-hex set element name, so that is latent, and it is latent on the write path rather than on this
 //! function.
@@ -283,12 +283,12 @@ fn exists(engine: &TemporalEngine, key: &str) -> i64 {
     ))
 }
 
-/// The members `shard.sets` holds for one key, straight off the resident map.
+/// The members `shard.bucket_index.sets` holds for one key, straight off the resident map.
 fn resident_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(key)
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default()
@@ -334,9 +334,9 @@ fn served_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
 /// AN EMPTIED CONTAINER KEY MUST NOT REPORT AS PRESENT, AND A SET'S DID.
 ///
 /// `record_exists_exact` -- behind `EXISTS`, `TTL`, `EXPIRE` and `PERSIST` -- ORs
-/// `shard.sets.contains_key(key)` in beside its bucket-index answer. `SetRemove` removed the member
+/// `shard.bucket_index.sets.contains_key(key)` in beside its bucket-index answer. `SetRemove` removed the member
 /// from the inner map and left the outer key, so after the last member went the key was still in
-/// `shard.sets` with an empty member map and `EXISTS` answered 1 for it.
+/// `shard.bucket_index.sets` with an empty member map and `EXISTS` answered 1 for it.
 ///
 /// ALL FOUR KINDS, AND THE ASSERTION IS ON THE COUNT. One kind cannot distinguish "sets are the
 /// outlier" from "this is what containers do here", and `HashDelete`'s own note asserted the former
@@ -564,7 +564,7 @@ fn an_emptied_set_does_not_accept_a_deadline() {
     assert!(
         phantom_expire.is_err(),
         "EXPIRE was ACCEPTED for a set with no members, so `record_exists_exact` can still see the \
-         key in `shard.sets` and a deadline is now recorded against nothing"
+         key in `shard.bucket_index.sets` and a deadline is now recorded against nothing"
     );
     assert_eq!(
         -2, phantom_ttl,
@@ -610,7 +610,7 @@ fn build_divergence(
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 is loaded");
         shard
-            .sets
+            .bucket_index.sets
             .get(key)
             .expect("the seeded key is in the resident map")
             .clone()
@@ -697,10 +697,10 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
 
         // The load path's input: the durable map as an index snapshot predating the removals.
         shard
-            .sets
+            .bucket_index.sets
             .insert_elements_for_test(&ghost.key, ghost.persisted_before_removal.clone());
         shard
-            .sets
+            .bucket_index.sets
             .insert_elements_for_test(&control.key, control.persisted_before_removal.clone());
 
         let live_blocks: usize = shard
@@ -730,7 +730,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         let mut rows: Vec<(&str, BTreeSet<Vec<u8>>)> = Vec::new();
         for divergence in [&ghost, &control] {
             let in_map = shard
-                .sets
+                .bucket_index.sets
                 .get(&divergence.key)
                 .map(|members| members.keys().cloned().collect::<BTreeSet<_>>())
                 .unwrap_or_default();
@@ -754,7 +754,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         );
         println!(
             "  reader record_exists_exact       LATENT: key granularity \
-             (`shard.sets.contains_key`), the key is in both populations"
+             (`shard.bucket_index.sets.contains_key`), the key is in both populations"
         );
 
         // -----------------------------------------------------------------------------------------
@@ -784,7 +784,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         // -----------------------------------------------------------------------------------------
         // READER 4: compact_shard_blocks_relocating -- it relocates WHAT THE MODEL MAPS NAME.
         //
-        // Its relocation loop is `for (key, members) in shard.sets.iter_mut()` (and one arm per
+        // Its relocation loop is `for (key, members) in shard.bucket_index.sets.iter_mut()` (and one arm per
         // other model), handing each address to `compact_block_addresses` to be read off the old
         // slab, appended to the fresh one and rewritten IN PLACE. The preamble's
         // `collect_live_block_entries` reports are a different walk and do not bound it. So the map
@@ -829,22 +829,22 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             for (key, slot) in shard.strings() {
                 check("string", key, &slot.address());
             }
-            for (key, fields) in &shard.hashes {
+            for (key, fields) in &shard.bucket_index.hashes {
                 for address in fields.values() {
                     check("hash", key, address);
                 }
             }
-            for (key, members) in &shard.sets {
+            for (key, members) in &shard.bucket_index.sets {
                 for address in members.values() {
                     check("set", key, address);
                 }
             }
-            for (key, elements) in &shard.lists {
+            for (key, elements) in &shard.bucket_index.lists {
                 for address in elements.values() {
                     check("list", key, address);
                 }
             }
-            for (key, members) in &shard.zsets {
+            for (key, members) in &shard.bucket_index.zsets {
                 for (_, address) in members.values() {
                     check("zset", key, address);
                 }
@@ -1092,7 +1092,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     // A block address that is in NO bucket: an offset far past anything this fixture wrote, on a
     // slab id nothing uses. This is the shape of a persisted entry whose block has been removed.
     let live_control_address = shard
-        .sets
+        .bucket_index.sets
         .get("s")
         .and_then(|members| members.values().next())
         .cloned()
@@ -1122,17 +1122,17 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
 
     // The stale-snapshot entries: one subject per merged kind, beside each kind's real element.
     shard
-        .sets
+        .bucket_index.sets
         .elements_mut_for_test("s")
         .expect("set key")
         .insert(b"set-subject".to_vec(), dead_address.clone());
     shard
-        .zsets
+        .bucket_index.zsets
         .elements_mut_for_test("z")
         .expect("zset key")
         .insert(b"zset-subject".to_vec(), (9, dead_address.clone()));
     shard
-        .lists
+        .bucket_index.lists
         .elements_mut_for_test("l")
         .expect("list key")
         .insert(i64::MAX - 3, dead_address.clone());
@@ -1144,17 +1144,17 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     );
 
     let set_members: BTreeSet<Vec<u8>> = shard
-        .sets
+        .bucket_index.sets
         .get("s")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
     let zset_members: BTreeSet<Vec<u8>> = shard
-        .zsets
+        .bucket_index.zsets
         .get("z")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
     let list_seqs: BTreeSet<i64> = shard
-        .lists
+        .bucket_index.lists
         .get("l")
         .map(|entries| entries.keys().copied().collect())
         .unwrap_or_default();
@@ -1394,7 +1394,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 ///
 /// A store whose every set block was removed after its last base-index write therefore reloaded with
 /// a full resident map and an empty block index -- the over-complete state again, reached by the one
-/// route the merge never saw, and the one a listing served from `shard.sets` would have fallen
+/// route the merge never saw, and the one a listing served from `shard.bucket_index.sets` would have fallen
 /// straight through. The merges are unconditional now and the filter answers this arm too.
 ///
 /// BOTH ARMS DRIVEN, and they differ by a COUNT rather than by which arm ran: the subject removes
@@ -1452,7 +1452,7 @@ fn the_merge_runs_even_when_no_set_block_survived() {
         let persisted = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
-            shard.sets.get("s").expect("set key").clone()
+            shard.bucket_index.sets.get("s").expect("set key").clone()
         };
         let removed_count = if keep_one_member { 2 } else { 3 };
         for member in members.iter().take(removed_count) {
@@ -1469,7 +1469,7 @@ fn the_merge_runs_even_when_no_set_block_survived() {
         let in_map = {
             let mut shards = engine.shards.write().expect("engine lock poisoned");
             let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-            shard.sets.insert_elements_for_test("s", persisted);
+            shard.bucket_index.sets.insert_elements_for_test("s", persisted);
             assert!(
                 !shard.bucket_index.bucket_map.is_empty(),
                 "{label}: the bucket index is empty, so the reconcile returns before any arm and \
@@ -1482,7 +1482,7 @@ fn the_merge_runs_even_when_no_set_block_survived() {
                 None,
             );
 
-            shard.sets.get("s").map_or(0, |members| members.len())
+            shard.bucket_index.sets.get("s").map_or(0, |members| members.len())
         };
 
         let served = served_members(&engine, "s").len();
@@ -1515,7 +1515,7 @@ fn the_merge_runs_even_when_no_set_block_survived() {
                 in_map > served,
                 "{label}: the resident map holds {in_map} against a served {served}, so the \
                  divergence #2017 measured is gone and the refusal to serve listings from \
-                 `shard.sets` needs re-deriving rather than re-asserting"
+                 `shard.bucket_index.sets` needs re-deriving rather than re-asserting"
             );
         } else {
             // THE SUBJECT ARM. No set block survives -- the branch that used to skip the merge, and

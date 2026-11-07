@@ -1034,11 +1034,11 @@ impl TemporalEngine {
             let block_store = self.block_store.stats();
             let block_store_slabs = self.block_store.slab_summary();
             let string_records = state.strings().len();
-            let hash_records = state.hashes.len();
-            let set_records = state.sets.len();
-            let list_records = state.lists.len();
+            let hash_records = state.bucket_index.hashes.len();
+            let set_records = state.bucket_index.sets.len();
+            let list_records = state.bucket_index.lists.len();
             let _ = list_records;
-            let zset_records = state.zsets.len();
+            let zset_records = state.bucket_index.zsets.len();
             let _ = zset_records;
             let feature_records = state.features().len();
             // ZERO BY CONSTRUCTION, AND THAT IS WHAT IT ALWAYS MEASURED. This read the length

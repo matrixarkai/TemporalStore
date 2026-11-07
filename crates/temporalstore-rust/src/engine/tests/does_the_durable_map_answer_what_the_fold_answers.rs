@@ -195,7 +195,7 @@ fn map_answer(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(KEY)
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default()

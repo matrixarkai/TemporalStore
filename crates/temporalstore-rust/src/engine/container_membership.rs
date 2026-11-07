@@ -251,7 +251,7 @@ where
 ///
 /// # A NOTE ON WHAT THIS TREE'S FOLD CAN CURRENTLY SEE
 ///
-/// `compact_container_blocks_batched` takes its elements from the RESIDENT maps (`shard.sets` and the
+/// `compact_container_blocks_batched` takes its elements from the RESIDENT maps (`shard.bucket_index.sets` and the
 /// other three), and a removed element is not in them. So the fold does not visit a tombstone at all
 /// today: it neither collects one nor risks dropping one, and a tombstone survives every round
 /// untouched. That is SAFE and it is not collection -- tombstones accumulate until something walks

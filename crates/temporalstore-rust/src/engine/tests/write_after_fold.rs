@@ -152,7 +152,7 @@ fn durable_members(engine: &TemporalEngine) -> std::collections::BTreeSet<Vec<u8
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(KEY)
         .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
         .unwrap_or_default()
@@ -958,7 +958,7 @@ fn member_block(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let address = shard
-        .sets
+        .bucket_index.sets
         .get(KEY)
         .and_then(|members| members.get(member))
         .expect("the durable map holds this member");
@@ -978,7 +978,7 @@ fn occupied_blocks(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(KEY)
         .map(|members| {
             members

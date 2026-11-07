@@ -83,7 +83,7 @@ fn resident_members(engine: &TemporalEngine, object_key: &str) -> std::collectio
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(object_key)
         .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
         .unwrap_or_default()

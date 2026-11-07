@@ -321,55 +321,6 @@ pub(super) struct ShardState {
     // instead of split across two.
     #[serde(default, with = "side_table_serde")]
     pub(super) side_tables: HashMap<SideTable, SideTableData>,
-    // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
-    // index on load; do not duplicate in checkpoints", which was true while this field was
-    // `skip_serializing` and the element name on a page-index entry was the durable spelling of a
-    // hash field. The entry has no element-name field now, so nothing could rebuild this map from
-    // the index: `hashes` carries `#[serde(default)]` below, as `sets`, `zsets` and `lists` do, and
-    // the four resident maps ARE the authority rather than a derived view of one.
-    //
-    // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
-    // of the eighteen nested model maps that is either. Measured on the counting allocator, a hash
-    // of ONE field -- which is every context node in a store, because `write_context_node` files
-    // its block under the single constant `CONTEXT_NODE_FIELD` -- cost 272 chunk bytes as a table
-    // and 560 as a `BTreeMap`, against 64 as an exact-sized vector. Matching the seventeen ordered
-    // siblings was measured and LOST, by more than 2x at the occupancy that is 100% of the product
-    // write path. See `engine::hash_field_map` for the trade and
-    // `engine::tests::model_map_container_cost` for the numbers.
-    //
-    // The wire shape is unchanged: `HashFieldMap` serializes to and from the same MAP the
-    // `HashMap` did, so an index written before this field became `skip_serializing` still decodes.
-    //
-    // AND THE WRAPPER AROUND IT MOVES NO BYTES EITHER. `RecordedHashContainer` is
-    // `#[serde(transparent)]` over exactly one field, `HashMap<String, HashFieldMap>` -- the type
-    // this field had -- so the derived impls forward verbatim and no snapshot, manifest or
-    // index-log encoding changes by a byte. `SHARD_INDEX_FORMAT_VERSION` does not move for it, and
-    // `engine::tests::recorded_hash_container_invariant` holds the two encodings equal against the
-    // bare map with a control that detects a planted difference.
-    //
-    // WHAT THE WRAPPER IS FOR IS NOT FOOTPRINT. It owns the map together with the durable record of
-    // its mutations: the inner map is private to the container's module, so the only way to change
-    // membership is to pass a value that could not have been constructed without the record already
-    // being emitted. A writer that mutates this map without recording does not compile. The five
-    // paths that legitimately mutate WITHOUT a record -- the reconcile, the delta fold, two replay
-    // arms and the compactor's address rewrite -- are named methods there, each with its reason,
-    // and that set is closed. See `engine::recorded_hash_container`.
-    #[serde(default)]
-    pub(super) hashes: super::recorded_map::RecordedMap<super::recorded_map::HashKind>,
-    // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT. `RecordedSetContainer` owns
-    // this map together with the durable record of its mutations -- the inner map is private, so the
-    // only way to change membership is to pass a value that could not exist unless the record was
-    // already emitted, and a writer that mutates without recording does not compile. Its
-    // `Serialize`/`Deserialize` impls CALL `set_index_serde`, the same functions this field named,
-    // so no snapshot, manifest or index-log encoding moves a byte and
-    // `SHARD_INDEX_FORMAT_VERSION` does not change for it.
-    //
-    // The four paths that legitimately mutate WITHOUT a record -- the reconcile, the delta fold,
-    // the replay removal and the compactor's address rewrite -- are named methods there, each with
-    // its reason, and that set is closed. FOUR and not hash's five: recovery's `set` arm re-files
-    // its block, so unlike hash's `context_node` arm it needs no replay-install exception.
-    #[serde(default)]
-    pub(super) sets: super::recorded_map::RecordedMap<super::recorded_map::SetKind>,
     /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus
     /// the same entries time-ordered so expiry pops from the front in bounded steps. Like the
     /// buckets, no blocks back this state -- it persists with the shard index snapshot, and a
@@ -385,24 +336,7 @@ pub(super) struct ShardState {
     /// tenants on stale counts.
     #[serde(default)]
     pub(super) buckets: HashMap<ModelKey, (f64, u64)>,
-    /// Sorted sets: member -> (total-order score bits, element block). The score-ordered view
-    /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
-    /// in-memory map rebuilt at load, never a second persisted structure (the index element name
-    /// already encodes score-then-member, so recovery has the order for free).
-    // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT: `ZSetKind` names
-    // `zset_index_serde` as its codec, which is a REQUIRED associated function with no default --
-    // so this kind cannot inherit the wrong encoding, which is the defect a blanket impl produced
-    // for `sets` and which three reload tests caught.
-    #[serde(default)]
-    pub(super) zsets: super::recorded_map::RecordedMap<super::recorded_map::ZSetKind>,
-    /// Redis-style lists: element blocks keyed by a signed sequence -- left pushes walk the
-    /// low end down, right pushes walk the high end up, so both ends are O(log n) and the
-    /// BTree's order IS the list's order.
-    // A PLAIN MAP, STATED RATHER THAN INHERITED. An `i64` key has a string form a JSON object can
-    // carry, so this kind never needed the codec `sets` and `zsets` do -- and `ListKind` says so
-    // explicitly instead of defaulting to it.
-    #[serde(default)]
-    pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
+
 
     /// WHERE A MULTI-BLOCK OBJECT'S BLOCKS LIVE, so they hang off the object's own record.
     ///
@@ -1040,6 +974,83 @@ pub(super) struct CoreIndex {
     ///
     /// Not serialized in either direction; the decoder below names no arm for it.
     pub(super) released_buckets: BTreeSet<u32>,
+    // ---- THE FOUR CONTAINER MODEL MAPS, MOVED IN FROM `ShardState`'s TOP LEVEL. ----
+    //
+    // WHY THEY ARE HERE AND NOT THERE, which is the same reason `objects` moved in: the
+    // index's encoder composes every block's stored key from the block-to-object INVERSION,
+    // and `serialize_block_index` refuses a block it cannot name. `impl Serialize for
+    // CoreIndex` has only `&self`, and no derive or `serialize_with` can pass a sibling
+    // down -- `BucketNodeAt` says so in its own words. So a map that holds any block's refs
+    // MUST be reachable from the index, or the index becomes unwritable the moment a ref
+    // lives only in that map.
+    //
+    // That is what `SHARD_INDEX_FORMAT_VERSION` 31 pays for: same key spellings, same value
+    // bytes, four different parent maps. An index written at 30 carries these at the top
+    // level where this decoder cannot see them, and the stamp refuses it rather than
+    // decoding into a shard holding no containers.
+    // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
+    // index on load; do not duplicate in checkpoints", which was true while this field was
+    // `skip_serializing` and the element name on a page-index entry was the durable spelling of a
+    // hash field. The entry has no element-name field now, so nothing could rebuild this map from
+    // the index: `hashes` carries `#[serde(default)]` below, as `sets`, `zsets` and `lists` do, and
+    // the four resident maps ARE the authority rather than a derived view of one.
+    //
+    // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
+    // of the eighteen nested model maps that is either. Measured on the counting allocator, a hash
+    // of ONE field -- which is every context node in a store, because `write_context_node` files
+    // its block under the single constant `CONTEXT_NODE_FIELD` -- cost 272 chunk bytes as a table
+    // and 560 as a `BTreeMap`, against 64 as an exact-sized vector. Matching the seventeen ordered
+    // siblings was measured and LOST, by more than 2x at the occupancy that is 100% of the product
+    // write path. See `engine::hash_field_map` for the trade and
+    // `engine::tests::model_map_container_cost` for the numbers.
+    //
+    // The wire shape is unchanged: `HashFieldMap` serializes to and from the same MAP the
+    // `HashMap` did, so an index written before this field became `skip_serializing` still decodes.
+    //
+    // AND THE WRAPPER AROUND IT MOVES NO BYTES EITHER. `RecordedHashContainer` is
+    // `#[serde(transparent)]` over exactly one field, `HashMap<String, HashFieldMap>` -- the type
+    // this field had -- so the derived impls forward verbatim and no snapshot, manifest or
+    // index-log encoding changes by a byte. `SHARD_INDEX_FORMAT_VERSION` does not move for it, and
+    // `engine::tests::recorded_hash_container_invariant` holds the two encodings equal against the
+    // bare map with a control that detects a planted difference.
+    //
+    // WHAT THE WRAPPER IS FOR IS NOT FOOTPRINT. It owns the map together with the durable record of
+    // its mutations: the inner map is private to the container's module, so the only way to change
+    // membership is to pass a value that could not have been constructed without the record already
+    // being emitted. A writer that mutates this map without recording does not compile. The five
+    // paths that legitimately mutate WITHOUT a record -- the reconcile, the delta fold, two replay
+    // arms and the compactor's address rewrite -- are named methods there, each with its reason,
+    // and that set is closed. See `engine::recorded_hash_container`.
+    pub(super) hashes: super::recorded_map::RecordedMap<super::recorded_map::HashKind>,
+    // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT. `RecordedSetContainer` owns
+    // this map together with the durable record of its mutations -- the inner map is private, so the
+    // only way to change membership is to pass a value that could not exist unless the record was
+    // already emitted, and a writer that mutates without recording does not compile. Its
+    // `Serialize`/`Deserialize` impls CALL `set_index_serde`, the same functions this field named,
+    // so no snapshot, manifest or index-log encoding moves a byte and
+    // `SHARD_INDEX_FORMAT_VERSION` does not change for it.
+    //
+    // The four paths that legitimately mutate WITHOUT a record -- the reconcile, the delta fold,
+    // the replay removal and the compactor's address rewrite -- are named methods there, each with
+    // its reason, and that set is closed. FOUR and not hash's five: recovery's `set` arm re-files
+    // its block, so unlike hash's `context_node` arm it needs no replay-install exception.
+    pub(super) sets: super::recorded_map::RecordedMap<super::recorded_map::SetKind>,
+    /// Sorted sets: member -> (total-order score bits, element block). The score-ordered view
+    /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
+    /// in-memory map rebuilt at load, never a second persisted structure (the index element name
+    /// already encodes score-then-member, so recovery has the order for free).
+    // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT: `ZSetKind` names
+    // `zset_index_serde` as its codec, which is a REQUIRED associated function with no default --
+    // so this kind cannot inherit the wrong encoding, which is the defect a blanket impl produced
+    // for `sets` and which three reload tests caught.
+    pub(super) zsets: super::recorded_map::RecordedMap<super::recorded_map::ZSetKind>,
+    /// Redis-style lists: element blocks keyed by a signed sequence -- left pushes walk the
+    /// low end down, right pushes walk the high end up, so both ends are O(log n) and the
+    /// BTree's order IS the list's order.
+    // A PLAIN MAP, STATED RATHER THAN INHERITED. An `i64` key has a string form a JSON object can
+    // carry, so this kind never needed the codec `sets` and `zsets` do -- and `ListKind` says so
+    // explicitly instead of defaulting to it.
+    pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
 }
 
 /// HAND-WRITTEN FOR ONE FIELD, AND BECAUSE A LIST OF CONSTRUCTION SITES COULD NOT BE EXHAUSTIVE.
@@ -1084,6 +1095,10 @@ impl Default for CoreIndex {
             block_slab_live: BlockSlabLiveIndex::default(),
             object_block_lookup: ObjectBlockLookup::default(),
             objects: BTreeMap::default(),
+                hashes: super::recorded_map::RecordedMap::default(),
+                sets: super::recorded_map::RecordedMap::default(),
+                zsets: super::recorded_map::RecordedMap::default(),
+                lists: super::recorded_map::RecordedMap::default(),
             kind_pool: std::collections::HashSet::default(),
             object_element_name_block_refs: Some(0),
             released_buckets: BTreeSet::default(),
@@ -1105,6 +1120,13 @@ enum CoreIndexField {
     /// carries it up there, where this decoder cannot see it, and is refused by the stamp rather
     /// than decoded into a shard holding no objects.
     Objects,
+    /// `hashes`, `sets`, `zsets`, `lists`: the four container model maps, which moved in from
+    /// `ShardState`'s top level so the encoder's inversion can be composed from them. Same
+    /// spellings, same value bytes, different parent -- stamp 31.
+    Hashes,
+    Sets,
+    ZSets,
+    Lists,
     /// Everything else, INCLUDING the four fields that are not on the wire at all. Ignored rather
     /// than refused, which is what lets an index written by a newer engine load into an older one.
     Ignore,
@@ -1132,6 +1154,13 @@ impl<'de> Deserialize<'de> for CoreIndexField {
                     "bucket_map" | "slots" => CoreIndexField::BucketMap,
                     "object_block_lookup" => CoreIndexField::ObjectBlockLookup,
                     "objects" => CoreIndexField::Objects,
+                    // THE FOUR CONTAINER MODEL MAPS, keyed by the SAME spellings they had at
+                    // `ShardState`'s top level, so the stored bytes of each map are unchanged and
+                    // only their parent moved. That is the whole of what stamp 31 pays for.
+                    "hashes" => CoreIndexField::Hashes,
+                    "sets" => CoreIndexField::Sets,
+                    "zsets" => CoreIndexField::ZSets,
+                    "lists" => CoreIndexField::Lists,
                     _ => CoreIndexField::Ignore,
                 })
             }
@@ -1141,7 +1170,8 @@ impl<'de> Deserialize<'de> for CoreIndexField {
     }
 }
 
-const CORE_INDEX_FIELDS: &[&str] = &["bucket_map", "object_block_lookup", "objects"];
+const CORE_INDEX_FIELDS: &[&str] =
+    &["bucket_map", "object_block_lookup", "objects", "hashes", "sets", "zsets", "lists"];
 
 impl<'de> Deserialize<'de> for CoreIndex {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -1165,6 +1195,18 @@ impl<'de> Deserialize<'de> for CoreIndex {
 
                 let mut buckets: Option<BTreeMap<u32, BucketNodeWithBlockKeys>> = None;
                 let mut stored_lookup: Option<ObjectBlockLookup> = None;
+                let mut stored_hashes: Option<
+                    super::recorded_map::RecordedMap<super::recorded_map::HashKind>,
+                > = None;
+                let mut stored_sets: Option<
+                    super::recorded_map::RecordedMap<super::recorded_map::SetKind>,
+                > = None;
+                let mut stored_zsets: Option<
+                    super::recorded_map::RecordedMap<super::recorded_map::ZSetKind>,
+                > = None;
+                let mut stored_lists: Option<
+                    super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
+                > = None;
                 let mut stored_objects: Option<
                     BTreeMap<
                         super::storage_bucket_internals::StoredModelKind,
@@ -1194,6 +1236,33 @@ impl<'de> Deserialize<'de> for CoreIndex {
                             }
                             stored_objects = Some(map.next_value()?);
                         }
+                        // THE FOUR CONTAINER MAPS. Each refuses a second statement of itself, as every
+                        // other arm here does: a store carrying one key twice is two
+                        // disagreeing statements and must fail loudly rather than pick one.
+                        CoreIndexField::Hashes => {
+                            if stored_hashes.is_some() {
+                                return Err(M::Error::duplicate_field("hashes"));
+                            }
+                            stored_hashes = Some(map.next_value()?);
+                        }
+                        CoreIndexField::Sets => {
+                            if stored_sets.is_some() {
+                                return Err(M::Error::duplicate_field("sets"));
+                            }
+                            stored_sets = Some(map.next_value()?);
+                        }
+                        CoreIndexField::ZSets => {
+                            if stored_zsets.is_some() {
+                                return Err(M::Error::duplicate_field("zsets"));
+                            }
+                            stored_zsets = Some(map.next_value()?);
+                        }
+                        CoreIndexField::Lists => {
+                            if stored_lists.is_some() {
+                                return Err(M::Error::duplicate_field("lists"));
+                            }
+                            stored_lists = Some(map.next_value()?);
+                        }
                         CoreIndexField::Ignore => {
                             map.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -1209,6 +1278,15 @@ impl<'de> Deserialize<'de> for CoreIndex {
                     // decoded block would take the lookup arm and a reload would quietly undo the
                     // fold -- the figure would regress with every restart and nothing would fail.
                     objects: stored_objects.unwrap_or_default(),
+                    // THE SAME ORDER ARGUMENT AS `objects` ABOVE, and it is why these four are here
+                    // rather than assigned after the filing loop: `insert_object_block_lookup`
+                    // picks slot-versus-lookup by whether the object HAS A ROW, so a container map
+                    // installed after the loop would leave every decoded container block on the
+                    // lookup arm -- the fold undone by a reload, with nothing failing.
+                    hashes: stored_hashes.unwrap_or_default(),
+                    sets: stored_sets.unwrap_or_default(),
+                    zsets: stored_zsets.unwrap_or_default(),
+                    lists: stored_lists.unwrap_or_default(),
                     ..CoreIndex::default()
                 };
                 // ZERO BEFORE THE FIRST FILING, not after the last. `insert_object_block_lookup`
@@ -1590,7 +1668,7 @@ impl Serialize for CoreIndex {
         // composed from the inversion now, so a release build without one would write no key at
         // all. The type's own doc prices the pass.
         let keys = self.block_identities();
-        let mut index = serializer.serialize_struct("CoreIndex", 2)?;
+        let mut index = serializer.serialize_struct("CoreIndex", 6)?;
         index.serialize_field(
             "bucket_map",
             &BucketMapAt {
@@ -1604,6 +1682,26 @@ impl Serialize for CoreIndex {
         // from it. Same key spelling, same value bytes, different parent map -- which is the whole
         // of what the `SHARD_INDEX_FORMAT_VERSION` step pays for.
         index.serialize_field("objects", &self.objects)?;
+        // THE FOUR CONTAINER MAPS, AND LEAVING THEM OUT IS SILENT DATA LOSS.
+        //
+        // They were top-level `ShardState` fields with `#[serde(default)]`, so a derive wrote
+        // them. Inside `CoreIndex` the encoder is HAND-WRITTEN and serialization is opt-in per
+        // field: the move compiled clean with these four absent, and every index write would have
+        // dropped every container object on the floor with nothing failing. That is the shape of
+        // `moving a durable field into a rebuilt struct is silent data loss`, and the compiler
+        // cannot see it. TWO GUARDS DO, both in `what_the_core_index_puts_on_the_wire`:
+        // `every_field_of_the_core_index_declares_whether_it_reaches_the_wire` destructures
+        // `CoreIndex` exhaustively and pins the encoded KEY SET, so a field left out of this
+        // encoder fails by name rather than narrowing the wire in silence, and
+        // `an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one` compares what
+        // came back against what went in, so a field written under the wrong codec fails too.
+        //
+        // SAME SPELLINGS AS AT THE TOP LEVEL, and `RecordedMap`'s own `Serialize` dispatches to
+        // each kind's codec, so each map's bytes are what they were -- only the parent moved.
+        index.serialize_field("hashes", &self.hashes)?;
+        index.serialize_field("sets", &self.sets)?;
+        index.serialize_field("zsets", &self.zsets)?;
+        index.serialize_field("lists", &self.lists)?;
         index.end()
     }
 }
@@ -8163,6 +8261,14 @@ impl CoreIndex {
             object_element_name_block_refs,
             released_buckets,
             // ---- CARRIED: durable, and the reconstruct has no way to derive it. ----
+            // CARRIED TOO, AND FOR THE SAME REASON `objects` IS: these four are the DURABLE
+            // authority for which container objects exist and what elements they hold. A
+            // reconstruct derives its filings FROM them, so anything it built of its own is a
+            // second, younger copy that would win silently.
+            hashes: rebuilt_hashes,
+            sets: rebuilt_sets,
+            zsets: rebuilt_zsets,
+            lists: rebuilt_lists,
             objects: rebuilt_objects,
         } = rebuilt;
         debug_assert!(
@@ -8750,15 +8856,15 @@ pub(super) fn resident_element_name_address<'a>(
     element_name: &str,
 ) -> Option<&'a ElementEntry> {
     match model_id {
-        "hash" => shard.hashes.get(object_key)?.get(element_name),
+        "hash" => shard.bucket_index.hashes.get(object_key)?.get(element_name),
         "set" => {
             let member = super::container_blocks::member_from_element_name(element_name)?;
-            shard.sets.get(object_key)?.get(&member)
+            shard.bucket_index.sets.get(object_key)?.get(&member)
         }
         "zset" => {
             let member = super::container_blocks::member_from_element_name(element_name)?;
             shard
-                .zsets
+                .bucket_index.zsets
                 .get(object_key)?
                 .get(&member)
                 .map(|(_, address)| address)
@@ -8766,7 +8872,7 @@ pub(super) fn resident_element_name_address<'a>(
         "list" => {
             let biased = u64::from_str_radix(element_name, 16).ok()?;
             let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-            shard.lists.get(object_key)?.get(&sequence)
+            shard.bucket_index.lists.get(object_key)?.get(&sequence)
         }
         // NOT A CONTAINER. Only the four container kinds have a level-two element at all, so there
         // is nothing for any other kind to be resident under and `None` is the whole answer.
@@ -8820,16 +8926,16 @@ pub(super) fn resident_highest_block_id(
         addresses.filter_map(ElementEntry::block_id).max()
     }
     match model_id {
-        "hash" => highest(shard.hashes.get(object_key)?.values()),
-        "set" => highest(shard.sets.get(object_key)?.values()),
+        "hash" => highest(shard.bucket_index.hashes.get(object_key)?.values()),
+        "set" => highest(shard.bucket_index.sets.get(object_key)?.values()),
         "zset" => highest(
             shard
-                .zsets
+                .bucket_index.zsets
                 .get(object_key)?
                 .values()
                 .map(|(_, address)| address),
         ),
-        "list" => highest(shard.lists.get(object_key)?.values()),
+        "list" => highest(shard.bucket_index.lists.get(object_key)?.values()),
         _ => None,
     }
 }
@@ -9725,10 +9831,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
         wal_resident_blocks,
-        sets,
         seen,
-        zsets,
-        lists,
         side_tables,
         control_state_changes,
         context_event_timeline,
@@ -9741,7 +9844,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // `hashes` IS BOUND, AND NOT FOR PACKING -- there is still nothing in it to pack, for
         // the reason just given. It is bound because its FIELD NAMES come out of a decode as
         // freshly minted handles and have to be pointed at the pool; see the adoption below.
-        hashes,
         buckets: _,
         // `objects` HAS NO FIELD HERE ANY MORE: it is a field of `CoreIndex`, because each
         // object's refs live in its slot and the index encoder composes every live block's
@@ -9869,15 +9971,26 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // AND THE HASH FIELD NAMES. The wire shape is a map of owned names, so the decode minted a
     // handle per field with the pool taking no part; without this a reloaded shard holds the
     // duplication the conversion removed and nothing fails, because the names are equal.
-    let _adopted_fields = hashes.adopt_element_names(&mut bucket_index.kind_pool);
+    // SCOPED DESTRUCTURE, because this needs `hashes` AND `kind_pool` mutably at the same
+    // time and both are fields of the index now. Naming them makes the borrows disjoint; writing
+    // `bucket_index.hashes.adopt_element_names(&mut bucket_index.kind_pool)` would be two
+    // mutable borrows through one path.
+    let _adopted_fields = {
+        let CoreIndex {
+            hashes, kind_pool, ..
+        } = &mut *bucket_index;
+        hashes.adopt_element_names(kind_pool)
+    };
     REPACK_ADOPTED_FIELDS.fetch_add(_adopted_fields, std::sync::atomic::Ordering::Relaxed);
 
     repack_btree_map(wal_resident_blocks);
     // `expires_at_ms` has no field here any more: it is a domain of `u64_ledgers`, whose
     // tables are ordered maps built by the decode and not half-empty B-tree nodes.
-    sets.repack_decoded();
-    zsets.repack_decoded();
-    lists.repack_decoded();
+    // THROUGH THE INDEX, because these four moved inside it at stamp 31. Sequential, so each
+    // mutable borrow ends before the next begins.
+    bucket_index.sets.repack_decoded();
+    bucket_index.zsets.repack_decoded();
+    bucket_index.lists.repack_decoded();
     // `features` has no field here any more -- its series are in `objects`, and the adoption
     // above is the one thing this pass owed them. `objects` itself holds owned sorted arrays
     // built by `collect` at decode, so there is no half-empty B-tree node for this pass to
@@ -11256,10 +11369,10 @@ impl ShardState {
         // through a declared operation rather than `adopt_key_in` because `RecordedMap` keeps its
         // map private, which is the invariant that kept them unconverted: nothing outside that
         // module can re-key them, so the adoption had to be declared there.
-        moved |= self.hashes.adopt_key(object_key, &canonical);
-        moved |= self.sets.adopt_key(object_key, &canonical);
-        moved |= self.zsets.adopt_key(object_key, &canonical);
-        moved |= self.lists.adopt_key(object_key, &canonical);
+        moved |= self.bucket_index.hashes.adopt_key(object_key, &canonical);
+        moved |= self.bucket_index.sets.adopt_key(object_key, &canonical);
+        moved |= self.bucket_index.zsets.adopt_key(object_key, &canonical);
+        moved |= self.bucket_index.lists.adopt_key(object_key, &canonical);
         // `seen` and `buckets` too: a raw key used for a string, a series, a selection, a
         // seen-set and a rate bucket lands in FIVE maps, and the pointer guard measured
         // THREE allocations before these two joined -- each was holding its own copy.

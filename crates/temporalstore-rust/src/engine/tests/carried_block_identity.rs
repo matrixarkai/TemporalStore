@@ -177,7 +177,7 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 /// THE ELEMENT NAME IS STILL CARRIED -- JUST NOT THERE. `wal::StagedBlock` keeps a per-element
 /// discriminator and says in its own doc why it has to ("the record's only discriminator BETWEEN
 /// ITS OWN BLOCKS"), which is this module's whole subject. What moved is where a READER recovers it
-/// from: `shard.hashes` is durable and is the authority for which field a hash block holds.
+/// from: `shard.bucket_index.hashes` is durable and is the authority for which field a hash block holds.
 ///
 /// JOINED BY ADDRESS, WHICH IS THE JOIN THE ENGINE ITSELF MAKES. The resident map holds an
 /// `ElementEntry` per field and the index entry holds the same address, so the address is what
@@ -190,7 +190,7 @@ fn live_blocks(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<Strin
     // makes it this module's control.
     let mut element_at: BTreeMap<(u64, u64, u64), String> = BTreeMap::new();
     if kind == "hash" {
-        for (object_key, fields) in shard.hashes.iter() {
+        for (object_key, fields) in shard.bucket_index.hashes.iter() {
             let _ = object_key;
             for (field, address) in fields.iter() {
                 element_at.insert(
@@ -1072,7 +1072,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 /// NO element name and returns `(block.element_name.clone(), block.address.clone())` off the entry." That
 /// field is gone and the walk recovered 0 of 25 names.
 ///
-/// The name is recovered from `shard.hashes` instead, and the claim is the same one: it is held
+/// The name is recovered from `shard.bucket_index.hashes` instead, and the claim is the same one: it is held
 /// BESIDE the id rather than inside it, and it survives an unload/load. The map is durable --
 /// `#[serde(default)]` on `ShardState`, with `sets`, `zsets` and `lists` beside it -- so this is
 /// still a measurement across the DISK copy and not a reading of process state: the engine is
@@ -1138,7 +1138,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_an_element_name_f
                 })
                 .count();
             let recovered: BTreeSet<String> = shard
-                .hashes
+                .bucket_index.hashes
                 .get(&key)
                 .map(|fields| fields.keys().map(|name| name.to_string()).collect())
                 .unwrap_or_default();

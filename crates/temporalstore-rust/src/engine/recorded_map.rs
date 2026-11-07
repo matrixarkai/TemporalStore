@@ -929,7 +929,7 @@ pub(super) trait AddressedElementMap: ElementMap {
 // is written once.
 // =============================================================================================
 
-/// `shard.hashes` -- field name to block.
+/// `shard.bucket_index.hashes` -- field name to block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HashKind;
 
@@ -960,7 +960,7 @@ impl RecordedKind for HashKind {
     }
 
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
-        &mut shard.hashes
+        &mut shard.bucket_index.hashes
     }
 
     /// A hash field's value is its address, which the outcome already carries whole. Nothing else
@@ -980,7 +980,7 @@ impl ReplaysInstallsUnrecorded for HashKind {}
 // AND IT DELIBERATELY DOES NOT DECLARE `RepacksAfterDecode`: `HashFieldMap` is a sorted vector
 // whose length IS its capacity below its growth threshold, so a decode leaves it exactly packed.
 
-/// `shard.sets` -- member bytes to block.
+/// `shard.bucket_index.sets` -- member bytes to block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SetKind;
 
@@ -1015,7 +1015,7 @@ impl RecordedKind for SetKind {
     }
 
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
-        &mut shard.sets
+        &mut shard.bucket_index.sets
     }
 
     /// A set member's value is its address, which the outcome already carries whole. Nothing else
@@ -1032,7 +1032,7 @@ impl RepacksAfterDecode for SetKind {}
 // block through the bucket index before installing, so it goes through `install_element` like any
 // other recorded write. One exception each way, and neither was predictable from the other kind.
 
-/// `shard.zsets` -- member bytes to a score-and-block pair.
+/// `shard.bucket_index.zsets` -- member bytes to a score-and-block pair.
 ///
 /// THE ONE MOST LIKELY TO HAVE RESISTED, AND IT DID NOT. A zset element is a member AND a score, so
 /// a composite key would have been the obvious guess -- and it is wrong: the score lives in the
@@ -1073,7 +1073,7 @@ impl RecordedKind for ZSetKind {
     }
 
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
-        &mut shard.zsets
+        &mut shard.bucket_index.zsets
     }
 
     /// EIGHT BIG-ENDIAN BYTES OF THE BIASED SCORE -- the one kind that answers `Some` here, and
@@ -1093,7 +1093,7 @@ impl RepacksAfterDecode for ZSetKind {}
 // through `upsert_bucket_index_block` before installing, so it goes through the recorded path.
 // Read from the arm rather than assumed.
 
-/// `shard.lists` -- a biased sequence number to a block.
+/// `shard.bucket_index.lists` -- a biased sequence number to a block.
 ///
 /// THIS KIND FOLDS IN FOR UNIFORMITY, NOT FOR BYTES, and the body of its change says so in those
 /// words. #2087 measured the list shape at **499.5 moves per insert**, which is n/2 by construction
@@ -1132,7 +1132,7 @@ impl RecordedKind for ListKind {
     }
 
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
-        &mut shard.lists
+        &mut shard.bucket_index.lists
     }
 
     /// A list element's value is its address, which the outcome already carries whole. Nothing

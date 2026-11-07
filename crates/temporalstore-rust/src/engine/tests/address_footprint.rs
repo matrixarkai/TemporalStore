@@ -285,7 +285,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     // HashMap<String, HashMap<String, BlockAddress>>
     {
         let before = c.total;
-        for fields in shard.hashes.values() {
+        for fields in shard.bucket_index.hashes.values() {
             for address in fields.values() {
                 c.observe(address);
             }
@@ -296,7 +296,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     // HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>
     {
         let before = c.total;
-        for members in shard.sets.values() {
+        for members in shard.bucket_index.sets.values() {
             for address in members.values() {
                 c.observe(address);
             }
@@ -308,7 +308,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     // HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>
     {
         let before = c.total;
-        for members in shard.zsets.values() {
+        for members in shard.bucket_index.zsets.values() {
             for (_, address) in members.values() {
                 c.observe(address);
             }
@@ -320,7 +320,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     // HashMap<String, BTreeMap<i64, BlockAddress>>
     {
         let before = c.total;
-        for elements in shard.lists.values() {
+        for elements in shard.bucket_index.lists.values() {
             for address in elements.values() {
                 c.observe(address);
             }
@@ -1156,22 +1156,22 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
     {
         d.observe_model(address);
     }
-    for fields in shard.hashes.values() {
+    for fields in shard.bucket_index.hashes.values() {
         for address in fields.values() {
             d.observe_model(address);
         }
     }
-    for members in shard.sets.values() {
+    for members in shard.bucket_index.sets.values() {
         for address in members.values() {
             d.observe_model(address);
         }
     }
-    for members in shard.zsets.values() {
+    for members in shard.bucket_index.zsets.values() {
         for (_, address) in members.values() {
             d.observe_model(address);
         }
     }
-    for elements in shard.lists.values() {
+    for elements in shard.bucket_index.lists.values() {
         for address in elements.values() {
             d.observe_model(address);
         }

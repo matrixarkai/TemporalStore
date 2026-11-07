@@ -28,9 +28,9 @@
 //!     because entries and elements are one-to-one and every block reads, which is a property of the
 //!     storage and not a contract either side states.
 //!   * LIST -- `Command::ListLen` and `Command::ListRange` over `0..=-1`. Both take the length from
-//!     `shard.lists`, so the number itself has one source; the listing then reads a block per
+//!     `shard.bucket_index.lists`, so the number itself has one source; the listing then reads a block per
 //!     element through the same dropping `filter_map`. One shared source, one unshared read.
-//!   * ZSET -- `Command::ZSetCard` and `Command::ZSetRange` over `0..=-1`. BOTH read `shard.zsets`
+//!   * ZSET -- `Command::ZSetCard` and `Command::ZSetRange` over `0..=-1`. BOTH read `shard.bucket_index.zsets`
 //!     and the listing reads no block at all: member and score come out of the map. Same structure
 //!     for both answers, which is the shape that cannot diverge. Its listing is INTERLEAVED
 //!     member/score, so the element count is half the returned length -- asserted even below,
@@ -48,7 +48,7 @@
 //!
 //! Because that breaks the same contract in the other direction, and this tree has the incident.
 //! #1989 is the recorded case: a member was served but undeletable because the listing answered
-//! from the block index while `shard.sets` had a single reader.
+//! from the block index while `shard.bucket_index.sets` had a single reader.
 //!
 //! ONE HALF OF THE ARGUMENT THIS PARAGRAPH USED TO MAKE HAS EXPIRED. It said `hashes` is
 //! `skip_serializing` and is rebuilt FROM the bucket index on load. `hashes` carries
@@ -355,7 +355,7 @@ fn a_list_length_answer_equals_its_range_listing() {
 
 /// A ZSET'S CARDINALITY EQUALS THE NUMBER OF MEMBERS ITS RANGE RETURNS.
 ///
-/// Both answers come out of `shard.zsets` and the listing reads no block, so this pair has the
+/// Both answers come out of `shard.bucket_index.zsets` and the listing reads no block, so this pair has the
 /// shape the others only happen to have. It is still asserted: the value of the assertion is that
 /// a later change moving either side off that map fails here instead of shipping.
 ///
@@ -787,7 +787,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let fields = shard
-            .hashes
+            .bucket_index.hashes
             .elements_mut_for_test(KEY)
             .expect("the fixture's hash is in the container");
         let removed = fields.remove("field-0");
@@ -843,7 +843,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     // THIS REPLACES THE CLAIM THAT THE COMMANDS DO NOT MOVE. That claim -- "both of them read the
     // index" -- was true when this test was written, and it is the half of it the reader move
     // retired. Under `container_index_files_one_entry_a_page`, `HashLen` answers from
-    // `shard.hashes.get(&key).map(|fields| fields.len())`, so on this route it tracks the
+    // `shard.bucket_index.hashes.get(&key).map(|fields| fields.len())`, so on this route it tracks the
     // container; `HashGetAll` serves the union of the container and the block index and is
     // untouched, so it tracks the index. The header above predicted this outright -- "a `HashLen`
     // reading the container at that moment would under-report" -- so the prediction is restated
@@ -860,7 +860,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     assert_eq!(
         parted.container as i64, parted.length_command,
         "the length command answered {} with the container holding {} and the index {}. Under the \
-         gate it reads `shard.hashes`, so on this route it must answer the CONTAINER's number -- \
+         gate it reads `shard.bucket_index.hashes`, so on this route it must answer the CONTAINER's number -- \
          the index's number means the gated branch was not taken and this stage is measuring the \
          engine as it was before the reader moved",
         parted.length_command, parted.container, parted.index,
@@ -887,7 +887,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     assert_eq!(
         parted.container, parted.listing_command,
         "the listing returned {} elements with the container holding {} and the index {}. \
-         `HashGetAll` answers field names from `shard.hashes` now, so it must answer the \
+         `HashGetAll` answers field names from `shard.bucket_index.hashes` now, so it must answer the \
          CONTAINER's number; the index's number would mean a nameless entry is being defaulted to \
          a name again -- the phantom `\"\"` field the collapse had to fix on the read path",
         parted.listing_command, parted.container, parted.index,
@@ -913,7 +913,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     // WHAT CHANGED. The completion rebuilt the durable hash map by walking the block index and
     // reading each entry's field name. An entry has no field name, so
     // `rebuild_unserialized_model_maps_from_bucket_index` passes an EMPTY derived view and keeps
-    // only its live-address filter; and `shard.hashes` carries `#[serde(default)]`, so the map is
+    // only its live-address filter; and `shard.bucket_index.hashes` carries `#[serde(default)]`, so the map is
     // written to the index snapshot and read back as it was. A reload therefore PRESERVES the
     // container rather than re-deriving it.
     //
@@ -1023,7 +1023,7 @@ fn four_answers(engine: &TemporalEngine, key: &str) -> FourAnswers {
     let (container, index) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let container = shard.hashes.get(key).map(|fields| fields.len()).unwrap_or(0);
+        let container = shard.bucket_index.hashes.get(key).map(|fields| fields.len()).unwrap_or(0);
         let index = super::bucket_index_element_name_block_addresses(shard, "hash", key).len();
         (container, index)
     };
