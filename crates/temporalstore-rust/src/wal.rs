@@ -53,7 +53,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1246,13 +1246,13 @@ pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
-    // Group-commit coordinator: serializes WAL fsyncs so many concurrent writers
-    // share one durability barrier. Always consulted -- `group_commit_configured` returns true,
-    // and `TS_GROUP_COMMIT`, which this comment used to name as its condition, is read by
-    // nothing.
+    // Group-commit coordinators, one per shard, so writers for one shard share a durability
+    // barrier without serializing an unrelated shard's fsync behind it. Always consulted --
+    // `group_commit_configured` returns true, and `TS_GROUP_COMMIT`, which this comment used to
+    // name as its condition, is read by nothing.
     // Writers append their bytes under the `inner` lock, RELEASE it, then coalesce
     // their fsync here -- so a burst of concurrent writes amortizes onto ~1 fsync.
-    sync_coord: Arc<Mutex<HashMap<ShardId, GroupCommitState>>>,
+    sync_coord: Arc<Mutex<HashMap<ShardId, Arc<GroupCommitCoordinator>>>>,
     /// Whether an append resolves its sequence from the warm cache. Read on the append path and
     /// on every execute, so it is an atomic beside the lock rather than a field inside it -- the
     /// engine asks without taking the log's lock.
@@ -1268,6 +1268,30 @@ struct GroupCommitState {
     // process lifetime. Appends only grow the file (inode), never the directory,
     // so the per-append dir fsync is redundant after the first.
     dir_synced: bool,
+    // A barrier caller queued behind the previous owner. The next uncovered owner opens the
+    // adaptive batch window, giving that observed concurrency a chance to share one fsync.
+    contention_seen: bool,
+    // The thread that most recently requested durability for this shard. Alternating callers are
+    // a concurrent workload even when state-lock scheduling staggers their barrier arrivals.
+    last_caller: Option<std::thread::ThreadId>,
+    // Keep the adaptive window warm briefly after contention. Without this, a growing-object
+    // workload can alternate writers through the state lock yet arrive at the barrier one at a
+    // time, forgetting the concurrency between every pair of calls.
+    adaptive_until: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Default)]
+struct GroupCommitCoordinator {
+    state: Mutex<GroupCommitState>,
+    pending: AtomicUsize,
+}
+
+struct PendingGroupCommit<'a>(&'a AtomicUsize);
+
+impl Drop for PendingGroupCommit<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, AtomicOrdering::AcqRel);
+    }
 }
 
 pub type WalError = WriteAheadLogError;
@@ -1892,7 +1916,20 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         required_sequence: u64,
     ) -> Result<(), WriteAheadLogError> {
-        self.group_commit_sync_windowed(shard_id, required_sequence, group_commit_delay())
+        self.group_commit_sync_with_policy(
+            shard_id,
+            required_sequence,
+            group_commit_delay(),
+            adaptive_group_commit_delay(),
+        )
+    }
+
+    fn group_commit_coordinator(&self, shard_id: ShardId) -> Arc<GroupCommitCoordinator> {
+        let mut coordinators = self.sync_coord.lock().expect("wal sync coordinator map poisoned");
+        coordinators
+            .entry(shard_id)
+            .or_insert_with(|| Arc::new(GroupCommitCoordinator::default()))
+            .clone()
     }
 
     /// Coalesced WAL durability barrier (group commit). Ensures every byte appended for
@@ -1910,15 +1947,43 @@ impl LocalWriteAheadLogStore {
     /// directly: this file's `set_*_for_test` idiom is a `thread_local!`, and a barrier runs on
     /// whichever thread calls it, so a thread-local override is invisible to exactly the
     /// concurrent writers this window exists to coalesce.
+    #[cfg(test)]
     fn group_commit_sync_windowed(
         &self,
         shard_id: ShardId,
         required_sequence: u64,
         window: std::time::Duration,
     ) -> Result<(), WriteAheadLogError> {
-        let mut coord = self.sync_coord.lock().expect("wal sync coordinator poisoned");
-        let entry = coord.entry(shard_id).or_default();
+        self.group_commit_sync_with_policy(
+            shard_id,
+            required_sequence,
+            window,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    fn group_commit_sync_with_policy(
+        &self,
+        shard_id: ShardId,
+        required_sequence: u64,
+        window: std::time::Duration,
+        adaptive_window: std::time::Duration,
+    ) -> Result<(), WriteAheadLogError> {
+        let coordinator = self.group_commit_coordinator(shard_id);
+        coordinator.pending.fetch_add(1, AtomicOrdering::AcqRel);
+        let _pending = PendingGroupCommit(&coordinator.pending);
+        let mut entry = coordinator.state.lock().expect("wal shard sync coordinator poisoned");
+        let caller = std::thread::current().id();
+        let writer_changed = entry
+            .last_caller
+            .as_ref()
+            .map(|previous| *previous != caller)
+            .unwrap_or(false);
+        entry.last_caller = Some(caller);
         if entry.durable_seq >= required_sequence {
+            if writer_changed || coordinator.pending.load(AtomicOrdering::Acquire) > 1 {
+                entry.contention_seen = true;
+            }
             return Ok(());
         }
         // THE BATCH WINDOW, AND WHY IT SITS EXACTLY HERE.
@@ -1939,8 +2004,43 @@ impl LocalWriteAheadLogStore {
         // fsync anyway -- the window makes that wait longer and the fsync rarer, which is the
         // whole trade. It is NOT free: ack waits on this barrier, so the window lands on write
         // latency. A zero default keeps that cost opt-in.
+        let queued = coordinator.pending.load(AtomicOrdering::Acquire) > 1;
+        // More than one sequence beyond the durable watermark is concurrent work even when this
+        // caller owns the newest sequence and the other writers are still finishing block/index
+        // updates. This is the engine path a pending-barrier count cannot see: WAL append happens
+        // before those updates, so the undurable sequence span is the earliest reliable
+        // concurrency signal available here.
+        let several_unflushed_appends = if window.is_zero() && !adaptive_window.is_zero() {
+            let appended = self
+                .inner
+                .lock()
+                .expect("write-ahead log lock poisoned")
+                .last_sequence_by_shard
+                .get(&shard_id)
+                .copied()
+                .unwrap_or(required_sequence);
+            appended.saturating_sub(entry.durable_seq) > 1
+        } else {
+            false
+        };
+        let contention =
+            queued || several_unflushed_appends || writer_changed || entry.contention_seen;
+        let now = std::time::Instant::now();
+        if window.is_zero() && contention && !adaptive_window.is_zero() {
+            entry.adaptive_until = Some(now + adaptive_group_commit_hold());
+        } else if !window.is_zero() {
+            entry.adaptive_until = None;
+        } else if entry.adaptive_until.is_some_and(|until| until <= now) {
+            entry.adaptive_until = None;
+        }
+        let use_adaptive_window = window.is_zero()
+            && !adaptive_window.is_zero()
+            && entry.adaptive_until.is_some_and(|until| until > now);
+        entry.contention_seen = false;
         if !window.is_zero() {
             std::thread::sleep(window);
+        } else if use_adaptive_window {
+            std::thread::sleep(adaptive_window);
         }
         let (path, snapshot, record_end) = {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
@@ -2011,6 +2111,9 @@ impl LocalWriteAheadLogStore {
                 .remove(&shard_id);
         }
         entry.durable_seq = entry.durable_seq.max(snapshot);
+        if coordinator.pending.load(AtomicOrdering::Acquire) > 1 {
+            entry.contention_seen = true;
+        }
         {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             inner.stats.flushes += 1;
@@ -4015,13 +4118,39 @@ pub fn group_commit_configured() -> bool {
 }
 
 /// `TS_WAL_COMMIT_DELAY_US` (config `[wal] commit_delay_us`): optional deliberate widening of the
-/// group-commit batch window under extreme load. Default 0 = pure timer-less coalescing (the group
-/// is exactly what accumulates during one durable barrier's in-flight duration).
+/// group-commit batch window under extreme load. Default 0 leaves timing to the adaptive policy,
+/// which opens a window only after same-shard concurrency is observed.
 pub fn group_commit_delay() -> std::time::Duration {
     let micros = std::env::var("TS_WAL_COMMIT_DELAY_US")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
+    std::time::Duration::from_micros(micros)
+}
+
+/// A short batch window used only after same-shard barrier contention has been observed.
+///
+/// Unlike [`group_commit_delay`], this does not tax an isolated writer: the first uncovered
+/// barrier for a shard runs immediately. A queued caller arms the next uncovered barrier, which
+/// then gives concurrent appenders a bounded chance to join the same fsync. Set to zero to keep
+/// purely arrival-driven grouping.
+pub fn adaptive_group_commit_delay() -> std::time::Duration {
+    let micros = std::env::var("TS_WAL_ADAPTIVE_COMMIT_DELAY_US")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(1_000);
+    std::time::Duration::from_micros(micros)
+}
+
+/// How long a shard remembers recently observed write concurrency.
+///
+/// The memory is intentionally short: it bridges staggered barrier arrivals in a busy workload,
+/// then expires so a shard that becomes serial returns to the timer-free path.
+pub fn adaptive_group_commit_hold() -> std::time::Duration {
+    let micros = std::env::var("TS_WAL_ADAPTIVE_COMMIT_HOLD_US")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(100_000);
     std::time::Duration::from_micros(micros)
 }
 
@@ -13174,6 +13303,268 @@ mod tests {
              {WINDOW:?} window. The sleep belongs after the early return: a free rider pays \
              nothing, or the window costs every writer and buys nobody anything."
         );
+    }
+
+    #[test]
+    fn the_adaptive_window_requires_observed_contention() {
+        use std::time::{Duration, Instant};
+
+        const ADAPTIVE: Duration = Duration::from_secs(1);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let first = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "serial".to_string(), value: vec![1] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let start = Instant::now();
+        store
+            .group_commit_sync_with_policy(1, first.sequence, Duration::ZERO, ADAPTIVE)
+            .unwrap();
+        assert!(
+            start.elapsed() < ADAPTIVE,
+            "an isolated writer paid the adaptive window even though no barrier queued behind it",
+        );
+
+        let second = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "concurrent-a".to_string(), value: vec![2] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let third = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "concurrent-b".to_string(), value: vec![3] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let coordinator = store.group_commit_coordinator(1);
+        let gate = coordinator.state.lock().unwrap();
+        let syncs_before = store.stats(1).syncs;
+        let wait_for_pending = |expected| {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while coordinator.pending.load(AtomicOrdering::Acquire) < expected {
+                assert!(
+                    Instant::now() < deadline,
+                    "only {} of {expected} barrier callers registered",
+                    coordinator.pending.load(AtomicOrdering::Acquire),
+                );
+                std::thread::yield_now();
+            }
+        };
+        let start = std::thread::scope(|scope| {
+            let first_store = &store;
+            let first_barrier = scope.spawn(move || {
+                first_store
+                    .group_commit_sync_with_policy(
+                        1,
+                        second.sequence,
+                        Duration::ZERO,
+                        ADAPTIVE,
+                    )
+                    .unwrap();
+            });
+            wait_for_pending(1);
+            let second_store = &store;
+            let second_barrier = scope.spawn(move || {
+                second_store
+                    .group_commit_sync_with_policy(
+                        1,
+                        third.sequence,
+                        Duration::ZERO,
+                        ADAPTIVE,
+                    )
+                    .unwrap();
+            });
+            wait_for_pending(2);
+            let start = Instant::now();
+            drop(gate);
+            first_barrier.join().unwrap();
+            second_barrier.join().unwrap();
+            start
+        });
+        assert!(
+            start.elapsed() >= ADAPTIVE,
+            "two queued barriers did not open the adaptive batch window",
+        );
+        assert_eq!(
+            store.stats(1).syncs - syncs_before,
+            1,
+            "both queued writes must share the barrier opened by the adaptive window",
+        );
+    }
+
+    #[test]
+    fn an_appended_later_sequence_opens_the_adaptive_window() {
+        use std::time::{Duration, Instant};
+
+        const ADAPTIVE: Duration = Duration::from_millis(250);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let earlier = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "earlier".to_string(), value: vec![1] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let later = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "later".to_string(), value: vec![2] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        let start = Instant::now();
+        store
+            .group_commit_sync_with_policy(1, earlier.sequence, Duration::ZERO, ADAPTIVE)
+            .unwrap();
+        assert!(
+            start.elapsed() >= ADAPTIVE,
+            "a later appended sequence did not open the adaptive batch window",
+        );
+
+        let start = Instant::now();
+        store
+            .group_commit_sync_with_policy(1, later.sequence, Duration::ZERO, ADAPTIVE)
+            .unwrap();
+        assert!(
+            start.elapsed() < ADAPTIVE,
+            "the later sequence was already durable but still paid the adaptive window",
+        );
+    }
+
+    #[test]
+    fn alternating_writer_threads_keep_the_adaptive_window_active() {
+        use std::time::{Duration, Instant};
+
+        const ADAPTIVE: Duration = Duration::from_millis(250);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let first = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "first-thread".to_string(), value: vec![1] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        std::thread::scope(|scope| {
+            let store = &store;
+            scope
+                .spawn(move || {
+                    store
+                        .group_commit_sync_with_policy(
+                            1,
+                            first.sequence,
+                            Duration::ZERO,
+                            ADAPTIVE,
+                        )
+                        .unwrap();
+                })
+                .join()
+                .unwrap();
+        });
+
+        let second = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "second-thread".to_string(), value: vec![2] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let elapsed = std::thread::scope(|scope| {
+            let store = &store;
+            scope
+                .spawn(move || {
+                    let start = Instant::now();
+                    store
+                        .group_commit_sync_with_policy(
+                            1,
+                            second.sequence,
+                            Duration::ZERO,
+                            ADAPTIVE,
+                        )
+                        .unwrap();
+                    start.elapsed()
+                })
+                .join()
+                .unwrap()
+        });
+        assert!(
+            elapsed >= ADAPTIVE,
+            "a different writer thread reached the shard but did not open the adaptive window",
+        );
+    }
+
+    #[test]
+    fn one_shards_commit_coordinator_does_not_hold_another_shard() {
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let first = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "one".to_string(), value: vec![1] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let second = store
+            .append_for_group_commit(
+                2,
+                Command::StringSet { key: "two".to_string(), value: vec![2] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        let first_coordinator = store.group_commit_coordinator(1);
+        let gate = first_coordinator.state.lock().unwrap();
+        std::thread::scope(|scope| {
+            let blocked_store = &store;
+            let blocked = scope.spawn(move || {
+                blocked_store
+                    .group_commit_sync_windowed(1, first.sequence, Duration::ZERO)
+                    .unwrap();
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while first_coordinator.pending.load(AtomicOrdering::Acquire) < 1 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the shard 1 barrier caller did not register",
+                );
+                std::thread::yield_now();
+            }
+
+            let (sent, received) = std::sync::mpsc::channel();
+            let independent_store = &store;
+            let independent = scope.spawn(move || {
+                independent_store
+                    .group_commit_sync_windowed(2, second.sequence, Duration::ZERO)
+                    .unwrap();
+                sent.send(()).unwrap();
+            });
+            received
+                .recv_timeout(Duration::from_secs(2))
+                .expect("shard 2 waited behind shard 1's commit coordinator");
+            drop(gate);
+            blocked.join().unwrap();
+            independent.join().unwrap();
+        });
     }
 
     /// WHAT THE COMMIT WINDOW BUYS IN FSYNCS PER WRITE, AND WHAT IT COSTS IN LATENCY.

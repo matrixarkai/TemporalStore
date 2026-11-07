@@ -37,82 +37,27 @@
 //!
 //! # AND IT IS SWEPT OVER CONCURRENCY, WHICH IS THE PART THAT CHANGES THE CONCLUSION
 //!
-//! A single-threaded fixture records **1.00 fsync per write**, and one row cannot say whether that
-//! is the store or the fixture: the group commit on this path is driven by CONCURRENCY rather than
-//! by a timer, so a lone writer has nothing to share a flush with. The question is what happens
-//! when there IS something.
+//! A single-threaded fixture records **1.00 fsync per write**. It should: no other write exists to
+//! share that barrier, and the adaptive commit window stays closed for an isolated caller. Under
+//! concurrency the coordinator now opens a bounded 1 ms window only after it observes a queued
+//! barrier, multiple undurable sequences, or a different writer thread on the same shard.
 //!
-//! Measured, writers each writing their own hash key so the reading is about flush sharing and not
-//! about contention on one object. TWO RUNS, because a timing-dependent sweep read once is a
-//! single sample and this tree has already had a monotonicity claim refuted by its fifth run:
+//! That distinction removes the old forced choice between serial latency and write throughput.
+//! The explicit `TS_WAL_COMMIT_DELAY_US` knob still applies an unconditional window when an
+//! operator asks for one; the default adaptive path pays no timer until concurrency is real, then
+//! remembers it briefly so staggered writers do not forget the workload between barrier calls.
 //!
-//! ```text
-//!   writers  each   run A   run B   1/N if flushes were shared
-//!   1        24     1.000   1.000   1.000
-//!   2        24     1.000   1.000   0.500
-//!   4        24     0.854   0.812   0.250
-//!   8        24     0.844   0.672   0.125
-//!   16       24     0.862   0.703   0.062
-//!   8        200    0.946   0.859   0.125
-//! ```
+//! Measured on the same engine tree, eight writers each issuing twenty-four hash writes used
+//! **0.641 fsyncs per write with adaptive timing disabled and 0.271 with it enabled**, while one
+//! writer remained **1.000**. A separate endpoint run read 0.406 and 0.318; the exact concurrent
+//! number is scheduling-sensitive and is not pinned. What is pinned below is the stable shape:
+//! concurrent writers must materially reduce barriers, while the dedicated WAL tests prove the
+//! isolated path does not wait and unrelated shards do not serialize their fsyncs.
 //!
-//! **THE PER-ROW FIGURES MOVE BY UP TO A QUARTER BETWEEN RUNS, SO NO SINGLE ONE OF THEM IS A
-//! RESULT.** What survives both runs is the ENDPOINT comparison, and it is not close: sixteen
-//! writers would cost 0.06 fsyncs per write if each flush carried the whole set, and they cost
-//! 0.70 to 0.86 -- an order of magnitude above that floor, in both runs, at every concurrency past
-//! one. Two writers share nothing at all in either run. And lengthening each writer's run moves
-//! the figure the WRONG way (0.86 to 0.95 at two hundred writes each), which is the opposite of
-//! what a window that fills with work would do.
-//!
-//! That endpoint gap is what the assertion below pins, deliberately: a clause on any single row,
-//! or on "more writers is better", would be riding a quantity that moves 25% between runs.
-//!
-//! So on this path **the barrier is per write, and concurrency does not amortise it.** Whether
-//! that is deliberate -- an ack that waits for its own fsync is a durability choice, not a defect
-//! -- is a separate question this arm does not settle. What it does settle is the ORDERING: the
-//! device pays about one barrier per write at every concurrency, so the 220.5 B envelope is behind
-//! that barrier and not in front of it.
-//!
-//! # WHY IT DOES NOT SHARE, AND IT IS NOT THE PATH -- IT IS THE ZERO DEFAULT WINDOW
-//!
-//! A previous measurement of the WAL's commit-delay knob reported **0.229 fsyncs per write at
-//! eight threads of twenty-four writes** -- the same shape as the rows above that read 0.82 -- and
-//! concluded batching was already done. Both readings are real, and the reason they differ is
-//! mechanical rather than mysterious.
-//!
-//! `group_commit_sync_windowed` coalesces a writer only if it arrives **while an fsync is already
-//! in flight**: the first caller through takes `sync_coord`, snapshots the high-water sequence and
-//! fsyncs, and anyone whose sequence is already covered returns free. With the window at its
-//! default of **zero**, that is the entire coalescing mechanism, so how much sharing happens is a
-//! property of **how densely writes arrive** -- which is to say of how much work the caller does
-//! between appends. A tight loop driving the WAL store directly piles writers up during each
-//! fsync and shares well. `engine.execute` does a block append and an index update per command, so
-//! its writers are spread out and mostly miss each other.
-//!
-//! **MEASURED, by widening the window on THIS path** (`TS_WAL_COMMIT_DELAY_US`, which
-//! `group_commit_delay` reads):
-//!
-//! ```text
-//!   writers  window 0   1 ms    5 ms    1/N floor
-//!   1        1.000      1.000   1.000   1.000
-//!   2        1.000      0.500   0.500   0.500
-//!   4        0.844      0.396   0.250   0.250
-//!   8        0.818      0.401   0.167   0.125
-//!   16       0.823      0.409   0.159   0.062
-//! ```
-//!
-//! At 5 ms the client path reaches the shared-flush floor **exactly** at four writers and comes
-//! within 1.1x of it at eight, against **7.6x** at the default. So the per-write barrier is not a
-//! property of this path at all: it is the zero window, and a window buys coalescing that arrival
-//! density alone does not.
-//!
-//! That is the whole argument for a TIMER over an arrival-driven window: a timer coalesces
-//! regardless of how the writes are spaced, which is exactly the case where a zero window gives up.
-//! The knob is wired and its default is zero, so the cost is opt-in -- and it is not free, because
-//! ack waits on the barrier and the window lands on write latency.
-//!
-//! **Do not quote either figure as "the" number.** 0.229 and 0.82 are the same mechanism at two
-//! arrival densities.
+//! The longer eight-by-two-hundred arm remains deliberately visible. Growing each hash stretches
+//! the work between WAL append and commit, so that row measures how well the short adaptive memory
+//! bridges staggered arrivals; it is not expected to equal the `1/N` ideal. Keeping it in the
+//! printed sweep prevents the short burst from being mistaken for every write shape.
 //!
 //! # THE FIXTURE IS TWENTY FIELDS, DELIBERATELY
 //!
@@ -384,8 +329,8 @@ fn what_one_hash_field_write_costs_durably() {
         together / if_shared.max(f64::MIN_POSITIVE),
     );
     println!(
-        "  so the barrier is PER WRITE at every concurrency, and the {:.1} B envelope ({:.0}% of \
-         it the index entry) sits BEHIND that barrier, not in front of it",
+        "  concurrent writers share barriers while one writer stays timer-free; the {:.1} B \
+         envelope is {:.0}% index entry bytes",
         shape.total(),
         100.0 * shape.index_bytes / shape.total(),
     );
@@ -398,54 +343,28 @@ fn what_one_hash_field_write_costs_durably() {
          neither row is a measurement of durability cost"
     );
 
-    // --- THE SHAPE, PINNED AS THE FINDING RATHER THAN AS A DIRECTION. Concurrency does NOT
-    // --- amortise the barrier here: eight writers stay far above the 1/8 a shared flush would
-    // --- cost. Asserting "together < alone" instead would pass on a 1.2x improvement and read as
-    // --- though batching worked, which is how this arm first stated it and why the sweep exists.
-    // ---
-    // --- IF THIS EVER FAILS, BATCHING LANDED ON THIS PATH. That is good news and the clause is
-    // --- what will say so: delete it, and move the envelope to the front of the queue, because
-    // --- the barrier will no longer be what a write pays for.
-    const SHARED_FLUSH_FLOOR_SLACK: f64 = 2.0;
-    // THE CLAUSE IS ABOUT THE DEFAULT CONFIGURATION, AND IT SAYS SO RATHER THAN ASSUMING IT.
-    //
-    // A non-zero commit window takes this path to the shared-flush floor -- 0.167 at eight writers
-    // with 5 ms against 0.818 at the default -- so under a window the assertion below is FALSE and
-    // correctly so. It was written before that was measured and fired exactly as its message
-    // promised when the window was widened, which is the behaviour wanted from it; what was
-    // missing is the precondition. Read the window rather than assuming zero, so the arm measures
-    // the configuration it is actually running under.
+    // --- THE DEFAULT POLICY MUST BUY A MATERIAL REDUCTION. A directional `together < alone`
+    // --- would pass on noise; twenty percent leaves room for scheduler variance while still
+    // --- refusing the old nearly-one-barrier-per-write shape. Custom timing values keep only the
+    // --- non-regression clause because their trade is chosen by the caller, not by this default.
     let window = std::env::var("TS_WAL_COMMIT_DELAY_US")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    if window > 0 {
-        println!(
-            "  TS_WAL_COMMIT_DELAY_US={window}, so the endpoint clause does not apply: a window \
-             coalesces by design and {together:.3} against a {if_shared:.3} floor is the window \
-             working, not a defect"
-        );
-        assert!(
-            together <= alone,
-            "with a {window} us commit window, {WRITERS} writers cost {together:.3} fsyncs per \
-             write against {alone:.3} for one. A window that makes concurrent writes cost MORE \
-             barriers each is the mechanism failing."
-        );
-        return;
-    }
+    let adaptive_override = std::env::var("TS_WAL_ADAPTIVE_COMMIT_DELAY_US").ok();
     assert!(
-        together > if_shared * SHARED_FLUSH_FLOOR_SLACK,
-        "{WRITERS} concurrent writers cost {together:.3} fsyncs per write at the DEFAULT commit \
-         window, within {:.1}x of the {if_shared:.3} a fully shared flush would cost. The barrier \
-         is being amortised without a window, which it was not when this was written -- so either \
-         the default changed (check `group_commit_delay`), or the write path got cheap enough per \
-         command that writers now pile up during an fsync on their own. Either way it inverts the \
-         conclusion: the {:.1} B envelope, {:.0}% of it the index entry, becomes the lever instead \
-         of the barrier. Re-read the window table in this file's header before changing anything.",
-        SHARED_FLUSH_FLOOR_SLACK,
-        shape.total(),
-        100.0 * shape.index_bytes / shape.total()
+        together <= alone,
+        "{WRITERS} concurrent writers cost {together:.3} fsyncs each against {alone:.3} for one; \
+         commit batching made concurrency pay more barriers per write",
     );
+    if window == 0 && adaptive_override.is_none() {
+        const MAX_DEFAULT_RATIO: f64 = 0.80;
+        assert!(
+            together <= alone * MAX_DEFAULT_RATIO,
+            "the default adaptive policy reduced fsyncs only from {alone:.3} to {together:.3} \
+             with {WRITERS} writers, less than the guarded twenty-percent reduction",
+        );
+    }
     // ---------------------------------------------------------------------------------------------
     // THE ON-DISK COLUMN IS NOT A PER-WRITE COST, AND THE CROSS IS WHAT SHOWS IT.
     //
