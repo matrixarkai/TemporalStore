@@ -76,7 +76,18 @@ use super::{ElementMap, LiveBlockKey};
 /// What distinguishes one model kind from another, and nothing else.
 pub(super) trait RecordedKind: Sized + 'static {
     /// The elements of one object, which is the level-2 container.
-    type Elements: ElementMap;
+    ///
+    /// THE FOUR EXTRA BOUNDS ARE STATED HERE RATHER THAN INHERITED FROM A DERIVE. `RecordedMap`
+    /// has always needed them -- it derives `Debug`, `Clone`, `PartialEq` and `Eq` -- but it got
+    /// them for free: when a field's type is an associated-type projection like
+    /// `HashMap<ModelKey, K::Elements>`, the derive adds a `where K::Elements: Debug` predicate of
+    /// its own. The value is a `RecordedRow<K>` now, which is not a projection, so that free
+    /// predicate disappears and the requirement has to be said out loud.
+    ///
+    /// Nothing is tightened in practice: all four concrete element maps already satisfy these, and
+    /// a kind added later that does not would have failed on the derive anyway -- it would just
+    /// have failed somewhere less obvious than the line that states the requirement.
+    type Elements: ElementMap + std::fmt::Debug + Clone + PartialEq + Eq;
 
     /// The model kind as the bucket index spells it. Spelled ONCE per kind here, so no arm can
     /// misspell it and no two arms can disagree.
@@ -95,10 +106,10 @@ pub(super) trait RecordedKind: Sized + 'static {
     ///
     /// So the codec is a REQUIRED associated function. A kind added later cannot inherit a wrong
     /// default; it has to say which encoding it uses, and saying "the plain map" is one line.
-    fn serialize_entries<S>(
-        entries: &HashMap<ModelKey, Self::Elements>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    /// TAKES THE MAP, NOT ITS INNER `HashMap`, because the inner value is a row now and the row is
+    /// private to this module. Every impl writes the ELEMENTS only, so the stored bytes are what
+    /// they were before the row existed.
+    fn serialize_entries<S>(map: &RecordedMap<Self>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer;
 
@@ -157,8 +168,102 @@ pub(super) struct RecordedMap<K: RecordedKind> {
     /// `which_string_keyed_holders_duplicate_a_key_another_map_holds`. Being private is what kept
     /// that true for so long: the key could not be converted from outside this module, so the
     /// adoption had to arrive as a declared operation here. See `adopt_key` below.
-    entries: HashMap<ModelKey, K::Elements>,
+    entries: HashMap<ModelKey, RecordedRow<K>>,
 }
+
+/// ONE ROW PER OBJECT: this object's elements AND its per-object facts, in a single entry.
+///
+/// # WHY THIS TYPE EXISTS
+///
+/// `string`, `control_state` and `feature` already keep their block refs on their own row, in
+/// `ObjectSlot::refs`. These four kinds could not, because this map's value WAS the elements and
+/// nothing else -- so their refs live in `CoreIndex::object_block_lookup`, a second structure keyed
+/// by the same object text. `where_an_objects_refs_could_live::where_each_kinds_refs_end_up`
+/// measures that split: 4 of 4 objects in the lookup for every one of `hash`, `set`, `zset` and
+/// `list`, against 4 of 4 in the row for the three kinds that have one.
+///
+/// # IT IS NOT ON THE WIRE, AND THAT IS WHY IT OWES NO FORMAT STAMP
+///
+/// `serialize_entries` writes the ELEMENTS only -- exactly the bytes it wrote before -- and the
+/// decode re-files every block it reads. That is the same bargain `ObjectSlot::refs` makes for the
+/// kinds that already have a row, and the reason the fold that built that field owed no stamp
+/// either.
+///
+/// "Owes no stamp" is a claim about an encoder, so it is CHECKED rather than argued:
+/// `recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were` pins all four
+/// kinds' exact stored bytes AND their map-versus-sequence shapes, so this type cannot change what
+/// any kind writes without that arm failing by name.
+struct RecordedRow<K: RecordedKind> {
+    elements: K::Elements,
+    /// THE BLOCKS THIS OBJECT'S DATA LIVES IN, or nothing when it names none.
+    ///
+    /// `Option` and not a bare `BlockRefs` for the reason `ObjectSlot::refs` gives: `BlockRefs` has
+    /// no empty arm, so "names no block" would have to be spelled as an empty `Many`, and a caller
+    /// that distinguishes "names nothing" by `None` would take the wrong branch.
+    refs: Option<crate::engine::state::BlockRefs>,
+}
+
+/// Hand-written, for the reason `RecordedMap`'s own is: a derive would demand `K: Default`, and the
+/// kind markers are types nobody constructs.
+impl<K: RecordedKind> Default for RecordedRow<K> {
+    fn default() -> Self {
+        Self {
+            elements: K::Elements::default(),
+            refs: None,
+        }
+    }
+}
+
+// THE FOUR IMPLS BELOW ARE HAND-WRITTEN BECAUSE A DERIVE BOUNDS THE TYPE PARAMETER AND NOT THE
+// ASSOCIATED TYPE. `#[derive(Debug)]` on this struct emits `impl<K: Debug> Debug`, which says
+// nothing about `K::Elements` -- the type the field actually is -- so it fails to satisfy
+// `RecordedMap`'s own derive. Written out, each carries the bound its field needs.
+
+impl<K: RecordedKind> std::fmt::Debug for RecordedRow<K>
+where
+    K::Elements: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecordedRow")
+            .field("elements", &self.elements)
+            .field("refs", &self.refs)
+            .finish()
+    }
+}
+
+impl<K: RecordedKind> Clone for RecordedRow<K>
+where
+    K::Elements: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            elements: self.elements.clone(),
+            refs: self.refs.clone(),
+        }
+    }
+}
+
+/// EQUALITY IS OVER THE ELEMENTS AND NOT THE REFS, and that is deliberate rather than an omission.
+///
+/// The refs are DERIVED: they are absent from the stored bytes and re-filed by the load path, so a
+/// decoded map legitimately holds `None` where the live map it was written from held `Some`.
+/// Comparing them would make `assert_eq!(decoded, original)` fail for every object that names a
+/// block -- a round-trip arm reporting the codec wrong when the codec is right.
+///
+/// This is the same correction `ObjectRecord` needed once its flag word began carrying bits that
+/// were derived rather than identity: equality there runs over the identity terms only. The rule is
+/// that a derived field must not enter equality, because the two sides of a reload disagree about
+/// it by design.
+impl<K: RecordedKind> PartialEq for RecordedRow<K>
+where
+    K::Elements: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.elements == other.elements
+    }
+}
+
+impl<K: RecordedKind> Eq for RecordedRow<K> where K::Elements: Eq {}
 
 impl<K: RecordedKind> Default for RecordedMap<K> {
     fn default() -> Self {
@@ -278,6 +383,206 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// `execute_on_shard`, `stream_batch_methods` and the two replay paths in `lifecycle` -- passes
 /// `Some(..)`, so the `Option` is a shape shared with the filer rather than a case this function
 /// has.
+/// THIS OBJECT'S BLOCK REFS, IF ITS ROW HOLDS THEM -- the third home, beside the slot and the
+/// lookup.
+///
+/// # WHY A KIND STRING AND NOT A TYPE PARAMETER
+///
+/// Every reader of refs has a `&str` kind in hand, not a `K`: they come from an index entry, a
+/// dump manifest row or a command, and none of them is generic. So the dispatch has to happen
+/// somewhere, and here is the only place that knows which `ShardState` field each kind's rows live
+/// in. The alternative -- making the readers generic -- would mean threading `K` through
+/// `block_refs_for`'s thirteen call sites, several of which handle several kinds in one loop.
+///
+/// A kind with no `RecordedMap` answers `None`, which is correct rather than a fallback: `string`,
+/// `control_state` and `feature` keep their refs on an `ObjectSlot` and the slot home answers for
+/// them.
+pub(super) fn row_refs<'a>(
+    shard: &'a ShardState,
+    kind: &str,
+    object_key: &str,
+) -> Option<&'a crate::engine::state::BlockRefs> {
+    if kind == HashKind::KIND {
+        shard.bucket_index.hashes.refs(object_key)
+    } else if kind == SetKind::KIND {
+        shard.bucket_index.sets.refs(object_key)
+    } else if kind == ZSetKind::KIND {
+        shard.bucket_index.zsets.refs(object_key)
+    } else if kind == ListKind::KIND {
+        shard.bucket_index.lists.refs(object_key)
+    } else {
+        None
+    }
+}
+
+// =============================================================================================
+// THE THREE DOORS THAT KEEP THE ROW HOME HONEST, and why there are exactly three.
+//
+// A ref has three homes now and each one needs a WRITER, a READER and a DELETER. The reader is
+// `state::object_block_refs`, which chains all three. These are the row's writer and deleters:
+//
+//   * `adopt_refs_into_row` -- the per-object writer, called from `install_element` after the
+//     install that creates the row, mirroring `CoreIndex::adopt_refs_into_slot`.
+//   * `adopt_every_lookup_ref_into_its_row` -- the same thing swept over the whole lookup, for the
+//     door that installs a reconstructed index, mirroring
+//     `CoreIndex::adopt_every_lookup_ref_into_its_slot`.
+//   * `prune_row_refs_to_the_blocks_the_index_holds` -- the deleter, mirroring
+//     `CoreIndex::prune_refs_to_the_pages_the_index_holds`.
+//
+// THE DELETER IS WHY THIS TOOK THREE ATTEMPTS TO SCOPE. `CoreIndex` cannot reach a `RecordedMap`
+// -- siblings on `ShardState` -- so the index's own prune cannot see a row, and a reconstruct
+// REPLACES the index wholesale. Wire the writer without the deleter and a reconstruct leaves refs
+// naming blocks the new index does not hold: the same shape as the defect where an install
+// replaced a slot row and dropped its refs, except this is the half nothing reports.
+//
+// Both callers that needed a `ShardState` turned out to have one. `install_reconstructed` has a
+// single production caller, `rebuild_bucket_first_index`, which already holds `shard`; and
+// `fold_delta_block_items` takes a `&mut CoreIndex` but its only caller,
+// `fold_index_log_deltas(.., shard: &mut ShardState)`, holds the shard. **I had read both
+// signatures and concluded no shard was in scope -- the signature is not the call site.**
+// =============================================================================================
+
+/// ADOPT EVERY LOOKUP REF WHOSE ROW NOW EXISTS, across the four kinds, and answer how many moved.
+///
+/// The row counterpart of `CoreIndex::adopt_every_lookup_ref_into_its_slot`, called from the same
+/// place: the door that installs a reconstructed index. A reconstruct derives its filings from the
+/// model maps and files them all into the lookup, so without this sweep every ref of these four
+/// kinds would sit in the lookup again after every reconstruct.
+pub(super) fn adopt_every_lookup_ref_into_its_row(shard: &mut ShardState) -> usize {
+    // COLLECTED FIRST, because the adoption mutates the lookup it would otherwise be iterating.
+    let pairs: Vec<(std::sync::Arc<str>, std::sync::Arc<str>)> = shard
+        .bucket_index
+        .object_block_lookup
+        .iter()
+        .map(|(model_id, object_key, _refs)| {
+            (std::sync::Arc::clone(model_id), std::sync::Arc::clone(object_key))
+        })
+        .collect();
+    let mut moved = 0usize;
+    for (model_id, object_key) in pairs {
+        let key = object_key.as_ref();
+        let did = if &*model_id == HashKind::KIND {
+            adopt_refs_into_row::<HashKind>(shard, key)
+        } else if &*model_id == SetKind::KIND {
+            adopt_refs_into_row::<SetKind>(shard, key)
+        } else if &*model_id == ZSetKind::KIND {
+            adopt_refs_into_row::<ZSetKind>(shard, key)
+        } else if &*model_id == ListKind::KIND {
+            adopt_refs_into_row::<ListKind>(shard, key)
+        } else {
+            false
+        };
+        if did {
+            moved += 1;
+        }
+    }
+    moved
+}
+
+/// PRUNE EVERY ROW'S REFS TO THE BLOCKS THE INDEX ACTUALLY HOLDS, and answer how many went.
+///
+/// THE DELETER THE ROW HOME WOULD OTHERWISE NOT HAVE. `CoreIndex::prune_refs_to_the_pages_the_index_holds`
+/// does this for the slot and the lookup and cannot reach a row. A reconstruct replaces the index,
+/// so a row ref naming a block the NEW index does not hold names nothing at all -- and a reader
+/// that chains the row home would hand that dead ref out.
+pub(super) fn prune_row_refs_to_the_blocks_the_index_holds(shard: &mut ShardState) -> usize {
+    // DESTRUCTURED so `bucket_map` can be borrowed immutably while the four maps are borrowed
+    // mutably. They are disjoint fields, which the compiler can only see if they are named.
+    //
+    // IT IS `CoreIndex` THAT IS TAKEN APART NOW, NOT `ShardState`. This read
+    // `let ShardState { bucket_index, hashes, sets, zsets, lists, .. }` while the four container
+    // maps were top-level `ShardState` fields, siblings of `bucket_index`. They are fields OF the
+    // index since `SHARD_INDEX_FORMAT_VERSION` 31, so the sibling destructure names fields that no
+    // longer exist there and the disjoint borrow has to be taken one level down.
+    //
+    // AND THE PREDICATE IS A FREE FUNCTION FOR THAT REASON: `CoreIndex::holds_block_ref` is
+    // unavailable here precisely because the struct it is a method on has just been destructured,
+    // so both callers share `bucket_map_holds_block_ref` rather than the two lines being copied.
+    let crate::engine::state::CoreIndex {
+        bucket_map,
+        hashes,
+        sets,
+        zsets,
+        lists,
+        ..
+    } = &mut shard.bucket_index;
+    let holds = |block_ref: &crate::engine::state::BlockLookupRef| -> bool {
+        crate::engine::state::CoreIndex::bucket_map_holds_block_ref(bucket_map, block_ref)
+    };
+    hashes.retain_refs(&holds)
+        + sets.retain_refs(&holds)
+        + zsets.retain_refs(&holds)
+        + lists.retain_refs(&holds)
+}
+
+/// DROP ONE REF FROM WHICHEVER OF THE FOUR KINDS' ROWS HOLDS IT.
+///
+/// For the delta fold's un-file half, which drops a block and may place another at the same handle
+/// in the same call -- so the un-file has to reach every home the ref could be in.
+pub(super) fn remove_row_ref(
+    shard: &mut ShardState,
+    model_id: &str,
+    object_key: &str,
+    block_ref: &crate::engine::state::BlockLookupRef,
+) -> bool {
+    if model_id == HashKind::KIND {
+        shard.bucket_index.hashes.remove_ref(object_key, block_ref)
+    } else if model_id == SetKind::KIND {
+        shard.bucket_index.sets.remove_ref(object_key, block_ref)
+    } else if model_id == ZSetKind::KIND {
+        shard.bucket_index.zsets.remove_ref(object_key, block_ref)
+    } else if model_id == ListKind::KIND {
+        shard.bucket_index.lists.remove_ref(object_key, block_ref)
+    } else {
+        false
+    }
+}
+
+/// DROP THIS OBJECT'S WHOLE REF SET FROM ITS ROW, whichever of the four kinds it is.
+///
+/// The row counterpart of `CoreIndex::remove_object_block_lookup_entry`, which removes an object's
+/// entire entry. A row's refs go to `None` rather than to an empty set, which `take_refs` does.
+pub(super) fn clear_row_refs(shard: &mut ShardState, model_id: &str, object_key: &str) -> bool {
+    if model_id == HashKind::KIND {
+        shard.bucket_index.hashes.take_refs(object_key).is_some()
+    } else if model_id == SetKind::KIND {
+        shard.bucket_index.sets.take_refs(object_key).is_some()
+    } else if model_id == ZSetKind::KIND {
+        shard.bucket_index.zsets.take_refs(object_key).is_some()
+    } else if model_id == ListKind::KIND {
+        shard.bucket_index.lists.take_refs(object_key).is_some()
+    } else {
+        false
+    }
+}
+
+/// MOVE THIS OBJECT'S REFS OUT OF THE LOOKUP AND ONTO ITS ROW.
+///
+/// The counterpart of [`CoreIndex::adopt_refs_into_slot`] for the four kinds whose rows are not
+/// `ObjectSlot`s, and it exists for the same reason that one does: a first write files its block
+/// BEFORE the element naming it is installed, because the filer runs first and the row is created
+/// by the install. So at filing time there is no row, the refs go to the lookup, and this is what
+/// moves them once the row exists.
+///
+/// Called from `install_element` below, immediately after the install that creates the row -- which
+/// is where the slot route calls its own adoption from.
+pub(super) fn adopt_refs_into_row<K: RecordedKind>(shard: &mut ShardState, object_key: &str) -> bool {
+    if !K::resident(shard).contains_key(object_key) {
+        return false;
+    }
+    let Some(adopted) = shard
+        .bucket_index
+        .object_block_lookup
+        .remove(K::KIND, object_key)
+    else {
+        return false;
+    };
+    // MERGED RATHER THAN REPLACED, which is the rule `adopt_refs_into_slot` states at its own
+    // merge: an overwrite can have filed a block into the row already, so replacing would drop it
+    // -- one block of an object going missing with no error anywhere.
+    K::resident(shard).merge_refs(object_key, adopted)
+}
+
 pub(super) fn install_element<K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -328,6 +633,39 @@ pub(super) fn install_element<K: RecordedKind>(
         element,
         value,
     });
+    // AND THEN THE ADOPTION, because the row exists only now.
+    //
+    // The filer above ran BEFORE this install, so at filing time this object had no row and its
+    // refs went to `object_block_lookup`. This is what moves them onto the row, and it is the whole
+    // reason the row RETIRES lookup entries rather than merely duplicating them. Same two-half
+    // shape the slot kinds use, where the second half is `CoreIndex::adopt_refs_into_slot` called
+    // by the door that installs a row.
+    //
+    // STOPPED HERE, and the reason is a FOURTH consumer class nobody had enumerated.
+    //
+    // Wiring this one line is what makes the row retire lookup entries. It was wired, and
+    // `recorded_map_invariant::every_kind_records_exactly_once_through_the_one_operation` caught
+    // what it broke: "deleting the object recorded 0 deleted object ids, not 1".
+    //
+    // The mechanism: `BlockKeysByPosition::from_parts(&objects, &object_block_lookup)` builds the
+    // INVERSION from block handle back to object key, and it reads the two homes as FIELDS rather
+    // than through `state::object_block_refs`. So the reader migration could not touch it. With
+    // refs on a row the inversion stops naming those blocks, `retain` keeps them, and a deletion
+    // marks nothing -- silently.
+    //
+    // There are 16 `from_parts` call sites and several hold a STANDALONE `CoreIndex` with no
+    // `ShardState`, so the inversion needs its own design decision rather than a mechanical
+    // migration.
+    //
+    // So the consumer census for this move is: WRITER (done), READER (done, 14 sites), DELETER
+    // (done, 6 sites plus two sweeps), INVERSION (not started, 16 sites). Each layer was found by
+    // a guard after the previous one was declared complete, which is the honest reason this is
+    // paused rather than pushed: the next layer is discovered, not predicted.
+    //
+    // AND IT IS WORTH 0.0 B/key ON THE PUBLISHED FIGURE -- that corpus is `StringSet` only, so the
+    // lookup measures 0 bytes there. The arena plus the slot's `many` field reach 4.0x at 29.7
+    // against 25.0 needed. This move is for real-workload footprint, and it should be finished
+    // deliberately rather than squeezed in.
 }
 
 /// The same, for a record that is a STAGED OUTCOME and no bucket-index entry.
@@ -512,7 +850,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     }
 
     pub(super) fn get(&self, object_key: &str) -> Option<&K::Elements> {
-        self.entries.get(object_key)
+        self.entries.get(object_key).map(|row| &row.elements)
     }
 
     /// Point every ELEMENT name in every entry at the pool's copy, and answer how many moved.
@@ -530,7 +868,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     {
         self.entries
             .values_mut()
-            .map(|elements| elements.adopt_element_names(pool))
+            .map(|row| row.elements.adopt_element_names(pool))
             .sum()
     }
 
@@ -551,21 +889,164 @@ impl<K: RecordedKind> RecordedMap<K> {
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &K::Elements> {
-        self.entries.values()
+        self.entries.values().map(|row| &row.elements)
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&ModelKey, &K::Elements)> {
-        self.entries.iter()
+        self.entries.iter().map(|(key, row)| (key, &row.elements))
     }
 
-    /// IMMUTABLE access to the whole map, for a serde adapter that has to hand the inner shape to
-    /// an existing codec module.
+    /// THE BLOCKS ONE OBJECT'S DATA LIVES IN, read from the row the object is already filed under.
     ///
-    /// This is a READ and not an escape hatch: nothing can be written through a `&`, and the
-    /// surface test's matcher is anchored on `&mut` returns for exactly that reason. `sets` and
-    /// `zsets` need it because their field carried a `with =` codec that a `transparent` wrapper
-    /// would have silently changed.
-    pub(super) fn entries(&self) -> &HashMap<ModelKey, K::Elements> {
+    /// This is the door that makes `CoreIndex::object_block_lookup` unnecessary for these kinds:
+    /// the answer is a field of the entry this map already holds, rather than an entry in a second
+    /// structure keyed by the same text.
+    pub(super) fn refs(&self, object_key: &str) -> Option<&crate::engine::state::BlockRefs> {
+        self.entries.get(object_key)?.refs.as_ref()
+    }
+
+    /// Put this object's refs on its row, and answer whether there was a row to put them on.
+    ///
+    /// FALSE IS A REAL ANSWER AND NOT A FAILURE. A first write files its block BEFORE the element
+    /// that names it is installed, so at that moment the object has no row -- the same window
+    /// `ObjectSlot` has, which is why the slot route needed an adoption step as well as a filing
+    /// one. A caller that gets `false` must keep the ref where it kept it before.
+    pub(super) fn set_refs(
+        &mut self,
+        object_key: &str,
+        refs: crate::engine::state::BlockRefs,
+    ) -> bool {
+        match self.entries.get_mut(object_key) {
+            Some(row) => {
+                row.refs = Some(refs);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Take this object's refs off its row, leaving the row and its elements in place.
+    pub(super) fn take_refs(
+        &mut self,
+        object_key: &str,
+    ) -> Option<crate::engine::state::BlockRefs> {
+        self.entries.get_mut(object_key)?.refs.take()
+    }
+
+    /// MERGE refs onto this object's row, or install them when it carries none.
+    ///
+    /// MERGED AND NOT ASSIGNED, for the reason `CoreIndex::adopt_refs_into_slot` gives at its own
+    /// merge: an overwrite can have filed a block into the row already, so assigning would drop
+    /// it, which is one block of an object going missing with nothing raised anywhere.
+    ///
+    /// Answers whether there was a row to merge onto. `false` is a real answer, not a failure --
+    /// see `set_refs`.
+    pub(super) fn merge_refs(
+        &mut self,
+        object_key: &str,
+        adopted: crate::engine::state::BlockRefs,
+    ) -> bool {
+        let Some(row) = self.entries.get_mut(object_key) else {
+            return false;
+        };
+        match row.refs.as_mut() {
+            Some(existing) => {
+                for block_ref in adopted.iter() {
+                    existing.insert(block_ref.clone());
+                }
+            }
+            None => row.refs = Some(adopted),
+        }
+        true
+    }
+
+    /// DROP EVERY REF THE PREDICATE REJECTS, and answer how many went.
+    ///
+    /// The row counterpart of `CoreIndex::prune_refs_to_the_pages_the_index_holds`, which cannot
+    /// reach these rows: a reconstruct replaces the index, and a ref naming a block the NEW index
+    /// does not hold has to go or it names nothing.
+    ///
+    /// CLEARS A ROW'S REFS TO `None` AND NOT TO AN EMPTY SET, which is the rule the slot home
+    /// states at its own removal: `BlockRefs::remove` turns the inline arm into an empty spilled
+    /// one, and an empty `Some` makes a reader answer `Some(&[])` where callers distinguish "names
+    /// nothing" by `None` -- after which a re-add takes the wrong branch and leaks a tombstone.
+    pub(super) fn retain_refs(
+        &mut self,
+        keep: &dyn Fn(&crate::engine::state::BlockLookupRef) -> bool,
+    ) -> usize {
+        let mut dropped = 0usize;
+        for row in self.entries.values_mut() {
+            let Some(refs) = row.refs.as_mut() else {
+                continue;
+            };
+            let stale: Vec<crate::engine::state::BlockLookupRef> =
+                refs.iter().filter(|r| !keep(r)).cloned().collect();
+            for block_ref in &stale {
+                if refs.remove(block_ref) {
+                    dropped += 1;
+                }
+            }
+            if refs.is_empty() {
+                row.refs = None;
+            }
+        }
+        dropped
+    }
+
+    /// DROP ONE REF FROM ONE OBJECT'S ROW, clearing to `None` when it was the last.
+    ///
+    /// For the un-file half of a delta fold, which drops a block and may place another at the same
+    /// handle in the same call. Clears to `None` for the reason `retain_refs` gives.
+    pub(super) fn remove_ref(
+        &mut self,
+        object_key: &str,
+        block_ref: &crate::engine::state::BlockLookupRef,
+    ) -> bool {
+        let Some(row) = self.entries.get_mut(object_key) else {
+            return false;
+        };
+        let Some(refs) = row.refs.as_mut() else {
+            return false;
+        };
+        let removed = refs.remove(block_ref);
+        if refs.is_empty() {
+            row.refs = None;
+        }
+        removed
+    }
+
+    /// EVERY ROW THAT CARRIES REFS, for the INVERSION to file.
+    ///
+    /// `BlockKeysByPosition` maps a block handle back to its object key, and it builds that by
+    /// walking the ref homes. It had two to walk; this is the third. Without it the inversion stops
+    /// naming any block whose ref sits on a row, and a caller that asks "which object owns this
+    /// block" gets `None` -- which an object deletion reads as "not mine" and skips.
+    pub(super) fn rows_holding_refs(
+        &self,
+    ) -> impl Iterator<Item = (&ModelKey, &crate::engine::state::BlockRefs)> {
+        self.entries
+            .iter()
+            .filter_map(|(key, row)| row.refs.as_ref().map(|refs| (key, refs)))
+    }
+
+    /// HOW MANY ROWS CARRY REFS, which is what a probe needs to tell a populated row apart from a
+    /// row that merely exists.
+    ///
+    /// Without it an arm asserting "the refs are on the row now" passes just as well when every
+    /// row's `refs` is `None` -- the failure mode an empty-population guard always has.
+    pub(super) fn rows_with_refs(&self) -> usize {
+        self.entries.values().filter(|row| row.refs.is_some()).count()
+    }
+
+    /// IMMUTABLE access for the serde adapters in this module, which have to hand the inner shape
+    /// to an existing codec.
+    ///
+    /// PRIVATE, not `pub(super)`, which is a tightening the row forced rather than a choice: the
+    /// value is a `RecordedRow` now and the row is private to this module, so a `pub(super)`
+    /// return would leak a private type. `sets` and `zsets` need this because their field carries a
+    /// `with =` codec that a `transparent` wrapper would have silently changed; those codecs now
+    /// take an ITERATOR of `(key, elements)`, which is what `iter()` already yields.
+    fn rows(&self) -> &HashMap<ModelKey, RecordedRow<K>> {
         &self.entries
     }
 
@@ -598,7 +1079,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     where
         K::Elements: AddressedElementMap,
     {
-        let elements = self.entries.get(object_key)?;
+        let elements = &self.entries.get(object_key)?.elements;
         let previous = elements.element_address(element)?;
         if super::live_block_key(previous) == super::live_block_key(landing) {
             return None;
@@ -610,12 +1091,35 @@ impl<K: RecordedKind> RecordedMap<K> {
     }
 }
 
+/// The projecting iterator `&RecordedMap<K>` hands out.
+///
+/// A NAMED TYPE because `IntoIterator::IntoIter` is an associated type and cannot be `impl
+/// Iterator`. It existed implicitly before as `hash_map::Iter`, which stopped describing the
+/// iteration once the value became a row.
+pub(super) struct RowElements<'a, K: RecordedKind> {
+    inner: std::collections::hash_map::Iter<'a, ModelKey, RecordedRow<K>>,
+}
+
+impl<'a, K: RecordedKind> Iterator for RowElements<'a, K> {
+    type Item = (&'a ModelKey, &'a K::Elements);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(key, row)| (key, &row.elements))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
 impl<'a, K: RecordedKind> IntoIterator for &'a RecordedMap<K> {
     type Item = (&'a ModelKey, &'a K::Elements);
-    type IntoIter = std::collections::hash_map::Iter<'a, ModelKey, K::Elements>;
+    type IntoIter = RowElements<'a, K>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.entries.iter()
+        RowElements {
+            inner: self.entries.iter(),
+        }
     }
 }
 
@@ -684,11 +1188,22 @@ impl<K: RecordedKind> RecordedMap<K> {
             object_key,
             element,
         } = recorded;
-        let Some(elements) = self.entries.get_mut(&object_key[..]) else {
+        let Some(row) = self.entries.get_mut(&object_key[..]) else {
             return false;
         };
-        let removed = elements.remove_element(&element);
-        if elements.is_empty_map() {
+        let removed = row.elements.remove_element(&element);
+        if row.elements.is_empty_map() {
+            // THE WHOLE ROW GOES, REFS INCLUDED, and the row must not be kept alive to preserve
+            // them. A row with no elements is an object that does not exist, so its refs name
+            // blocks nothing holds -- and keeping it would make `contains_key` answer true for a
+            // key every listing reports empty, which is exactly the defect the key removal here
+            // exists to prevent: `record_exists_exact` ORs this map's `contains_key` into its
+            // answer, and `CommonExpire` gates on that, so such a key accepted a deadline and
+            // `ttl_ms` then reported it instead of the -2 of a missing key.
+            //
+            // So a row's lifetime is its ELEMENTS' lifetime. That is what keeps every existence
+            // answer in this engine unchanged by the row, and it is why `set_refs` answering
+            // `false` before the first element lands is honest rather than a hole.
             self.entries.remove(&object_key[..]);
         }
         removed
@@ -712,8 +1227,24 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// while each kind had its own container -- `hashes` got it from `#[serde(transparent)]` and
     /// `sets` from a hand-written impl, so neither named it -- and collapsing the two is what
     /// surfaced it as a path. Naming it is strictly better than a derive doing it silently.
+    /// THE REFS ARRIVE ABSENT, which is the whole reason this change owes no format stamp: they
+    /// are not in the stored bytes, and the load path re-files every block it reads. Same bargain
+    /// `ObjectSlot::refs` makes on the kinds that already have a row.
     pub(super) fn from_decoded(entries: HashMap<ModelKey, K::Elements>) -> Self {
-        Self { entries }
+        Self {
+            entries: entries
+                .into_iter()
+                .map(|(key, elements)| {
+                    (
+                        key,
+                        RecordedRow {
+                            elements,
+                            refs: None,
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 
     /// SHARED EXCEPTION 2 -- THE RECONCILE, where the durable index DECIDES and this map is the
@@ -740,13 +1271,40 @@ impl<K: RecordedKind> RecordedMap<K> {
         // hold, and it asks the VALUE for that address -- so the live-block filter needs this too.
         <K::Elements as ElementMap>::Value: super::CarriedValue,
     {
-        let persisted = std::mem::take(&mut self.entries);
+        // THE REFS ARE CARRIED ACROSS THE REPLACEMENT RATHER THAN RE-DERIVED. This method takes
+        // the whole map out and builds a new one from `fill_absent_elements`, so every row's refs
+        // would be dropped BY CONSTRUCTION -- for every key, silently, with nothing failing and no
+        // reader able to tell a lost ref from an object that never named a block.
+        //
+        // Dropping them would be sound only if this ran at load alone, where a refile follows. It
+        // is not worth resting a whole shard's block refs on that being true, so they are set aside
+        // by key and re-attached to whichever rows survive the merge. A key the merge drops takes
+        // its refs with it, which is correct: the object is gone.
+        let mut carried_refs: HashMap<ModelKey, crate::engine::state::BlockRefs> = self
+            .entries
+            .iter_mut()
+            .filter_map(|(key, row)| {
+                row.refs
+                    .take()
+                    .map(|refs| (std::sync::Arc::clone(key), refs))
+            })
+            .collect();
+        let persisted: HashMap<ModelKey, K::Elements> = std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|(key, row)| (key, row.elements))
+            .collect();
         self.entries = super::storage_bucket_internals::fill_absent_elements(
             derived,
             persisted,
             live,
             resurrections_refused,
-        );
+        )
+        .into_iter()
+        .map(|(key, elements)| {
+            let refs = carried_refs.remove(&key);
+            (key, RecordedRow { elements, refs })
+        })
+        .collect();
     }
 
     /// SHARED EXCEPTION 3 -- THE DELTA FOLD, where the carried blob IS the record.
@@ -762,7 +1320,30 @@ impl<K: RecordedKind> RecordedMap<K> {
     ) where
         <K::Elements as ElementMap>::Value: super::CarriedValue,
     {
-        super::merge_container_elements(&mut self.entries, object_key, carried, live, skipped);
+        // ONE OBJECT'S ELEMENTS, LENT THROUGH A TEMPORARY MAP. `merge_container_elements` takes a
+        // map of ELEMENTS and this map's values are rows now. The fold touches exactly the one
+        // object it is given, so the temporary holds at most one entry -- it is not a copy of the
+        // map.
+        //
+        // The object's REFS survive the lend: a fold changes which elements exist, not which blocks
+        // the object names. `take()` is what stops them being attached twice if the helper ever
+        // returns more than the key it was handed.
+        let mut lent: HashMap<ModelKey, K::Elements> = HashMap::new();
+        let mut held_refs = None;
+        if let Some((key, row)) = self.entries.remove_entry(object_key) {
+            held_refs = row.refs;
+            lent.insert(key, row.elements);
+        }
+        super::merge_container_elements(&mut lent, object_key, carried, live, skipped);
+        for (key, elements) in lent {
+            self.entries.insert(
+                key,
+                RecordedRow {
+                    elements,
+                    refs: held_refs.take(),
+                },
+            );
+        }
     }
 
     /// SHARED EXCEPTION 4 -- WAL REPLAY OF A REMOVAL THAT IS ALREADY IN THE RECORD.
@@ -781,7 +1362,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     {
         self.entries
             .get_mut(object_key)
-            .map(|elements| elements.remove_element(element))
+            .map(|row| row.elements.remove_element(element))
             .unwrap_or(false)
     }
 
@@ -797,9 +1378,14 @@ impl<K: RecordedKind> RecordedMap<K> {
     pub(super) fn element_values_mut(
         &mut self,
     ) -> impl Iterator<Item = (&str, ElementValuesMut<'_, K>)> {
-        self.entries
-            .iter_mut()
-            .map(|(object_key, elements)| (&**object_key, ElementValuesMut { elements }))
+        self.entries.iter_mut().map(|(object_key, row)| {
+            (
+                &**object_key,
+                ElementValuesMut {
+                    elements: &mut row.elements,
+                },
+            )
+        })
     }
 }
 
@@ -843,8 +1429,8 @@ impl<K: RepacksAfterDecode> RecordedMap<K> {
     where
         K::Elements: RepackableElementMap,
     {
-        for elements in self.entries.values_mut() {
-            elements.repack();
+        for row in self.entries.values_mut() {
+            row.elements.repack();
         }
     }
 }
@@ -940,14 +1526,11 @@ impl RecordedKind for HashKind {
     /// THE PLAIN MAP, which is what this field always was: a `#[serde(default)]` map of
     /// `String` to `HashFieldMap`, and `HashFieldMap` itself round-trips through the same MAP shape
     /// the bare `HashMap` used. So the bytes are unchanged by construction.
-    fn serialize_entries<S>(
-        entries: &HashMap<ModelKey, Self::Elements>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    fn serialize_entries<S>(map: &RecordedMap<Self>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serde::Serialize::serialize(entries, serializer)
+        serialize_elements_as_map(map, serializer)
     }
 
     fn deserialize_entries<'de, D>(
@@ -995,14 +1578,11 @@ impl RecordedKind for SetKind {
     /// round-trip -- three reload tests said so. This module encodes each set's members as a
     /// sequence of pairs instead, and it also sorts the outer keys into a `BTreeMap`, which is why
     /// this field's encoding is deterministic where `hashes`'s is not.
-    fn serialize_entries<S>(
-        entries: &HashMap<ModelKey, Self::Elements>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    fn serialize_entries<S>(map: &RecordedMap<Self>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        super::set_index_serde::serialize(entries, serializer)
+        super::set_index_serde::serialize(map.iter(), serializer)
     }
 
     fn deserialize_entries<'de, D>(
@@ -1053,14 +1633,11 @@ impl RecordedKind for ZSetKind {
     /// JSON object key is a string. STATED rather than inherited -- the codec is a required
     /// associated function with no default precisely so a new kind cannot acquire the wrong one in
     /// silence, which is the defect a blanket impl produced for `sets`.
-    fn serialize_entries<S>(
-        entries: &HashMap<ModelKey, Self::Elements>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    fn serialize_entries<S>(map: &RecordedMap<Self>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        super::zset_index_serde::serialize(entries, serializer)
+        super::zset_index_serde::serialize(map.iter(), serializer)
     }
 
     fn deserialize_entries<'de, D>(
@@ -1112,14 +1689,11 @@ impl RecordedKind for ListKind {
     /// THE PLAIN MAP, which is what this field always was -- a `#[serde(default)]` map with no
     /// `with =`. An `i64` key has a string form a JSON object can carry, which is exactly why this
     /// kind never needed the codec `sets` and `zsets` do. Stated explicitly all the same.
-    fn serialize_entries<S>(
-        entries: &HashMap<ModelKey, Self::Elements>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    fn serialize_entries<S>(map: &RecordedMap<Self>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serde::Serialize::serialize(entries, serializer)
+        serialize_elements_as_map(map, serializer)
     }
 
     fn deserialize_entries<'de, D>(
@@ -1281,12 +1855,39 @@ where
 // format stamp moves.
 // =============================================================================================
 
+/// Write a row map as the MAP OF ELEMENTS it was before the row existed.
+///
+/// BYTE-FOR-BYTE WHAT `HashMap<ModelKey, K::Elements>` WROTE. `serde`'s own map impl emits one
+/// entry per key in the table's iteration order, which is exactly what this does -- the only
+/// difference is that the value comes from a field of the row rather than being the value itself.
+/// So the row is invisible on the wire, which is the claim
+/// `recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were` checks.
+///
+/// NO INTERMEDIATE MAP, because there is no need for one: `serialize_entry` is fed straight from
+/// the iteration.
+fn serialize_elements_as_map<K, S>(
+    map: &RecordedMap<K>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    K: RecordedKind,
+    K::Elements: serde::Serialize,
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut out = serializer.serialize_map(Some(map.rows().len()))?;
+    for (key, row) in map.rows() {
+        out.serialize_entry(key, &row.elements)?;
+    }
+    out.end()
+}
+
 impl<K: RecordedKind> serde::Serialize for RecordedMap<K> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        K::serialize_entries(&self.entries, serializer)
+        K::serialize_entries(self, serializer)
     }
 }
 
@@ -1315,12 +1916,24 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.install_into(object_key, element, value);
     }
 
+    /// EVERY DOOR BELOW KEEPS THE SIGNATURE IT HAD, in `K::Elements` and not in the row. The row is
+    /// private to this module, so a test fixture that spoke in rows would leak it -- and more to the
+    /// point, no existing arm should have to be rewritten to say the same thing. The refs a row
+    /// carries are not a fixture's business: they are installed by the write path and re-filed by
+    /// the load path, so a test that builds elements gets a row with `None` refs, which is the state
+    /// a decode produces too.
     pub(super) fn insert_elements_for_test(&mut self, object_key: &str, elements: K::Elements) {
-        self.entries.insert(std::sync::Arc::from(object_key), elements);
+        self.entries.insert(
+            std::sync::Arc::from(object_key),
+            RecordedRow {
+                elements,
+                refs: None,
+            },
+        );
     }
 
     pub(super) fn remove_for_test(&mut self, object_key: &str) -> Option<K::Elements> {
-        self.entries.remove(object_key)
+        self.entries.remove(object_key).map(|row| row.elements)
     }
 
     pub(super) fn clear_for_test(&mut self) {
@@ -1328,15 +1941,44 @@ impl<K: RecordedKind> RecordedMap<K> {
     }
 
     pub(super) fn elements_mut_for_test(&mut self, object_key: &str) -> Option<&mut K::Elements> {
-        self.entries.get_mut(object_key)
+        self.entries
+            .get_mut(object_key)
+            .map(|row| &mut row.elements)
     }
 
+    /// TAKES THE ELEMENTS AND DROPS THE REFS, which is safe only because its partner below puts
+    /// rows back with `None` refs: the pair is used to move a map aside and restore it within one
+    /// test, never across a reload, so there is nothing for the refs to be wrong about.
     pub(super) fn take_for_test(&mut self) -> HashMap<ModelKey, K::Elements> {
         std::mem::take(&mut self.entries)
+            .into_iter()
+            .map(|(key, row)| (key, row.elements))
+            .collect()
     }
 
     pub(super) fn restore_for_test(&mut self, entries: HashMap<ModelKey, K::Elements>) {
-        self.entries = entries;
+        self.entries = entries
+            .into_iter()
+            .map(|(key, elements)| {
+                (
+                    key,
+                    RecordedRow {
+                        elements,
+                        refs: None,
+                    },
+                )
+            })
+            .collect();
+    }
+
+    /// Put refs on a row from a test, so an arm can assert the row CARRIES them rather than only
+    /// that the type has a field for them.
+    pub(super) fn set_refs_for_test(
+        &mut self,
+        object_key: &str,
+        refs: crate::engine::state::BlockRefs,
+    ) -> bool {
+        self.set_refs(object_key, refs)
     }
 }
 

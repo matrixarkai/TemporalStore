@@ -106,6 +106,33 @@ fn where_each_kinds_refs_end_up() {
             }
         }
     }
+    // THE THIRD HOME. A container kind's refs live on its own per-object row since
+    // `SHARD_INDEX_FORMAT_VERSION` 31 put the four maps inside `CoreIndex`. Counted from each
+    // map's own `rows_holding_refs`, so every home is asked in its own terms and none is derived
+    // from another -- a census where one column is computed from another cannot show them
+    // disagreeing.
+    let mut in_row: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for (_object_key, refs) in shard.bucket_index.hashes.rows_holding_refs() {
+        *in_row
+            .entry("hash")
+            .or_insert(0) += refs.len();
+    }
+    for (_object_key, refs) in shard.bucket_index.sets.rows_holding_refs() {
+        *in_row
+            .entry("set")
+            .or_insert(0) += refs.len();
+    }
+    for (_object_key, refs) in shard.bucket_index.zsets.rows_holding_refs() {
+        *in_row
+            .entry("zset")
+            .or_insert(0) += refs.len();
+    }
+    for (_object_key, refs) in shard.bucket_index.lists.rows_holding_refs() {
+        *in_row
+            .entry("list")
+            .or_insert(0) += refs.len();
+    }
     let mut in_lookup: std::collections::BTreeMap<&'static str, usize> =
         std::collections::BTreeMap::new();
     for (model_id, _object_key, refs) in shard.bucket_index.object_block_lookup.iter() {
@@ -114,15 +141,24 @@ fn where_each_kinds_refs_end_up() {
         *in_lookup.entry(kind.as_str()).or_insert(0) += refs.len();
     }
 
-    let mut kinds: Vec<&'static str> = in_slot.keys().chain(in_lookup.keys()).copied().collect();
+    let mut kinds: Vec<&'static str> = in_slot
+        .keys()
+        .chain(in_row.keys())
+        .chain(in_lookup.keys())
+        .copied()
+        .collect();
     kinds.sort_unstable();
     kinds.dedup();
     println!();
-    println!("  {:<22} {:>12} {:>12}", "KIND", "in the slot", "in the lookup");
+    println!(
+        "  {:<22} {:>12} {:>12} {:>12}",
+        "KIND", "in the slot", "in the row", "in the lookup"
+    );
     for kind in &kinds {
         println!(
-            "  {kind:<22} {:>12} {:>12}",
+            "  {kind:<22} {:>12} {:>12} {:>12}",
             in_slot.get(kind).copied().unwrap_or(0),
+            in_row.get(kind).copied().unwrap_or(0),
             in_lookup.get(kind).copied().unwrap_or(0)
         );
     }
@@ -137,12 +173,66 @@ fn where_each_kinds_refs_end_up() {
          correctly, so nothing else in the suite would notice -- check that \
          `CoreIndex::adopt_refs_into_slot` is still called by the door that installs a row."
     );
-    assert!(
-        !in_lookup.is_empty(),
-        "no ref is in the lookup, which would make the slot column above look better than it is: \
-         the four kinds whose rows live in `RecordedMap` have nowhere to fold into and MUST still \
-         be served from the lookup. An empty lookup here means those kinds were not exercised."
-    );
+    // RESTATED DELIBERATELY. THE INVARIANT, NOT THE SYMPTOM IT WAS READ OFF.
+    //
+    // This asserted `!in_lookup.is_empty()`, and its own message said what it was for: "An empty
+    // lookup here means those kinds were not exercised." That is a DENOMINATOR guard -- it stops
+    // the slot column looking better than it is because the container kinds never ran -- and it
+    // used "something is in the lookup" as the EVIDENCE for "the container kinds ran".
+    //
+    // TWO REASONS THAT PROXY HAD TO GO, and neither is that it was failing.
+    //
+    //   1. IT IS WEAKER THAN WHAT IT CLAIMS. A lookup holding only `hash` refs satisfies it, so a
+    //      corpus exercising one container kind and not the other three passes while the message
+    //      asserts all four were exercised. It is an ANY-KIND check over a FOUR-KIND population:
+    //      four fifths of a regression walks past it. Naming the four is strictly stronger, and is
+    //      true today with the lookup still in place.
+    //
+    //   2. THE SYMPTOM IS ABOUT TO STOP EXISTING. A container kind's refs move onto its own row --
+    //      every per-key fact belongs on the key's own row -- which makes `in_lookup` empty BY
+    //      DESIGN rather than by an unexercised corpus. The old assertion would then fail for the
+    //      one reason it was never meant to catch, leaving whoever hit it to decide under pressure
+    //      whether to delete a guard they did not write.
+    //
+    // THE POPULATION IS NOT SHRUNK TO MAKE IT PASS: every kind is still counted, from every home,
+    // and each of the four must still show at least one ref SOMEWHERE. What changes is that the
+    // guard no longer cares WHICH home answers.
+    //
+    // The manifest-digest question this shape turns on is answered at `ObjectBlockLookup`'s own
+    // doc: the key set is unmoved because a row's lifetime is its elements' lifetime, and the
+    // values are unmoved because `refs` is never serialized -- the four golden strings in
+    // `recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were` are
+    // byte-identical across the move, and that pin is in the CI hard gate.
+    for kind in ["hash", "set", "zset", "list"] {
+        let anywhere = in_slot.get(kind).copied().unwrap_or(0)
+            + in_row.get(kind).copied().unwrap_or(0)
+            + in_lookup.get(kind).copied().unwrap_or(0);
+        assert!(
+            anywhere > 0,
+            "not one {kind} ref is in ANY home -- slot, row or lookup -- so this corpus did not \
+             exercise {kind} and the slot column above is measured on a denominator that excludes \
+             it. This is what the old any-kind lookup assertion stood for, named per kind \
+             so that exercising one container kind cannot satisfy it for the other three."
+        );
+    }
+
+    // AND A COMPONENT-NAMED REF REACHES NEITHER HOME, WHICH IS WHY THE COUNTS ABOVE ARE COMPLETE.
+    //
+    // `names_the_only_slot(component)` is `component.is_none()`, and a named component is refused
+    // by design on both the read and the removal doors. So a `Some` component contributes to no
+    // home at all, and the per-kind totals are not quietly excluding a population they should
+    // count. Asserted rather than assumed, because if that refusal ever softened the census would
+    // start missing refs without any column going to zero.
+    for kind in ["hash", "set", "zset", "list"] {
+        assert!(
+            shard
+                .bucket_index
+                .block_refs_for(kind, "a-key-that-need-not-exist", Some("a-named-component"))
+                .is_none(),
+            "a component-named read resolved for {kind}; the per-kind totals above assume a named \
+             component reaches NO home, so this census would be missing refs"
+        );
+    }
     // AND THE SINGLE-BLOCK STRING CASE SPECIFICALLY, because it is the one the published figure is
     // measured on and the one the adoption exists for. Each `s{i}` above is written ONCE.
     assert_eq!(

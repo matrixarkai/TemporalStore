@@ -501,6 +501,11 @@ jobs:
           for t in \
             engine::tests::every_published_ratio_is_rederivable::every_published_ratio_is_rederivable_from_published_counters \
             engine::tests::index_bytes_per_key::every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for \
+            engine::tests::what_the_core_index_puts_on_the_wire::an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one \
+            engine::tests::what_the_core_index_puts_on_the_wire::every_field_of_the_core_index_declares_whether_it_reaches_the_wire \
+            engine::tests::where_an_objects_refs_could_live::where_each_kinds_refs_end_up \
+            shared_store::tests::the_object_writer_is_json_until_asked_and_the_reader_never_cares \
+            snapshot_store::tests::a_binary_manifest_is_written_only_when_asked_and_read_without_the_gate \
             engine::tests::index_bytes_per_key::how_many_holders_a_key_allocation_has_by_kind ; do
             echo "--- $t (ignored) ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
