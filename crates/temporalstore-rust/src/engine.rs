@@ -2003,15 +2003,60 @@ impl TemporalEngine {
     /// when the shard has no config-log (no single-barrier config change was ever persisted).
     pub(super) fn config_log_entries(&self, shard_id: ShardId) -> Vec<ConfigLogEntry> {
         let path = self.config_log_path(shard_id);
-        let contents = match std::fs::read_to_string(&path) {
-            Ok(contents) => contents,
+        // BYTES, NOT A STRING: a framed entry's payload is binary and is not required to be valid
+        // UTF-8, so `read_to_string` would refuse the whole file for one such entry.
+        let data = match std::fs::read(&path) {
+            Ok(data) => data,
             Err(_) => return Vec::new(),
         };
-        let mut entries: Vec<ConfigLogEntry> = contents
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| serde_json::from_str::<ConfigLogEntry>(line).ok())
-            .collect();
+        let mut entries: Vec<ConfigLogEntry> = Vec::new();
+        let mut offset = 0usize;
+        while offset < data.len() {
+            // A blank separator is not an entry: the line format leaves bare newlines between them.
+            if data[offset] == b'\n' || data[offset] == b'\r' {
+                offset += 1;
+                continue;
+            }
+            match crate::log_framing::next_frame(&data[offset..]) {
+                // A whole framed entry whose checksum matched, or an unframed JSON line ending at
+                // its newline. An entry that does not parse is SKIPPED and the next is read, as a
+                // JSON line that did not parse always was.
+                Ok(Some((consumed, payload))) => {
+                    offset += consumed;
+                    match decode_config_log_payload(payload) {
+                        Some(entry) => entries.push(entry),
+                        None => tracing::warn!(
+                            shard_id,
+                            "a config-log entry did not parse and was skipped"
+                        ),
+                    }
+                }
+                // What remains is shorter than the entry it declares: a torn tail. A final JSON
+                // line with no terminator that is nonetheless complete is still taken, which is
+                // what reading it line by line always did.
+                Ok(None) => {
+                    let rest = &data[offset..];
+                    if rest.first() == Some(&b'{') {
+                        if let Some(entry) = decode_config_log_payload(rest.trim_ascii_end()) {
+                            entries.push(entry);
+                        }
+                    }
+                    break;
+                }
+                // A COMPLETE framed entry whose checksum failed. Its declared length cannot be
+                // trusted to step over it, so nothing after it can be found: reading stops here
+                // and says so, instead of resynchronising on a byte that may be inside a payload.
+                Err(error) => {
+                    tracing::warn!(
+                        shard_id,
+                        error = %error.0,
+                        entries_read = entries.len(),
+                        "a framed config-log entry failed its checksum; entries after it were not read"
+                    );
+                    break;
+                }
+            }
+        }
         entries.sort_by_key(|entry| entry.after_seq);
         entries
     }
@@ -5619,6 +5664,76 @@ pub(crate) fn env_flag_default_on(name: &str) -> bool {
 pub(super) struct ConfigLogEntry {
     pub after_seq: u64,
     pub config: Config,
+}
+
+/// One config-log payload, in EITHER shape: a protobuf entry behind `BINARY_PAYLOAD_MAGIC`, or the
+/// JSON line every entry written so far is. `None` when it parses as neither.
+///
+/// The JSON arm is PERMANENT. Every config log on disk is JSON lines, and a reader that dropped
+/// them would reload every shard with a defaulted config, which silently resets the flags that
+/// change how already-written data is read.
+fn decode_config_log_payload(payload: &[u8]) -> Option<ConfigLogEntry> {
+    use prost::Message as _;
+    if payload.first() == Some(&crate::log_framing::BINARY_PAYLOAD_MAGIC) {
+        let proto = crate::sdk::v1::DurableConfigLogEntry::decode(&payload[1..]).ok()?;
+        let config = proto.config?;
+        return Some(ConfigLogEntry {
+            after_seq: proto.after_seq,
+            config: Config {
+                version: config.version,
+                maxmemory_bytes: config.maxmemory_bytes,
+                tenant_name: config.tenant_name,
+                read_qps: config.read_qps,
+                write_qps: config.write_qps,
+                table_read_qps: config.table_read_qps,
+                table_write_qps: config.table_write_qps,
+                tenant_read_qps: config.tenant_read_qps,
+                tenant_write_qps: config.tenant_write_qps,
+                extend_config: config
+                    .extend_config
+                    .into_iter()
+                    .map(|pair| (pair.key, pair.value))
+                    .collect(),
+                feature_max_size: usize::try_from(config.feature_max_size).ok()?,
+                async_storage: config.async_storage,
+            },
+        });
+    }
+    serde_json::from_slice::<ConfigLogEntry>(payload).ok()
+}
+
+/// One config-log entry as a binary frame. Test-only until the writer flips.
+#[cfg(test)]
+pub(super) fn encode_config_log_frame(entry: &ConfigLogEntry) -> Vec<u8> {
+    use prost::Message as _;
+    let config = &entry.config;
+    let proto = crate::sdk::v1::DurableConfigLogEntry {
+        after_seq: entry.after_seq,
+        config: Some(crate::sdk::v1::DurableShardConfig {
+            version: config.version,
+            maxmemory_bytes: config.maxmemory_bytes,
+            tenant_name: config.tenant_name.clone(),
+            read_qps: config.read_qps,
+            write_qps: config.write_qps,
+            table_read_qps: config.table_read_qps,
+            table_write_qps: config.table_write_qps,
+            tenant_read_qps: config.tenant_read_qps,
+            tenant_write_qps: config.tenant_write_qps,
+            extend_config: config
+                .extend_config
+                .iter()
+                .map(|(key, value)| crate::sdk::v1::DurableConfigExtendEntry {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            feature_max_size: config.feature_max_size as u64,
+            async_storage: config.async_storage,
+        }),
+    };
+    let mut payload = vec![crate::log_framing::BINARY_PAYLOAD_MAGIC];
+    payload.extend(proto.encode_to_vec());
+    crate::log_framing::encode_frame(&payload)
 }
 
 fn next_temp_counter() -> u64 {

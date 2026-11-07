@@ -1620,3 +1620,44 @@ message DurableBucketDumpInstallMarker {
   uint64 index_log_sequence = 5;
   uint64 created_unix_ms = 6;
 }
+
+// ===========================================================================================
+// DURABLE SHARD CONFIG LOG ENTRY, BINARY SHAPE.
+//
+// One entry of `shard-<id>.configlog.jsonl`: the shard config that became effective for every WAL
+// write with a sequence strictly greater than `after_seq`. The file holds JSON lines (every entry
+// written so far) and, as of the writer change, length-prefixed checksummed frames whose payload is
+// this message behind `BINARY_PAYLOAD_MAGIC`. A frame is used because the payload is binary and may
+// contain a newline, so the line format's delimiter cannot be trusted to find its end.
+//
+// NO DIGEST here depends on byte order, so `extend_config` is a `repeated` pair list in the order
+// the map iterates (sorted by key) rather than a protobuf `map`.
+// ===========================================================================================
+
+message DurableConfigExtendEntry {
+  string key = 1;
+  string value = 2;
+}
+
+message DurableShardConfig {
+  uint64 version = 1;
+  // Every `optional` below is an `Option` in the config: absent is not zero.
+  optional uint64 maxmemory_bytes = 2;
+  optional string tenant_name = 3;
+  optional uint64 read_qps = 4;
+  optional uint64 write_qps = 5;
+  optional uint64 table_read_qps = 6;
+  optional uint64 table_write_qps = 7;
+  optional uint64 tenant_read_qps = 8;
+  optional uint64 tenant_write_qps = 9;
+  repeated DurableConfigExtendEntry extend_config = 10;
+  uint64 feature_max_size = 11;
+  bool async_storage = 12;
+}
+
+message DurableConfigLogEntry {
+  uint64 after_seq = 1;
+  // A message field is optional on the wire; an entry with no config is refused, not defaulted
+  // (a defaulted config would silently reset every flag the entry was written to carry).
+  DurableShardConfig config = 2;
+}
