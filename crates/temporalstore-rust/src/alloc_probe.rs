@@ -221,9 +221,8 @@ pub enum AllocClass {
     /// do it. The second class on the READ side, and it exists because that stamp was TWO of
     /// the ten allocations #1952 measured on a warm serving read -- a `Vec<String>` built and
     /// cloned into so that a routing bucket could be derived from a key the command already
-    /// owned. It now visits the keys instead of collecting them, and this row is what says so:
-    /// zero on a read command, and still non-zero on a write, whose keys are synthesised and
-    /// have to be built.
+    /// owned. It now visits borrowed read keys or the owned write-key vector execution already
+    /// needs, and this row is what says both paths stay at zero.
     RecencyStamp,
 }
 

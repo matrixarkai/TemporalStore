@@ -391,7 +391,33 @@ fn wal_resident_block_floor(limit: usize) -> usize {
     limit.saturating_sub(limit / 4).max(1)
 }
 
+#[derive(Default)]
+struct RequestShardInfo {
+    recovering: bool,
+    readonly: bool,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    table_name: Option<String>,
+}
+
 impl TemporalEngine {
+    fn request_shard_info(&self, shard_id: ShardId, copy_table_name: bool) -> RequestShardInfo {
+        let infos = self.infos.read().expect("info lock poisoned");
+        let Some(info) = infos.get(&shard_id) else {
+            return RequestShardInfo {
+                end_routing_bucket: u32::MAX,
+                ..RequestShardInfo::default()
+            };
+        };
+        RequestShardInfo {
+            recovering: info.recovering,
+            readonly: info.readonly,
+            start_routing_bucket: info.start_routing_bucket,
+            end_routing_bucket: info.end_routing_bucket,
+            table_name: copy_table_name.then(|| info.table_name.clone()),
+        }
+    }
+
     /// Rebuild the bucket first-index once, for a caller that deferred it across a window.
     ///
     /// Only meaningful after an `IngestReconstructWindow` has held off the per-record rebuilds;
@@ -855,43 +881,8 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         };
-        // While a shard is replaying its WAL on load it is present in `shards` but not yet
-        // serving (keeps it in PartitionLoadStage::LOADING). Reject client commands with
-        // a retryable status so a concurrent write cannot interleave with replay -- which
-        // would regress the WAL anchor and double-apply on the next restart. The replay
-        // thread re-drives records under replaying_wal(), which bypasses this gate.
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&request.shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
-            return ExecuteResponse {
-                status: Status::error(
-                    "shard_not_loaded",
-                    "shard is recovering (WAL replay in progress)",
-                ),
-                response: CommandResponse::Empty,
-            };
-        }
         let command = request.command;
-        if self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&request.shard_id)
-            .map(|info| info.readonly)
-            .unwrap_or(false)
-            && is_write_command(&command)
-        {
-            return ExecuteResponse {
-                status: Status::error("readonly_shard", "readonly shard rejects write command"),
-                response: CommandResponse::Empty,
-            };
-        }
+        let write_command = is_write_command(&command);
         let mut config = self
             .configs
             .read()
@@ -902,20 +893,38 @@ impl TemporalEngine {
         if let Some(async_storage) = async_storage_override {
             config.async_storage = async_storage;
         }
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&request.shard_id)
-            .cloned();
-        let start_routing_bucket = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end_routing_bucket = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        let table_admission_enabled = (if write_command {
+            config.table_write_qps
+        } else {
+            config.table_read_qps
+        })
+        .filter(|limit| *limit > 0)
+        .is_some();
+        // Read shard metadata once and copy only what command execution consumes. The shard URI
+        // is not on this path, and the table name is needed only by an active table-level limit.
+        let info = self.request_shard_info(request.shard_id, table_admission_enabled);
+        // While a shard is replaying its WAL on load it is present in `shards` but not yet
+        // serving (keeps it in PartitionLoadStage::LOADING). Reject client commands with
+        // a retryable status so a concurrent write cannot interleave with replay -- which
+        // would regress the WAL anchor and double-apply on the next restart. The replay
+        // thread re-drives records under replaying_wal(), which bypasses this gate.
+        if !replaying_wal() && info.recovering {
+            return ExecuteResponse {
+                status: Status::error(
+                    "shard_not_loaded",
+                    "shard is recovering (WAL replay in progress)",
+                ),
+                response: CommandResponse::Empty,
+            };
+        }
+        if info.readonly && write_command {
+            return ExecuteResponse {
+                status: Status::error("readonly_shard", "readonly shard rejects write command"),
+                response: CommandResponse::Empty,
+            };
+        }
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
         // Bulk backfill AND WAL replay defer this model-map -> bucket-index promotion
         // (an O(store) scan plus secondary-view rebuild) to a single reconstruct pass
         // (flush_shard_index() / replay_wal_into_shard()'s tail). Run per command it is
@@ -948,7 +957,6 @@ impl TemporalEngine {
                 shard.promote_scan_done = true;
             }
         }
-        let write_command = is_write_command(&command);
         // Exempt for exactly the reason the token-bucket limit at the top of this function is
         // exempt, and the reason is not symmetry for its own sake. A follower that refuses what
         // its leader committed diverges from the leader. A replay that refuses a record already
@@ -959,8 +967,12 @@ impl TemporalEngine {
         // Measured before this guard existed: a shard configured write_qps=3 applied 0 of 40
         // committed entries, and a replay of 40 records refused the 4th.
         if !raft_applying() && !replaying_wal() {
-            if let Err(status) =
-                self.check_admission(request.shard_id, write_command, &config, &info)
+            if let Err(status) = self.check_admission(
+                request.shard_id,
+                write_command,
+                &config,
+                info.table_name.as_deref(),
+            )
             {
                 return ExecuteResponse {
                     status,
@@ -1095,23 +1107,11 @@ impl TemporalEngine {
                 rebuild_bucket_block_ownership(
                     request.shard_id,
                     shard,
-                    info.as_ref()
-                        .map(|info| info.start_routing_bucket)
-                        .unwrap_or_default(),
-                    info.as_ref()
-                        .map(|info| info.end_routing_bucket)
-                        .unwrap_or(u32::MAX),
+                    start_routing_bucket,
+                    end_routing_bucket,
                 );
             } else {
                 for object_key in &object_keys {
-                    let start_routing_bucket = info
-                        .as_ref()
-                        .map(|info| info.start_routing_bucket)
-                        .unwrap_or_default();
-                    let end_routing_bucket = info
-                        .as_ref()
-                        .map(|info| info.end_routing_bucket)
-                        .unwrap_or(u32::MAX);
                     // ONE MARKING PATH, CALLED ONCE.
                     //
                     // This site used to do four things -- compute the routing bucket, fetch the
@@ -1835,9 +1835,9 @@ impl TemporalEngine {
         shard_id: ShardId,
         write_command: bool,
         config: &Config,
-        info: &Option<ShardInfo>,
+        table_name: Option<&str>,
     ) -> Result<(), Status> {
-        let limits = admission_limits(shard_id, write_command, config, info);
+        let limits = admission_limits(shard_id, write_command, config, table_name);
         if limits.is_empty() {
             return Ok(());
         }
