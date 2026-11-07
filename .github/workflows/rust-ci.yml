@@ -233,6 +233,7 @@ jobs:
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
+            data_node::tests::loop_report::the_loop_report_prices_every_stage_it_reaches \
             data_node::tests::evict_live::a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted \
             data_node::tests::evict_live::an_acknowledged_row_keeps_its_fields_across_the_cache_budget \
             data_node::tests::evict_live::the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_clock \

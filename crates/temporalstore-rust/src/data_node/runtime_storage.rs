@@ -213,6 +213,41 @@ impl EvictionLoopTerms {
     }
 }
 
+/// Stage-by-stage clock for `run_storage_manager_once`. One `Instant` read per stage; the span's
+/// microseconds and its walk charge are both taken at the same boundary, so the rows tile the
+/// round. A row is closed AFTER the stage's branch chain, which is where its work ends: a stage's
+/// own gate probe (the reclaim_wal reclaimability check, the reclaim_index trigger) is charged to
+/// that stage and not to the one before it.
+struct LoopSpans {
+    started: std::time::Instant,
+    clock: std::time::Instant,
+    rows: Vec<StorageManagerLoopStageSpan>,
+}
+
+impl LoopSpans {
+    fn start() -> Self {
+        crate::engine::reset_stage_walk_charges();
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            clock: now,
+            rows: Vec::new(),
+        }
+    }
+
+    /// A stage ran when its name is the last thing pushed on `executed`; stages push exactly once
+    /// and in order, so no earlier entry can be mistaken for it.
+    fn close(&mut self, stage: &str, executed: &[String]) {
+        let elapsed = self.clock.elapsed();
+        self.clock = std::time::Instant::now();
+        self.rows.push(StorageManagerLoopStageSpan {
+            stage: stage.to_string(),
+            executed: executed.last().map(String::as_str) == Some(stage),
+            duration_us: elapsed.as_micros() as u64,
+            walk: crate::engine::take_stage_walk_charges(),
+        });
+    }
+}
 impl DataNodeRuntime {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         self.inner.engine.storage_lifecycle_plan(request)
@@ -335,7 +370,11 @@ impl DataNodeRuntime {
         shard_id: ShardId,
         options: StorageManagerOptions,
     ) -> StorageManagerLoopReport {
+        // The stage walk counters are read-and-cleared at each stage boundary, so the first span
+        // must not inherit whatever ran before this round.
+        let mut spans = LoopSpans::start();
         let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot(shard_id, &options);
+        spans.close("pressure_snapshot", &["pressure_snapshot".to_string()]);
         let mut executed_stages = Vec::new();
         let mut skipped_stages = Vec::new();
         let mut pressure_decisions = Vec::new();
@@ -384,6 +423,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("prepare_disabled".to_string());
         }
+        spans.close("prepare", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "prepare",
             options.enable_prepare,
@@ -549,6 +589,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_wal_no_pressure".to_string());
         }
+        spans.close("reclaim_wal", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_wal",
             options.enable_wal_reclaim,
@@ -601,6 +642,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("expire_disabled".to_string());
         }
+        spans.close("expire", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "expire",
             options.enable_expire,
@@ -748,6 +790,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("evict_disabled".to_string());
         }
+        spans.close("evict", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "evict",
             // `enable_evict` is no longer the only thing that can enable this stage, so the
@@ -859,6 +902,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_memory_no_pressure".to_string());
         }
+        spans.close("reclaim_memory", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_memory",
             options.enable_memory_reclaim,
@@ -1017,6 +1061,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_page_no_pressure".to_string());
         }
+        spans.close("reclaim_page", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_page",
             options.enable_block_gc,
@@ -1144,6 +1189,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_index_disabled".to_string());
         }
+        spans.close("reclaim_index", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "reclaim_index",
             options.enable_index_gc,
@@ -1293,6 +1339,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("compact_pages_nothing_to_relocate".to_string());
         }
+        spans.close("compact_pages", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "compact_pages",
             options.enable_block_compaction && leadership_permits_compaction,
@@ -1384,6 +1431,7 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reap_metrics_disabled".to_string());
         }
+        spans.close("reap_metrics", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
             "reap_metrics",
             options.enable_metrics_reap,
@@ -1425,6 +1473,7 @@ impl DataNodeRuntime {
             stats.storage_manager_last_shard_id = Some(shard_id);
         }
 
+        let duration_us = spans.started.elapsed().as_micros() as u64;
         StorageManagerLoopReport {
             shard_id,
             pressure,
@@ -1439,6 +1488,8 @@ impl DataNodeRuntime {
             gc_report,
             eviction,
             status,
+            stage_spans: spans.rows,
+            duration_us,
         }
     }
 
