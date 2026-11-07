@@ -59,7 +59,6 @@ pub(crate) const BUCKET_DUMP_CHECKSUM_PROTOBUF: u32 = 1;
 /// Field numbers the digest streams by hand. Declared in `temporalstore.proto`, where the note on
 /// `DurableBucketDumpManifest` says why they must stay the two highest.
 const INDEX_BYTES_FIELD: u32 = 22;
-#[cfg(test)]
 const CHECKSUM_FIELD: u32 = 23;
 
 fn invalid_data(err: impl std::fmt::Display) -> std::io::Error {
@@ -319,8 +318,13 @@ pub(crate) fn bucket_dump_protobuf_digest_payload(manifest: &BucketDumpManifest)
 
 /// A manifest as the binary file: the container byte, the head, the index image, the checksum.
 ///
-/// Test-only until the writer flips; the production readers above do not need it.
-#[cfg(test)]
+/// THE ONLY ENCODER. Every writer of a manifest -- the local index dir and the shared object
+/// store -- calls this, and no JSON encode path is left for either. `BucketDumpManifest` still
+/// derives `Serialize`, so a test can build the legacy shape to plant it; what is gone is any
+/// path a running node can take to write it. An encoder nobody reaches is how a retired format
+/// comes back (a later branch finds the function and calls it); a decoder nobody in this tree
+/// calls is still reached by every manifest already on disk. Opposite reasons, so the encoder is
+/// deleted and `decode_bucket_dump_manifest` keeps its JSON arm.
 pub(crate) fn encode_bucket_dump_manifest(manifest: &BucketDumpManifest) -> Vec<u8> {
     let mut out = vec![BUCKET_DUMP_CONTAINER_PROTOBUF];
     out.extend(manifest_head_to_proto(manifest).encode_to_vec());
@@ -340,8 +344,7 @@ pub(crate) fn encode_bucket_dump_manifest(manifest: &BucketDumpManifest) -> Vec<
     out
 }
 
-/// A marker as the binary file. Test-only until the writer flips.
-#[cfg(test)]
+/// A marker as the binary file. The only encoder, for the reasons on `encode_bucket_dump_manifest`.
 pub(crate) fn encode_bucket_dump_install_marker(marker: &BucketDumpInstallMarker) -> Vec<u8> {
     let mut out = vec![BUCKET_DUMP_CONTAINER_PROTOBUF];
     out.extend(
@@ -356,4 +359,18 @@ pub(crate) fn encode_bucket_dump_install_marker(marker: &BucketDumpInstallMarker
         .encode_to_vec(),
     );
     out
+}
+
+/// A manifest re-derived as a LEGACY one: version-0 checksum over its canonical JSON, with the
+/// generation id refreshed first because it hashes the sequences and the checksum covers it.
+///
+/// For tests that plant the installed base. No writer produces this shape any more, which is why
+/// there is a test-only way to build it at all.
+#[cfg(test)]
+pub(crate) fn into_legacy_json_manifest_for_test(mut manifest: BucketDumpManifest) -> BucketDumpManifest {
+    manifest.checksum_version = BUCKET_DUMP_CHECKSUM_LEGACY_JSON;
+    manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
+    manifest.checksum =
+        bucket_dump_manifest_checksum(&manifest).expect("the JSON derivation runs");
+    manifest
 }

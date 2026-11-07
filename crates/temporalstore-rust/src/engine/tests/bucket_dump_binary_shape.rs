@@ -4,9 +4,10 @@
 //! THE BUCKET-DUMP MANIFEST AND INSTALL MARKER ARE READ IN EITHER SHAPE, AND THE CHECKSUM KNOWS
 //! WHICH BYTES IT WAS TAKEN OVER.
 //!
-//! This is the READER half. The writers still emit JSON, so every binary document below is built
-//! by the test-only encoder in `bucket_dump_codec.rs` and PLANTED into the directory the real
-//! listing reads. The writer PR promotes that encoder and deletes the JSON one.
+//! The writers are binary and have NO JSON encode path, so every LEGACY (JSON) document below is
+//! built with `serde_json` here and PLANTED straight into the directory or object store the real
+//! readers use. A test that round-tripped through a writer would have had nothing left to drive
+//! its JSON arm after the flip, and would quietly have become a test of the binary arm twice over.
 //!
 //! # WHY THE DIGEST HAS ITS OWN TESTS
 //!
@@ -167,6 +168,32 @@ fn resign(m: &mut BucketDumpManifest) {
     m.checksum = bucket_dump_protobuf_digest(m).0;
 }
 
+/// `m`, re-filed as a LEGACY manifest: new id, a version-0 checksum taken over its canonical JSON.
+/// The generation id is recomputed first because it hashes the sequences and the checksum covers it.
+fn as_a_legacy_json_manifest(m: &BucketDumpManifest, suffix: &str) -> BucketDumpManifest {
+    let mut legacy = m.clone();
+    legacy.manifest_id = format!("{}-{suffix}", m.manifest_id);
+    legacy.index_log_sequence = m.index_log_sequence + 1;
+    crate::engine::bucket_dump_codec::into_legacy_json_manifest_for_test(legacy)
+}
+
+/// Write `m` into the manifest directory as the JSON older builds wrote.
+fn plant_json(engine: &TemporalEngine, m: &BucketDumpManifest) {
+    let path = bucket_dump_manifest_path(&engine.index_dir, m.shard_id, &m.manifest_id);
+    let bytes = serde_json::to_vec(m).expect("the JSON shape must still build");
+    assert_eq!(
+        bytes[0], b'{',
+        "the planted legacy manifest is not the JSON shape, so the arm kept for the installed base \
+         is being driven on the wrong bytes"
+    );
+    std::fs::write(&path, bytes).expect("plant the legacy manifest");
+    assert_eq!(
+        std::fs::read(&path).unwrap()[0],
+        b'{',
+        "the plant did not take, so nothing below reads a JSON manifest"
+    );
+}
+
 fn plant_binary(engine: &TemporalEngine, m: &BucketDumpManifest) -> std::path::PathBuf {
     let path = bucket_dump_manifest_path(&engine.index_dir, m.shard_id, &m.manifest_id);
     let bytes = encode_bucket_dump_manifest(m);
@@ -268,10 +295,20 @@ fn the_manifest_codec_reads_both_shapes_and_the_digest_payload_is_the_encoding()
 #[test]
 fn each_checksum_version_verifies_its_own_manifests_and_never_the_others() {
     let real = a_real_manifest();
-    let legacy = real.manifest.clone();
     assert_eq!(
-        legacy.checksum_version, 0,
-        "the writer that runs today is expected to mint legacy-digest manifests in this change"
+        real.manifest.checksum_version, BUCKET_DUMP_CHECKSUM_PROTOBUF,
+        "the writer must mint version-1 manifests: a new manifest on the JSON derivation would \
+         keep that verifier on the write path for ever"
+    );
+    real.engine
+        .validate_bucket_dump_manifest(&real.manifest)
+        .expect("a manifest the writer just minted must verify under the protobuf derivation");
+    // The installed base: a manifest whose checksum was taken over its canonical JSON.
+    let legacy = as_a_legacy_json_manifest(&real.manifest, "legacy");
+    assert_eq!(legacy.checksum_version, 0);
+    assert_ne!(
+        legacy.checksum, real.manifest.checksum,
+        "the two derivations agree on this manifest, so the checks below could not tell them apart"
     );
     real.engine
         .validate_bucket_dump_manifest(&legacy)
@@ -293,6 +330,7 @@ fn each_checksum_version_verifies_its_own_manifests_and_never_the_others() {
     // Recomputed under version 1: verifies. The two checksums differ, or the test is vacuous.
     let binary = as_a_binary_digest_manifest(&legacy, "v1");
     assert_ne!(binary.checksum, legacy.checksum);
+    assert_ne!(binary.manifest_id, legacy.manifest_id);
     real.engine
         .validate_bucket_dump_manifest(&binary)
         .expect("a version-1 manifest must verify under the protobuf derivation");
@@ -330,21 +368,36 @@ fn a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trus
     // The listing memo is keyed on file identity; this test rewrites files, so run the control arm.
     let _no_memo = crate::engine::bucket_dump_io::ManifestParseMemoOff::new();
     let real = a_real_manifest();
-    let legacy_id = real.manifest.manifest_id.clone();
+    let written_id = real.manifest.manifest_id.clone();
 
-    // ---- the JSON manifest the writer produced is listed (the installed base).
-    assert_eq!(listed_ids(&real.engine), vec![legacy_id.clone()]);
-    let json_on_disk = std::fs::read(bucket_dump_manifest_path(
+    // ---- what the writer produced is BINARY and is listed.
+    let on_disk = std::fs::read(bucket_dump_manifest_path(
         &real.engine.index_dir,
         SHARD,
-        &legacy_id,
+        &written_id,
     ))
     .unwrap();
     assert_eq!(
-        json_on_disk[0], b'{',
-        "the legacy manifest on disk is not JSON, so the arm kept for the installed base is not \
-         the one being read"
+        on_disk[0], BUCKET_DUMP_CONTAINER_PROTOBUF,
+        "the manifest writer did not write the binary shape"
     );
+    assert!(serde_json::from_slice::<serde_json::Value>(&on_disk).is_err());
+    assert_eq!(listed_ids(&real.engine), vec![written_id.clone()]);
+
+    // ---- the INSTALLED BASE: a JSON manifest planted beside it, because no writer produces one.
+    let legacy = as_a_legacy_json_manifest(&real.manifest, "legacy");
+    plant_json(&real.engine, &legacy);
+    let mut base = vec![written_id.clone(), legacy.manifest_id.clone()];
+    base.sort();
+    assert_eq!(
+        listed_ids(&real.engine),
+        base,
+        "the planted JSON manifest was not listed beside the binary one"
+    );
+    let legacy_back = bucket_dump_manifest_at(&real.engine.index_dir, SHARD, &legacy.manifest_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(legacy_back, legacy, "the JSON arm changed the legacy manifest");
 
     // ---- a binary manifest beside it. Its wal_sequence is a one-byte varint (40), so a change
     // ---- to it is a one-byte change that still decodes.
@@ -353,7 +406,8 @@ fn a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trus
     resign(&mut binary);
     let path = plant_binary(&real.engine, &binary);
 
-    let mut want = vec![legacy_id.clone(), binary.manifest_id.clone()];
+    let mut want = base.clone();
+    want.push(binary.manifest_id.clone());
     want.sort();
     assert_eq!(
         listed_ids(&real.engine),
@@ -402,7 +456,7 @@ fn a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trus
     );
     assert_eq!(
         listed_ids(&real.engine),
-        vec![legacy_id.clone()],
+        base.clone(),
         "a manifest whose stored count changed was still trusted"
     );
 
@@ -430,7 +484,7 @@ fn a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trus
     );
     assert_eq!(
         listed_ids(&real.engine),
-        vec![legacy_id.clone()],
+        base.clone(),
         "a manifest whose stored id changed was still trusted"
     );
     std::fs::write(&path, encode_bucket_dump_manifest(&binary)).unwrap();
@@ -453,7 +507,7 @@ fn a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trus
     );
     assert_eq!(
         listed_ids(&real.engine),
-        vec![legacy_id.clone()],
+        base.clone(),
         "a manifest whose index image changed by one bit was still trusted"
     );
     std::fs::write(&path, encode_bucket_dump_manifest(&binary)).unwrap();
@@ -465,7 +519,7 @@ fn a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trus
     std::fs::write(&path, encode_bucket_dump_manifest(&unknown)).unwrap();
     assert_eq!(
         listed_ids(&real.engine),
-        vec![legacy_id],
+        base,
         "a manifest with an unknown checksum version was listed"
     );
 
@@ -483,44 +537,137 @@ fn a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trus
     );
 }
 
-/// AN INSTALL MARKER IS READ IN EITHER SHAPE.
+/// AN INSTALL MARKER IS WRITTEN BINARY AND READ IN EITHER SHAPE.
 ///
-/// The JSON marker is written by the real writer; the binary one is planted. Their values are
-/// disjoint, so each can only have come from its own arm.
+/// The writer's marker is binary; the JSON one is the installed base and is PLANTED. Their values
+/// are disjoint, so each can only have come from its own arm.
 #[test]
 fn an_install_marker_is_read_in_either_shape() {
     let real = a_real_manifest();
     real.engine
         .persist_bucket_dump_install_marker(&real.manifest, "prepare")
         .unwrap();
-    let json_marker = list_bucket_dump_install_markers_at(&real.engine.index_dir, SHARD).unwrap();
-    assert_eq!(json_marker.len(), 1);
-    assert_eq!(json_marker[0].manifest_id, real.manifest.manifest_id);
-    let json_path = bucket_dump_install_marker_files_at(&real.engine.index_dir, SHARD)
-        .unwrap()
-        .remove(0)
-        .1;
-    assert_eq!(std::fs::read(&json_path).unwrap()[0], b'{');
+    let files = bucket_dump_install_marker_files_at(&real.engine.index_dir, SHARD).unwrap();
+    assert_eq!(files.len(), 1);
+    let written = std::fs::read(&files[0].1).unwrap();
+    assert_eq!(
+        written[0], BUCKET_DUMP_CONTAINER_PROTOBUF,
+        "the marker writer did not write the binary shape"
+    );
+    assert!(serde_json::from_slice::<serde_json::Value>(&written).is_err());
+    assert_eq!(files[0].0.manifest_id, real.manifest.manifest_id);
+    assert_eq!(files[0].0.phase, "prepare");
 
-    let planted = BucketDumpInstallMarker {
+    let legacy = BucketDumpInstallMarker {
         shard_id: SHARD,
-        manifest_id: "planted-binary-manifest".to_string(),
+        manifest_id: "planted-legacy-manifest".to_string(),
         phase: "install".to_string(),
         wal_sequence: 9_001,
         index_log_sequence: 9_002,
         created_unix_ms: 1_999_999_999_999,
     };
-    let bytes = encode_bucket_dump_install_marker(&planted);
-    assert_eq!(bytes[0], BUCKET_DUMP_CONTAINER_PROTOBUF);
-    assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_err());
-    let path = bucket_dump_install_marker_path(&real.engine.index_dir, &planted);
+    let bytes = serde_json::to_vec_pretty(&legacy).unwrap();
+    assert_eq!(bytes[0], b'{', "the planted marker is not the JSON shape");
+    let path = bucket_dump_install_marker_path(&real.engine.index_dir, &legacy);
     std::fs::write(&path, bytes).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap()[0], b'{', "the plant did not take");
 
     let markers = list_bucket_dump_install_markers_at(&real.engine.index_dir, SHARD).unwrap();
-    assert_eq!(markers.len(), 2, "the binary marker was not listed: {markers:?}");
+    assert_eq!(markers.len(), 2, "the JSON marker was not listed: {markers:?}");
     assert!(
-        markers.contains(&planted),
-        "the binary marker was read as something else: {markers:?}"
+        markers.contains(&legacy),
+        "the JSON marker was read as something else: {markers:?}"
     );
     assert!(markers.iter().any(|m| m.manifest_id == real.manifest.manifest_id));
+}
+
+/// NO JSON ENCODE PATH IS LEFT FOR EITHER WRITER, AND THE FILES THEY WRITE ARE NOT JSON.
+///
+/// The behavioural half is in the tests above (they assert the first byte of what the real writers
+/// put on disk). This is the half that sees an encoder nobody calls YET: a retired format comes
+/// back when a later branch finds the function and calls it, and the first byte of today's output
+/// says nothing about that. The scan looks at each writer function's own code with comment lines
+/// removed, because a doc comment naming `serde_json` is not a call to it, and it is anchored on the
+/// function's declaration up to the next one.
+///
+/// The POSITIVE CONTROL is the checksum verifier, which does still call `serde_json` (it is the
+/// legacy verifier). A scan that cannot see that call would pass over any writer.
+#[test]
+fn no_json_encode_path_is_left_for_a_manifest_or_a_marker() {
+    fn body(source: &'static str, from: &str, to: &str) -> String {
+        let start = source
+            .find(from)
+            .unwrap_or_else(|| panic!("no declaration {from}"));
+        let rest = &source[start..];
+        let end = rest[from.len()..]
+            .find(to)
+            .unwrap_or_else(|| panic!("no declaration {to} after {from}"))
+            + from.len();
+        rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let persistence = include_str!("../engine_persistence.rs");
+    let io = include_str!("../bucket_dump_io.rs");
+    let shared = include_str!("../../shared_store.rs");
+
+    let writers = [
+        (
+            "persist_bucket_dump_manifest",
+            body(
+                persistence,
+                "fn persist_bucket_dump_manifest(",
+                "fn persist_bucket_dump_install_marker(",
+            ),
+            "encode_bucket_dump_manifest(",
+        ),
+        (
+            "write_bucket_dump_install_marker",
+            body(
+                io,
+                "fn write_bucket_dump_install_marker(",
+                "fn bucket_dump_install_marker_files_at(",
+            ),
+            "encode_bucket_dump_install_marker(",
+        ),
+        (
+            "publish_bucket_dump_manifests",
+            body(
+                shared,
+                "pub async fn publish_bucket_dump_manifests(",
+                "pub async fn restore_bucket_dump_manifests(",
+            ),
+            "encode_bucket_dump_manifest(",
+        ),
+    ];
+    // DENOMINATOR: three writers, each located and each calling the binary encoder.
+    assert_eq!(writers.len(), 3);
+    for (name, code, encoder) in &writers {
+        assert!(
+            code.len() > 100,
+            "{name}: the scan found almost nothing, so it proves nothing"
+        );
+        assert!(
+            code.contains(encoder),
+            "{name} does not call {encoder}, so it is not the writer this scan thinks it is"
+        );
+        assert!(
+            !code.contains("serde_json"),
+            "{name} still reaches for serde_json: a JSON encode path survives for a manifest or \
+             marker. Delete it; the decoder keeps its JSON arm for the files already on disk."
+        );
+    }
+
+    let verifier = body(
+        io,
+        "fn finish_bucket_dump_manifest_checksum(",
+        "pub(super) fn bucket_dump_fault_scenario(",
+    );
+    assert!(
+        verifier.contains("serde_json::to_vec"),
+        "the control no longer sees the legacy verifier's serde_json call, so this scan could pass \
+         over a writer it cannot see"
+    );
 }
