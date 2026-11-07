@@ -1515,41 +1515,61 @@ pub(crate) fn extract_context_gated(
 pub(crate) fn context_extract_summaries_with_fallback(
     request: &ContextExtractRequest,
 ) -> Result<ContextExtractSummaries, ContextExtractReport> {
-    let provider = normalize_provider(request.provider.clone());
-    let summaries = match context_summaries_for_extract(&provider, &request) {
-        Ok(summaries) => summaries,
-        Err(status) => {
-            if let Some(fallback) = provider.fallback_provider.as_deref() {
-                let fallback = normalize_provider(fallback.clone());
-                match context_summaries_for_extract(&fallback, &request) {
-                    Ok(mut summaries) => {
-                        summaries.provider = fallback;
-                        summaries.provider.provider_name = format!(
-                            "{}+fallback:{}",
-                            provider.provider_name, summaries.provider.provider_name
-                        );
-                        summaries
-                    }
-                    Err(fallback_status) => {
-                        return Err(empty_extract_report(
-                            fallback_status,
-                            provider,
-                            request.tenant_hash,
-                            request.timestamp_ms,
-                        ));
-                    }
-                }
-            } else {
-                return Err(empty_extract_report(
-                    status,
-                    provider,
-                    request.tenant_hash,
-                    request.timestamp_ms,
-                ));
+    context_extract_summaries_with_fallback_batch(&[request])
+        .pop()
+        .expect("single summary request returns one result")
+}
+
+pub(crate) fn context_extract_summaries_with_fallback_batch(
+    requests: &[&ContextExtractRequest],
+) -> Vec<Result<ContextExtractSummaries, ContextExtractReport>> {
+    let Some(first) = requests.first() else {
+        return Vec::new();
+    };
+    let provider = normalize_provider(first.provider.clone());
+    let mut results = context_summaries_for_extract_batch(&provider, requests);
+    let failed_indexes = results
+        .iter()
+        .enumerate()
+        .filter_map(|(index, result)| result.is_err().then_some(index))
+        .collect::<Vec<_>>();
+
+    if !failed_indexes.is_empty() {
+        if let Some(fallback) = provider.fallback_provider.as_deref() {
+            let fallback = normalize_provider(fallback.clone());
+            let failed_requests = failed_indexes
+                .iter()
+                .map(|index| requests[*index])
+                .collect::<Vec<_>>();
+            let fallback_results =
+                context_summaries_for_extract_batch(&fallback, &failed_requests);
+            for (index, fallback_result) in failed_indexes.iter().zip(fallback_results) {
+                results[*index] = fallback_result.map(|mut summaries| {
+                    summaries.provider = fallback.clone();
+                    summaries.provider.provider_name = format!(
+                        "{}+fallback:{}",
+                        provider.provider_name, summaries.provider.provider_name
+                    );
+                    summaries
+                });
             }
         }
-    };
-    Ok(summaries)
+    }
+
+    results
+        .into_iter()
+        .zip(requests)
+        .map(|(result, request)| {
+            result.map_err(|status| {
+                empty_extract_report(
+                    status,
+                    provider.clone(),
+                    request.tenant_hash,
+                    request.timestamp_ms,
+                )
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn context_embeddings_with_fallback(

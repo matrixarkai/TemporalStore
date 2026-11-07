@@ -38,7 +38,7 @@ pub fn ingest_extract_context_with_l1_gate(
     let source_count = request.sources.len();
     let start_time_ms = request.start_time_ms;
     let end_time_ms = request.end_time_ms;
-    let mut prepared_sources = Vec::with_capacity(source_count);
+    let mut validated_sources = Vec::with_capacity(source_count);
 
     for mut source in request.sources {
         source.shard_id = request.shard_id;
@@ -46,6 +46,7 @@ pub fn ingest_extract_context_with_l1_gate(
         if source.provider.provider_name.is_empty() {
             source.provider = provider.clone();
         }
+        source.provider = normalize_provider(source.provider);
         *source_kind_counts
             .entry(context_source_kind_name(source.source_kind).to_string())
             .or_insert(0) += 1;
@@ -60,7 +61,41 @@ pub fn ingest_extract_context_with_l1_gate(
             });
             continue;
         }
-        match context_extract_summaries_with_fallback(&source) {
+        validated_sources.push(source);
+    }
+
+    let mut summary_provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
+    for (source_index, source) in validated_sources.iter().enumerate() {
+        if let Some((_, source_indexes)) = summary_provider_groups
+            .iter_mut()
+            .find(|(provider, _)| *provider == source.provider)
+        {
+            source_indexes.push(source_index);
+        } else {
+            summary_provider_groups.push((source.provider.clone(), vec![source_index]));
+        }
+    }
+    let mut summary_results: Vec<Option<Result<ContextExtractSummaries, ContextExtractReport>>> =
+        std::iter::repeat_with(|| None)
+            .take(validated_sources.len())
+            .collect();
+    for (_, source_indexes) in summary_provider_groups {
+        let requests = source_indexes
+            .iter()
+            .map(|source_index| &validated_sources[*source_index])
+            .collect::<Vec<_>>();
+        let results = context_extract_summaries_with_fallback_batch(&requests);
+        for (source_index, result) in source_indexes.into_iter().zip(results) {
+            summary_results[source_index] = Some(result);
+        }
+    }
+
+    let mut prepared_sources = Vec::with_capacity(validated_sources.len());
+    for (source_index, source) in validated_sources.into_iter().enumerate() {
+        match summary_results[source_index]
+            .take()
+            .expect("every validated source receives a summary result")
+        {
             Ok(summaries) if summaries.status.ok => prepared_sources.push((source, summaries)),
             Ok(summaries) => failed_sources.push(ContextIngestSourceFailure {
                 source_id: source.source_id,
