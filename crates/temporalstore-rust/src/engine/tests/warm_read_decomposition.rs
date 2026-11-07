@@ -380,23 +380,46 @@ fn where_a_warm_serving_reads_allocations_go() {
     );
 }
 
-/// THE RECENCY STAMP'S ROW, WITH THE CONTROL THAT PROVES IT IS BEING CHARGED.
+/// THE RECENCY STAMP'S ROW, WITH A CONTROL THAT PROVES IT IS BEING CHARGED.
 ///
 /// A row that reads zero is exactly the shape of a class nobody enters, so zero on its own says
-/// nothing. The control is the WRITE arm: the same scope, the same production site, on a command
-/// whose keys `command_object_keys` SYNTHESISES and therefore has to build. It must be non-zero
-/// there and zero on the read, on one run of one binary, or the zero is an instrument failure
-/// rather than a saving.
+/// nothing. The control allocates directly inside the class before measuring production reads and
+/// writes. Both production arms must stay at zero: reads borrow their command key, while writes
+/// borrow the owned key vector that execution already needs for maintenance and durability.
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
-fn the_recency_stamp_allocates_on_a_write_and_not_on_a_read() {
+fn the_recency_stamp_borrows_keys_on_reads_and_writes() {
     use crate::alloc_probe::AllocClass;
 
     let dir = tempfile::tempdir().unwrap();
     let (engine, _) = engine_at(dir.path());
 
-    // The control arm: writes, whose touched keys come from `command_object_keys`.
+    let control_span = crate::alloc_probe::ClassSpan::open();
+    crate::alloc_probe::in_class(AllocClass::RecencyStamp, || {
+        let control = Vec::<u8>::with_capacity(64);
+        std::hint::black_box(control);
+    });
+    let control = control_span
+        .close()
+        .expect("the counting allocator must be installed");
+    assert!(
+        control.classes.row(AllocClass::RecencyStamp).allocs > 0,
+        "the direct recency allocation control was not counted"
+    );
+
+    // Populate the recency map first. Its bucket table is allowed to grow; this measurement asks
+    // whether updating an existing stamp copies the command key on every write.
+    for index in 0..READS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: record_key(index),
+                value: vec![118u8; VALUE_BYTES],
+            },
+        });
+    }
+
     let write_span = crate::alloc_probe::ClassSpan::open();
     for index in 0..READS {
         engine.execute(ExecuteRequest {
@@ -421,11 +444,10 @@ fn the_recency_stamp_allocates_on_a_write_and_not_on_a_read() {
         read_row as f64 / READS as f64,
     );
 
-    assert!(
-        write_row > 0,
-        "the write arm charged {write_row} allocations to the recency stamp. The scope is in \
-         production code at both sites and a write's touched keys are synthesised, so zero here \
-         means the class is not being charged at all and the read arm's zero below says nothing"
+    assert_eq!(
+        write_row, 0,
+        "writes charged {write_row} allocations to recency stamping even though their \
+         owned object-key vector was already available"
     );
     assert_eq!(
         read_row, 0,
@@ -445,7 +467,7 @@ fn the_recency_stamp_allocates_on_a_write_and_not_on_a_read() {
 ///
 /// This is the failure the change could have caused and nothing else would have noticed. The
 /// recency map is how eviction prefers a least-recently-used bucket, and nothing reads it back
-/// on the serving path, so a `for_each_touched_key` visiting NOTHING on a read would leave every
+/// on the serving path, so the touched-key visitor yielding NOTHING on a read would leave every
 /// answer byte-identical, every status ok, every cache counter unmoved, and only eviction's
 /// choice of victim quietly wrong -- weeks later, under pressure, on a different machine.
 ///
@@ -537,15 +559,15 @@ fn a_warm_read_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
     assert_eq!(
         stamped, expected,
         "the buckets a read stamped are not the buckets its keys belong to. Reads stamp recency \
-         through for_each_touched_key, and nothing on the serving path reads this map back, so \
+         through the touched-key visitor, and nothing on the serving path reads this map back, so \
          this is the only place a read that stopped stamping -- or stamped the wrong bucket -- \
          is visible"
     );
 }
 
-/// A WRITE STILL STAMPS ITS BUCKET TOO, THROUGH THE SAME VISITOR.
+/// A WRITE STILL STAMPS ITS BUCKET TOO, THROUGH THE PRECOMPUTED VISITOR.
 ///
-/// The fork inside `for_each_touched_key` has two arms and the read test above drives only one.
+/// The precomputed touched-key visitor has two arms and the read test above drives only one.
 /// A visitor that fired only on the borrowed arm would pass it and lose every write's stamp.
 #[test]
 fn a_write_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
@@ -598,20 +620,22 @@ fn a_write_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
     assert_eq!(
         stamped, expected,
         "the buckets a write stamped are not the buckets its keys belong to; the owned arm of \
-         for_each_touched_key is the one a write takes and it is not firing"
+         for_each_precomputed_touched_key is the one a write takes and it is not firing"
     );
 }
 
 /// THE VISITOR YIELDS EXACTLY THE KEYS THE COLLECTING FORM YIELDED, COMMAND BY COMMAND.
 ///
-/// `for_each_touched_key` replaced a function that returned `Vec<String>`, and the shape of a
+/// `for_each_precomputed_touched_key` replaces a second key collection, and the shape of a
 /// regression is a command whose keys it now skips or duplicates. Rather than trusting the
 /// rewrite, this rebuilds the old answer from the two functions the old one was made of --
 /// `command_object_keys`, unchanged, and `command_read_key` -- and compares element by element,
 /// in order, on a command of each of the two arms plus one that touches no key at all.
 #[test]
-fn the_touched_key_visitor_yields_what_the_collecting_form_yielded() {
-    use crate::engine::command_validation::{command_object_keys, command_read_key, for_each_touched_key};
+fn the_precomputed_touched_key_visitor_yields_what_the_collecting_form_yielded() {
+    use crate::engine::command_validation::{
+        command_object_keys, command_read_key, for_each_precomputed_touched_key,
+    };
 
     let cases: Vec<(&str, Command)> = vec![
         (
@@ -634,11 +658,13 @@ fn the_touched_key_visitor_yields_what_the_collecting_form_yielded() {
         let expected: Vec<String> = if object_keys.is_empty() {
             command_read_key(command).map(str::to_string).into_iter().collect()
         } else {
-            object_keys
+            object_keys.clone()
         };
 
         let mut visited: Vec<String> = Vec::new();
-        for_each_touched_key(command, |key| visited.push(key.to_string()));
+        for_each_precomputed_touched_key(command, &object_keys, |key| {
+            visited.push(key.to_string())
+        });
 
         assert_eq!(
             visited, expected,
@@ -651,8 +677,9 @@ fn the_touched_key_visitor_yields_what_the_collecting_form_yielded() {
     // and the third must yield none, or the comparison above holds vacuously.
     let mut counts = Vec::new();
     for (_, command) in &cases {
+        let object_keys = command_object_keys(command);
         let mut seen = 0usize;
-        for_each_touched_key(command, |_| seen += 1);
+        for_each_precomputed_touched_key(command, &object_keys, |_| seen += 1);
         counts.push(seen);
     }
     assert_eq!(
@@ -693,7 +720,7 @@ fn the_warm_hit_floor_rejects_an_arm_that_served_fewer_answers_than_it_measured(
 
 /// THE BATCH PATH STAMPS RECENCY TOO, THROUGH THE SAME VISITOR.
 ///
-/// `for_each_touched_key` replaced a collecting helper at TWO call sites: the single-command
+/// `for_each_precomputed_touched_key` serves TWO call sites: the single-command
 /// path and `batch_execute`'s post-write stamp. A guard covering one of two live copies lets the
 /// other keep the bug, and mutation confirmed it -- emptying the batch site's visitor changed no
 /// test in either width until this existed. The batch path is driven by several tests in this
