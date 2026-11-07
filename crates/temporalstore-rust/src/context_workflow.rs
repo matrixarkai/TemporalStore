@@ -90,8 +90,8 @@ use crate::llm_context::{
     EmbeddingVector,
 };
 use crate::types::{
-    context_model_descriptors, context_node_summary_vector_enabled, Command, CommandResponse,
-    ContextAuditRef, ContextChildRef, CONTEXT_SUMMARY_LEVEL_L1,
+    context_model_descriptors, context_node_summary_vector_enabled, BatchExecuteRequest, Command,
+    CommandResponse, ContextAuditRef, ContextChildRef, CONTEXT_SUMMARY_LEVEL_L1,
     ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef,
     ContextModelDescriptor, ContextNode, ContextPackAudit, ContextSummary,
     ContextDirtyNode, ExecuteRequest, ShardId, Status,
@@ -1880,32 +1880,48 @@ pub(crate) fn extract_context_gated_prepared(
             clear: false,
         });
     }
-    // Embedding upserts (empty when deferred).
-    for command in commands {
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: request.shard_id,
-            command,
-        });
-        if !response.status.ok {
-            return ContextExtractReport {
-                status: response.status,
-                provider: provider.clone(),
-                embedding_generation: embedding_generation.clone(),
-                node,
-                event,
-                index_ref,
-                dirty_marker,
-                source_ref: request.source_id.clone(),
-                related_node_hashes: vec![node_hash],
-                summary_refs,
-                compact_summary_ref: l1.clone(),
-                node_uri: context_node_uri(request.tenant_hash, node_hash),
-                event_uri: context_event_uri(request.tenant_hash, node_hash, timestamp_ms),
-                l0,
-                l1,
-                l2_ref,
-            };
-        }
+    // Keep one extracted source in one crash-atomic durable group. Besides one WAL barrier, the
+    // engine now takes the shard lock and publishes the compact embedding index only once.
+    let command_count = commands.len();
+    let response = engine.batch_execute_durable(BatchExecuteRequest {
+        shard_id: request.shard_id,
+        commands,
+    });
+    let failure = if !response.status.ok {
+        Some(response.status)
+    } else if response.responses.len() != command_count {
+        Some(Status::error(
+            "context_extract_batch_incomplete",
+            format!(
+                "context extraction expected {command_count} command responses but received {}",
+                response.responses.len()
+            ),
+        ))
+    } else {
+        response
+            .responses
+            .into_iter()
+            .find_map(|response| (!response.status.ok).then_some(response.status))
+    };
+    if let Some(status) = failure {
+        return ContextExtractReport {
+            status,
+            provider: provider.clone(),
+            embedding_generation: embedding_generation.clone(),
+            node,
+            event,
+            index_ref,
+            dirty_marker,
+            source_ref: request.source_id.clone(),
+            related_node_hashes: vec![node_hash],
+            summary_refs,
+            compact_summary_ref: l1.clone(),
+            node_uri: context_node_uri(request.tenant_hash, node_hash),
+            event_uri: context_event_uri(request.tenant_hash, node_hash, timestamp_ms),
+            l0,
+            l1,
+            l2_ref,
+        };
     }
 
     ContextExtractReport {

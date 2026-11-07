@@ -634,6 +634,20 @@ impl TemporalEngine {
             request.shard_id,
             BatchCommandSource::Commands(request.commands.into_iter()),
             false,
+            None,
+        )
+    }
+
+    /// Execute a batch with synchronous storage regardless of the shard's async setting.
+    ///
+    /// This is the batch counterpart to `execute_durable`: commands share one shard lock,
+    /// crash-atomic WAL group, durability barrier, index-log append, and embedding-index publish.
+    pub fn batch_execute_durable(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::Commands(request.commands.into_iter()),
+            false,
+            Some(false),
         )
     }
 
@@ -666,6 +680,7 @@ impl TemporalEngine {
                 completed_keys: &mut completed_keys,
             },
             true,
+            None,
         );
         (response, completed_keys)
     }
@@ -704,6 +719,7 @@ impl TemporalEngine {
                 completed_keys: &mut completed_keys,
             },
             true,
+            None,
         );
         (response, completed_keys)
     }
@@ -713,6 +729,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         mut command_source: BatchCommandSource<'_>,
         reuse_hash_command_metadata: bool,
+        async_storage_override: Option<bool>,
     ) -> BatchExecuteResponse {
         let reuse_hash_command_metadata =
             reuse_hash_command_metadata && crate::wal::wal_data_only_enabled();
@@ -787,13 +804,16 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(|info| info.readonly)
             .unwrap_or(false);
-        let config = self
+        let mut config = self
             .configs
             .read()
             .expect("config lock poisoned")
             .get(&shard_id)
             .cloned()
             .unwrap_or_default();
+        if let Some(async_storage) = async_storage_override {
+            config.async_storage = async_storage;
+        }
         let info = self
             .infos
             .read()
