@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::fmt;
 use std::sync::OnceLock;
 
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, DeserializeSeed, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -325,7 +326,7 @@ impl OllamaProvider {
                 truncate: self.config.truncate_embeddings,
                 keep_alive: &self.config.keep_alive,
             };
-            let response: OllamaEmbedResponse = post_json_with_options(
+            let mut response: OllamaEmbedResponse = post_json_with_options(
                 &self.addr,
                 &self.endpoint("/api/embed"),
                 &request,
@@ -339,7 +340,9 @@ impl OllamaProvider {
                     actual: response.embeddings.len(),
                 });
             }
-            for vector in response.embeddings {
+            let mut row_start = 0usize;
+            for row_end in response.embeddings.row_ends.iter().copied() {
+                let vector = &response.embeddings.values[row_start..row_end];
                 if vector.is_empty() {
                     return Err(OllamaError::EmptyEmbedding);
                 }
@@ -355,7 +358,18 @@ impl OllamaProvider {
                 if !vector.iter().all(|value| value.is_finite()) {
                     return Err(OllamaError::NonFiniteEmbedding);
                 }
-                values.extend_from_slice(&vector);
+                row_start = row_end;
+            }
+            if values.is_empty() {
+                values = response.embeddings.values;
+                values.reserve(
+                    texts
+                        .len()
+                        .saturating_mul(dimensions)
+                        .saturating_sub(values.len()),
+                );
+            } else {
+                values.append(&mut response.embeddings.values);
             }
             start = end;
         }
@@ -427,9 +441,12 @@ impl OllamaProvider {
     }
 
     fn extract(&self, messages: &[ContextMessage]) -> Result<Vec<ExtractedContext>, OllamaError> {
-        let mut message_ids = HashSet::with_capacity(messages.len());
-        for message in messages {
-            if !message_ids.insert(message.message_id) {
+        let mut messages_by_id = HashMap::with_capacity(messages.len());
+        for (message_index, message) in messages.iter().enumerate() {
+            if messages_by_id
+                .insert(message.message_id, (message_index, message))
+                .is_some()
+            {
                 return Err(OllamaError::DuplicateMessageId(message.message_id));
             }
         }
@@ -444,10 +461,13 @@ impl OllamaProvider {
                 extraction_schema(),
             )?;
             for item in output.items {
-                let source = messages[start..end]
-                    .iter()
-                    .find(|message| message.message_id == item.source_message_id)
+                let (source_index, source) = messages_by_id
+                    .get(&item.source_message_id)
+                    .copied()
                     .ok_or(OllamaError::UnknownSourceMessage(item.source_message_id))?;
+                if !(start..end).contains(&source_index) {
+                    return Err(OllamaError::UnknownSourceMessage(item.source_message_id));
+                }
                 let text = item.text.trim();
                 if text.is_empty() {
                     return Err(OllamaError::EmptyContext);
@@ -546,7 +566,97 @@ struct OllamaEmbedRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 struct OllamaEmbedResponse {
-    embeddings: Vec<Vec<f32>>,
+    embeddings: FlatEmbeddingRows,
+}
+
+#[derive(Debug, Default)]
+struct FlatEmbeddingRows {
+    values: Vec<f32>,
+    row_ends: Vec<usize>,
+}
+
+impl FlatEmbeddingRows {
+    fn len(&self) -> usize {
+        self.row_ends.len()
+    }
+}
+
+impl<'de> Deserialize<'de> for FlatEmbeddingRows {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct RowsVisitor;
+
+        impl<'de> Visitor<'de> for RowsVisitor {
+            type Value = FlatEmbeddingRows;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an array of embedding rows")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut rows = FlatEmbeddingRows {
+                    values: Vec::new(),
+                    row_ends: Vec::with_capacity(sequence.size_hint().unwrap_or(0)),
+                };
+                while sequence
+                    .next_element_seed(EmbeddingRowSeed {
+                        values: &mut rows.values,
+                    })?
+                    .is_some()
+                {
+                    rows.row_ends.push(rows.values.len());
+                }
+                Ok(rows)
+            }
+        }
+
+        deserializer.deserialize_seq(RowsVisitor)
+    }
+}
+
+struct EmbeddingRowSeed<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+impl<'de, 'a> DeserializeSeed<'de> for EmbeddingRowSeed<'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(EmbeddingRowVisitor {
+            values: self.values,
+        })
+    }
+}
+
+struct EmbeddingRowVisitor<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+impl<'de, 'a> Visitor<'de> for EmbeddingRowVisitor<'a> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an embedding row of floating-point values")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        self.values.reserve(sequence.size_hint().unwrap_or(0));
+        while let Some(value) = sequence.next_element::<f32>()? {
+            self.values.push(value);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]

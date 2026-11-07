@@ -231,14 +231,15 @@ pub(crate) fn context_summaries_for_extract_batch(
                 if item.source_index >= chunk.len() || !seen.insert(item.source_index) {
                     continue;
                 }
+                if item.l0.trim().is_empty() || item.l1.trim().is_empty() {
+                    continue;
+                }
                 let request = chunk[item.source_index];
-                let content = serde_json::json!({ "l0": item.l0, "l1": item.l1 }).to_string();
-                let (l0, l1) = parse_provider_summary_content(&content, request);
                 results[start + item.source_index] = Some(Ok(ContextExtractSummaries {
                     status: Status::ok(),
                     provider: provider.clone(),
-                    l0,
-                    l1,
+                    l0: truncate_words(&item.l0, 32),
+                    l1: truncate_words(&item.l1, 96),
                     l2_ref: format!(
                         "tsctx://tenant/{}/model/{}/source/{}",
                         request.tenant_hash, provider.provider_name, request.source_id
