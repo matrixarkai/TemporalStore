@@ -1659,7 +1659,9 @@ where
             if !is_checkpoint_manifest_key(&key) {
                 continue;
             }
-            manifests.push(serde_json::from_slice(&self.object_store.get(&key).await?)?);
+            manifests.push(decode_checkpoint_manifest(
+                &self.object_store.get(&key).await?,
+            )?);
         }
         manifests.sort_by_key(|manifest: &SharedStoreCheckpointManifest| {
             (manifest.checkpoint_wal_index, manifest.created_at_ms)
@@ -3733,6 +3735,161 @@ pub(crate) fn encode_routing_range_stamp(
             end_routing_bucket: stamp.end_routing_bucket,
         },
     ))
+}
+
+// ---- the checkpoint manifest
+
+/// Decode a checkpoint manifest in EITHER shape, decided per object from the first byte.
+///
+/// The JSON arm is permanent, for the reason it is on the objects above: every checkpoint a shipped
+/// build wrote is that shape, and a live store may still hold one. This is the ONLY place a
+/// checkpoint manifest body is read -- `list_checkpoints` calls it, and `restore_checkpoint` and the
+/// collectors are built on that -- so the two shapes cannot be told apart two different ways.
+///
+/// A raw protobuf body carries no checksum of its own, which the JSON form did not either. What a
+/// manifest points AT is checked: the index and every slab are named with their sha256 and verified
+/// on fetch.
+fn decode_checkpoint_manifest(
+    bytes: &[u8],
+) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        return Ok(checkpoint_manifest_from_proto(
+            v1::SharedStoreCheckpointManifest::decode(body)?,
+        ));
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+// EVERY FIELD IS NAMED ON BOTH SIDES AND NEITHER PATTERN HAS A `..`, so a field added to the
+// manifest or to a slab ref is a compile error here rather than a value that quietly stops
+// reaching the stored object.
+fn checkpoint_manifest_from_proto(
+    proto: v1::SharedStoreCheckpointManifest,
+) -> SharedStoreCheckpointManifest {
+    let v1::SharedStoreCheckpointManifest {
+        cluster_id,
+        shard_id,
+        checkpoint_id,
+        checkpoint_wal_index,
+        created_at_ms,
+        index_key,
+        index_byte_size,
+        index_sha256,
+        block_slabs,
+        next_block_id,
+        routing_range,
+    } = proto;
+    SharedStoreCheckpointManifest {
+        cluster_id,
+        shard_id,
+        checkpoint_id,
+        checkpoint_wal_index,
+        created_at_ms,
+        index_key,
+        index_byte_size,
+        index_sha256,
+        block_slabs: block_slabs.into_iter().map(block_slab_from_proto).collect(),
+        next_block_id,
+        routing_range: routing_range.map(|stamp| {
+            crate::engine::routing_range_stamp::RoutingRangeStamp {
+                start_routing_bucket: stamp.start_routing_bucket,
+                end_routing_bucket: stamp.end_routing_bucket,
+            }
+        }),
+    }
+}
+
+fn block_slab_from_proto(proto: v1::SharedStoreBlockSlabRef) -> SharedStoreBlockSlab {
+    let v1::SharedStoreBlockSlabRef {
+        block_slab_id,
+        key,
+        byte_size,
+        sha256,
+        logical_bytes,
+        first_block_id,
+        last_block_id,
+        created_unix_ms,
+        updated_unix_ms,
+    } = proto;
+    SharedStoreBlockSlab {
+        block_slab_id,
+        key,
+        byte_size,
+        sha256,
+        logical_bytes,
+        first_block_id,
+        last_block_id,
+        created_unix_ms,
+        updated_unix_ms,
+    }
+}
+
+/// The encoder exists for the tests only, until the writer uses it: reader first, so a build that
+/// cannot read the binary shape is never handed one.
+#[cfg(test)]
+fn encode_checkpoint_manifest(manifest: &SharedStoreCheckpointManifest) -> Vec<u8> {
+    encode_shared_object_protobuf(&checkpoint_manifest_to_proto(manifest))
+}
+
+#[cfg(test)]
+fn checkpoint_manifest_to_proto(
+    manifest: &SharedStoreCheckpointManifest,
+) -> v1::SharedStoreCheckpointManifest {
+    let SharedStoreCheckpointManifest {
+        cluster_id,
+        shard_id,
+        checkpoint_id,
+        checkpoint_wal_index,
+        created_at_ms,
+        index_key,
+        index_byte_size,
+        index_sha256,
+        block_slabs,
+        next_block_id,
+        routing_range,
+    } = manifest.clone();
+    v1::SharedStoreCheckpointManifest {
+        cluster_id,
+        shard_id,
+        checkpoint_id,
+        checkpoint_wal_index,
+        created_at_ms,
+        index_key,
+        index_byte_size,
+        index_sha256,
+        block_slabs: block_slabs
+            .into_iter()
+            .map(|slab| {
+                let SharedStoreBlockSlab {
+                    block_slab_id,
+                    key,
+                    byte_size,
+                    sha256,
+                    logical_bytes,
+                    first_block_id,
+                    last_block_id,
+                    created_unix_ms,
+                    updated_unix_ms,
+                } = slab;
+                v1::SharedStoreBlockSlabRef {
+                    block_slab_id,
+                    key,
+                    byte_size,
+                    sha256,
+                    logical_bytes,
+                    first_block_id,
+                    last_block_id,
+                    created_unix_ms,
+                    updated_unix_ms,
+                }
+            })
+            .collect(),
+        next_block_id,
+        routing_range: routing_range.map(|stamp| v1::SharedStoreRoutingRangeStamp {
+            start_routing_bucket: stamp.start_routing_bucket,
+            end_routing_bucket: stamp.end_routing_bucket,
+        }),
+    }
 }
 
 // ---- the per-key WAL object (`JsonPerKey` mode), in either shape
@@ -9755,6 +9912,211 @@ mod tests {
              shard with no checkpoints returns"
         );
         assert_eq!(found[0].checkpoint_wal_index, 1);
+    }
+
+    fn sample_slab(id: u64, with_optionals: bool) -> SharedStoreBlockSlab {
+        SharedStoreBlockSlab {
+            block_slab_id: id,
+            key: format!("slabs/block_segment_{id:020}.seg"),
+            byte_size: 1_000 + id,
+            sha256: format!("sha-{id}"),
+            logical_bytes: 2_000 + id,
+            first_block_id: with_optionals.then_some(30 + id),
+            last_block_id: with_optionals.then_some(40 + id),
+            created_unix_ms: with_optionals.then_some(1_700_000_000_000 + id),
+            updated_unix_ms: with_optionals.then_some(1_700_000_001_000 + id),
+        }
+    }
+
+    /// Every scalar a DIFFERENT value, so a field copied to the wrong place changes the answer.
+    fn sample_checkpoint_manifest(
+        with_routing_range: bool,
+        slabs: Vec<SharedStoreBlockSlab>,
+    ) -> SharedStoreCheckpointManifest {
+        SharedStoreCheckpointManifest {
+            cluster_id: "cluster-x".to_string(),
+            shard_id: 7,
+            checkpoint_id: "ckpt-0001".to_string(),
+            checkpoint_wal_index: 41,
+            created_at_ms: 1_700_000_002_000,
+            index_key: "cluster-x/shards/7/shared/index.bin".to_string(),
+            index_byte_size: 4_096,
+            index_sha256: "index-sha".to_string(),
+            block_slabs: slabs,
+            next_block_id: 99,
+            routing_range: with_routing_range.then_some(
+                crate::engine::routing_range_stamp::RoutingRangeStamp {
+                    start_routing_bucket: 11,
+                    end_routing_bucket: 12,
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_manifest_survives_the_binary_round_trip() {
+        let shapes: Vec<SharedStoreCheckpointManifest> = vec![
+            sample_checkpoint_manifest(true, vec![sample_slab(3, true), sample_slab(4, false)]),
+            sample_checkpoint_manifest(false, vec![sample_slab(5, true)]),
+            sample_checkpoint_manifest(true, Vec::new()),
+        ];
+        // DENOMINATOR: the three shapes really differ in the ways the claim is about -- a slab with
+        // every optional present, one with none, no routing range, and no slabs at all.
+        assert!(shapes[0].block_slabs[0].first_block_id.is_some());
+        assert!(shapes[0].block_slabs[1].first_block_id.is_none());
+        assert!(shapes[1].routing_range.is_none());
+        assert!(shapes[2].block_slabs.is_empty());
+
+        for manifest in &shapes {
+            let bytes = encode_checkpoint_manifest(manifest);
+            assert_eq!(bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF);
+            let decoded = decode_checkpoint_manifest(&bytes).expect("what was encoded must decode");
+            assert_eq!(&decoded, manifest);
+        }
+    }
+
+    #[test]
+    fn a_json_checkpoint_manifest_still_decodes_and_matches_the_binary_one() {
+        let manifest =
+            sample_checkpoint_manifest(true, vec![sample_slab(3, true), sample_slab(4, false)]);
+        let json = serde_json::to_vec_pretty(&manifest).unwrap();
+        assert_eq!(json[0], b'{', "this must be the JSON shape a shipped build wrote");
+
+        let from_json = decode_checkpoint_manifest(&json).expect("JSON must still decode");
+        let from_binary = decode_checkpoint_manifest(&encode_checkpoint_manifest(&manifest))
+            .expect("binary must decode");
+        assert_eq!(from_json, manifest);
+        assert_eq!(from_json, from_binary);
+    }
+
+    #[test]
+    fn a_truncated_binary_checkpoint_manifest_is_an_error_not_a_shorter_manifest() {
+        // The routing range is the last field on the wire, so cutting one byte lands INSIDE a
+        // length-delimited field. Cutting at a field boundary would decode as a manifest that is
+        // simply missing its tail, which no checksum-free body can tell apart from a real one.
+        let manifest = sample_checkpoint_manifest(true, vec![sample_slab(3, true)]);
+        let bytes = encode_checkpoint_manifest(&manifest);
+        assert!(decode_checkpoint_manifest(&bytes).is_ok(), "the whole body decodes");
+        assert!(
+            decode_checkpoint_manifest(&bytes[..bytes.len() - 1]).is_err(),
+            "a body cut inside a field must not read as a manifest"
+        );
+    }
+
+    #[test]
+    fn the_checkpoint_manifest_field_numbers_do_not_move() {
+        // EVERY FIELD A DIFFERENT NON-ZERO VALUE: proto3 leaves a zero scalar off the wire, so a
+        // zero would say nothing about its field number.
+        let slab = SharedStoreBlockSlab {
+            block_slab_id: 1,
+            key: "s".to_string(),
+            byte_size: 3,
+            sha256: "z".to_string(),
+            logical_bytes: 5,
+            first_block_id: Some(6),
+            last_block_id: Some(7),
+            created_unix_ms: Some(8),
+            updated_unix_ms: Some(9),
+        };
+        let manifest = SharedStoreCheckpointManifest {
+            cluster_id: "c".to_string(),
+            shard_id: 2,
+            checkpoint_id: "i".to_string(),
+            checkpoint_wal_index: 4,
+            created_at_ms: 5,
+            index_key: "k".to_string(),
+            index_byte_size: 7,
+            index_sha256: "h".to_string(),
+            block_slabs: vec![slab],
+            next_block_id: 10,
+            routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                start_routing_bucket: 11,
+                end_routing_bucket: 12,
+            }),
+        };
+        let slab_bytes: Vec<u8> = vec![
+            0x08, 0x01, // 1 block_slab_id
+            0x12, 0x01, b's', // 2 key
+            0x18, 0x03, // 3 byte_size
+            0x22, 0x01, b'z', // 4 sha256
+            0x28, 0x05, // 5 logical_bytes
+            0x30, 0x06, // 6 first_block_id
+            0x38, 0x07, // 7 last_block_id
+            0x40, 0x08, // 8 created_unix_ms
+            0x48, 0x09, // 9 updated_unix_ms
+        ];
+        // DENOMINATOR: nine fields were meant to be in the slab, so a field dropped from the
+        // message cannot leave this fixture silently shorter than the thing it describes.
+        assert_eq!(slab_bytes.len(), 20);
+        let mut expected: Vec<u8> = vec![
+            0x0a, 0x01, b'c', // 1  cluster_id
+            0x10, 0x02, // 2  shard_id
+            0x1a, 0x01, b'i', // 3  checkpoint_id
+            0x20, 0x04, // 4  checkpoint_wal_index
+            0x28, 0x05, // 5  created_at_ms
+            0x32, 0x01, b'k', // 6  index_key
+            0x38, 0x07, // 7  index_byte_size
+            0x42, 0x01, b'h', // 8  index_sha256
+            0x4a, slab_bytes.len() as u8, // 9  block_slabs (one)
+        ];
+        expected.extend_from_slice(&slab_bytes);
+        expected.extend_from_slice(&[
+            0x50, 0x0a, // 10 next_block_id
+            0x5a, 0x04, 0x08, 0x0b, 0x10, 0x0c, // 11 routing_range { 11, 12 }
+        ]);
+        assert_eq!(
+            checkpoint_manifest_to_proto(&manifest).encode_to_vec(),
+            expected,
+            "the stored field numbers or wire types moved; a manifest on disk would read as something else"
+        );
+    }
+
+    /// THE WIRING, NOT JUST THE CODEC: a binary manifest filed under the binary name, beside a JSON
+    /// one filed under the old name, both come back from `list_checkpoints` -- the one place the
+    /// body is read -- and each is equal to what was written.
+    #[tokio::test]
+    async fn list_checkpoints_reads_a_binary_manifest_and_a_json_one_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        // The JSON one, written by this build's own publish.
+        let json_manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+
+        // The binary one: the same manifest under a different id and a later WAL index, filed under
+        // the binary name. Only the encoder here is the test's own; everything else is the reader.
+        let mut binary_manifest = json_manifest.clone();
+        binary_manifest.checkpoint_id = format!("{}-binary", json_manifest.checkpoint_id);
+        binary_manifest.checkpoint_wal_index = json_manifest.checkpoint_wal_index + 1;
+        let json_key = replicator.checkpoint_manifest_key(1, &binary_manifest.checkpoint_id);
+        let binary_key = format!(
+            "{}manifest{SHARED_STORE_BINARY_OBJECT_SUFFIX}",
+            json_key.strip_suffix("manifest.json").unwrap()
+        );
+        store
+            .put(
+                &binary_key,
+                Bytes::from(encode_checkpoint_manifest(&binary_manifest)),
+            )
+            .await
+            .unwrap();
+
+        let found = replicator.list_checkpoints(1).await.unwrap();
+        // DENOMINATOR: both objects were found, so neither was passed over by name.
+        assert_eq!(found.len(), 2, "a manifest was passed over: {found:?}");
+        assert_eq!(found[0], json_manifest, "the JSON object, as published");
+        assert_eq!(found[1], binary_manifest, "the binary object, as encoded");
     }
 
     /// EVERY WIDENED READER ACCEPTS BOTH SHAPES, AND THE CONTAINER BYTE CANNOT BE JSON.

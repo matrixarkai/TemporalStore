@@ -256,6 +256,11 @@ jobs:
             ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart \
             shared_store::tests::the_widened_object_readers_accept_both_shapes \
             shared_store::tests::the_object_writers_are_binary_and_planted_json_objects_are_still_read \
+            shared_store::tests::a_checkpoint_manifest_survives_the_binary_round_trip \
+            shared_store::tests::a_json_checkpoint_manifest_still_decodes_and_matches_the_binary_one \
+            shared_store::tests::a_truncated_binary_checkpoint_manifest_is_an_error_not_a_shorter_manifest \
+            shared_store::tests::the_checkpoint_manifest_field_numbers_do_not_move \
+            shared_store::tests::list_checkpoints_reads_a_binary_manifest_and_a_json_one_alike \
             engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read \
             engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
