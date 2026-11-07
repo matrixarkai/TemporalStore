@@ -268,6 +268,14 @@ fn where_a_warm_reads_allocations_go() {
             if wa > 0.0 { (wa - da) / wa * 100.0 } else { 0.0 },
         );
 
+        assert_eq!(
+            decoding.allocs,
+            keys as u64,
+            "decoding {keys} cached {value_len}-byte values allocated {} times; the payload \
+             needs one owned buffer per answer, while the response tag should borrow from the \
+             packed input",
+            decoding.allocs
+        );
         assert!(whole.allocs > 0, "the probe must observe the reads at {value_len}B");
     }
 }

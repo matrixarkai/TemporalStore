@@ -57,7 +57,9 @@
 //! active. That removes both name allocations from the ordinary serving path without holding the
 //! `infos` read guard across admission accounting. A read on a shard with no expiry state now
 //! transfers its command directly into execution, removing another allocation. Writes and reads
-//! that can perform lazy expiry retain the command for WAL and index metadata.
+//! that can perform lazy expiry retain the command for WAL and index metadata. The measured read
+//! now uses the production lock-free entry point and serves from the single physical block-cache
+//! copy rather than creating a second logical response-cache copy.
 //!
 //! COUNTS CARRY EVERY CLAIM. The byte columns wobble between otherwise identical runs and the
 //! counts do not -- #1952 observed that and so does this. The store path length is asserted
@@ -163,7 +165,8 @@ fn engine_at_named(dir: &std::path::Path) -> (TemporalEngine, usize) {
     (engine, dir.to_string_lossy().len())
 }
 
-/// Write `records` records, warm the command-answer cache, then measure `READS` warm reads.
+/// Write `records` records, warm the physical block cache through the production read entry point,
+/// then measure `READS` warm reads through that same entry point.
 #[cfg(feature = "alloc-probe")]
 fn measure_warm_reads(engine: &TemporalEngine, records: usize) -> WarmArm {
     for index in 0..records {
@@ -177,7 +180,7 @@ fn measure_warm_reads(engine: &TemporalEngine, records: usize) -> WarmArm {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
     for offset in 0..READS {
-        let _ = engine.execute(ExecuteRequest {
+        let _ = engine.execute_durable(ExecuteRequest {
             shard_id: 1,
             command: Command::StringGet {
                 key: record_key(offset % records),
@@ -188,7 +191,7 @@ fn measure_warm_reads(engine: &TemporalEngine, records: usize) -> WarmArm {
     let before = engine.cache().stats();
     let span = crate::alloc_probe::ClassSpan::open();
     for offset in 0..READS {
-        std::hint::black_box(engine.execute(ExecuteRequest {
+        std::hint::black_box(engine.execute_durable(ExecuteRequest {
             shard_id: 1,
             command: Command::StringGet {
                 key: record_key(offset % records),
@@ -339,7 +342,7 @@ fn where_a_warm_serving_reads_allocations_go() {
         named[0], named[1]
     );
 
-    // A BAND THAT EXCLUDES THE VALUE IT GUARDS AGAINST. 7.00 is the measured cost while every
+    // A BAND THAT EXCLUDES THE VALUE IT GUARDS AGAINST. 7.00 is what a warm read cost while every
     // command was cloned into execution; the assertion is strictly below it, so restoring that
     // clone cannot pass.
     for cost in &unnamed {

@@ -1786,23 +1786,24 @@ impl TemporalEngine {
                         response: CommandResponse::Bytes { value: None },
                     });
                 };
+                // Keep the payload under its physical block key only. The ordinary StringGet
+                // path already does this: a second encoded response under the logical string key
+                // is memory-only, has one reader, and doubles resident payload bytes. Reading the
+                // block cache here gives the lock-free path the same single-copy layout and keeps
+                // persistent-tier refill available.
                 Some(ExecuteResponse {
                     status: Status::ok(),
-                    response: cached_response(
-                        &self.cache,
-                        CacheKey::string(request.shard_id, key),
-                        || CommandResponse::Bytes {
-                            value: read_block_bytes(
-                                &self.cache,
-                                &self.block_store,
-                                request.shard_id,
-                                &address,
-                                // A string block IS its whole object, so the element is `None`.
-                                BlockIdentity::of(request.shard_id, "string", key, None),
-                                Some(routing_bucket),
-                            ),
-                        },
-                    ),
+                    response: CommandResponse::Bytes {
+                        value: read_block_bytes(
+                            &self.cache,
+                            &self.block_store,
+                            request.shard_id,
+                            &address,
+                            // A string block IS its whole object, so the element is `None`.
+                            BlockIdentity::of(request.shard_id, "string", key, None),
+                            Some(routing_bucket),
+                        ),
+                    },
                 })
             }
             FastPathRead::Hash {

@@ -1031,13 +1031,15 @@ pub(super) fn validate_command_preconditions(
 /// None of it shows in what is stored: the same answer packs into 4,117 bytes, a 1.005x encoding.
 /// The cost is entirely on the read side.
 ///
-/// So the tag is read on its own first, and the payload is then read into a plain struct that
-/// carries no tag and so needs no buffering. What is STORED does not change at all -- these are the
-/// same bytes the encoder already wrote -- which matters because the cache admits and evicts by
-/// size, and an entry of a different size lives a different life.
+/// So the tag is read on its own first and borrowed from the packed input, and the payload is then
+/// read into a plain struct that carries no tag and so needs no buffering. Matching the tag needs
+/// no owned `String`; the returned payload remains the only allocation. What is STORED does not
+/// change at all -- these are the same bytes the encoder already wrote -- which matters because
+/// the cache admits and evicts by size, and an entry of a different size lives a different life.
 #[derive(serde::Deserialize)]
-struct CachedKind {
-    kind: String,
+struct CachedKind<'a> {
+    #[serde(borrow)]
+    kind: &'a str,
 }
 
 #[derive(serde::Deserialize)]
@@ -1079,8 +1081,8 @@ pub(super) fn encode_cached_response(response: &CommandResponse) -> Option<Vec<u
 pub(super) fn decode_cached_response(bytes: &[u8]) -> Option<CommandResponse> {
     // Reading the tag on its own steps over the payload instead of building it: the fields this
     // struct does not name are skipped, not materialised.
-    let kind = rmp_serde::from_slice::<CachedKind>(bytes).ok()?.kind;
-    match kind.as_str() {
+    let kind = rmp_serde::from_slice::<CachedKind<'_>>(bytes).ok()?.kind;
+    match kind {
         "bytes" => Some(CommandResponse::Bytes {
             value: rmp_serde::from_slice::<CachedBytes>(bytes).ok()?.value,
         }),
