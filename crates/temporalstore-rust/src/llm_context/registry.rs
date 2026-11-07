@@ -11,6 +11,10 @@ use super::{
 const DEFAULT_MAX_CACHED_ENTRIES: usize = 1_000_000;
 const DEFAULT_MAX_SPACES: usize = 8;
 const DEFAULT_MAX_CACHED_VECTOR_BYTES: usize = 512 * 1024 * 1024;
+const MIN_CACHED_VECTOR_BYTES: usize = 4096 + std::mem::size_of::<f32>();
+const CACHE_ENTRIES_ENV: &str = "TS_CONTEXT_EMBEDDING_CACHE_ENTRIES";
+const CACHE_SPACES_ENV: &str = "TS_CONTEXT_EMBEDDING_CACHE_SPACES";
+const CACHE_VECTOR_BYTES_ENV: &str = "TS_CONTEXT_EMBEDDING_CACHE_VECTOR_BYTES";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmbeddingChannel {
@@ -44,11 +48,27 @@ pub struct EmbeddingIndexRegistry {
 
 impl Default for EmbeddingIndexRegistry {
     fn default() -> Self {
-        Self::new(DEFAULT_MAX_CACHED_ENTRIES)
+        Self::from_env()
     }
 }
 
 impl EmbeddingIndexRegistry {
+    /// Creates a registry using process-level cache budgets when supplied.
+    ///
+    /// `TS_CONTEXT_EMBEDDING_CACHE_ENTRIES`, `TS_CONTEXT_EMBEDDING_CACHE_SPACES`, and
+    /// `TS_CONTEXT_EMBEDDING_CACHE_VECTOR_BYTES` accept positive integer limits. Missing,
+    /// zero, or malformed values retain the defaults.
+    pub fn from_env() -> Self {
+        Self::with_budget(
+            cache_budget(CACHE_ENTRIES_ENV, DEFAULT_MAX_CACHED_ENTRIES),
+            cache_budget(CACHE_SPACES_ENV, DEFAULT_MAX_SPACES),
+            cache_budget(
+                CACHE_VECTOR_BYTES_ENV,
+                DEFAULT_MAX_CACHED_VECTOR_BYTES,
+            ),
+        )
+    }
+
     /// Creates a registry whose entry limit is shared by all embedding spaces.
     pub fn new(max_entries: usize) -> Self {
         Self::with_limits(max_entries, DEFAULT_MAX_SPACES)
@@ -58,10 +78,23 @@ impl EmbeddingIndexRegistry {
     ///
     /// Both limits are clamped to one so cache publication always has a usable target.
     pub fn with_limits(max_entries: usize, max_spaces: usize) -> Self {
+        Self::with_budget(
+            max_entries,
+            max_spaces,
+            DEFAULT_MAX_CACHED_VECTOR_BYTES,
+        )
+    }
+
+    /// Creates a registry with explicit row, embedding-space, and vector-byte budgets.
+    pub fn with_budget(
+        max_entries: usize,
+        max_spaces: usize,
+        max_vector_bytes: usize,
+    ) -> Self {
         Self {
             max_entries: max_entries.max(1),
             max_spaces: max_spaces.max(1),
-            max_vector_bytes: DEFAULT_MAX_CACHED_VECTOR_BYTES,
+            max_vector_bytes: max_vector_bytes.max(MIN_CACHED_VECTOR_BYTES),
             spaces: HashMap::new(),
             space_order: VecDeque::new(),
         }
@@ -296,6 +329,15 @@ impl EmbeddingIndexRegistry {
     pub fn is_empty(&self) -> bool {
         self.spaces.values().all(EmbeddingIndex::is_empty)
     }
+}
+
+fn cache_budget(name: &str, fallback: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]
