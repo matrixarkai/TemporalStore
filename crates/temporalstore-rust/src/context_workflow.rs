@@ -2178,7 +2178,6 @@ pub fn retrieve_context(
     let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
     node_hashes.retain(|node_hash| seen_node_hashes.insert(*node_hash));
     drop(seen_node_hashes);
-    fanout_plan.namespace_node_candidates = node_hashes.len();
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
         Ok(vector) => vector,
@@ -2201,6 +2200,33 @@ pub fn retrieve_context(
     // encoder is unknown, and unknown never conflicts.
     let active_embedding_model_hash =
         context_embedding_model_hash(request.provider.embedding_model.trim());
+    // The durable recency index bounds cold storage reads. The compact hot index may know older
+    // nodes that are stronger semantic matches, so let a small number re-enter as candidates.
+    // Their cached scores are not final: the normal node fetch and rerank below still apply.
+    if node_hashes.len() >= CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT {
+        let hot_candidate_limit = request
+            .max_summary_nodes
+            .max(request.max_event_nodes)
+            .max(request.max_events)
+            .max(1)
+            .saturating_mul(4)
+            .min(128);
+        if let Ok(hits) = engine.search_context_embeddings(
+            EmbeddingChannel::Node,
+            request.tenant_hash,
+            active_embedding_model_hash,
+            &query_embedding,
+            hot_candidate_limit,
+        ) {
+            let mut seen = node_hashes.iter().copied().collect::<HashSet<_>>();
+            node_hashes.extend(
+                hits.into_iter()
+                    .map(|hit| hit.key.item_id)
+                    .filter(|node_hash| seen.insert(*node_hash)),
+            );
+        }
+    }
+    fanout_plan.namespace_node_candidates = node_hashes.len();
     let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     let mut exact_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);

@@ -306,6 +306,50 @@ impl EmbeddingIndexRegistry {
         Ok(hits)
     }
 
+    /// Selects the strongest cached rows for one tenant across compatible spaces.
+    pub fn search(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query: &[f32],
+        limit: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut best_by_item = HashMap::<u64, f32>::new();
+        for (space, index) in &self.spaces {
+            if space.channel != channel
+                || space.dimensions != query.len()
+                || (model_hash != 0 && space.model_hash != 0 && space.model_hash != model_hash)
+            {
+                continue;
+            }
+            for hit in index.search(tenant_id, query, limit)? {
+                best_by_item
+                    .entry(hit.key.item_id)
+                    .and_modify(|score| *score = score.max(hit.score))
+                    .or_insert(hit.score);
+            }
+        }
+        let mut hits = best_by_item
+            .into_iter()
+            .map(|(item_id, score)| EmbeddingHit {
+                key: EmbeddingKey { tenant_id, item_id },
+                score,
+            })
+            .collect::<Vec<_>>();
+        hits.sort_unstable_by(|left, right| {
+            right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| left.key.item_id.cmp(&right.key.item_id))
+        });
+        hits.truncate(limit);
+        Ok(hits)
+    }
+
     pub fn remove(&mut self, channel: EmbeddingChannel, key: EmbeddingKey) -> bool {
         let mut removed = false;
         for (space, index) in &mut self.spaces {
