@@ -2277,7 +2277,6 @@ pub fn retrieve_context(
     }
     fanout_plan.namespace_node_candidates = node_hashes.len();
     let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
-    let mut exact_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
     let mut prefetched_nodes =
         HashMap::<u64, ContextNode>::with_capacity(initial_candidate_capacity);
@@ -2287,7 +2286,7 @@ pub fn retrieve_context(
     // is handed to the hybrid lexical pass below, exactly like before it was embedded. Chunked
     // because a single oversized command is rejected outright, not truncated, and an unscored
     // node silently collapses to the lexical/recency fallback.
-    let mut l0_row_fallback = Vec::<u64>::with_capacity(initial_candidate_capacity);
+    let mut l0_row_fallback_nodes = 0usize;
     let mut width_conflict_nodes = 0usize;
     let mut model_conflict_nodes = 0usize;
     // The point in time the L1 summary vectors are wanted as of, hoisted because the node pass
@@ -2403,10 +2402,10 @@ pub fn retrieve_context(
                     None => summary_lookup_nodes.push(node.node_hash),
                 }
                 if node.vector.is_empty() {
-                    l0_row_fallback.push(node.node_hash);
+                    l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
                 } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
                     width_conflict_nodes = width_conflict_nodes.saturating_add(1);
-                    l0_row_fallback.push(node.node_hash);
+                    l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
                 } else if context_embedding_model_conflicts(
                     node.embedding_model_hash,
                     active_embedding_model_hash,
@@ -2420,7 +2419,7 @@ pub fn retrieve_context(
                     // score value, so a zero would mark the node scored and strand it at the
                     // bottom of the ranking with no second chance.
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
-                    l0_row_fallback.push(node.node_hash);
+                    l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
                 } else {
                     node_score_candidates.push(node.node_hash);
                     node_rows
@@ -2477,7 +2476,7 @@ pub fn retrieve_context(
         // A node the engine did not return cannot carry a vector either.
         for node_hash in candidate_chunk {
             if !returned.contains(node_hash) {
-                l0_row_fallback.push(*node_hash);
+                l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
                 // ...and it cannot have supplied a summary vector copy either, so it keeps the
                 // lookup it has always had. A node record can be missing while its summaries are
                 // not: the summary series lives in its own keyspace.
@@ -2485,8 +2484,8 @@ pub fn retrieve_context(
             }
         }
     }
-    // Diagnostic only now: candidates whose node carries no vector at all (un-embedded).
-    fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
+    // Count only: retrieval never reads these identities after handing them to lexical scoring.
+    fanout_plan.l0_row_fallback_nodes = l0_row_fallback_nodes;
     // node_l1 comes from the L1 summaries' own vectors -- the summary record owns them, and it is
     // addressable by the node hash already in hand. Level 2 here is the summary-record level for
     // L1 (ContextQuerySummaries uses 1 = L0, 2 = L1).
@@ -2510,7 +2509,6 @@ pub fn retrieve_context(
             },
         });
         if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
-            let mut summary_score_candidates = Vec::with_capacity(vectors.len());
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             for entry in &vectors {
                 if context_embedding_width_conflicts(&query_embedding, &entry.vector) {
@@ -2532,7 +2530,6 @@ pub fn retrieve_context(
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     continue;
                 }
-                summary_score_candidates.push(entry.node_hash);
                 summary_rows
                     .entry((entry.embedding_model_hash, entry.vector.len()))
                     .or_default()
@@ -2545,11 +2542,13 @@ pub fn retrieve_context(
                     });
             }
             for ((model_hash, _), rows) in summary_rows {
+                // These durable rows are already decoded as f32 values. Score them once in that
+                // form for this query, then warm the compact cache for later retrievals.
                 if let Ok(hits) = score_embedding_candidates_exact(&query_embedding, &rows) {
                     for hit in hits {
-                        let score = exact_scores_by_node.entry(hit.key.item_id).or_default();
-                        score.0 = score.0.max((hit.score * 1_000_000.0) as i64);
-                        score.1 = score.1.saturating_add(1);
+                        let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
+                        scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
+                        scores.1 = scores.1.saturating_add(1);
                     }
                 }
                 let _ = engine.cache_missing_context_embeddings(
@@ -2557,19 +2556,6 @@ pub fn retrieve_context(
                     model_hash,
                     &rows,
                 );
-            }
-            if let Ok(hits) = engine.score_context_embedding_candidates(
-                EmbeddingChannel::Summary,
-                request.tenant_hash,
-                active_embedding_model_hash,
-                &query_embedding,
-                &summary_score_candidates,
-            ) {
-                for hit in hits {
-                    let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
-                    scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
-                    scores.1 = scores.1.saturating_add(1);
-                }
             }
         }
     }
@@ -2655,6 +2641,7 @@ pub fn retrieve_context(
             }
         }
     }
+    let mut exact_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     for rows in [&exact_node_rows, &exact_summary_rows] {
         if let Ok(hits) = score_embedding_candidates_exact(&query_embedding, rows) {
             for hit in hits {
