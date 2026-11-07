@@ -2504,17 +2504,7 @@ where
         key: &str,
     ) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
         let bytes = self.object_store.get(key).await?;
-        if let Ok(object) = serde_json::from_slice::<SharedStoreWalObject>(&bytes) {
-            let entry_bytes = serde_json::to_vec(&object.entry)?;
-            verify_checksum(
-                key,
-                &entry_bytes,
-                object.entry_byte_size,
-                &object.entry_sha256,
-            )?;
-            return Ok(object.entry);
-        }
-        Ok(serde_json::from_slice(&bytes)?)
+        decode_wal_entry_object(key, &bytes)
     }
 
     fn parse_wal_entry_object(
@@ -2522,17 +2512,7 @@ where
         key: &str,
         bytes: &[u8],
     ) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
-        if let Ok(object) = serde_json::from_slice::<SharedStoreWalObject>(bytes) {
-            let entry_bytes = serde_json::to_vec(&object.entry)?;
-            verify_checksum(
-                key,
-                &entry_bytes,
-                object.entry_byte_size,
-                &object.entry_sha256,
-            )?;
-            return Ok(object.entry);
-        }
-        Ok(serde_json::from_slice(bytes)?)
+        decode_wal_entry_object(key, bytes)
     }
 
     /// The highest WAL index currently persisted in shared storage for
@@ -3754,6 +3734,70 @@ pub(crate) fn encode_routing_range_stamp(
             end_routing_bucket: stamp.end_routing_bucket,
         },
     ))
+}
+
+// ---- the per-key WAL object (`JsonPerKey` mode), in either shape
+
+/// A per-key WAL object in EITHER shape. THE ONLY READER of one.
+///
+/// Two shapes live under `wal_<index>.json`:
+///
+///   * the original envelope -- a JSON `SharedStoreWalObject` carrying the entry, its JSON byte
+///     length and a SHA-256 of that JSON, or (older still) the bare entry as JSON; and
+///   * the binary object -- the shared-store container byte, a CRC32C, then ONE protobuf WAL frame
+///     (the same frame the append-blob log writes), so a per-key log and a blob log hold the same
+///     bytes for the same entry.
+///
+/// The shape is decided from the first byte and never from a setting. The JSON arms are PERMANENT:
+/// every per-key log written before the binary object existed is JSON, and "which writer runs
+/// today" is the wrong question for a reader -- the hold is on what is on disk.
+///
+/// THE CRC COVERS THE WHOLE FRAME, ON PURPOSE. The frame's own digest covers only its command
+/// payload, so the outcomes, staged blocks, shard id and WAL index inside it would otherwise be
+/// unchecked -- and the JSON envelope this replaces checked all of them, through a SHA-256 over the
+/// whole entry. Dropping to the frame's check alone would have been a quiet loss of integrity for
+/// this layout.
+fn decode_wal_entry_object(
+    key: &str,
+    bytes: &[u8],
+) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        if body.len() < 4 {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("truncated binary WAL object at {key}"),
+            )));
+        }
+        let stored = u32::from_be_bytes(body[..4].try_into().expect("four bytes"));
+        let frame = &body[4..];
+        verify_crc32c(key, frame, None, stored)?;
+        return decode_wal_proto_frame_exact(frame, key);
+    }
+    if let Ok(object) = serde_json::from_slice::<SharedStoreWalObject>(bytes) {
+        let entry_bytes = serde_json::to_vec(&object.entry)?;
+        verify_checksum(
+            key,
+            &entry_bytes,
+            object.entry_byte_size,
+            &object.entry_sha256,
+        )?;
+        return Ok(object.entry);
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+/// A per-key WAL object in the binary shape. Test-only until the writer flips.
+#[cfg(test)]
+fn encode_wal_entry_object(
+    entry: &SharedStoreWalEntry,
+    frame_format: u32,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    let frame = encode_wal_proto_frame(entry, frame_format)?;
+    let mut out = Vec::with_capacity(5 + frame.len());
+    out.push(SHARED_OBJECT_CONTAINER_PROTOBUF);
+    out.extend_from_slice(&crate::checksum::crc32c(&frame).to_be_bytes());
+    out.extend_from_slice(&frame);
+    Ok(out)
 }
 
 fn parse_wal_index(key: &str) -> Option<u64> {
@@ -15543,6 +15587,134 @@ fn no_json_encode_arm_is_left_in_the_wal_command_encoders() {
         "the control no longer sees the permanent JSON decode arm, so this scan could pass over \
          an encoder it cannot see"
     );
+}
+
+/// A PER-KEY WAL OBJECT IS READ IN EITHER SHAPE, THROUGH BOTH READERS, AND A CHANGED FIELD IS NOT
+/// TRUSTED.
+///
+/// The reader half: the per-key writer still emits the JSON envelope, so the binary objects are
+/// built by the test-only encoder and PLANTED into the object store beside REAL published ones.
+/// They are then read through `load_wal_entries` (the batched path, `parse_wal_entry_object`) and
+/// through `read_wal_entry` (the fallback path), because the two are separate call sites and a
+/// pass through one says nothing about the other.
+///
+/// The corruption is made at a layer the NEXT layer accepts. The frame's own check covers only its
+/// command payload, so a changed WAL index inside it decodes cleanly as a different entry; only the
+/// object-wide CRC can refuse it. The test shows the frame decoder accepting the changed bytes
+/// first, so the refusal is demonstrably the object check and not the frame's.
+#[tokio::test]
+async fn a_per_key_wal_object_is_read_in_either_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, replicator) = test_shared_store(dir.path());
+    let entry = |wal_index: u64| SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index,
+        command: Some(Command::StringSet {
+            key: format!("k{wal_index}"),
+            value: vec![wal_index as u8; 3],
+        }),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+
+    // ---- the installed base: REAL published objects, JSON.
+    for index in 1..=3u64 {
+        replicator.publish_wal_entry(entry(index)).await.unwrap();
+        assert_eq!(
+            store.get(&replicator.wal_key(1, index)).await.unwrap()[0],
+            b'{',
+            "the real per-key writer is expected to still write JSON in this change"
+        );
+    }
+    // ---- binary objects PLANTED beside them.
+    for index in 4..=5u64 {
+        let bytes = encode_wal_entry_object(&entry(index), WAL_FRAME_FORMAT_DEFAULT).unwrap();
+        assert_eq!(bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
+            "the planted object parses as JSON, so the binary arm is not what is being read"
+        );
+        store
+            .put(&replicator.wal_key(1, index), Bytes::from(bytes))
+            .await
+            .unwrap();
+    }
+
+    // ---- the batched reader.
+    let loaded = replicator.load_wal_entries(1).await.unwrap();
+    assert_eq!(
+        loaded.keys().copied().collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5],
+        "an object was passed over, and a short list is a successful answer"
+    );
+    for index in 1..=5u64 {
+        assert_eq!(loaded[&index], entry(index), "entry {index} read back differently");
+    }
+    assert_eq!(replicator.latest_persisted_wal_index(1).await.unwrap(), 5);
+
+    // ---- the single-object reader, over one of each shape.
+    for index in [2u64, 5] {
+        assert_eq!(
+            replicator
+                .read_wal_entry(&replicator.wal_key(1, index))
+                .await
+                .unwrap(),
+            entry(index),
+            "read_wal_entry disagrees with load_wal_entries on entry {index}"
+        );
+    }
+
+    // ---- one WAL index changed inside the frame. The frame decoder accepts it...
+    let key = replicator.wal_key(1, 5);
+    let good = encode_wal_entry_object(&entry(5), WAL_FRAME_FORMAT_DEFAULT).unwrap();
+    // Locate the index byte by encoding the SAME command at two adjacent indices.
+    let same_command = |wal_index: u64| SharedStoreWalEntry {
+        wal_index,
+        ..entry(5)
+    };
+    let (a, b) = (
+        encode_wal_entry_object(&same_command(5), WAL_FRAME_FORMAT_DEFAULT).unwrap(),
+        encode_wal_entry_object(&same_command(6), WAL_FRAME_FORMAT_DEFAULT).unwrap(),
+    );
+    assert_eq!(a, good, "the located encoding is not the planted one");
+    assert_eq!(a.len(), b.len());
+    // Skip the CRC bytes (1..5): they differ too, because the CRC covers the index.
+    let differing: Vec<usize> = (5..a.len()).filter(|&i| a[i] != b[i]).collect();
+    assert_eq!(
+        differing.len(),
+        1,
+        "the index is not a single byte of the frame, so the flip below is not what it claims"
+    );
+    let mut changed = good.clone();
+    changed[differing[0]] = b[differing[0]];
+    let frame_only = decode_wal_proto_frame_exact(&changed[5..], &key)
+        .expect("the frame's own check covers only the command payload, so it accepts this");
+    assert_eq!(frame_only.wal_index, 6, "the changed index is not the one the frame now carries");
+    store.put(&key, Bytes::from(changed)).await.unwrap();
+    let refused = replicator
+        .read_wal_entry(&key)
+        .await
+        .expect_err("an object whose stored WAL index changed was trusted");
+    assert!(
+        matches!(refused, SharedStoreReplicationError::ChecksumMismatch { .. }),
+        "refused for the wrong reason: {refused:?}"
+    );
+    assert!(
+        replicator.load_wal_entries(1).await.is_err(),
+        "the batched reader trusted an object whose stored WAL index changed"
+    );
+
+    // ---- CONTROL: the original bytes read again, so the refusals above were the changed byte.
+    store.put(&key, Bytes::from(good)).await.unwrap();
+    assert_eq!(replicator.read_wal_entry(&key).await.unwrap(), entry(5));
+    assert_eq!(replicator.load_wal_entries(1).await.unwrap().len(), 5);
+
+    // ---- a truncated object is an error, never an empty entry.
+    store
+        .put(&key, Bytes::from(vec![SHARED_OBJECT_CONTAINER_PROTOBUF, 0, 0]))
+        .await
+        .unwrap();
+    assert!(replicator.read_wal_entry(&key).await.is_err());
 }
 
 }
