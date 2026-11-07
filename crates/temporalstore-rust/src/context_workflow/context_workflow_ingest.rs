@@ -464,7 +464,7 @@ pub fn ingest_resource_skill_context(
             index_writes.push(("skill_ref".to_string(), skill_ref.clone()));
         }
 
-        for command in [
+        let commands = vec![
             Command::ContextUpsertEntity {
                 tenant_hash: request.tenant_hash,
                 entity: entity.clone(),
@@ -477,13 +477,24 @@ pub fn ingest_resource_skill_context(
                 tenant_hash: request.tenant_hash,
                 event: compression.clone(),
             },
-        ] {
-            let response = engine.execute_durable(ExecuteRequest {
-                shard_id: request.shard_id,
-                command,
-            });
-            if !response.status.ok {
-                fanout.missing_models.push(response.status.code);
+        ];
+        let command_count = commands.len();
+        let response = engine.batch_execute_durable(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands,
+        });
+        if !response.status.ok {
+            fanout.missing_models.push(response.status.code);
+        } else {
+            if response.responses.len() != command_count {
+                fanout
+                    .missing_models
+                    .push("context_resource_fanout_batch_incomplete".to_string());
+            }
+            for response in response.responses {
+                if !response.status.ok {
+                    fanout.missing_models.push(response.status.code);
+                }
             }
         }
         fanout.entity_count += 1;
