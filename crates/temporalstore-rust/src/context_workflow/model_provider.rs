@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Context model-provider calls for summaries and embeddings across supported provider protocols.
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use crate::llm_context::{BatchEmbedder, EmbeddingBatch, OllamaConfig, OllamaProvider};
@@ -9,6 +10,10 @@ use crate::llm_context::{BatchEmbedder, EmbeddingBatch, OllamaConfig, OllamaProv
 use super::*;
 
 const CONTEXT_SUMMARY_SYSTEM_PROMPT: &str = "You generate TemporalStore ContextNode traversal summaries. Be faithful to the supplied source; prefer current state and resolved contradictions; never invent facts. l0 is a compact routing abstract; l1 is a richer synthesis whose length scales to the source's information.";
+const CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX: &str = "Generate an independent hierarchical summary for every source below. Return one item for every source_index and preserve each ordinal exactly. l0 is a routing abstract of at most 220 characters. For rich_source=true, l1 is a semantic synthesis of at most 1200 characters; otherwise l1 is one distilled fact line of at most 220 characters. Do not combine facts between sources or invent facts. Sources: ";
+const DEFAULT_EMBED_MAX_BATCH_ITEMS: usize = 128;
+const DEFAULT_EMBED_MAX_INPUT_BYTES: usize = 64 * 1024;
+const DEFAULT_EMBED_MAX_REQUEST_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ContextExtractSummaries {
@@ -17,6 +22,55 @@ pub(crate) struct ContextExtractSummaries {
     pub(crate) l0: String,
     pub(crate) l1: String,
     pub(crate) l2_ref: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextSummaryBatchOutput {
+    items: Vec<ContextSummaryBatchItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextSummaryBatchItem {
+    source_index: usize,
+    l0: String,
+    l1: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ContextEmbeddingBatchLimits {
+    pub(crate) max_items: usize,
+    pub(crate) max_input_bytes: usize,
+    pub(crate) max_request_bytes: usize,
+}
+
+pub(crate) fn context_embedding_batch_limits(
+    provider: &ContextModelProviderConfig,
+) -> ContextEmbeddingBatchLimits {
+    if provider.provider_kind == ContextProviderKind::Ollama {
+        let config = OllamaConfig::from_env();
+        return ContextEmbeddingBatchLimits {
+            max_items: config.max_batch_items.max(1),
+            max_input_bytes: config.max_input_bytes.max(1),
+            max_request_bytes: config.max_request_bytes.max(1),
+        };
+    }
+    ContextEmbeddingBatchLimits {
+        max_items: crate::env_flag::env_number(
+            "MATRIXARK_EMBED_MAX_BATCH_ITEMS",
+            DEFAULT_EMBED_MAX_BATCH_ITEMS,
+        )
+        .max(1),
+        max_input_bytes: crate::env_flag::env_number(
+            "MATRIXARK_EMBED_MAX_INPUT_BYTES",
+            DEFAULT_EMBED_MAX_INPUT_BYTES,
+        )
+        .max(1),
+        max_request_bytes: crate::env_flag::env_number(
+            "MATRIXARK_EMBED_MAX_REQUEST_BYTES",
+            DEFAULT_EMBED_MAX_REQUEST_BYTES,
+        )
+        .max(1),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +158,101 @@ pub(crate) fn context_summaries_for_extract(
         }
         ContextProviderKind::Mock => Ok(mock_context_summaries(provider, request)),
     }
+}
+
+pub(crate) fn context_summaries_for_extract_batch(
+    provider: &ContextModelProviderConfig,
+    requests: &[&ContextExtractRequest],
+) -> Vec<Result<ContextExtractSummaries, Status>> {
+    if requests.is_empty() {
+        return Vec::new();
+    }
+    let provider = normalize_provider(provider.clone());
+    if requests.len() == 1 {
+        return vec![context_summaries_for_extract(&provider, requests[0])];
+    }
+    if provider.mock_mode || provider.provider_kind != ContextProviderKind::Ollama {
+        return requests
+            .iter()
+            .map(|request| context_summaries_for_extract(&provider, request))
+            .collect();
+    }
+
+    let client = match ollama_provider(&provider) {
+        Ok(client) => client,
+        Err(status) => return requests.iter().map(|_| Err(status.clone())).collect(),
+    };
+    let mut results: Vec<Option<Result<ContextExtractSummaries, Status>>> =
+        std::iter::repeat_with(|| None).take(requests.len()).collect();
+    let mut start = 0usize;
+    while start < requests.len() {
+        let end = ollama_summary_batch_end(&client, requests, start);
+        let chunk = &requests[start..end];
+        let prompt = context_summary_batch_prompt(chunk);
+        let output = client
+            .generate_structured_json(
+                CONTEXT_SUMMARY_SYSTEM_PROMPT,
+                &prompt,
+                context_summary_batch_schema(),
+            )
+            .map_err(|err| {
+                Status::error(
+                    "model_provider_request_failed",
+                    format!(
+                        "context provider {} request failed: {err}",
+                        provider.provider_name
+                    ),
+                )
+            })
+            .and_then(|value| {
+                serde_json::from_value::<ContextSummaryBatchOutput>(value).map_err(|err| {
+                    Status::error(
+                        "model_provider_bad_response",
+                        format!(
+                            "context provider {} returned invalid summary JSON: {err}",
+                            provider.provider_name
+                        ),
+                    )
+                })
+            });
+
+        if let Ok(output) = output {
+            let mut seen = HashSet::with_capacity(output.items.len());
+            for item in output.items {
+                if item.source_index >= chunk.len() || !seen.insert(item.source_index) {
+                    continue;
+                }
+                let request = chunk[item.source_index];
+                let content = serde_json::json!({ "l0": item.l0, "l1": item.l1 }).to_string();
+                let (l0, l1) = parse_provider_summary_content(&content, request);
+                results[start + item.source_index] = Some(Ok(ContextExtractSummaries {
+                    status: Status::ok(),
+                    provider: provider.clone(),
+                    l0,
+                    l1,
+                    l2_ref: format!(
+                        "tsctx://tenant/{}/model/{}/source/{}",
+                        request.tenant_hash, provider.provider_name, request.source_id
+                    ),
+                }));
+            }
+        }
+
+        // A malformed or partial batch response should not discard unrelated sources. Retry only
+        // entries that did not receive a valid ordinal through the established single-source path.
+        for (offset, request) in chunk.iter().enumerate() {
+            let result_index = start + offset;
+            if results[result_index].is_none() {
+                results[result_index] = Some(context_summaries_for_extract(&provider, request));
+            }
+        }
+        start = end;
+    }
+
+    results
+        .into_iter()
+        .map(|result| result.expect("every summary request is completed"))
+        .collect()
 }
 
 /// The embedding provider a deployment has configured, read from the environment.
@@ -222,6 +371,108 @@ pub(crate) fn context_embeddings_for_extract(
     inputs: &[(&str, u64, u32, &str)],
 ) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
     let provider = normalize_provider(provider.clone());
+    if inputs.is_empty() {
+        return context_embeddings_for_extract_one_batch(&provider, inputs);
+    }
+
+    let mut start = 0usize;
+    let mut combined = EmbeddingBatch::default();
+    let mut combined_report: Option<ContextEmbeddingGenerationReport> = None;
+    while start < inputs.len() {
+        let end = context_embedding_batch_end(&provider, inputs, start);
+        let (batch, report) =
+            context_embeddings_for_extract_one_batch(&provider, &inputs[start..end])?;
+        if combined.dimensions == 0 {
+            combined.dimensions = batch.dimensions;
+            combined
+                .values
+                .reserve(inputs.len().saturating_mul(batch.dimensions));
+        } else if batch.dimensions != combined.dimensions {
+            return Err(Status::error(
+                "embedding_provider_bad_response",
+                format!(
+                    "embedding provider {} changed dimensions between request batches",
+                    provider.provider_name
+                ),
+            ));
+        }
+        combined.values.extend(batch.values);
+        if let Some(total) = combined_report.as_mut() {
+            total.requested_vector_count = total
+                .requested_vector_count
+                .saturating_add(report.requested_vector_count);
+            total.generated_vector_count = total
+                .generated_vector_count
+                .saturating_add(report.generated_vector_count);
+            total.batch_count = total.batch_count.saturating_add(report.batch_count);
+            total.live_call_count = total
+                .live_call_count
+                .saturating_add(report.live_call_count);
+            total.production_evidence_ready &= report.production_evidence_ready;
+        } else {
+            combined_report = Some(report);
+        }
+        start = end;
+    }
+    Ok((
+        combined,
+        combined_report.expect("non-empty embedding input produces a report"),
+    ))
+}
+
+fn context_embedding_batch_end(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+    start: usize,
+) -> usize {
+    let limits = context_embedding_batch_limits(provider);
+    let mut end = start;
+    let mut bytes = 0usize;
+    while end < inputs.len() && end - start < limits.max_items {
+        let input_bytes = inputs[end].3.len();
+        if end > start && bytes.saturating_add(input_bytes) > limits.max_request_bytes {
+            break;
+        }
+        bytes = bytes.saturating_add(input_bytes);
+        end += 1;
+        if input_bytes > limits.max_input_bytes || bytes > limits.max_request_bytes {
+            break;
+        }
+    }
+    end.max(start + 1).min(inputs.len())
+}
+
+fn context_embeddings_for_extract_one_batch(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    let limits = context_embedding_batch_limits(provider);
+    if let Some((index, input)) = inputs
+        .iter()
+        .enumerate()
+        .find(|(_, input)| input.3.len() > limits.max_input_bytes)
+    {
+        return Err(Status::error(
+            "embedding_input_too_large",
+            format!(
+                "embedding input {index} is {} bytes; limit is {}",
+                input.3.len(), limits.max_input_bytes
+            ),
+        ));
+    }
+    let request_bytes = inputs.iter().fold(0usize, |bytes, input| {
+        bytes.saturating_add(input.3.len())
+    });
+    if inputs.len() > limits.max_items || request_bytes > limits.max_request_bytes {
+        return Err(Status::error(
+            "embedding_request_too_large",
+            format!(
+                "embedding request has {} items and {request_bytes} input bytes; limits are {} items and {} bytes",
+                inputs.len(), limits.max_items, limits.max_request_bytes
+            ),
+        ));
+    }
+
     if provider.mock_mode || provider.provider_kind == ContextProviderKind::Mock {
         if context_require_model_embeddings() {
             return Err(Status::error(
@@ -235,9 +486,9 @@ pub(crate) fn context_embeddings_for_extract(
             batch,
             ContextEmbeddingGenerationReport {
                 status: Status::ok(),
-                provider_name: provider.provider_name,
-                provider_kind: provider.provider_kind,
-                embedding_model: provider.embedding_model,
+                provider_name: provider.provider_name.clone(),
+                provider_kind: provider.provider_kind.clone(),
+                embedding_model: provider.embedding_model.clone(),
                 vector_dimension,
                 requested_vector_count: inputs.len(),
                 generated_vector_count: inputs.len(),
@@ -287,9 +538,9 @@ pub(crate) fn context_embeddings_for_extract(
         batch,
         ContextEmbeddingGenerationReport {
             status: Status::ok(),
-            provider_name: provider.provider_name,
-            provider_kind: provider.provider_kind,
-            embedding_model: provider.embedding_model,
+            provider_name: provider.provider_name.clone(),
+            provider_kind: provider.provider_kind.clone(),
+            embedding_model: provider.embedding_model.clone(),
             vector_dimension,
             requested_vector_count: inputs.len(),
             generated_vector_count: inputs.len(),
@@ -586,6 +837,69 @@ fn context_summary_prompt(request: &ContextExtractRequest) -> String {
     context_summary_prompt_with_guidance(request, guidance)
 }
 
+fn ollama_summary_batch_end(
+    client: &OllamaProvider,
+    requests: &[&ContextExtractRequest],
+    start: usize,
+) -> usize {
+    let config = client.config();
+    let max_end = requests
+        .len()
+        .min(start.saturating_add(config.max_batch_items));
+    let mut end = start;
+    let mut prompt_bytes = CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2;
+    while end < max_end {
+        let candidate_end = end + 1;
+        let source_index = end - start;
+        let item_bytes = context_summary_batch_source(source_index, requests[end])
+            .to_string()
+            .len();
+        let candidate_bytes = prompt_bytes
+            .saturating_add(usize::from(source_index > 0))
+            .saturating_add(item_bytes);
+        let fits = candidate_bytes <= config.max_input_bytes
+            && CONTEXT_SUMMARY_SYSTEM_PROMPT
+                .len()
+                .saturating_add(candidate_bytes)
+                <= config.max_request_bytes;
+        if !fits && end > start {
+            break;
+        }
+        end = candidate_end;
+        prompt_bytes = candidate_bytes;
+        if !fits {
+            break;
+        }
+    }
+    end.max(start + 1)
+}
+
+fn context_summary_batch_prompt(requests: &[&ContextExtractRequest]) -> String {
+    let sources = requests
+        .iter()
+        .enumerate()
+        .map(|(source_index, request)| context_summary_batch_source(source_index, request))
+        .collect::<Vec<_>>();
+    format!(
+        "{CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX}{}",
+        serde_json::Value::Array(sources)
+    )
+}
+
+fn context_summary_batch_source(
+    source_index: usize,
+    request: &ContextExtractRequest,
+) -> Value {
+    serde_json::json!({
+        "source_index": source_index,
+        "source_kind": format!("{:?}", request.source_kind),
+        "source_id": request.source_id,
+        "title": request.title,
+        "rich_source": context_source_warrants_l1(&request.body),
+        "body": request.body,
+    })
+}
+
 fn context_summary_prompt_with_guidance(
     request: &ContextExtractRequest,
     l1_guidance: &str,
@@ -611,6 +925,30 @@ fn context_summary_schema() -> &'static Value {
                 "l1": { "type": "string" }
             },
             "required": ["l0", "l1"]
+        })
+    })
+}
+
+fn context_summary_batch_schema() -> &'static Value {
+    static SCHEMA: OnceLock<Value> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_index": { "type": "integer" },
+                            "l0": { "type": "string" },
+                            "l1": { "type": "string" }
+                        },
+                        "required": ["source_index", "l0", "l1"]
+                    }
+                }
+            },
+            "required": ["items"]
         })
     })
 }

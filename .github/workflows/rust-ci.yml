@@ -273,6 +273,9 @@ jobs:
             shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
             shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
             engine::tests::part4::the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable \
+            engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_answers_to_the_feature_ceiling_on_the_same_series \
+            engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_inside_the_ceiling_is_still_accepted \
+            engine::tests::part2::feature_append_rejects_hard_size_limit_before_mutation \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -418,6 +421,18 @@ jobs:
             engine::container_blocks::member_component_tests::every_kind_maps_to_the_spelling_its_writers_emit \
             engine::container_blocks::member_component_tests::a_block_written_before_the_flip_is_found_by_a_component_in_either_spelling \
             engine::container_blocks::member_component_tests::a_write_after_the_flip_frames_rather_than_falling_back_to_a_bare_value \
+            engine::tests::marking_an_object_dirty_reaches_its_blocks::marking_an_object_dirty_reaches_blocks_its_row_holds_the_refs_for \
+            engine::tests::where_an_objects_refs_could_live::where_each_kinds_refs_end_up \
+            engine::tests::what_the_core_index_puts_on_the_wire::every_field_of_the_core_index_declares_whether_it_reaches_the_wire \
+            engine::tests::what_the_core_index_puts_on_the_wire::an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one \
+            block_store::slab_manifest_wire::tests::every_descriptor_field_survives_the_wire_round_trip \
+            block_store::slab_manifest_wire::tests::a_wire_manifest_loads_with_values_only_those_bytes_can_carry \
+            block_store::slab_manifest_wire::tests::a_json_manifest_still_loads_through_the_same_reader \
+            block_store::slab_manifest_wire::tests::the_two_spellings_load_to_the_same_descriptors \
+            block_store::slab_manifest_wire::tests::a_frame_of_123_bytes_starts_with_an_open_brace \
+            block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
+            block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
+            block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -449,6 +464,33 @@ jobs:
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
             ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/ratio_gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or no longer #[ignore]d"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/ratio_gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
+          # AND THE ALLOCATION GUARDS, which need --features alloc-probe ON TOP of --ignored.
+          # Without the feature the counting allocator is not installed, every counter reads zero,
+          # and an allocation assertion passes on a zero that means nothing -- so these cannot
+          # share either loop above. One name at a time under the feature, deliberately:
+          # installing the counting allocator process-wide turns a number of other tests red, and
+          # a filtered run never reaches them.
+          #
+          # an_element_write_into_a_live_object_does_not_copy_its_key pins that an install into an
+          # object that ALREADY EXISTS reaches it through a borrow. `Arc::from(&str)` always mallocs
+          # and copies and `entry()` takes its key by value, so the pre-fix path allocated, copied
+          # and dropped the key on every element write: 413 allocations for 400 installs, and
+          # 264.9 B per write at a 208-byte key against 64.9 B at an 8-byte one. The guard varies
+          # KEY LENGTH, because only a key copy can make per-write bytes depend on it.
+          for t in \
+            engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key ; do
+            echo "--- $t (ignored, alloc-probe) ---"
+            cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
+              -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
+            ran=$(grep -oE '^running [0-9]+ tests?$' /tmp/ratio_gate.log | head -1 | awk '{print $2}')
             if [ "$ran" != "1" ]; then
               echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or no longer #[ignore]d"
               exit 1

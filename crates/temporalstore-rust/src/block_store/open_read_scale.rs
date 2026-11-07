@@ -486,6 +486,7 @@ const MODULES: &[(&str, &str)] = &[
     ("slab_backend.rs", include_str!("slab_backend.rs")),
     ("slab_ids.rs", include_str!("slab_ids.rs")),
     ("slab_manifest.rs", include_str!("slab_manifest.rs")),
+    ("slab_manifest_wire.rs", include_str!("slab_manifest_wire.rs")),
     ("slab_reports.rs", include_str!("slab_reports.rs")),
 ];
 

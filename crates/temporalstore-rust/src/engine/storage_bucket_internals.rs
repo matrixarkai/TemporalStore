@@ -5554,9 +5554,17 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // it can still be true.
     let lookup_can_target = !(shard.bucket_index.names_no_object_blocks()
         || shard.bucket_index.object_component_block_refs.is_none());
-    // Components whose blocks this call drops, so the lookup can be corrected for exactly those
+    // WHETHER this call dropped any block of this object, so the lookup can be corrected for it
     // instead of being rebuilt from every block in the shard.
-    let mut removed_components: BTreeSet<Option<Arc<str>>> = BTreeSet::new();
+    //
+    // A `bool` RATHER THAN A SET OF COMPONENT NAMES. This was `BTreeSet<Option<Arc<str>>>`, and
+    // the only value ever inserted was `None` -- which the comment at the insert site already
+    // said outright: the set recorded "WHETHER anything was dropped for this object rather than
+    // how many names were". A set holding at most one `None` drives at most one un-filing call,
+    // and so does this flag, so the behaviour is identical while the type stops claiming a
+    // per-component index the lookup has never been able to express -- see `names_the_only_slot`,
+    // which answers `false` for every named component by design.
+    let mut dropped_a_block_of_this_object = false;
     // THE ID THIS CALL SUPERSEDES IS NO LONGER COLLECTED HERE, because a delta over it was the
     // wrong shape: the membership a removal can change is not limited to what the removal caused.
     // See [`repair_object_index_against_its_blocks`].
@@ -5616,15 +5624,14 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             let matches_object = block.model_id().as_str() == kind
                 && names.get(handle).is_some_and(|beside| &**beside == object_key);
             if matches_object {
-                // THE SET THIS FILLS COLLAPSES TO AT MOST ONE ELEMENT, AND THAT IS NOT NEW.
+                // WHAT THIS RECORDS IS "SOMETHING WENT", NOT "WHICH NAME WENT".
                 //
-                // It collected `block.component` so the lookup un-filing below could be driven once
-                // per distinct name dropped. Every entry's component was `None` before the field
-                // was removed, so the set already held either nothing or the single value `None`,
-                // and the loop below already ran at most once per bucket sweep. Inserting `None`
-                // keeps that exactly, and keeps the set as the thing that records WHETHER anything
-                // was dropped for this object rather than how many names were.
-                removed_components.insert(None);
+                // The predecessor collected `block.component` so the un-filing below could run
+                // once per distinct name dropped. Every entry's component was `None` before that
+                // field was removed, so the collection already held either nothing or the single
+                // value `None`, and the un-filing already ran at most once per bucket sweep. This
+                // flag is that same fact with the component-shaped container retired.
+                dropped_a_block_of_this_object = true;
             }
             !matches_object
         });
@@ -5649,19 +5656,19 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         }
     }
 
-    // UN-FILED UNCONDITIONALLY. Only this object's own entries were dropped above, so only
-    // they need correcting -- and correcting an entry the lookup does not hold is a no-op, which
-    // is why this needs no condition once the filing below has none. Filing and un-filing are one
-    // obligation: a call that files what it places must un-file what it drops.
-    {
-        // Only this object's own entries were dropped above, so only they need correcting.
-        for component in &removed_components {
-            shard.bucket_index.remove_object_block_lookup_entry(
-                kind,
-                object_key,
-                component.as_deref(),
-            );
-        }
+    // UN-FILED WITHOUT ASKING WHETHER THE LOOKUP CAN BE TARGETED. Only this object's own entries
+    // were dropped above, so only they need correcting -- and correcting an entry the lookup does
+    // not hold is a no-op, which is why this needs no targeting condition once the filing below
+    // has none. Filing and un-filing are one obligation: a call that files what it places must
+    // un-file what it drops.
+    if dropped_a_block_of_this_object {
+        // `None` IS THE ACCEPTED CASE HERE, NOT A REFUSED ONE -- which is the whole reason this
+        // call cannot simply be deleted as component-shaped dead work. The predecessor passed
+        // `component.as_deref()` over a collection holding only `None`, and
+        // `names_the_only_slot(None)` is TRUE, so the un-filing ran then and runs now. Reading
+        // that guard on its own suggests the opposite; the value the caller passes is what
+        // decides, and dropping this would leave the lookup naming blocks just removed.
+        shard.bucket_index.remove_object_block_lookup_entry(kind, object_key, None);
     }
 
     let mut unique_addresses = BTreeMap::<

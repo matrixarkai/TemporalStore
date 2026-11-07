@@ -15,6 +15,7 @@ use crate::storage_config::effective_block_slab_target_bytes;
 #[path = "block_store/block_store_paths.rs"]
 mod paths;
 mod slab_manifest;
+mod slab_manifest_wire;
 mod slab_reports;
 #[path = "block_store/block_store_append.rs"]
 mod append;

@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::env_flag::{env_bool, env_number};
 use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
 
 use super::{
@@ -71,7 +72,25 @@ impl OllamaConfig {
             "MATRIXARK_OLLAMA_EMBEDDING_MODEL",
             &mut config.embedding_model,
         );
-        set_string_from_env("MATRIXARK_OLLAMA_KEEP_ALIVE", &mut config.keep_alive);
+        if let Some(keep_alive) = string_from_env("MATRIXARK_OLLAMA_KEEP_ALIVE")
+            .or_else(|| string_from_env("OLLAMA_KEEP_ALIVE"))
+        {
+            config.keep_alive = keep_alive;
+        }
+        config.timeout_ms = env_number("MATRIXARK_OLLAMA_TIMEOUT_MS", config.timeout_ms);
+        config.max_retries = env_number("MATRIXARK_OLLAMA_MAX_RETRIES", config.max_retries);
+        config.max_batch_items =
+            env_number("MATRIXARK_OLLAMA_MAX_BATCH_ITEMS", config.max_batch_items);
+        config.max_input_bytes =
+            env_number("MATRIXARK_OLLAMA_MAX_INPUT_BYTES", config.max_input_bytes);
+        config.max_request_bytes = env_number(
+            "MATRIXARK_OLLAMA_MAX_REQUEST_BYTES",
+            config.max_request_bytes,
+        );
+        config.truncate_embeddings = env_bool(
+            "MATRIXARK_OLLAMA_TRUNCATE_EMBEDDINGS",
+            config.truncate_embeddings,
+        );
         config
     }
 }
@@ -97,6 +116,8 @@ pub enum OllamaError {
     MissingHost,
     #[error("Ollama model name cannot be empty")]
     EmptyModel,
+    #[error("Ollama timeout must be greater than zero")]
+    InvalidTimeout,
     #[error("Ollama batch limits must be greater than zero")]
     InvalidBatchLimit,
     #[error("input at position {index} is {bytes} bytes; limit is {limit}")]
@@ -138,6 +159,9 @@ impl OllamaProvider {
     pub fn new(config: OllamaConfig) -> Result<Self, OllamaError> {
         if config.extraction_model.trim().is_empty() || config.embedding_model.trim().is_empty() {
             return Err(OllamaError::EmptyModel);
+        }
+        if config.timeout_ms == 0 {
+            return Err(OllamaError::InvalidTimeout);
         }
         if config.max_batch_items == 0
             || config.max_input_bytes == 0

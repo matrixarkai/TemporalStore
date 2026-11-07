@@ -10,6 +10,7 @@ use super::{
 
 const DEFAULT_MAX_CACHED_ENTRIES: usize = 1_000_000;
 const DEFAULT_MAX_SPACES: usize = 8;
+const DEFAULT_MAX_CACHED_VECTOR_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmbeddingChannel {
@@ -28,13 +29,15 @@ struct EmbeddingSpace {
 ///
 /// Keeping spaces independent prevents vectors from different encoders from
 /// sharing a dot product. Tenant rows remain isolated inside each index.
-/// One global entry budget bounds vector memory across every space, while a
-/// separate space bound prevents sparse historical model versions from
-/// accumulating map and allocation overhead.
+/// A global entry budget bounds row metadata, a global byte budget bounds the
+/// compact vector payload across every space, and a separate space bound
+/// prevents sparse historical model versions from accumulating maps and
+/// allocation overhead.
 #[derive(Debug)]
 pub struct EmbeddingIndexRegistry {
     max_entries: usize,
     max_spaces: usize,
+    max_vector_bytes: usize,
     spaces: HashMap<EmbeddingSpace, EmbeddingIndex>,
     space_order: VecDeque<EmbeddingSpace>,
 }
@@ -58,9 +61,24 @@ impl EmbeddingIndexRegistry {
         Self {
             max_entries: max_entries.max(1),
             max_spaces: max_spaces.max(1),
+            max_vector_bytes: DEFAULT_MAX_CACHED_VECTOR_BYTES,
             spaces: HashMap::new(),
             space_order: VecDeque::new(),
         }
+    }
+
+    fn max_entries_for_dimensions(&self, dimensions: usize) -> usize {
+        let bytes_per_entry = dimensions.saturating_add(std::mem::size_of::<f32>());
+        self.max_entries
+            .min(self.max_vector_bytes / bytes_per_entry.max(1))
+            .max(1)
+    }
+
+    fn quantized_vector_bytes(&self) -> usize {
+        self.spaces
+            .values()
+            .map(EmbeddingIndex::quantized_vector_bytes)
+            .sum()
     }
 
     fn upsert(
@@ -78,31 +96,33 @@ impl EmbeddingIndexRegistry {
             model_hash,
             dimensions: first.values.len(),
         };
-        let missing = only_missing.then(|| {
+        let space_entry_limit = self.max_entries_for_dimensions(space.dimensions);
+        let mut missing = Vec::new();
+        let rows = if !only_missing {
             batch
-                .iter()
-                .copied()
-                .filter(|row| {
-                    !self
-                        .spaces
-                        .get(&space)
-                        .is_some_and(|index| index.contains(row.key))
-                })
-                .collect::<Vec<_>>()
-        });
-        let rows = missing.as_deref().unwrap_or(batch);
+        } else if let Some(index) = self.spaces.get(&space) {
+            if batch.iter().all(|row| !index.contains(row.key)) {
+                // A cold chunk can be quantized directly from the caller's borrowed rows.
+                batch
+            } else {
+                missing.extend(batch.iter().copied().filter(|row| !index.contains(row.key)));
+                missing.as_slice()
+            }
+        } else {
+            batch
+        };
         let compact = if let Some(index) = self.spaces.get(&space) {
             index.prepare_batch_unbounded(rows)?
         } else {
             EmbeddingIndex::new(
-                EmbeddingIndexConfig::new(space.dimensions, self.max_entries)
+                EmbeddingIndexConfig::new(space.dimensions, space_entry_limit)
                     .with_model_hash(model_hash),
             )?
             .prepare_batch_unbounded(rows)?
         };
-        if compact.len() > self.max_entries {
+        if compact.len() > space_entry_limit {
             return Err(EmbeddingIndexError::CapacityExceeded {
-                capacity: self.max_entries,
+                capacity: space_entry_limit,
                 requested: compact.len(),
             });
         }
@@ -128,7 +148,7 @@ impl EmbeddingIndexRegistry {
             self.spaces.insert(
                 space,
                 EmbeddingIndex::new(
-                    EmbeddingIndexConfig::new(space.dimensions, self.max_entries)
+                    EmbeddingIndexConfig::new(space.dimensions, space_entry_limit)
                         .with_model_hash(model_hash),
                 )?,
             );
@@ -140,7 +160,20 @@ impl EmbeddingIndexRegistry {
                 .filter(|row| !index.contains(compact.key(*row)))
                 .count()
         };
-        while self.len().saturating_add(new_entries) > self.max_entries {
+        let current_entries = self
+            .spaces
+            .get(&space)
+            .expect("embedding space exists")
+            .len();
+        let retained_growth = new_entries.min(space_entry_limit.saturating_sub(current_entries));
+        let retained_growth_bytes = retained_growth
+            .saturating_mul(space.dimensions.saturating_add(std::mem::size_of::<f32>()));
+        while self.len().saturating_add(retained_growth) > self.max_entries
+            || self
+                .quantized_vector_bytes()
+                .saturating_add(retained_growth_bytes)
+                > self.max_vector_bytes
+        {
             if self.evict_oldest_space_except(space).is_none() {
                 break;
             }
@@ -253,6 +286,11 @@ impl EmbeddingIndexRegistry {
 
     pub fn len(&self) -> usize {
         self.spaces.values().map(EmbeddingIndex::len).sum()
+    }
+
+    /// Quantized vector payload retained across all channels and embedding spaces.
+    pub fn vector_bytes(&self) -> usize {
+        self.quantized_vector_bytes()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -498,6 +536,36 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn wide_vectors_recycle_rows_at_the_global_vector_budget() {
+        let mut registry = EmbeddingIndexRegistry::new(16);
+        registry.max_vector_bytes = 18;
+        let vectors = [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 1.0]];
+        for (index, vector) in vectors.iter().enumerate() {
+            registry
+                .upsert_batch(
+                    EmbeddingChannel::Node,
+                    7,
+                    &[EmbeddingVector {
+                        key: EmbeddingKey {
+                            tenant_id: 4,
+                            item_id: index as u64 + 1,
+                        },
+                        values: vector,
+                    }],
+                )
+                .unwrap();
+        }
+
+        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.vector_bytes(), 18);
+        let hits = registry
+            .score_candidates(EmbeddingChannel::Node, 4, 7, &vectors[3], &[4])
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key.item_id, 4);
     }
 
     #[test]

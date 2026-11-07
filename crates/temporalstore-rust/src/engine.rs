@@ -155,7 +155,9 @@ use crate::index_log::LocalIndexLogStore;
 use crate::block_store::{BlockStore, ElementEntry, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, BatchHashMultiGetError, BatchHashMultiGetRequest,
-    BatchHashMultiGetResponse, BatchHashMultiGetRow, Command, CommandResponse,
+    BatchHashMultiGetResponse, BatchHashMultiGetRow, BatchHashMultiSetRequest,
+    BatchHashMultiSetRow, BatchHashTimestampSetRequest, BatchHashTimestampSetRow, Command,
+    CommandResponse,
     ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
     context_node_summary_vector_enabled, context_vector_as_stored, ContextSummaryVector,
     CONTEXT_SUMMARY_LEVEL_L1,
@@ -1025,12 +1027,13 @@ impl TemporalEngine {
         // deadline being removed (a shrink) but not one being ARMED (a growth) or MOVED (no
         // change at all). Keeping the millisecond itself is what lets those two be seen. See
         // `delta_key_state_change` below.
-        let membership_before: Vec<(String, usize, Option<u64>)> = command_object_keys(&command)
-            .into_iter()
+        let object_keys = command_object_keys(&command);
+        let membership_before: Vec<(usize, Option<u64>)> = object_keys
+            .iter()
             .map(|key| {
-                let size = key_membership_size(shard, &key);
+                let size = key_membership_size(shard, key);
                 let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                (key, size, deadline)
+                (size, deadline)
             })
             .collect();
         let feature_trimmed_membership = command_will_trim_feature_membership(
@@ -1062,7 +1065,7 @@ impl TemporalEngine {
         {
             let now = now_ms();
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                for_each_touched_key(&command, |key| {
+                for_each_precomputed_touched_key(&command, &object_keys, |key| {
                     let recency_bucket =
                         block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
                     shard.bucket_recency.insert(recency_bucket, now);
@@ -1078,10 +1081,6 @@ impl TemporalEngine {
         // set on only one of the two paths.
         let mut appended_sequence: Option<u64> = None;
         if outcome.mutated {
-            let object_keys = command_object_keys(&command);
-            // Capture this write's touched keys for the O(delta) index-log append below
-            // (the command is moved into the WAL append before we reach that point).
-            let delta_command_keys = object_keys.clone();
             // Captured here for the same reason as the keys above: the command is moved into
             // the WAL append before the index-log items are built, so anything the items need
             // from it has to be taken while it is still owned.
@@ -1104,7 +1103,7 @@ impl TemporalEngine {
                         .unwrap_or(u32::MAX),
                 );
             } else {
-                for object_key in object_keys {
+                for object_key in &object_keys {
                     let start_routing_bucket = info
                         .as_ref()
                         .map(|info| info.start_routing_bucket)
@@ -1134,7 +1133,7 @@ impl TemporalEngine {
                     // removes the branch that suggested it already had been.
                     mark_object_dirty(
                         shard,
-                        &object_key,
+                        object_key,
                         start_routing_bucket,
                         end_routing_bucket,
                     );
@@ -1161,8 +1160,8 @@ impl TemporalEngine {
             // the rebuild rather than a quietly stale index. An empty bucket_map still rebuilds:
             // maintenance updates an index, it does not construct one.
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
-                && !delta_command_keys.is_empty()
-                && delta_command_keys.iter().all(|object_key| {
+                && !object_keys.is_empty()
+                && object_keys.iter().all(|object_key| {
                     storage_bucket_internals::sync_context_blocks_for_object(
                         shard,
                         request.shard_id,
@@ -1203,9 +1202,13 @@ impl TemporalEngine {
             // (maintenance through `sync_context_blocks_for_object`, otherwise the rebuild), so
             // the handle exists here and nowhere earlier. Same shape as the dirty index above,
             // and for the same reason: ask once the thing you borrow from exists.
-            for object_key in &delta_command_keys {
+            for object_key in &object_keys {
                 shard.adopt_object_key_allocations(object_key);
             }
+            // The command can move into the WAL below. Its object keys have finished every
+            // in-place maintenance step, so move the one owned vector into the durable delta
+            // instead of cloning it before those steps and deriving it again after execution.
+            let delta_command_keys = object_keys;
             // Every
             // write records a WAL entry before any block is written.
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
@@ -1484,7 +1487,11 @@ impl TemporalEngine {
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
                 let key_state_changed = feature_trimmed_membership
-                    || delta_key_state_change(shard, &membership_before);
+                    || delta_key_state_change(
+                        shard,
+                        &delta_command_keys,
+                        &membership_before,
+                    );
                 let mut key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
@@ -4090,11 +4097,14 @@ fn command_will_trim_feature_membership(
 /// change and does not capture.
 fn delta_key_state_change(
     shard: &ShardState,
-    membership_before: &[(String, usize, Option<u64>)],
+    keys: &[String],
+    membership_before: &[(usize, Option<u64>)],
 ) -> bool {
-    membership_before
+    debug_assert_eq!(keys.len(), membership_before.len());
+    keys
         .iter()
-        .any(|(key, size_before, deadline_before)| {
+        .zip(membership_before)
+        .any(|(key, (size_before, deadline_before))| {
             key_membership_size(shard, key) < *size_before
                 || shard.expires_at_ms().get(key.as_str()).copied() != *deadline_before
         })
