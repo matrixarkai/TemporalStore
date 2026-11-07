@@ -340,7 +340,7 @@ where
 /// in this tree at one element: **312 B in 4 allocations for the B-tree against 48 B in 2 for this
 /// array** (`Vec` header 24 B, buffer 24 B for one 24-byte pair), and the owning field itself is a
 /// thin pointer at eight bytes rather than a 24-byte `BTreeMap` header. Those are two different
-/// components and are reported as two numbers, never one standing in for the other.
+/// element names and are reported as two numbers, never one standing in for the other.
 ///
 /// The access pattern is what makes the array the right shape and not a compromise: these series
 /// are append-mostly, read by one instant or walked whole. An array appends in amortised O(1),

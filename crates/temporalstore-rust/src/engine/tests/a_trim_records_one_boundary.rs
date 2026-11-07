@@ -29,7 +29,7 @@
 //!
 //! The spelling is pinned separately because it is the contract between the writer and the apply
 //! path, and because an older build has to DECLINE the item rather than mis-apply it: an absent
-//! component on a removal already means "the whole series went", and a build that read a boundary
+//! element name on a removal already means "the whole series went", and a build that read a boundary
 //! that way would delete a live series instead of leaving points to linger.
 
 use super::*;
@@ -115,7 +115,7 @@ fn live_instants(engine: &TemporalEngine) -> Vec<u64> {
 
 /// Occurrences of a byte pattern in the WAL.
 ///
-/// Sound ONLY for a pattern stored as text. A numeric component is not: `numeric_component` renders
+/// Sound ONLY for a pattern stored as text. A numeric element name is not: `numeric_element_name` renders
 /// it into the protobuf `timestamp_ms` field as a varint, so a per-point removal's instant never
 /// appears here as digits while the non-numeric boundary spelling does. So this shows that the
 /// boundary form FIRED and is never used to count per-point removals -- counting those this way
@@ -270,7 +270,7 @@ fn a_boundary_element_name_is_not_read_as_an_instant() {
             &packed_blocks::timestamped_boundary_element_name(42)
         )),
         Some(42),
-        "a boundary component has to round trip"
+        "a boundary element name has to round trip"
     );
     // A plain instant is NOT a boundary, which keeps every existing per-point removal on the
     // per-point path.
@@ -280,14 +280,14 @@ fn a_boundary_element_name_is_not_read_as_an_instant() {
     // Marked but not a number is not a boundary either, rather than a boundary at zero.
     assert_eq!(packed_blocks::timestamped_boundary_through(Some("<=x")), None);
 
-    // AND IT IS NOT AN ABSENT COMPONENT, which already means "the whole series went". A build
-    // without the apply path reads this component, fails to parse it as an instant and declines the
+    // AND IT IS NOT AN ABSENT ELEMENT NAME, which already means "the whole series went". A build
+    // without the apply path reads this element name, fails to parse it as an instant and declines the
     // item, so the trimmed points linger until the next trim drops them again. Reading it as a
     // whole-series removal would delete a LIVE series, which is why the boundary is spelled into
-    // the component rather than left out of it.
+    // the element name rather than left out of it.
     assert!(
         !packed_blocks::timestamped_boundary_element_name(42).is_empty(),
-        "a boundary record must carry a component"
+        "a boundary record must carry an element name"
     );
     assert!(
         packed_blocks::timestamped_boundary_element_name(42).parse::<u64>().is_err(),

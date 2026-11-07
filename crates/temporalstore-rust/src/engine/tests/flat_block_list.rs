@@ -481,7 +481,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
     // --- entry INSIDE the box it already has, so it allocates nothing and does not spill.
     //
     // WHAT A "REWRITE" IS HERE, BECAUSE IT IS NARROWER THAN IT SOUNDS. `block_index_handle` hashes
-    // the model kind, the object key, the component AND the address -- slab, offset, length, block id
+    // the model kind, the object key, the element name AND the address -- slab, offset, length, block id
     // and generation. So a block that MOVES gets a different handle and is a different entry; the only
     // thing that reaches the replace branch is re-filing the BYTE-IDENTICAL block, which is what a
     // repeated append of an unchanged value produces.
@@ -625,7 +625,7 @@ fn replacing_a_block_discharges_the_address_it_displaced() {
 
 /// THE LIST, AND THE ONE OBJECT KEY EVERY ENTRY IN IT BELONGS TO.
 ///
-/// Every block here is a component of the same object, so ONE key names the whole list and the
+/// Every block here is an element name of the same object, so ONE key names the whole list and the
 /// element type stays exactly `(u64, BlockIndex)`. That is load-bearing rather than tidy: two
 /// callers below measure `Vec<(u64, BlockIndex)>`'s own growth against this list's, and a key
 /// folded into the element would widen the very thing being measured and move both columns.
@@ -1773,7 +1773,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
     for (_, entry) in &blocks {
         list.insert(&object_key, entry.clone(), &mut live);
     }
-    // ONE OBJECT NAMES THE WHOLE LIST: `sorted_list` builds components of `bag`.
+    // ONE OBJECT NAMES THE WHOLE LIST: `sorted_list` builds element names of `bag`.
     let written =
         serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&list, &["bag"])).expect("the block index serializes");
     assert!(

@@ -30,7 +30,7 @@
 //!   * `packed_blocks::append_timestamped_kv_blocks` chunks many points into ONE block against
 //!     `context_block_target_bytes`, so items per block is greater than one; and
 //!   * `sync_bucket_index_object_blocks_with_mode` files what comes back deduplicated BY PHYSICAL
-//!     ADDRESS, with `component: None`, so the entry count is the BLOCK count.
+//!     ADDRESS, with `element_name: None`, so the entry count is the BLOCK count.
 //!
 //! So a feature series files one entry per block and a container files one per element, in the same
 //! block index, on the same shard.
@@ -38,9 +38,9 @@
 //! sizes ten times apart, as a histogram with per-row denominators.
 //!
 //! BATCHING NEEDED BOTH HALVES AND IT HAS BOTH NOW, WHICH IS WHY THIS SECTION IS HISTORY RATHER
-//! THAN A PREREQUISITE. It read "Sharing blocks without dropping the component moves nothing;
-//! dropping the component moves the entry count only once blocks are shared ... Dropping the
-//! component is what costs, because for a container the component is not decoration", and then
+//! THAN A PREREQUISITE. It read "Sharing blocks without dropping the element name moves nothing;
+//! dropping the element name moves the entry count only once blocks are shared ... Dropping the
+//! element name is what costs, because for a container the element name is not decoration", and then
 //! listed three readers for which the element name on the entry was the only copy of an element's
 //! identity. The name has been dropped and all three were moved first, so the list below is the
 //! bill that was paid and not one that is outstanding:
@@ -100,7 +100,7 @@ const NARROW_END: u32 = 1023;
 /// The end bucket `TemporalEngine::load_shard` uses when nothing says otherwise. Every key lands in
 /// a bucket of its own BY CONSTRUCTION at this width, so it is an artefact of the default and not a
 /// workload. Entries per OBJECT cannot move with it -- routing takes the object key and never sees
-/// the component, so all of an object's blocks land in one bucket at either range -- and
+/// the element name, so all of an object's blocks land in one bucket at either range -- and
 /// `how_many_index_entries_each_kind_files_for_the_same_element_count` asserts that equality rather
 /// than assuming it.
 const WIDE_END: u32 = u32::MAX;
@@ -468,7 +468,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                         );
                     }
                     // BLOCK-SCALED. The same block index, entries deduplicated by physical address
-                    // with `component: None`, so the count is blocks and not points.
+                    // with `element_name: None`, so the count is blocks and not points.
                     "feature" => {
                         assert!(
                             entry_hist.max() < elements,
@@ -507,7 +507,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
     println!("store path length held at {} characters", path_lengths[0]);
 
     // ENTRIES PER OBJECT CANNOT MOVE WITH THE ROUTING RANGE, because routing takes the object key
-    // and never sees the component, so all of an object's blocks land in one bucket at either
+    // and never sees the element name, so all of an object's blocks land in one bucket at either
     // range. Asserted rather than assumed: it is the property that makes one row answer for both
     // deployments.
     for elements in [SMALL_ELEMENTS, LARGE_ELEMENTS] {
@@ -529,11 +529,11 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
 
 /// An entry naming one block, at the address given.
 ///
-/// THIS TOOK A `component: Option<&str>` AND THE ARGUMENT WAS DEAD. The struct literal below
+/// THIS TOOK An `element_name: Option<&str>` AND THE ARGUMENT WAS DEAD. The struct literal below
 /// stopped setting an element name when the field was removed from `BlockIndex`, so the parameter
 /// decided nothing: `block_at(Some("field-a"), ..)` and `block_at(Some("field-b"), ..)` returned the
 /// SAME value, which is what quietly turned the old control into a comparison of a value with
-/// itself. It is REMOVED rather than renamed to `_component`, so a caller that still tries to name
+/// itself. It is REMOVED rather than renamed to `_element_name`, so a caller that still tries to name
 /// an element here is a compile error and not a silent no-op.
 ///
 /// AND IT HANDS THE OBJECT KEY BESIDE THE BLOCK, for the same reason: the identity is leaving the
@@ -570,7 +570,7 @@ fn block_at_for_object(
 /// ONE BLOCK IS ONE ENTRY, BECAUSE THE HANDLE CAN NO LONGER NAME AN ELEMENT.
 ///
 /// RESTATED FROM ITS OPPOSITE, AND THE NAME WENT WITH THE CLAIM. This arm was
-/// `two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_component`,
+/// `two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_element_name`,
 /// and what it asserted was the refutation this whole module was built on. Its own failure message
 /// asked for this rather than for a looser assertion: "the premise of this module's refutation is
 /// then wrong and it must be rewritten, not patched".
@@ -694,7 +694,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
 /// `apply_key_states` restores thirteen per-key maps from a delta's key-state blobs, and
 /// `fold_delta_block_items` restores the delta's block items beside them. `sets`, `zsets`, `lists`
 /// and `hashes` are in the second and not the first, so through this route a container element
-/// arrives as a block entry with no durable map entry beside it and the COMPONENT is the only place
+/// arrives as a block entry with no durable map entry beside it and the ELEMENT NAME is the only place
 /// its identity is written down.
 ///
 /// A batched container block would carry element identity in its PAYLOAD instead, and the
@@ -707,7 +707,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
 #[test]
 fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     // ITS PREMISE IS SPELLED OUT IN ITS OWN FLOOR: "must hold exactly one page entry carrying a
-    // component ... so the identity-in-the-component premise". That premise is the ungated one.
+    // element name ... so the identity-in-the-element-name premise". That premise is the ungated one.
     // The gated delta-fold replay is `replay_under_the_gate`'s subject.
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
@@ -754,9 +754,9 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     // THE CONTRAST THIS ARM WAS BUILT ON IS GONE: EVERY KIND IS NOW THE "WITHOUT" SIDE.
     //
     // It asserted that each of the four container kinds held exactly one block entry CARRYING a
-    // component -- "the identity-in-the-component premise" -- and that the series held exactly one
+    // element name -- "the identity-in-the-element-name premise" -- and that the series held exactly one
     // entry WITHOUT one, "the shape a batched container would have to adopt". `BlockIndex` has no
-    // component field, so the first four assertions are unsatisfiable by any fixture and the fifth
+    // element name field, so the first four assertions are unsatisfiable by any fixture and the fifth
     // is satisfied by every entry in the shard. A contrast where one side cannot exist and the
     // other is universal is not a contrast.
     //
@@ -837,7 +837,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     println!("every kind files one nameless block entry; the durable maps are what name the elements");
     println!(
         "and `apply_key_states` folds `features` but none of `hashes`/`sets`/`zsets`/`lists`, so \
-         the component is the container element's only fold-route copy"
+         the element name is the container element's only fold-route copy"
     );
 }
 
@@ -1133,10 +1133,10 @@ fn the_control_assertion_goes_red_when_the_projection_moves_the_row() {
 
 /// THREE READERS TAKE THE BLOCK-INDEX ENTRY COUNT FOR THE ELEMENT COUNT, AND ONE OF THEM RETURNS IT.
 ///
-/// `bucket_index_component_block_addresses` -- the whole-object door into the block index -- has
+/// `bucket_index_element_name_block_addresses` -- the whole-object door into the block index -- has
 /// three call sites in production code, and TWO CONTAINER KINDS reach it:
 ///
-///   * `Command::HashGetAll` maps every `(component, address)` pair to one block read;
+///   * `Command::HashGetAll` maps every `(element_name, address)` pair to one block read;
 ///   * `Command::HashLen` returns `.len()` of that list DIRECTLY, as the field count; and
 ///   * `Command::SetMembers` maps every pair to one block read, one block per member.
 ///
@@ -1146,12 +1146,12 @@ fn the_control_assertion_goes_red_when_the_projection_moves_the_row() {
 /// over. This test pins all three against the element count, so the change cannot be made without
 /// landing on them by name.
 ///
-/// COMPONENT-BLIND IS NOT THE SAME PROPERTY AS COUNT-BLIND, and the difference is the whole reason
+/// ELEMENT NAME-BLIND IS NOT THE SAME PROPERTY AS COUNT-BLIND, and the difference is the whole reason
 /// this test exists beside `element_ordinal_reuse`'s. That module establishes that this reader takes
-/// no component and its callers have none to give, so an ORDINAL answers it exactly as a name does --
-/// which is true, and is why renaming a component is safe here. Every assertion below is consistent
+/// no element name and its callers have none to give, so an ORDINAL answers it exactly as a name does --
+/// which is true, and is why renaming an element name is safe here. Every assertion below is consistent
 /// with it. But a rename preserves the entry COUNT and batching does not, and this reader is blind to
-/// the component while being sensitive to the count. `HashLen` is the proof: it returns `.len()` of
+/// the element name while being sensitive to the count. `HashLen` is the proof: it returns `.len()` of
 /// this list, so it cannot tell a field from a block.
 ///
 /// The CONTROL is a zset, which reaches this door for nothing -- `ZSetCard` takes `len()` off

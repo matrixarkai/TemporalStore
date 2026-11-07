@@ -1178,7 +1178,7 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
 /// The mechanism claimed here is specific: the ROUTING RANGE decides how many object keys share a
 /// bucket, and that is what moved the single-block share. It follows that a workload whose blocks
 /// already share ONE bucket at EVERY range cannot move -- routing takes the object key and never
-/// sees the component, so a container's fields are many blocks under one key and one bucket at any
+/// sees the element name, so a container's fields are many blocks under one key and one bucket at any
 /// width. If the occupancy moved for such a store, the explanation above would be describing
 /// something other than the range.
 ///

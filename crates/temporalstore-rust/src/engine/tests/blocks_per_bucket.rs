@@ -58,7 +58,7 @@
 //! block index's wide arm was the one whose commonness moved.
 //!
 //! ONE CORRECTION TO THAT CONTRAST, measured since: the object index's multi-entry arm is NOT
-//! rare in every workload. An object id is hashed over `shard:kind:key:component` while the
+//! rare in every workload. An object id is hashed over `shard:kind:key:element_name` while the
 //! routing bucket is hashed over the key alone, so a collection key files one object id per
 //! MEMBER into one bucket -- 46.46% of buckets hold two or more on a store with collections in
 //! it, against 0.00% on a store of strings and series.
@@ -488,7 +488,7 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     // all. A field-width subtraction would have predicted nothing here twice over. ---
     let arc_str = size_of::<Arc<str>>();
     let opt_arc_str = size_of::<Option<Arc<str>>>();
-    // TWO EIGHT-ALIGNED FIELDS, NOT THREE: `opt_arc_str` was the component and it is gone, which
+    // TWO EIGHT-ALIGNED FIELDS, NOT THREE: `opt_arc_str` was the element name and it is gone, which
     // is the 56 -> 40 step. `opt_arc_str` stays bound above as the width the name USED to cost,
     // because the paragraphs here are stated against that arithmetic.
     // ONE EIGHT-ALIGNED FIELD NOW, AND THE TAIL LOST TWO TERMS IT SHOULD NEVER HAVE HAD. The
@@ -1957,7 +1957,7 @@ fn assert_same_block(context: &str, handle: u64, left: &BlockIndex, right: &Bloc
         left.model_id(), right.model_id(),
         "{context}: block {handle} changed model_id"
     );
-    // THE COMPONENT COMPARISON IS GONE WITH THE FIELD. It was one of the six identity terms this
+    // THE ELEMENT NAME COMPARISON IS GONE WITH THE FIELD. It was one of the six identity terms this
     // helper compared, and the entry has no seventh name to change.
     assert_eq!(
         left.address, right.address,
@@ -2017,7 +2017,7 @@ fn assert_same_block_set(context: &str, left: &BlockIndexMap, right: &BlockIndex
 /// difference between an index that is fat and one that has lost a block.
 ///
 /// `block_index_handle` has no direct test anywhere in the crate, which is why the two blocks that
-/// differ only in their component are driven here as well.
+/// differ only in their element name are driven here as well.
 ///
 /// DIRECTION DECIDES THE TEST. A block index that keeps too much is merely fat; one that loses an
 /// entry is silent data loss, because the block is still on its slab and nothing can find it again.
@@ -2205,14 +2205,14 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
         "an emptied index yielded entries"
     );
 
-    // --- TWO BLOCKS THAT DIFFER ONLY IN THEIR COMPONENT ARE NOT A STATE THIS INDEX CAN HOLD. ---
+    // --- TWO BLOCKS THAT DIFFER ONLY IN THEIR ELEMENT NAME ARE NOT A STATE THIS INDEX CAN HOLD. ---
     //
-    // This read: "TWO BLOCKS THAT DIFFER ONLY IN THEIR COMPONENT ARE TWO BLOCKS. A handle that did
-    // not read the component would file them all as one block and 99 of every 100 would be lost --
+    // This read: "TWO BLOCKS THAT DIFFER ONLY IN THEIR ELEMENT NAME ARE TWO BLOCKS. A handle that did
+    // not read the element name would file them all as one block and 99 of every 100 would be lost --
     // while every length assertion on a single-block fixture still passed."
     //
-    // The handle no longer reads a component, because the entry has none. `component_block(20,
-    // "alpha")` and `component_block(20, "beta")` are now the SAME entry -- same object key, same
+    // The handle no longer reads an element name, because the entry has none. `element_name_block(20,
+    // "alpha")` and `element_name_block(20, "beta")` are now the SAME entry -- same object key, same
     // model, same address -- so they hash alike and the second takes the first's slot. That is the
     // loss the old assertion warned about, and it is why the collapse is a correctness requirement:
     // the projection emits one entry per distinct BLOCK, so two entries of one object at one address
@@ -2345,18 +2345,18 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
         untouched_bytes.len()
     );
 
-    // --- THE WRITTEN KEY NO LONGER HAS A COMPONENT TO CARRY, AND THE OLD ARM IS RESTATED. ---
+    // --- THE WRITTEN KEY NO LONGER HAS An ELEMENT NAME TO CARRY, AND THE OLD ARM IS RESTATED. ---
     //
-    // It read: "THE WRITTEN KEY CARRIES THE COMPONENT, which nothing in the crate pinned. Found by
+    // It read: "THE WRITTEN KEY CARRIES THE ELEMENT NAME, which nothing in the crate pinned. Found by
     // mutation, and the reason it was missed is worth keeping. The written key is rendered from the
-    // block's identity AND its address, so dropping the component from it leaves every key DISTINCT
+    // block's identity AND its address, so dropping the element name from it leaves every key DISTINCT
     // -- the addresses differ. Uniqueness cannot catch it, key counts cannot catch it, and the
     // ordering guard cannot catch it; the only thing that changes is the text of a stored key,
-    // which is the bytes on disk." It then built two blocks differing ONLY in their component and
+    // which is the bytes on disk." It then built two blocks differing ONLY in their element name and
     // asserted their written keys differed.
     //
-    // NEITHER BLOCK CAN BE BUILT NOW: an entry has no component to set or clear, so "two blocks of
-    // one object at the same address, one with a component and one without" is not a pair this type
+    // NEITHER BLOCK CAN BE BUILT NOW: an entry has no element name to set or clear, so "two blocks of
+    // one object at the same address, one with an element name and one without" is not a pair this type
     // can express. `block_index_written_key` passes the constant `None` into
     // `block_ref_key_from_parts`, which is what it was already receiving for every entry of every
     // kind -- so the stored spelling does not move with this change, and that is why removing the
@@ -2525,7 +2525,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
 /// These claims used to live at the end of
 /// [`the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term`], which seeds two stores
 /// and is `#[ignore]`d for that reason. The reconstruction there summed `object_key`,
-/// `component`, `kind` and `routing_bucket` on top of the address and the two flags -- 56 bytes
+/// `element_name`, `kind` and `routing_bucket` on top of the address and the two flags -- 56 bytes
 /// against an entry of 24 -- because all four of those fields had LEFT `BlockIndex` and the sum
 /// went on naming them. It printed an accurate failure that nobody read.
 ///
@@ -2570,7 +2570,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
 fn the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth() {
     // WHAT THE NEXT STEP WOULD HAVE TO REACH, RECONSTRUCTED -- AND THIS BLOCK WAS RED, UNNOTICED.
     //
-    // It summed `object_key`, `component`, `kind` and `routing_bucket` on top of the address and
+    // It summed `object_key`, `element_name`, `kind` and `routing_bucket` on top of the address and
     // the flags and asserted the total against `size_of`: 56 bytes against an entry of 24. Every
     // one of those four left `BlockIndex` -- `object_key` in the step that took the entry 40 -> 24
     // -- and the sum went on naming them. The message it printed was accurate and nobody read it.

@@ -9,20 +9,20 @@
 //! converted exactly one of the three, and the two refusals are the useful half -- both were
 //! refused ON MEASUREMENT rather than on sequencing, and each for its own reason:
 //!
-//!   * `zset` REFUSED, 12 tests across 5 modules. A zset's component is not a name for the
+//!   * `zset` REFUSED, 12 tests across 5 modules. A zset's element name is not a name for the
 //!     element, it IS THE SCORE: `{biased_score:016x}{hex(member)}`. Dropping it deletes the
 //!     index's only copy of the score, so a member whose durable entry the fold has not delivered
 //!     cannot be rebuilt from its block at all -- `durable_outranks_derived::an_empty_zset_member_
-//!     is_a_whole_component_and_survives_the_fold_shape` came back `None` where `Some(3.0)` was
+//!     is_a_whole_element_name_and_survives_the_fold_shape` came back `None` where `Some(3.0)` was
 //!     written. And a RESCORE is an in-place rewrite from the index's side: the old element key is
 //!     tombstoned while its live entry is not superseded, leaving TWO live entries for one member
 //!     at one score, which is precisely the shape `index_entry_names_a_block` warns an
 //!     address-keyed predicate mishandles.
-//!   * `hash` REFUSED on its readers. Four of them resolve through the block index BY COMPONENT
+//!   * `hash` REFUSED on its readers. Four of them resolve through the block index BY ELEMENT NAME
 //!     with no resident-map fallback, so a nameless hash entry makes a present field unreachable
 //!     rather than merely unnamed.
 //!
-//! `list` is the one that converts, and it converts because its component carries no data the
+//! `list` is the one that converts, and it converts because its element name carries no data the
 //! engine reads back: the sequence that orders a list lives in `shard.lists`, which is keyed BY
 //! that sequence, and every list reader (`ListLen`, `ListRange`) reads the resident map. `list`
 //! also has no `LSET`, `LINSERT` or `LREM`, so it never rewrites an element in place and the
@@ -301,13 +301,13 @@ fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse
             "element {index} is missing from a collapsed list range"
         );
     }
-    // AND IN ORDER. A list's component is its sequence, which is the ORDER -- so this is the
+    // AND IN ORDER. A list's element name is its sequence, which is the ORDER -- so this is the
     // property that would be lost if the order lived in the entry rather than in `shard.lists`.
     let expected: Vec<Vec<u8>> = (0..ELEMENTS).map(element_bytes).collect();
     assert_eq!(
         expected, listed,
         "a collapsed list served its elements OUT OF ORDER. The sequence that orders a list is \
-         the component this change drops from the entry, so order is the property at risk"
+         the element name this change drops from the entry, so order is the property at risk"
     );
 
     // ---- REMOVED. `list` has no LSET/LINSERT/LREM, so a pop off the right end is its removal. ----
@@ -398,18 +398,18 @@ fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
     }
 }
 
-/// A GATED LIST COMES BACK THROUGH **WAL REPLAY**, WHICH HARD-REQUIRES THE COMPONENT.
+/// A GATED LIST COMES BACK THROUGH **WAL REPLAY**, WHICH HARD-REQUIRES THE ELEMENT NAME.
 ///
 /// # THE INVARIANT, WRITTEN DOWN AND DRIVEN
 ///
-/// `lifecycle::apply_outcome_item`'s list arm destructures a `(Some(address), Some(component))`
+/// `lifecycle::apply_outcome_item`'s list arm destructures a `(Some(address), Some(element_name))`
 /// and `return false` otherwise -- and a `false` there is not a wrong answer, it **REFUSES THE
-/// WHOLE SHARD LOAD**. It then DECODES the component as `u64::from_str_radix(component, 16)` to
-/// recover the sequence. So the component is not merely required to be present, it has to still be
+/// WHOLE SHARD LOAD**. It then DECODES the element name as `u64::from_str_radix(element_name, 16)` to
+/// recover the sequence. So the element name is not merely required to be present, it has to still be
 /// the ELEMENT's sequence, spelled the way the write path spells it.
 ///
 /// WHY COLLAPSING THE INDEX ENTRY DOES NOT REACH IT, which is the thing being pinned: that
-/// component comes from the WAL outcome item, which `stage_outcome` fills from the element's own
+/// element name comes from the WAL outcome item, which `stage_outcome` fills from the element's own
 /// name, passed in by the caller -- the index entry is filed under its block and never held a name
 /// to take instead. The index entry and the outcome record are different things that share a field
 /// name. The existing module that drives this (`replay_under_the_gate`) is SET-ONLY,
@@ -455,7 +455,7 @@ fn a_gated_list_comes_back_through_wal_replay() {
     assert!(
         response.status.ok,
         "a gated list store REFUSED TO LOAD through replay: {:?}. The list replay arm answers \
-         `false` when it cannot rebuild an element from the outcome's component, and the caller \
+         `false` when it cannot rebuild an element from the outcome's element name, and the caller \
          turns that into a failed load -- so this is the shape where collapsing the index entry \
          would take the shard down rather than shorten an answer",
         response.status
@@ -475,7 +475,7 @@ fn a_gated_list_comes_back_through_wal_replay() {
     let expected: Vec<Vec<u8>> = (0..ELEMENTS).map(element_bytes).collect();
     assert_eq!(
         expected, ranged,
-        "WAL replay rebuilt the list OUT OF ORDER, so the sequence the component carries was not \
+        "WAL replay rebuilt the list OUT OF ORDER, so the sequence the element name carries was not \
          recovered the way the write path spelled it"
     );
 }
@@ -589,12 +589,12 @@ fn the_projection_collapses_every_container_kind() {
     // ALL THREE, THROUGH ONE HELPER -- three independent measurements, not a restatement of one.
     //
     // AND THE PARAGRAPH THAT STOOD HERE IS REFUTED BY ITS OWN SUBJECT. It read: "THE SECOND HALF
-    // IS WHAT KEEPS THIS FROM BECOMING VACUOUS. `entries_named` counts `component.is_some()`, and
+    // IS WHAT KEEPS THIS FROM BECOMING VACUOUS. `entries_named` counts `element_name.is_some()`, and
     // with every container kind collapsed that count is zero for all of them, which could be read
     // as an assertion that can no longer fail. It can: a regression that files a container per
     // element makes it non-zero."
     //
-    // IT CANNOT, ANY MORE. `BlockIndex` has no component field, so no regression in this crate can
+    // IT CANNOT, ANY MORE. `BlockIndex` has no element name field, so no regression in this crate can
     // make that count non-zero -- the only way back is to re-add the field, which fails
     // `engine_storage_state.rs`'s width pin at const-evaluation before any test runs. The half the paragraph
     // dismissed as the one that "would not notice" is now the only one with a subject, and the
@@ -614,7 +614,7 @@ fn the_projection_collapses_every_container_kind() {
 ///
 /// This was `the_shared_predicate_names_set_and_list_but_not_hash_or_zset` and its two `!` arms
 /// carried the reasons hash and zset were held out. Both reasons were discharged -- hash's four
-/// index-by-component readers now answer from `shard.hashes`, and a zset component is the member
+/// index-by-element-name readers now answer from `shard.hashes`, and a zset element name is the member
 /// in hex with the score on the outcome's `value` slot -- so the assertions are turned over rather
 /// than deleted, and the kinds that are STILL out are asserted positively below so the set cannot
 /// be widened past the containers by accident. The old name itself asserted the false claim, which
@@ -806,13 +806,13 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
 ///
 /// This was written while hash was held out, to record a measured "before" for the step that moves
 /// those readers rather than a claim about one. The step has landed: they answer from
-/// `shard.hashes` instead of resolving through the index by component, and hash is in the
+/// `shard.hashes` instead of resolving through the index by element name, and hash is in the
 /// collapsed set -- so the SAME assertions now say something stronger than they were written to
 /// say. They are what shows a hash field is still reachable when its entry carries no element
 /// name, which is the one thing the collapse could have broken for this kind.
 ///
 /// `HashLen` is the sharpest of the four and the reason this arm is worth the engine start: it was
-/// `bucket_index_component_block_addresses(..).len()`, so it counted ENTRIES, and over a collapsed
+/// `bucket_index_element_name_block_addresses(..).len()`, so it counted ENTRIES, and over a collapsed
 /// index it would report the BLOCK count with no union to rescue it. It answers the full element
 /// count here with the fields on folded blocks, which is only possible because it stopped counting
 /// entries.
@@ -854,7 +854,7 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
             Some(element_bytes(index)),
             value,
             "HashGet lost field {index} over a COLLAPSED hash. It used to resolve through \
-             `bucket_index_block_address`, which required `block.component == Some(field)` on \
+             `bucket_index_block_address`, which required `block.element_name == Some(field)` on \
              every branch; it answers from `shard.hashes` now, and this is what shows a present \
              field is still reachable when its entry carries no element name"
         );
@@ -865,7 +865,7 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
 ///
 /// # WHAT THIS ARM USED TO SAY, AND WHY IT IS WORTH KEEPING INVERTED
 ///
-/// It said a zset entry's name IS the score: a component was `{biased_score:016x}{hex(member)}`,
+/// It said a zset entry's name IS the score: an element name was `{biased_score:016x}{hex(member)}`,
 /// so the index's name for an element was the only copy of its score outside `shard.zsets`, which
 /// made dropping it a data deletion rather than a renaming. That was the refusal that held zset
 /// out of the collapsed set, and it was discharged by moving the score onto the WAL outcome's
@@ -873,9 +873,9 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
 ///
 /// Inverted it is a TRIPWIRE ON A DATA LOSS, which is a stronger thing to own than a baseline. If
 /// a zset entry ever carries sixteen leading hex characters again, either the score has crept back
-/// onto the component -- in which case the collapse that drops the component is deleting it -- or
+/// onto the element name -- in which case the collapse that drops the element name is deleting it -- or
 /// a member's own hex is being mistaken for one. Deleting this arm when its premise flipped would
-/// have left nothing watching that, since every other assertion about zset components checks what
+/// have left nothing watching that, since every other assertion about zset element names checks what
 /// they DO hold.
 ///
 /// Asserted over the entries in the index rather than over the predicate, so it reads the shape
@@ -900,17 +900,17 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     // at all, and how many of those spelled sixteen leading hex characters that decode as a biased
     // score. Its own comment explained why both were taken -- "no entry carries a score" is
     // satisfied vacuously by "no entry carries a name", and the named count is what tells those
-    // apart. `BlockIndex` has no component field now, so BOTH counts are structurally zero and
+    // apart. `BlockIndex` has no element name field now, so BOTH counts are structurally zero and
     // neither can tell anything apart: the arm it was built to be, a tripwire on a data loss,
     // cannot be served by counting entries any more.
     //
     // WHAT CAN STILL REGRESS IS THE RENDERER, and that is what this now asserts.
-    // `container_blocks::component_from_element_key` is the function that turns a block's item key
-    // back into a component string, and its `ScoreThenMember` arm is the one that used to spell
+    // `container_blocks::element_name_from_element_key` is the function that turns a block's item key
+    // back into an element name string, and its `ScoreThenMember` arm is the one that used to spell
     // the score: it returns `hex::encode(key[8..])`, the member alone, deliberately skipping the
     // eight score bytes. A change that dropped the `8..` would put the score straight back into
     // every derived name -- which is the data-deletion risk the old arm was watching -- and it
-    // would do it without any entry carrying a component at all. So the key is built WITH a known
+    // would do it without any entry carrying an element name at all. So the key is built WITH a known
     // score in its first eight bytes and the render is asserted not to contain it.
     //
     // AND THE ROUND TRIP IS ASSERTED IN BOTH DIRECTIONS, because a renderer that returned the
@@ -924,12 +924,12 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
         crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
         &block_key,
     )
-    .expect("a score-then-member key renders a component");
+    .expect("a score-then-member key renders an element name");
     let score_hex = hex::encode(score_bytes);
-    println!("    key = {} -> component {rendered}", hex::encode(&block_key));
+    println!("    key = {} -> element_name {rendered}", hex::encode(&block_key));
     assert!(
         !rendered.contains(&score_hex),
-        "the zset component renderer spelled the score back into the name: {rendered} contains \
+        "the zset element name renderer spelled the score back into the name: {rendered} contains \
          {score_hex}. The score rides the WAL outcome's `value` slot and `shard.zsets` now, so a \
          score in a rendered name is the data the collapse deletes being put back where it will \
          be dropped"
@@ -937,7 +937,7 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     assert_eq!(
         hex::encode(&member),
         rendered,
-        "the zset component renderer must return the MEMBER alone. It returned {rendered}, which \
+        "the zset element name renderer must return the MEMBER alone. It returned {rendered}, which \
          is neither the member nor the member behind a score -- a renderer that lost the member \
          would satisfy the score assertion above while losing more than the score ever was"
     );

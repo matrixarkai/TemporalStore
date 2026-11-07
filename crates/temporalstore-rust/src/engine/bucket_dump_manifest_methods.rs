@@ -1160,7 +1160,7 @@ impl TemporalEngine {
                 self.routing_bucket_for_key(manifest.shard_id, key)
             })
         };
-        // bucket_dump_entries_by_key keys pages by "kind:object_key:component:page_id",
+        // bucket_dump_entries_by_key keys pages by "kind:object_key:element name:page_id",
         // so a value update (which allocates a new page_id) shows up as a removed block
         // plus a new block for the same object. Classify at the object level (strip the
         // trailing :page_id): a block whose object still exists on the other side is a

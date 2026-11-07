@@ -632,7 +632,7 @@ pub struct BlockAddress {
 /// nothing unless it goes all the way.
 ///
 /// AND THE FIELD IS A CACHE OF A PURE FUNCTION OF FIELDS THE ENTRY ALREADY HOLDS, which is what
-/// decides it. `BlockIndex` carries `object_key`, `model_id` and `component` beside this address
+/// decides it. `BlockIndex` carries `object_key`, `model_id` and `element_name` beside this address
 /// and `ShardState` carries the shard, so `stable_block_object_id(shard, kind, key)` is
 /// computable wherever a block entry is. Measured by
 /// `engine::tests::address_footprint::the_object_id_on_a_live_block_entry_is_the_hash_of_fields_beside_it`
@@ -9954,7 +9954,7 @@ mod shorter_struct_against_an_existing_row {
 ///
 /// The resident block entry is being RELOCATED into this position. Today an element of a hash is
 /// described twice: once by a [`BlockAddress`] in this map, and once by a 56-byte `BlockIndex` in
-/// the bucket index, keyed by a hash of the object key, the model id, the component and five
+/// the bucket index, keyed by a hash of the object key, the model id, the element name and five
 /// address terms. The entry here can be KEY-INDEPENDENT -- the object key is the level-one key and
 /// the element name is the level-two key, so the value does not have to name either -- which is the
 /// whole reason the relocation is worth anything.

@@ -387,7 +387,7 @@ pub(super) struct ShardState {
     pub(super) buckets: HashMap<ModelKey, (f64, u64)>,
     /// Sorted sets: member -> (total-order score bits, element block). The score-ordered view
     /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
-    /// in-memory map rebuilt at load, never a second persisted structure (the index component
+    /// in-memory map rebuilt at load, never a second persisted structure (the index element name
     /// already encodes score-then-member, so recovery has the order for free).
     // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT: `ZSetKind` names
     // `zset_index_serde` as its codec, which is a REQUIRED associated function with no default --
@@ -984,9 +984,9 @@ pub(super) struct CoreIndex {
     /// for those same 2700 blocks, which is why it is not interned here: sharing something that is
     /// nearly unique saves nothing.
     ///
-    /// COMPONENT names share it, and that used to destroy it. The cap exists so that being
+    /// ELEMENT NAMES share it, and that used to destroy it. The cap exists so that being
     /// bounded is a property of this code rather than a promise about every future caller -- but
-    /// components are one per field, member or element of a container, so the FIRST container key
+    /// element names are one per field, member or element of a container, so the FIRST container key
     /// written fills the cap, and after that the pool took nothing new. Including the kinds of
     /// every container written afterwards, which then allocated their own copy of a
     /// four-character string once per block. Measured over a container store of 40,000 blocks in
@@ -995,18 +995,18 @@ pub(super) struct CoreIndex {
     ///
     /// ONE POOL, TWO CEILINGS, and no second `HashSet`: a set of its own is 48 bytes on a
     /// structure there is one of per shard, and `shard_carried_range` holds `ShardState` at 1,888
-    /// for exactly that reason. Components may fill the pool to `KIND_POOL_CAP`; kinds may use
-    /// `KIND_RESERVE` slots beyond it, which no component can reach. The pool is still bounded,
-    /// by the sum, and a component can no longer crowd out a kind.
+    /// for exactly that reason. Element names may fill the pool to `KIND_POOL_CAP`; kinds may use
+    /// `KIND_RESERVE` slots beyond it, which no element name can reach. The pool is still bounded,
+    /// by the sum, and an element name can no longer crowd out a kind.
     ///
     /// Owned by the index rather than a global, so the write path interns through the `&mut` it
     /// already holds and no lock appears on it. Not serialized -- it is a sharing detail, not part
     /// of the index, and the decoder below names no arm for it.
     pub(super) kind_pool: std::collections::HashSet<Arc<str>>,
-    /// Running total of block refs across `object_component_lookup`, or `None` when not known.
+    /// Running total of block refs across `object_element_name_lookup`, or `None` when not known.
     ///
     /// The stats path reports this number, and computing it as
-    /// `object_component_lookup.values().map(BTreeSet::len).sum()` walks every object in the
+    /// `object_element_name_lookup.values().map(BTreeSet::len).sum()` walks every object in the
     /// shard. That runs on a TIMER -- the server heartbeat, every 3s by default -- while holding
     /// the shard read lock that writers need, so its cost grows with the store and lands on the
     /// write path as lock contention. Measured on a 200k-record ingest in five equal phases: with
@@ -1044,7 +1044,7 @@ pub(super) struct CoreIndex {
 
 /// HAND-WRITTEN FOR ONE FIELD, AND BECAUSE A LIST OF CONSTRUCTION SITES COULD NOT BE EXHAUSTIVE.
 ///
-/// `object_component_block_refs` is `Some(0)` from birth rather than `None`. `None` means "nobody
+/// `object_element_name_block_refs` is `Some(0)` from birth rather than `None`. `None` means "nobody
 /// has established this count", and `insert_object_block_lookup` increments only `if let Some`, so
 /// a count left at `None` can never be incremented into a right answer -- it has to START at a
 /// number. The decoder already said exactly that and set zero before its first filing; this makes
@@ -1069,7 +1069,7 @@ pub(super) struct CoreIndex {
 ///
 /// AN EMPTY INDEX'S REF TOTAL IS NOT UNKNOWN, IT IS ZERO, which is the other half of why this is a
 /// correction rather than a convenience. The two production readers test
-/// `object_block_lookup.is_empty() || object_component_block_refs.is_none()` and read either half
+/// `object_block_lookup.is_empty() || object_element_name_block_refs.is_none()` and read either half
 /// as "needs establishing". The FIRST half still answers for an index holding blocks its lookup
 /// does not name, so what this removes is only the arm that called a known zero unknown -- and in
 /// exchange, an index that files as it goes now carries a maintained total without a rebuild
@@ -1823,7 +1823,7 @@ impl Drop for BucketMut<'_> {
 }
 /// The object ids a bucket holds.
 ///
-/// Almost always exactly one: keys route one to a bucket, and even an object with many components
+/// Almost always exactly one: keys route one to a bucket, and even an object with many element names
 /// is still one object. A `BTreeSet` holding a single id costs 128 live bytes of node to carry
 /// eight bytes of id, once per bucket and so once per key.
 ///
@@ -2872,7 +2872,7 @@ pub(super) enum BlockIndexMap {
     /// address is not known until the node has been read. Both are measured; dropping the arm would
     /// have paid both too.
     One(u64, Box<BlockIndex>),
-    /// Several blocks -- an object with components, or several keys routed to one bucket -- held
+    /// Several blocks -- an object with element names, or several keys routed to one bucket -- held
     /// as a FLAT LIST SORTED BY HANDLE rather than as a tree.
     ///
     /// WHY A LIST AND NOT A TREE. A `BTreeMap` leaf holds eleven value slots whether or not it
@@ -4140,7 +4140,7 @@ impl BlockIndexMap {
     ///     `BLOCK_LIST_GROWTH_STEP` with `reserve_exact`, so a list of five owns a buffer of eight.
     ///
     /// WHAT THIS DELIBERATELY DOES NOT CHARGE, ON A MEASUREMENT AND NOT AN OVERSIGHT. `BlockIndex`
-    /// holds `object_key: Arc<str>` and `component: Option<Arc<str>>`, whose bytes live off the
+    /// holds `object_key: Arc<str>` and `element_name: Option<Arc<str>>`, whose bytes live off the
     /// entry. They are not added here because this index does not OWN them: over four fixtures --
     /// routed keys and hash fields, at two corpus sizes, at both routing ranges -- every distinct
     /// name allocation had a strong count higher than the number of index entries holding it, and
@@ -4502,7 +4502,7 @@ impl StoredBlockEntry {
     /// # THE KEY IS THE SOURCE NOW, AND IT IS EXACTLY INVERTIBLE FOR THESE TWO TERMS
     ///
     /// `index_log::block_ref_key_parts` is the inverse of the `block_ref_key_from_parts` that wrote
-    /// the name: the kind is the leftmost field, the five numbers and the component slot are cut
+    /// the name: the kind is the leftmost field, the five numbers and the element name slot are cut
     /// from the RIGHT, and everything between is the object key -- colons included, which is what
     /// makes an object key holding a colon come back whole.
     ///
@@ -4839,7 +4839,7 @@ pub(super) fn block_index_handle(object_key: &str, block: &BlockIndex) -> u64 {
     //
     // RESTATED FROM "ONE PRODUCER", which was the set arm alone. Every kind
     // `storage_bucket_internals::index_entry_names_a_block` answers true for -- `set` and `list`
-    // today -- emits entries with no component, so for those this term contributes the hash of
+    // today -- emits entries with no element name, so for those this term contributes the hash of
     // `None` and the handle is decided by the object key and the address alone.
     //
     // That is safe only because all of them go through ONE emitter,
@@ -4851,7 +4851,7 @@ pub(super) fn block_index_handle(object_key: &str, block: &BlockIndex) -> u64 {
     // both ends rather than inferred at either.
     // THE NAME TERM IS HASHED AS THE CONSTANT IT ALREADY WAS, NOT REMOVED.
     //
-    // This hashed `block.component.as_deref()`, and every entry's component was `None` before the
+    // This hashed `block.element_name.as_deref()`, and every entry's element name was `None` before the
     // field was removed -- so the term contributed one fixed discriminant to every handle and
     // distinguished nothing. It is spelled `None::<&str>` rather than deleted because deleting it
     // MOVES EVERY HANDLE VALUE, and the identity this computes is the key `BlockIndexMap` files an
@@ -4872,7 +4872,7 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
         block.model_id().as_str(),
         object_key,
         // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a page's key is built
-        // here, so the value must not move: every entry's component was `None` before the field was
+        // here, so the value must not move: every entry's element name was `None` before the field was
         // removed, and passing the constant keeps every written key character-for-character what it
         // was. That is why removing the field costs no `SHARD_INDEX_FORMAT_VERSION` step -- the
         // slot it filled was already absent from the bytes.
@@ -4887,22 +4887,22 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
 /// One entry per OBJECT, holding that object's block refs directly.
 ///
 /// This replaced two maps keyed by overlapping composites -- (model, object) and
-/// (model, object, component) -- where the shorter key was a byte-for-byte prefix of the longer
+/// (model, object, element name) -- where the shorter key was a byte-for-byte prefix of the longer
 /// one, so every record stored the (model, object) head twice: once as a whole key and once as the
 /// head of a longer one. Measured across both maps at 4000 records: 223588 B of keys held, 110780
 /// nested, a saving of 50.5%. The entry count halves too, because the second map is gone rather
 /// than nested.
 ///
 /// It also makes `len()` the count of distinct OBJECTS, which is the number the stats path
-/// reports. That question is precisely why the per-component map could not simply be dropped in
-/// favour of a range scan over the other: a scan of a map keyed by (object, component) cannot
+/// reports. That question is precisely why the per-element-name map could not simply be dropped in
+/// favour of a range scan over the other: a scan of a map keyed by (object, element name) cannot
 /// count distinct objects without walking every entry.
 ///
 /// # THE THREE WRAPPERS THAT USED TO SIT BETWEEN THE OBJECT AND ITS REFS
 ///
-/// The value was `ObjectBlockRefs { by_component: ComponentList }`, where `ComponentList` was
-/// `Empty | One(ComponentBlocks) | Many(Vec<ComponentBlocks>)` and `ComponentBlocks` was
-/// `{ component: Option<Arc<str>>, refs: BlockRefs }`. Every one of them existed to map a
+/// The value was `ObjectBlockRefs { by_element_name: ElementNameList }`, where `ElementNameList` was
+/// `Empty | One(ElementNameBlocks) | Many(Vec<ElementNameBlocks>)` and `ElementNameBlocks` was
+/// `{ element_name: Option<Arc<str>>, refs: BlockRefs }`. Every one of them existed to map a
 /// CALLER-SUPPLIED ELEMENT NAME onto blocks.
 ///
 /// # THE WRAPPERS WERE FREE IN BYTES AND THE NAME WAS NOT -- 16 PER OBJECT, NOT 96
@@ -4910,19 +4910,19 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
 /// WRITTEN DOWN BECAUSE THE PLAN THIS WAS BUILT FROM HAD IT WRONG, and so did the first commit
 /// message of the change: "120 bytes of nesting before you reach the 24 that holds anything". That
 /// adds up four DECLARATION widths for types that occupy THE SAME BYTES. `ObjectBlockRefs` had one
-/// field, `ComponentList::One` held its `ComponentBlocks` INLINE, and `ComponentBlocks` was 16 of
+/// field, `ElementNameList::One` held its `ElementNameBlocks` INLINE, and `ElementNameBlocks` was 16 of
 /// name plus 24 of refs with no padding -- so all four were 40 bytes because they WERE the same 40
 /// bytes. Each of the base's own const assertions said 40, 40, 40 and 24, and reading them as a sum
 /// is the field-sum-against-`size_of` mistake in its most inviting form.
 ///
 /// So the per-object cost was 40 and is now 24. The saving is the 16-byte `Option<Arc<str>>` that
 /// held a constant `None`, and the three wrappers around it cost nothing -- which is exactly what
-/// `bucket_node_arms::the_component_level_is_not_a_list_of_one` measured and said in as many words,
+/// `bucket_node_arms::the_element_name_level_is_not_a_list_of_one` measured and said in as many words,
 /// "there are no bytes here to reclaim". That arm was right about the wrapper and looking one level
 /// too high: the bytes were in what the wrapper wrapped.
 ///
 /// There is no name left to map. `insert_object_block_lookup` was the only site in the crate that
-/// ever built a `ComponentBlocks`, and it wrote `component: None` as a literal because the block
+/// ever built a `ElementNameBlocks`, and it wrote `element_name: None` as a literal because the block
 /// entry it files from has no element name to give it. So the list held exactly one entry, that
 /// entry's name was a constant, and `ObjectBlockRefs` was a struct with one field. All three are
 /// deleted and an object now maps straight to its `BlockRefs`.
@@ -4933,15 +4933,15 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
 ///   * `ObjectBlockRefs` carried `position`, `refs_for`, `all_refs` and `total_refs`. Every one
 ///     was a forwarding method over the list; `all_refs` and `total_refs` ARE `BlockRefs::iter`
 ///     and `BlockRefs::len` once the list is gone.
-///   * `ComponentList` carried the most: `iter`, `binary_search_by`, `insert`, `remove`, `Index`,
+///   * `ElementNameList` carried the most: `iter`, `binary_search_by`, `insert`, `remove`, `Index`,
 ///     `IndexMut`, `IntoIterator` and a hand-written `Serialize`/`Deserialize` pair. All of it is
-///     machinery for holding SEVERAL components -- the inline/spilled trade so a list of one costs
+///     machinery for holding SEVERAL element names -- the inline/spilled trade so a list of one costs
 ///     no allocation, the demotion on removal so an object that briefly held two does not keep the
 ///     vector, and the binary search the removals used to find a named slot. At one slot whose
 ///     name is a constant, each of those is machinery for nothing. The one piece worth keeping is
 ///     the inline/spilled trade itself, and `BlockRefs` already has it for the refs, which is the
 ///     level where it now applies.
-///   * `ComponentBlocks` carried the name field and nothing else.
+///   * `ElementNameBlocks` carried the name field and nothing else.
 ///
 /// THE EMPTY SLOT STOPPED BEING REPRESENTABLE, AND THAT IS A SIMPLIFICATION AND NOT A LOSS. The
 /// list could hold a slot with no refs -- `BlockRefs::remove` leaves `Many(vec![])` behind -- and
@@ -5069,13 +5069,13 @@ const _: () = assert!(std::mem::size_of::<(u64, (Arc<str>, BlockRefs))>() == 48)
 /// count, so that level is a constant head and not a per-object tree.
 const _: () = assert!(std::mem::size_of::<((u8, Arc<str>), BlockRefs)>() == 48);
 
-/// Whether this component argument names THE ONLY SLOT THERE IS.
+/// Whether this element name argument names THE ONLY SLOT THERE IS.
 ///
 /// # THIS IS THE ONE PIECE OF THE DELETED LEVELS THAT HAD TO STAY
 ///
-/// The component argument on this lookup's readers and removers is NOT always `None`, and
+/// The element name argument on this lookup's readers and removers is NOT always `None`, and
 /// believing otherwise is the way to get this collapse wrong. Two production sites reach it with a
-/// real `Some`: `bucket_store::bucket_index_block_address`, which passes a caller's component
+/// real `Some`: `bucket_store::bucket_index_block_address`, which passes a caller's element name
 /// straight through from the slow read path, and [`CoreIndex::contains_object_block_address`],
 /// which `storage_bucket_internals`'s hash-field sync asks `Some(field)` once per field.
 ///
@@ -5263,7 +5263,7 @@ impl From<ObjectBlockLookup> for BTreeMap<String, BlockRefs> {
 }
 
 /// A kind is drawn from a fixed set of literals in the code, so a pool of them is bounded. A
-/// component name is not -- it comes from the caller -- and the cap is what makes sharing it safe
+/// element name is not -- it comes from the caller -- and the cap is what makes sharing it safe
 /// anyway: past the cap a name still works, it just allocates as it did before. So the cap is not
 /// a tuning knob, it is the thing that lets an unbounded input share a bounded pool.
 const KIND_POOL_CAP: usize = 64;
@@ -5275,13 +5275,13 @@ pub(super) fn intern_shared(pool: &mut std::collections::HashSet<Arc<str>>, kind
 
 /// Headroom in the same pool that only a KIND may use.
 ///
-/// Components are one per field, member or element, so they reach `KIND_POOL_CAP` on the first
+/// Element names are one per field, member or element, so they reach `KIND_POOL_CAP` on the first
 /// container key written and then the pool takes nothing new. Kinds are a closed set this engine
 /// spells itself -- about five -- so a reserve this size is never the binding constraint for them
 /// and the pool stays bounded by `KIND_POOL_CAP + KIND_RESERVE` either way.
 const KIND_RESERVE: usize = 16;
 
-/// Intern a KIND. Sees the reserve; a component does not.
+/// Intern a KIND. Sees the reserve; an element name does not.
 pub(super) fn intern_kind(pool: &mut std::collections::HashSet<Arc<str>>, kind: &str) -> Arc<str> {
     intern_up_to(pool, kind, KIND_POOL_CAP + KIND_RESERVE)
 }
@@ -5301,16 +5301,16 @@ fn intern_up_to(
     shared
 }
 
-/// The blocks holding one component, with the single-block case held inline.
+/// The blocks holding one element name, with the single-block case held inline.
 ///
 /// Measured over a corpus mixing single-value objects and multi-field ones: 3600 of 3600
-/// components hold exactly one ref. That is not a property of the workload mix the way the
-/// component count per object is -- it held for both object shapes -- so the single case is worth
+/// element names hold exactly one ref. That is not a property of the workload mix the way the
+/// element name count per object is -- it held for both object shapes -- so the single case is worth
 /// having a shape for.
 ///
 /// A `Vec` for one element costs a 24-byte header and, more expensively, its own heap allocation
 /// to hold a single 24-byte value. Inline costs 8 bytes more inside the enclosing vector and no
-/// allocation at all. The spilled arm keeps the behaviour unchanged for a component that does span
+/// allocation at all. The spilled arm keeps the behaviour unchanged for an element name that does span
 /// several blocks -- nothing in the measured corpus does, but the format allows it, so it stays
 /// representable rather than being asserted away.
 ///
@@ -5325,8 +5325,8 @@ pub(super) enum BlockRefs {
 /// THE LOOKUP'S PER-OBJECT VALUE, AND WHAT IT REPLACED.
 ///
 /// `BlockRefs` is now the value `ObjectBlockLookup` holds for each object, which is where the
-/// collapse's saving lands. The value was an `ObjectBlockRefs` holding a `ComponentList` holding a
-/// `ComponentBlocks` holding this -- and all four were 40, 40, 40 and 24 because the first three
+/// collapse's saving lands. The value was an `ObjectBlockRefs` holding a `ElementNameList` holding a
+/// `ElementNameBlocks` holding this -- and all four were 40, 40, 40 and 24 because the first three
 /// WERE THE SAME 40 BYTES, nested inline. The step is 40 to 24 per object: the 16 bytes of the
 /// always-`None` `Option<Arc<str>>`, and nothing for the wrappers. See [`ObjectBlockLookup`] on why
 /// reading those four declarations as a 120-byte sum is the mistake it looks like.
@@ -5364,7 +5364,7 @@ const _: () = assert!(
 
 /// AND THE WIDTH THIS REPLACED, DECOMPOSED IN TERMS OF TYPES THAT STILL EXIST.
 ///
-/// `ComponentBlocks` was `Option<Arc<str>>` plus `BlockRefs` with no padding, so its 40 is still
+/// `ElementNameBlocks` was `Option<Arc<str>>` plus `BlockRefs` with no padding, so its 40 is still
 /// checkable with the type itself deleted -- which is the point: a "before" number quoted in a
 /// comment goes stale silently, and this one cannot. If the name's width or the refs' width moves,
 /// this goes red and the 40-to-24 claim above has to be restated rather than left wrong.
@@ -7244,7 +7244,7 @@ const _: () = assert!(std::mem::align_of::<BlockIndex>() == 8);
 //
 // THE `object_key` TERM IS GONE FROM THIS SUM, which is the whole of the step. It was
 // `size_of::<Arc<str>>()` -- sixteen bytes, a fat pointer -- so the field set went 35 -> 19 and
-// the width 40 -> 24, a whole two words rather than one word and some rounding. The `component`
+// the width 40 -> 24, a whole two words rather than one word and some rounding. The `element_name`
 // term went the same way one leg earlier, from 56 -> 40.
 //
 // AND THIS BLOCK IS NOW THE ONLY DECOMPOSITION OF THIS STRUCT. `TheEntryWithoutAnElementName`
@@ -7332,9 +7332,9 @@ const _: () = {
 //   * `BlockRefs::insert` keeps the list as a SORTED SET ordered by `BlockLookupRef`'s derived
 //     `Ord`, whose second term is `block_ref_key` -- a `u64` HASH. Position in that list is
 //     position in hash order, which carries no ordinal.
-//   * The list is nested PER COMPONENT (`ComponentBlocks`), while `next_block_index_for_object`
-//     filters on `(model_id, object_key)` and NOT on the component. A position inside one
-//     component's list is the wrong denominator for a maximum taken across all of them.
+//   * The list is nested PER ELEMENT NAME (`ElementNameBlocks`), while `next_block_index_for_object`
+//     filters on `(model_id, object_key)` and NOT on the element name. A position inside one
+//     element name's list is the wrong denominator for a maximum taken across all of them.
 //   * `insert_object_block_lookup` returns early on `block.deleted`, so the list omits exactly the
 //     entries the walk still counts. Taking the ordinal from the list would hand out a value BELOW
 //     a deleted-but-still-reachable block's ordinal, which is the reuse this walk's own doc calls
@@ -7405,7 +7405,7 @@ const _: () = {
     // THE PROBE LOST THE TERM THE LIVE ENTRY LOST, FOR THE SECOND TIME, AND THE NUMBER WENT
     // 48 -> 32 -> 16.
     //
-    // It carried a `component: Option<Arc<str>>` and measured 48; that field left `BlockIndex` one
+    // It carried an `element_name: Option<Arc<str>>` and measured 48; that field left `BlockIndex` one
     // leg ago and the probe went to 32. It carried an `object_key: Arc<str>` and has now lost that
     // too, which takes it to 16. The probe's whole job is to answer "what would THIS entry measure
     // if its address field held the bare word", so keeping either term would have it measure a
@@ -7485,7 +7485,7 @@ const _: () = {
 //
 // THREE LANES WERE NAMED AND ONE HAS LANDED, so this reads as two. It said "Three lanes have to
 // land for this shape to exist, and this one owns NONE of them: the address field holding the bare
-// word (refused above, with its reasons), `component` leaving, and `object_key` becoming an ordinal
+// word (refused above, with its reasons), `element_name` leaving, and `object_key` becoming an ordinal
 // rather than a shared name." The element name HAS left `BlockIndex` on this branch -- the entry is
 // 40 -- so what stands between the live entry and this shape is the address word and the object
 // key. The probe below is unchanged: it was already written without an element name, which is why
@@ -7681,8 +7681,8 @@ impl BlockIndex {
     /// the caller, where a state IS in scope to ask, and makes the compiler name every site that
     /// cannot answer.
     ///
-    /// The component is NOT a term. An object id is per (shard, kind, key); which element of that
-    /// object a block holds is `component`, beside the id and not inside it.
+    /// The element name is NOT a term. An object id is per (shard, kind, key); which element of that
+    /// object a block holds is `element_name`, beside the id and not inside it.
     pub(super) fn object_id(&self, shard_id: crate::types::ShardId, object_key: &str) -> u64 {
         crate::engine::hashing::stable_block_object_id(
             shard_id,
@@ -7823,17 +7823,17 @@ impl CoreIndex {
             );
             // THE LOOKUP IS KEYED ON A NAME THE ENTRY DOES NOT HAVE, so every block of an object
             // files under the SAME single slot -- which is what it already did, because an entry's
-            // component was `None` for every kind before the field was removed.
+            // element name was `None` for every kind before the field was removed.
             //
-            // THAT SLOT USED TO SIT UNDER THREE WRAPPERS. `ObjectBlockRefs` -> `ComponentList` ->
-            // `ComponentBlocks` -> `BlockRefs` was three wrappers in front of the 24 that holds
+            // THAT SLOT USED TO SIT UNDER THREE WRAPPERS. `ObjectBlockRefs` -> `ElementNameList` ->
+            // `ElementNameBlocks` -> `BlockRefs` was three wrappers in front of the 24 that holds
             // the answer, and all of it existed to map a caller-supplied ELEMENT NAME onto blocks.
             // THE WRAPPERS COST NOTHING -- all three were the same 40 bytes, nested inline -- and
             // the 16 the step recovers is the always-`None` name inside the innermost one.
-            // This was the only site in the crate that ever built a `ComponentBlocks`, and
+            // This was the only site in the crate that ever built a `ElementNameBlocks`, and
             // the name it wrote was a literal `None`. All three wrappers are gone and the object
             // maps straight to its refs -- see [`ObjectBlockLookup`] on what each one carried, and
-            // on the one piece that had to stay, because the component ARGUMENT on the readers and
+            // on the one piece that had to stay, because the element name ARGUMENT on the readers and
             // the removers still comes from callers and is still sometimes `Some`.
             self.object_block_lookup.file(&kind, object_key, value)
         };
@@ -7904,7 +7904,7 @@ impl CoreIndex {
     /// rather than leaving it to be assumed.
     ///
     /// The ref TOTAL does not move: this relocates refs, it does not add or drop any, so
-    /// `object_component_block_refs` is deliberately untouched.
+    /// `object_element_name_block_refs` is deliberately untouched.
     pub(super) fn adopt_refs_into_slot(
         &mut self,
         kind: super::storage_bucket_internals::StoredModelKind,
@@ -8324,9 +8324,9 @@ impl CoreIndex {
             )
     }
 
-    /// Every block ref this object holds, for one component.
+    /// Every block ref this object holds, for one element name.
     ///
-    /// A named component resolves nothing and never did -- see [`names_the_only_slot`].
+    /// A named element name resolves nothing and never did -- see [`names_the_only_slot`].
     pub(super) fn block_refs_for(
         &self,
         model_id: &str,
@@ -8340,7 +8340,7 @@ impl CoreIndex {
             .map(BlockRefs::as_slice)
     }
 
-    /// Every block ref of this object, whatever its component.
+    /// Every block ref of this object, whatever its element name.
     pub(super) fn object_block_refs(
         &self,
         model_id: &str,
@@ -8363,12 +8363,12 @@ impl CoreIndex {
 
         // ONE SLOT IS THIS OBJECT'S ENTIRE SET OF REFS, so dropping the slot is dropping the
         // object's entry. What this replaces had to seek a range with an empty-string sentinel and
-        // take_while on the component, because the per-component map flattened every component of
-        // an object into one ordered set -- so a component's refs could only be found by range,
+        // take_while on the element name, because the per-element-name map flattened every element name of
+        // an object into one ordered set -- so an element name's refs could only be found by range,
         // not by index. Nesting deleted the range; the collapse deleted the index too, because
         // there is only ever the one slot.
         //
-        // A NAMED COMPONENT REMOVES NOTHING, which is what the binary search over a list of one
+        // A NAMED ELEMENT NAME REMOVES NOTHING, which is what the binary search over a list of one
         // already did -- see [`names_the_only_slot`].
         if !names_the_only_slot(element_name) {
             return;
@@ -8395,8 +8395,8 @@ impl CoreIndex {
         }
     }
 
-    /// Drop ONE ref an object holds under one component, leaving that component's other refs and
-    /// every other component alone.
+    /// Drop ONE ref an object holds under one element name, leaving that element name's other refs and
+    /// every other element name alone.
     ///
     /// # WHY THIS EXISTS WHEN THE WHOLE-SLOT REMOVAL ABOVE ALREADY DID
     ///
@@ -8413,10 +8413,10 @@ impl CoreIndex {
     ///
     /// # THE SLOT GOES WHEN ITS LAST REF DOES
     ///
-    /// An empty component slot is not the same as an absent one, and the difference is load-bearing
+    /// An empty element name slot is not the same as an absent one, and the difference is load-bearing
     /// rather than tidiness. `position` finds an empty slot, `refs_for` answers `Some(&[])` for it,
     /// and the upsert's third case -- "the lookup is established and names NOTHING for this
-    /// component", which is exactly the re-add after a removal -- is distinguished by `refs_for`
+    /// element name", which is exactly the re-add after a removal -- is distinguished by `refs_for`
     /// answering `None`. Leaving an empty slot behind would send that case down the wrong branch
     /// and leak the tombstone the re-add is supposed to clear.
     ///
@@ -8430,7 +8430,7 @@ impl CoreIndex {
         element_name: Option<&str>,
         block_ref: &BlockLookupRef,
     ) -> bool {
-        // A NAMED COMPONENT REMOVES NOTHING -- see [`names_the_only_slot`].
+        // A NAMED ELEMENT NAME REMOVES NOTHING -- see [`names_the_only_slot`].
         if !names_the_only_slot(element_name) {
             return false;
         }
@@ -8483,7 +8483,7 @@ impl CoreIndex {
     /// delete cost work proportional to the entire shard, and deleting a store cost the square of
     /// it. Removing the object's own entry is the same result for a fraction of the work.
     ///
-    /// Maintains `object_component_page_refs` exactly as the per-component removal above does,
+    /// Maintains `object_element_name_page_refs` exactly as the per-element-name removal above does,
     /// because that counter is what lets the stats path avoid walking the shard.
     pub(super) fn remove_object_from_block_lookup(
         &mut self,
@@ -8530,8 +8530,8 @@ impl CoreIndex {
                             // THAT object's own ref list, so it asked whether the lookup was
                             // right rather than which object the block belongs to.
                             //
-                            // The entry carries no element name; `component.is_none()` is the old
-                            // `block.component.as_deref() == component` with that constant folded
+                            // The entry carries no element name; `element_name.is_none()` is the old
+                            // `block.element_name.as_deref() == element_name` with that constant folded
                             // in, so the kinds this answers for do not move.
                             && element_name.is_none()
                             && same_block_address(&block.address, address)
@@ -8593,7 +8593,7 @@ pub(super) fn next_block_index_for_object(
     // a large shard paid for every other object in it.
     //
     // MEASURED, BEFORE: 475,584 bytes per call on a 3,200-block shard -- 14.5% of a feature
-    // append, and after #2232 declared that command's upsert components it is the dominant
+    // append, and after #2232 declared that command's upsert element names it is the dominant
     // remaining term. The same call is on the context-event path, where
     // `what_one_context_event_append_costs_at_two_series_lengths` recorded a flat allocation count
     // with bytes still climbing 2.66x over an 8x series: the signature of a buffer sized by
@@ -8651,22 +8651,22 @@ pub(super) fn next_block_index_for_object(
     }
 }
 
-/// THE ADDRESS THE RESIDENT MAP HOLDS FOR ONE ELEMENT, found by the component the index spells it
+/// THE ADDRESS THE RESIDENT MAP HOLDS FOR ONE ELEMENT, found by the element name the index spells it
 /// under.
 ///
 /// # ONE SPELLING TABLE, READ BY EVERY SITE THAT NEEDS AN ELEMENT'S IDENTITY
 ///
 /// Three things in this engine need to know WHICH element a write, a removal or a tombstone is
 /// about, and none of them can ask the index any more: the filing supersede term, the tombstone
-/// sweep, and the ordinal allocator below. They all have a component STRING in hand -- the
+/// sweep, and the ordinal allocator below. They all have an element name STRING in hand -- the
 /// rendering the index used to be filed under -- and the resident maps are keyed by the element
 /// itself, so each of them needs the same four-arm decode. It is written here once rather than
 /// three times, because several copies of a condition is how most of them come to agree and the
 /// rest do not, which this series has already hit with two filers disagreeing.
 ///
-/// `member_component` for a set member and for a zset member, base sixteen plus the two's-complement
+/// `member_element_name` for a set member and for a zset member, base sixteen plus the two's-complement
 /// bias for a list sequence, the field itself for a hash -- each the SAME rendering the write path
-/// files. A component this cannot parse answers `None` rather than defaulting to the empty member
+/// files. An element name this cannot parse answers `None` rather than defaulting to the empty member
 /// or to sequence zero: an unreadable name names nothing, which is the rule every arm of the
 /// derived view already follows, and the two defaults it replaces are both real elements whose
 /// address it would have taken.
@@ -8703,7 +8703,7 @@ pub(super) fn resident_element_name_address<'a>(
 
 /// The highest block ordinal any LIVE element of this object holds.
 ///
-/// NO COMPONENT IS RENDERED HERE, deliberately: the question is about ORDINALS, and rendering every
+/// NO ELEMENT NAME IS RENDERED HERE, deliberately: the question is about ORDINALS, and rendering every
 /// sibling's name back to a string to ask it would allocate once per element of the object on every
 /// container write. The addresses carry the ordinals and the map's keys are not read at all.
 /// HOW MANY TIMES THE SIBLING SCAN RAN, AND HOW MANY SIBLINGS IT LOOKED AT.
@@ -8770,7 +8770,7 @@ pub(super) fn resident_highest_block_id(
 /// ways, both forced:
 ///
 ///   * AN OVERWRITE KEEPS THE ORDINAL IT ALREADY HAS. A container element is addressed by its
-///     component, and `HashSet` or `SetAdd` on an existing member REPLACES that member's block.
+///     element name, and `HashSet` or `SetAdd` on an existing member REPLACES that member's block.
 ///     Handing the replacement `max + 1` would make the ordinal climb once per WRITE rather than
 ///     once per ELEMENT, so a single member rewritten 65,536 times would reach the ceiling on a set
 ///     of one. Reading the element's own block first bounds the ordinal by the object's live
@@ -8791,12 +8791,12 @@ pub(super) fn resident_highest_block_id(
 ///
 /// # IT ASKS THE RESIDENT MAP NOW, NOT THE INDEX ENTRIES, AND THE FILTER IT NEEDED IS GONE WITH THEM
 ///
-/// This walked `bucket.block_index` and compared `block.component` to pick out the element's own
+/// This walked `bucket.block_index` and compared `block.element_name` to pick out the element's own
 /// block. That was the THIRD consumer of a per-element name on an index entry, after the filing
 /// supersede term and the tombstone sweep -- and the one that is not about removals at all, which
 /// is why it was the hardest of the three to see. An entry under one entry a block carries no
 /// element name, so the comparison matches nothing and EVERY overwrite falls through to `max + 1`:
-/// measured as `an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal` failing at round one
+/// measured as `an_overwrite_of_an_element_name_less_hash_entry_reuses_its_ordinal` failing at round one
 /// with `[0]` against `[1]`.
 ///
 /// THE RESIDENT MAP ANSWERS BOTH HALVES AND IS THE ONLY PLACE THAT CAN. It is keyed BY the element,
@@ -8808,7 +8808,7 @@ pub(super) fn resident_highest_block_id(
 /// so the block recording it stays reachable, and that broke the old derivation in both directions at
 /// once: `max` stopped FALLING after a delete, so the ordinal climbed once per element ever written
 /// and a container churning distinct members walked to the ceiling for a set that never held more
-/// than a handful; and the component match found the TOMBSTONE, so a re-add was handed the dead
+/// than a handful; and the element name match found the TOMBSTONE, so a re-add was handed the dead
 /// block's position. Both were about a deleted entry being visible to a walk over entries. A removal
 /// drops its element from the resident map, so neither question arises here.
 ///
@@ -8952,27 +8952,27 @@ mod element_name_lookup_tests {
     //! counted the two renames as deletions and did not account for the arms added at all.
     //!
     //! GONE, SUBJECT UNREPRESENTABLE -- there is one slot per object now, so there is no second
-    //! component to order against, none to sort first, and no sibling to disturb:
+    //! element name to order against, none to sort first, and no sibling to disturb:
     //!
-    //!   * `removing_one_component_leaves_the_others`
-    //!   * `removing_the_first_and_last_components_works`
-    //!   * `a_none_component_is_removable_and_does_not_take_the_others`
-    //!   * `every_ref_sharing_a_component_goes` -- its surviving half, that a whole-slot removal
+    //!   * `removing_one_element_name_leaves_the_others`
+    //!   * `removing_the_first_and_last_element_names_works`
+    //!   * `a_none_element_name_is_removable_and_does_not_take_the_others`
+    //!   * `every_ref_sharing_an_element_name_goes` -- its surviving half, that a whole-slot removal
     //!     takes every ref the slot held, is carried by
     //!     `the_running_ref_total_is_decremented_by_what_the_slot_held` below.
     //!
     //! RESTATED, SUBJECT MOVED:
     //!
-    //!   * `removing_an_absent_component_changes_nothing` becomes
-    //!     `a_removal_by_a_named_component_is_a_no_op`. Same call; the subject is now the
+    //!   * `removing_an_absent_element_name_changes_nothing` becomes
+    //!     `a_removal_by_a_named_element_name_is_a_no_op`. Same call; the subject is now the
     //!     predicate rather than a binary search that ran off the front of a list.
     //!   * `emptying_the_set_drops_the_key_entirely` becomes
     //!     `dropping_the_only_slot_drops_the_objects_key`, with `Some("only")` replaced by `None`,
-    //!     because a removal by a named component is a no-op and the old form would assert over a
+    //!     because a removal by a named element name is a no-op and the old form would assert over a
     //!     removal that correctly did nothing.
     //!
     //! KEPT, FULL TEETH -- three of them, and their claim is that the hand-maintained
-    //! `object_component_block_refs` counter agrees with the refs actually present, which is
+    //! `object_element_name_block_refs` counter agrees with the refs actually present, which is
     //! independent of how many slots exist. Their FIXTURES still had to move from `Some(x)` to
     //! `None`: left as they were, each one's first `assert!(index.remove_...)` would fail on a
     //! removal that correctly did nothing.
@@ -8988,11 +8988,11 @@ mod element_name_lookup_tests {
     //!   * `the_insert_accumulates_an_objects_blocks_into_the_one_slot` -- the half of the filing
     //!     tripwire that HAS a discriminator, since the half about what a block carried cannot fail
     //!     here. See the note on [`page`] for why.
-    //!   * `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` -- the
+    //!   * `a_named_element_name_resolves_nothing_while_the_unnamed_one_resolves_everything` -- the
     //!     `names_the_only_slot` predicate, asserted BOTH WAYS in one arm so that loosening it
     //!     cannot satisfy a one-sided check.
     //!   * `the_refs_in_the_only_slot_stay_sorted_for_the_search_that_removes_them` -- carried out
-    //!     of `components_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs`, which the collapse deleted.
+    //!     of `element_names_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs`, which the collapse deleted.
     //!     The order claim it held belongs to `BlockRefs`, whose `insert` keeps the refs sorted and
     //!     whose `remove` binary-searches them, and nothing else in the tree asserted it.
 
@@ -9000,7 +9000,7 @@ mod element_name_lookup_tests {
 
     /// A block carrying nothing but the identity the lookup keys on.
     ///
-    /// THE COMPONENT PARAMETER THIS USED TO TAKE IS GONE, AND IT WAS ALREADY DEAD. It was accepted
+    /// THE ELEMENT NAME PARAMETER THIS USED TO TAKE IS GONE, AND IT WAS ALREADY DEAD. It was accepted
     /// and then never mentioned in the `BlockIndex` built below, because the field it used to fill
     /// came off the entry in this branch's previous commit. Keeping it would make the arms below
     /// read as though they varied something they did not.
@@ -9011,7 +9011,7 @@ mod element_name_lookup_tests {
     /// would pass on any insert at all. The half that can still move is asserted instead -- see
     /// [`the_insert_accumulates_an_objects_blocks_into_the_one_slot`].
     /// AND THE `object` PARAMETER IS REMOVED RATHER THAN RENAMED `_object`, which is the
-    /// treatment `entry_count_versus_block_count::block_at` already took for a dead `component`
+    /// treatment `entry_count_versus_block_count::block_at` already took for a dead `element_name`
     /// argument and for the same reason: a caller that still tries to name an object here should
     /// be a compile error and not a silent no-op. The entry has no field for it; the callers pass
     /// the key to `insert_object_block_lookup` themselves.
@@ -9099,7 +9099,7 @@ mod element_name_lookup_tests {
         let index = CoreIndex::default();
         // THE COUNTER IS ESTABLISHED BY THE TYPE NOW, AND THIS FIXTURE USED TO DO IT BY HAND.
         //
-        // It read "`object_component_block_refs` is `None` on a default index, and `None` means
+        // It read "`object_element_name_block_refs` is `None` on a default index, and `None` means
         // UNKNOWN rather than zero", and set `Some(0)` itself with a note that three arms here had
         // asserted `Some(n)` without the line and read back `None`. `impl Default for CoreIndex`
         // writes that zero now, so the line was a no-op -- and a no-op that STILL COMPILED and
@@ -9159,10 +9159,10 @@ mod element_name_lookup_tests {
     /// THE REFS IN THE ONE SLOT STAY SORTED, WHICH IS THE ORDER `remove` SEARCHES.
     ///
     /// CARRIED FROM AN ARM THE COLLAPSE DELETED, in the merge that joined the two branches.
-    /// `components_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs` asserted "removal binary-searches
+    /// `element_names_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs` asserted "removal binary-searches
     /// this vector, so its order is load-bearing" of the SECOND LEVEL's vector, and the
     /// element-name branch's rewrite of that arm moved the claim down onto the refs. The level is
-    /// gone and the rewrite with it -- it reads `by_component` and `refs_for(..)`, neither of which
+    /// gone and the rewrite with it -- it reads `by_element_name` and `refs_for(..)`, neither of which
     /// exists -- but the claim belongs here: [`BlockRefs::insert`] keeps the refs sorted and
     /// [`BlockRefs::remove`] binary-searches them, so an `insert` rewritten to append, which is the
     /// obvious way to add to a `Vec`, would leave every other arm in this module green and make
@@ -9236,7 +9236,7 @@ mod element_name_lookup_tests {
         );
     }
 
-    /// THE OTHER HALF: a lookup BY A NAMED COMPONENT resolves nothing, while the same lookup
+    /// THE OTHER HALF: a lookup BY A NAMED ELEMENT NAME resolves nothing, while the same lookup
     /// unnamed resolves everything.
     ///
     /// # WHAT CAN MAKE THIS FAIL, STATED PLAINLY BECAUSE IT IS NOT A STRUCTURAL DRIFT
@@ -9247,7 +9247,7 @@ mod element_name_lookup_tests {
     /// one-sided check is satisfied on whichever side an edit moves -- loosening the predicate so
     /// every query hits would redden a `Some`-misses assertion and leave a `None`-hits assertion
     /// passing, and only the pair says which way it went. And the consequence of loosening it is
-    /// not a bigger index: `bucket_store::bucket_index_block_address` passes a caller's component
+    /// not a bigger index: `bucket_store::bucket_index_block_address` passes a caller's element name
     /// straight through, so a `Some` that started hitting would serve an object's whole block as
     /// the answer to a field lookup that has always, correctly, found nothing.
     #[test]
@@ -9268,7 +9268,7 @@ mod element_name_lookup_tests {
         );
     }
 
-    /// Restated from `removing_an_absent_component_changes_nothing`.
+    /// Restated from `removing_an_absent_element_name_changes_nothing`.
     #[test]
     fn a_removal_by_a_named_element_name_is_a_no_op() {
         let mut index = core_with("k", 2);
@@ -9322,7 +9322,7 @@ mod element_name_lookup_tests {
     /// Recomputed from the structure rather than compared with a number written here. The failure
     /// this is for is a counter that drifts from the map it is supposed to describe, and an
     /// expected-number assertion cannot see that: it agrees with a counter that is wrong in the
-    /// same direction as the expectation. `object_component_block_refs` is maintained BY HAND on
+    /// same direction as the expectation. `object_element_name_block_refs` is maintained BY HAND on
     /// every path that touches the lookup, which is exactly the shape that drifts.
     fn refs_actually_present(index: &CoreIndex) -> usize {
         index
@@ -9381,7 +9381,7 @@ mod element_name_lookup_tests {
     }
 
     /// WHERE A COUNT AND A SLOT DISAGREE, restated from
-    /// `the_last_ref_of_a_component_takes_the_slot_and_not_just_the_ref`.
+    /// `the_last_ref_of_an_element_name_takes_the_slot_and_not_just_the_ref`.
     ///
     /// An empty slot is not an absent one: `refs_for` answered `Some(&[])` for the first and
     /// `None` for the second, and the upsert distinguishes its re-add case -- "established but
@@ -9453,7 +9453,7 @@ mod element_name_lookup_tests {
     }
 
     /// Restated from `the_running_ref_total_is_decremented_by_what_was_removed`, and it carries
-    /// `every_ref_sharing_a_component_goes`'s surviving half: a whole-slot removal takes EVERY ref
+    /// `every_ref_sharing_an_element_name_goes`'s surviving half: a whole-slot removal takes EVERY ref
     /// the slot held, not one of them. Three went in, so a decrement of three is the claim and a
     /// decrement of one is the failure it is for.
     #[test]
@@ -10860,7 +10860,7 @@ impl ShardState {
     ///
     ///   LOOKUPARM filed=true                                   block 1 -> lookup, no row yet
     ///   MARK  lookup_empty=true slots_with_refs=1 live_blocks=1 adopted into the row, passes
-    ///   REMOVE-ALL component=None slots_with_refs=1             the element supersede, correctly
+    ///   REMOVE-ALL element name=None slots_with_refs=1             the element supersede, correctly
     ///   SLOTARM filed=true                                      block 2 -> the ROW, read back
     ///   MARK  lookup_empty=true slots_with_refs=0 live_blocks=1 the row was replaced: refs gone
     ///

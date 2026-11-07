@@ -391,7 +391,7 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
 //
 // AND IT IS ALREADY REACHED THIS WAY BY PRODUCTION CODE, which is what makes this a cost question
 // rather than a design question. `visit_model_live_blocks` offers every live model-map block in the
-// shard to a callback as `(kind, object_key, component, address)`, and its own doc says of the key
+// shard to a callback as `(kind, object_key, element_name, address)`, and its own doc says of the key
 // that "Every other arm's key is borrowed from the map and costs nothing" -- one arm composes a
 // key with `format!` and is the stated exception. `collect_model_live_block_entries` is that walk
 // with an always-true filter, and it takes NOTHING BUT A SHARD. The signature pin below is the

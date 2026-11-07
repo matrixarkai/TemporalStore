@@ -73,7 +73,7 @@ pub(super) fn stage(object_id: u64, element_name: Option<&str>, bytes: &[u8]) {
     // carrying a block in its record COSTS, and a third caller staging a block would otherwise add
     // that cost to the store while adding nothing to the count.
     //
-    // The component's copy is charged to the same class for the same reason. It is a second,
+    // The element name's copy is charged to the same class for the same reason. It is a second,
     // smaller cost of carrying the block -- a hash field name is two or three bytes, a zset member
     // is `16 + 2n` characters -- and it belongs beside the block copy it travels with rather than
     // against whichever caller happened to render the name.
@@ -185,7 +185,7 @@ type Registration = (LocalWriteAheadLogStore, u64, u64);
 /// block of a key to be written owns that key's entry and every earlier one becomes unreachable.
 pub(super) type BlockKey = (u64, Option<std::sync::Arc<str>>);
 
-/// Build a key without owning the component until the map needs it.
+/// Build a key without owning the element name until the map needs it.
 fn block_key(object_id: u64, element_name: Option<&str>) -> BlockKey {
     (object_id, element_name.map(std::sync::Arc::from))
 }
@@ -205,8 +205,8 @@ fn block_key(object_id: u64, element_name: Option<&str>) -> BlockKey {
 /// calls safe ("a stale entry costs a miss, never wrong bytes"), because the read falls through to
 /// the block store and, failing that, to a WAL replay that re-derives the block.
 ///
-/// FNV-1a over the id's bytes and then the component's, which is the mixing `stable_block_object_id`
-/// uses one level up, so a component that distinguishes two blocks there distinguishes them here.
+/// FNV-1a over the id's bytes and then the element name's, which is the mixing `stable_block_object_id`
+/// uses one level up, so an element name that distinguishes two blocks there distinguishes them here.
 pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u64 {
     let Some(element_name) = element_name else {
         return object_id;
@@ -231,7 +231,7 @@ pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u6
 /// The element term is here for the same shape of reason one level down: two blocks of one object
 /// are two entries, not one, and which of them a read wants is a question the object id cannot be
 /// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
-/// INSIDE that record -- which is why [`StagedBlock::component`] exists as well.
+/// INSIDE that record -- which is why [`StagedBlock::element_name`] exists as well.
 fn registry() -> &'static Mutex<HashMap<(usize, ShardId, BlockKey), Registration>> {
     static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, BlockKey), Registration>>> =
         OnceLock::new();

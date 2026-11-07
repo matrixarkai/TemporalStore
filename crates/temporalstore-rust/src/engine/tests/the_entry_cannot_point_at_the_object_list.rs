@@ -32,12 +32,12 @@
 //!      SAME 48, so its ceiling of 255 objects a bucket -- reachable, since a bucket is a hash
 //!      bucket that fills with the corpus -- buys precisely zero additional bytes. Nothing should be
 //!      spent on it. (`block_entry_name_pointer`'s step 2 row reads 40/48 because it composes an
-//!      ordinal with step 1a's thin `component` as well; this row substitutes `object_key` only.)
+//!      ordinal with step 1a's thin `element_name` as well; this row substitutes `object_key` only.)
 //!
 //!   2. #2019'S COLLAPSE DOES NOT REOPEN STEP 1b, and the reason is the arm it did not touch. The
 //!      trade is `saving * blocks - name_row * rows`, and it is positive only where a key holds more
 //!      than one block. Measured per arm and never averaged: the container arm is where #2019's
-//!      collapse lands and it pays, and THE ROUTED ARM STILL HOLDS ONE ROW PER BLOCK -- its component
+//!      collapse lands and it pays, and THE ROUTED ARM STILL HOLDS ONE ROW PER BLOCK -- its element name
 //!      was already absent, so #2019 was the identity on it -- which makes its trade a CEILING of
 //!      zero before the list's own allocation is charged at all. The standing +8.11 to +9.10 is that
 //!      ceiling with the allocation charged. #2019 published the distribution that decides which arm
@@ -129,7 +129,7 @@ const OPERATOR_END: u32 = 1023;
 /// The population #2019 measured on, so the rows here are comparable to its line for line.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
-/// The CONTROL population: a string block's component is already `None`, one block per key, so #2019
+/// The CONTROL population: a string block's element name is already `None`, one block per key, so #2019
 /// was the identity on it and its trade has a ceiling of zero. Both facts are asserted, not assumed.
 const ROUTED_KEYS: usize = 200;
 
@@ -290,7 +290,7 @@ fn blocks_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
 // THE MIRRORS LOSE THEIR NAME SLOT WITH THE REAL ENTRY'S.
 //
 // Both of these swap the entry's `object_key` for an ordinal into the bucket's object list, and
-// both carried `component: Option<Arc<str>>` beside it because the real entry did. It does not, so
+// both carried `element_name: Option<Arc<str>>` beside it because the real entry did. It does not, so
 // a mirror that kept the slot would be sixteen bytes wider than the thing it mirrors and the
 // counterfactual would price a shape the engine cannot reach. The ordinal proposal is about the
 // OBJECT KEY and is unaffected by the element name leaving -- which is why these are restated
@@ -378,7 +378,7 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
         // bits do not collide and fit the eight borrowed, asserted beside the packed accessors in
         // `engine_storage_state.rs`. A bit budget is to a packed field what an offset is to a
         // declared one.
-        // The `component` row is gone with the field: sixteen bytes between `model_id` and
+        // The `element_name` row is gone with the field: sixteen bytes between `model_id` and
         // `address`, and the whole of the 56 -> 40 step. The reconstruction assertion below is
         // what keeps this list honest against the type.
         ("address", offset_of!(BlockIndex, address), size_of::<ElementEntry>()),
@@ -784,7 +784,7 @@ fn a_slot_into_the_object_list_survives_the_three_mutations_that_invalidated_an_
 /// A CEILING IS THE RIGHT SHAPE FOR THIS CLAIM. If even the ceiling is zero on the routed arm, no
 /// accounting of the list can make that arm pay, and the arm is where a real store's keys are.
 ///
-/// THE CONTROL IS THE ROUTED ARM, whose component was already absent -- so #2019 was the IDENTITY
+/// THE CONTROL IS THE ROUTED ARM, whose element name was already absent -- so #2019 was the IDENTITY
 /// on it and its rows-per-block cannot have moved off 1.0000. Its block count and its row count are
 /// both asserted BEFORE its result: a control that exercised no blocks reports no movement for the
 /// wrong reason, and a control over zero rows reports success whatever the trade.
@@ -857,7 +857,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
          whose keys held one block each would measure nothing"
     );
 
-    // THE CONTROL. #2019 was the IDENTITY on this arm -- a string block's component was already
+    // THE CONTROL. #2019 was the IDENTITY on this arm -- a string block's element name was already
     // absent -- so its rows-per-block cannot have moved off 1.0000, and that is the whole reason the
     // collapse does not reopen the route.
     assert_eq!(

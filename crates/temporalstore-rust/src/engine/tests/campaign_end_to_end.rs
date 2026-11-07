@@ -48,7 +48,7 @@
 //!
 //! `the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key` is the workload where the
 //! column effect's mechanism predicts NOTHING: routing takes the object key and never the
-//! component, so one key's many component blocks sit in one bucket at every range. If the column
+//! element name, so one key's many element name blocks sit in one bucket at every range. If the column
 //! effect showed up there too, the explanation attributed to it here would be wrong.
 
 #![allow(clippy::all)]
@@ -749,7 +749,7 @@ fn the_arm_a_bucket_sits_in_at_each_range_and_corpus_size() {
 /// The column effect is attributed to one mechanism: the range width is the modulus, so narrowing
 /// it groups distinct OBJECT KEYS into shared buckets and amortises the per-bucket node. This is
 /// the workload where that mechanism predicts NOTHING -- routing takes the object key and never
-/// the component, so one key's many component blocks sit in a single bucket at every range.
+/// the element name, so one key's many element name blocks sit in a single bucket at every range.
 ///
 /// A FIRST DRAFT OF THIS CONTROL COMPARED ONE ARM AGAINST ONE ARM and read -2.95% of request
 /// bytes, with the allocation COUNT apart by 8 in 110,629. Eight allocations cannot carry 189 kB.
@@ -824,15 +824,15 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
     }
 
     // NON-VACUITY BEFORE ANYTHING ELSE. "No effect" over a store that wrote nothing is the
-    // cheapest false control available, and so is one whose components never shared a bucket.
+    // cheapest false control available, and so is one whose element names never shared a bucket.
     for (range, buckets, blocks, widest, ..) in &runs {
         assert!(
             *blocks >= MEMBERS,
-            "an arm on 0..{range} filed {blocks} blocks for {MEMBERS} components"
+            "an arm on 0..{range} filed {blocks} blocks for {MEMBERS} element names"
         );
         assert_eq!(
             1, *buckets,
-            "an arm on 0..{range} occupied {buckets} buckets, so its components did not share a \
+            "an arm on 0..{range} occupied {buckets} buckets, so its element names did not share a \
              bucket and this is not the shape the control names"
         );
         assert!(
@@ -848,7 +848,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
             first,
             (run.1, run.2, run.3),
             "run {} on 0..{} filed {} buckets / {} blocks / widest {} against run 1's {:?}; \
-             routing takes the object key and never the component, so the range cannot split one \
+             routing takes the object key and never the element name, so the range cannot split one \
              key -- if it did here, the mechanism the column effect is attributed to is not the \
              mechanism",
             i + 1,

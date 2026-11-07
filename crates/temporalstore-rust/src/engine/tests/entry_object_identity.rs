@@ -9,27 +9,27 @@
 //! about thirty sites. This module is the refutation of removing the key, and it exists because the
 //! refutation is NOT the one the shape suggests.
 //!
-//! THE ID DOES NOT NAME AN OBJECT. It names a TRIPLE: the component is folded into it alongside the
-//! kind and the key, so two blocks of one object under different components carry DIFFERENT ids and
-//! no block of a multi-component object shares an id with any other. `address_footprint` recorded
-//! that as a note about a fixture ("a component is its own object rather than another block") and
+//! THE ID DOES NOT NAME AN OBJECT. It names a TRIPLE: the element name is folded into it alongside the
+//! kind and the key, so two blocks of one object under different element names carry DIFFERENT ids and
+//! no block of a multi-element-name object shares an id with any other. `address_footprint` recorded
+//! that as a note about a fixture ("an element name is its own object rather than another block") and
 //! `bucket_fill` recorded it as a property of the block handle. Neither drew the consequence, and the
 //! consequence is what decides this:
 //!
-//!   * A reader that matches a block against a caller's kind AND key AND component could be served
+//!   * A reader that matches a block against a caller's kind AND key AND element name could be served
 //!     by the id. The caller holds all three and `ShardState` holds the shard, so the id is
 //!     computable where the comparison happens. Five readers are of that shape.
-//!   * A reader that is COMPONENT-BLIND cannot. `bucket_index_component_block_addresses` is the
-//!     sharpest: it is the whole-object read path, it asks for EVERY COMPONENT of one key, and its
-//!     caller holds a key and no component list. The ids it would have to match are not derivable
-//!     from what it is given -- computing them needs the components, which are the answer it was
+//!   * A reader that is ELEMENT NAME-BLIND cannot. `bucket_index_element_name_block_addresses` is the
+//!     sharpest: it is the whole-object read path, it asks for EVERY ELEMENT NAME of one key, and its
+//!     caller holds a key and no element name list. The ids it would have to match are not derivable
+//!     from what it is given -- computing them needs the element names, which are the answer it was
 //!     called to produce. That is not a reader missing a parameter. It is a reader asking a question
 //!     the id cannot express.
 //!
 //! AND THE STORED SPELLING IS THE KEY'S CHARACTERS. `block_index_written_key` renders the page
-//! index's own map key through `block_ref_key_from_parts` as `kind:object_key:component:...`, and
+//! index's own map key through `block_ref_key_from_parts` as `kind:object_key:element_name:...`, and
 //! that string is what a dump writes and what the replay log shares. `blocks_per_bucket` pinned the
-//! COMPONENT's place in it -- found by mutation, because dropping a field from that key leaves every
+//! ELEMENT NAME's place in it -- found by mutation, because dropping a field from that key leaves every
 //! key distinct (the addresses differ), so uniqueness, key counts and ordering all still pass. The
 //! object key's place in it was pinned by nothing, and a mutation dropping it would have survived
 //! for exactly the same reason. It is pinned here.
@@ -41,7 +41,7 @@
 //! takes the shard, so it could compute the id on the derived side and compare on that. The two
 //! sites in that function that DO need the characters are its lookup probes -- `block_refs_for` and
 //! `remove_object_block_lookup_entry` -- because `ObjectBlockLookup` is character-keyed, per object,
-//! above the component. This distinction is drawn because the campaign has now three times found a
+//! above the element name. This distinction is drawn because the campaign has now three times found a
 //! reader that "cannot be given what it needs" to merely lack an argument.
 //!
 //! AND THE FALLBACK SITES PIN NOTHING HERE. Every
@@ -71,7 +71,7 @@ use crate::engine::storage_bucket_internals::StoredModelKind;
 /// The range a production shard is loaded on: `TS_SHARD_END_ROUTING_BUCKET=1023` (#1973).
 const OPERATOR_END: u32 = 1023;
 
-/// The kind every fixture here uses. Hash is the kind whose objects carry real components, which is
+/// The kind every fixture here uses. Hash is the kind whose objects carry real element names, which is
 /// the population the whole module is about.
 const FIXTURE_KIND: StoredModelKind = StoredModelKind::Hash;
 
@@ -129,7 +129,7 @@ fn ack_batch(engine: &TemporalEngine, commands: Vec<Command>) {
 }
 
 /// Hash containers only: one key, `MEMBERS_PER_KEY` fields, each field its own block and its own
-/// component. The population where the id's granularity and the object's disagree.
+/// element name. The population where the id's granularity and the object's disagree.
 fn seed_hash_containers(engine: &TemporalEngine) {
     let mut commands = Vec::with_capacity(CONTAINER_KEYS * MEMBERS_PER_KEY);
     for k in 0..CONTAINER_KEYS {
@@ -206,19 +206,19 @@ fn entry_named(object_key: &str, element_name: Option<&str>) -> (Arc<str>, Block
 ///
 /// #1986 recorded the opposite, and this test asserted it: "the object id names a block's triple,
 /// not an object". That was a DESCRIPTION OF A DEFECT rather than a property to preserve, and
-/// taking the component out of `stable_block_object_id` is what closes it. The three arms are
+/// taking the element name out of `stable_block_object_id` is what closes it. The three arms are
 /// INVERTED rather than deleted, so each still names the denominator it reads.
 ///
-///   1. FROM THE AUTHORITY. `stable_block_object_id` is asked once per component over one key --
-///      the same loop as before -- and the distinct answers counted. It is now ONE. The component
+///   1. FROM THE AUTHORITY. `stable_block_object_id` is asked once per element name over one key --
+///      the same loop as before -- and the distinct answers counted. It is now ONE. The element name
 ///      count is printed beside it and asserted greater than one, so an arm that stopped
-///      generating components could not report 1 for the wrong reason.
+///      generating element names could not report 1 for the wrong reason.
 ///   2. OVER A REAL STORE. A hash container's blocks are grouped by object key and the ids counted
 ///      per key: one key, `MEMBERS_PER_KEY` blocks, ONE id.
-///   3. THE CONTROL. A routed string key holds ONE block and its component was already `None`, so
+///   3. THE CONTROL. A routed string key holds ONE block and its element name was already `None`, so
 ///      this change is the IDENTITY on it: one block, one id, before and after. That arm asserts
 ///      the number it always asserted, which is what makes it a control -- if it moved, the
-///      collapse above would be something other than the component leaving the hash.
+///      collapse above would be something other than the element name leaving the hash.
 ///
 /// rust-internal: reads declarations and a seeded store, no product behaviour
 #[test]
@@ -227,31 +227,31 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     let element_names: Vec<String> = (0..MEMBERS_PER_KEY).map(|f| format!("f{f}")).collect();
     assert!(
         element_names.len() > 1,
-        "DENOMINATOR: {} component(s) generated. One id out of one component is arithmetic \
+        "DENOMINATOR: {} element_name(s) generated. One id out of one element name is arithmetic \
          rather than a collapse, and every row below would be vacuous",
         element_names.len()
     );
-    // The id no longer TAKES a component, so the component is varied by asking once per
-    // component and counting how many DISTINCT answers come back.
+    // The id no longer TAKES an element name, so the element name is varied by asking once per
+    // element name and counting how many DISTINCT answers come back.
     let folded: BTreeSet<u64> = element_names
         .iter()
         .map(|_| stable_block_object_id(1, FIXTURE_KIND.as_str(), "h0"))
         .collect();
     println!(
-        "\n=== stable_block_object_id over ONE key and {} components ===",
+        "\n=== stable_block_object_id over ONE key and {} element names ===",
         element_names.len()
     );
     println!(
-        "  distinct ids: {} over {} components",
+        "  distinct ids: {} over {} element names",
         folded.len(),
         element_names.len()
     );
     assert_eq!(
         1,
         folded.len(),
-        "one key and {} distinct components produced {} distinct ids, not 1. The component has \
+        "one key and {} distinct element names produced {} distinct ids, not 1. The element name has \
          left the identity, so every element of this key is the SAME object and a \
-         component-blind reader can be served by the id rather than only by the key",
+         element-name-blind reader can be served by the id rather than only by the key",
         element_names.len(),
         folded.len()
     );
@@ -263,7 +263,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     assert!(
         only != other_key && only != other_kind,
         "the id collapsed across the KEY or the KIND as well ({only} vs {other_key} vs \
-         {other_kind}), which is a broken derivation rather than a component-free one"
+         {other_kind}), which is a broken derivation rather than an element-name-free one"
     );
 
 
@@ -317,7 +317,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
             distinct.len(),
             "{object_key}'s {} blocks carry {} distinct ids, not 1. Every block of one object is an \
              ELEMENT of it and they are supposed to share the object's id; if they do not, the \
-             component is still reaching the hash",
+             element name is still reaching the hash",
             ids.len(),
             distinct.len()
         );
@@ -384,9 +384,9 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     assert_eq!(
         0, control_many,
         "{control_many} routed keys hold more than one id. A routed key is one block and its \
-         component was already `None`, so removing the component from the id is the IDENTITY on \
+         element name was already `None`, so removing the element name from the id is the IDENTITY on \
          this population -- this count was zero before the change and must still be zero, or \
-         the collapse measured above is not the component leaving the hash"
+         the collapse measured above is not the element name leaving the hash"
     );
 }
 
@@ -396,14 +396,14 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
 
 /// THE WRITTEN KEY OF A PAGE SPELLS ITS OBJECT KEY, SO AN ID CANNOT RENDER IT.
 ///
-/// `blocks_per_bucket` pinned the COMPONENT's place in this string after a mutation that dropped it
+/// `blocks_per_bucket` pinned the ELEMENT NAME's place in this string after a mutation that dropped it
 /// survived every test in the crate -- dropping any field from the written key leaves every key
 /// DISTINCT, because the addresses differ, so uniqueness, key counts and ordering all still pass.
 /// The object key's place in it was pinned by nothing and the identical mutation would have survived
 /// for the identical reason.
 ///
 /// THE POSITION IS DERIVED FROM THE AUTHORITY rather than restated. `block_ref_key_from_parts`
-/// builds `kind:object_key:component:...`, so the object key is the field after the kind -- and the
+/// builds `kind:object_key:element_name:...`, so the object key is the field after the kind -- and the
 /// precondition that makes that split meaningful, that neither the kind nor the key contains the
 /// separator, is ASSERTED rather than assumed.
 ///
@@ -434,7 +434,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
         Some(object_key),
         fields.next(),
         "the field after the model spelling is not the object key's characters. \
-         `block_ref_key_from_parts` renders `kind:object_key:component:...` and this string is the \
+         `block_ref_key_from_parts` renders `kind:object_key:element_name:...` and this string is the \
          block index's own stored map key, shared with the replay log -- so the entry cannot hand it \
          over without holding those characters: {written:?}"
     );
@@ -484,13 +484,13 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
 // 3. THE READER THAT REFUTES IT, DRIVEN.
 // =================================================================================================
 
-/// THE WHOLE-OBJECT READ PATH ASKS FOR EVERY COMPONENT OF ONE KEY, AND THE ID CANNOT EXPRESS THAT.
+/// THE WHOLE-OBJECT READ PATH ASKS FOR EVERY ELEMENT NAME OF ONE KEY, AND THE ID CANNOT EXPRESS THAT.
 ///
-/// `bucket_index_component_block_addresses(shard, model_id, object_key)` takes a key and NO
-/// component and returns one pair per component. This drives it over a real container and shows that
+/// `bucket_index_element_name_block_addresses(shard, model_id, object_key)` takes a key and NO
+/// element name and returns one pair per element name. This drives it over a real container and shows that
 /// the blocks it returns resolve to as many distinct ids as there are blocks -- so an id-keyed index
-/// could not have answered it: the caller would have to know the components in order to compute the
-/// ids, and the components are what it called to find out.
+/// could not have answered it: the caller would have to know the element names in order to compute the
+/// ids, and the element names are what it called to find out.
 ///
 /// THE DENOMINATOR IS PRINTED AND THE POPULATION ASSERTED, because this reader driven over an empty
 /// store returns an empty vector and reads exactly like a reader that answered.
@@ -519,10 +519,10 @@ fn the_whole_object_read_path_asks_for_every_element_name_of_one_key() {
         );
         // WHAT SEPARATES THE ELEMENTS OF THE ANSWER IS THE ADDRESS NOW, NOT A NAME.
         //
-        // This collected the pairs' COMPONENTS and asserted there were `MEMBERS_PER_KEY` distinct
-        // ones -- "the COMPONENT is what separates the elements; if these collapsed too, the reader
+        // This collected the pairs' ELEMENT NAMES and asserted there were `MEMBERS_PER_KEY` distinct
+        // ones -- "the ELEMENT NAME is what separates the elements; if these collapsed too, the reader
         // would have no way to tell one element of the answer from another". The pair's first slot
-        // is dead on both of `bucket_index_component_block_addresses`'s arms, so that set is now a
+        // is dead on both of `bucket_index_element_name_block_addresses`'s arms, so that set is now a
         // single `None` for every key and the assertion could never pass again.
         //
         // THE CLAIM IS NOT ABANDONED, IT MOVED TO THE TERM THAT STILL CARRIES IT. The reader is
@@ -530,14 +530,14 @@ fn the_whole_object_read_path_asks_for_every_element_name_of_one_key() {
         // ADDRESS each one is at, and that is counted here instead. It is a claim this can still
         // get wrong -- a filing that collapsed two elements onto one block, or a reader that
         // returned the same address twice, drops this count below the member count -- which is
-        // exactly the failure the component set was watching for, observed through the term that
+        // exactly the failure the element name set was watching for, observed through the term that
         // still exists.
         let separators: BTreeSet<String> = pairs
             .iter()
             .map(|(_, address)| format!("{address:?}"))
             .collect();
         // THE IDS THESE PAIRS RESOLVE TO. One per KEY now, not one per block -- which is why
-        // the loop below counts them rather than the components: the component set is what the
+        // the loop below counts them rather than the element names: the element name set is what the
         // reader actually answers with, and the id set is what an id-keyed reader would have.
         let ids: BTreeSet<u64> = pairs
             .iter()
@@ -552,16 +552,16 @@ fn the_whole_object_read_path_asks_for_every_element_name_of_one_key() {
         assert_eq!(
             MEMBERS_PER_KEY,
             pairs.len(),
-            "{object_key} answered with {} pairs, not the {MEMBERS_PER_KEY} components the seed \
+            "{object_key} answered with {} pairs, not the {MEMBERS_PER_KEY} element names the seed \
              wrote. An empty or short answer here reads exactly like a reader that resolved",
             pairs.len()
         );
         // AND THE REASON THIS READER CANNOT BE HANDED AN ID, RESTATED THE OTHER WAY UP.
         //
         // It used to be that the id set was as LARGE as the answer and computable only from it.
-        // Since the component left the identity the id set has collapsed to ONE, and the point
+        // Since the element name left the identity the id set has collapsed to ONE, and the point
         // stands more strongly: a single number cannot name which of {MEMBERS_PER_KEY} elements
-        // is wanted, so the reader still has to be given the key and answer with components.
+        // is wanted, so the reader still has to be given the key and answer with element names.
         assert_eq!(
             1,
             ids.len(),
@@ -660,7 +660,7 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
         // bits do not collide and fit the eight borrowed, asserted beside the packed accessors in
         // `engine_storage_state.rs`. A bit budget is to a packed field what an offset is to a
         // declared one.
-        // The `component` row is gone with the field. `field_width` infers from the field it is
+        // The `element_name` row is gone with the field. `field_width` infers from the field it is
         // handed, so a row for a field that does not exist cannot be written at all -- which is
         // the property this list was built for.
         ("address", field_width(&sample.address), offset_of!(BlockIndex, address)),

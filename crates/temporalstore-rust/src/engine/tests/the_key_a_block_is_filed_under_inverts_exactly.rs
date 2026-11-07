@@ -486,7 +486,7 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
             );
             assert_eq!(
                 "", parts.element_name,
-                "[CLAUSE every-block-inverts] the component slot of {key:?} holds {:?}; the \
+                "[CLAUSE every-block-inverts] the element name slot of {key:?} holds {:?}; the \
                  renderer passes a literal `None`, so a non-empty slot means the key was composed \
                  by something else",
                 parts.element_name
@@ -591,7 +591,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
             parts.object_key
         );
         assert_eq!("string", parts.kind, "[CLAUSE awkward-keys-survive] the kind moved");
-        assert_eq!("", parts.element_name, "[CLAUSE awkward-keys-survive] the component slot moved");
+        assert_eq!("", parts.element_name, "[CLAUSE awkward-keys-survive] the element name slot moved");
         assert_eq!(
             (7, 9, 126, 4, 4),
             (
@@ -623,7 +623,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
         );
     }
 
-    // AND A NON-EMPTY COMPONENT IS CARRIED TOO, because an index written before the element name
+    // AND A NON-EMPTY ELEMENT NAME IS CARRIED TOO, because an index written before the element name
     // left the entry spells one -- `block_entry_names::OLD_STORE_INDEX` holds `hash:k:f0:1:9:3:4:4`
     // -- and the object key in such a key must still come back whole rather than absorbing it.
     let named = block_ref_key_from_parts("hash", "a:b", Some("f0"), 1, 9, 3, 4, 4);
@@ -701,7 +701,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 ///
 /// # AND IT IS THE HARDEST AVAILABLE CASE, WHICH IS WHY IT IS THIS FIXTURE AND NOT A NEWER ONE
 ///
-/// Its keys carry a NON-EMPTY component slot -- `hash:ungated/hash:f0:0:0:27:0:0` and
+/// Its keys carry a NON-EMPTY element name slot -- `hash:ungated/hash:f0:0:0:27:0:0` and
 /// `zset:ungated/zset:6d30:0:54:34:0:0` -- from an era when a block entry named its element. A parse
 /// that searched for its fields rather than counting them from the END would read the object key
 /// short on exactly these keys and would still look right on every key this binary writes. Nothing
@@ -802,7 +802,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
          injected, so the equalities above are equalities it cannot distinguish from inequalities"
     );
 
-    // ---- AND THE COMPONENT-BEARING KEY IS THE CASE THIS FIXTURE EXISTS FOR ----
+    // ---- AND THE ELEMENT NAME-BEARING KEY IS THE CASE THIS FIXTURE EXISTS FOR ----
     assert!(
         bytes.contains("hash:ungated/hash:f0:0:0:27:0:0"),
         "[CLAUSE old-bytes-carry-the-fields] the fixture carries no element-named block key, so the \

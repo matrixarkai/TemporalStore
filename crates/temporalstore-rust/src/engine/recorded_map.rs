@@ -119,10 +119,10 @@ pub(super) trait RecordedKind: Sized + 'static {
     /// every kind already carries -- and deliberately NO DEFAULT, for the same reason
     /// `serialize_entries` has none.
     ///
-    /// THIS EXISTS BECAUSE A ZSET'S COMPONENT STOPPED SPELLING THE SCORE. Every other kind's level-2
-    /// value is fully named by its component and its address -- a hash field, a set member, a list
+    /// THIS EXISTS BECAUSE A ZSET'S ELEMENT NAME STOPPED SPELLING THE SCORE. Every other kind's level-2
+    /// value is fully named by its element name and its address -- a hash field, a set member, a list
     /// sequence -- so `None` costs them nothing. A zset's value is `(u64, BlockAddress)`, and the
-    /// `u64` had been riding the component as `{biased:016x}` until that string collapsed to the
+    /// `u64` had been riding the element name as `{biased:016x}` until that string collapsed to the
     /// member alone; this is where it rides instead, on replay's only remaining path to it. A kind
     /// added later that also needs a byte string beside its address has to say so here rather than
     /// inherit silence -- the same defect class `serialize_entries`'s own doc comment describes.
@@ -215,7 +215,7 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 //
 // FREE FUNCTIONS, NOT METHODS, and that is forced rather than stylistic.
 // `upsert_bucket_index_block` takes `&mut ShardState` -- the WHOLE shard -- because filing a block
-// reloads a released bucket, interns the component name and touches the pending-flag set. A model
+// reloads a released bucket, interns the element name and touches the pending-flag set. A model
 // map is a FIELD of `ShardState`, so a method holding `&mut self` cannot lend the whole shard to
 // the emitter, and a closure capturing the shard fails for the same reason. A free function clears
 // it because the two borrows are SEQUENTIAL: the emitter's `&mut shard` ends when it returns, and
@@ -224,9 +224,9 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 
 /// Record an element's block and put it in the resident map, in that order, in one call.
 ///
-/// `component` is the element rendered the way the block index names it; `element` is the level-2
+/// `element_name` is the element rendered the way the block index names it; `element` is the level-2
 /// key. BOTH are taken rather than one derived from the other, because every caller has already
-/// computed the component to derive the block ordinal and the block frame from it, and deriving it
+/// computed the element name to derive the block ordinal and the block frame from it, and deriving it
 /// again here would be a second rendering of one identity -- the shape that let a claim about a
 /// hash function be relayed as a claim about a hash path.
 ///
@@ -247,13 +247,13 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// it removes the authority". IT IS NOT THAT, and the correction is worth having even though the
 /// conclusion survives: the map's key is `element`, the parameter beside it, and the two are
 /// different VALUES rather than two spellings of one. For `SetKind` the caller passes
-/// `Some(set_component(member))` here and the raw `member` bytes as `element`; the map is keyed by
+/// `Some(set_element_name(member))` here and the raw `member` bytes as `element`; the map is keyed by
 /// the bytes.
 ///
 /// WHAT IT FEEDS, AFTER THE REPLAY PATH STOPPED ASKING THE OUTCOME. Both readers are inside
 /// `upsert_bucket_index_block_inner`:
 ///
-///   1. `WalOutcomeItem::component`. The replay path no longer READS that field for a container
+///   1. `WalOutcomeItem::element_name`. The replay path no longer READS that field for a container
 ///      kind -- it reads the block -- so this reader is now the record's own copy rather than
 ///      something a recovery depends on. It is still written, because the field cannot be removed
 ///      while six timestamped kinds read it and its absence is a meaning; the argument is set out
@@ -291,7 +291,7 @@ pub(super) fn install_element<K: RecordedKind>(
     K::Elements: AddressedElementMap,
 {
     // COMPUTED BEFORE `value` MOVES INTO THE RECORD BELOW. The only producer of a `Some` today is
-    // `ZSetKind`, whose score has nowhere else to ride now that the component does not spell it.
+    // `ZSetKind`, whose score has nowhere else to ride now that the element name does not spell it.
     let outcome_value = K::outcome_value(&value);
     // WHICH BLOCK THIS WRITE REPLACES, ASKED WHILE THE MAP STILL HOLDS THE OLD ANSWER.
     //
@@ -301,7 +301,7 @@ pub(super) fn install_element<K: RecordedKind>(
     // See `AddressedElementMap` for the two measured losses that leaves.
     //
     // ASKED ONLY WHEN THE ENTRY IS BLOCK-NAMED. While an entry names its element the filer's own
-    // component-keyed supersede already takes the predecessor, so there is nothing to tell it and
+    // element-name-keyed supersede already takes the predecessor, so there is nothing to tell it and
     // nothing to pay for: the ungated path does not reach the scan at all.
     let replaces = if super::storage_bucket_internals::index_entry_names_a_block(K::KIND) {
         K::resident(shard).block_an_element_vacates(object_key, &element, &address)
@@ -1077,7 +1077,7 @@ impl RecordedKind for ZSetKind {
     }
 
     /// EIGHT BIG-ENDIAN BYTES OF THE BIASED SCORE -- the one kind that answers `Some` here, and
-    /// the whole reason the function exists. `component` no longer spells this; replay's only
+    /// the whole reason the function exists. `element_name` no longer spells this; replay's only
     /// other source for a zset insert's score, so a value-less install on that path is a replay
     /// that cannot recover what the write did and must refuse rather than guess (see
     /// `lifecycle`'s `"zset"` replay arm).

@@ -10,8 +10,8 @@
 //!
 //! **Both fail**, which completes the set at five:
 //!
-//!     hash outcome at sequence 3 ... (address UNRESOLVED, component present, 5 chars)
-//!     set  outcome at sequence 3 ... (address UNRESOLVED, component present, 10 chars)
+//!     hash outcome at sequence 3 ... (address UNRESOLVED, element name present, 5 chars)
+//!     set  outcome at sequence 3 ... (address UNRESOLVED, element name present, 10 chars)
 //!
 //! -- the hash field `alpha`, and the same member hex-encoded for the set. So EVERY typed removal
 //! refuses the load: a deleted hash field, a removed set member, a popped list element, a rescored

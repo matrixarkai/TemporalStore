@@ -5,7 +5,7 @@
 // states its boundary recovers.
 //
 // A trim drops the oldest points and records that they went. Recording each one costs an outcome
-// item per point -- the kind, the key, the instant as a decimal component, a derived object id --
+// item per point -- the kind, the key, the instant as a decimal element name, a derived object id --
 // so a series below its bound records P appends per command, and the same series AT its bound
 // records P appends AND P removals. The removal count tracks the APPEND WIDTH, not anything the
 // caller asked for, and a bounded series is at its bound essentially always, because that is what a

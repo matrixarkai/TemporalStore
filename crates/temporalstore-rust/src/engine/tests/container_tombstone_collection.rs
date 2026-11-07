@@ -101,11 +101,11 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
         "a kind whose blocks name no element produced a tombstone block, which would be a block nothing \
          can interpret"
     );
-    // A component the kind's spelling cannot produce: a set's components are hex, and this is not.
+    // An element name the kind's spelling cannot produce: a set's element names are hex, and this is not.
     let not_hex = crate::engine::container_blocks::tombstone_block("set", "zz-not-hex");
     assert!(
         not_hex.is_none(),
-        "a component a set's spelling cannot name produced a tombstone page"
+        "an element name a set's spelling cannot name produced a tombstone page"
     );
 
     let counted = crate::engine::container_blocks::unframed_container_removal_count();
@@ -120,17 +120,17 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     // AND THE FOUR REAL KINDS ALL FRAME, so the counter above is a defect signal and not a tolerance.
     //
     // THE ZSET FIXTURE HERE WAS STALE AND PASSED ANYWAY, which is why it is called out rather than
-    // quietly corrected. It spelled the component `{score:016x}{hex(member)}` -- the spelling zset
-    // components had BEFORE the score moved to the WAL outcome's value slot. That string is still
+    // quietly corrected. It spelled the element name `{score:016x}{hex(member)}` -- the spelling zset
+    // element names had BEFORE the score moved to the WAL outcome's value slot. That string is still
     // all hex characters, so `hex::decode` accepted it and the block framed, and the arm went green
-    // while exercising a component shape the engine no longer produces: the score prefix was being
+    // while exercising an element name shape the engine no longer produces: the score prefix was being
     // framed as eight leading bytes of the MEMBER. A fixture whose premise has gone stale can keep
     // passing for the wrong reason, and only the round-trip added below would have caught it.
     crate::engine::container_blocks::reset_unframed_container_removal_count();
     let element_names = [
         ("hash", "some-field".to_string()),
         ("set", hex::encode(b"a-member")),
-        // The CURRENT spelling: the member alone. The score is not in a component any more.
+        // The CURRENT spelling: the member alone. The score is not in an element name any more.
         ("zset", hex::encode(b"a-member")),
         ("list", format!("{:016x}", 7u64)),
     ];
@@ -147,19 +147,19 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                 // The tombstone block's single item carries the ELEMENT KEY as its key, so the
                 // element's identity is already stored durably in the block the entry points at.
                 // Asserting the inverse here is what makes that a measured property rather than a
-                // reading of the encoder: whatever `element_key_from_component` put in,
-                // `component_from_element_key` must give back, for every one of the four kinds.
+                // reading of the encoder: whatever `element_key_from_element_name` put in,
+                // `element_name_from_element_key` must give back, for every one of the four kinds.
                 //
                 // It is also the lossy arm's floor. `ScoreThenMember` drops the score on the way
                 // back -- deliberately, the resident map is the score's only copy -- so if a
-                // component ever carried a score again this assertion is what reddens, instead of
+                // element name ever carried a score again this assertion is what reddens, instead of
                 // the score silently becoming eight bytes of somebody's member.
                 let spelling = crate::engine::container_blocks::ElementKeySpelling::for_kind(kind)
                     .unwrap_or_else(|| panic!("{kind} has no element-key spelling"));
                 let recovered =
                     crate::engine::container_blocks::element_name_from_element_key(spelling, &items[0].key)
                         .unwrap_or_else(|| {
-                            panic!("{kind}: the tombstone block's own key did not read back as a component")
+                            panic!("{kind}: the tombstone block's own key did not read back as an element name")
                         });
                 assert_eq!(
                     element_name, &recovered,
@@ -187,8 +187,8 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     // decides whether the blocks can be the only record of a removed element.
     //
     // The two that returned `None` are a kind with no element-key spelling (`string`, whose page is
-    // its whole object, so no container removal ever asks) and a set component that is not hex. A
-    // set component is `hex::encode(member)`, computed by the engine and never by a caller, so a
+    // its whole object, so no container removal ever asks) and a set element name that is not hex. A
+    // set element name is `hex::encode(member)`, computed by the engine and never by a caller, so a
     // non-hex one cannot arrive from a `SetRemove`. Both are reached here by calling the codec
     // directly with inputs no write path produces. So there is no removal of a container element
     // that stores no block -- stated as the conclusion it is, because "a side table is redundant

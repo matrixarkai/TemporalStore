@@ -157,7 +157,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     // SIDE 1: what the engine SERVES as this object's membership -- the resident map.
     //
     // RE-ATTRIBUTED, AND THAT IS THE ONE EDIT THE WIDTH STEP FORCED IN THIS ARM. This side read
-    // `bucket_index_component_block_addresses` and recovered each member from the block entry's own
+    // `bucket_index_element_name_block_addresses` and recovered each member from the block entry's own
     // element name. `BlockIndex` has no element-name field now, so that walk answers for NO
     // members, and this arm's floor is what said so: "the live index names 0 of 12 members after
     // one removal, so the removal did not do what this fixture assumes". The removal was fine; the
@@ -312,7 +312,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
         .collect();
     assert!(
         mismatched.is_empty(),
-        "{} derived element(s) carry a value that is not the member their component spells: {:?}",
+        "{} derived element(s) carry a value that is not the member their element name spells: {:?}",
         mismatched.len(),
         mismatched
     );

@@ -842,12 +842,12 @@ impl TemporalEngine {
         // capture below have anything to preserve -- see the single-command execute path, whose
         // guard this mirrors.
         let mut batch_membership_shrank = false;
-        // Some(components) while every mutating command in the batch is a pure block-upsert;
+        // Some(element names) while every mutating command in the batch is a pure block-upsert;
         // one non-upsert write downgrades the whole record to snapshot semantics.
         let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
         // Every container element any command in this batch added or replaced. Unlike the
-        // components above this is never downgraded to `None`: it is a list of elements, not a
+        // element names above this is never downgraded to `None`: it is a list of elements, not a
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
         // does not make the others' identities uncarryable.
         let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
@@ -1116,9 +1116,9 @@ impl TemporalEngine {
                 let maintained_bucket_index = if shard.bucket_index.bucket_map.is_empty() {
                     false
                 } else {
-                    // Prefer the components this command actually wrote. The whole-object sync
+                    // Prefer the element names this command actually wrote. The whole-object sync
                     // below re-upserts every field the object holds, which is quadratic in that
-                    // count; this is one upsert per written component. It reports false when it
+                    // count; this is one upsert per written element name. It reports false when it
                     // cannot model the write, and the whole-object sync then runs.
                     let narrow = match written_element_names.as_deref() {
                         Some(element_names) => {
@@ -1483,7 +1483,7 @@ impl TemporalEngine {
             /// The OBJECT key of the block, which is the key its routing bucket is derived from.
             ///
             /// A hash field's block is filed under the hash's key, not under the field -- the field
-            /// is the block's COMPONENT. Reading the bucket from the field would key the cache under
+            /// is the block's ELEMENT NAME. Reading the bucket from the field would key the cache under
             /// a bucket nothing wrote.
             fn object_key(&self) -> &str {
                 match self {
@@ -1493,7 +1493,7 @@ impl TemporalEngine {
             }
 
             /// The ELEMENT of that object, which the comment above already calls the block's
-            /// component. It was named there and then thrown away; a read that resolves
+            /// element name. It was named there and then thrown away; a read that resolves
             /// through a log record needs it to pick the right block out of the record.
             fn element_name(&self) -> Option<&str> {
                 match self {
@@ -1506,7 +1506,7 @@ impl TemporalEngine {
             ///
             /// Named here rather than at the read because the two variants ARE the two kinds, so a
             /// `match` at the call site would be this function written out again. The kind is not
-            /// recoverable from the key or the component: a `string` and a `hash` may share a key,
+            /// recoverable from the key or the element name: a `string` and a `hash` may share a key,
             /// and it is the kind that tells their blocks apart.
             fn kind(&self) -> &'static str {
                 match self {

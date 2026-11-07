@@ -21,21 +21,21 @@
 //!     of nothing else, and that distribution is measured here -- as a histogram with percentiles
 //!     and a MAX, never a mean, because a mean of 1.98 blocks a bucket in this engine once
 //!     contained ZERO buckets holding two.
-//!   * `component` is TWO POPULATIONS, and this module was written expecting one. The reasoning
-//!     was that a container key's fields are each their own block and the component is the only
-//!     thing telling them apart, so distinct component names must grow with the blocks -- true
+//!   * `element_name` is TWO POPULATIONS, and this module was written expecting one. The reasoning
+//!     was that a container key's fields are each their own block and the element name is the only
+//!     thing telling them apart, so distinct element names must grow with the blocks -- true
 //!     WITHIN one object and false ACROSS a store, because a schema repeats: forty hashes sharing
-//!     a hundred field names hold 400 distinct components over 4,000 blocks. The anti-vacuity
+//!     a hundred field names hold 400 distinct element names over 4,000 blocks. The anti-vacuity
 //!     assertion caught that and refused to score, so the verdict is stated per population. A
-//!     repeated SCHEMA name pays; a CONTENT-DERIVED one -- which is what `zset_component` and
-//!     `timestamped_component` build -- does not, and cannot be replaced by an ordinal at all
+//!     repeated SCHEMA name pays; a CONTENT-DERIVED one -- which is what `zset_element_name` and
+//!     `timestamped_element_name` build -- does not, and cannot be replaced by an ordinal at all
 //!     without a second map to get back.
 //!
-//! AND ONE THING THE NAMES TURN OUT TO BE THAT IS WORTH MORE THAN THE POINTER. A component name is
-//! not a label -- `zset_component` is `format!("{biased:016x}{}", hex::encode(member))` and
-//! `timestamped_component` is `format!("{stored_key:016x}{identity:016x}")`. They are HEX TEXT FOR
+//! AND ONE THING THE NAMES TURN OUT TO BE THAT IS WORTH MORE THAN THE POINTER. A element name is
+//! not a label -- `zset_element_name` is `format!("{biased:016x}{}", hex::encode(member))` and
+//! `timestamped_element_name` is `format!("{stored_key:016x}{identity:016x}")`. They are HEX TEXT FOR
 //! NUMBERS: sixteen characters carrying eight bytes, and `hex::encode` is exactly twice its input.
-//! Measured here at 81.3% of component text in a container corpus and 97.1% with twenty-byte
+//! Measured here at 81.3% of element name text in a container corpus and 97.1% with twenty-byte
 //! members -- separately from the pointer, because it is a bigger term and it needs no table, no
 //! ordinal and no map.
 //!
@@ -133,7 +133,7 @@ fn seed_routed_keys(engine: &TemporalEngine, records: usize) {
 }
 
 /// Container keys: every element is its own block under ONE object key. The population a handle
-/// wins on, and the one whose component names are hex.
+/// wins on, and the one whose element names are hex.
 fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
     let mut commands = Vec::with_capacity(keys * members);
     for k in 0..keys {
@@ -181,7 +181,7 @@ fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
 /// Containers whose members are WIDE, so the doubling in `hex::encode` is visible.
 ///
 /// A set member is stored as `hex::encode(member)` and a zset member as `{biased:016x}` followed
-/// by the same, so a twenty-byte member becomes a forty- or fifty-six-character component name.
+/// by the same, so a twenty-byte member becomes a forty- or fifty-six-character element name.
 /// Hash fields are seeded alongside deliberately: a field is the caller's own short text, and it is
 /// the population the classifier below has to NOT match.
 fn seed_wide_members(engine: &TemporalEngine, keys: usize, members: usize) {
@@ -225,13 +225,13 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) {
 #[derive(Debug, Default, Clone)]
 struct BlocksPerObject {
     histogram: BTreeMap<usize, usize>,
-    /// Distinct component names per object, same shape. The term that decides `component`.
+    /// Distinct element names per object, same shape. The term that decides `element_name`.
     element_names_per_object: BTreeMap<usize, usize>,
-    /// Distinct component names per BUCKET: a candidate table scoped to a bucket pays per entry.
+    /// Distinct element names per BUCKET: a candidate table scoped to a bucket pays per entry.
     element_names_per_bucket: BTreeMap<usize, usize>,
     object_key_bytes: usize,
     element_name_name_bytes: usize,
-    /// Component-name bytes that are HEX SPELLINGS OF NUMBERS, so half of them carry nothing.
+    /// Element name-name bytes that are HEX SPELLINGS OF NUMBERS, so half of them carry nothing.
     hex_element_name_name_bytes: usize,
     hex_element_names: usize,
     blocks: usize,
@@ -273,8 +273,8 @@ impl BlocksPerObject {
         );
         for (name, map) in [
             ("blocks per OBJECT", &self.histogram),
-            ("components per OBJECT", &self.element_names_per_object),
-            ("components per BUCKET", &self.element_names_per_bucket),
+            ("element names per OBJECT", &self.element_names_per_object),
+            ("element names per BUCKET", &self.element_names_per_bucket),
         ] {
             let n: usize = map.values().copied().sum();
             println!(
@@ -293,8 +293,8 @@ impl BlocksPerObject {
             }
         }
         println!(
-            "  object-key text {} B over {} objects; component text {} B, of which {} B in {} hex \
-             spellings of numbers ({:.1}% of component text)",
+            "  object-key text {} B over {} objects; element name text {} B, of which {} B in {} hex \
+             spellings of numbers ({:.1}% of element name text)",
             self.object_key_bytes,
             self.objects(),
             self.element_name_name_bytes,
@@ -309,10 +309,10 @@ impl BlocksPerObject {
     }
 }
 
-/// Is this component name a hex spelling of numbers rather than a caller's own text?
+/// Is this element name a hex spelling of numbers rather than a caller's own text?
 ///
-/// `zset_component` is `{biased:016x}` followed by `hex::encode(member)`, and
-/// `timestamped_component` is `{stored_key:016x}{identity:016x}`. Both are even-length, all-hex,
+/// `zset_element_name` is `{biased:016x}` followed by `hex::encode(member)`, and
+/// `timestamped_element_name` is `{stored_key:016x}{identity:016x}`. Both are even-length, all-hex,
 /// and at least sixteen characters. A hash FIELD is the caller's own bytes and is not, which is
 /// what stops this counting everything and reporting a saving that is not there.
 fn is_hex_spelling_of_numbers(name: &str) -> bool {
@@ -341,7 +341,7 @@ fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
                 ))
                 .or_default();
             slot.0 += 1;
-            // NO ELEMENT NAME ON THE ENTRY, so the component columns of this census -- distinct
+            // NO ELEMENT NAME ON THE ENTRY, so the element name columns of this census -- distinct
             // names per object, name bytes, and the hex-spelled share of them -- are zero by
             // construction. They are kept as columns because the arms below print them as the
             // denominator for what a name WOULD have cost; each of those is restated where it is
@@ -513,7 +513,7 @@ impl CandidateTable {
     }
 }
 
-/// What a table over `object_key` and a table over `component` would charge, measured.
+/// What a table over `object_key` and a table over `element_name` would charge, measured.
 ///
 /// TWO BYTE COLUMNS AND THEY ANSWER DIFFERENT QUESTIONS, which is a correction this measurement
 /// forced rather than a distinction planned for it. `ALLOC_CHUNK_BYTES` is CUMULATIVE: a `Vec` and a
@@ -578,7 +578,7 @@ fn resident_bytes(table: &CandidateTable) -> usize {
 /// bytes of FIELD, but `BlockIndex` is 8-aligned and carries three flag bytes in its slack, so
 /// what the structure actually loses is a whole eight-byte step and then some of the slack. The
 /// measured steps, from the layout probe below: 88 with three names, 72 with the model spelling as
-/// one byte, 56 with the component as a two-byte ordinal as well, 48 with all three. Every one of
+/// one byte, 56 with the element name as a two-byte ordinal as well, 48 with all three. Every one of
 /// those is SIXTEEN, not twelve.
 #[allow(dead_code)]
 const ENTRY_BYTES_A_HANDLE_SAVES: usize = 16;
@@ -816,22 +816,22 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     );
 }
 
-/// A HANDLE FOR `component` IS DECIDED BY HOW MANY DISTINCT NAMES THE STORE HOLDS, AND THAT IS TWO
+/// A HANDLE FOR `element_name` IS DECIDED BY HOW MANY DISTINCT NAMES THE STORE HOLDS, AND THAT IS TWO
 /// POPULATIONS TOO.
 ///
 /// THIS TEST WAS WRITTEN TO REFUTE THE HANDLE OUTRIGHT and its own anti-vacuity assertion refused to
-/// let it. The reasoning was that a container key's fields are each their own block and the component
-/// is the only thing telling them apart, so distinct component names must grow with the blocks. That
+/// let it. The reasoning was that a container key's fields are each their own block and the element name
+/// is the only thing telling them apart, so distinct element names must grow with the blocks. That
 /// is true WITHIN one object and false ACROSS a store: forty hashes with the same hundred field
-/// names hold 400 distinct components over 4,000 blocks, because a schema repeats. The assertion
+/// names hold 400 distinct element names over 4,000 blocks, because a schema repeats. The assertion
 /// fired, and the verdict is stated by population instead.
 ///
 /// THE TWO POPULATIONS, and which one a real store is in depends on where the name comes from:
 ///
 ///   * A SCHEMA name -- a hash field -- repeats across every object of that shape, so distinct
 ///     names are bounded by the schema and a handle PAYS.
-///   * A CONTENT-DERIVED name does not repeat at all. `zset_component` is
-///     `format!("{biased:016x}{}", hex::encode(member))` and `timestamped_component` is
+///   * A CONTENT-DERIVED name does not repeat at all. `zset_element_name` is
+///     `format!("{biased:016x}{}", hex::encode(member))` and `timestamped_element_name` is
 ///     `format!("{stored_key:016x}{identity:016x}")`: the name IS the lookup key, computed from the
 ///     element. One entry per block, and a handle LOSES.
 ///
@@ -870,8 +870,8 @@ fn a_handle_for_the_element_name_costs_a_table_entry_per_block() {
 
     const SAVED: f64 = ENTRY_BYTES_A_HANDLE_SAVES as f64;
     println!(
-        "\n=== A HANDLE FOR component: {SAVED} B a block saved against one table entry per \
-           DISTINCT COMPONENT ===\n  store path length {} characters",
+        "\n=== A HANDLE FOR element name: {SAVED} B a block saved against one table entry per \
+           DISTINCT ELEMENT NAME ===\n  store path length {} characters",
         path_lengths[0]
     );
     println!(
@@ -911,7 +911,7 @@ fn a_handle_for_the_element_name_costs_a_table_entry_per_block() {
     for (label, cost, _) in &schema {
         assert!(
             cost.entries_per_block() < 0.5,
-            "{label}: {} distinct components over {} blocks. This arm exists to hold a REPEATED \
+            "{label}: {} distinct element names over {} blocks. This arm exists to hold a REPEATED \
              schema -- the same hundred field names across forty objects -- so distinct names are \
              supposed to be far fewer than blocks",
             cost.entries,
@@ -929,7 +929,7 @@ fn a_handle_for_the_element_name_costs_a_table_entry_per_block() {
     for (label, cost, _) in &content {
         assert!(
             cost.entries_per_block() > 0.9,
-            "{label}: {} distinct components over {} blocks. This arm exists to hold names that do \
+            "{label}: {} distinct element names over {} blocks. This arm exists to hold names that do \
              NOT repeat -- one container whose two thousand members are all distinct -- so the \
              table is supposed to hold about one entry per block",
             cost.entries,
@@ -944,7 +944,7 @@ fn a_handle_for_the_element_name_costs_a_table_entry_per_block() {
     }
 
     println!(
-        "\n  VERDICT, BY POPULATION. Where a component name is a repeated SCHEMA name the table \n\
+        "\n  VERDICT, BY POPULATION. Where a element name is a repeated SCHEMA name the table \n\
            holds {:.2} B a block and a handle nets {:+.2}. Where it is CONTENT-DERIVED -- a zset \n\
            member, a timestamped entry -- it holds {:.2} B a block and a handle nets {:+.2}. A \n\
            single blended figure would hide that, and the second population is the one a \n\
@@ -956,7 +956,7 @@ fn a_handle_for_the_element_name_costs_a_table_entry_per_block() {
     );
 }
 
-/// THE COMPONENT NAME IS HEX TEXT FOR NUMBERS, AND HALF OF IT CARRIES NOTHING.
+/// THE ELEMENT NAME IS HEX TEXT FOR NUMBERS, AND HALF OF IT CARRIES NOTHING.
 ///
 /// A separate and larger term than the pointer, measured separately because it is a separate
 /// change: it needs no table, no ordinal and no map. `{biased:016x}` is sixteen characters for
@@ -979,12 +979,12 @@ fn the_element_name_name_is_hex_text_for_numbers_and_that_half_is_measured() {
         path_lengths.push(dir.path().as_os_str().len());
         let engine = probe_engine(dir.path());
         load_shard_over(&engine, end);
-        // Sets and zsets produce hex component names; hash fields are the caller's own short
+        // Sets and zsets produce hex element names; hash fields are the caller's own short
         // text. Both, so the classifier is exercised in both directions in the same store and a
         // predicate that matched everything would fail below.
         seed_wide_members(&engine, 4, 100);
         let measured = blocks_per_object(&engine);
-        measured.report(&format!("hex component census, {range_label}"));
+        measured.report(&format!("hex element name census, {range_label}"));
         rows.push((range_label.to_string(), measured));
     }
     for length in &path_lengths {
@@ -994,24 +994,24 @@ fn the_element_name_name_is_hex_text_for_numbers_and_that_half_is_measured() {
     for (label, measured) in &rows {
         assert!(
             measured.element_name_name_bytes > 0,
-            "{label}: no component text at all, so the ratio below is free"
+            "{label}: no element name text at all, so the ratio below is free"
         );
         // BOTH directions of the predicate must be reached, or it is not discriminating.
         assert!(
             measured.hex_element_names > 0,
-            "{label}: the predicate classified NO component as a hex spelling, and this fixture \
+            "{label}: the predicate classified NO element name as a hex spelling, and this fixture \
              seeds zsets and lists which produce them"
         );
         assert!(
             measured.hex_element_name_name_bytes < measured.element_name_name_bytes,
-            "{label}: the predicate classified EVERY component byte as hex, and this fixture also \
+            "{label}: the predicate classified EVERY element name byte as hex, and this fixture also \
              seeds hash fields, which are the caller's own text. A predicate that matches \
              everything is not measuring anything"
         );
         let hex_share =
             measured.hex_element_name_name_bytes as f64 / measured.element_name_name_bytes as f64;
         println!(
-            "  {label}: {:.1}% of component text is a hex spelling of numbers; storing those as \
+            "  {label}: {:.1}% of element name text is a hex spelling of numbers; storing those as \
              bytes would halve {} B to {} B",
             100.0 * hex_share,
             measured.hex_element_name_name_bytes,
@@ -1021,18 +1021,18 @@ fn the_element_name_name_is_hex_text_for_numbers_and_that_half_is_measured() {
 }
 
 // =================================================================================================
-// LAYOUT. What each name's handle does to the entry, and to the component level around it.
+// LAYOUT. What each name's handle does to the entry, and to the element name level around it.
 // =================================================================================================
 
-// `mod ordinal_layout` AND `an_ordinal_does_not_cost_the_component_list_its_tag` WERE HERE.
+// `mod ordinal_layout` AND `an_ordinal_does_not_cost_the_element_name_list_its_tag` WERE HERE.
 //
-// They measured whether replacing `ComponentBlocks`'s component NAME with a two-byte ordinal would
-// cost `ComponentList` the tag that rode the name's niche. Mirror types with `NonZeroU16`,
+// They measured whether replacing `ElementNameBlocks`'s element name NAME with a two-byte ordinal would
+// cost `ElementNameList` the tag that rode the name's niche. Mirror types with `NonZeroU16`,
 // `NonZeroU32` and a plain-integer control priced the three candidates, and the answer was that an
 // ordinal makes the level smaller rather than larger.
 //
 // THE NARROWING THEY WERE CLEARING THE WAY FOR IS SUPERSEDED, AND BY A STRONGER RESULT. The field
-// is not two bytes now, it is zero: `ComponentBlocks` and `ComponentList` are deleted and an
+// is not two bytes now, it is zero: `ElementNameBlocks` and `ElementNameList` are deleted and an
 // object's refs hang directly off the object. Deleting the name beats narrowing it, so there is no
 // decision left for this measurement to inform.
 //
@@ -1058,11 +1058,11 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
 
     let address = size_of::<crate::block_store::ElementEntry>();
     let model = size_of::<StoredModelKind>();
-    // THE WIDTH THE KEY USED TO COST, kept as a counterfactual beside `component`'s for the
+    // THE WIDTH THE KEY USED TO COST, kept as a counterfactual beside `element_name`'s for the
     // same reason: the verdicts below are stated against what each of the three names WOULD be
     // worth, and that arithmetic needs the term even though no field carries it.
     let object_key_when_it_was_a_field = size_of::<Arc<str>>();
-    // `component` IS NO LONGER A FIELD OF THE ENTRY. The local is kept as the WIDTH THE NAME USED
+    // `element_name` IS NO LONGER A FIELD OF THE ENTRY. The local is kept as the WIDTH THE NAME USED
     // TO COST, because the verdicts below are stated against that arithmetic -- what each of the
     // three names would be worth -- and it is now a counterfactual rather than a measurement.
     let element_name_when_it_was_a_field = size_of::<Option<Arc<str>>>();
@@ -1112,7 +1112,7 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // THE RECONSTRUCTION. The 8-aligned fields form the group; the model byte and the three
     // flag bytes are the tail, and the tail is rounded once to the alignment.
     //
-    // ONE 8-ALIGNED FIELD NOW. `component` was one of three and went at 56 -> 40; `object_key`
+    // ONE 8-ALIGNED FIELD NOW. `element_name` was one of three and went at 56 -> 40; `object_key`
     // was the second and goes at 40 -> 24; the address is what is left. The reconstruction is what
     // proves the arithmetic rather than the comment -- if the field set and this sum part, it
     // fails here.
@@ -1782,7 +1782,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
             &**key,
             "{label}: object_key moved across the round trip"
         );
-        // No component on the entry, so there is no such field to survive a round trip.
+        // No element name on the entry, so there is no such field to survive a round trip.
         assert_eq!(block.dirty(), decoded.dirty(), "{label}: dirty moved");
         assert_eq!(block.deleted(), decoded.deleted(), "{label}: deleted moved");
         // NOT a stored field any more, and this is the ONLY address property this loop checks --
@@ -1960,7 +1960,7 @@ mod tail_layout {
         pub(super) flags: BlockFlags,
     }
 
-    /// Component as an ordinal.
+    /// Element name as an ordinal.
     pub(super) struct B0 {
         pub(super) object_key: Arc<str>,
         pub(super) element_name: Option<NonZeroU16>,
@@ -2096,7 +2096,7 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
         ("names, 32 B address (before)", size_of::<A0>(), size_of::<A1>()),
         ("names, 24 B address (before)", size_of::<E0>(), size_of::<E1>()),
         ("names, 16 B address (HISTORICAL)", size_of::<F0Loose>(), size_of::<F1>()),
-        ("component ordinal, 32 B", size_of::<B0>(), size_of::<B1>()),
+        ("element name ordinal, 32 B", size_of::<B0>(), size_of::<B1>()),
         ("both names ordinals, 32 B", size_of::<C0>(), size_of::<C1>()),
         ("both names + 24 B address", size_of::<D0>(), size_of::<D1>()),
     ];
@@ -2320,28 +2320,28 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
 }
 
 // =================================================================================================
-// WHAT THE COMPONENT LEVEL COST -- ANSWERED BY DELETING IT, NOT BY THE MEASUREMENT THAT WAS HERE
+// WHAT THE ELEMENT NAME LEVEL COST -- ANSWERED BY DELETING IT, NOT BY THE MEASUREMENT THAT WAS HERE
 // =================================================================================================
 //
-// `FlatPageRef`, `nested_level` and `what_the_component_level_costs_at_one_component_and_at_a_
+// `FlatPageRef`, `nested_level` and `what_the_element_name_level_costs_at_one_element_name_and_at_a_
 // hundred` were here. The test priced the second level of `ObjectBlockLookup` at N=1 and at N=100,
 // in bytes and allocations, with the read path counted, and handed over a verdict: the level pays
 // at the p50 population and costs at the MAX one, "Recommend BY POPULATION".
 //
 // ITS CORRECTION OF #1967 WAS RIGHT AND IS WORTH KEEPING ON THE RECORD. #1967 had measured
-// `ComponentList` at the same 40 bytes as the `ComponentBlocks` its `One` arm held and recorded
+// `ElementNameList` at the same 40 bytes as the `ElementNameBlocks` its `One` arm held and recorded
 // that as "the level is free". This test said plainly that it is a narrower claim than it sounds:
 // what was free is the three-arm ENUM WRAPPER around one entry, and the LEVEL is the entry.
 //
 // THE VERDICT IS NOW SETTLED, AND NOT THE WAY EITHER POPULATION SUGGESTED. There was no MAX
 // population. `insert_object_block_lookup` was the only site in the crate that ever built a
-// `ComponentBlocks`, and it wrote `component: None` as a literal -- so N was always 1 and the
+// `ElementNameBlocks`, and it wrote `element_name: None` as a literal -- so N was always 1 and the
 // entry it held was a 24-byte `BlockRefs` behind a 16-byte `Option<Arc<str>>` holding a constant.
 // The level is deleted rather than flattened by population, which is a stronger outcome than the
 // comparison this test was set up to decide.
 //
 // WHY THIS IS PROSE AND NOT A RESTATED ARM. `nested_level` built its fixture BY HAND, with
-// `components` distinct `Some(hex)` names under one object -- a state the producer could not
+// `element_names` distinct `Some(hex)` names under one object -- a state the producer could not
 // reach even before this commit. Every arm that would survive a mechanical rewrite is the N=1 one,
 // and at N=1 the new shape makes all three tautologies: "a bisection over a list of one reads one"
 // becomes the definition of `Option::is_some`; the byte and allocation comparisons become two

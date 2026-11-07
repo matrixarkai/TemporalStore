@@ -9,14 +9,14 @@
 //!
 //!   * `apply_outcome_item`'s `"set"` arm answers `false` when it cannot rebuild a member, and the
 //!     caller treats that as a refusal that **FAILS THE SHARD LOAD**. The shard does not come up.
-//!   * `collect_upsert_index_items`' `"set"` arm falls to `_ => None` when the component is absent,
+//!   * `collect_upsert_index_items`' `"set"` arm falls to `_ => None` when the element name is absent,
 //!     which means the row **never reaches the index log** -- so a replay has nothing to rebuild it
 //!     from, and the loss surfaces much later than the write that caused it.
 //!
 //! # WHY THEY DO NOT FIRE, AND WHY THAT IS A TEST RATHER THAN A PARAGRAPH
 //!
-//! Both components are derived from the COMMAND, not from the index entry: the log item's comes
-//! from `command_upsert_components` off `Command::SetAdd`, and the outcome's from the component
+//! Both element names are derived from the COMMAND, not from the index entry: the log item's comes
+//! from `command_upsert_element_names` off `Command::SetAdd`, and the outcome's from the element name
 //! handed to the per-write filer, which this series deliberately left per-element. **So the struct
 //! field and the record field are different things that share a name**, and collapsing the index
 //! entry does not reach either record.
@@ -50,7 +50,7 @@
 //! # THE TWO FAILURES ARE COVERED BY TWO DIFFERENT TESTS, AND THAT IS NOT A STYLE CHOICE
 //!
 //! `execute` does NOT reach `collect_upsert_index_items`. That function's only production caller
-//! is `batch_execute`; the single-command path builds its items from `command_upsert_components`
+//! is `batch_execute`; the single-command path builds its items from `command_upsert_element_names`
 //! at `engine.rs:954`. **Two filers again** -- the same shape that already caught this series out
 //! once, when "the derivation is the only filer" turned out to be two.
 //!
@@ -246,7 +246,7 @@ fn a_gated_write_reaches_the_log_and_every_member_comes_back_through_replay() {
         gated.load_ok,
         "THE SHARD DID NOT COME UP under the gate. `apply_outcome_item`'s set arm answers `false` \
          when it cannot rebuild a member, and the caller treats that as a refusal that fails the \
-         whole shard load -- so a gated outcome missing its component takes the shard with it"
+         whole shard load -- so a gated outcome missing its element name takes the shard with it"
     );
 
     // ---- THE CONTROL, so a short gated arm cannot be blamed on the fixture ----
@@ -294,7 +294,7 @@ fn a_gated_write_reaches_the_log_and_every_member_comes_back_through_replay() {
 /// The test above drives `execute`, and `execute` does **not** reach
 /// `collect_upsert_index_items`: that function's only production caller is `batch_execute`
 /// (`stream_batch_methods.rs`), and the single-command path builds its items from
-/// `command_upsert_components` at `engine.rs:954` instead. So the arm above covers the execute
+/// `command_upsert_element_names` at `engine.rs:954` instead. So the arm above covers the execute
 /// path's filer and would have left 7b's named function untested while appearing to cover it --
 /// the same two-filers shape this series already hit once, where "the derivation is the only
 /// filer" turned out to be two.
@@ -304,14 +304,14 @@ fn a_gated_write_reaches_the_log_and_every_member_comes_back_through_replay() {
 ///
 /// # THE HAZARD IS REAL, WHICH IS WHY THE MECHANISM MATTERS
 ///
-/// `collect_upsert_index_items` matches on `(kind, component)` and its only set arm is
-/// `("set", Some(component))`, so `("set", None)` falls to `_ => None`, resolves no address, and
+/// `collect_upsert_index_items` matches on `(kind, element_name)` and its only set arm is
+/// `("set", Some(element_name))`, so `("set", None)` falls to `_ => None`, resolves no address, and
 /// **builds no item at all**. A row that builds no item never reaches the index log, and a replay
 /// then has nothing to rebuild it from.
 ///
-/// So the negative control below is not decoration: without it, "the component is still there"
+/// So the negative control below is not decoration: without it, "the element name is still there"
 /// would be a fact with no stated consequence. With it, the pair says the thing worth saying --
-/// the drop is real, and what prevents it is that the component is taken from the COMMAND.
+/// the drop is real, and what prevents it is that the element name is taken from the COMMAND.
 #[test]
 fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -333,34 +333,34 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
 
-    // (1) THE MECHANISM: the component the log item is built from comes off the COMMAND, so the
+    // (1) THE MECHANISM: the element name the log item is built from comes off the COMMAND, so the
     //     collapsed index entry cannot reach it.
     let command = Command::SetAdd {
         key: KEY.to_string(),
         member: member_bytes(0),
     };
     let named = crate::engine::command_upsert_element_names(&command, shard)
-        .expect("a set add must name an upsert component");
+        .expect("a set add must name an upsert element name");
     println!("\n=== asked directly, under the gate ===");
     println!("  command_upsert_element_names -> {named:?}");
     assert_eq!(
         1,
         named.len(),
-        "a single set add named {} components",
+        "a single set add named {} element names",
         named.len()
     );
     let (kind, object_key, element_name) = named[0].clone();
-    assert_eq!("set", kind, "the component is filed under {kind}");
+    assert_eq!("set", kind, "the element name is filed under {kind}");
     assert_eq!(KEY, object_key.as_str(), "it names object {object_key}");
     let element_name = element_name.expect(
-        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names a component for \
+        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names an element name for \
          a set add, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
          item, and the write would never reach the index log",
     );
     assert_eq!(
         hex::encode(member_bytes(0)),
         element_name,
-        "the component is spelled {element_name}, not as the set arm decodes it"
+        "the element name is spelled {element_name}, not as the set arm decodes it"
     );
 
     // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
@@ -371,9 +371,9 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
         0,
         1023,
     );
-    println!("  with the command's component -> {} item(s)", with_element_name.len());
+    println!("  with the command's element_name -> {} item(s)", with_element_name.len());
 
-    // (3) THE NEGATIVE CONTROL: the same call with no component builds NOTHING. This is the
+    // (3) THE NEGATIVE CONTROL: the same call with no element name builds NOTHING. This is the
     //     failure 7b names, demonstrated rather than asserted about.
     let without_element_name = crate::engine::collect_upsert_index_items(
         shard,
@@ -382,17 +382,17 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
         0,
         1023,
     );
-    println!("  with no component    -> {} item(s)", without_element_name.len());
+    println!("  with no element_name    -> {} item(s)", without_element_name.len());
 
     assert_eq!(
         1,
         with_element_name.len(),
-        "the builder made {} items for one component, so the counts below are not comparable",
+        "the builder made {} items for one element name, so the counts below are not comparable",
         with_element_name.len()
     );
     assert!(
         without_element_name.is_empty(),
-        "THE NEGATIVE CONTROL DID NOT HOLD: a `(\"set\", None)` component built {} item(s), so the \
+        "THE NEGATIVE CONTROL DID NOT HOLD: a `(\"set\", None)` element name built {} item(s), so the \
          `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
          longer what protects the index log. If a later step gave the builder a block-named arm, \
          THIS is the assertion to change -- deliberately, saying so",
@@ -407,27 +407,27 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
 //
 // The replay arm's hard requirement is the hash analogue of the set one named at the top of this
 // module: `apply_outcome_item`'s `"hash"` arm (`lifecycle.rs`) answers `false` when
-// `item.component` is `None`, and the caller treats that as a refusal that FAILS THE SHARD LOAD.
+// `item.element_name` is `None`, and the caller treats that as a refusal that FAILS THE SHARD LOAD.
 // And `collect_upsert_index_items`' `"hash"` arm matches only `("hash", Some(field))`, falling to
 // `_ => None` otherwise -- a row that builds no item never reaches the index log.
 //
-// Neither fires, for the SAME reason the set case does not: both components are derived from the
-// COMMAND, not from the index entry. `command_upsert_components`'s `HashSet`/`HashMultiSet`/
+// Neither fires, for the SAME reason the set case does not: both element names are derived from the
+// COMMAND, not from the index entry. `command_upsert_element_names`'s `HashSet`/`HashMultiSet`/
 // `HashIncrBy` arms (`engine.rs`) take the field straight off the `Command`, and
 // `collect_upsert_index_items`'s `"hash"` arm resolves the address from `shard.hashes` -- the
 // resident map, not the bucket index. So the struct field and the record field are, again, two
-// different things that share a name, and collapsing the index entry's component does not reach
+// different things that share a name, and collapsing the index entry's element name does not reach
 // either record.
 //
 // That is a reading, same as it was for set, and this module exists because a reading is not
 // where hash's replay safety should rest. Driven below exactly the way set already is.
 //
 // ONE DIFFERENCE FROM THE SET CASE, WORTH BEING HONEST ABOUT: `index_entry_names_a_block`, the
-// single authority that decides whether a WRITTEN entry's component is actually suppressed to
+// single authority that decides whether a WRITTEN entry's element name is actually suppressed to
 // `None`, lists only `set` and `list` today -- hash is not in it yet (steps 6-7 of this series,
 // held separately). So turning `TS_CONTAINER_ONE_ENTRY_A_PAGE` on does not, today, make a
-// `HashSet` write a component-less entry the way it already does for `SetAdd`. The test below
-// still drives the real mechanism -- `command_upsert_components` and `collect_upsert_index_items`
+// `HashSet` write an element-name-less entry the way it already does for `SetAdd`. The test below
+// still drives the real mechanism -- `command_upsert_element_names` and `collect_upsert_index_items`
 // asked directly, under the gate -- which is independent of that allow-list and is exactly the
 // regression tripwire this series wants: if a later change made either function start consulting
 // the allow-list for hash, this is what would catch it before the allow-list itself ever moves.
@@ -547,7 +547,7 @@ fn a_gated_hash_write_reaches_the_log_and_every_field_comes_back_through_replay(
     assert!(
         gated.load_ok,
         "THE SHARD DID NOT COME UP under the gate. `apply_outcome_item`'s hash arm answers `false` \
-         when it cannot rebuild a field -- `item.component` is `None` -- and the caller treats \
+         when it cannot rebuild a field -- `item.element_name` is `None` -- and the caller treats \
          that as a refusal that fails the whole shard load"
     );
     assert!(
@@ -605,7 +605,7 @@ fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_fro
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
 
-    // (1) THE MECHANISM: the component the log item is built from comes off the COMMAND for hash
+    // (1) THE MECHANISM: the element name the log item is built from comes off the COMMAND for hash
     //     too, so the collapsed index entry cannot reach it.
     let command = Command::HashSet {
         key: HASH_KEY.to_string(),
@@ -613,27 +613,27 @@ fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_fro
         value: field_value(0),
     };
     let named = crate::engine::command_upsert_element_names(&command, shard)
-        .expect("a hash set must name an upsert component");
+        .expect("a hash set must name an upsert element name");
     println!("\n=== asked directly, under the gate (hash) ===");
     println!("  command_upsert_element_names -> {named:?}");
     assert_eq!(
         1,
         named.len(),
-        "a single hash set named {} components",
+        "a single hash set named {} element names",
         named.len()
     );
     let (kind, object_key, element_name) = named[0].clone();
-    assert_eq!("hash", kind, "the component is filed under {kind}");
+    assert_eq!("hash", kind, "the element name is filed under {kind}");
     assert_eq!(HASH_KEY, object_key.as_str(), "it names object {object_key}");
     let element_name = element_name.expect(
-        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names a component for \
+        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names an element name for \
          a hash set, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
          item, and the write would never reach the index log",
     );
     assert_eq!(
         field_name(0),
         element_name,
-        "the component is spelled {element_name}, not the field name `command_upsert_element_names` \
+        "the element name is spelled {element_name}, not the field name `command_upsert_element_names` \
          should have taken straight off the command"
     );
 
@@ -645,9 +645,9 @@ fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_fro
         0,
         1023,
     );
-    println!("  with the command's component -> {} item(s)", with_element_name.len());
+    println!("  with the command's element_name -> {} item(s)", with_element_name.len());
 
-    // (3) THE NEGATIVE CONTROL: the same call with no component builds NOTHING.
+    // (3) THE NEGATIVE CONTROL: the same call with no element name builds NOTHING.
     let without_element_name = crate::engine::collect_upsert_index_items(
         shard,
         1,
@@ -655,17 +655,17 @@ fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_fro
         0,
         1023,
     );
-    println!("  with no component    -> {} item(s)", without_element_name.len());
+    println!("  with no element_name    -> {} item(s)", without_element_name.len());
 
     assert_eq!(
         1,
         with_element_name.len(),
-        "the builder made {} items for one component, so the counts below are not comparable",
+        "the builder made {} items for one element name, so the counts below are not comparable",
         with_element_name.len()
     );
     assert!(
         without_element_name.is_empty(),
-        "THE NEGATIVE CONTROL DID NOT HOLD: a (\"hash\", None) component built {} item(s), so the \
+        "THE NEGATIVE CONTROL DID NOT HOLD: a (\"hash\", None) element name built {} item(s), so the \
          `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
          longer what protects the index log. If a later step gave the builder a block-named arm, \
          THIS is the assertion to change -- deliberately, saying so",
@@ -673,19 +673,19 @@ fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_fro
     );
 }
 
-/// EVERY KIND THAT DECLARES AN UPSERT COMPONENT MUST HAVE A COLLECTOR ARM FOR IT.
+/// EVERY KIND THAT DECLARES AN UPSERT ELEMENT NAME MUST HAVE A COLLECTOR ARM FOR IT.
 ///
 /// # THE PAIR, AND WHY HALF OF IT IS WORSE THAN NEITHER
 ///
 /// Two functions have to agree for a write to reach the index log by the O(delta) path:
 ///
-///   * `command_upsert_components` names what the command wrote, as `(kind, key, component)`.
+///   * `command_upsert_element_names` names what the command wrote, as `(kind, key, element_name)`.
 ///     Naming nothing is safe: the caller falls back to a whole-object snapshot record, which is
 ///     expensive and correct.
 ///   * `collect_upsert_index_items` turns each of those back into the address the item carries,
-///     by looking the component up in the resident map for its kind.
+///     by looking the element name up in the resident map for its kind.
 ///
-/// Declaring a component the collector has no arm for is the one combination that loses. The
+/// Declaring an element name the collector has no arm for is the one combination that loses. The
 /// caller sees `Some(..)` and takes the delta path, the collector falls to `_ => None` and builds
 /// nothing, and the record names NO block for a write that wrote one -- while reporting success and
 /// looking cheaper than before, because an empty record is small.
@@ -702,11 +702,11 @@ fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_fro
 /// both halves asserted on what the command actually produced. A kind added to the first function
 /// without an arm in the second fails here, and the failure names the kind.
 ///
-/// The NEGATIVE CONTROL matters as much: the same component removed must build nothing. Without
+/// The NEGATIVE CONTROL matters as much: the same element name removed must build nothing. Without
 /// it, a collector that answered an item for every input -- the obvious way to "fix" a failure
 /// here -- would pass.
 ///
-///   cargo test -p temporalstore-rust --lib every_declared_component_builds_an_index_item -- --nocapture
+///   cargo test -p temporalstore-rust --lib every_declared_element_name_builds_an_index_item -- --nocapture
 #[test]
 fn every_declared_element_name_builds_an_index_item() {
     use crate::types::{Command, ExecuteRequest, FeaturePoint};
@@ -791,7 +791,7 @@ fn every_declared_element_name_builds_an_index_item() {
     let shard = shards.get(&1).expect("shard 1 is loaded");
 
     println!();
-    println!("  kind      components   items   items without the component");
+    println!("  kind      element names   items   items without the element name");
     let mut checked = 0usize;
     for (label, command) in &commands {
         // POST-WRITE, which is when the real caller asks: a list push files under a sequence only
@@ -806,12 +806,12 @@ fn every_declared_element_name_builds_an_index_item() {
         });
         assert!(
             !named.is_empty(),
-            "a {label} write named an EMPTY component list, which takes the delta path and then \
+            "a {label} write named an EMPTY element name list, which takes the delta path and then \
              has nothing to put in the record"
         );
 
         let items = crate::engine::collect_upsert_index_items(shard, 1, &named, 0, 1023);
-        // THE STRIPPED FORM: the same components with the component dropped. This is what the
+        // THE STRIPPED FORM: the same element names with the element name dropped. This is what the
         // collector sees when a kind has no arm, and it must build nothing.
         let stripped: Vec<(&'static str, String, Option<String>)> = named
             .iter()
@@ -829,9 +829,9 @@ fn every_declared_element_name_builds_an_index_item() {
         assert_eq!(
             named.len(),
             items.len(),
-            "a {label} write named {} component(s) and the collector built {} item(s). The \
+            "a {label} write named {} element_name(s) and the collector built {} item(s). The \
              missing arm is `(\"{label}\", Some(..))` in `collect_upsert_index_items`: the caller \
-             takes the delta path on the strength of the component being named, so an item that \
+             takes the delta path on the strength of the element name being named, so an item that \
              is not built is a block the record never mentions -- and the record gets SMALLER, so \
              it reads as a saving.",
             named.len(),
@@ -855,7 +855,7 @@ fn every_declared_element_name_builds_an_index_item() {
          list too, and the number here is what makes leaving it out visible"
     );
 
-    // --- AND THE NEGATIVE CONTROL, once, on the kind whose component is richest. A collector that
+    // --- AND THE NEGATIVE CONTROL, once, on the kind whose element name is richest. A collector that
     // --- answered an item for anything would satisfy every assertion above.
     let string_only = crate::engine::collect_upsert_index_items(
         shard,
@@ -866,8 +866,8 @@ fn every_declared_element_name_builds_an_index_item() {
     );
     assert!(
         string_only.is_empty(),
-        "the collector built {} item(s) for a hash with NO component named. It is meant to answer \
-         only for a component it can resolve, so building something here means the assertions \
+        "the collector built {} item(s) for a hash with NO element name named. It is meant to answer \
+         only for an element name it can resolve, so building something here means the assertions \
          above prove nothing.",
         string_only.len()
     );

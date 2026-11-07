@@ -19,7 +19,7 @@
 //!
 //! # THE TRAP THIS IS AIMED AT
 //!
-//! `mark_bucket_index_block_deleted` finds the entry to tombstone BY COMPONENT. Under one entry per
+//! `mark_bucket_index_block_deleted` finds the entry to tombstone BY ELEMENT NAME. Under one entry per
 //! block the entry carries none, so the match cannot select it -- the same selection-versus-meaning
 //! shape that produced an orphan at step two and five entries at step five-a. A removal that cannot
 //! find its entry, over a block that still states the member as live, is exactly the arrangement a

@@ -16,7 +16,7 @@
 //! **It fails**, and `StringDelete` is a fifth kind:
 //!
 //!     wal_replay_outcome_refused: WAL replay could not install a recorded string outcome at
-//!     sequence 3 ... (address UNRESOLVED, component missing)
+//!     sequence 3 ... (address UNRESOLVED, element name missing)
 //!
 //! A FIRST VERSION OF THIS TEST PASSED, and it was wrong. It called `unload_shard` before
 //! reopening, which flushes the index, so the reopened engine read a base that already had the
