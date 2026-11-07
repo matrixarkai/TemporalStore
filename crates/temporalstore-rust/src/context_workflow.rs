@@ -97,6 +97,73 @@ use crate::types::{
     ContextDirtyNode, ExecuteRequest, ShardId, Status,
 };
 
+const CONTEXT_SCOPE_NODE_INDEX_NAME: &str = "scope_node_recent";
+const CONTEXT_SCOPE_NODE_INDEX_VALUE_HASH: u64 = 1;
+const CONTEXT_SCOPE_NODE_INDEX_TIME_CEILING_MS: u64 = 10_000_000_000_000;
+pub const CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT: usize = 1000;
+
+fn context_scope_node_index_time(event_time_ms: u64) -> u64 {
+    CONTEXT_SCOPE_NODE_INDEX_TIME_CEILING_MS
+        .saturating_sub(
+            event_time_ms.min(CONTEXT_SCOPE_NODE_INDEX_TIME_CEILING_MS.saturating_sub(1)),
+        )
+        .max(1)
+}
+
+/// Add a node to the bounded, newest-first candidate index for one durable context scope.
+pub fn remember_context_scope_node(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    tenant_hash: u64,
+    index_ref: &ContextIndexRef,
+) -> bool {
+    engine
+        .execute(ExecuteRequest {
+            shard_id,
+            command: Command::ContextWriteIndexRef {
+                tenant_hash,
+                index_name: CONTEXT_SCOPE_NODE_INDEX_NAME.to_string(),
+                index_value_hash: CONTEXT_SCOPE_NODE_INDEX_VALUE_HASH,
+                scope_hash: 0,
+                event_time_ms: context_scope_node_index_time(index_ref.primary_event_time_ms),
+                index_ref: index_ref.clone(),
+            },
+        })
+        .status
+        .ok
+}
+
+/// Load the newest candidate nodes for one scope without scanning context records.
+pub fn context_scope_nodes(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    tenant_hash: u64,
+) -> Vec<u64> {
+    let response = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::ContextQueryIndex {
+            tenant_hash,
+            index_name: CONTEXT_SCOPE_NODE_INDEX_NAME.to_string(),
+            index_value_hash: CONTEXT_SCOPE_NODE_INDEX_VALUE_HASH,
+            scope_hash: 0,
+            start_time_ms: 0,
+            end_time_ms: CONTEXT_SCOPE_NODE_INDEX_TIME_CEILING_MS,
+            limit: Some(CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT),
+        },
+    });
+    let mut nodes = match response.response {
+        CommandResponse::ContextIndexRefs { refs, .. } => refs
+            .into_iter()
+            .map(|index_ref| index_ref.primary_node_hash)
+            .filter(|node_hash| *node_hash != 0)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    nodes.sort_unstable();
+    nodes.dedup();
+    nodes
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextTier {
