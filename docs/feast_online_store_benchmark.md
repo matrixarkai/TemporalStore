@@ -566,7 +566,7 @@ independently so a walk over either would show:
 
 Three code-reading diagnoses, each wrong, recorded so they are not re-derived:
 
-1. **The `object_component_block_refs` fallback walk is unreachable.** The field
+1. **The `object_element_name_block_refs` fallback walk is unreachable.** The field
    is `Some(0)` from birth — the type's own hand-written `Default` states it and
    explains why — and nothing anywhere assigns `None`. Removing the
    `unwrap_or_else` would change no behaviour.
