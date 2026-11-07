@@ -273,6 +273,9 @@ jobs:
             shared_store::tests::a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_json \
             shared_store::tests::no_json_encode_arm_is_left_in_the_wal_command_encoders \
             shared_store::tests::a_per_key_wal_object_is_read_in_either_shape \
+            shared_store::tests::the_per_key_wal_writer_is_binary_and_a_planted_json_object_is_still_replayed \
+            shared_store::tests::no_json_encode_path_is_left_in_the_per_key_wal_publish \
+            shared_store::tests::shared_store_rejects_corrupt_wal_checksum \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
             block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
             block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
