@@ -111,7 +111,7 @@ const ROSTER: &[Row] = &[
     ("crates/temporalstore-rust/src/engine/execute_on_shard.rs", "*", 69, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/packed_blocks.rs", "*", 13, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/recorded_map.rs", "*", 7, Class::ToRetire, ""),
-    ("crates/temporalstore-rust/src/engine/storage_bucket_internals.rs", "*", 87, Class::ToRetire, ""),
+    ("crates/temporalstore-rust/src/engine/storage_bucket_internals.rs", "*", 79, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/storage_reporting.rs", "*", 9, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/stream_batch_methods.rs", "*", 16, Class::ToRetire, ""),
     ("crates/temporalstore-rust/src/engine/tests/a_trim_records_one_boundary.rs", "*", 4, Class::ToRetire, ""),

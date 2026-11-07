@@ -409,11 +409,10 @@ fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
 /// the ELEMENT's sequence, spelled the way the write path spells it.
 ///
 /// WHY COLLAPSING THE INDEX ENTRY DOES NOT REACH IT, which is the thing being pinned: that
-/// component comes from the WAL outcome item, which `stage_outcome` fills from the
-/// `ElementComponent` -- taken BEFORE the `FiledComponent` collapse, and a separate newtype
-/// precisely so transposing the two fails to compile rather than silently filing the block's name
-/// where the element's belongs. The index entry and the outcome record are different things that
-/// share a field name. The existing module that drives this (`replay_under_the_gate`) is SET-ONLY,
+/// component comes from the WAL outcome item, which `stage_outcome` fills from the element's own
+/// name, passed in by the caller -- the index entry is filed under its block and never held a name
+/// to take instead. The index entry and the outcome record are different things that share a field
+/// name. The existing module that drives this (`replay_under_the_gate`) is SET-ONLY,
 /// so for `list` the reading was unpinned until here.
 ///
 /// # WHY THERE IS NO UNLOAD
