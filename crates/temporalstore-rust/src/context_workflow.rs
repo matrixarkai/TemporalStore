@@ -1606,6 +1606,46 @@ pub(crate) fn context_embeddings_with_fallback(
     }
 }
 
+pub(crate) struct PreparedContextExtract {
+    pub report: ContextExtractReport,
+    pub commands: Vec<Command>,
+}
+
+fn persist_prepared_context_extract(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    mut prepared: PreparedContextExtract,
+) -> ContextExtractReport {
+    if !prepared.report.status.ok || prepared.commands.is_empty() {
+        return prepared.report;
+    }
+    let command_count = prepared.commands.len();
+    let response = engine.batch_execute_durable(BatchExecuteRequest {
+        shard_id,
+        commands: prepared.commands,
+    });
+    let failure = if !response.status.ok {
+        Some(response.status)
+    } else if response.responses.len() != command_count {
+        Some(Status::error(
+            "context_extract_batch_incomplete",
+            format!(
+                "context extraction expected {command_count} command responses but received {}",
+                response.responses.len()
+            ),
+        ))
+    } else {
+        response
+            .responses
+            .into_iter()
+            .find_map(|response| (!response.status.ok).then_some(response.status))
+    };
+    if let Some(status) = failure {
+        prepared.report.status = status;
+    }
+    prepared.report
+}
+
 pub(crate) fn extract_context_gated_prepared(
     engine: &TemporalEngine,
     request: ContextExtractRequest,
@@ -1613,36 +1653,53 @@ pub(crate) fn extract_context_gated_prepared(
     summaries: ContextExtractSummaries,
     embedding_outcome: Option<ContextEmbeddingOutcome>,
 ) -> ContextExtractReport {
+    let shard_id = request.shard_id;
+    persist_prepared_context_extract(
+        engine,
+        shard_id,
+        prepare_context_gated_prepared(request, gate_l1, summaries, embedding_outcome),
+    )
+}
+
+pub(crate) fn prepare_context_gated_prepared(
+    request: ContextExtractRequest,
+    gate_l1: bool,
+    summaries: ContextExtractSummaries,
+    embedding_outcome: Option<ContextEmbeddingOutcome>,
+) -> PreparedContextExtract {
     let provider = summaries.provider;
     if !summaries.status.ok {
-        return ContextExtractReport {
-            status: summaries.status,
-            provider,
-            embedding_generation: ContextEmbeddingGenerationReport::default(),
-            node: empty_node(),
-            event: empty_event(),
-            index_ref: ContextIndexRef {
-                primary_node_hash: 0,
-                primary_event_time_ms: 0,
-                event_id_hash: 0,
+        return PreparedContextExtract {
+            commands: Vec::new(),
+            report: ContextExtractReport {
+                status: summaries.status,
+                provider,
+                embedding_generation: ContextEmbeddingGenerationReport::default(),
+                node: empty_node(),
+                event: empty_event(),
+                index_ref: ContextIndexRef {
+                    primary_node_hash: 0,
+                    primary_event_time_ms: 0,
+                    event_id_hash: 0,
+                },
+                dirty_marker: ContextDirtyNode {
+                    node_hash: 0,
+                    first_event_time_ms: request.timestamp_ms,
+                    last_event_time_ms: request.timestamp_ms,
+                    reason: 0,
+                    propagate_depth: 0,
+                    mark_count: 0,
+                },
+                source_ref: request.source_id,
+                related_node_hashes: Vec::new(),
+                summary_refs: Vec::new(),
+                compact_summary_ref: String::new(),
+                node_uri: String::new(),
+                event_uri: String::new(),
+                l0: String::new(),
+                l1: String::new(),
+                l2_ref: String::new(),
             },
-            dirty_marker: ContextDirtyNode {
-                node_hash: 0,
-                first_event_time_ms: request.timestamp_ms,
-                last_event_time_ms: request.timestamp_ms,
-                reason: 0,
-                propagate_depth: 0,
-                mark_count: 0,
-            },
-            source_ref: String::new(),
-            related_node_hashes: Vec::new(),
-            summary_refs: Vec::new(),
-            compact_summary_ref: String::new(),
-            node_uri: String::new(),
-            event_uri: String::new(),
-            l0: String::new(),
-            l1: String::new(),
-            l2_ref: String::new(),
         };
     }
 
@@ -1880,39 +1937,17 @@ pub(crate) fn extract_context_gated_prepared(
             clear: false,
         });
     }
-    // Keep one extracted source in one crash-atomic durable group. Besides one WAL barrier, the
-    // engine now takes the shard lock and publishes the compact embedding index only once.
-    let command_count = commands.len();
-    let response = engine.batch_execute_durable(BatchExecuteRequest {
-        shard_id: request.shard_id,
+    PreparedContextExtract {
         commands,
-    });
-    let failure = if !response.status.ok {
-        Some(response.status)
-    } else if response.responses.len() != command_count {
-        Some(Status::error(
-            "context_extract_batch_incomplete",
-            format!(
-                "context extraction expected {command_count} command responses but received {}",
-                response.responses.len()
-            ),
-        ))
-    } else {
-        response
-            .responses
-            .into_iter()
-            .find_map(|response| (!response.status.ok).then_some(response.status))
-    };
-    if let Some(status) = failure {
-        return ContextExtractReport {
-            status,
-            provider: provider.clone(),
-            embedding_generation: embedding_generation.clone(),
+        report: ContextExtractReport {
+            status: Status::ok(),
+            provider,
+            embedding_generation,
             node,
             event,
             index_ref,
             dirty_marker,
-            source_ref: request.source_id.clone(),
+            source_ref: request.source_id,
             related_node_hashes: vec![node_hash],
             summary_refs,
             compact_summary_ref: l1.clone(),
@@ -1921,26 +1956,7 @@ pub(crate) fn extract_context_gated_prepared(
             l0,
             l1,
             l2_ref,
-        };
-    }
-
-    ContextExtractReport {
-        status: Status::ok(),
-        provider,
-        embedding_generation,
-        node,
-        event,
-        index_ref,
-        dirty_marker,
-        source_ref: request.source_id,
-        related_node_hashes: vec![node_hash],
-        summary_refs,
-        compact_summary_ref: l1.clone(),
-        node_uri: context_node_uri(request.tenant_hash, node_hash),
-        event_uri: context_event_uri(request.tenant_hash, node_hash, timestamp_ms),
-        l0,
-        l1,
-        l2_ref,
+        },
     }
 }
 

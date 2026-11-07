@@ -4,6 +4,62 @@
 //! Context ingest + resource/skill secondary-index verification, split from context_workflow.rs.
 use super::*;
 
+// Amortize durability while bounding duplicated report and command payloads in memory.
+const CONTEXT_DURABLE_SOURCE_BATCH: usize = 16;
+
+fn persist_prepared_context_batch(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    mut pending: Vec<PreparedContextExtract>,
+    extracts: &mut Vec<ContextExtractReport>,
+    failed_sources: &mut Vec<ContextIngestSourceFailure>,
+    node_hashes: &mut Vec<u64>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let command_count = pending
+        .iter()
+        .map(|prepared| prepared.commands.len())
+        .sum();
+    let mut commands = Vec::with_capacity(command_count);
+    let mut command_ranges = Vec::with_capacity(pending.len());
+    for prepared in &mut pending {
+        let start = commands.len();
+        commands.append(&mut prepared.commands);
+        command_ranges.push(start..commands.len());
+    }
+    let response = engine.batch_execute_durable(BatchExecuteRequest { shard_id, commands });
+    let batch_failure = if !response.status.ok {
+        Some(response.status)
+    } else if response.responses.len() != command_count {
+        Some(Status::error(
+            "context_ingest_batch_incomplete",
+            format!(
+                "context ingest expected {command_count} command responses but received {}",
+                response.responses.len()
+            ),
+        ))
+    } else {
+        None
+    };
+
+    for (prepared, command_range) in pending.into_iter().zip(command_ranges) {
+        let failure = batch_failure.clone().or_else(|| {
+            response.responses[command_range]
+                .iter()
+                .find_map(|response| (!response.status.ok).then(|| response.status.clone()))
+        });
+        if let Some(status) = failure {
+            let source_id = prepared.report.source_ref;
+            failed_sources.push(ContextIngestSourceFailure { source_id, status });
+        } else {
+            node_hashes.push(prepared.report.node.node_hash);
+            extracts.push(prepared.report);
+        }
+    }
+}
+
 /// Ingest with the public API's historical full fanout: every source emits its L1 summary.
 pub fn ingest_extract_context(
     engine: &TemporalEngine,
@@ -204,8 +260,8 @@ pub fn ingest_extract_context_with_l1_gate(
         }
     }
 
+    let mut pending_extracts = Vec::with_capacity(CONTEXT_DURABLE_SOURCE_BATCH);
     for (source_index, (source, summaries)) in prepared_sources.into_iter().enumerate() {
-        let source_id = source.source_id.clone();
         let embedding_outcome = embedding_outcomes[source_index]
             .take()
             .unwrap_or_else(|| {
@@ -215,23 +271,39 @@ pub fn ingest_extract_context_with_l1_gate(
                     true,
                 )
             });
-        let extract = extract_context_gated_prepared(
-            engine,
+        let prepared = prepare_context_gated_prepared(
             source,
             gate_l1,
             summaries,
             Some(embedding_outcome),
         );
-        if extract.status.ok {
-            node_hashes.push(extract.node.node_hash);
-            extracts.push(extract);
+        if prepared.report.status.ok {
+            pending_extracts.push(prepared);
+            if pending_extracts.len() >= CONTEXT_DURABLE_SOURCE_BATCH {
+                persist_prepared_context_batch(
+                    engine,
+                    request.shard_id,
+                    std::mem::take(&mut pending_extracts),
+                    &mut extracts,
+                    &mut failed_sources,
+                    &mut node_hashes,
+                );
+            }
         } else {
             failed_sources.push(ContextIngestSourceFailure {
-                source_id,
-                status: extract.status.clone(),
+                source_id: prepared.report.source_ref,
+                status: prepared.report.status,
             });
         }
     }
+    persist_prepared_context_batch(
+        engine,
+        request.shard_id,
+        pending_extracts,
+        &mut extracts,
+        &mut failed_sources,
+        &mut node_hashes,
+    );
 
     // No reconstruct: the writes above maintain the index themselves now, so the window has
     // nothing to catch up on. It stays open across the ingest only to keep the per-record
