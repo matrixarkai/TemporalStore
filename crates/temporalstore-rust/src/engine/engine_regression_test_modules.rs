@@ -454,3 +454,5 @@ mod a_windowed_aggregate_must_be_current_and_bounded;
 mod a_trim_records_one_boundary;
 #[path = "tests/one_series_two_commands_one_ceiling.rs"]
 mod one_series_two_commands_one_ceiling;
+#[path = "tests/the_two_other_feature_arms_hold_the_ceiling.rs"]
+mod the_two_other_feature_arms_hold_the_ceiling;
