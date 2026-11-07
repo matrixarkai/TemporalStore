@@ -97,6 +97,7 @@ pub fn run_context_pipeline_benchmark(
             prefer_current_agent: false,
             current_agent_scope_key: default_current_agent_scope_key(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: false,
         };
         let retrieve_start = Instant::now();
         let retrieve = retrieve_context(engine, retrieve_request.clone());

@@ -174,6 +174,9 @@ pub struct ProxyContextRetrieveRequest {
     pub node_hashes: Vec<u64>,
     #[serde(default)]
     pub provider: Option<Value>,
+    /// Forward retrieval diagnostics only when the caller explicitly requests them.
+    #[serde(default)]
+    pub include_debug: bool,
 }
 
 /// Scope hash used for context tenancy. Matches the Python control-plane
@@ -225,6 +228,8 @@ fn scope_session(scope: &ProxyContextScope) -> &str {
 #[derive(serde::Serialize)]
 struct RetrievePayload<'a> {
     end_time_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include_debug: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_events: Option<usize>,
     node_hashes: &'a [u64],
@@ -691,6 +696,7 @@ impl ProxyService {
         // the live hook calls on every retrieve.
         let payload = RetrievePayload {
             end_time_ms,
+            include_debug: request.include_debug.then_some(true),
             max_events: request.max_events,
             node_hashes: &request.node_hashes,
             provider: request.provider.as_ref(),
@@ -901,6 +907,7 @@ mod ingest_key_tests {
 
             let borrowed = serde_json::to_vec(&RetrievePayload {
                 end_time_ms,
+                include_debug: None,
                 max_events,
                 node_hashes,
                 provider: prov,
