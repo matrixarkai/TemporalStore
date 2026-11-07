@@ -478,3 +478,5 @@ mod the_config_log_in_either_shape;
 mod the_served_index_encoder_has_no_json_fallback;
 #[path = "tests/the_control_state_block_in_either_shape.rs"]
 mod the_control_state_block_in_either_shape;
+#[path = "tests/the_sequence_row_in_either_shape.rs"]
+mod the_sequence_row_in_either_shape;
