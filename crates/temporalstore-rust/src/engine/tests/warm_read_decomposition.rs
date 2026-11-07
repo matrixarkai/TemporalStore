@@ -55,7 +55,9 @@
 //! takes one lightweight metadata snapshot: routing bounds and state flags are copied, the unused
 //! URI is left behind, and the table name is copied only when a table-level admission limit is
 //! active. That removes both name allocations from the ordinary serving path without holding the
-//! `infos` read guard across admission accounting.
+//! `infos` read guard across admission accounting. A read on a shard with no expiry state now
+//! transfers its command directly into execution, removing another allocation. Writes and reads
+//! that can perform lazy expiry retain the command for WAL and index metadata.
 //!
 //! COUNTS CARRY EVERY CLAIM. The byte columns wobble between otherwise identical runs and the
 //! counts do not -- #1952 observed that and so does this. The store path length is asserted
@@ -81,10 +83,10 @@ const READS: usize = 512;
 /// The stored value's width, in bytes.
 #[cfg(feature = "alloc-probe")]
 const VALUE_BYTES: usize = 1_024;
-/// What a warm serving read cost before this change, on the `load_shard` fixture. The band below
+/// What a warm serving read cost while execution still cloned every command. The band below
 /// EXCLUDES it: the assertion is strictly less than this, so no value can satisfy both.
 #[cfg(feature = "alloc-probe")]
-const ALLOCS_BEFORE: f64 = 10.0;
+const ALLOCS_WITH_COMMAND_CLONE: f64 = 7.0;
 /// A named shard must cost exactly the same as an unnamed one when table admission is disabled.
 #[cfg(feature = "alloc-probe")]
 const NAMED_SHARD_EXTRA_ALLOCS: f64 = 0.0;
@@ -265,8 +267,8 @@ fn report(label: &str, arm: &WarmArm) {
 ///
 /// ```text
 ///   fixture                 512 records        4,096 records     ratio
-///   load_shard (unnamed)     7.00 allocs        7.00 allocs      1.00x
-///   named shard              7.00 allocs        7.00 allocs      1.00x
+///   load_shard (unnamed)     6.00 allocs        6.00 allocs      1.00x
+///   named shard              6.00 allocs        6.00 allocs      1.00x
 /// ```
 ///
 /// The named arm was 9.00 before the lightweight metadata snapshot. Its two extra allocations
@@ -337,14 +339,14 @@ fn where_a_warm_serving_reads_allocations_go() {
         named[0], named[1]
     );
 
-    // A BAND THAT EXCLUDES THE VALUE IT GUARDS AGAINST. 10.00 is what #1952 measured before the
-    // recency stamp stopped collecting; the assertion is strictly below it, so the pre-change
-    // figure cannot satisfy this and a silent revert cannot pass.
+    // A BAND THAT EXCLUDES THE VALUE IT GUARDS AGAINST. 7.00 is the measured cost while every
+    // command was cloned into execution; the assertion is strictly below it, so restoring that
+    // clone cannot pass.
     for cost in &unnamed {
         assert!(
-            *cost < ALLOCS_BEFORE,
-            "a warm serving read costs {cost:.2} allocations against {ALLOCS_BEFORE:.2} before \
-             the recency stamp stopped collecting a Vec<String> to walk once and drop"
+            *cost < ALLOCS_WITH_COMMAND_CLONE,
+            "a warm serving read costs {cost:.2} allocations against \
+             {ALLOCS_WITH_COMMAND_CLONE:.2} with the command clone still present"
         );
         assert!(
             *cost > 1.0,
