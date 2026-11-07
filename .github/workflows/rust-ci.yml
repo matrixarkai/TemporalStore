@@ -256,6 +256,8 @@ jobs:
             ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart \
             shared_store::tests::the_widened_object_readers_accept_both_shapes \
             shared_store::tests::the_object_writers_are_binary_and_planted_json_objects_are_still_read \
+            engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read \
+            engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
             shared_store::tests::restore_reads_a_published_binary_dump_manifest_beside_a_planted_json_one \
             engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_both_shapes_and_the_digest_payload_is_the_encoding \
