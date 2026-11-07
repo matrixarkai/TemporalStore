@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Context model-provider calls for summaries and embeddings across supported provider protocols.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::llm_context::{BatchEmbedder, EmbeddingBatch, OllamaConfig, OllamaProvider};
@@ -375,13 +375,56 @@ pub(crate) fn context_embeddings_for_extract(
         return context_embeddings_for_extract_one_batch(&provider, inputs);
     }
 
+    // Encoder output depends on the configured model and text, not the caller's label or object
+    // id. Preserve the first occurrence for the provider request and remember where every input
+    // maps so repeated event bodies or summaries do not consume duplicate local-model work.
+    let mut unique_by_text = HashMap::<&str, usize>::with_capacity(inputs.len());
+    let mut unique_inputs = Vec::with_capacity(inputs.len());
+    let mut input_rows = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let row = if let Some(row) = unique_by_text.get(input.3) {
+            *row
+        } else {
+            let row = unique_inputs.len();
+            unique_by_text.insert(input.3, row);
+            unique_inputs.push(*input);
+            row
+        };
+        input_rows.push(row);
+    }
+
+    let (unique_batch, mut report) =
+        context_embeddings_for_unique_inputs(&provider, &unique_inputs)?;
+    if unique_inputs.len() == inputs.len() {
+        return Ok((unique_batch, report));
+    }
+
+    let dimensions = unique_batch.dimensions;
+    let mut values = Vec::with_capacity(inputs.len().saturating_mul(dimensions));
+    for row in input_rows {
+        let start = row.saturating_mul(dimensions);
+        values.extend_from_slice(&unique_batch.values[start..start + dimensions]);
+    }
+    report.requested_vector_count = inputs.len();
+    report.generated_vector_count = inputs.len();
+    Ok((EmbeddingBatch { dimensions, values }, report))
+}
+
+fn context_embeddings_for_unique_inputs(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    if inputs.is_empty() {
+        return context_embeddings_for_extract_one_batch(provider, inputs);
+    }
+
     let mut start = 0usize;
     let mut combined = EmbeddingBatch::default();
     let mut combined_report: Option<ContextEmbeddingGenerationReport> = None;
     while start < inputs.len() {
-        let end = context_embedding_batch_end(&provider, inputs, start);
+        let end = context_embedding_batch_end(provider, inputs, start);
         let (batch, report) =
-            context_embeddings_for_extract_one_batch(&provider, &inputs[start..end])?;
+            context_embeddings_for_extract_one_batch(provider, &inputs[start..end])?;
         if combined.dimensions == 0 {
             combined.dimensions = batch.dimensions;
             combined
