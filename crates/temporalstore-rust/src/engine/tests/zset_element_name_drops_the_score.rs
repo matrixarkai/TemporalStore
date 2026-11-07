@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! GUARDS FOR "THE SCORE LEAVES THE ZSET COMPONENT", DRIVEN THROUGH `engine.execute` AND A REAL
+//! GUARDS FOR "THE SCORE LEAVES THE ZSET ELEMENT NAME", DRIVEN THROUGH `engine.execute` AND A REAL
 //! COLD RELOAD.
 //!
-//! `BlockIndex` was 56 bytes with zero slack asserted; `component: Option<Arc<str>>` is 16 of
+//! `BlockIndex` was 56 bytes with zero slack asserted; `element_name: Option<Arc<str>>` is 16 of
 //! those 56. Set and list already collapse to one index entry a block; a zset could not, because
-//! its component was not a name -- it was the score, `{biased:016x}` then the member in hex. This
-//! change takes the score off the component (`zset_component` is `hex::encode(member)` alone
+//! its element name was not a name -- it was the score, `{biased:016x}` then the member in hex. This
+//! change takes the score off the element name (`zset_element_name` is `hex::encode(member)` alone
 //! now), which makes zset collapsible like the others -- collapsing it is a separate, later step,
 //! not this one.
 //!
@@ -24,11 +24,11 @@
 //!      the first.
 //!   3. `a_rescore_leaves_exactly_one_member_across_a_cold_reload` -- `ZSetCard` and `ZSetScore`
 //!      after `ZSetAdd m@1` then `ZSetAdd m@2`, through the collapse this change drives at the
-//!      component level (see `container_tombstone_entry::a_rescore_sweeps_its_own_tombstone_...`
+//!      element name level (see `container_tombstone_entry::a_rescore_sweeps_its_own_tombstone_...`
 //!      for the index-entry mechanics; this guard is the user-visible shape).
 //!   4. `a_zset_write_recovered_through_replay_alone_returns_its_score` -- **the guard that catches
 //!      the data loss an earlier attempt at this change measured.** The score used to be
-//!      recoverable from the component text on replay; it is not any more, so it has to ride the
+//!      recoverable from the element name text on replay; it is not any more, so it has to ride the
 //!      WAL outcome's own `value` slot (`RecordedKind::outcome_value`) instead. This guard writes a
 //!      zset member and reloads WITHOUT an `unload_shard` -- `replay_under_the_gate`'s mechanism:
 //!      an unload is what materializes the base index, so skipping it leaves the reload no choice
@@ -270,9 +270,9 @@ fn a_removed_member_stays_removed_across_a_cold_reload() {
 // 3. A RESCORE LEAVES EXACTLY ONE MEMBER
 // =================================================================================================
 
-/// THE USER-VISIBLE SHAPE OF THE COLLAPSE THIS CHANGE DRIVES AT THE COMPONENT LEVEL.
+/// THE USER-VISIBLE SHAPE OF THE COLLAPSE THIS CHANGE DRIVES AT THE ELEMENT NAME LEVEL.
 ///
-/// `container_tombstone_entry::a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_
+/// `container_tombstone_entry::a_rescore_sweeps_its_own_tombstone_because_the_element_name_no_longer_
 /// spells_the_score` drives the index-entry mechanics (one live entry, zero tombstones) in the
 /// same process, without a reload. This guard asks the same question of a REAL cold reload, which
 /// is the thing a hand-built index fixture cannot stand in for.
@@ -333,16 +333,16 @@ fn a_rescore_leaves_exactly_one_member_across_a_cold_reload() {
 // 4. REPLAY-ONLY RECOVERY -- THE GUARD THAT CATCHES THE DATA LOSS AN EARLIER ATTEMPT MEASURED
 // =================================================================================================
 
-/// THE SCORE RIDES THE WAL OUTCOME'S `value` SLOT NOW, NOT THE COMPONENT, AND THIS IS THE ONE
+/// THE SCORE RIDES THE WAL OUTCOME'S `value` SLOT NOW, NOT THE ELEMENT NAME, AND THIS IS THE ONE
 /// PATH THAT CAN ONLY REACH IT THAT WAY.
 ///
 /// `replay_under_the_gate`'s mechanism, reused here rather than re-derived: an `unload_shard` is
 /// what materializes the base index, so a fixture that never unloads leaves the reload no choice
 /// but to replay the WAL through `apply_outcome_item` alone. That is the ONLY path with no block
 /// read and no index snapshot available to fall back on for the score -- which is exactly why an
-/// earlier, naive attempt at this change lost it here: the component used to carry
+/// earlier, naive attempt at this change lost it here: the element name used to carry
 /// `{biased:016x}` and the replay arm decoded the score out of that text; with the score off the
-/// component, a replay arm that still looked there would find none and either refuse the whole
+/// element name, a replay arm that still looked there would find none and either refuse the whole
 /// shard load or silently install the wrong score. Neither happens if the score rode `value`
 /// instead, which is what this guard is for.
 ///

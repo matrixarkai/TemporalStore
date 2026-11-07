@@ -129,7 +129,7 @@ fn outcomes(batch: usize) -> Vec<WalOutcomeItem> {
             WalOutcomeItem {
                 kind: "string".to_string(),
                 object_key: format!("batch-{batch:08}-item-{item:03}"),
-                component: None,
+                element_name: None,
                 object_id: id,
                 routing_bucket: item as u32,
                 address: None,

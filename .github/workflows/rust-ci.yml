@@ -216,7 +216,7 @@ jobs:
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
             shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_and_older_json \
-            engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_component \
+            engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
             engine::tests::part4::the_counter_coalesce_cure_is_inert_under_default_config \
@@ -261,12 +261,32 @@ jobs:
             shared_store::tests::a_truncated_binary_checkpoint_manifest_is_an_error_not_a_shorter_manifest \
             shared_store::tests::the_checkpoint_manifest_field_numbers_do_not_move \
             shared_store::tests::list_checkpoints_reads_a_binary_manifest_and_a_json_one_alike \
+            engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read \
+            engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
+            shared_store::tests::restore_reads_a_published_binary_dump_manifest_beside_a_planted_json_one \
+            engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_both_shapes_and_the_digest_payload_is_the_encoding \
+            engine::tests::bucket_dump_binary_shape::each_checksum_version_verifies_its_own_manifests_and_never_the_others \
+            engine::tests::bucket_dump_binary_shape::a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trusted \
+            engine::tests::bucket_dump_binary_shape::an_install_marker_is_read_in_either_shape \
+            engine::tests::bucket_dump_binary_shape::no_json_encode_path_is_left_for_a_manifest_or_a_marker \
             shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
+            shared_store::tests::a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_json \
+            shared_store::tests::no_json_encode_arm_is_left_in_the_wal_command_encoders \
+            shared_store::tests::a_per_key_wal_object_is_read_in_either_shape \
+            shared_store::tests::the_per_key_wal_writer_is_binary_and_a_planted_json_object_is_still_replayed \
+            shared_store::tests::no_json_encode_path_is_left_in_the_per_key_wal_publish \
+            index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
+            index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
+            engine::tests::the_served_index_encoder_has_no_json_fallback::the_served_index_encoder_does_not_fall_through_to_json \
+            engine::tests::the_config_log_in_either_shape::the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_misread \
+            engine::tests::the_config_log_in_either_shape::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
+            engine::tests::the_config_log_in_either_shape::no_json_encode_path_is_left_in_the_config_log_writer \
+            shared_store::tests::shared_store_rejects_corrupt_wal_checksum \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
             block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
             block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
@@ -277,9 +297,18 @@ jobs:
             wal_record::tests::the_hot_block_sentinel_is_declared_in_exactly_one_file \
             shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
             shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
+            engine::tests::part4::the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable \
             engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_answers_to_the_feature_ceiling_on_the_same_series \
             engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_inside_the_ceiling_is_still_accepted \
             engine::tests::part2::feature_append_rejects_hard_size_limit_before_mutation \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_policy_append_past_the_ceiling_is_refused_before_it_writes \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_policy_append_at_the_ceiling_is_accepted \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_replace_past_the_ceiling_is_refused_before_it_writes \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_replace_at_the_ceiling_is_accepted \
+            engine::tests::does_the_durable_map_answer_what_the_fold_answers::the_durable_map_answers_what_the_fold_answers_on_every_scenario_that_could_diverge \
+            engine::tests::gated_listing_folds_the_blocks::a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone \
+            engine::tests::gated_listing_folds_the_blocks::an_unframed_block_makes_the_fold_decline_rather_than_answer_short \
+            engine::tests::what_a_cold_set_listing_reads::what_a_cold_set_listing_reads_from_the_durable_map \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -409,22 +438,22 @@ jobs:
             engine::tests::flat_block_list::what_the_published_arm_cannot_see_in_container_capacity \
             engine::tests::flat_block_list::what_the_slots_owned_element_headroom_costs \
             engine::tests::where_an_objects_refs_could_live::whether_a_niche_can_take_the_refs_union_to_sixteen \
-            engine::tests::part4::maintained_component_block_ref_total_matches_the_walk \
+            engine::tests::part4::maintained_element_name_block_ref_total_matches_the_walk \
             engine::tests::part4::object_block_lookup_refs_per_object_census \
             engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
             engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
             engine::tests::part4::the_pressure_snapshot_reads_cache_stats_without_listing_the_cache \
             engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             engine::tests::the_consolidated_object_map::installing_a_control_state_block_keeps_the_rows_block_refs \
-            engine::container_blocks::member_component_tests::a_hex_component_still_decodes_to_the_member_it_always_did \
-            engine::container_blocks::member_component_tests::a_member_whose_text_is_valid_hex_is_not_confused_with_the_bytes_that_hex_spells \
-            engine::container_blocks::member_component_tests::the_new_spelling_round_trips_a_text_a_tag_leading_and_a_non_utf8_member \
-            engine::container_blocks::member_component_tests::the_new_spelling_charges_one_byte_a_member_byte_where_hex_charges_two \
-            engine::container_blocks::member_component_tests::the_two_new_spelling_bytes_are_four_and_five_and_round_trip \
-            engine::container_blocks::member_component_tests::the_new_variants_render_a_component_the_same_pair_parses_back \
-            engine::container_blocks::member_component_tests::every_kind_maps_to_the_spelling_its_writers_emit \
-            engine::container_blocks::member_component_tests::a_block_written_before_the_flip_is_found_by_a_component_in_either_spelling \
-            engine::container_blocks::member_component_tests::a_write_after_the_flip_frames_rather_than_falling_back_to_a_bare_value \
+            engine::container_blocks::member_element_name_tests::a_hex_element_name_still_decodes_to_the_member_it_always_did \
+            engine::container_blocks::member_element_name_tests::a_member_whose_text_is_valid_hex_is_not_confused_with_the_bytes_that_hex_spells \
+            engine::container_blocks::member_element_name_tests::the_new_spelling_round_trips_a_text_a_tag_leading_and_a_non_utf8_member \
+            engine::container_blocks::member_element_name_tests::the_new_spelling_charges_one_byte_a_member_byte_where_hex_charges_two \
+            engine::container_blocks::member_element_name_tests::the_two_new_spelling_bytes_are_four_and_five_and_round_trip \
+            engine::container_blocks::member_element_name_tests::the_new_variants_render_an_element_name_the_same_pair_parses_back \
+            engine::container_blocks::member_element_name_tests::every_kind_maps_to_the_spelling_its_writers_emit \
+            engine::container_blocks::member_element_name_tests::a_block_written_before_the_flip_is_found_by_an_element_name_in_either_spelling \
+            engine::container_blocks::member_element_name_tests::a_write_after_the_flip_frames_rather_than_falling_back_to_a_bare_value \
             engine::tests::marking_an_object_dirty_reaches_its_blocks::marking_an_object_dirty_reaches_blocks_its_row_holds_the_refs_for \
             engine::tests::where_an_objects_refs_could_live::where_each_kinds_refs_end_up \
             engine::tests::what_the_core_index_puts_on_the_wire::every_field_of_the_core_index_declares_whether_it_reaches_the_wire \
@@ -437,6 +466,17 @@ jobs:
             block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
             block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
             block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
+            engine::tests::component_is_retired::the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone \
+            engine::tests::component_is_retired::a_comment_or_string_edit_moves_nothing_and_a_code_edit_moves_exactly_one \
+            engine::tests::component_is_retired::a_sentence_moves_only_its_own_row \
+            engine::tests::component_is_retired::the_roster_matches_the_tree_in_both_directions \
+            engine::tests::component_is_retired::the_files_named_for_the_word_are_the_roster \
+            engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_short_key_and_the_long_key_write_one_wal_json \
+            engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_protobuf_framing_of_a_named_record_does_not_move \
+            engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_key_a_block_is_filed_under_spells_the_name_in_its_third_slot \
+            engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_tombstone_row_keeps_its_key \
+            engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_report_row_keeps_its_key \
+            shared_store::a_staged_blocks_name_keeps_its_tag::the_frame_of_a_named_block_round_trips_byte_for_byte \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -489,8 +529,16 @@ jobs:
           # and dropped the key on every element write: 413 allocations for 400 installs, and
           # 264.9 B per write at a 208-byte key against 64.9 B at an 8-byte one. The guard varies
           # KEY LENGTH, because only a key copy can make per-write bytes depend on it.
+          #
+          # a_hash_field_write_does_not_pay_for_the_fields_it_already_has pins that a single-command
+          # hash write files the field it wrote and not the fields the hash already held. The
+          # whole-object sync it used to run cost 118 allocations at 10 fields and about 2,300 at
+          # 400 (571 at 100, 5,080 at 1,000), because its filter against re-filing asks a lookup
+          # that resolves no named element. The guard varies the FIELD COUNT and carries a control:
+          # a read of the whole hash must grow with it, or the probe cannot see that dimension.
           for t in \
-            engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key ; do
+            engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
+            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log

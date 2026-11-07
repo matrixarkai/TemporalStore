@@ -36,6 +36,16 @@ struct ContextSummaryBatchItem {
     l1: String,
 }
 
+#[derive(Serialize)]
+struct ContextSummaryBatchSource<'a> {
+    source_index: usize,
+    source_kind: &'static str,
+    source_id: &'a str,
+    title: &'a str,
+    rich_source: bool,
+    body: &'a str,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ContextEmbeddingBatchLimits {
     pub(crate) max_items: usize,
@@ -186,9 +196,8 @@ pub(crate) fn context_summaries_for_extract_batch(
         std::iter::repeat_with(|| None).take(requests.len()).collect();
     let mut start = 0usize;
     while start < requests.len() {
-        let end = ollama_summary_batch_end(&client, requests, start);
+        let (end, prompt) = ollama_summary_batch_prompt(&client, requests, start);
         let chunk = &requests[start..end];
-        let prompt = context_summary_batch_prompt(chunk);
         let output = client
             .generate_structured_json(
                 CONTEXT_SUMMARY_SYSTEM_PROMPT,
@@ -222,14 +231,15 @@ pub(crate) fn context_summaries_for_extract_batch(
                 if item.source_index >= chunk.len() || !seen.insert(item.source_index) {
                     continue;
                 }
+                if item.l0.trim().is_empty() || item.l1.trim().is_empty() {
+                    continue;
+                }
                 let request = chunk[item.source_index];
-                let content = serde_json::json!({ "l0": item.l0, "l1": item.l1 }).to_string();
-                let (l0, l1) = parse_provider_summary_content(&content, request);
                 results[start + item.source_index] = Some(Ok(ContextExtractSummaries {
                     status: Status::ok(),
                     provider: provider.clone(),
-                    l0,
-                    l1,
+                    l0: truncate_words(&item.l0, 32),
+                    l1: truncate_words(&item.l1, 96),
                     l2_ref: format!(
                         "tsctx://tenant/{}/model/{}/source/{}",
                         request.tenant_hash, provider.provider_name, request.source_id
@@ -880,67 +890,73 @@ fn context_summary_prompt(request: &ContextExtractRequest) -> String {
     context_summary_prompt_with_guidance(request, guidance)
 }
 
-fn ollama_summary_batch_end(
+fn ollama_summary_batch_prompt(
     client: &OllamaProvider,
     requests: &[&ContextExtractRequest],
     start: usize,
-) -> usize {
+) -> (usize, String) {
     let config = client.config();
     let max_end = requests
         .len()
         .min(start.saturating_add(config.max_batch_items));
     let mut end = start;
-    let mut prompt_bytes = CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2;
+    let mut prompt = Vec::with_capacity(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2);
+    prompt.extend_from_slice(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.as_bytes());
+    prompt.push(b'[');
     while end < max_end {
-        let candidate_end = end + 1;
         let source_index = end - start;
-        let item_bytes = context_summary_batch_source(source_index, requests[end])
-            .to_string()
-            .len();
-        let candidate_bytes = prompt_bytes
-            .saturating_add(usize::from(source_index > 0))
-            .saturating_add(item_bytes);
-        let fits = candidate_bytes <= config.max_input_bytes
+        let item_start = prompt.len();
+        if source_index > 0 {
+            prompt.push(b',');
+        }
+        serde_json::to_writer(
+            &mut prompt,
+            &context_summary_batch_source(source_index, requests[end]),
+        )
+        .expect("borrowed context summary source serializes");
+        let candidate_prompt_bytes = prompt
+            .len()
+            .saturating_add(1);
+        let fits = candidate_prompt_bytes <= config.max_input_bytes
             && CONTEXT_SUMMARY_SYSTEM_PROMPT
                 .len()
-                .saturating_add(candidate_bytes)
+                .saturating_add(candidate_prompt_bytes)
                 <= config.max_request_bytes;
         if !fits && end > start {
+            prompt.truncate(item_start);
             break;
         }
-        end = candidate_end;
-        prompt_bytes = candidate_bytes;
+        end += 1;
         if !fits {
             break;
         }
     }
-    end.max(start + 1)
-}
-
-fn context_summary_batch_prompt(requests: &[&ContextExtractRequest]) -> String {
-    let sources = requests
-        .iter()
-        .enumerate()
-        .map(|(source_index, request)| context_summary_batch_source(source_index, request))
-        .collect::<Vec<_>>();
-    format!(
-        "{CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX}{}",
-        serde_json::Value::Array(sources)
+    prompt.push(b']');
+    (
+        end.max(start + 1),
+        String::from_utf8(prompt).expect("serialized context summary prompt is UTF-8"),
     )
 }
 
 fn context_summary_batch_source(
     source_index: usize,
     request: &ContextExtractRequest,
-) -> Value {
-    serde_json::json!({
-        "source_index": source_index,
-        "source_kind": format!("{:?}", request.source_kind),
-        "source_id": request.source_id,
-        "title": request.title,
-        "rich_source": context_source_warrants_l1(&request.body),
-        "body": request.body,
-    })
+) -> ContextSummaryBatchSource<'_> {
+    ContextSummaryBatchSource {
+        source_index,
+        source_kind: match request.source_kind {
+            ContextSourceKind::Document => "Document",
+            ContextSourceKind::Chat => "Chat",
+            ContextSourceKind::Ticket => "Ticket",
+            ContextSourceKind::Code => "Code",
+            ContextSourceKind::Incident => "Incident",
+            ContextSourceKind::UserEvent => "UserEvent",
+        },
+        source_id: &request.source_id,
+        title: &request.title,
+        rich_source: context_source_warrants_l1(&request.body),
+        body: &request.body,
+    }
 }
 
 fn context_summary_prompt_with_guidance(

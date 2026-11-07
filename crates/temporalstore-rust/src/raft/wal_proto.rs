@@ -226,16 +226,16 @@ pub(crate) fn put_staged_block(
     // Ascending field order, the order prost would have written them, which is the property
     // `the_borrowing_encoder_writes_the_same_bytes` checks. Written unconditionally when present
     // rather than elided against an implied value the way the object id is: there is no second
-    // copy of the component anywhere in the record to imply it from.
-    if let Some(component) = block.component.as_deref() {
+    // copy of the element name anywhere in the record to imply it from.
+    if let Some(element_name) = block.element_name.as_deref() {
         // NOT `put_len_delimited`, which skips an empty payload. This field is `optional` in the
         // schema, so prost writes it for `Some("")` and omits it only for `None` -- and the
-        // difference is load-bearing rather than cosmetic: a component that decoded back as `None`
+        // difference is load-bearing rather than cosmetic: an element name that decoded back as `None`
         // would make an element block indistinguishable from the whole-object block of the same key,
         // which is the exact confusion this field exists to remove.
         prost::encoding::encode_key(4, prost::encoding::WireType::LengthDelimited, out);
-        prost::encoding::encode_varint(component.len() as u64, out);
-        out.extend_from_slice(component.as_bytes());
+        prost::encoding::encode_varint(element_name.len() as u64, out);
+        out.extend_from_slice(element_name.as_bytes());
     }
 }
 
@@ -273,10 +273,10 @@ pub(crate) fn staged_block_body_len(
         } else {
             len_delimited_len(2, block.bytes.len())
         }
-        + match block.component.as_deref() {
+        + match block.element_name.as_deref() {
             // Counted for `Some("")` as well, because the writer above emits it: an `optional`
             // field is present or absent, not empty or absent.
-            Some(component) => len_delimited_len(4, component.len()),
+            Some(element_name) => len_delimited_len(4, element_name.len()),
             None => 0,
         }
 }

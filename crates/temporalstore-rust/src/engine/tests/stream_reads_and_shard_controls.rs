@@ -300,7 +300,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     // recorded with the right page address, not how the fields are spelled.
     //
     // AND THE SELECTOR CANNOT NAME THE FIELD ANY MORE. It matched
-    // `object_key == "h" && component == "f"`, and a block entry has no component slot in the
+    // `object_key == "h" && element_name == "f"`, and a block entry has no element name slot in the
     // served index, so it matched nothing and read "the hash h/f write is recorded in the bucket
     // index" for a write that was recorded. The object holds exactly ONE field, so its block is
     // selected by object key alone -- and the count below is what keeps that selection exact
@@ -329,7 +329,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     );
     let hash_block = hash_blocks[0];
     // AND NO ELEMENT-NAME SLOT IS WRITTEN, which is the other half of why the selector changed. A
-    // `component` or `c` key on a block entry here would mean the element name has come back to the
+    // `element_name` or `c` key on a block entry here would mean the element name has come back to the
     // STORED form, which is the thing the width step removed.
     assert!(
         hash_block.get("component").is_none() && hash_block.get("c").is_none(),
@@ -1723,6 +1723,57 @@ fn table_write_qps_config_is_shared_across_loaded_table_shards() {
 }
 
 #[test]
+fn a_batch_keeps_the_table_name_when_table_admission_is_active() {
+    let engine = TemporalEngine::default();
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 1,
+                local_node_id: Some(1),
+                shard_uri: "local://feature_table/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
+                readonly: false,
+                table_name: "feature_table".to_string(),
+            })
+            .status
+            .ok
+    );
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            table_write_qps: Some(1),
+            ..Config::default()
+        },
+    });
+    wait_for_fresh_admission_second();
+
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet {
+                key: "first".to_string(),
+                value: b"x".to_vec(),
+            },
+            Command::StringSet {
+                key: "second".to_string(),
+                value: b"y".to_vec(),
+            },
+        ],
+    });
+    assert!(response.status.ok, "batch failed: {:?}", response.status);
+    assert_eq!(response.responses.len(), 2);
+    assert!(response.responses[0].status.ok);
+    assert_eq!(response.responses[1].status.code, "admission_rejected");
+    assert_eq!(
+        response.responses[1].status.message,
+        "table_write_qps limit exceeded"
+    );
+}
+
+#[test]
 fn tenant_read_qps_config_is_shared_across_tables() {
     let engine = TemporalEngine::default();
     for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "control_state_table", "k2")] {
@@ -2187,7 +2238,7 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     assert!(physical_before_reload.bucket_nodes.iter().any(|bucket| {
         bucket.block_ref_count == 2
             // ONE OBJECT, TWO BLOCKS. This pinned `object_count == 2` -- two hash fields of one
-            // key were two OBJECTS, because the id folded the component in. They are two
+            // key were two OBJECTS, because the id folded the element name in. They are two
             // ELEMENTS of one object now, so `object_index` holds one row and the pair
             // (2 blocks, 1 object) is what `classify_bucket_layout` calls `MultiBlockObject`.
             // The block count beside it is left at 2 deliberately: it is what says the
@@ -2205,7 +2256,7 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
             .map(|summary| summary.object_count)
             .sum::<u64>(),
         // ONE, not two: `object_count` is `bucket.object_index.len()` and the two hash
-        // fields of this key are two ELEMENTS of one object since the component left
+        // fields of this key are two ELEMENTS of one object since the element name left
         // the identity.
         1
     );

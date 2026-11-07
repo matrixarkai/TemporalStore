@@ -9,7 +9,7 @@
 //!
 //! ```text
 //!     sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>   the member IS the map key
-//!     component = member_component(&member)                     the member again, one char a byte
+//!     element name = member_element_name(&member)                     the member again, one char a byte
 //!     append_value_of_object(.., &member, ..)                   the member again, as the payload
 //! ```
 //!
@@ -20,12 +20,12 @@
 //!
 //! # THE MEASUREMENT
 //!
-//! `Command::SetMembers` walks `bucket_index_component_block_addresses(shard, "set", &key)` and
-//! reads ONE BLOCK PER MEMBER to build its answer. The pairs it walks carry the component, and a
-//! set's component IS the member spelled once by `member_component` -- so every member the
+//! `Command::SetMembers` walks `bucket_index_element_name_block_addresses(shard, "set", &key)` and
+//! reads ONE BLOCK PER MEMBER to build its answer. The pairs it walks carry the element name, and a
+//! set's element name IS the member spelled once by `member_element_name` -- so every member the
 //! response returns was already
 //! present, spelled in hex, in the tuple being iterated. `a_set_listing_reads_one_page_per_member`
-//! counts the reads; `every_member_a_set_listing_returns_is_already_spelled_by_its_component`
+//! counts the reads; `every_member_a_set_listing_returns_is_already_spelled_by_its_element_name`
 //! proves the redundancy at byte level over a seeded shard rather than inferring it from the call
 //! site.
 //!
@@ -42,20 +42,20 @@
 //!
 //! Two cheaper sources were put to the fixture and both are refused, for different reasons.
 //!
-//! ## Decoding the component instead of reading the block
+//! ## Decoding the element name instead of reading the block
 //!
 //! Byte-identical today -- that is the finding of
-//! `every_member_a_set_listing_returns_is_already_spelled_by_its_component`. What it would cost is
-//! not reads but the only validation a component has.
+//! `every_member_a_set_listing_returns_is_already_spelled_by_its_element_name`. What it would cost is
+//! not reads but the only validation an element name has.
 //!
 //! THE SECOND HALF OF THAT SENTENCE USED TO READ "and nothing re-checks them; today a block that
 //! disagrees with its name is served as the block", and `container_blocks` made it false. A container
 //! block now states which element it holds, and the read funnel asks the block for the element the
 //! index named -- so a block that disagrees with its name is NOT served, it answers missing. The
-//! component and the payload are still written together by one call site, and the check is now on the
+//! element name and the payload are still written together by one call site, and the check is now on the
 //! element KEY rather than on the value, but a check exists where none did.
 //!
-//! What does not change is the verdict: decoding the component instead of reading the block would
+//! What does not change is the verdict: decoding the element name instead of reading the block would
 //! trade an answer storage vouches for against one nothing does, and it would give up the element
 //! check as well as the byte one. It is measured here and not taken.
 //!
@@ -74,9 +74,9 @@
 //!
 //! THAT OBJECTION IS ANSWERED and this module's conclusion survives it on other grounds. The merge
 //! asks the live-block question of the persisted map now, so the map cannot over-report. What still
-//! stops a listing is the opposite direction: a live block whose component cannot be decoded is in the
+//! stops a listing is the opposite direction: a live block whose element name cannot be decoded is in the
 //! index and in no map, so a map-served listing would MISS a member -- #1989's case, latent because
-//! nothing writes a non-hex set component. `resident_map_readers` carries that argument and the
+//! nothing writes a non-hex set element name. `resident_map_readers` carries that argument and the
 //! per-reader sweep. The 1.00 reads per member measured below are therefore UNBLOCKED rather than
 //! recovered, and are a serving-path change with its own gate.
 //!
@@ -179,7 +179,7 @@ fn members_returned(response: &crate::types::CommandResponse) -> Vec<Vec<u8>> {
 /// Every member the LIVE BLOCKS of one set key still state as present, decoded out of the element
 /// key each block item is filed under.
 ///
-/// THIS IS THE SOURCE THAT REPLACED THE COMPONENT, and its limit is stated here because one arm in
+/// THIS IS THE SOURCE THAT REPLACED THE ELEMENT NAME, and its limit is stated here because one arm in
 /// this module turns on it: the payload is where a member's bytes live now, but it is NOT an
 /// authority on element LIVENESS. A removal writes a tombstone block and leaves the element's
 /// original block live and still stating the element, so this OVER-REPORTS after a removal. For
@@ -211,18 +211,18 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
                     if item.deleted {
                         continue;
                     }
-                    if let Some(component) =
-                        crate::engine::container_blocks::component_from_element_key(
+                    if let Some(element_name) =
+                        crate::engine::container_blocks::element_name_from_element_key(
                             spelling, &item.key,
                         )
                     {
                         // BY THE SHARED READER, not `hex::decode`. This hand-written decode was a
-                        // second implementation of the component encoding, and it stopped
+                        // second implementation of the element name encoding, and it stopped
                         // agreeing with the write path the moment set and zset filed a tagged
-                        // component: the payload members came back empty and the equality below
+                        // element name: the payload members came back empty and the equality below
                         // failed against a listing that was perfectly correct.
                         if let Some(member) =
-                            crate::engine::container_blocks::member_from_component(&component)
+                            crate::engine::container_blocks::member_from_element_name(&element_name)
                         {
                             stated.insert(member);
                         }
@@ -477,14 +477,14 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 ///
 /// # THE COPY THIS ARM MEASURED HAS BEEN DELETED, NOT MOVED
 ///
-/// This arm's subject was the third of the three copies in the module doc: `component =
+/// This arm's subject was the third of the three copies in the module doc: `element_name =
 /// hex::encode(&member)`, sitting beside the address in the walk `SetMembers` performs, so that the
 /// block read recovered bytes the iteration was already holding. The entry stopped naming its
 /// element, and that copy is now STRUCTURALLY UNREPRESENTABLE rather than merely absent.
-/// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
+/// `bucket_index_element_name_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
 /// return paths. The old body asked the pair for its name and the `expect` fired.
 ///
-/// AND IT IS NOT RESTATED AS `component.is_none()`, WHICH IS WHY THAT IS SAID HERE. Production
+/// AND IT IS NOT RESTATED AS `element_name.is_none()`, WHICH IS WHY THAT IS SAID HERE. Production
 /// writes the `None` as a literal, so an `is_none()` assertion compares a constant against itself:
 /// it would read like a guard over the deletion while being unable to fail. The
 /// `MEMBERS * width * 2` name-byte assertion goes with the copy it measured, for the same reason:
@@ -493,10 +493,10 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 /// WHAT DOES GUARD THE DELETION IS A CONST-EVALUATED FIELD SUM, and it is named precisely because
 /// the obvious candidate does not. `engine_storage_state.rs` reconstructs `BlockIndex`'s width from its seven
 /// fields BY TYPE and asserts the sum is 40 and equal to `size_of::<BlockIndex>()`, so re-adding a
-/// `component: Option<Arc<str>>` puts the sum at 56 and fails to COMPILE -- it cannot be a test
+/// `element_name: Option<Arc<str>>` puts the sum at 56 and fails to COMPILE -- it cannot be a test
 /// nothing runs. The signature tripwire in `element_ordinal_reuse`, which pins this function's
 /// exact declaration text including `-> Vec<(Option<Arc<str>>, ElementEntry)>`, is a weaker and
-/// different guard: it fires when the pair's SHAPE changes or a caller gains a component argument,
+/// different guard: it fires when the pair's SHAPE changes or a caller gains an element name argument,
 /// and it would NOT fire on the first slot merely starting to be populated. Both are cited rather
 /// than one, because an earlier draft of this paragraph credited the tripwire with the whole job.
 ///
@@ -507,7 +507,7 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 /// FIRST, THE MEMBER BYTES ARE STILL RECOVERABLE WITHOUT A BLOCK READ -- just not from the index.
 /// They are in the block PAYLOAD, and the two sides of the equality are TWO DIFFERENT FIELDS of it,
 /// which is worth naming because the copies being distinct is the whole claim. The left is the
-/// element KEY each item is filed under, decoded by `component_from_element_key`. The right is what
+/// element KEY each item is filed under, decoded by `element_name_from_element_key`. The right is what
 /// the listing serves, which is the item's stored VALUE -- `derive_membership` folds the blocks and
 /// hands back `derived.live.into_values()`. Both were written by one call site, which is what makes
 /// them a redundancy and not a check.
@@ -515,8 +515,8 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 /// THREE MUTATIONS WERE DRIVEN TO PROVE THEY ARE INDEPENDENT, AND THE FIRST TWO COULD NOT, so they
 /// are recorded here rather than left for the next reader to repeat:
 ///
-///   - truncating the component moved BOTH sides, because the serving path keys its fold by the
-///     component: 12 members collided into 2 and the DENOMINATOR fired, not the equality;
+///   - truncating the element name moved BOTH sides, because the serving path keys its fold by the
+///     element name: 12 members collided into 2 and the DENOMINATOR fired, not the equality;
 ///   - truncating the served VALUE collided them too, since this fixture's members differ only in
 ///     their last bytes -- again the denominator;
 ///   - flipping the first byte of the ELEMENT KEY is the one that isolates it. Every member here
@@ -527,7 +527,7 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 /// SECOND, AND THIS IS THE PART THE OLD ARM COULD NOT HAVE STATED: the walk now returns one pair
 /// per BLOCK rather than one per element, so after a FOLD it hands back strictly fewer pairs than
 /// there are members. Before the collapse those were equal at every width -- which is what made
-/// "the component beside the address already spells the member" sayable at all. A strict inequality
+/// "the element name beside the address already spells the member" sayable at all. A strict inequality
 /// is asserted rather than a magnitude, because the number of blocks a fold lands on is a property
 /// of the batcher and moves with the fixture.
 ///
@@ -536,7 +536,7 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 ///
 /// rust-internal: reads the engine's own block index and block store over a seeded store
 #[test]
-fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
+fn every_member_a_set_listing_returns_is_already_spelled_by_its_element_name() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -573,7 +573,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         let (pairs, named) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let walk = crate::engine::bucket_store::bucket_index_component_block_addresses(
+            let walk = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
                 shard, "set", &key,
             );
             let named = walk.iter().filter(|(c, _)| c.is_some()).count();
@@ -651,7 +651,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
     let folded_pairs = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        crate::engine::bucket_store::bucket_index_component_block_addresses(
+        crate::engine::bucket_store::bucket_index_element_name_block_addresses(
             shard,
             "set",
             &folded_key,
@@ -668,7 +668,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         "the folded key's walk returned {folded_pairs} pair(s) for {served_folded} served \
          member(s). One entry a block is what makes this strict: before the collapse the walk \
          returned a pair per element and these were equal, which is what let this arm claim the \
-         component beside the address already spelled the member"
+         element name beside the address already spelled the member"
     );
     println!(
         "\n  folded: {folded_pairs} walk pair(s) for {served_folded} served member(s) -- the index \
@@ -685,15 +685,15 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 ///
 /// # WHY THIS IS RESTATED AND NOT RE-GOLDENED
 ///
-/// This arm compared `shard.sets` against a member population DECODED OUT OF THE COMPONENT each
+/// This arm compared `shard.sets` against a member population DECODED OUT OF THE ELEMENT NAME each
 /// block is filed under. That population no longer exists.
-/// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
+/// `bucket_index_element_name_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
 /// of its return paths -- the lookup arm, the released arm and the bucket walk -- so the walk hands
 /// back addresses and nothing else. Measured here: resident map 2 member(s), live block index 0.
 ///
 /// AND THE DERIVED SIDE OF THIS MERGE IS NOW EMPTY, which is the fact that makes the rest of it
 /// matter. `reconcile_secondary_views_from_bucket_index` builds `derived` from the live block index,
-/// and rebuilding a set's members from there needs the component the entry no longer carries.
+/// and rebuilding a set's members from there needs the element name the entry no longer carries.
 /// Measured by handing the merge an EMPTY persisted map: `shard.sets` came back empty, so nothing
 /// in it came from the derived side. The resident set map is therefore wholly the durable
 /// snapshot's now, and the address test in `fill_absent_elements` is the only filter standing
@@ -845,9 +845,9 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         // decoded into members; it is reported so that the reason this arm changed shape is a
         // number in the output and not only a paragraph above.
         let named =
-            crate::engine::bucket_store::bucket_index_component_block_addresses(shard, "set", &key)
+            crate::engine::bucket_store::bucket_index_element_name_block_addresses(shard, "set", &key)
                 .iter()
-                .filter(|(component, _)| component.is_some())
+                .filter(|(element_name, _)| element_name.is_some())
                 .count();
         println!("\n=== after a removal and a reconcile against a snapshot that predates it ===");
         println!("  index walk pairs carrying a member name: {named}");

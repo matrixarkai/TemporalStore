@@ -729,8 +729,10 @@ impl serde::Serialize for SummaryNamed<'_> {
 pub struct StoragePhysicalBlockIndex {
     pub object_key: String,
     pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub component: Option<String>,
+    /// Published under the key `component`, which is what every consumer of this report reads. The
+    /// Rust field is the element name; the key is the contract and does not move with it.
+    #[serde(rename = "component", default, skip_serializing_if = "Option::is_none")]
+    pub element_name: Option<String>,
     #[serde(rename = "routing_slot")]
     pub routing_bucket: u32,
     #[serde(rename = "block_segment_id", alias = "page_segment_id")]
@@ -883,7 +885,24 @@ pub struct BucketDumpManifest {
     pub index_bytes: Vec<u8>,
     #[serde(default)]
     pub index_sha256: String,
+    /// WHICH DERIVATION `checksum` WAS COMPUTED WITH.
+    ///
+    /// 0 (absent in the JSON) is every manifest written before this field existed: the checksum
+    /// is a SHA-256 over this struct's canonical JSON with `checksum` emptied. 1 is a SHA-256 over
+    /// the manifest's deterministic protobuf encoding with `checksum` empty -- see
+    /// `engine/bucket_dump_codec.rs`. Any other value is refused by the verifier rather than
+    /// guessed at, so a manifest from a build that knows a third derivation is dropped from the
+    /// listing instead of being verified against the wrong bytes.
+    ///
+    /// Skipped when 0 so a legacy manifest serialises to exactly the bytes its checksum was taken
+    /// over: the field must not change the one derivation that already exists.
+    #[serde(default, skip_serializing_if = "is_legacy_checksum_version")]
+    pub checksum_version: u32,
     pub checksum: String,
+}
+
+fn is_legacy_checksum_version(version: &u32) -> bool {
+    *version == 0
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

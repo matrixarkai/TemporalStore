@@ -29,7 +29,7 @@
 //! # WHAT COUNTS AS PRODUCTION, STATED RATHER THAN ASSUMED
 //!
 //! Every `.rs` file under the crate's `src/`, excluding any whose path has a `tests` directory
-//! component. The scope is derived from the crate root and walked recursively -- NOT from a list
+//! element name. The scope is derived from the crate root and walked recursively -- NOT from a list
 //! of directories, because a hand-listed scope is the same sampling error inside the detector. A
 //! signature in `storage_reporting.rs` or `packed_blocks.rs` is exactly what the original walk
 //! missed.
@@ -245,7 +245,7 @@ fn no_production_signature_names_the_series_representation() {
     for path in &files {
         if path
             .components()
-            .any(|component| component.as_os_str() == "tests")
+            .any(|element_name| element_name.as_os_str() == "tests")
         {
             continue;
         }

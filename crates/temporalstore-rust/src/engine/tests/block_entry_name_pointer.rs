@@ -69,7 +69,7 @@
 //!
 //!   * #1986 asked whether the entry needs `object_key` AT ALL and found it does: 47 production
 //!     lines, twelve of them class 2 -- they need the CHARACTERS -- and class 3 empty.
-//!   * #1976 / #1985 asked whether `component` could be an ordinal and found it cannot: the
+//!   * #1976 / #1985 asked whether `element_name` could be an ordinal and found it cannot: the
 //!     ordinal does not exist for `zset`, `set`, `list` or `hash`.
 //!   * #1986 also priced an interning HANDLE and declined it on arithmetic: a table entry at
 //!     54.02 B resident, break-even 3.38 blocks an object against a mixed store's 1.98.
@@ -95,7 +95,7 @@
 //!   step 1a  two one-word name slots (thin pointer)               48      56   measured, DECLINED
 //!   step 1b  the key moved to the bucket's object list            48      56   measured, REFUTED
 //!   step 2   an eight-bit object ordinal, needs 1b                40      48   does not follow
-//!   step 3   an element ordinal for the component (another tree's) 24     32   does not follow
+//!   step 3   an element ordinal for the element name (another tree's) 24     32   does not follow
 //!   step 4   the handle folded out of the list                    24      24   does not follow
 //!   step 5   `repr(packed)`, needs 3                              22      32   WORTH NOTHING
 //!
@@ -130,8 +130,8 @@
 //!
 //! STEP 4 -- the list's `u64` handle -- is the one term that needs no step above it and no format
 //! change at all. `block_index_handle` is a `DefaultHasher` over the entry's own `model_id`,
-//! `object_key`, `component` and five address fields, so it is a CACHED DERIVATION OF THE ENTRY
-//! BESIDE THE ENTRY -- the shape `generation` (#1966) and the component name (#1978) both had when
+//! `object_key`, `element_name` and five address fields, so it is a CACHED DERIVATION OF THE ENTRY
+//! BESIDE THE ENTRY -- the shape `generation` (#1966) and the element name (#1978) both had when
 //! they came out. Nothing persists it: the block index's stored form is a map keyed by
 //! `block_index_written_key`'s string, and `CoreIndex::object_block_lookup`, which holds the handle
 //! in `BlockLookupRef`, is `#[serde(default, skip_serializing)]` and rebuilt on load. So there is no
@@ -147,7 +147,7 @@
 //!     the same error #1994 caught from the other side, where a change was -324.44 B a bucket at one
 //!     range and +0.70 at the other.
 //!   * WHAT IT COSTS IS A HASH PER PROBE, counted and not timed. The list is sorted by the handle and
-//!     `find_block` bisects it, so a recomputed key hashes `model_id`, the key, the component and five
+//!     `find_block` bisects it, so a recomputed key hashes `model_id`, the key, the element name and five
 //!     address fields at every probe of every warm block lookup, against zero today. MEASURED probe
 //!     depth: 6 to 7 at the median bucket and up to 9 at the widest, which is **48 to 72 field hashes
 //!     a warm block lookup**, and one of the eight is a 24-character string. The ORDER is safe -- the
@@ -158,7 +158,7 @@
 //! SO 64 STANDS, and the reason is written down here rather than left to be re-derived.
 //!
 //! THE HONEST CEILING. The design that prompted this work holds a 17-byte entry with NO key and NO
-//! component: names resolve to small integer ids at its API boundary. Three merged refutations
+//! element name: names resolve to small integer ids at its API boundary. Three merged refutations
 //! establish our readers need the characters somewhere, so 17 is not reachable without that object
 //! model. Our own floor, with every step above taken and the alignment given up, is 22 -- and the
 //! 18-byte figure quoted for it omits `model_id` and the three flag bytes, which are 4 of our 22.
@@ -257,12 +257,12 @@ struct MirrorAddressSixteenBitObject {
     object_ordinal: u16,
 }
 
-/// Step 3: the component as an element ordinal too. Another tree's step, not this one's -- mirrored
+/// Step 3: the element name as an element ordinal too. Another tree's step, not this one's -- mirrored
 /// only so the combined width can be stated.
 #[allow(dead_code)]
 struct MirrorEntryBothOrdinals {
     model_id: StoredModelKind,
-    component: u16,
+    element_name: u16,
     address: MirrorAddressEightBitObject,
     dirty: bool,
     deleted: bool,
@@ -274,7 +274,7 @@ struct MirrorEntryBothOrdinals {
 #[repr(packed)]
 struct MirrorEntryBothOrdinalsPacked {
     model_id: StoredModelKind,
-    component: u16,
+    element_name: u16,
     address: MirrorAddressEightBitObject,
     dirty: bool,
     deleted: bool,
@@ -447,7 +447,7 @@ fn a_packed_entry_reads_its_address_by_value_because_a_borrow_of_it_is_undefined
     };
     let entry = MirrorEntryBothOrdinalsPacked {
         model_id: StoredModelKind::String,
-        component: 9,
+        element_name: 9,
         address: written,
         dirty: true,
         deleted: false,

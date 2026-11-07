@@ -70,7 +70,7 @@ fn member_bytes(index: usize) -> Vec<u8> {
     bytes
 }
 
-/// Live blocks, live entries, and entries carrying a component, for one set object.
+/// Live blocks, live entries, and entries carrying an element name, for one set object.
 fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -169,8 +169,8 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     );
 
     // THE SECOND HALF OF THIS TEST USED TO BE A `named` COUNTER asserted to zero: no entry still
-    // carrying an element name after the sweep, "a component here means a rebuild put one back".
-    // `BlockIndex` has no component field, so a rebuild has nothing to put back and the counter
+    // carrying an element name after the sweep, "an element name here means a rebuild put one back".
+    // `BlockIndex` has no element name field, so a rebuild has nothing to put back and the counter
     // could only ever read zero. It is enforced by `engine_storage_state.rs`'s pin instead --
     // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` and a field sum equal to the width, so
     // re-adding a name fails const-evaluation rather than being counted here.

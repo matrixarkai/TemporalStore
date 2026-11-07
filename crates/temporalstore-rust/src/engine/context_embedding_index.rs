@@ -122,6 +122,20 @@ impl TemporalEngine {
             )
     }
 
+    pub(crate) fn search_context_embeddings(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_hash: u64,
+        model_hash: u64,
+        query: &[f32],
+        limit: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.context_embedding_indexes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .search(channel, tenant_hash, model_hash, query, limit)
+    }
+
     #[cfg(test)]
     pub(crate) fn context_embedding_index_len(&self) -> usize {
         self.context_embedding_indexes

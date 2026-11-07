@@ -219,7 +219,7 @@ fn carried_since(root: &Path, before: &HashSet<u64>) -> Carried {
             *blocks
                 .entry((
                     block.object_id,
-                    block.component.as_ref().map(|c| c.to_string()),
+                    block.element_name.as_ref().map(|c| c.to_string()),
                 ))
                 .or_default() += 1;
         }
@@ -244,7 +244,7 @@ fn carried_since(root: &Path, before: &HashSet<u64>) -> Carried {
             }
             // Nothing in the result says what the value is and there is no operation to re-run,
             // so the only way back is a block for THIS result inside THIS record.
-            let carried = blocks.contains_key(&(item.object_id, item.component.clone()))
+            let carried = blocks.contains_key(&(item.object_id, item.element_name.clone()))
                 || blocks.contains_key(&(item.object_id, None));
             if !carried {
                 counts.results_with_no_way_back += 1;

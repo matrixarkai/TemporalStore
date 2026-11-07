@@ -44,7 +44,7 @@
 //!
 //! ORDER. The entries are kept sorted by field name, so iteration is ordered where the table's was
 //! arbitrary. Nothing depended on the arbitrary order -- `HashGetAll` and `HashLen` do not read
-//! this map at all, they resolve through `bucket_index_component_block_addresses`, which sorts its
+//! this map at all, they resolve through `bucket_index_element_name_block_addresses`, which sorts its
 //! own result -- and making the order defined can only remove a source of run-to-run difference.
 //!
 //! THE WIRE FORMAT IS UNCHANGED, BY CONSTRUCTION AND BY TEST, AND THAT IS WHY `hashes` COULD BECOME
@@ -70,7 +70,7 @@ use crate::block_store::ElementEntry;
 /// so an owned name is that constant copied once per object -- 32.0 bytes and one allocation
 /// per field at the narrow arm, 40.0 bytes and one allocation at the wide one. The handles come
 /// from `bucket_index.kind_pool`, which already interned exactly these names for the bucket
-/// index's component position.
+/// index's element name position.
 pub(super) type FieldName = std::sync::Arc<str>;
 
 /// Up to this many entries the vector is grown to EXACTLY what it holds; at or above it, it doubles

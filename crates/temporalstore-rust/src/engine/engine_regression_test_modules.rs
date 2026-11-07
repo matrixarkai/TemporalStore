@@ -121,6 +121,8 @@ mod reclaiming_space_is_its_own_pass;
 mod cache_invalidation_cost;
 #[path = "tests/cache_read_cost.rs"]
 mod cache_read_cost;
+#[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
+mod a_hash_write_files_only_what_it_wrote;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]
@@ -240,13 +242,13 @@ mod hash_read_union_divergence;
 // cost that goes; arm B is the cost that stays."
 //
 // ARM A IS GONE, so the trade it measured is settled rather than open. `ObjectBlockRefs`,
-// `ComponentList` and `ComponentBlocks` are deleted and an object maps straight to its
+// `ElementNameList` and `ElementNameBlocks` are deleted and an object maps straight to its
 // `BlockRefs`; there is no per-element level left to price and no `position` to call.
 //
 // IT COULD NOT BE REPAIRED MECHANICALLY, AND ITS OWN DOC SAID NOT TO TRY. The fixture built the
 // per-element level BY HAND -- `occupancy` distinct `Some(name)` entries under one object, a state
 // the producer could not reach even before the collapse, since `insert_object_block_lookup` wrote
-// `component: None` as a literal. And on keeping arm B alone it is explicit: "A measurement that
+// `element_name: None` as a literal. And on keeping arm B alone it is explicit: "A measurement that
 // priced B alone would be pricing the status quo." Arm B is the shipped selector and both read
 // doors already call it unconditionally, so nothing it measured about the scan has changed.
 //
@@ -262,7 +264,7 @@ mod hash_read_union_divergence;
 // `resident_bytes_per_object` -- `size_of::<BlockIndex>()` from 56 to 40, with a note that the
 // arithmetic MULTIPLIES it so a stale width scales the whole column. That pin's subject survives;
 // the arithmetic it fed does not, because the column priced the chain `ObjectBlockRefs ->
-// ComponentList -> ComponentBlocks -> BlockRefs` per object and three of those four are deleted.
+// ElementNameList -> ElementNameBlocks -> BlockRefs` per object and three of those four are deleted.
 // The 40 is not lost with the file: it is a `const _` beside `BlockIndex` in `engine_storage_state.rs` and is
 // re-asserted in `block_entry_handles`, `blocks_per_bucket`, `per_item_byte_budget`,
 // `block_entry_element_naming` and `the_entry_cannot_name_its_object_by_slot`.
@@ -294,8 +296,8 @@ mod gated_corpus_across_a_store_boundary;
 mod write_after_fold;
 #[path = "tests/collapse_for_list.rs"]
 mod collapse_for_list;
-#[path = "tests/zset_component_drops_the_score.rs"]
-mod zset_component_drops_the_score;
+#[path = "tests/zset_element_name_drops_the_score.rs"]
+mod zset_element_name_drops_the_score;
 #[path = "tests/entry_width_at_each_step.rs"]
 mod entry_width_at_each_step;
 #[path = "tests/an_assigned_durable_id_defeats_ground_one_only.rs"]
@@ -454,3 +456,21 @@ mod a_windowed_aggregate_must_be_current_and_bounded;
 mod a_trim_records_one_boundary;
 #[path = "tests/one_series_two_commands_one_ceiling.rs"]
 mod one_series_two_commands_one_ceiling;
+#[path = "tests/the_two_other_feature_arms_hold_the_ceiling.rs"]
+mod the_two_other_feature_arms_hold_the_ceiling;
+#[path = "tests/what_a_cold_set_listing_reads.rs"]
+mod what_a_cold_set_listing_reads;
+#[path = "tests/does_the_durable_map_answer_what_the_fold_answers.rs"]
+mod does_the_durable_map_answer_what_the_fold_answers;
+#[path = "tests/component_is_retired.rs"]
+mod component_is_retired;
+#[path = "tests/bucket_dump_binary_shape.rs"]
+mod bucket_dump_binary_shape;
+#[path = "tests/what_an_element_name_writes_to_disk_and_the_wire.rs"]
+mod what_an_element_name_writes_to_disk_and_the_wire;
+#[path = "tests/routing_range_stamp_binary.rs"]
+mod routing_range_stamp_binary;
+#[path = "tests/the_config_log_in_either_shape.rs"]
+mod the_config_log_in_either_shape;
+#[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
+mod the_served_index_encoder_has_no_json_fallback;

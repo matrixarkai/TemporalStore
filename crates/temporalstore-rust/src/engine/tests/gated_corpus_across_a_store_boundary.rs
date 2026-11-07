@@ -27,8 +27,8 @@
 //! RESTATED. This said the projection gates ONE arm and that "hash, zset and list emit one entry
 //! per element either way", which was true when the set arm was the whole collapse. `list` is
 //! collapsed now as well, so THE CONTROL IS TWO KINDS RATHER THAN THREE: `hash` and `zset`, both
-//! deliberately held out -- a zset component carries the SCORE, and four hash readers resolve
-//! through the index BY COMPONENT with no resident-map fallback. See `index_entry_names_a_block`
+//! deliberately held out -- a zset element name carries the SCORE, and four hash readers resolve
+//! through the index BY ELEMENT NAME with no resident-map fallback. See `index_entry_names_a_block`
 //! for the measured statement of each.
 //!
 //! A kind that is supposed to be unaffected is a CONTROL, and a control that is never read cannot
@@ -68,7 +68,7 @@
 //! is read, which is why this module had to exist before the default moved rather than after.
 //! It is also why no format stamp is spent -- see the cross-version arm below.
 //!
-//! **THE OPERATOR WARNING IS ANTI-CORRELATED WITH THE DAMAGE.** `reconcile: N component name(s)
+//! **THE OPERATOR WARNING IS ANTI-CORRELATED WITH THE DAMAGE.** `reconcile: N element name(s)
 //! could not be read and were skipped` fires whenever a gated store is loaded, including in the
 //! arms that serve every element correctly, and it stayed SILENT in the arm that served zero
 //! before the listing was brought along (a store written ungated and read gated prints nothing,
@@ -518,11 +518,11 @@ fn an_ungated_store_comes_back_whole_under_the_gate() {
 /// It is kept, restated, because the refutation is the useful half: without it the next person
 /// spends an irreversible stamp bump on a hazard that is not there.
 ///
-/// The expectation was that a block-named entry -- `component: None` -- would be read by a binary
+/// The expectation was that a block-named entry -- `element_name: None` -- would be read by a binary
 /// without the gate as an element whose name is simply absent, indistinguishable from a legitimate
 /// `None`. There is a branch for exactly that: the set arm of
 /// `reconcile_secondary_views_from_bucket_index` asks
-/// `component.and_then(|c| hex::decode(c).ok())` and counts the `None` as an UNREADABLE NAME, the
+/// `element_name.and_then(|c| hex::decode(c).ok())` and counts the `None` as an UNREADABLE NAME, the
 /// same bucket a corrupt name falls into.
 ///
 /// **It never reaches that branch for the elements, because the index is not a format.** It is a

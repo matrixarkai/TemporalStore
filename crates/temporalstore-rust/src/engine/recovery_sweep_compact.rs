@@ -1633,13 +1633,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
             }
         }
         // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
-        // its component: `container_blocks::component_from_element_key` renders the component from
+        // its element name: `container_blocks::element_name_from_element_key` renders the element name from
         // them, so the four inline renderings the write sites spell out are not copied here. That is
         // the second copy `read_block_bytes_for_compaction` documented as the reason these arms
         // could not name their elements at all, and it no longer has to exist.
         //
         // `iter_mut()` and not `values_mut()`, because the map's KEY is the element and it is what
-        // the frame has to carry -- and it is also what the read's component is rendered from, so
+        // the frame has to carry -- and it is also what the read's element name is rendered from, so
         // these arms now name the block they read instead of asking for the whole of it.
         //
         // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
@@ -1655,7 +1655,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 key,
                 routing_bucket,
                 addresses.iter_mut().map(|(field, address)| ContainerElementRef {
-                    // A hash field's component IS the field name, so its key bytes are the name's.
+                    // A hash field's element name IS the field name, so its key bytes are the name's.
                     key: field.as_bytes().to_vec(),
                     address,
                 }),
@@ -1672,7 +1672,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 key,
                 routing_bucket,
                 members.iter_mut().map(|(member, entry)| {
-                    // The biased score big-endian, then the member: the two halves the component
+                    // The biased score big-endian, then the member: the two halves the element name
                     // spells as sixteen hex characters and then the member's hex.
                     let mut element_key = Vec::with_capacity(8 + member.len());
                     element_key.extend_from_slice(&entry.0.to_be_bytes());
@@ -1716,7 +1716,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 key,
                 routing_bucket,
                 addresses.iter_mut().map(|(member, address)| ContainerElementRef {
-                    // A set member's component renders the member and nothing else, in whichever
+                    // A set member's element name renders the member and nothing else, in whichever
                     // spelling it was filed under, so the member IS the key.
                     key: member.clone(),
                     address,

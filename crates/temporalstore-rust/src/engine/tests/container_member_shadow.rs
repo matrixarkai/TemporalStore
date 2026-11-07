@@ -4,12 +4,12 @@
 //! WHAT ONE BLOCK PER CONTAINER MEMBER COSTS, AND WHY A PACKED MEMBER BUFFER IS NOT THE LEVER.
 //!
 //! A container in this engine gives every member its own block. A zset member becomes a block whose
-//! component name is `zset_component(member)`, a set member's is `hex::encode(member)`, a
+//! element name is `zset_element_name(member)`, a set member's is `hex::encode(member)`, a
 //! list element's is the biased sequence in hex. Each block gets a `BlockIndex` in the routing
-//! bucket's block index, an entry in the object/component lookup, and an outcome staged for the
+//! bucket's block index, an entry in the object/element name lookup, and an outcome staged for the
 //! index log. So a hundred-member container is a hundred block entries under one object key -- and
 //! `bucket_fill.rs` already established that one object key is ONE routing bucket at any range,
-//! because routing takes the object key and never sees the component.
+//! because routing takes the object key and never sees the element name.
 //!
 //! THE QUESTION THIS MODULE WAS OPENED TO ANSWER was whether those hundred entries should become
 //! ONE packed byte buffer per container: a small header, then the members as raw bytes and the
@@ -19,30 +19,30 @@
 //! SECOND COPY OF IT. `ShardState::zsets` is
 //! `HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>` and it is PERSISTED, through
 //! `zset_index_serde`, as a sequence of `(member bytes, (score, address))` per key -- members as
-//! RAW BYTES, the score as a NUMBER, one container per key, no component names anywhere in it.
+//! RAW BYTES, the score as a NUMBER, one container per key, no element names anywhere in it.
 //! That is the packed shape, already written, already the better encoding. What sits beside it is
 //! a per-member block shadow that this module prices.
 //!
 //! THREE FACTS DECIDE THE SHAPE OF THE SHADOW, AND ALL THREE ARE ASSERTED BELOW RATHER THAN
 //! ARGUED.
 //!
-//!   1. THE PAGE PAYLOAD IS THE MEMBER, AND THE COMPONENT NAME ALREADY SPELLS THE MEMBER.
+//!   1. THE PAGE PAYLOAD IS THE MEMBER, AND THE ELEMENT NAME ALREADY SPELLS THE MEMBER.
 //!      `Command::ZSetAdd` calls `append_value(.., &member, ..)`, so the stored block IS the member
-//!      bytes; the component beside it is sixteen hex digits of score followed by the same member
-//!      in hex. `a_zset_element_page_holds_exactly_what_its_component_name_already_spells` decodes
-//!      every component in a seeded shard back to (score, member) and asserts it against the model
+//!      bytes; the element name beside it is sixteen hex digits of score followed by the same member
+//!      in hex. `a_zset_element_page_holds_exactly_what_its_element_name_name_already_spells` decodes
+//!      every element name in a seeded shard back to (score, member) and asserts it against the model
 //!      map, so the redundancy is a byte-level fact and not an inference from the call site.
 //!
 //!   2. NO ZSET READ RESOLVES THROUGH THE BLOCK INDEX. `ZSetScore` takes the score out of
 //!      `shard.zsets`, `ZSetCard` takes `len()`, `ZSetRange` orders the same map's keys.
-//!      `bucket_index_component_block_addresses` -- the door a container read goes through -- is
+//!      `bucket_index_element_name_block_addresses` -- the door a container read goes through -- is
 //!      called for `"hash"` and `"set"` and for nothing else.
 //!      `a_zset_read_examines_no_page_index_entries_and_a_hash_read_does` counts it with
 //!      `BLOCK_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_block`, and carries the hash arm as
 //!      the CONTROL: an instrument reading zero on both arms would be measuring nothing.
 //!
-//!   3. INDEX-LOG REPLAY REBUILDS THE MEMBER AND THE SCORE FROM THE COMPONENT NAME. The `"zset"`
-//!      arm of `apply_outcome_item` (`lifecycle.rs`) splits the component at sixteen, parses the
+//!   3. INDEX-LOG REPLAY REBUILDS THE MEMBER AND THE SCORE FROM THE ELEMENT NAME. The `"zset"`
+//!      arm of `apply_outcome_item` (`lifecycle.rs`) splits the element name at sixteen, parses the
 //!      score with `u64::from_str_radix` and the member with `hex::decode`, and inserts the pair
 //!      into `shard.zsets`. It never reads the block. So the shadow is not dead weight everywhere:
 //!      it is the SOURCE OF TRUTH for one of the three recovery routes, and that is the reader
@@ -64,7 +64,7 @@
 //! a heavier representation.
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::execute_on_shard::zset_component;
+use crate::engine::execute_on_shard::zset_element_name;
 use crate::engine::hashing::{block_routing_bucket, stable_block_object_id};
 use crate::engine::state::BlockIndex;
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,7 +84,7 @@ const NARROW_END: u32 = 1023;
 /// not a workload, which is why every row below is reported at both.
 const WIDE_END: u32 = u32::MAX;
 
-/// Members under one container key. The measured shape: p50 100 components under one object key,
+/// Members under one container key. The measured shape: p50 100 element names under one object key,
 /// MAX 100.
 const MEMBERS: usize = 100;
 
@@ -92,7 +92,7 @@ const MEMBERS: usize = 100;
 /// and the wide range does not, so the two arms differ in the way the range decides.
 const CONTAINER_KEYS: usize = 40;
 
-/// The member width the shadow is priced at. Twenty bytes: the width the component-name arithmetic
+/// The member width the shadow is priced at. Twenty bytes: the width the element-name-name arithmetic
 /// below is quoted at, and wide enough that the hex spelling dominates the fixed score prefix.
 const MEMBER_WIDTH: usize = 20;
 
@@ -165,12 +165,12 @@ fn seed_zsets(engine: &TemporalEngine) -> Vec<String> {
     keys
 }
 
-/// One zset block in the seeded shard: which object key, which component, and the address.
+/// One zset block in the seeded shard: which object key, which element name, and the address.
 #[derive(Debug, Clone)]
 struct ZsetBlock {
     routing_bucket: u32,
     object_key: String,
-    component: String,
+    element_name: String,
     address: crate::block_store::ElementEntry,
     dirty: bool,
     deleted: bool,
@@ -192,13 +192,13 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
                 routing_bucket: *routing_bucket,
                 object_key: named.at(*routing_bucket, *handle).to_string(),
                 // THIS `expect` WAS THE MODULE'S OWN CONTROL AND IT CANNOT HOLD. It read
-                // `page.component.as_deref().expect("a zset block is named by its component")`.
+                // `page.element_name.as_deref().expect("a zset block is named by its element_name")`.
                 // A zset block entry names no element -- that is the collapse -- so the walk
                 // panicked rather than failing an assertion. The redundancy this module measures
-                // between a component and the block payload is what the collapse DELETED, so the
+                // between an element name and the block payload is what the collapse DELETED, so the
                 // field is carried as the empty string and the arms that priced that redundancy
                 // are restated where they are read.
-                component: String::new(),
+                element_name: String::new(),
                 address: block.address.clone(),
                 dirty: block.dirty(),
                 deleted: block.deleted(),
@@ -225,7 +225,7 @@ fn model_members(engine: &TemporalEngine, key: &str) -> BTreeMap<Vec<u8>, u64> {
         .unwrap_or_default()
 }
 
-/// Components held per routing bucket, as bucket COUNTS keyed by the number held.
+/// Element names held per routing bucket, as bucket COUNTS keyed by the number held.
 ///
 /// A histogram and not a mean: a mean of 1.98 blocks a bucket once contained not one bucket holding
 /// two, and a mean of 1.001 was two populations.
@@ -342,7 +342,7 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
         // ONE BYTE since #1974, not a sixteen-byte fat pointer. The compiler did NOT catch this
         // line when the field's type changed -- `size_of` of the wrong type still compiles -- so
         // the reconstruction assertion below is what caught it, which is the reason it exists.
-        // THE `component` ROW IS GONE WITH THE FIELD -- sixteen bytes of fat pointer between
+        // THE `element_name` ROW IS GONE WITH THE FIELD -- sixteen bytes of fat pointer between
         // `model_id` and `address`, which is the whole of the 56 -> 40 step. The reconstruction
         // assertion below is what makes removing the row safe: a row that no longer matches a
         // field fails there rather than silently describing a type that moved.
@@ -482,8 +482,8 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
     // THE PER-MEMBER STRUCTURE IN THE OBJECT LOOKUP IS GONE, AND THAT IS WHY NO TERM FOR IT IS
     // BUDGETED HERE ANY MORE.
     //
-    // This block budgeted `ComponentBlocks` at 40 bytes and charged one per MEMBER, on the reading
-    // that the lookup's second level held one entry per (object, component). It did not: every
+    // This block budgeted `ElementNameBlocks` at 40 bytes and charged one per MEMBER, on the reading
+    // that the lookup's second level held one entry per (object, element name). It did not: every
     // entry was filed under one nameless slot per OBJECT, so the charge was one per object all
     // along and the per-member column overstated it by the container's member count. The level is
     // now deleted outright -- see `ObjectBlockRefs` in `engine_storage_state.rs` -- so the lookup contributes
@@ -495,21 +495,21 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 }
 
 // =============================================================================================
-// 2. THE COMPONENT NAME, AND HOW MUCH OF IT IS SPELLING
+// 2. THE ELEMENT NAME, AND HOW MUCH OF IT IS SPELLING
 // =============================================================================================
 
-/// A COMPONENT NAME CHARGES ONE BYTE MORE THAN ITS MEMBER, NOT TWICE ITS MEMBER -- AT EVERY WIDTH,
+/// An ELEMENT NAME CHARGES ONE BYTE MORE THAN ITS MEMBER, NOT TWICE ITS MEMBER -- AT EVERY WIDTH,
 /// FOR SET AND ZSET ALIKE.
 ///
-/// WHAT THIS TEST USED TO SAY, AND WHY IT NO LONGER SAYS IT. It asserted that a zset component
+/// WHAT THIS TEST USED TO SAY, AND WHY IT NO LONGER SAYS IT. It asserted that a zset element name
 /// spells exactly HALF its bytes, at every member width: `hex::encode` doubles any input, so a
 /// `W`-byte member cost `2W` characters carrying `W` bytes, an exact one-half fraction by
-/// construction. That property was real, it was measured, and it was the DEFECT -- the component
+/// construction. That property was real, it was measured, and it was the DEFECT -- the element name
 /// is the term that scales with member width, so the doubling WAS the member-width rate of every
 /// set and zset write. The test is retargeted rather than deleted because the quantity it watches
 /// is still the right one; only the answer moved.
 ///
-/// WHAT IT SAYS NOW: the component is one tag byte plus the member, so the slope against member
+/// WHAT IT SAYS NOW: the element name is one tag byte plus the member, so the slope against member
 /// width is ONE and the spelling share falls as `1/(W+1)` instead of sitting at one half forever.
 ///
 /// AND THE SLOPE IS NOT ONE FOR EVERY MEMBER, WHICH IS THE PART THAT MATTERS FOR A RELEASE.
@@ -520,7 +520,7 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 ///     member is binary    2 + 4*ceil(W/3)  slope 1.333   (was 2W)
 ///
 /// TWO tag bytes on the binary arm and not one, which is worth stating because it is easy to
-/// predict wrongly and this test caught exactly that prediction. `member_component` writes one
+/// predict wrongly and this test caught exactly that prediction. `member_element_name` writes one
 /// unconditionally, so a reader holding only the string can tell the spellings apart; then
 /// `encode_name` writes its OWN before the base64, so its decoder can tell base64 from
 /// pass-through text. They answer different questions and both are needed. A fixed two bytes does
@@ -530,19 +530,19 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 /// A binary set member -- which Redis permits and real workloads use -- therefore gains a THIRD,
 /// not a half. Both arms are asserted below so neither figure can be quoted as the other.
 ///
-/// THE NEGATIVE CONTROL is the decimal arm. `timestamped_component` with no identity is
+/// THE NEGATIVE CONTROL is the decimal arm. `timestamped_element_name` with no identity is
 /// `stored_key.to_string()`, which is NOT hex and NOT a fixed doubling: it is up to twenty
 /// characters for the same eight bytes. An instrument that reported one half for that too would be
 /// computing its answer rather than measuring it.
 ///
-/// rust-internal: reads this crate's own component-name producers, no product behaviour
+/// rust-internal: reads this crate's own element-name-name producers, no product behaviour
 #[test]
-fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
-    let set_name = crate::engine::execute_on_shard::set_component;
+fn an_element_name_name_charges_one_byte_more_than_its_member_not_twice_it() {
+    let set_name = crate::engine::execute_on_shard::set_element_name;
     // SET AND ZSET BOTH, because the flip moved two kinds and a test over one of them would pass
     // on a tree where the other was missed. They render identically today and that is asserted,
     // not assumed.
-    println!("--- component name, per name ---");
+    println!("--- element name, per name ---");
     println!(
         "  {:>5}  {:>6}  {:>6}  {:>6}  {:>7}",
         "W", "text", "binary", "hex", "spell%"
@@ -551,7 +551,7 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
     for width in widths {
         // TEXT: the common case, and the one the cost-per-op instrument exercises.
         let text: Vec<u8> = std::iter::repeat(b'a').take(width).collect();
-        let text_name = zset_component(&text);
+        let text_name = zset_element_name(&text);
         assert_eq!(
             text_name.len(),
             1 + width,
@@ -566,12 +566,12 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
 
         // BINARY: 0xAB repeated is not valid UTF-8, so this is the base64 arm.
         let binary = vec![0xABu8; width];
-        let binary_name = zset_component(&binary);
+        let binary_name = zset_element_name(&binary);
         assert_eq!(
             binary_name.len(),
             2 + 4 * width.div_ceil(3),
             "a binary member of {width} bytes should cost two tag bytes plus base64, not {} \
-             -- `member_component` writes one tag and `encode_name` writes another before the \
+             -- `member_element_name` writes one tag and `encode_name` writes another before the \
              base64",
             binary_name.len()
         );
@@ -603,24 +603,24 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
     // THE SLOPE, WHICH IS THE WHOLE POINT: a fixed term cannot be mistaken for a rate here,
     // because this divides a difference by a difference and the tag cancels out.
     let (lo, hi) = (16usize, 256usize);
-    let text_slope = (zset_component(&vec![b'a'; hi]).len() as f64
-        - zset_component(&vec![b'a'; lo]).len() as f64)
+    let text_slope = (zset_element_name(&vec![b'a'; hi]).len() as f64
+        - zset_element_name(&vec![b'a'; lo]).len() as f64)
         / (hi - lo) as f64;
     assert!(
         (text_slope - 1.0).abs() < 1e-12,
-        "the text component slope is {text_slope}, not the 1.0 that replaced hex's 2.0"
+        "the text element name slope is {text_slope}, not the 1.0 that replaced hex's 2.0"
     );
-    let binary_slope = (zset_component(&vec![0xABu8; hi]).len() as f64
-        - zset_component(&vec![0xABu8; lo]).len() as f64)
+    let binary_slope = (zset_element_name(&vec![0xABu8; hi]).len() as f64
+        - zset_element_name(&vec![0xABu8; lo]).len() as f64)
         / (hi - lo) as f64;
     assert!(
         (binary_slope - 4.0 / 3.0).abs() < 0.01,
-        "the binary component slope is {binary_slope}, not the 4/3 base64 charges"
+        "the binary element name slope is {binary_slope}, not the 4/3 base64 charges"
     );
     println!("  slope: text {text_slope:.4}  binary {binary_slope:.4}  hex was 2.0000");
     assert_eq!(MEMBER_WIDTH, 20, "the quoted width is part of the measurement");
     assert_eq!(
-        zset_component(&vec![b'a'; MEMBER_WIDTH]).len(),
+        zset_element_name(&vec![b'a'; MEMBER_WIDTH]).len(),
         21,
         "a 20-byte TEXT member's name is 21 bytes, where hex charged 40"
     );
@@ -629,18 +629,18 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
     // the binary one. It did not matter under hex, which doubles any input regardless; it decides
     // which branch is taken now. The byte has to be one that cannot appear in UTF-8.
     assert_eq!(
-        zset_component(&vec![0u8; MEMBER_WIDTH]).len(),
+        zset_element_name(&vec![0u8; MEMBER_WIDTH]).len(),
         21,
         "twenty NUL bytes are valid UTF-8, so they take the text arm at one byte more"
     );
     assert_eq!(
-        zset_component(&vec![0xABu8; MEMBER_WIDTH]).len(),
+        zset_element_name(&vec![0xABu8; MEMBER_WIDTH]).len(),
         30,
         "a 20-byte BINARY member's name is 30 bytes, where hex charged 40"
     );
 
     // THE NEGATIVE CONTROL: the decimal producer is not a doubling and must not read as one.
-    let decimal = crate::engine::packed_blocks::timestamped_component(u64::MAX, None);
+    let decimal = crate::engine::packed_blocks::timestamped_element_name(u64::MAX, None);
     assert_eq!(decimal.len(), 20, "u64::MAX in decimal is twenty characters");
     let decimal_fraction = (decimal.len() - 8) as f64 / decimal.len() as f64;
     assert!(
@@ -663,15 +663,15 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
 ///
 /// # WHAT IT USED TO SAY
 ///
-/// "A ZSET ELEMENT PAGE HOLDS EXACTLY WHAT ITS COMPONENT NAME ALREADY SPELLS." The write path
+/// "A ZSET ELEMENT PAGE HOLDS EXACTLY WHAT ITS ELEMENT NAME ALREADY SPELLS." The write path
 /// stores the member as the block and named the block with the same member in hex, so this decoded
-/// every component in a seeded shard back to a member and asserted the set against `shard.zsets`'s
+/// every element name in a seeded shard back to a member and asserted the set against `shard.zsets`'s
 /// own members -- "the payload is a second copy", as a byte-level fact about a real shard. It had
-/// already been restated once, when the component stopped spelling `(score, member)`.
+/// already been restated once, when the element name stopped spelling `(score, member)`.
 ///
 /// # WHY IT IS NOT RESTATED A SECOND TIME THE SAME WAY
 ///
-/// An index entry has no component. The redundancy is not smaller, mis-stated, or differently
+/// An index entry has no element name. The redundancy is not smaller, mis-stated, or differently
 /// shaped -- it is STRUCTURALLY UNREPRESENTABLE: there is no second copy of the member on the
 /// entry because there is no name on the entry, and `engine_storage_state.rs` pins the entry at 40 bytes with
 /// zero slack so one cannot come back without failing const-evaluation. Correcting a number here
@@ -680,7 +680,7 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
 /// # WHAT IT ASSERTS INSTEAD, AND WHY THAT IS NOT A WEAKER CLAIM
 ///
 /// The member's identity lives in exactly two places now: `shard.zsets`, and the block's own item
-/// key -- written by `container_blocks::element_key_from_component` precisely so a block is
+/// key -- written by `container_blocks::element_key_from_element_name` precisely so a block is
 /// interpretable without the entry that names it. That key is the ONLY copy outside the model map,
 /// which makes a codec that does not round-trip a LOSS rather than a mislabelling. So the round
 /// trip is asserted, per member, over the members the model map actually holds, in both directions:
@@ -711,17 +711,17 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
         MEMBERS
     );
 
-    // THE COMPONENT DECODE IS GONE, AND SO IS THE REDUNDANCY IT MEASURED.
+    // THE ELEMENT NAME DECODE IS GONE, AND SO IS THE REDUNDANCY IT MEASURED.
     //
-    // This walked every block, ran `hex::decode(&block.component)`, asserted the result was
+    // This walked every block, ran `hex::decode(&block.element_name)`, asserted the result was
     // `MEMBER_WIDTH` bytes, and collected the members per key to compare against `shard.zsets`.
-    // An index entry has no component, so there is nothing to decode -- and the thing the loop
+    // An index entry has no element name, so there is nothing to decode -- and the thing the loop
     // proved, that the entry's name was a SECOND COPY of the member, is not a fact that has become
     // false: it has become unrepresentable. There is no second copy because there is no name.
     //
     // WHAT REPLACES IT IS A ROUND TRIP, not a corrected number. The member's identity now lives in
     // exactly two places: `shard.zsets` and the block's own item key, written by
-    // `container_blocks::element_key_from_component` so a block is interpretable without the entry
+    // `container_blocks::element_key_from_element_name` so a block is interpretable without the entry
     // that names it. That codec is what the identity passes through, it is the thing a change can
     // still break, and the round trip is what catches the class this campaign has been bitten by:
     // `hex::decode` has no opinion about what the bytes mean, so a key that framed and decoded
@@ -781,12 +781,12 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
         // THE ROUND TRIP, PER MEMBER, over the members the model map actually holds -- so this
         // covers the real population rather than whatever the codec happens to accept.
         for member in model.keys() {
-            let component = hex::encode(member);
-            let block_key = crate::engine::container_blocks::element_key_from_component(
+            let element_name = hex::encode(member);
+            let block_key = crate::engine::container_blocks::element_key_from_element_name(
                 crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
-                &component,
+                &element_name,
             )
-            .unwrap_or_else(|| panic!("{key}: no block key for member {component}"));
+            .unwrap_or_else(|| panic!("{key}: no block key for member {element_name}"));
             assert_eq!(
                 MEMBER_WIDTH + 8,
                 block_key.len(),
@@ -794,13 +794,13 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
                  behind an eight-byte score slot",
                 block_key.len()
             );
-            let back = crate::engine::container_blocks::component_from_element_key(
+            let back = crate::engine::container_blocks::element_name_from_element_key(
                 crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
                 &block_key,
             )
-            .unwrap_or_else(|| panic!("{key}: the block key for {component} renders no component"));
+            .unwrap_or_else(|| panic!("{key}: the block key for {element_name} renders no element name"));
             assert_eq!(
-                component, back,
+                element_name, back,
                 "{key}: the member does not survive the block key it is written into. That key is \
                  the ONLY copy of the member outside `shard.zsets` now -- the entry carries none -- \
                  so a codec that does not round-trip loses the element rather than mislabelling it"
@@ -828,7 +828,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
 /// THE CONTROL THIS COUNT IS TAKEN AGAINST: one `HashGetAll` over a populated hash.
 ///
 /// It is the arm where the mechanism predicts an effect. `HashGetAll` resolves the object through
-/// `bucket_index_component_block_addresses`, which asks `bucket.block_index.get` for every block of
+/// `bucket_index_element_name_block_addresses`, which asks `bucket.block_index.get` for every block of
 /// the object and so enters `find_block` -- the one door the counter sits in. It walks the INDEX by
 /// construction rather than reading a block by an address it was handed, which is what makes it
 /// hold at any fixture size and what the point read no longer does.
@@ -874,7 +874,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 /// # THE CONTROL MOVED FROM THE POINT READ TO THE WHOLE-OBJECT READ
 ///
 /// This test was named `..._and_a_hash_read_does`, and its control was the hash POINT read: a
-/// `HashGet` resolved a field through `bucket_index_component_block_addresses` into the block index,
+/// `HashGet` resolved a field through `bucket_index_element_name_block_addresses` into the block index,
 /// so it MUST be non-zero and an instrument reading zero on both arms would be measuring nothing.
 /// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.hashes` and hands
 /// the address it holds to `read_block_bytes`, which consults the cache, the WAL-resident redirect
@@ -1045,13 +1045,13 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
 /// The per-member shadow, priced from the measured structure widths and the measured counts:
 ///
 ///   * one `BlockIndex` -- `size_of`, printed, not a literal here;
-///   * one `ComponentBlocks` in the object/component lookup;
-///   * the component NAME on the heap, whose length is measured off the real names;
+///   * one `ElementNameBlocks` in the object/element name lookup;
+///   * the element name NAME on the heap, whose length is measured off the real names;
 ///   * the `BlockAddress` the model map carries beside the score, which exists only to point at a
 ///     block nothing reads.
 ///
 /// BOTH RANGES, AND THE OPERATOR'S IS THE NARROW ONE. The block COUNT per member is one at either
-/// width -- routing takes the object key and never sees the component -- so the per-member figure
+/// width -- routing takes the object key and never sees the element name -- so the per-member figure
 /// is range-INDEPENDENT, and that is itself the finding: narrowing the range does not reduce the
 /// shadow at all, it only decides how many containers share a bucket. The histograms are reported
 /// at both so the claim is visible rather than asserted.
@@ -1090,11 +1090,11 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
             "the model map at 0..{end_routing_bucket} does not hold the population claimed"
         );
 
-        // The component NAME bytes, measured off the real names rather than computed.
-        let name_bytes: usize = blocks.iter().map(|block| block.component.len()).sum();
+        // The element name NAME bytes, measured off the real names rather than computed.
+        let name_bytes: usize = blocks.iter().map(|block| block.element_name.len()).sum();
         let spelling_bytes: usize = blocks
             .iter()
-            .map(|block| block.component.len() - (8 + MEMBER_WIDTH))
+            .map(|block| block.element_name.len() - (8 + MEMBER_WIDTH))
             .sum();
 
         let hist = zset_blocks_per_bucket(&blocks);
@@ -1107,7 +1107,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 
         // Per member: the structures whose count IS the member count, plus the name on the heap
         // and the address the model map holds to reach a block nothing reads.
-        // No `ComponentBlocks` term: the object lookup holds one slot per OBJECT, so it adds
+        // No `ElementNameBlocks` term: the object lookup holds one slot per OBJECT, so it adds
         // nothing that scales with members. It used to be charged here, once per member.
         let structural = index_width + address_width;
         let name_per_member = name_bytes as f64 / members as f64;
@@ -1116,7 +1116,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         println!("--- 0..{end_routing_bucket}: per member ---");
         println!("  BlockIndex        {index_width:>5} B");
         println!("  ElementEntry      {address_width:>5} B  (in the model map, points at the block)");
-        println!("  component name    {name_per_member:>7.1} B  (measured; {:.1} B of it spelling)",
+        println!("  element name    {name_per_member:>7.1} B  (measured; {:.1} B of it spelling)",
             spelling_bytes as f64 / members as f64);
         println!("  ------------------------");
         println!("  shadow per member {shadow_per_member:>7.1} B");
@@ -1147,7 +1147,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 
     // THE RANGE-INDEPENDENCE CLAIM, asserted rather than left to the reader: the per-member shadow
     // is the same at both widths, because routing takes the OBJECT KEY and never sees the
-    // component, so a container's members are one bucket's blocks at any range.
+    // element name, so a container's members are one bucket's blocks at any range.
     let (wide_range, wide, _, wide_max) = per_member[0];
     let (narrow_range, narrow, _, narrow_max) = per_member[1];
     assert!(
@@ -1181,7 +1181,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
     println!(
         "per-member shadow {narrow:.1} B at BOTH ranges; a container's {MEMBERS} members share ONE \
          bucket at 0..{wide_range} and at 0..{narrow_range} alike, because routing never sees the \
-         component"
+         element name"
     );
 }
 
@@ -1223,7 +1223,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     // rather than from the command: the block the write actually filed.
     //
     // IDENTIFIED BY SET DIFFERENCE ON THE ADDRESS, NOT BY NAME. The new block used to be found with
-    // `block.component == zset_component(&member)`, and an entry carries no component -- so that
+    // `block.element_name == zset_element_name(&member)`, and an entry carries no element name -- so that
     // filter matched nothing and the arm failed with "the new member's block is not identifiable in
     // the index". The addresses held before the write are recorded here and the one address that is
     // new afterwards IS the block the write filed. That is a stricter identification than the name

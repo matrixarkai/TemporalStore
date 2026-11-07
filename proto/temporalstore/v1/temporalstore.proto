@@ -631,7 +631,7 @@ message WalBlockAddress {
 //
 // Fields 1-10 described a write and were derived FROM the command beside them, so nothing ever
 // read them back and writing them was pure amplification. Fields 11-14 are the difference: the
-// block a write produced, the bytes for state no block backs, and which component of an object
+// block a write produced, the bytes for state no block backs, and which element of an object
 // they belong to. With those, a shard can be rebuilt from items alone and the command becomes
 // removable rather than merely redundant.
 //
@@ -649,10 +649,10 @@ message EngineWalItem {
   bool meta_log = 9;
   bool block_log = 10;
 
-  // Which component of the object this is: a hash field, a set member, a timestamp, a score and
+  // Which element of the object this is: a hash field, a set member, a timestamp, a score and
   // member packed together. Absent for an object with exactly one value.
-  optional string component = 11;
-  // Where the block for this component went. Absent for state no block backs -- a seen-set
+  optional string element_name = 11;
+  // Where the block for this element went. Absent for state no block backs -- a seen-set
   // member, a token bucket -- which carries its bytes in `value` instead.
   WalBlockAddress block = 12;
   // The bytes themselves, for state that has no block behind it.
@@ -668,17 +668,17 @@ message EngineWalItem {
   optional uint32 routing_bucket = 15;
   // The stored key of a timestamped entry, as a number.
   //
-  // It used to travel inside `component` as a decimal string: thirteen characters for something a
+  // It used to travel inside `element_name` as a decimal string: thirteen characters for something a
   // varint says in seven, and a context event packed two of them as thirty-two hex characters
-  // where two varints cost about twelve. `component` keeps its job of naming a hash field or a
+  // where two varints cost about twelve. `element_name` keeps its job of naming a hash field or a
   // set member, and stops doubling as a number.
   optional uint64 timestamp_ms = 16;
   // A second key for an entry the index keys by something other than its timestamp -- a context
   // event, whose block packs by time and whose index keys by event id.
   optional uint64 entry_id = 17;
-  // The whole object is gone, not one component of it.
+  // The whole object is gone, not one element of it.
   //
-  // Previously implied by `deleted` with no component. A reader had to know the convention to
+  // Previously implied by `deleted` with no element name. A reader had to know the convention to
   // tell the two apart, and a reader that did not silently removed the wrong amount.
   bool object_deleted = 18;
 }
@@ -698,8 +698,8 @@ message WalStagedBlock {
   // exists to stop a durably acknowledged write reading as missing.
   //
   // Absent for a page that IS its whole object (a string, a control state), which is what `None`
-  // has always meant for `BlockIndex::component`. Never absent for a container element.
-  optional string component = 4;
+  // has always meant for `BlockIndex::element_name`. Never absent for a container element.
+  optional string element_name = 4;
 }
 
 message EngineWalMetadata {
@@ -1551,4 +1551,145 @@ message DurableIngestionState {
   // ORDER PRESERVED: dead letters are a `Vec` and operators read them in arrival order.
   repeated IngestionDeadLetter dead_letters = 4;
   IngestionStats stats = 5;
+}
+
+// ===========================================================================================
+// DURABLE BUCKET-DUMP MANIFEST AND INSTALL MARKER, BINARY SHAPE.
+//
+// A dump manifest is the durable reclaim watermark plus the recovery index for the data it
+// covers; the install marker is the roll-forward record of an install in flight. Both used to be
+// JSON files. A reader decides the shape per file from the first byte (see
+// `BUCKET_DUMP_CONTAINER_PROTOBUF` in `engine/bucket_dump_codec.rs`), never from a setting.
+//
+// NO `map` FIELD, ON PURPOSE. The manifest carries a checksum, and for a binary manifest that
+// checksum is a SHA-256 over THIS message's own encoding (`checksum_version` 1). A protobuf `map`
+// has no defined iteration order, so a digest over one would depend on the encoder. Every
+// collection below is a `repeated` field, which encodes in the order the writer gave it.
+//
+// FIELD ORDER IS PART OF THE DIGEST. `index_bytes` and `checksum` take the two HIGHEST tags so a
+// writer can stream the whole-shard index image into the hash without copying it into a message
+// first: the encoding of every other field comes before it, in tag order. A field added later
+// takes a tag BELOW 22, or the streamed digest stops being the encoding of the message -- and a
+// test in `bucket_dump_codec.rs` compares the two and says so.
+// ===========================================================================================
+
+message DurableBucketStorageSummary {
+  uint32 routing_bucket = 1;
+  uint64 object_count = 2;
+  uint64 block_ref_count = 3;
+  uint64 logical_bytes = 4;
+  uint64 physical_bytes = 5;
+  uint64 dirty_object_count = 6;
+  uint64 dirty_generation = 7;
+  uint64 last_dump_sequence = 8;
+  repeated uint64 block_slab_ids = 9;
+  // Absent is not slab 0: a bucket never compacted has no value here at all.
+  optional uint64 last_compacted_slab = 10;
+}
+
+message DurableStorageObjectLifecycle {
+  uint64 live_object_ids = 1;
+  uint64 live_block_refs = 2;
+  uint64 stale_object_ids = 3;
+  uint64 delete_marked_object_ids = 4;
+  uint64 reused_object_id_conflicts = 5;
+  uint64 missing_owner_block_refs = 6;
+  uint64 owner_mismatch_block_refs = 7;
+  repeated uint64 reused_object_ids = 8;
+  repeated string delete_marked_object_keys = 9;
+}
+
+message DurableBucketDumpSourceCoverage {
+  string manifest_id = 1;
+  repeated uint32 bucket_ids = 2;
+}
+
+message DurableBucketDumpLoadVersionHandoff {
+  uint64 previous_load_version = 1;
+  uint64 next_load_version = 2;
+  bool applied = 3;
+}
+
+message DurableBucketDumpManifest {
+  uint32 version = 1;
+  uint64 shard_id = 2;
+  string manifest_id = 3;
+  string manifest_kind = 4;
+  string dump_generation_id = 5;
+  repeated string source_manifest_ids = 6;
+  repeated DurableBucketDumpSourceCoverage source_manifest_coverage = 7;
+  // `optional`: an empty parent id is a parent that was named and happens to be empty, which is
+  // not the same as no parent.
+  optional string parent_manifest_id = 8;
+  optional DurableBucketDumpLoadVersionHandoff load_version_handoff = 9;
+  uint64 created_unix_ms = 10;
+  repeated uint32 bucket_ids = 11;
+  repeated uint64 block_slab_ids = 12;
+  uint64 wal_sequence = 13;
+  uint64 index_log_sequence = 14;
+  uint64 live_block_refs = 15;
+  uint64 logical_bytes = 16;
+  uint64 physical_bytes = 17;
+  repeated DurableBucketStorageSummary bucket_summaries = 18;
+  // Absent means the all-zero report, which is what a manifest without one has always meant.
+  optional DurableStorageObjectLifecycle object_lifecycle = 19;
+  string index_sha256 = 20;
+  // Which derivation `checksum` was computed with. 0 is a manifest written before this field
+  // existed: its checksum is a SHA-256 over the manifest's canonical JSON. 1 is a SHA-256 over
+  // this message's own encoding with `checksum` empty. Any other value is refused, never guessed.
+  uint32 checksum_version = 21;
+  // The whole-shard index image. Second-highest tag: see the note above.
+  bytes index_bytes = 22;
+  // Highest tag, and EMPTY while the digest is computed.
+  string checksum = 23;
+}
+
+message DurableBucketDumpInstallMarker {
+  uint64 shard_id = 1;
+  string manifest_id = 2;
+  string phase = 3;
+  uint64 wal_sequence = 4;
+  uint64 index_log_sequence = 5;
+  uint64 created_unix_ms = 6;
+}
+
+// ===========================================================================================
+// DURABLE SHARD CONFIG LOG ENTRY, BINARY SHAPE.
+//
+// One entry of `shard-<id>.configlog.jsonl`: the shard config that became effective for every WAL
+// write with a sequence strictly greater than `after_seq`. The file holds JSON lines (every entry
+// written so far) and, as of the writer change, length-prefixed checksummed frames whose payload is
+// this message behind `BINARY_PAYLOAD_MAGIC`. A frame is used because the payload is binary and may
+// contain a newline, so the line format's delimiter cannot be trusted to find its end.
+//
+// NO DIGEST here depends on byte order, so `extend_config` is a `repeated` pair list in the order
+// the map iterates (sorted by key) rather than a protobuf `map`.
+// ===========================================================================================
+
+message DurableConfigExtendEntry {
+  string key = 1;
+  string value = 2;
+}
+
+message DurableShardConfig {
+  uint64 version = 1;
+  // Every `optional` below is an `Option` in the config: absent is not zero.
+  optional uint64 maxmemory_bytes = 2;
+  optional string tenant_name = 3;
+  optional uint64 read_qps = 4;
+  optional uint64 write_qps = 5;
+  optional uint64 table_read_qps = 6;
+  optional uint64 table_write_qps = 7;
+  optional uint64 tenant_read_qps = 8;
+  optional uint64 tenant_write_qps = 9;
+  repeated DurableConfigExtendEntry extend_config = 10;
+  uint64 feature_max_size = 11;
+  bool async_storage = 12;
+}
+
+message DurableConfigLogEntry {
+  uint64 after_seq = 1;
+  // A message field is optional on the wire; an entry with no config is refused, not defaulted
+  // (a defaulted config would silently reset every flag the entry was written to carry).
+  DurableShardConfig config = 2;
 }

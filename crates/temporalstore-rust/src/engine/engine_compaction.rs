@@ -698,16 +698,16 @@ fn read_block_bytes_for_compaction(
     // `None`, AND THIS IS THE ONE PLACE IN THIS CHANGE THAT PASSES IT WITHOUT THE BLOCK BEING
     // A WHOLE OBJECT. Compaction walks the model maps, and for the container kinds those maps
     // are keyed by the element's VALUE (a set's member bytes, a zset's member, a list's
-    // sequence) rather than by the component the index filed the block under -- which is a
-    // rendering of it: `member_component(member)` for a set and for a zset alike -- one tag byte
+    // sequence) rather than by the element name the index filed the block under -- which is a
+    // rendering of it: `member_element_name(member)` for a set and for a zset alike -- one tag byte
     // then the member, the score having left the zset string -- and `{:016x}` of the biased
     // sequence for a list.
     //
     // SET AND ZSET DO HAVE A SHARED RENDERER NOW, which this comment used to deny: both reach
-    // `member_component` through `set_component` and `zset_component`. List and hash are still
+    // `member_element_name` through `set_element_name` and `zset_element_name`. List and hash are still
     // spelled inline, so the drift argument below holds over those two rather than over all
     // four. Re-spelling them here would be a second copy of those rules, free to drift from the
-    // originals, and a component that drifted would be indistinguishable from this `None` in its
+    // originals, and an element name that drifted would be indistinguishable from this `None` in its
     // effect -- which is why the decision is unchanged even though one of its two reasons is.
     //
     // WHAT IT COSTS, stated rather than implied: the in-log fallback inside `read_block_bytes`
@@ -723,7 +723,7 @@ fn read_block_bytes_for_compaction(
     // misreading has already turned it red once. The bytes are never wrong either way -- what is
     // at stake is whether the failure stays loud.
     // Whole-object blocks, which is every `string` and `control_state`, are unaffected: `None`
-    // is their actual component.
+    // is their actual element name.
     read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
 }
 
@@ -754,11 +754,11 @@ fn container_batch_target_bytes() -> usize {
 
 /// One element of a container, as compaction sees it: the bytes that name it, and where it lives.
 ///
-/// The KEY BYTES and not the component. The component is a rendering of these -- hex for a set,
+/// The KEY BYTES and not the element name. The element name is a rendering of these -- hex for a set,
 /// a score before that hex for a zset, the biased word for a list, the field name itself for a hash
-/// -- and `container_blocks::component_from_element_key` is the one renderer for all four. Before it
+/// -- and `container_blocks::element_name_from_element_key` is the one renderer for all four. Before it
 /// existed, `read_block_bytes_for_compaction` documented at length why this function could not have
-/// the component: "There is no shared renderer to call; each write site spells it out inline.
+/// the element name: "There is no shared renderer to call; each write site spells it out inline.
 /// Re-spelling them here would be a second copy of four rules, free to drift from the four
 /// originals." There is a renderer now, so the caller hands over key bytes and this asks it.
 pub(super) struct ContainerElementRef<'a> {
@@ -778,7 +778,7 @@ pub(super) struct ContainerElementRef<'a> {
 /// count_with_them` measures it through a round, 40 entries over 40 blocks before and 1 over 1 after.
 ///
 /// THIS PARAGRAPH SAID THE OPPOSITE AND IT WAS TRUE WHEN IT WAS WRITTEN: "It changes the BLOCK count
-/// and not the ENTRY count ... `block_index_handle` hashes the component beside the address, so the
+/// and not the ENTRY count ... `block_index_handle` hashes the element name beside the address, so the
 /// block index still holds one entry per element ... The entry count is a later stage's subject."
 /// That later stage has landed -- `BlockIndex` has no element-name field -- so the entry count is
 /// this round's subject too.
@@ -797,7 +797,7 @@ pub(super) struct ContainerElementRef<'a> {
 /// # AND IT IS THE MIGRATION OFF UNFRAMED BLOCKS
 ///
 /// A block written before `container_blocks` carries a bare value and no element key. Read through the
-/// funnel with its component it hands that value back, and this function writes it into a frame that
+/// funnel with its element name it hands that value back, and this function writes it into a frame that
 /// names it. So an old store becomes a framed one as it is compacted, without a migration pass of
 /// its own.
 ///
@@ -837,7 +837,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
     // objects; these four arms do not.
     //
     // AND IT IS NOT OPTIONAL, because a [`BlockIdentity`] cannot be built without it. The read below
-    // asks for ONE ELEMENT of a block, and a read handed only a component and no object cannot say
+    // asks for ONE ELEMENT of a block, and a read handed only an element name and no object cannot say
     // which object's element it means.
     object_key: &str,
     routing_bucket: u32,
@@ -872,12 +872,12 @@ pub(super) fn compact_container_blocks_batched<'a>(
         if !rewrite_stats.should_relocate(element.address) {
             continue;
         }
-        let component = match super::container_blocks::component_from_element_key(
+        let element_name = match super::container_blocks::element_name_from_element_key(
             spelling,
             &element.key,
         ) {
-            Some(component) => component,
-            // A key this spelling cannot render names no component, so no page can be found for it.
+            Some(element_name) => element_name,
+            // A key this spelling cannot render names no element name, so no page can be found for it.
             // Counted by being skipped; the address is left alone.
             None => continue,
         };
@@ -887,10 +887,10 @@ pub(super) fn compact_container_blocks_batched<'a>(
             shard_id,
             element.address,
             // THE TERMS, NOT AN ID. The object comes from the key this call is standing on and the
-            // element from the component just rendered, so the identity is derived here from both
+            // element from the element name just rendered, so the identity is derived here from both
             // halves rather than recovered from the address -- which is what #2024 made the only
             // way to name a block, precisely so a relocation cannot read a block it cannot name.
-            BlockIdentity::of(shard_id, model_id, object_key, Some(component.as_str())),
+            BlockIdentity::of(shard_id, model_id, object_key, Some(element_name.as_str())),
             routing_bucket,
         )
         .ok_or_else(|| {
@@ -960,10 +960,10 @@ pub(super) fn compact_container_blocks_batched<'a>(
 
 /// One element's VALUE out of the block its index entry names.
 ///
-/// Through the read funnel WITH THE COMPONENT NAMED IN THE IDENTITY, which is the one thing that
+/// Through the read funnel WITH THE ELEMENT NAME NAMED IN THE IDENTITY, which is the one thing that
 /// makes this different from `read_block_bytes_for_compaction`: that one builds its identity with
-/// `None` for the component and so gets the whole payload, because until `container_blocks` there was
-/// no renderer to turn a model-map key into a component. There is one now, so this asks for the
+/// `None` for the element name and so gets the whole payload, because until `container_blocks` there was
+/// no renderer to turn a model-map key into an element name. There is one now, so this asks for the
 /// element and gets its value whether the stored block is framed or is a bare value from before the
 /// frame existed -- `select_container_element` answers `NotFramed` for the second and the funnel
 /// hands back the whole block, which for an unframed block IS the element.
@@ -1325,7 +1325,7 @@ pub fn compaction_drain_block_slab_ids(
 ///
 /// `model_id` is the second half of the question and has no answer to give yet IN THIS TREE, for
 /// the reason just given -- every model's blocks are copied verbatim, so no model can improve
-/// itself by being rewritten in place. A model that PACKED several components into one block on
+/// itself by being rewritten in place. A model that PACKED several element names into one block on
 /// rewrite could, and this is where it says so: it would name its own blocks here whether or not
 /// their slab is being drained. The hint carries a per-model tally so the answer stays
 /// attributable when that arrives.

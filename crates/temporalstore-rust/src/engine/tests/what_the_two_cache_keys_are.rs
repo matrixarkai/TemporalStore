@@ -30,7 +30,7 @@
 //!
 //! # THE PHYSICAL KEY IS DENOMINATED IN STORED BYTES
 //!
-//! The selector's three components are routing bucket, offset and **length** — and that length is
+//! The selector's three element names are routing bucket, offset and **length** — and that length is
 //! the block's *stored* size, not the caller's. For a 256-byte run of one character it reads 35.
 //!
 //! This is not a detail about cache keys. It is the reason a user-denominated amplification ratio

@@ -22,7 +22,7 @@
 //!
 //! AND A GENUINELY CONTAINER-ONLY ELEMENT SURVIVES ANYWAY, which is the finding the collapse work
 //! depends on. `LiveBlockKey` is `(slab_id, offset, length)`: a BLOCK identity carrying no element,
-//! component or object key. So `fill_absent_elements` asks only whether the block is still there,
+//! element name or object key. So `fill_absent_elements` asks only whether the block is still there,
 //! never whether the index names this element -- and an element the index has never heard of is
 //! kept as long as its block is live.
 //!
@@ -463,7 +463,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     );
     // MEASURED, and it REFUTED the prediction this test was written to confirm: a container-only
     // element whose BLOCK is live SURVIVES. `LiveBlockKey` is `(slab_id, offset, length)` -- a block
-    // identity carrying no element, component or object key -- so the filter asks only whether the
+    // identity carrying no element, element name or object key -- so the filter asks only whether the
     // block is still there, never whether the index names this element.
     assert!(
         orphan_after,

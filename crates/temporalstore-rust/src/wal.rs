@@ -24,7 +24,7 @@
 //! **There is no per-piece index from record number to byte offset.** A segmented log usually
 //! carries one, as a sidecar file, so that "read entries N through M" is a seek rather than a walk
 //! from the start of the piece. Here it would have no reader. Random access is by log id, which is
-//! already arithmetic and needs no index; and the only component that reads the log sequentially is
+//! already arithmetic and needs no index; and the only element name that reads the log sequentially is
 //! recovery (`engine::lifecycle::replay_wal_into_shard`), which starts at a watermark and reads
 //! forward to the end -- in BOUNDED WINDOWS, so it seeks into the middle of a piece once per
 //! window, and it does so by arithmetic on the log id, which is exactly why no index is wanted.
@@ -450,7 +450,7 @@ pub(crate) fn record_command(
 ///
 /// So a result is covered when it STATES ITSELF -- bytes, a removal, a new deadline -- or when
 /// this batch carries a block for it. The block match UNDER-matches by design, the same way
-/// `tests/what_an_ack_promises.rs` matches: a whole-object page spells its component `None` and is
+/// `tests/what_an_ack_promises.rs` matches: a whole-object page spells its element name `None` and is
 /// accepted for any element of its object, so coverage can only ever be counted LOW and a `true`
 /// here is the direction a durability claim needs.
 ///
@@ -466,8 +466,8 @@ pub(crate) fn every_result_can_be_found_again(
             || item.value.as_ref().map(|value| !value.is_empty()).unwrap_or(false)
             || blocks.iter().any(|block| {
                 block.object_id == item.object_id
-                    && (block.component.as_deref() == item.component.as_deref()
-                        || block.component.is_none())
+                    && (block.element_name.as_deref() == item.element_name.as_deref()
+                        || block.element_name.is_none())
             })
     })
 }
@@ -477,11 +477,11 @@ mod every_result_can_be_found_again_tests {
     use super::{every_result_can_be_found_again, StagedBlock, WalOutcomeItem};
 
     /// A result that names an address and states nothing about itself.
-    fn names_only_an_address(object_id: u64, component: &str) -> WalOutcomeItem {
+    fn names_only_an_address(object_id: u64, element_name: &str) -> WalOutcomeItem {
         WalOutcomeItem {
             kind: "page".to_string(),
             object_key: format!("object/{object_id}"),
-            component: Some(component.to_string()),
+            element_name: Some(element_name.to_string()),
             object_id,
             routing_bucket: 7,
             address: None,
@@ -492,10 +492,10 @@ mod every_result_can_be_found_again_tests {
         }
     }
 
-    fn block_for(object_id: u64, component: &str) -> StagedBlock {
+    fn block_for(object_id: u64, element_name: &str) -> StagedBlock {
         StagedBlock {
             object_id,
-            component: Some(std::sync::Arc::from(component)),
+            element_name: Some(std::sync::Arc::from(element_name)),
             bytes: vec![b'p'; 8],
         }
     }
@@ -633,7 +633,7 @@ fn outcome_not_deleted(deleted: &bool) -> bool {
 /// outcome said it twice.
 ///
 /// Their `object_id`s look equally redundant and are NOT. For a timestamped kind the item's is
-/// derived from (kind, key, COMPONENT) and the block's from (kind, key, None) -- per point against
+/// derived from (kind, key, ELEMENT NAME) and the block's from (kind, key, None) -- per point against
 /// per series -- so restoring one from the other writes the wrong id into the index entry. The
 /// bucket-index half of the equivalence gate is what caught that; the field stays.
 ///
@@ -693,18 +693,18 @@ pub struct WalOutcomeItem {
     ///   1. NINE READS IN `engine::lifecycle`, every one of them a TIMESTAMPED kind: `feature`,
     ///      `context_index`, `context_audit`, `context_child`, `context_summary`,
     ///      `context_compression`, and the entity/event/node/embedding arms below them. For these
-    ///      the component is a stored key parsed as a `u64`, and
+    ///      the element name is a stored key parsed as a `u64`, and
     ///      `container_blocks::ElementKeySpelling::for_kind` answers `None` for every one of them --
     ///      their blocks carry NO element-key frame at all. The payload cannot supply what it does
     ///      not spell, so for these kinds this field is the only copy and removing it is data loss.
     ///   2. ITS ABSENCE IS A MEANING, which no removal can preserve. The timestamped arm opens
-    ///      "No component on a removal means the whole series went, not one point of it", and
+    ///      "No element name on a removal means the whole series went, not one point of it", and
     ///      `wal_proto` encodes exactly that as `object_deleted: item.deleted &&
-    ///      item.component.is_none()`. A field whose `None` is a statement cannot be deleted even
+    ///      item.element_name.is_none()`. A field whose `None` is a statement cannot be deleted even
     ///      where its `Some` is derivable.
-    ///   3. EIGHT READS IN `wal_proto`, where it is not stored as itself: `numeric_component`
+    ///   3. EIGHT READS IN `wal_proto`, where it is not stored as itself: `numeric_element_name`
     ///      renders it into the `timestamp_ms` and `entry_id` protobuf fields for the kinds whose
-    ///      component is a number, and reads it back out of them. Removing the field means removing
+    ///      element name is a number, and reads it back out of them. Removing the field means removing
     ///      a wire encoding, not a struct member.
     ///
     /// # WHAT WOULD ACTUALLY BUY IT, SO THE NEXT LANE DOES NOT RE-DERIVE THIS
@@ -736,15 +736,15 @@ pub struct WalOutcomeItem {
     ///     every point, and its own doc says why -- "it is what picks one point out of a block
     ///     holding several". Driven through the real decoder on a 64-point append: ONE block, 64 of
     ///     64 timestamps recovered, 0 outcomes whose object carried several blocks. For every kind
-    ///     whose component IS the stored key, there is nothing to add.
-    ///   * ONLY ONE KIND CARRIES A SECOND TERM. `packed_blocks::timestamped_component` packs an
+    ///     whose element name IS the stored key, there is nothing to add.
+    ///   * ONLY ONE KIND CARRIES A SECOND TERM. `packed_blocks::timestamped_element_name` packs an
     ///     identity beside the stored key for `context_event` alone -- `{stored:016x}{id:016x}` --
     ///     and the block holds the timeline key but not the event id. So the frame work reduces to
     ///     ONE kind, at about 8 B per block to put the id in the frame.
-    ///   * AND THE SAVING IS AN ORDER OF MAGNITUDE SMALLER THAN THE COMPONENT LOOKS, which is what
-    ///     settles it. `wal_proto::numeric_component` stores this field as NUMBERS for all eight
+    ///   * AND THE SAVING IS AN ORDER OF MAGNITUDE SMALLER THAN THE ELEMENT NAME LOOKS, which is what
+    ///     settles it. `wal_proto::numeric_element_name` stores this field as NUMBERS for all eight
     ///     timestamped kinds -- a `timestamp_ms`, plus an `entry_id` for `context_event` -- so the
-    ///     32-character hex component of a `context_event` is never written as 32 characters.
+    ///     32-character hex element name of a `context_event` is never written as 32 characters.
     ///     Measured through the real framer: a feature record is 523 B and 418 B without the field,
     ///     which is 105 B over the 64 outcomes IN THAT RECORD = **1.64 B per outcome**; a
     ///     context_event record is 169 B and 146 B = 23 B.
@@ -752,7 +752,7 @@ pub struct WalOutcomeItem {
     /// SO THE TRADE IS ~8 B PER BLOCK AGAINST 1.64 B PER OUTCOME, and for the common case that is a
     /// NET LOSS -- the store would get bigger to remove a field. Refused on the measurement.
     ///
-    /// THE GENERAL LESSON, WHICH IS WORTH MORE THAN THIS DECISION: A HEX-SPELLED COMPONENT IS NOT
+    /// THE GENERAL LESSON, WHICH IS WORTH MORE THAN THIS DECISION: A HEX-SPELLED ELEMENT NAME IS NOT
     /// STORED AS HEX. Pricing a removal from a field's SPELLING rather than from its ENCODER
     /// overstated it by about twenty times here. It is the same error as pricing the index-log row's
     /// element name from its string width when slot 5 had already become a constant nil -- read the
@@ -763,7 +763,7 @@ pub struct WalOutcomeItem {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub component: Option<String>,
+    pub element_name: Option<String>,
     #[serde(rename = "i", alias = "object_id")]
     pub object_id: u64,
     #[serde(rename = "b", alias = "routing_bucket")]
@@ -861,18 +861,18 @@ pub struct StagedBlock {
     /// sharing an id serve 1 of 2 correctly, and the block that loses is handed the FIRST block's
     /// BYTES rather than answering missing.
     ///
-    /// The component and not the block's ordinal, on four grounds that are measured elsewhere and
+    /// The element name and not the block's ordinal, on four grounds that are measured elsewhere and
     /// cited rather than re-derived here. `container_block_ordinal` derives the ordinal FROM this
-    /// component, so it is a lossy projection of the thing it would replace; #2008 measured that a
+    /// element name, so it is a lossy projection of the thing it would replace; #2008 measured that a
     /// delete frees an ordinal for the next insert to reuse ("correct for a position and would be
     /// silent corruption for an identity"); the ordinal is left at 0 past an object's 65,535th
-    /// element; and #1996 found the component is the ONLY copy of a member for an element the delta
+    /// element; and #1996 found the element name is the ONLY copy of a member for an element the delta
     /// fold delivers without a durable-map entry. The one fact this file adds: the hot write's
     /// address is built with `block_id: None`, so on the very path this block exists to serve there
     /// is no ordinal on the address to read back.
     ///
     /// `None` means the block IS its whole object -- a string, a control state -- which is what
-    /// `None` has always meant for `BlockIndex::component`. Skipped when absent, so a record for a
+    /// `None` has always meant for `BlockIndex::element_name`. Skipped when absent, so a record for a
     /// whole-object block is byte-identical to one written before this field existed.
     #[serde(
         rename = "k",
@@ -880,7 +880,7 @@ pub struct StagedBlock {
         default,
         skip_serializing_if = "Option::is_none"
     )]
-    pub component: Option<std::sync::Arc<str>>,
+    pub element_name: Option<std::sync::Arc<str>>,
     /// The block contents.
     ///
     /// Carried beside the document when that is smaller, and encoded into it otherwise -- the same
@@ -5776,7 +5776,7 @@ mod tests {
             WalOutcomeItem {
                 kind: "string".to_string(),
                 object_key: format!("ingest-00042/{index}"),
-                component: None,
+                element_name: None,
                 object_id: 1000 + index as u64,
                 routing_bucket: 7,
                 address: None,
@@ -6865,7 +6865,7 @@ mod tests {
                     (Schema::Item, 8) => ("deleted", None),
                     (Schema::Item, 9) => ("meta_log", None),
                     (Schema::Item, 10) => ("block_log", None),
-                    (Schema::Item, 11) => ("component", None),
+                    (Schema::Item, 11) => ("element_name", None),
                     (Schema::Item, 12) => ("block", Some(Schema::BlockAddress)),
                     (Schema::Item, 13) => ("value", None),
                     (Schema::Item, 14) => ("kind_name", None),
@@ -6889,7 +6889,7 @@ mod tests {
                     (Schema::StagedBlock, 1) => ("object_id", None),
                     (Schema::StagedBlock, 2) => ("block", None),
                     (Schema::StagedBlock, 3) => ("routing_bucket", None),
-                    (Schema::StagedBlock, 4) => ("component", None),
+                    (Schema::StagedBlock, 4) => ("element_name", None),
                     _ => return None,
                 })
             }
@@ -7059,7 +7059,7 @@ mod tests {
                     outcomes: vec![WalOutcomeItem {
                         kind: "string".to_string(),
                         object_key: KEY.to_string(),
-                        component: None,
+                        element_name: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
                             1, "string", KEY,
                         ),
@@ -8954,7 +8954,7 @@ mod tests {
                     .map(|index| WalOutcomeItem {
                         kind: "string".to_string(),
                         object_key: format!("batch-key-{index:09}"),
-                        component: None,
+                        element_name: None,
                         object_id: index as u64,
                         routing_bucket: index as u32,
                         address: None,
@@ -10927,7 +10927,7 @@ mod tests {
             metadata: None,
             staged_blocks: vec![StagedBlock {
                 object_id: 7,
-                component: None,
+                element_name: None,
                 bytes: block.clone(),
             }],
             outcomes: Vec::new(),
