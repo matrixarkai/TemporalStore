@@ -73,7 +73,7 @@ use self::task_output::*;
 use self::worker::*;
 use self::storage_manager_runtime::*;
 
-pub use lifecycle::decode_lifecycle_snapshot_file;
+pub use lifecycle::{decode_lifecycle_snapshot_file, encode_lifecycle_snapshot_file};
 use lifecycle::{
     final_loaded_lifecycle_state, lifecycle_persistence_report_for_path, lifecycle_snapshot_inner,
     lifecycle_snapshot_path_from_env, persist_lifecycle_snapshot_inner,

@@ -745,7 +745,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
         generation: 800,
     });
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.tokens.len(), 1);
     assert!(saved.transitions.is_empty());
     let report = runtime.lifecycle_persistence_report();
@@ -767,7 +767,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     });
     assert!(load.status.ok, "{load:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.transitions[0].operation, "load");
     assert_eq!(saved.transitions[0].state, "serving");
     assert_eq!(saved.transitions[0].scheduler_task_id, Some(31));
@@ -808,7 +808,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     });
     assert!(reload.status.ok, "{reload:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.transitions[0].operation, "reload");
     assert_eq!(saved.transitions[0].state, "readonly");
     assert_eq!(saved.transitions[0].scheduler_task_id, Some(32));
@@ -823,7 +823,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     let unload = restored.unload_shard_with(crate::control::UnloadShardRequest { shard_id: 8 });
     assert!(unload.status.ok, "{unload:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.tokens.len(), 3);
     assert_eq!(saved.transitions[0].operation, "unload");
     assert_eq!(saved.transitions[0].state, "unloaded");
