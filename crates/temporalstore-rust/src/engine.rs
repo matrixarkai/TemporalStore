@@ -1055,6 +1055,22 @@ impl TemporalEngine {
         );
         let context_embedding_command =
             Self::command_updates_context_embedding(&command).then(|| command.clone());
+        let read_recency_bucket = if object_keys.is_empty() {
+            command_read_key(&command)
+                .map(|key| block_routing_bucket(key, start_routing_bucket, end_routing_bucket))
+        } else {
+            None
+        };
+        // Writes retain the original command for their WAL record. Reads can transfer ownership
+        // straight into execution unless lazy expiry is armed somewhere on the shard, in which
+        // case a read may mutate state and must retain the same post-execution metadata as a
+        // write. The common feature-serving shard with no deadlines avoids a full command clone.
+        let retain_command = write_command || !shard.expires_at_ms().is_empty();
+        let (execution_command, retained_command) = if retain_command {
+            (command.clone(), Some(command))
+        } else {
+            (command, None)
+        };
 
         let outcome = execute_on_shard(
             &self.cache,
@@ -1070,18 +1086,22 @@ impl TemporalEngine {
             start_routing_bucket,
             end_routing_bucket,
             shard,
-            command.clone(),
+            execution_command,
         );
         // LRU recency: record that this command touched its
         // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
         {
             let now = now_ms();
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                for_each_precomputed_touched_key(&command, &object_keys, |key| {
-                    let recency_bucket =
-                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                if let Some(recency_bucket) = read_recency_bucket {
                     shard.bucket_recency.insert(recency_bucket, now);
-                });
+                } else {
+                    for key in &object_keys {
+                        let recency_bucket =
+                            block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                        shard.bucket_recency.insert(recency_bucket, now);
+                    }
+                }
             });
         }
         // Set to the reserved WAL sequence when the concurrent-commit path defers this
@@ -1093,6 +1113,9 @@ impl TemporalEngine {
         // set on only one of the two paths.
         let mut appended_sequence: Option<u64> = None;
         if outcome.mutated {
+            let command = retained_command.expect(
+                "a mutating command must be retained for WAL and index-log metadata",
+            );
             // Captured here for the same reason as the keys above: the command is moved into
             // the WAL append before the index-log items are built, so anything the items need
             // from it has to be taken while it is still owned.
