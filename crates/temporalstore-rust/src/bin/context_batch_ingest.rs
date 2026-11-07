@@ -41,7 +41,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    context_scope_nodes, context_scopes, ingest_extract_context_with_l1_gate,
+    context_scope_all_nodes, context_scope_nodes, context_scopes,
+    ingest_extract_context_with_l1_gate,
     remember_context_scope, remember_context_scope_node, BatchExecuteRequest, Command,
     CommandResponse, ContextEvent, ContextExtractRequest, ContextIndexRef,
     ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode, ContextSourceKind,
@@ -148,7 +149,7 @@ fn main() {
             "{}:{}:{}:{}",
             account_id, tenant_id, user_id, session_id
         ));
-        if !context_scope_nodes(&engine, 1, tenant_hash).is_empty() {
+        if !context_scope_all_nodes(&engine, 1, tenant_hash).is_empty() {
             continue;
         }
         let _ = remember_context_scope(&engine, 1, catalog_hash, session_id);
@@ -402,7 +403,7 @@ fn main() {
                         accepted
                             .saturating_add(session_accepted)
                             .saturating_mul(4)
-                            .saturating_add(candidate_index_writes)
+                            .saturating_add(candidate_index_writes.saturating_mul(2))
                             .to_string(),
                     );
                 }
@@ -465,7 +466,7 @@ fn main() {
             "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
             accepted
                 .saturating_mul(4)
-                .saturating_add(candidate_index_writes)
+                .saturating_add(candidate_index_writes.saturating_mul(2))
                 .to_string(),
         );
     }

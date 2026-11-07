@@ -10,11 +10,10 @@
 //! (~0% needle recall at scale).
 //!
 //! This bin closes that gap WITHOUT touching live ingest: it opens an existing
-//! `with_local_dirs` store, enumerates the context nodes recorded in the agent
-//! session index, reads each node's stored event text, batches those texts to a
-//! real OpenAI-compatible embedding provider (e.g. a local MiniLM
-//! `/v1/embeddings` server), and persists the `ctx:embedding:{tenant}:{ref}`
-//! entries under the exact `node_l0` ref-hash the retrieve path reads
+//! `with_local_dirs` store, enumerates the nodes in each durable context scope,
+//! reads each node's stored text, batches those texts to an OpenAI-compatible
+//! embedding provider, and persists the vector on the node record the retrieve
+//! path already reads.
 //! It reuses the engine's own provider path
 //! (`context_backfill_embeddings`) so batching, `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS`
 //! enforcement, and response validation are identical to live extraction.
@@ -36,8 +35,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::json;
 use temporalstore_rust::{
-    context_backfill_embeddings, BatchExecuteRequest, Command,
-    CommandResponse, ContextModelProviderConfig, ContextProviderKind,
+    context_backfill_embeddings, context_scope_all_nodes, context_scope_nodes, context_scopes,
+    remember_context_scope, remember_context_scope_node, BatchExecuteRequest, Command,
+    CommandResponse, ContextIndexRef, ContextModelProviderConfig, ContextProviderKind,
     ExecuteRequest, TemporalEngine,
 };
 
@@ -247,10 +247,54 @@ fn main() {
     let shard_load_seconds = load_started.elapsed().as_secs_f64();
 
     let index_path = root.join(format!("{}-session-index.json", agent));
-    let index: SessionIndex = fs::read_to_string(&index_path)
+    let legacy_index: SessionIndex = fs::read_to_string(&index_path)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
+    let catalog_hash = stable_hash64(&format!("{}:{}:{}", account, tenant, user));
+
+    let mut sessions = if only_session.trim().is_empty() {
+        let mut scopes = context_scopes(&engine, 1, catalog_hash);
+        scopes.extend(legacy_index.sessions.keys().cloned());
+        scopes.sort_unstable();
+        scopes.dedup();
+        scopes
+    } else {
+        vec![only_session.clone()]
+    };
+    let mut imported_scope_nodes = 0usize;
+    for session in &sessions {
+        let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
+        if !context_scope_all_nodes(&engine, 1, tenant_hash).is_empty() {
+            continue;
+        }
+        let nodes = legacy_index
+            .sessions
+            .get(session)
+            .cloned()
+            .filter(|nodes| !nodes.is_empty())
+            .unwrap_or_else(|| context_scope_nodes(&engine, 1, tenant_hash));
+        if nodes.is_empty() {
+            continue;
+        }
+        let _ = remember_context_scope(&engine, 1, catalog_hash, session);
+        for node_hash in nodes {
+            let index_ref = ContextIndexRef {
+                primary_node_hash: node_hash,
+                primary_event_time_ms: 1,
+                event_id_hash: node_hash,
+            };
+            if remember_context_scope_node(&engine, 1, tenant_hash, &index_ref) {
+                imported_scope_nodes = imported_scope_nodes.saturating_add(1);
+            }
+        }
+    }
+    if imported_scope_nodes > 0 {
+        engine.flush_shard_index(1);
+    }
+    if only_session.trim().is_empty() {
+        sessions = context_scopes(&engine, 1, catalog_hash);
+    }
 
     let mut provider = ContextModelProviderConfig::default();
     provider.provider_name = "minilm-local".to_string();
@@ -260,12 +304,6 @@ fn main() {
     provider.embedding_model = embedding_model.clone();
     provider.mock_mode = false;
 
-    let sessions: Vec<String> = if only_session.trim().is_empty() {
-        index.sessions.keys().cloned().collect()
-    } else {
-        vec![only_session.clone()]
-    };
-
     if verify_only {
         // Fresh-load verification: by default sample the first N nodes of each
         // session for fast checks; --verify-full checks every indexed node so
@@ -273,12 +311,12 @@ fn main() {
         let n_probe = if verify_full { usize::MAX } else { 20usize };
         let mut verify_reports = Vec::new();
         for session in &sessions {
-            let node_hashes = capped_nodes(
-                index.sessions.get(session).cloned().unwrap_or_default(),
-                max_nodes,
-            );
             let tenant_hash =
                 stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
+            let node_hashes = capped_nodes(
+                context_scope_all_nodes(&engine, 1, tenant_hash),
+                max_nodes,
+            );
             let probe: Vec<u64> = node_hashes.iter().take(n_probe).copied().collect();
             let embedded = load_embedded_nodes(&engine, tenant_hash, &probe);
             let found = embedded.len();
@@ -351,6 +389,8 @@ fn main() {
             "verify_full": verify_full,
             "root": root.display().to_string(),
             "index_path": index_path.display().to_string(),
+            "scope_catalog_hash": catalog_hash,
+            "imported_scope_nodes": imported_scope_nodes,
             "sessions": sessions.len(),
             "sessions_with_embeddings": sessions_with_embeddings,
             "sessions_fully_covered": sessions_fully_covered,
@@ -386,8 +426,10 @@ fn main() {
     let updated_at_ms = now_ms();
 
     for session in &sessions {
+        let tenant_hash =
+            stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
         let node_hashes = capped_nodes(
-            index.sessions.get(session).cloned().unwrap_or_default(),
+            context_scope_all_nodes(&engine, 1, tenant_hash),
             max_nodes,
         );
         if node_hashes.is_empty() {
@@ -407,7 +449,6 @@ fn main() {
             }
             skipped_report_stale_sessions += 1;
         }
-        let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
         let end_time_ms = u64::MAX;
         let existing_started = Instant::now();
         let existing_embeddings = load_embedded_nodes(&engine, tenant_hash, &node_hashes);
@@ -563,6 +604,8 @@ fn main() {
         "status": "ok",
         "root": root.display().to_string(),
         "index_path": index_path.display().to_string(),
+        "scope_catalog_hash": catalog_hash,
+        "imported_scope_nodes": imported_scope_nodes,
         "base_url": base_url,
         "embedding_model": embedding_model,
         "sessions": sessions.len(),
