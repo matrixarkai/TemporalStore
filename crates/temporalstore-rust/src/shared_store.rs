@@ -3941,6 +3941,45 @@ fn digest_text_to_bytes(digest: &str) -> Option<Vec<u8>> {
     bytes.filter(|bytes| hex::encode(bytes) == digest)
 }
 
+/// THE PROTOBUF ENCODING OF A COMMAND, OR A REFUSAL THAT NAMES IT.
+///
+/// This used to be a two-armed `match` whose second arm wrote the command as JSON, so a command the
+/// proto could not carry was published anyway, in a shape no one reading the log was told to
+/// expect. The arm is gone: every write the shared log can carry has a mapping
+/// (`COMMANDS_STILL_ENCODED_AS_JSON` is empty and a guard keeps it so), and the commands left over
+/// are not writes, which a local log never records and so nothing publishes. A command with no
+/// mapping is therefore a bug in the caller or a new write that skipped the mapping, and the
+/// useful answer to either is an error at publish time that says which command, not a record that
+/// replays on one build and is unreadable on the next.
+///
+/// THE DECODER IS NOT SYMMETRIC WITH THIS, ON PURPOSE. `wal_command_from_payload` keeps its JSON
+/// arm for ever: a log written before this change can hold JSON command payloads, and the hold is
+/// on what is on disk. An encoder nobody should reach is deleted; a decoder for what already exists
+/// stays.
+///
+/// NOT TO BE CONFUSED WITH AN OUTCOME-ONLY RECORD. An entry with no command at all is written as an
+/// EMPTY payload under the tag that is also JSON's (zero), with no JSON in it; that is `None` of
+/// `entry.command`, handled by the callers before they get here, and it needs no encoding.
+fn wal_command_payload(command: &Command) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    match command_to_sdk_proto(command) {
+        Some(encoded) => Ok(encoded.encode_to_vec()),
+        None => {
+            let shown = format!("{command:?}");
+            let name: String = shown
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "command {name} has no protobuf encoding, so it cannot be published to the \
+                     shared WAL; it is not written as JSON"
+                ),
+            )))
+        }
+    }
+}
+
 struct WalCommandMetadata {
     byte_size: u64,
     encoding: u32,
@@ -3975,16 +4014,10 @@ fn wal_command_metadata(
             encoding: WAL_COMMAND_ENCODING_JSON_SERDE,
         });
     };
-    let (command_payload, command_encoding) = match command_to_sdk_proto(command) {
-        Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-        None => (
-            serde_json::to_vec(command)?,
-            WAL_COMMAND_ENCODING_JSON_SERDE,
-        ),
-    };
+    let command_payload = wal_command_payload(command)?;
     Ok(WalCommandMetadata {
         byte_size: command_payload.len() as u64,
-        encoding: command_encoding,
+        encoding: WAL_COMMAND_ENCODING_SDK_PROTO,
     })
 }
 
@@ -3995,10 +4028,7 @@ fn encode_wal_proto_frame(
     let (command_payload, command_encoding) = match entry.command.as_ref() {
         // No operation to carry: the entry states results instead.
         None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
-        Some(command) => match command_to_sdk_proto(command) {
-            Some(encoded) => (encoded.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-            None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
-        },
+        Some(command) => (wal_command_payload(command)?, WAL_COMMAND_ENCODING_SDK_PROTO),
     };
     // The same rule the log frame follows: a carried block states the length its address
     // covers, so the address need not restate it.
@@ -4391,10 +4421,7 @@ fn encode_wal_batch_container(
         let (command_payload, command_encoding) = match entry.command.as_ref() {
             // No operation to carry: the entry states results instead.
             None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
-            Some(command) => match command_to_sdk_proto(command) {
-                Some(encoded) => (encoded.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-                None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
-            },
+            Some(command) => (wal_command_payload(command)?, WAL_COMMAND_ENCODING_SDK_PROTO),
         };
         // The first entry's encoding becomes the header's; any entry that differs states its own.
         let header_encoding = *declared_encoding.get_or_insert(command_encoding);
@@ -15385,6 +15412,139 @@ fn no_write_command_quietly_joins_the_json_fallback() {
     );
 }
 
+/// A COMMAND WITH NO PROTOBUF ENCODING IS REFUSED BY NAME AT EVERY ENCODER, AND NOTHING IS WRITTEN.
+///
+/// The three encoders used to fall through to `serde_json::to_vec(command)` for a command
+/// `command_to_sdk_proto` does not map. That arm is gone. The command used here is a READ with no
+/// mapping, which is exactly the shape of command that can still reach it: every write has a
+/// mapping (`no_write_command_quietly_joins_the_json_fallback` keeps that true), and the unmapped
+/// ones are reads a local log never records.
+///
+/// Driven at the three encoders AND through a real publish, because the encoders are what choose
+/// the arm and the publish is what a running node calls. The store is listed afterwards: a refusal
+/// that had already written something would still be an error, and an error is not the claim.
+#[tokio::test]
+async fn a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_json() {
+    let command = Command::LeaderEstablish;
+    // DENOMINATORS: it is really unmapped and really not a write, or the refusals below are about
+    // a command that happened to be unusual.
+    assert!(
+        command_to_sdk_proto(&command).is_none(),
+        "this command is now mapped, so it no longer exercises the arm this test is about; pick \
+         another unmapped read"
+    );
+    assert!(!crate::engine::is_write_command(&command));
+
+    let entry = SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index: 1,
+        command: Some(command.clone()),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+    let refusals: Vec<(&str, Result<(), SharedStoreReplicationError>)> = vec![
+        ("metadata", wal_command_metadata(Some(&command)).map(|_| ())),
+        (
+            "frame",
+            encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT).map(|_| ()),
+        ),
+        (
+            "container",
+            encode_wal_batch_container(&[entry.clone()]).map(|_| ()),
+        ),
+    ];
+    assert_eq!(refusals.len(), 3, "three encoders lost their JSON arm");
+    for (what, result) in refusals {
+        let text = result
+            .expect_err(&format!("the {what} encoder accepted a command it cannot encode"))
+            .to_string();
+        assert!(
+            text.contains("LeaderEstablish") && text.contains("no protobuf encoding"),
+            "the {what} refusal must name the command and the reason: {text}"
+        );
+    }
+
+    // CONTROL: a mapped command goes through all three, so the refusals are about THIS command.
+    let mapped = Command::StringSet {
+        key: "k".to_string(),
+        value: b"v".to_vec(),
+    };
+    let mapped_entry = SharedStoreWalEntry {
+        command: Some(mapped.clone()),
+        ..entry.clone()
+    };
+    assert!(wal_command_metadata(Some(&mapped)).is_ok());
+    assert!(encode_wal_proto_frame(&mapped_entry, WAL_FRAME_FORMAT_DEFAULT).is_ok());
+    assert!(encode_wal_batch_container(&[mapped_entry.clone()]).is_ok());
+
+    // ---- through a real publish: refused, and the store is still empty.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+    let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+    let err = replicator
+        .publish_wal_entry(entry)
+        .await
+        .expect_err("a command with no protobuf encoding was published");
+    assert!(err.to_string().contains("LeaderEstablish"), "{err}");
+    assert!(
+        store.list("").await.unwrap().is_empty(),
+        "the refused publish left objects in the store"
+    );
+    // CONTROL: the mapped command publishes and leaves something, so the empty listing above was
+    // the refusal and not a listing that cannot see this store.
+    replicator.publish_wal_entry(mapped_entry).await.unwrap();
+    assert!(!store.list("").await.unwrap().is_empty());
+}
+
+/// NO JSON ENCODE ARM IS LEFT IN THE THREE WAL COMMAND ENCODERS.
+///
+/// The test above drives them; this sees an arm nobody reaches YET. The scan reads each function's
+/// own code with comment lines removed, anchored on its declaration up to the closing brace at
+/// column zero. Its POSITIVE CONTROL is `wal_command_from_payload`, which still calls
+/// `serde_json::from_slice` (the permanent decode arm for logs written before this change): a scan
+/// that could not see that call would pass over any encoder.
+#[test]
+fn no_json_encode_arm_is_left_in_the_wal_command_encoders() {
+    let source = include_str!("shared_store.rs");
+    fn body(source: &'static str, from: &str) -> String {
+        let start = source
+            .find(from)
+            .unwrap_or_else(|| panic!("no declaration {from}"));
+        let rest = &source[start..];
+        let end = rest.find("\n}\n").unwrap_or_else(|| panic!("{from} never closes"));
+        rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let encoders = [
+        "fn wal_command_payload(",
+        "fn wal_command_metadata(",
+        "fn encode_wal_proto_frame(",
+        "fn encode_wal_batch_container(",
+    ];
+    assert_eq!(encoders.len(), 4);
+    for declaration in encoders {
+        let code = body(source, declaration);
+        assert!(
+            code.len() > 100,
+            "{declaration}: the scan found almost nothing, so it proves nothing"
+        );
+        assert!(
+            !code.contains("serde_json"),
+            "{declaration} still reaches for serde_json: a JSON encode arm survives for a WAL \
+             command. Delete it; `wal_command_from_payload` keeps the JSON decode arm for logs \
+             already written."
+        );
+    }
+    assert!(
+        body(source, "fn wal_command_from_payload(").contains("serde_json::from_slice"),
+        "the control no longer sees the permanent JSON decode arm, so this scan could pass over \
+         an encoder it cannot see"
+    );
+}
+
 }
 
 #[cfg(test)]
@@ -15414,4 +15574,5 @@ mod a_staged_blocks_name_keeps_its_tag {
             "a block with no name writes no tag 3"
         );
     }
+
 }
