@@ -6,6 +6,10 @@ use super::*;
 
 // Amortize durability while bounding duplicated report and command payloads in memory.
 const CONTEXT_DURABLE_SOURCE_BATCH: usize = 16;
+// Bound summaries and embedding matrices retained between model calls and durable commits.
+// Sixty-four sources also fill the default 128-item embedding request exactly because each
+// source contributes one node text and one event text.
+const CONTEXT_MODEL_SOURCE_WINDOW: usize = 64;
 
 fn persist_prepared_context_batch(
     engine: &TemporalEngine,
@@ -60,68 +64,21 @@ fn persist_prepared_context_batch(
     }
 }
 
-/// Ingest with the public API's historical full fanout: every source emits its L1 summary.
-pub fn ingest_extract_context(
+fn process_context_source_window(
     engine: &TemporalEngine,
-    request: ContextIngestExtractRequest,
-) -> ContextIngestExtractReport {
-    ingest_extract_context_with_l1_gate(engine, request, false)
-}
-
-/// The same, with the frugal L1 gate live hook ingestion uses: only a source whose body warrants
-/// one gets an L1 summary.
-///
-/// `MATRIXARK_CONTEXT_INGEST_GATE_L1` used to carry this in, because `ingest_extract_context` had
-/// nowhere to put it -- so `context_batch_ingest` set it for its whole process and the gate was on
-/// for that binary and off for every other caller. `extract_context_gated` has taken the value as
-/// an argument all along; this just gives the caller a way to supply one.
-pub fn ingest_extract_context_with_l1_gate(
-    engine: &TemporalEngine,
-    request: ContextIngestExtractRequest,
+    shard_id: ShardId,
     gate_l1: bool,
-) -> ContextIngestExtractReport {
-    // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
-    // Context* write would otherwise rebuild the first-index over every live block in the shard --
-    // eight walks of the store for one add.
-    let reconstruct_window = crate::engine::IngestReconstructWindow::open();
-    let policy = ContextWorkflowPolicy::default();
-    let mut extracts = Vec::new();
-    let mut failed_sources = Vec::new();
-    let mut node_hashes = Vec::new();
-    let mut source_kind_counts = BTreeMap::new();
-    let mut provider_counts = BTreeMap::new();
-    let provider = normalize_provider(request.provider.clone());
-    let source_count = request.sources.len();
-    let start_time_ms = request.start_time_ms;
-    let end_time_ms = request.end_time_ms;
-    let mut validated_sources = Vec::with_capacity(source_count);
-
-    for mut source in request.sources {
-        source.shard_id = request.shard_id;
-        source.tenant_hash = request.tenant_hash;
-        if source.provider.provider_name.is_empty() {
-            source.provider = provider.clone();
-        }
-        source.provider = normalize_provider(source.provider);
-        *source_kind_counts
-            .entry(context_source_kind_name(source.source_kind).to_string())
-            .or_insert(0) += 1;
-        *provider_counts
-            .entry(source.provider.provider_name.clone())
-            .or_insert(0) += 1;
-        let policy_report = validate_context_extract_policy(&policy, &source);
-        if !policy_report.status.ok {
-            failed_sources.push(ContextIngestSourceFailure {
-                source_id: source.source_id,
-                status: policy_report.status,
-            });
-            continue;
-        }
-        validated_sources.push(source);
+    sources: Vec<ContextExtractRequest>,
+    extracts: &mut Vec<ContextExtractReport>,
+    failed_sources: &mut Vec<ContextIngestSourceFailure>,
+    node_hashes: &mut Vec<u64>,
+) {
+    if sources.is_empty() {
+        return;
     }
 
     let mut summary_provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
-    for (source_index, source) in validated_sources.iter().enumerate() {
+    for (source_index, source) in sources.iter().enumerate() {
         if let Some((_, source_indexes)) = summary_provider_groups
             .iter_mut()
             .find(|(provider, _)| *provider == source.provider)
@@ -132,13 +89,11 @@ pub fn ingest_extract_context_with_l1_gate(
         }
     }
     let mut summary_results: Vec<Option<Result<ContextExtractSummaries, ContextExtractReport>>> =
-        std::iter::repeat_with(|| None)
-            .take(validated_sources.len())
-            .collect();
+        std::iter::repeat_with(|| None).take(sources.len()).collect();
     for (_, source_indexes) in summary_provider_groups {
         let requests = source_indexes
             .iter()
-            .map(|source_index| &validated_sources[*source_index])
+            .map(|source_index| &sources[*source_index])
             .collect::<Vec<_>>();
         let results = context_extract_summaries_with_fallback_batch(&requests);
         for (source_index, result) in source_indexes.into_iter().zip(results) {
@@ -146,8 +101,8 @@ pub fn ingest_extract_context_with_l1_gate(
         }
     }
 
-    let mut prepared_sources = Vec::with_capacity(validated_sources.len());
-    for (source_index, source) in validated_sources.into_iter().enumerate() {
+    let mut prepared_sources = Vec::with_capacity(sources.len());
+    for (source_index, source) in sources.into_iter().enumerate() {
         match summary_results[source_index]
             .take()
             .expect("every validated source receives a summary result")
@@ -164,9 +119,9 @@ pub fn ingest_extract_context_with_l1_gate(
         }
     }
 
-    // Embedding endpoints natively accept batches. Group by normalized provider, then bound each
-    // request by both item count and input bytes. Besides protecting the endpoint, processing one
-    // chunk at a time avoids retaining the full returned matrix while source-local rows are copied.
+    // Embedding endpoints accept batches. Group by normalized provider, then subdivide by both
+    // item count and bytes; the enclosing source window bounds the returned matrices retained
+    // while source-local rows are prepared.
     let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
     for (source_index, (_, summaries)) in prepared_sources.iter().enumerate() {
         if let Some((_, source_indexes)) = provider_groups
@@ -282,11 +237,11 @@ pub fn ingest_extract_context_with_l1_gate(
             if pending_extracts.len() >= CONTEXT_DURABLE_SOURCE_BATCH {
                 persist_prepared_context_batch(
                     engine,
-                    request.shard_id,
+                    shard_id,
                     std::mem::take(&mut pending_extracts),
-                    &mut extracts,
-                    &mut failed_sources,
-                    &mut node_hashes,
+                    extracts,
+                    failed_sources,
+                    node_hashes,
                 );
             }
         } else {
@@ -298,12 +253,93 @@ pub fn ingest_extract_context_with_l1_gate(
     }
     persist_prepared_context_batch(
         engine,
-        request.shard_id,
+        shard_id,
         pending_extracts,
-        &mut extracts,
-        &mut failed_sources,
-        &mut node_hashes,
+        extracts,
+        failed_sources,
+        node_hashes,
     );
+}
+
+/// Ingest with the public API's historical full fanout: every source emits its L1 summary.
+pub fn ingest_extract_context(
+    engine: &TemporalEngine,
+    request: ContextIngestExtractRequest,
+) -> ContextIngestExtractReport {
+    ingest_extract_context_with_l1_gate(engine, request, false)
+}
+
+/// The same, with the frugal L1 gate live hook ingestion uses: only a source whose body warrants
+/// one gets an L1 summary.
+///
+/// `MATRIXARK_CONTEXT_INGEST_GATE_L1` used to carry this in, because `ingest_extract_context` had
+/// nowhere to put it -- so `context_batch_ingest` set it for its whole process and the gate was on
+/// for that binary and off for every other caller. `extract_context_gated` has taken the value as
+/// an argument all along; this just gives the caller a way to supply one.
+pub fn ingest_extract_context_with_l1_gate(
+    engine: &TemporalEngine,
+    request: ContextIngestExtractRequest,
+    gate_l1: bool,
+) -> ContextIngestExtractReport {
+    // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
+    // Context* write would otherwise rebuild the first-index over every live block in the shard --
+    // eight walks of the store for one add.
+    let reconstruct_window = crate::engine::IngestReconstructWindow::open();
+    let policy = ContextWorkflowPolicy::default();
+    let mut extracts = Vec::new();
+    let mut failed_sources = Vec::new();
+    let mut node_hashes = Vec::new();
+    let mut source_kind_counts = BTreeMap::new();
+    let mut provider_counts = BTreeMap::new();
+    let provider = normalize_provider(request.provider.clone());
+    let source_count = request.sources.len();
+    let start_time_ms = request.start_time_ms;
+    let end_time_ms = request.end_time_ms;
+    let mut validated_sources = Vec::with_capacity(source_count);
+
+    for mut source in request.sources {
+        source.shard_id = request.shard_id;
+        source.tenant_hash = request.tenant_hash;
+        if source.provider.provider_name.is_empty() {
+            source.provider = provider.clone();
+        }
+        source.provider = normalize_provider(source.provider);
+        *source_kind_counts
+            .entry(context_source_kind_name(source.source_kind).to_string())
+            .or_insert(0) += 1;
+        *provider_counts
+            .entry(source.provider.provider_name.clone())
+            .or_insert(0) += 1;
+        let policy_report = validate_context_extract_policy(&policy, &source);
+        if !policy_report.status.ok {
+            failed_sources.push(ContextIngestSourceFailure {
+                source_id: source.source_id,
+                status: policy_report.status,
+            });
+            continue;
+        }
+        validated_sources.push(source);
+    }
+
+    let mut validated_sources = validated_sources.into_iter();
+    loop {
+        let source_window = validated_sources
+            .by_ref()
+            .take(CONTEXT_MODEL_SOURCE_WINDOW)
+            .collect::<Vec<_>>();
+        if source_window.is_empty() {
+            break;
+        }
+        process_context_source_window(
+            engine,
+            request.shard_id,
+            gate_l1,
+            source_window,
+            &mut extracts,
+            &mut failed_sources,
+            &mut node_hashes,
+        );
+    }
 
     // No reconstruct: the writes above maintain the index themselves now, so the window has
     // nothing to catch up on. It stays open across the ingest only to keep the per-record
