@@ -2042,8 +2042,6 @@ pub fn retrieve_context(
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
     let mut prefetched_nodes =
         HashMap::<u64, ContextNode>::with_capacity(initial_candidate_capacity);
-    let mut node_score_candidates = Vec::<u64>::with_capacity(initial_candidate_capacity);
-    let mut summary_score_candidates = Vec::<u64>::with_capacity(initial_candidate_capacity);
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
     // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
@@ -2063,61 +2061,68 @@ pub fn retrieve_context(
     let mut summary_lookup_nodes = Vec::<u64>::with_capacity(initial_candidate_capacity);
     // A current-state query can use a fully warm pair directly. Historical queries still read
     // every row because the compact index deliberately carries no summary-validity timestamp.
-    let warm_complete_nodes = if request.end_time_ms == u64::MAX {
-        let summary_hits = engine
-            .score_context_embedding_candidates(
-                EmbeddingChannel::Summary,
+    let cold_node_hashes = if request.end_time_ms == u64::MAX {
+        let mut cold = Vec::with_capacity(initial_candidate_capacity);
+        for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+            let summary_hits = engine
+                .score_context_embedding_candidates(
+                    EmbeddingChannel::Summary,
+                    request.tenant_hash,
+                    active_embedding_model_hash,
+                    &query_embedding,
+                    candidate_chunk,
+                )
+                .unwrap_or_default()
+                .into_iter()
+                .map(|hit| (hit.key.item_id, hit.score))
+                .collect::<HashMap<_, _>>();
+            let mut complete = HashSet::with_capacity(summary_hits.len());
+            if let Ok(node_hits) = engine.score_context_embedding_candidates(
+                EmbeddingChannel::Node,
                 request.tenant_hash,
                 active_embedding_model_hash,
                 &query_embedding,
-                &node_hashes,
-            )
-            .unwrap_or_default()
-            .into_iter()
-            .map(|hit| (hit.key.item_id, hit.score))
-            .collect::<HashMap<_, _>>();
-        let mut complete = HashSet::with_capacity(summary_hits.len());
-        if let Ok(node_hits) = engine.score_context_embedding_candidates(
-            EmbeddingChannel::Node,
-            request.tenant_hash,
-            active_embedding_model_hash,
-            &query_embedding,
-            &node_hashes,
-        ) {
-            for node_hit in node_hits {
-                let Some(summary_score) = summary_hits.get(&node_hit.key.item_id) else {
-                    continue;
-                };
-                let scores = summary_scores_by_node
-                    .entry(node_hit.key.item_id)
-                    .or_default();
-                scores.0 = ((node_hit.score.max(*summary_score)) * 1_000_000.0) as i64;
-                scores.1 = 2;
-                complete.insert(node_hit.key.item_id);
+                candidate_chunk,
+            ) {
+                for node_hit in node_hits {
+                    let Some(summary_score) = summary_hits.get(&node_hit.key.item_id) else {
+                        continue;
+                    };
+                    let scores = summary_scores_by_node
+                        .entry(node_hit.key.item_id)
+                        .or_default();
+                    scores.0 = ((node_hit.score.max(*summary_score)) * 1_000_000.0) as i64;
+                    scores.1 = 2;
+                    complete.insert(node_hit.key.item_id);
+                }
             }
+            cold.extend(
+                candidate_chunk
+                    .iter()
+                    .copied()
+                    .filter(|node_hash| !complete.contains(node_hash)),
+            );
         }
-        complete
+        Some(cold)
     } else {
-        HashSet::new()
+        None
     };
-    for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
-        let cold_chunk = candidate_chunk
-            .iter()
-            .copied()
-            .filter(|node_hash| !warm_complete_nodes.contains(node_hash))
-            .collect::<Vec<_>>();
-        if cold_chunk.is_empty() {
+    let storage_candidates = cold_node_hashes.as_deref().unwrap_or(&node_hashes);
+    for candidate_chunk in storage_candidates.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        if candidate_chunk.is_empty() {
             continue;
         }
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
             command: Command::ContextGetNodes {
                 tenant_hash: request.tenant_hash,
-                node_hashes: cold_chunk,
+                node_hashes: candidate_chunk.to_vec(),
             },
         });
         let mut returned = HashSet::with_capacity(candidate_chunk.len());
         if let CommandResponse::ContextNodes { nodes } = response.response {
+            let mut node_score_candidates = Vec::with_capacity(nodes.len());
+            let mut summary_score_candidates = Vec::with_capacity(nodes.len());
             let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             for node in &nodes {
@@ -2205,13 +2210,34 @@ pub fn retrieve_context(
                     &rows,
                 );
             }
+            for (channel, candidates) in [
+                (EmbeddingChannel::Node, node_score_candidates.as_slice()),
+                (
+                    EmbeddingChannel::Summary,
+                    summary_score_candidates.as_slice(),
+                ),
+            ] {
+                if let Ok(hits) = engine.score_context_embedding_candidates(
+                    channel,
+                    request.tenant_hash,
+                    active_embedding_model_hash,
+                    &query_embedding,
+                    candidates,
+                ) {
+                    for hit in hits {
+                        let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
+                        scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
+                        scores.1 = scores.1.saturating_add(1);
+                    }
+                }
+            }
             for node in nodes {
                 prefetched_nodes.insert(node.node_hash, node);
             }
         }
         // A node the engine did not return cannot carry a vector either.
         for node_hash in candidate_chunk {
-            if !warm_complete_nodes.contains(node_hash) && !returned.contains(node_hash) {
+            if !returned.contains(node_hash) {
                 l0_row_fallback.push(*node_hash);
                 // ...and it cannot have supplied a summary vector copy either, so it keeps the
                 // lookup it has always had. A node record can be missing while its summaries are
@@ -2220,7 +2246,6 @@ pub fn retrieve_context(
             }
         }
     }
-    drop(warm_complete_nodes);
     // Diagnostic only now: candidates whose node carries no vector at all (un-embedded).
     fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
     // node_l1 comes from the L1 summaries' own vectors -- the summary record owns them, and it is
@@ -2246,6 +2271,7 @@ pub fn retrieve_context(
             },
         });
         if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
+            let mut summary_score_candidates = Vec::with_capacity(vectors.len());
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             for entry in &vectors {
                 if context_embedding_width_conflicts(&query_embedding, &entry.vector) {
@@ -2293,26 +2319,18 @@ pub fn retrieve_context(
                     &rows,
                 );
             }
-        }
-    }
-    for (channel, candidates) in [
-        (EmbeddingChannel::Node, node_score_candidates.as_slice()),
-        (
-            EmbeddingChannel::Summary,
-            summary_score_candidates.as_slice(),
-        ),
-    ] {
-        if let Ok(hits) = engine.score_context_embedding_candidates(
-            channel,
-            request.tenant_hash,
-            active_embedding_model_hash,
-            &query_embedding,
-            candidates,
-        ) {
-            for hit in hits {
-                let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
-                scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
-                scores.1 = scores.1.saturating_add(1);
+            if let Ok(hits) = engine.score_context_embedding_candidates(
+                EmbeddingChannel::Summary,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                &query_embedding,
+                &summary_score_candidates,
+            ) {
+                for hit in hits {
+                    let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
+                    scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
+                    scores.1 = scores.1.saturating_add(1);
+                }
             }
         }
     }
