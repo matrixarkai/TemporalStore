@@ -1023,7 +1023,7 @@ fn four_answers(engine: &TemporalEngine, key: &str) -> FourAnswers {
     let (container, index) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let container = shard.hashes.get(key).map(|fields| fields.len()).unwrap_or(0);
+        let container = shard.bucket_index.hashes.get(key).map(|fields| fields.len()).unwrap_or(0);
         let index = super::bucket_index_element_name_block_addresses(shard, "hash", key).len();
         (container, index)
     };

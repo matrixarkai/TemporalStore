@@ -124,7 +124,7 @@ fn a_hash_write_leaves_every_field_filed_exactly_once() {
     let mut checked_fields = 0usize;
     for object in 0..3 {
         let key = format!("h-{object}");
-        let fields = shard.hashes.get(key.as_str()).expect("the hash exists");
+        let fields = shard.bucket_index.hashes.get(key.as_str()).expect("the hash exists");
         let held: BTreeSet<String> = fields.iter().map(|(_, address)| identity(address)).collect();
 
         let refs = shard

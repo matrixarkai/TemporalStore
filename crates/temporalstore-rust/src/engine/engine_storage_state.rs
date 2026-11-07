@@ -1037,7 +1037,7 @@ pub(super) struct CoreIndex {
     pub(super) sets: super::recorded_map::RecordedMap<super::recorded_map::SetKind>,
     /// Sorted sets: member -> (total-order score bits, element block). The score-ordered view
     /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
-    /// in-memory map rebuilt at load, never a second persisted structure (the index component
+    /// in-memory map rebuilt at load, never a second persisted structure (the index element name
     /// already encodes score-then-member, so recovery has the order for free).
     // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT: `ZSetKind` names
     // `zset_index_serde` as its codec, which is a REQUIRED associated function with no default --
@@ -8783,10 +8783,10 @@ pub(super) fn resident_element_name_address<'a>(
     element_name: &str,
 ) -> Option<&'a ElementEntry> {
     match model_id {
-        "hash" => shard.hashes.get(object_key)?.get(element_name),
+        "hash" => shard.bucket_index.hashes.get(object_key)?.get(element_name),
         "set" => {
             let member = super::container_blocks::member_from_element_name(element_name)?;
-            shard.sets.get(object_key)?.get(&member)
+            shard.bucket_index.sets.get(object_key)?.get(&member)
         }
         "zset" => {
             let member = super::container_blocks::member_from_element_name(element_name)?;

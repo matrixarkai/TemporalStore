@@ -2967,7 +2967,7 @@ pub(super) fn sync_written_hash_fields(
     }
     for field in fields {
         let address = shard
-            .hashes
+            .bucket_index.hashes
             .get(object_key)
             .and_then(|held| held.get(*field))
             .cloned();

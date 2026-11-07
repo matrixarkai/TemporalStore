@@ -486,7 +486,7 @@ pub(super) fn execute_hash_multi_get(
             mutated: true,
         };
     }
-    let hash_fields = shard.hashes.get(key);
+    let hash_fields = shard.bucket_index.hashes.get(key);
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     // A packed row gives every present field the same address. Detect that common case
     // without allocating a per-command address map, fetch its frame once, and project all
@@ -643,14 +643,14 @@ fn write_packed_hash_entries(
         .iter()
         .find_map(|(field, _)| {
             shard
-                .hashes
+                .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.get(field))
                 .and_then(ElementEntry::block_id)
         })
         .or_else(|| {
             shard
-                .hashes
+                .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
                 .map(|held| held.saturating_add(1))
@@ -790,7 +790,7 @@ pub(super) fn execute_packed_conditional_hash_write(
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
-        .hashes
+        .bucket_index.hashes
         .get(&key)
         .and_then(|fields| fields.get(&timestamp_field))
         .and_then(|address| {
@@ -2645,7 +2645,7 @@ pub(crate) fn execute_on_shard(
                 // and a listing can never answer EMPTY for a key whose blocks say otherwise
                 // -- which is exactly the `listed=0` against 40 that killed the entries walk.
                 if shard.set_listing_from_map {
-                    if let Some(members) = shard.sets.get(&key) {
+                    if let Some(members) = shard.bucket_index.sets.get(&key) {
                         SET_LISTING_FROM_MAP
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return CommandResponse::Members {
