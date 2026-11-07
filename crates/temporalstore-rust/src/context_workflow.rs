@@ -3,6 +3,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -1644,11 +1645,55 @@ pub struct ContextWorkflowPolicyReport {
     pub sanitized_text: String,
 }
 
-pub(crate) type ContextEmbeddingOutcome = (
-    EmbeddingBatch,
-    ContextEmbeddingGenerationReport,
-    bool,
-);
+pub(crate) enum ContextEmbeddingRows {
+    Owned(EmbeddingBatch),
+    Shared {
+        batch: Arc<EmbeddingBatch>,
+        row_offset: usize,
+    },
+}
+
+impl ContextEmbeddingRows {
+    fn get_row(&self, index: usize) -> Option<&[f32]> {
+        match self {
+            Self::Owned(batch) => batch.get_row(index),
+            Self::Shared { batch, row_offset } => batch.get_row(row_offset.saturating_add(index)),
+        }
+    }
+}
+
+pub(crate) struct ContextEmbeddingOutcome {
+    rows: ContextEmbeddingRows,
+    report: ContextEmbeddingGenerationReport,
+    deferred: bool,
+}
+
+impl ContextEmbeddingOutcome {
+    fn owned(
+        batch: EmbeddingBatch,
+        report: ContextEmbeddingGenerationReport,
+        deferred: bool,
+    ) -> Self {
+        Self {
+            rows: ContextEmbeddingRows::Owned(batch),
+            report,
+            deferred,
+        }
+    }
+
+    pub(crate) fn shared(
+        batch: Arc<EmbeddingBatch>,
+        row_offset: usize,
+        report: ContextEmbeddingGenerationReport,
+        deferred: bool,
+    ) -> Self {
+        Self {
+            rows: ContextEmbeddingRows::Shared { batch, row_offset },
+            report,
+            deferred,
+        }
+    }
+}
 
 /// Single-source extraction (codex-hook path). Gates L1 by source richness so
 /// thin events do not pay for the richer L1 tier.
@@ -1761,8 +1806,8 @@ pub(crate) fn context_embeddings_with_fallback(
         }
     };
     match embed_outcome {
-        Ok((vectors, report)) => (vectors, report, false),
-        Err(_) => (
+        Ok((vectors, report)) => ContextEmbeddingOutcome::owned(vectors, report, false),
+        Err(_) => ContextEmbeddingOutcome::owned(
             EmbeddingBatch::default(),
             ContextEmbeddingGenerationReport::default(),
             true,
@@ -1995,7 +2040,11 @@ pub(crate) fn prepare_context_gated_prepared(
     // DEFER (persist the node/event/summaries without vectors and mark the node
     // embedding-dirty so the async drainer attaches vectors later, keeping it
     // lexically rankable meanwhile); the fail-closed path aborts the extract.
-    let (embedding_vectors, embedding_generation, embedding_deferred) = embedding_outcome
+    let ContextEmbeddingOutcome {
+        rows: embedding_vectors,
+        report: embedding_generation,
+        deferred: embedding_deferred,
+    } = embedding_outcome
         .unwrap_or_else(|| context_embeddings_with_fallback(&provider, &embedding_inputs));
 
     // The vectors live on their owners and nowhere else: the summaries, the event and the node

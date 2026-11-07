@@ -120,8 +120,8 @@ fn process_context_source_window(
     }
 
     // Embedding endpoints accept batches. Group by normalized provider, then subdivide by both
-    // item count and bytes; the enclosing source window bounds the returned matrices retained
-    // while source-local rows are prepared.
+    // item count and bytes. Every source addresses its two rows in the shared provider matrix,
+    // avoiding a second allocation and copy for every source in the window.
     let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
     for (source_index, (_, summaries)) in prepared_sources.iter().enumerate() {
         if let Some((_, source_indexes)) = provider_groups
@@ -192,24 +192,25 @@ fn process_context_source_window(
                 embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
                 embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
             }
-            let (batch, report, deferred) =
-                context_embeddings_with_fallback(&provider, &embedding_inputs);
+            let ContextEmbeddingOutcome {
+                rows,
+                report,
+                deferred,
+            } = context_embeddings_with_fallback(&provider, &embedding_inputs);
+            let batch = match rows {
+                ContextEmbeddingRows::Owned(batch) => Arc::new(batch),
+                ContextEmbeddingRows::Shared { batch, .. } => batch,
+            };
             for (chunk_offset, source_index) in chunk_indexes.iter().copied().enumerate() {
-                let source_batch = if deferred {
-                    EmbeddingBatch::default()
-                } else {
-                    let row_start = chunk_offset.saturating_mul(2);
-                    let value_start = row_start.saturating_mul(batch.dimensions);
-                    let value_end = value_start.saturating_add(batch.dimensions.saturating_mul(2));
-                    EmbeddingBatch {
-                        dimensions: batch.dimensions,
-                        values: batch.values[value_start..value_end].to_vec(),
-                    }
-                };
                 let mut source_report = report.clone();
                 source_report.requested_vector_count = 2;
                 source_report.generated_vector_count = if deferred { 0 } else { 2 };
-                embedding_outcomes[source_index] = Some((source_batch, source_report, deferred));
+                embedding_outcomes[source_index] = Some(ContextEmbeddingOutcome::shared(
+                    Arc::clone(&batch),
+                    chunk_offset.saturating_mul(2),
+                    source_report,
+                    deferred,
+                ));
             }
             chunk_start = chunk_end;
         }
@@ -220,7 +221,7 @@ fn process_context_source_window(
         let embedding_outcome = embedding_outcomes[source_index]
             .take()
             .unwrap_or_else(|| {
-                (
+                ContextEmbeddingOutcome::owned(
                     EmbeddingBatch::default(),
                     ContextEmbeddingGenerationReport::default(),
                     true,
