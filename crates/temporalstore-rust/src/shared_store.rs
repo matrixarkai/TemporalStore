@@ -3745,7 +3745,7 @@ pub(crate) fn decode_routing_range_stamp(
 /// Encode a routing-range stamp. ONE SHAPE, with no gate to pick another.
 /// `decode_routing_range_stamp` above keeps its JSON arm permanently, for the stamps already on
 /// disk.
-fn encode_routing_range_stamp(
+pub(crate) fn encode_routing_range_stamp(
     stamp: &crate::engine::routing_range_stamp::RoutingRangeStamp,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
     Ok(encode_shared_object_protobuf(

@@ -466,3 +466,5 @@ mod component_is_retired;
 mod bucket_dump_binary_shape;
 #[path = "tests/what_an_element_name_writes_to_disk_and_the_wire.rs"]
 mod what_an_element_name_writes_to_disk_and_the_wire;
+#[path = "tests/routing_range_stamp_binary.rs"]
+mod routing_range_stamp_binary;
