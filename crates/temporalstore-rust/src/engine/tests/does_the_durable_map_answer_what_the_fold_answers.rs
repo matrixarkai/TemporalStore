@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! UNVERIFIED: WRITTEN WITHOUT A COMPILER. The box was at 5.9 G free with 28 foreign build
-//! processes when this was written, below the abort floor, so nothing here has been built or run.
-//! Treat every signature as a guess until it compiles.
+//! VERIFIED. This was first written without a compiler, on a box too loaded to build, and its
+//! first green run came later: it now compiles and passes, three runs in a row, each selecting
+//! exactly this one test. Two plants were run against it, and they fail DIFFERENT tests:
+//!
+//!   * skipping the resident-map removal (a STALE map) fails THIS test, at `one_removed`, with
+//!     "the durable map disagrees with the commands";
+//!   * making the production map arm unreachable does NOT fail this test at all -- the fold still
+//!     returns the right members, so a comparison of answers cannot see which mechanism served.
+//!     Only `what_a_cold_set_listing_reads_from_the_durable_map`, which asserts ZERO block reads on
+//!     the map arm, catches that. Both tests are pinned in CI for that reason.
 //!
 //! # THE QUESTION THIS EXISTS TO SETTLE
 //!
