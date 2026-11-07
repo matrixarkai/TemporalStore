@@ -123,6 +123,8 @@ mod cache_invalidation_cost;
 mod cache_read_cost;
 #[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
 mod a_hash_write_files_only_what_it_wrote;
+#[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
+mod a_write_names_only_the_blocks_of_the_objects_it_touched;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]
