@@ -64,6 +64,24 @@ fn load_on(engine: &TemporalEngine) {
         local_node_id: Some(1),
     });
     assert!(response.status.ok, "load failed: {:?}", response.status);
+    // THE GATE IS OFF FOR THIS FIXTURE, AND THAT IS THE SUBJECT RATHER THAN A DETAIL. The
+    // durable member map is the preferred answer now, so a listing driven with the gate on
+    // never reaches the fold -- and every assertion in this file is about what the fold does.
+    let mut extend_config = std::collections::BTreeMap::new();
+    extend_config.insert("set_listing_from_map".to_string(), "off".to_string());
+    assert!(
+        engine
+            .set_config(crate::control::SetConfigRequest {
+                shard_id: 1,
+                config: crate::control::Config {
+                    version: 2,
+                    extend_config,
+                    ..Default::default()
+                },
+            })
+            .ok,
+        "the gate under test has to be the one that is set"
+    );
 }
 
 fn member_bytes(index: usize) -> Vec<u8> {
@@ -138,7 +156,8 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
         let (expected, victim) = seed_fold_remove(&engine);
         crate::engine::execute_on_shard::reset_gated_listing_counts();
         let seen = listed(&engine);
-        let (derived, declined) = crate::engine::execute_on_shard::gated_listing_counts();
+        let (derived, declined, from_map) =
+            crate::engine::execute_on_shard::gated_listing_counts();
 
         println!("\n=== the gated listing ===");
         println!(
@@ -147,7 +166,17 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
             expected.len(),
             seen.contains(&victim)
         );
-        println!("  answered by: derived={derived}, declined={declined}");
+        println!("  answered by: derived={derived}, declined={declined}, from_map={from_map}");
+
+        // THE GATE REALLY IS OFF, asserted rather than assumed. If the durable map answered,
+        // the two floors below would be passing over a fold that never ran -- and a floor on
+        // an unreached path is the one thing they exist to refuse.
+        assert_eq!(
+            0, from_map,
+            "the durable map answered {from_map} time(s), so this fixture did not exercise \
+             the fold at all. The two assertions below are about what the FOLD does with a \
+             tombstone, and a listing that never called it cannot make them"
+        );
 
         // THE FLOOR, on the reaching of the path and not on the answer: the FOLD must have served.
         // The decline path answers from the durable map and would return the same members, so
