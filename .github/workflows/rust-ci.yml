@@ -263,7 +263,7 @@ jobs:
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
-            block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
+            block_store::tests::a_written_manifest_is_the_binary_shape_and_reopens \
             block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
             block_store::tests::a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load \
             block_store::shorter_struct_against_an_existing_row::a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation \
@@ -432,6 +432,7 @@ jobs:
             block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
             block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
             block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
+            block_store::slab_manifest_wire::tests::the_stored_field_numbers_do_not_move \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
