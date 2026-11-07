@@ -236,10 +236,12 @@ fn weigh_with(keys: usize, value: usize, compressible: bool) -> Reading {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    // READ EVERY KEY BACK. The cache fills on reads, so a write-only probe measures an empty cache
-    // and reports a vacuous 0 -- which is how the published arm's memory quadrant first came out.
+    // READ EVERY KEY BACK THROUGH THE PRODUCTION ENTRY POINT. The cache fills on reads, so a
+    // write-only probe measures an empty cache and reports a vacuous 0 -- which is how the
+    // published arm's memory quadrant first came out. `execute_durable` also enables the lock-free
+    // read path, so a logical response copy there cannot hide behind the ordinary path's result.
     for index in 0..keys {
-        let response = engine.execute(ExecuteRequest {
+        let response = engine.execute_durable(ExecuteRequest {
             shard_id: 1,
             command: Command::StringGet { key: format!("amp-{index:06}") },
         });
