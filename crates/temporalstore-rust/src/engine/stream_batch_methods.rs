@@ -422,75 +422,26 @@ impl TemporalEngine {
         }
     }
 
-    fn compact_hash_multi_get_response(
-        field_count: usize,
-        response: BatchExecuteResponse,
-    ) -> BatchHashMultiGetResponse {
-        if !response.status.ok {
-            return BatchHashMultiGetResponse {
-                status: response.status,
-                rows: Vec::new(),
-                errors: Vec::new(),
-            };
-        }
-        let mut rows = Vec::with_capacity(response.responses.len());
-        let mut errors = Vec::new();
-        for (index, item) in response.responses.into_iter().enumerate() {
-            if !item.status.ok {
-                errors.push(BatchHashMultiGetError {
-                    index,
-                    status: item.status,
-                });
-                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
-                continue;
-            }
-            match item.response {
-                CommandResponse::Values { values } => rows.push(BatchHashMultiGetRow(values)),
-                _ => {
-                    errors.push(BatchHashMultiGetError {
-                        index,
-                        status: Status::error(
-                            "unexpected_read_response",
-                            "hash multi-get returned a non-values response",
-                        ),
-                    });
-                    rows.push(BatchHashMultiGetRow(vec![None; field_count]));
-                }
-            }
-        }
-        BatchHashMultiGetResponse {
-            status: Status::ok(),
-            rows,
-            errors,
-        }
-    }
-
-    /// Serve one shared field projection without expanding it into owned commands per row.
-    pub fn batch_hash_multi_get_compact(
+    fn visit_batch_hash_multi_get(
         &self,
         request: BatchHashMultiGetRequest,
-    ) -> BatchHashMultiGetResponse {
+        mut visit: impl FnMut(usize, Result<Vec<Option<Vec<u8>>>, Status>),
+    ) -> Result<(), Status> {
         let BatchHashMultiGetRequest {
             shard_id,
             keys,
             fields,
         } = request;
-        let field_count = fields.len();
         if keys.is_empty() {
-            return BatchHashMultiGetResponse {
-                status: Status::ok(),
-                rows: Vec::new(),
-                errors: Vec::new(),
-            };
+            return Ok(());
         }
 
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
-            return BatchHashMultiGetResponse {
-                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
-                rows: Vec::new(),
-                errors: Vec::new(),
-            };
+            return Err(Status::error(
+                "shard_not_loaded",
+                "shard is not loaded on this server",
+            ));
         };
         if !replaying_wal()
             && self
@@ -501,19 +452,13 @@ impl TemporalEngine {
                 .map(|info| info.recovering)
                 .unwrap_or(false)
         {
-            return BatchHashMultiGetResponse {
-                status: Status::error(
-                    "shard_not_loaded",
-                    "shard is recovering (WAL replay in progress)",
-                ),
-                rows: Vec::new(),
-                errors: Vec::new(),
-            };
+            return Err(Status::error(
+                "shard_not_loaded",
+                "shard is recovering (WAL replay in progress)",
+            ));
         }
 
-        // Lazy expiry is a mutating read and must retain the generic batch's WAL/index handling.
-        // Feature-serving rows do not use TTLs, so the no-command-expansion path remains the
-        // common case while any shard that does carry expiry state keeps the established behavior.
+        // Lazy expiry is a mutating read and retains the generic batch's WAL/index handling.
         if !shard.expires_at_ms().is_empty() {
             drop(shards);
             let response = self.batch_execute(BatchExecuteRequest {
@@ -526,7 +471,26 @@ impl TemporalEngine {
                     })
                     .collect(),
             });
-            return Self::compact_hash_multi_get_response(field_count, response);
+            if !response.status.ok {
+                return Err(response.status);
+            }
+            for (index, item) in response.responses.into_iter().enumerate() {
+                if !item.status.ok {
+                    visit(index, Err(item.status));
+                    continue;
+                }
+                match item.response {
+                    CommandResponse::Values { values } => visit(index, Ok(values)),
+                    _ => visit(
+                        index,
+                        Err(Status::error(
+                            "unexpected_read_response",
+                            "hash multi-get returned a non-values response",
+                        )),
+                    ),
+                }
+            }
+            return Ok(());
         }
 
         let config = self
@@ -567,8 +531,6 @@ impl TemporalEngine {
         }
 
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
-        let mut rows = Vec::with_capacity(keys.len());
-        let mut errors = Vec::new();
         for (index, key) in keys.iter().enumerate() {
             let rejected = if !raft_applying() && !replaying_wal() {
                 if !self.charge_quota(shard_id, quota::QuotaKind::Read) {
@@ -583,8 +545,7 @@ impl TemporalEngine {
                 None
             };
             if let Some(status) = rejected {
-                errors.push(BatchHashMultiGetError { index, status });
-                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+                visit(index, Err(status));
                 continue;
             }
 
@@ -607,21 +568,62 @@ impl TemporalEngine {
                 shard.bucket_recency.insert(routing_bucket, now);
             });
             match outcome.response {
-                CommandResponse::Values { values } => rows.push(BatchHashMultiGetRow(values)),
-                _ => {
-                    errors.push(BatchHashMultiGetError {
-                        index,
-                        status: Status::error(
-                            "unexpected_read_response",
-                            "hash multi-get returned a non-values response",
-                        ),
-                    });
-                    rows.push(BatchHashMultiGetRow(vec![None; field_count]));
-                }
+                CommandResponse::Values { values } => visit(index, Ok(values)),
+                _ => visit(
+                    index,
+                    Err(Status::error(
+                        "unexpected_read_response",
+                        "hash multi-get returned a non-values response",
+                    )),
+                ),
             }
         }
+        Ok(())
+    }
+
+    pub fn batch_hash_multi_get(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchExecuteResponse {
+        let mut responses = Vec::with_capacity(request.keys.len());
+        let status = match self.visit_batch_hash_multi_get(request, |_, result| {
+            responses.push(match result {
+                Ok(values) => ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Values { values },
+                },
+                Err(status) => ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                },
+            });
+        }) {
+            Ok(()) => Status::ok(),
+            Err(status) => status,
+        };
+        BatchExecuteResponse { status, responses }
+    }
+
+    /// Serve one shared field projection without expanding it into owned commands per row.
+    pub fn batch_hash_multi_get_compact(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchHashMultiGetResponse {
+        let field_count = request.fields.len();
+        let mut rows = Vec::with_capacity(request.keys.len());
+        let mut errors = Vec::new();
+        let status = match self.visit_batch_hash_multi_get(request, |index, result| match result {
+            Ok(values) => rows.push(BatchHashMultiGetRow(values)),
+            Err(status) => {
+                errors.push(BatchHashMultiGetError { index, status });
+                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+            }
+        }) {
+            Ok(()) => Status::ok(),
+            Err(status) => status,
+        };
         BatchHashMultiGetResponse {
-            status: Status::ok(),
+            status,
             rows,
             errors,
         }

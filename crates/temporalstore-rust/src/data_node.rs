@@ -2875,32 +2875,21 @@ impl DataNodeRuntime {
 
     /// Read one shared field projection from many hashes.
     ///
-    /// The regular batch command remains the execution path, so admission,
-    /// expiry, cache, and response ordering stay identical. Only the request
-    /// representation is compact: field names cross the network once.
+    /// The common path builds one projection plan for the batch and streams
+    /// rows into the regular response shape. Shards carrying expiry state use
+    /// the generic batch path so lazy expiry keeps its WAL and index handling.
     pub fn batch_hash_multi_get(
         &self,
         request: BatchHashMultiGetRequest,
     ) -> BatchExecuteResponse {
-        let fields = request.fields;
-        self.batch_execute(BatchExecuteRequest {
-            shard_id: request.shard_id,
-            commands: request
-                .keys
-                .into_iter()
-                .map(|key| Command::HashMultiGet {
-                    key,
-                    fields: fields.clone(),
-                })
-                .collect(),
-        })
+        self.inner.engine.batch_hash_multi_get(request)
     }
 
     /// Read one shared projection with a compact success response.
     ///
-    /// The regular batch remains the execution path. This removes repeated
-    /// successful statuses and response tags from the network result while
-    /// retaining positional rows and sparse indexed failures.
+    /// This removes repeated successful statuses and response tags from the
+    /// network result while retaining positional rows and sparse indexed
+    /// failures.
     pub fn batch_hash_multi_get_compact(
         &self,
         request: BatchHashMultiGetRequest,
