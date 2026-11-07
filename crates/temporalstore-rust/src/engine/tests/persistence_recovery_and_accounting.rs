@@ -22239,3 +22239,178 @@ fn the_pressure_snapshot_reads_cache_stats_without_listing_the_cache() {
          more than one listing's worth was paid"
     );
 }
+
+/// THE SHIPPED DUMP GATE DECIDES ON BYTES, AND THE RECORD TRIGGER IS STILL THERE TO BE SET.
+///
+/// Two claims, and each is false without the other. "Byte-only" alone would be satisfied by
+/// deleting the record field, which would take a real lever away from an operator who wants a
+/// shorter replay window. "Still configurable" alone would be satisfied by a default that arms the
+/// record trigger, which is the behaviour being retired.
+///
+/// # THE REGIME THIS IS ABOUT
+///
+/// `min_undumped_wal_records` shipped at 1,000. A shard taking ordinary traffic crosses a thousand
+/// undumped records continuously, and either threshold RELEASES the dump on its own, so the byte
+/// threshold beside it never got a turn: every maintenance round took a dump, and the dump is where
+/// the round spends its time because it re-serializes the selected buckets' index. The fixture
+/// below is that exact state -- past 1,000 records, nowhere near 128 MiB -- and the first
+/// assertion is the non-vacuity that says so, because a fixture under 1,000 records would be
+/// delayed by BOTH gates and would separate nothing.
+///
+/// # WHAT IS GIVEN UP, AND WHY IT IS ASSERTED HERE RATHER THAN EXPLAINED SOMEWHERE
+///
+/// Only a dump advances the point a restart replays from, so dumping less often lengthens the
+/// replay window. Under the byte-only gate the worst case is bounded by `min_undumped_wal_bytes`
+/// alone: up to 128 MiB of log, against a few hundred kilobytes when a 1,000-record arm was
+/// cutting in first on a small-record workload. Nothing is less durable -- every record is in the
+/// log either way -- but recovery time is traded for round cost, and `min_undumped_wal_records` is
+/// the one knob that buys it back.
+///
+/// Both arms print their per-stage microseconds, so the round cost of the two gates is in the test
+/// output rather than in a commit message.
+#[test]
+fn the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable() {
+    use crate::data_node::{StorageManagerOptions, WAL_DUMP_RECORD_TRIGGER_OFF};
+
+    // Past the 1,000 records the record arm used to ship at, and a long way short of the 128 MiB
+    // the byte arm ships at.
+    const RECORDS: usize = 1_500;
+    // The record threshold arm B configures. Not read from the default -- the default is the thing
+    // under test, and a test that took its treatment from it would pass against any default at all.
+    const CONFIGURED_RECORD_TRIGGER: u64 = 1_000;
+
+    let shipped = StorageManagerOptions::default();
+
+    // THE SHIPPED DEFAULT ITSELF, so this cannot be read as a claim about a fixture's options.
+    assert_eq!(
+        shipped.min_undumped_wal_records,
+        WAL_DUMP_RECORD_TRIGGER_OFF,
+        "the record arm is armed in the shipped default again, so the gate is not byte-only and \
+         the replay window this test documents is not the one a server has"
+    );
+    assert_eq!(
+        shipped.min_undumped_wal_bytes,
+        128 * 1024 * 1024,
+        "the byte arm is the only trigger the shipped gate has left, so this value IS the gate and \
+         is also the worst-case replay window; moving it moves both"
+    );
+
+    fn seeded(dir: &std::path::Path) -> TemporalEngine {
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.join("cache"),
+            dir.join("blocks"),
+            dir.join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..RECORDS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("gate-{index:05}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        engine
+    }
+
+    fn one_round(
+        engine: &TemporalEngine,
+        min_undumped_wal_records: u64,
+        min_undumped_wal_bytes: u64,
+    ) -> crate::engine::reports::StorageManagerCycleReport {
+        engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            min_undumped_wal_records,
+            min_undumped_wal_bytes,
+            ..Default::default()
+        })
+    }
+
+    fn print_round(arm: &str, report: &crate::engine::reports::StorageManagerCycleReport) {
+        eprintln!(
+            "  {arm}: round {} us, dump_delayed={}, undumped_wal_records={}, \
+             selected_dump_buckets={}",
+            report.duration_us,
+            report.plan.dump_delayed,
+            report.plan.undumped_wal_records,
+            report.plan.selected_dump_buckets.len()
+        );
+        for stage in &report.stages {
+            eprintln!(
+                "      {:<26} {:>9} us  walk_entries={}",
+                stage.stage, stage.duration_us, stage.walk.live_block_entries
+            );
+        }
+    }
+
+    // ---- ARM A: the shipped gate. Bytes decide, and this fixture has not written 128 MiB. ----
+    //
+    // Its own store, because a round changes what the next round sees: sharing one fixture would
+    // let arm A's reclaim decide arm B.
+    let byte_only_dir = tempfile::tempdir().unwrap();
+    let byte_only_engine = seeded(byte_only_dir.path());
+    let undumped_bytes = byte_only_engine
+        .write_ahead_log_store()
+        .undumped_len_since_dump(1);
+    let byte_only = one_round(
+        &byte_only_engine,
+        shipped.min_undumped_wal_records,
+        shipped.min_undumped_wal_bytes,
+    );
+    print_round("BYTE-ONLY (shipped)", &byte_only);
+
+    // NON-VACUITY: the retired trigger WOULD have fired on this fixture. Without this the test
+    // passes on a store that both gates would have delayed, and demonstrates nothing.
+    assert!(
+        byte_only.plan.undumped_wal_records >= CONFIGURED_RECORD_TRIGGER,
+        "the fixture left only {} undumped records, under the {CONFIGURED_RECORD_TRIGGER} the \
+         record arm used to ship at, so both gates would delay this round and the two arms below \
+         do not separate them",
+        byte_only.plan.undumped_wal_records
+    );
+    assert!(
+        undumped_bytes < shipped.min_undumped_wal_bytes,
+        "the fixture wrote {undumped_bytes} B, already past the shipped byte threshold of {} B, so \
+         arm A is not measuring a gate that declines",
+        shipped.min_undumped_wal_bytes
+    );
+    assert!(
+        byte_only.plan.dump_delayed,
+        "{} undumped records and {undumped_bytes} undumped bytes against a byte-only gate at {} B \
+         must be DELAYED; releasing here means a record count still reaches the decision",
+        byte_only.plan.undumped_wal_records,
+        shipped.min_undumped_wal_bytes
+    );
+    assert!(
+        byte_only.plan.selected_dump_buckets.is_empty(),
+        "a delayed dump may select no bucket, got {:?}",
+        byte_only.plan.selected_dump_buckets
+    );
+
+    // ---- ARM B: the same store and the same records, with the record trigger set. ----
+    //
+    // The half that proves the field is KEPT rather than vestigial. Were it ignored, this round
+    // would be delayed exactly like arm A and half of this test's name would be false.
+    let configured_dir = tempfile::tempdir().unwrap();
+    let configured_engine = seeded(configured_dir.path());
+    let configured = one_round(
+        &configured_engine,
+        CONFIGURED_RECORD_TRIGGER,
+        shipped.min_undumped_wal_bytes,
+    );
+    print_round("RECORD TRIGGER SET", &configured);
+
+    assert!(
+        !configured.plan.dump_delayed,
+        "{} undumped records against a record threshold of {CONFIGURED_RECORD_TRIGGER} must \
+         RELEASE the dump; a delay here means `min_undumped_wal_records` is no longer read and the \
+         field an operator would reach for is dead",
+        configured.plan.undumped_wal_records
+    );
+    assert!(
+        !configured.plan.selected_dump_buckets.is_empty(),
+        "released, but no bucket was selected, so nothing would be written"
+    );
+}
