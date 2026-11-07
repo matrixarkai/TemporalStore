@@ -15386,3 +15386,32 @@ fn no_write_command_quietly_joins_the_json_fallback() {
 }
 
 }
+
+#[cfg(test)]
+mod a_staged_blocks_name_keeps_its_tag {
+    use super::*;
+    use prost::Message;
+
+    /// The name of the element a staged block holds rides tag 3 of its frame message, and the
+    /// bytes below are what a build before the Rust field was renamed wrote for object 7, the
+    /// payload 1-2-3 and the name `f0`. Decoded and written back, they must come back unchanged:
+    /// a tag that moved would drop the name on the way in and write nothing for it on the way out.
+    #[test]
+    fn the_frame_of_a_named_block_round_trips_byte_for_byte() {
+        let written: [u8; 11] = [
+            0x08, 0x07, // tag 1, varint: the object id
+            0x12, 0x03, 0x01, 0x02, 0x03, // tag 2, bytes: the payload
+            0x1a, 0x02, b'f', b'0', // tag 3, string: the name
+        ];
+        let decoded = SharedStoreStagedBlockProto::decode(&written[..])
+            .expect("a frame an earlier build wrote must decode");
+        assert_eq!(decoded.encode_to_vec(), written);
+        let whole_object: [u8; 7] = [0x08, 0x07, 0x12, 0x03, 0x01, 0x02, 0x03];
+        let decoded = SharedStoreStagedBlockProto::decode(&whole_object[..]).expect("decodes");
+        assert_eq!(
+            decoded.encode_to_vec(),
+            whole_object,
+            "a block with no name writes no tag 3"
+        );
+    }
+}

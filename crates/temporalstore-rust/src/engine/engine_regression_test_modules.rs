@@ -464,3 +464,5 @@ mod does_the_durable_map_answer_what_the_fold_answers;
 mod component_is_retired;
 #[path = "tests/bucket_dump_binary_shape.rs"]
 mod bucket_dump_binary_shape;
+#[path = "tests/what_an_element_name_writes_to_disk_and_the_wire.rs"]
+mod what_an_element_name_writes_to_disk_and_the_wire;
