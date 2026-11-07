@@ -4002,7 +4002,16 @@ fn collect_command_index_items_for(
     // its own copy, so the source is the object lookup inverted by position -- built ONCE here and
     // queried per block, never built per block. `shard` is held immutably throughout, so there is no
     // borrow to split.
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    //
+    // RESTRICTED TO THE OBJECTS THE COMMAND TOUCHED. Only rows whose identity is one of `keys` are
+    // emitted, so naming every other object's blocks was a whole-shard pass (two maps grown to the
+    // shard's block count) spent to be thrown away. A deleted block is named by its bucket's
+    // tombstone row and never came from this inversion.
+    let identities = crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+        &shard.bucket_index.objects,
+        &shard.bucket_index.object_block_lookup,
+        keys.iter().copied(),
+    );
     let mut items = Vec::new();
     for routing_bucket in buckets {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
@@ -5051,7 +5060,13 @@ fn fold_delta_block_items(
             // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
             let names = crate::engine::state::block_identities_in(
                 &bucket,
-                &crate::engine::state::BlockKeysByPosition::from_parts(&bucket_index.objects, &bucket_index.object_block_lookup),
+                // ONLY THE OBJECT THIS ITEM IS ABOUT: the closure below drops a block only when its
+                // identity equals `item.object_key`, and keeps a block it cannot name.
+                &crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+                    &bucket_index.objects,
+                    &bucket_index.object_block_lookup,
+                    std::iter::once(&*item.object_key),
+                ),
             );
             let routing_bucket = item.routing_bucket;
             bucket.block_index.retain(
@@ -5099,7 +5114,13 @@ fn fold_delta_block_items(
         } = &mut *bucket_index;
         // NAMED BEFORE THE MUTATION, for the reason at the upsert arm above. Here the destructure
         // is what lets the inversion be read while the bucket map is held mutably.
-        let identities = crate::engine::state::BlockKeysByPosition::from_parts(objects, object_block_lookup);
+        // ONLY THE COVERED OBJECTS: the closure below drops a block only when its identity is one
+        // of `covered_keys`, and keeps a block it cannot name.
+        let identities = crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+            objects,
+            object_block_lookup,
+            covered_keys.iter().map(String::as_str),
+        );
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
             let names = crate::engine::state::block_identities_in(bucket, &identities);

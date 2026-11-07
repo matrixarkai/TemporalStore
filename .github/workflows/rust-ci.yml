@@ -337,7 +337,8 @@ jobs:
             engine::tests::round_scale::a_round_walks_the_live_block_set_a_constant_number_of_times \
             engine::tests::round_scale::an_idle_round_still_walks_the_live_block_set \
             engine::tests::model_map_container_cost::no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container \
-            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container ; do
+            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container \
+            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::a_restricted_inversion_names_what_the_whole_shard_one_names_for_its_keys ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log
@@ -531,9 +532,16 @@ jobs:
           # 400 (571 at 100, 5,080 at 1,000), because its filter against re-filing asks a lookup
           # that resolves no named element. The guard varies the FIELD COUNT and carries a control:
           # a read of the whole hash must grow with it, or the probe cannot see that dimension.
+          #
+          # a_write_does_not_pay_for_the_objects_it_did_not_touch pins that the walk which builds a
+          # write's index-log rows names the blocks of the objects the write touched and not the
+          # blocks of the whole shard. The whole-shard inversion costs 19 KB at 20 objects and 1.2 MB
+          # at 1,000; the walk is flat. The guard varies the OBJECT COUNT and carries a control: the
+          # whole-shard inversion must grow with it, or the probe cannot see that dimension.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
-            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has ; do
+            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
+            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
