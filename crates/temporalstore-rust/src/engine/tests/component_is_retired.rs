@@ -422,10 +422,14 @@ fn repository_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every `.rs` file under `<root>/crates`, as a path relative to the root with `/` separators.
+/// Every `.rs` file under `<root>/crates` and every `.proto` file under `<root>/proto`, as a path
+/// relative to the root with `/` separators. The proto syntax lexes well enough with the Rust
+/// lexer: `//` comments, `/* */` comments and double-quoted strings are the same.
 fn rust_files(root: &Path) -> Vec<String> {
     let mut found = Vec::new();
-    let mut stack = vec![root.join("crates")];
+    // The wire schema is scanned with the code: the proto comments said "component" for the
+    // engine concept long after the Rust did, because nothing counted them.
+    let mut stack = vec![root.join("crates"), root.join("proto")];
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir)
             .unwrap_or_else(|err| panic!("read_dir {} failed: {err}", dir.display()));
@@ -438,7 +442,7 @@ fn rust_files(root: &Path) -> Vec<String> {
                 if name != "target" && !name.starts_with('.') {
                     stack.push(path);
                 }
-            } else if kind.is_file() && name.ends_with(".rs") {
+            } else if kind.is_file() && (name.ends_with(".rs") || name.ends_with(".proto")) {
                 let rel = path
                     .strip_prefix(root)
                     .expect("under the root")
@@ -735,6 +739,10 @@ fn the_roster_matches_the_tree_in_both_directions() {
             .iter()
             .any(|f| f.starts_with("crates/temporalstore-rust/tests/")),
         "the walk did not reach the integration tests"
+    );
+    assert!(
+        files.iter().any(|f| f.ends_with(".proto")),
+        "the walk did not reach the wire schema under proto/"
     );
     assert!(
         files

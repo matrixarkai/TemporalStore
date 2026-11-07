@@ -631,7 +631,7 @@ message WalBlockAddress {
 //
 // Fields 1-10 described a write and were derived FROM the command beside them, so nothing ever
 // read them back and writing them was pure amplification. Fields 11-14 are the difference: the
-// block a write produced, the bytes for state no block backs, and which component of an object
+// block a write produced, the bytes for state no block backs, and which element of an object
 // they belong to. With those, a shard can be rebuilt from items alone and the command becomes
 // removable rather than merely redundant.
 //
@@ -649,10 +649,10 @@ message EngineWalItem {
   bool meta_log = 9;
   bool block_log = 10;
 
-  // Which component of the object this is: a hash field, a set member, a timestamp, a score and
+  // Which element of the object this is: a hash field, a set member, a timestamp, a score and
   // member packed together. Absent for an object with exactly one value.
   optional string element_name = 11;
-  // Where the block for this component went. Absent for state no block backs -- a seen-set
+  // Where the block for this element went. Absent for state no block backs -- a seen-set
   // member, a token bucket -- which carries its bytes in `value` instead.
   WalBlockAddress block = 12;
   // The bytes themselves, for state that has no block behind it.
@@ -668,17 +668,17 @@ message EngineWalItem {
   optional uint32 routing_bucket = 15;
   // The stored key of a timestamped entry, as a number.
   //
-  // It used to travel inside `component` as a decimal string: thirteen characters for something a
+  // It used to travel inside `element_name` as a decimal string: thirteen characters for something a
   // varint says in seven, and a context event packed two of them as thirty-two hex characters
-  // where two varints cost about twelve. `component` keeps its job of naming a hash field or a
+  // where two varints cost about twelve. `element_name` keeps its job of naming a hash field or a
   // set member, and stops doubling as a number.
   optional uint64 timestamp_ms = 16;
   // A second key for an entry the index keys by something other than its timestamp -- a context
   // event, whose block packs by time and whose index keys by event id.
   optional uint64 entry_id = 17;
-  // The whole object is gone, not one component of it.
+  // The whole object is gone, not one element of it.
   //
-  // Previously implied by `deleted` with no component. A reader had to know the convention to
+  // Previously implied by `deleted` with no element name. A reader had to know the convention to
   // tell the two apart, and a reader that did not silently removed the wrong amount.
   bool object_deleted = 18;
 }
@@ -698,7 +698,7 @@ message WalStagedBlock {
   // exists to stop a durably acknowledged write reading as missing.
   //
   // Absent for a page that IS its whole object (a string, a control state), which is what `None`
-  // has always meant for `BlockIndex::component`. Never absent for a container element.
+  // has always meant for `BlockIndex::element_name`. Never absent for a container element.
   optional string element_name = 4;
 }
 
