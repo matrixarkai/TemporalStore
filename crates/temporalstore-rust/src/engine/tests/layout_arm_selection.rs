@@ -16,13 +16,13 @@
 //! `blocks_per_object` being greater than one.
 //!
 //! IT WAS NOT, AND THAT WAS NOT AN ACCIDENT: a block's object identity was
-//! `stable_block_object_id(shard_id, kind, object_key, component)` -- THE COMPONENT WAS IN THE
+//! `stable_block_object_id(shard_id, kind, object_key, element_name)` -- THE ELEMENT NAME WAS IN THE
 //! HASH -- so a hash field, a set member, a list element and a sorted-set member were each an
 //! object of their own holding exactly one block. `MultiBlockObject`, the one arm the proposal is
-//! for, was therefore UNREACHABLE for every component-bearing kind: a bucket holding many blocks
+//! for, was therefore UNREACHABLE for every element-name-bearing kind: a bucket holding many blocks
 //! of one key held many OBJECTS of one key, which classifies `MultiObject`.
 //!
-//! THE COMPONENT HAS SINCE LEFT THE HASH. One key is one object, a container key is `(1 object,
+//! THE ELEMENT NAME HAS SINCE LEFT THE HASH. One key is one object, a container key is `(1 object,
 //! many blocks)`, and this module's two findings invert with it -- both are inverted below rather
 //! than deleted, keeping their denominators and their controls:
 //!
@@ -36,16 +36,16 @@
 //! select nothing there.
 //!
 //! THE POSITIVE CONTROL IS WHAT MAKES THAT A MEASUREMENT RATHER THAN AN EMPTY FIXTURE. A
-//! component-free kind CAN hold several blocks under one object id, and the series kind does: a
+//! element-name-free kind CAN hold several blocks under one object id, and the series kind does: a
 //! timestamped series is appended under one `(kind, key, None)` identity and spills into more than
 //! one block. If this module reported "no multi-block objects" without reaching one, the report
 //! would be indistinguishable from a fixture that could not produce one -- so the series arm is
 //! seeded, its blocks-per-object MAX is asserted above one, and the refutation is stated only for
 //! the kinds where the ceiling is structural.
 //!
-//! THE NULL CONTROL, AT 0.00%. Grouping blocks by `object_id` (component IN the hash) and grouping
-//! them by `(model_id, object_key)` (component OUT) must give byte-identical histograms for any
-//! component-free kind, and must diverge for containers. The routed-string arm is that control: it
+//! THE NULL CONTROL, AT 0.00%. Grouping blocks by `object_id` (element name IN the hash) and grouping
+//! them by `(model_id, object_key)` (element name OUT) must give byte-identical histograms for any
+//! element-name-free kind, and must diverge for containers. The routed-string arm is that control: it
 //! predicts exactly no difference, and a difference there would mean the two groupings are not
 //! measuring what they are named for.
 //!
@@ -145,7 +145,7 @@ struct SeedCounts {
 }
 
 fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
-    // Half plain strings: one block each, no component.
+    // Half plain strings: one block each, no element name.
     let strings = records / 2;
     run_batch(
         engine,
@@ -158,7 +158,7 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
     );
 
     // Two fifths containers, across all four container kinds: one block PER ELEMENT, each element a
-    // component and therefore an object of its own.
+    // element name and therefore an object of its own.
     let container_blocks = records * 2 / 5;
     let members = 100usize;
     let container_keys = container_blocks / members;
@@ -228,13 +228,13 @@ struct Population {
     arms: BTreeMap<&'static str, (usize, usize)>,
     blocks_per_bucket: Vec<usize>,
     objects_per_bucket: Vec<usize>,
-    /// Blocks grouped by the engine's own object identity -- component IN the hash.
+    /// Blocks grouped by the engine's own object identity -- element name IN the hash.
     by_object_id: BTreeMap<u64, usize>,
-    /// Blocks grouped by (kind, key) -- component OUT. What an object list would key on.
+    /// Blocks grouped by (kind, key) -- element name OUT. What an object list would key on.
     by_kind_key: BTreeMap<String, usize>,
-    /// Blocks grouped by (kind, key) for COMPONENT-FREE blocks only: the null control's population.
-    component_free_by_kind_key: BTreeMap<String, usize>,
-    component_free_by_object_id: BTreeMap<u64, usize>,
+    /// Blocks grouped by (kind, key) for ELEMENT NAME-FREE blocks only: the null control's population.
+    element_name_free_by_kind_key: BTreeMap<String, usize>,
+    element_name_free_by_object_id: BTreeMap<u64, usize>,
     total_buckets: usize,
     total_blocks: usize,
     blocks_without_object_id: usize,
@@ -270,14 +270,14 @@ fn population(engine: &TemporalEngine) -> Population {
             // object now, which is the fact that used to be worth counting.
             let id = entry.object_id(1, object_key);
             *out.by_object_id.entry(id).or_default() += 1;
-            // EVERY block is component-free now -- an entry has no element name -- so this control
+            // EVERY block is element-name-free now -- an entry has no element name -- so this control
             // group is the whole population rather than a subset of it. Kept because the CONTROL
             // it feeds still has a subject: it compares grouping by the engine's object id against
             // grouping by (kind, key), and those two can still disagree.
-            *out.component_free_by_object_id.entry(id).or_default() += 1;
+            *out.element_name_free_by_object_id.entry(id).or_default() += 1;
             let kind_key = format!("{:?}\u{1}{}", entry.model_id(), object_key);
             *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
-            *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
+            *out.element_name_free_by_kind_key.entry(kind_key).or_default() += 1;
         }
     }
     out.blocks_per_bucket.sort_unstable();
@@ -486,10 +486,10 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
 
             // --- THE NULL CONTROL, AT 0.00%. ---
             let (cf_id_groups, cf_id_max) =
-                report_group("CONTROL component-free by id", &pop.component_free_by_object_id);
+                report_group("CONTROL element-name-free by id", &pop.element_name_free_by_object_id);
             let (cf_key_groups, cf_key_max) = report_group(
-                "CONTROL component-free by (kind,key)",
-                &pop.component_free_by_kind_key,
+                "CONTROL element-name-free by (kind,key)",
+                &pop.element_name_free_by_kind_key,
             );
             assert!(
                 cf_id_groups > 0,
@@ -497,14 +497,14 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             );
             assert_eq!(
                 cf_id_groups, cf_key_groups,
-                "CONTROL FAILED at {records}/{end}: component-free blocks group into {cf_id_groups} objects by id and {cf_key_groups} by (kind, key). For a block with no component the two groupings ask the same question and must agree exactly; a difference here means the groupings are not measuring what they are named for"
+                "CONTROL FAILED at {records}/{end}: element-name-free blocks group into {cf_id_groups} objects by id and {cf_key_groups} by (kind, key). For a block with no element name the two groupings ask the same question and must agree exactly; a difference here means the groupings are not measuring what they are named for"
             );
             assert_eq!(
                 cf_id_max, cf_key_max,
-                "CONTROL FAILED at {records}/{end}: component-free MAX blocks per object is {cf_id_max} by id and {cf_key_max} by (kind, key)"
+                "CONTROL FAILED at {records}/{end}: element-name-free MAX blocks per object is {cf_id_max} by id and {cf_key_max} by (kind, key)"
             );
             println!(
-                "    CONTROL: component-free groupings agree exactly -- {cf_id_groups} groups, MAX {cf_id_max}, difference 0.00%"
+                "    CONTROL: element-name-free groupings agree exactly -- {cf_id_groups} groups, MAX {cf_id_max}, difference 0.00%"
             );
             series_max_seen = series_max_seen.max(cf_id_max);
 
@@ -527,15 +527,15 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
         "THE FIXTURE NEVER REACHED A MULTI-BLOCK OBJECT, so this module cannot tell an engine whose objects hold one block from a fixture that could not make one hold two. The series arm is seeded precisely to reach it and its MAX came back {series_max_seen}"
     );
     println!(
-        "  POSITIVE CONTROL: a component-free (series) object reaches {series_max_seen} blocks, so blocks-per-object above one IS observable by this instrument"
+        "  POSITIVE CONTROL: an element-name-free (series) object reaches {series_max_seen} blocks, so blocks-per-object above one IS observable by this instrument"
     );
 
     // --- THE FINDING, ON THE ARM THE PROPOSAL IS FOR. ---
     // THE FINDING, INVERTED BY THE IDENTITY CHANGE, AND THE TWO SHARES SPLIT APART.
     //
     // This used to assert `multi_block_object` stayed under one percent of buckets everywhere,
-    // because `(1 object, many blocks)` was unreachable for any component-bearing kind. Since the
-    // component left the object id a container IS that shape, so the arm is now reached -- and
+    // because `(1 object, many blocks)` was unreachable for any element-name-bearing kind. Since the
+    // element name left the object id a container IS that shape, so the arm is now reached -- and
     // the assertion is not LOOSENED, it is replaced by the pair of numbers the mechanism
     // predicts, which point in opposite directions and together are the honest size:
     //
@@ -545,7 +545,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     // Either share quoted alone would read as a much bigger or much smaller result than this is.
     assert!(
         widest_bucket_share_of_multi_block_object > 0.0,
-        "`multi_block_object` reached no bucket in any store. Since the component left the object \
+        "`multi_block_object` reached no bucket in any store. Since the element name left the object \
          id a container key is ONE object holding many blocks, which is exactly this arm -- an \
          unreached arm here means the identity did not collapse"
     );
@@ -572,7 +572,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
         EVERY_ARM.len()
     );
     println!(
-        "  Blocks per object: MAX {widest_object_by_id} grouped by the engine's own object id (component IN the hash), MAX {widest_object_by_kind_key} grouped by (kind, key)."
+        "  Blocks per object: MAX {widest_object_by_id} grouped by the engine's own object id (element name IN the hash), MAX {widest_object_by_kind_key} grouped by (kind, key)."
     );
 }
 
@@ -774,10 +774,10 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
 ///
 /// This test held the OPPOSITE, and it was the load-bearing half of #2007's refutation: the saving
 /// an object list offers is available only to a list keyed on `(kind, key)`; the stored
-/// `object_index` was keyed on an identity that folded the component in; so the two were DIFFERENT
+/// `object_index` was keyed on an identity that folded the element name in; so the two were DIFFERENT
 /// structures and the proposal meant a SECOND durable map rather than a re-use of one.
 ///
-/// Removing the component from `stable_block_object_id` collapses them into one. The stored list
+/// Removing the element name from `stable_block_object_id` collapses them into one. The stored list
 /// is keyed exactly on `(kind, key)` now, so its row count and the distinct-key count are the same
 /// number, and the second structure is not needed because the first one IS it.
 ///
@@ -841,7 +841,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         assert_eq!(
             stored_rows, distinct_keys,
             "the stored object_index holds {stored_rows} rows against {distinct_keys} distinct \
-             (kind, key). Since the component left the identity these are the same list, and a \
+             (kind, key). Since the element name left the identity these are the same list, and a \
              disagreement means the id is still carrying something the key does not"
         );
         assert_eq!(

@@ -49,7 +49,7 @@
 //! `expires_at_ms`, the per-key lookup -- "when does THIS key expire" -- and only that.
 
 /// Production source: every `.rs` under the crate's `src/`, excluding any path with a `tests`
-/// component. A `#[cfg(test)]` region inside a production FILE is NOT excluded, which matters here:
+/// element name. A `#[cfg(test)]` region inside a production FILE is NOT excluded, which matters here:
 /// the only call that fills a record's deadline lives in one, and counting it as production would
 /// have reversed this module's entire conclusion.
 fn production_sources() -> Vec<(String, String)> {

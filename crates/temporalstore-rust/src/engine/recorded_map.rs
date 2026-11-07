@@ -119,10 +119,10 @@ pub(super) trait RecordedKind: Sized + 'static {
     /// every kind already carries -- and deliberately NO DEFAULT, for the same reason
     /// `serialize_entries` has none.
     ///
-    /// THIS EXISTS BECAUSE A ZSET'S COMPONENT STOPPED SPELLING THE SCORE. Every other kind's level-2
-    /// value is fully named by its component and its address -- a hash field, a set member, a list
+    /// THIS EXISTS BECAUSE A ZSET'S ELEMENT NAME STOPPED SPELLING THE SCORE. Every other kind's level-2
+    /// value is fully named by its element name and its address -- a hash field, a set member, a list
     /// sequence -- so `None` costs them nothing. A zset's value is `(u64, BlockAddress)`, and the
-    /// `u64` had been riding the component as `{biased:016x}` until that string collapsed to the
+    /// `u64` had been riding the element name as `{biased:016x}` until that string collapsed to the
     /// member alone; this is where it rides instead, on replay's only remaining path to it. A kind
     /// added later that also needs a byte string beside its address has to say so here rather than
     /// inherit silence -- the same defect class `serialize_entries`'s own doc comment describes.
@@ -215,7 +215,7 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 //
 // FREE FUNCTIONS, NOT METHODS, and that is forced rather than stylistic.
 // `upsert_bucket_index_block` takes `&mut ShardState` -- the WHOLE shard -- because filing a block
-// reloads a released bucket, interns the component name and touches the pending-flag set. A model
+// reloads a released bucket, interns the element name and touches the pending-flag set. A model
 // map is a FIELD of `ShardState`, so a method holding `&mut self` cannot lend the whole shard to
 // the emitter, and a closure capturing the shard fails for the same reason. A free function clears
 // it because the two borrows are SEQUENTIAL: the emitter's `&mut shard` ends when it returns, and
@@ -224,9 +224,9 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 
 /// Record an element's block and put it in the resident map, in that order, in one call.
 ///
-/// `component` is the element rendered the way the block index names it; `element` is the level-2
+/// `element_name` is the element rendered the way the block index names it; `element` is the level-2
 /// key. BOTH are taken rather than one derived from the other, because every caller has already
-/// computed the component to derive the block ordinal and the block frame from it, and deriving it
+/// computed the element name to derive the block ordinal and the block frame from it, and deriving it
 /// again here would be a second rendering of one identity -- the shape that let a claim about a
 /// hash function be relayed as a claim about a hash path.
 ///
@@ -247,14 +247,13 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// it removes the authority". IT IS NOT THAT, and the correction is worth having even though the
 /// conclusion survives: the map's key is `element`, the parameter beside it, and the two are
 /// different VALUES rather than two spellings of one. For `SetKind` the caller passes
-/// `Some(set_component(member))` here and the raw `member` bytes as `element`; the map is keyed by
+/// `Some(set_element_name(member))` here and the raw `member` bytes as `element`; the map is keyed by
 /// the bytes.
 ///
 /// WHAT IT FEEDS, AFTER THE REPLAY PATH STOPPED ASKING THE OUTCOME. Both readers are inside
-/// `upsert_bucket_index_block_inner`, which splits it into `ElementComponent` and
-/// `FiledComponent`:
+/// `upsert_bucket_index_block_inner`:
 ///
-///   1. `WalOutcomeItem::component`. The replay path no longer READS that field for a container
+///   1. `WalOutcomeItem::element_name`. The replay path no longer READS that field for a container
 ///      kind -- it reads the block -- so this reader is now the record's own copy rather than
 ///      something a recovery depends on. It is still written, because the field cannot be removed
 ///      while six timestamped kinds read it and its absence is a meaning; the argument is set out
@@ -283,7 +282,7 @@ pub(super) fn install_element<K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     element: <K::Elements as ElementMap>::Element,
     value: <K::Elements as ElementMap>::Value,
     dirty: bool,
@@ -292,7 +291,7 @@ pub(super) fn install_element<K: RecordedKind>(
     K::Elements: AddressedElementMap,
 {
     // COMPUTED BEFORE `value` MOVES INTO THE RECORD BELOW. The only producer of a `Some` today is
-    // `ZSetKind`, whose score has nowhere else to ride now that the component does not spell it.
+    // `ZSetKind`, whose score has nowhere else to ride now that the element name does not spell it.
     let outcome_value = K::outcome_value(&value);
     // WHICH BLOCK THIS WRITE REPLACES, ASKED WHILE THE MAP STILL HOLDS THE OLD ANSWER.
     //
@@ -302,7 +301,7 @@ pub(super) fn install_element<K: RecordedKind>(
     // See `AddressedElementMap` for the two measured losses that leaves.
     //
     // ASKED ONLY WHEN THE ENTRY IS BLOCK-NAMED. While an entry names its element the filer's own
-    // component-keyed supersede already takes the predecessor, so there is nothing to tell it and
+    // element-name-keyed supersede already takes the predecessor, so there is nothing to tell it and
     // nothing to pay for: the ungated path does not reach the scan at all.
     let replaces = if super::storage_bucket_internals::index_entry_names_a_block(K::KIND) {
         K::resident(shard).block_an_element_vacates(object_key, &element, &address)
@@ -316,7 +315,7 @@ pub(super) fn install_element<K: RecordedKind>(
         shard_id,
         K::KIND,
         object_key,
-        component,
+        element_name,
         address,
         dirty,
         outcome_value,
@@ -349,7 +348,7 @@ pub(super) fn install_element_staged_only<K: RecordedKind>(
     shard_id: ShardId,
     staged_kind: &str,
     object_key: &str,
-    component: &str,
+    element_name: &str,
     routing_bucket: u32,
     element: <K::Elements as ElementMap>::Element,
     value: <K::Elements as ElementMap>::Value,
@@ -358,7 +357,7 @@ pub(super) fn install_element_staged_only<K: RecordedKind>(
     let staged = super::block_in_wal::stage_outcome_attested(crate::wal::WalOutcomeItem {
         kind: staged_kind.to_string(),
         object_key: object_key.to_string(),
-        component: Some(component.to_string()),
+        element_name: Some(element_name.to_string()),
         object_id: super::stable_block_object_id(shard_id, staged_kind, object_key),
         routing_bucket,
         address: Some(address),
@@ -388,7 +387,7 @@ pub(super) fn remove_element<K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,
     object_key: &str,
-    component: &str,
+    element_name: &str,
     element: <K::Elements as ElementMap>::Element,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
@@ -404,7 +403,7 @@ where
         shard_id,
         K::KIND,
         object_key,
-        component,
+        element_name,
         start_routing_bucket,
         end_routing_bucket,
         async_storage,
@@ -627,6 +626,36 @@ impl<'a, K: RecordedKind> IntoIterator for &'a RecordedMap<K> {
 // ---------------------------------------------------------------------------------------------
 
 impl<K: RecordedKind> RecordedMap<K> {
+    /// Install an element, reaching an already-live object through a BORROW.
+    ///
+    /// `Arc::from(&str)` always mallocs and copies, and `entry()` takes its key BY VALUE -- so
+    /// handing it a freshly built `Arc` for a slot that already exists allocates the key, copies
+    /// the text into it, and drops it again. Measured at the map, 400 installs into ONE existing
+    /// object: 64.9 B per write at an 8-byte key against 264.9 B at a 208-byte key -- a 200.0 B
+    /// difference for a 200 B key, with the allocation COUNT identical in both arms, which is the
+    /// signature of a copy rather than an extra allocation. `remove_element` below has always done
+    /// the borrowed thing.
+    ///
+    /// ONE HOME FOR THE RULE. Every install arm routes here, so the borrow cannot be right in one
+    /// and forgotten in another -- a second copy of a rule is wrong even while it agrees. The MISS
+    /// path still builds the `Arc`, because then the map genuinely needs to own the key; that costs
+    /// one extra hash of the key, once per object instead of once per element.
+    fn install_into(
+        &mut self,
+        object_key: &str,
+        element: <K::Elements as ElementMap>::Element,
+        value: <K::Elements as ElementMap>::Value,
+    ) {
+        if let Some(elements) = self.entries.get_mut(object_key) {
+            elements.insert_element(element, value);
+            return;
+        }
+        self.entries
+            .entry(std::sync::Arc::from(object_key))
+            .or_default()
+            .insert_element(element, value);
+    }
+
     fn install(&mut self, recorded: RecordedElement<K>) {
         let RecordedElement {
             filed: _,
@@ -634,10 +663,7 @@ impl<K: RecordedKind> RecordedMap<K> {
             element,
             value,
         } = recorded;
-        self.entries
-            .entry(std::sync::Arc::from(&object_key[..]))
-            .or_default()
-            .insert_element(element, value);
+        self.install_into(&object_key, element, value);
     }
 
     /// Drop a recorded element, and the key with it when that element was its last.
@@ -795,10 +821,7 @@ impl<K: ReplaysInstallsUnrecorded> RecordedMap<K> {
         element: <K::Elements as ElementMap>::Element,
         value: <K::Elements as ElementMap>::Value,
     ) {
-        self.entries
-            .entry(std::sync::Arc::from(object_key))
-            .or_default()
-            .insert_element(element, value);
+        self.install_into(object_key, element, value);
     }
 }
 
@@ -1054,7 +1077,7 @@ impl RecordedKind for ZSetKind {
     }
 
     /// EIGHT BIG-ENDIAN BYTES OF THE BIASED SCORE -- the one kind that answers `Some` here, and
-    /// the whole reason the function exists. `component` no longer spells this; replay's only
+    /// the whole reason the function exists. `element_name` no longer spells this; replay's only
     /// other source for a zset insert's score, so a value-less install on that path is a replay
     /// that cannot recover what the write did and must refuse rather than guess (see
     /// `lifecycle`'s `"zset"` replay arm).
@@ -1289,10 +1312,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         element: <K::Elements as ElementMap>::Element,
         value: <K::Elements as ElementMap>::Value,
     ) {
-        self.entries
-            .entry(std::sync::Arc::from(object_key))
-            .or_default()
-            .insert_element(element, value);
+        self.install_into(object_key, element, value);
     }
 
     pub(super) fn insert_elements_for_test(&mut self, object_key: &str, elements: K::Elements) {
@@ -1317,5 +1337,96 @@ impl<K: RecordedKind> RecordedMap<K> {
 
     pub(super) fn restore_for_test(&mut self, entries: HashMap<ModelKey, K::Elements>) {
         self.entries = entries;
+    }
+}
+
+/// WHAT AN ELEMENT WRITE INTO A LIVE OBJECT ALLOCATES, measured at the map and not at the engine.
+///
+/// Every install arm here reaches the resident map through
+/// `entries.entry(Arc::from(object_key))`. `Arc::from(&str)` ALWAYS mallocs and copies, and
+/// `entry()` takes its key BY VALUE, so on an OCCUPIED slot the fresh `Arc` is built, copied into
+/// and dropped immediately: a malloc, a memcpy and a free for a key the map already holds.
+/// `remove_element` in this same file does the borrowed thing and allocates nothing.
+///
+/// KEY LENGTH IS THE DIMENSION, because a key COPY costs its own length. While the defect is
+/// present the per-write `alloc_bytes` of a long-keyed object exceeds a short-keyed one by about
+/// the key-length difference; once the install borrows, per-write bytes are INDEPENDENT of key
+/// length. That is a value only the fixed path can produce.
+///
+/// AND IT IS MEASURED AT THE MAP, NOT THROUGH `engine.execute`. Driving the public write path was
+/// tried first and cannot attribute: a write there allocated ~254 KB and grew 4,687 B per write
+/// when the key grew 200 B, because the key is carried about twenty-three times across the WAL
+/// record, the block record and the index entries. No fix to the install alone could flatten that,
+/// so the number proved nothing about this line. Varying a dimension that reaches far more than the
+/// function under test is not a control.
+///
+/// Every element is built BEFORE the probe opens; `format!` and `Arc::from` on the FIELD allocate
+/// too, and although a field name's length is equal in both arms, building them inside would put
+/// the measurement's own noise inside the window.
+#[cfg(test)]
+mod element_write_key_allocation {
+    use super::{HashKind, RecordedMap};
+
+    const WRITES: usize = 400;
+    const SHORT_KEY: usize = 8;
+    const LONG_KEY: usize = 208;
+
+    fn per_write(key_len: usize) -> (u64, f64) {
+        let key = "k".repeat(key_len);
+        let mut map: RecordedMap<HashKind> = RecordedMap::default();
+        // The FIRST install creates the slot. Everything measured below lands on an occupied one.
+        map.insert_element_for_test(
+            &key,
+            std::sync::Arc::from("seed"),
+            crate::block_store::ElementEntry::default(),
+        );
+        let elements: Vec<std::sync::Arc<str>> = (0..WRITES)
+            .map(|index| std::sync::Arc::from(format!("f{index:06}").as_str()))
+            .collect();
+        let probe = crate::alloc_probe::Probe::start();
+        for element in elements {
+            map.insert_element_for_test(
+                &key,
+                element,
+                crate::block_store::ElementEntry::default(),
+            );
+        }
+        let counts = probe.stop();
+        (counts.allocs, counts.alloc_bytes as f64 / WRITES as f64)
+    }
+
+    #[test]
+    #[ignore = "allocation measurement; needs --features alloc-probe"]
+    fn an_element_write_into_a_live_object_does_not_copy_its_key() {
+        // THE CANARY. Without `--features alloc-probe` the counting allocator is not installed,
+        // every counter reads zero, and the assertion below would pass on a zero that means
+        // nothing. Fail loudly on a known allocation instead.
+        let canary = crate::alloc_probe::Probe::start();
+        let sink: Vec<u8> = Vec::with_capacity(8192);
+        assert!(
+            canary.stop().allocs > 0,
+            "the counting allocator is not installed -- rerun with `--features alloc-probe`, or \
+             every number this test prints is a zero that means nothing"
+        );
+        drop(sink);
+
+        let (short_allocs, short_per) = per_write(SHORT_KEY);
+        let (long_allocs, long_per) = per_write(LONG_KEY);
+        let delta = long_per - short_per;
+        let key_delta = (LONG_KEY - SHORT_KEY) as f64;
+        eprintln!(
+            "  [element-write] {WRITES} installs into ONE existing object\n    \
+             short key ({SHORT_KEY} B): {short_allocs} allocs, {short_per:.1} B/write\n    \
+             long  key ({LONG_KEY} B): {long_allocs} allocs, {long_per:.1} B/write\n    \
+             per-write delta {delta:.1} B against a key-length delta of {key_delta:.0} B"
+        );
+
+        assert!(
+            delta < key_delta / 4.0,
+            "per-write allocation grew {delta:.1} B when the key grew {key_delta:.0} B, so an \
+             install into an EXISTING object is still copying the key it already has. Reach an \
+             occupied slot through a borrow, the way `remove_element` does, instead of building an \
+             `Arc` for `entry()` to drop"
+        );
     }
 }

@@ -15,6 +15,7 @@ use crate::storage_config::effective_block_slab_target_bytes;
 #[path = "block_store/block_store_paths.rs"]
 mod paths;
 mod slab_manifest;
+mod slab_manifest_wire;
 mod slab_reports;
 #[path = "block_store/block_store_append.rs"]
 mod append;
@@ -189,7 +190,9 @@ const _: () = assert!(HOLDER_BITS_MASK >> HOLDER_BITS_SHIFT == 0xFF);
 ///     `length` reported as "invalid length 1, expected struct BlockAddressWire with 5
 ///     elements": a missing REQUIRED FIELD, not an arity the decoder checked. `index_log`'s
 ///     `IndexItemRow` closes the same hole one struct up by reading the arity off the array
-///     header; nothing closes it here yet.
+///     header; [`BlockAddressRow`] now closes it here the same way, so arities 4, 3 and 2 are
+///     REFUSED rather than defaulted. The sentence above describes what the DERIVED impl did,
+///     and is kept because it is the reason the gate exists.
 ///
 ///   * THE SERVED INDEX IS NAMED. `engine::encode_index_bytes` builds its serializer
 ///     `.with_struct_map()`, so a row is a map and a reader simply DROPS the keys its struct no
@@ -205,6 +208,153 @@ const _: () = assert!(HOLDER_BITS_MASK >> HOLDER_BITS_SHIFT == 0xFF);
 /// read and ignored -- and they are gone. `g` carries one, because its PRESENCE is
 /// `ADDRESS_HAS_GENERATION`, so retiring it needs the stamp to refuse the old shape first.
 /// `shorter_struct_against_an_existing_row` at the end of this file drives all four cases.
+/// How many positional slots a stored address array carries.
+///
+/// ONE PLACE, because [`BlockAddressWire`] has this many fields and [`BlockAddressRow`] refuses an
+/// array that does not carry this many. Two spellings of one arity is how a reader comes to refuse
+/// what the writer beside it just wrote.
+const BLOCK_ADDRESS_SLOTS: usize = 5;
+
+/// THE ARITY GATE ON THE POSITIONAL ADDRESS ARRAY: an array SHORT AT ITS TAIL is refused here.
+///
+/// # THE DEFECT THIS CLOSES
+///
+/// Four of [`BlockAddressWire`]'s five slots carry `#[serde(default)]`. The NAMED map arm needs
+/// that -- the served index is a map and a reader must go on finding `g` by its own name wherever
+/// it sits -- and the POSITIONAL arm must not have it: serde's derived `visit_seq` fills a slot
+/// the array never reached with `Default`, so a FOUR-slot array loaded as a five-slot one whose
+/// `generation` said `None`.
+///
+/// `generation` is the one slot here whose PRESENCE is a meaning: it becomes
+/// `ADDRESS_HAS_GENERATION`. So a defaulted tail does not produce a smaller address, it produces
+/// an address that has LOST one. Measured, not assumed: the entry comes back with `present: 1`,
+/// so the generation bit (`1 << 3`) is CLEAR and the row reads as carrying no generation at all.
+/// `block_index_written_key` renders the ref key from it, so a dropped generation MOVES the key
+/// the block is filed under -- an omitted ref key "restores to a different handle entirely",
+/// which is the consequence recorded against index version 6. And the index log carries NO
+/// version of its own, so the stamp cannot refuse this shape; the arity is the only thing that
+/// can.
+///
+/// `index_log`'s `IndexItemRow` closes exactly this hole one struct up, where the same defaulting
+/// turned a stored TOMBSTONE into a LIVE row and brought back a deleted object with no error
+/// anywhere. The paragraph on [`BlockAddressWire`] said "nothing closes it here yet". This is it.
+///
+/// # WHY AN ARITY MAY BE CHECKED AT ALL
+///
+/// Because no legitimately-written array is ever short. `From<ElementEntry> for BlockAddressWire`
+/// builds every field, there is no `skip_serializing_if` anywhere on the struct, and the slots
+/// that were retired (`rs` and `h`) made already-written arrays LONGER, not shorter --
+/// `shorter_struct_against_an_existing_row` drives that, and `rmp_serde` already refuses the long
+/// side with "array had incorrect length". This makes the two sides symmetric, and that is the
+/// whole of the change.
+///
+/// # REFUSED, NOT PADDED
+///
+/// Substituting a safe value for an absent slot is the same defect with better manners: the array
+/// did not say `None`, and a reader that invents an answer cannot be told from one that read a
+/// real one.
+struct BlockAddressRow(BlockAddressWire);
+
+impl From<BlockAddressRow> for BlockAddressWire {
+    fn from(row: BlockAddressRow) -> Self {
+        row.0
+    }
+}
+
+impl TryFrom<BlockAddressRow> for ElementEntry {
+    /// Named off the existing conversion rather than restated, so the two cannot drift: this row
+    /// adds an arity check and changes nothing about what a well-formed address means.
+    type Error = <Self as TryFrom<BlockAddressWire>>::Error;
+
+    fn try_from(row: BlockAddressRow) -> Result<Self, Self::Error> {
+        Self::try_from(row.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BlockAddressRow {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Refuses to report exhaustion, so a derived `visit_seq` cannot default a slot the array
+        /// never reached. The arity check below catches a short array first on every format that
+        /// states a length up front -- msgpack does, and msgpack is the only shape the index log
+        /// is written in -- and this is what holds when one does not.
+        struct EverySlotPresent<A>(A);
+
+        impl<'de, A> serde::de::SeqAccess<'de> for EverySlotPresent<A>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            type Error = A::Error;
+
+            fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+            where
+                T: serde::de::DeserializeSeed<'de>,
+            {
+                match self.0.next_element_seed(seed)? {
+                    Some(value) => Ok(Some(value)),
+                    None => Err(<A::Error as serde::de::Error>::custom(format!(
+                        "a stored address ran out of positional slots before all {BLOCK_ADDRESS_SLOTS} were read; a missing tail slot reads back as its default, which drops a generation the row carried and MOVES the ref key the block is filed under"
+                    ))),
+                }
+            }
+
+            fn size_hint(&self) -> Option<usize> {
+                self.0.size_hint()
+            }
+        }
+
+        struct EitherShape;
+
+        impl<'de> serde::de::Visitor<'de> for EitherShape {
+            type Value = BlockAddressRow;
+
+            fn expecting(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    out,
+                    "a stored address: {BLOCK_ADDRESS_SLOTS} positional slots, or a named map"
+                )
+            }
+
+            /// THE POSITIONAL ARM, WHICH IS THE ONE THAT IS STRICT.
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                if let Some(slots) = seq.size_hint() {
+                    if slots != BLOCK_ADDRESS_SLOTS {
+                        return Err(<A::Error as serde::de::Error>::custom(format!(
+                            "a stored address carries {slots} positional slots, not {BLOCK_ADDRESS_SLOTS}: a missing tail slot reads back as its default, which drops a generation the row carried and MOVES the ref key the block is filed under"
+                        )));
+                    }
+                }
+                <BlockAddressWire as serde::Deserialize>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(EverySlotPresent(seq)),
+                )
+                .map(BlockAddressRow)
+            }
+
+            /// THE NAMED ARM, WHICH STAYS TOLERANT ON PURPOSE.
+            ///
+            /// The served index is written `.with_struct_map()`, so a row is a map, `g` is found
+            /// by its own name wherever it sits, and a key the struct stopped declaring is simply
+            /// dropped. Nothing moves in that encoding, so nothing there needs refusing.
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                <BlockAddressWire as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(BlockAddressRow)
+            }
+        }
+
+        deserializer.deserialize_any(EitherShape)
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct BlockAddressWire {
     /// THE MERGED ADDRESS WORD, AND DELIBERATELY NOT AN ALIAS OF THE OLD SPELLING.
@@ -482,7 +632,7 @@ pub struct BlockAddress {
 /// nothing unless it goes all the way.
 ///
 /// AND THE FIELD IS A CACHE OF A PURE FUNCTION OF FIELDS THE ENTRY ALREADY HOLDS, which is what
-/// decides it. `BlockIndex` carries `object_key`, `model_id` and `component` beside this address
+/// decides it. `BlockIndex` carries `object_key`, `model_id` and `element_name` beside this address
 /// and `ShardState` carries the shard, so `stable_block_object_id(shard, kind, key)` is
 /// computable wherever a block entry is. Measured by
 /// `engine::tests::address_footprint::the_object_id_on_a_live_block_entry_is_the_hash_of_fields_beside_it`
@@ -1372,9 +1522,10 @@ pub struct BlockStoreSlabDescriptor {
     /// nothing ever configured the two sizes differently and the grouping was never exercised,
     /// which is why the map is keyed by slab id with one descriptor per slab.
     ///
-    /// It stays because it SERIALIZES -- under its original key, which the wire names below
-    /// record as `zone_id` -> `extent_id` -> `band_id` -- and the compat corpora carry it, so
-    /// dropping it is a wire break rather than a cleanup. Read `block_slab_id` in new code; the
+    /// It stays because it SERIALIZES -- as of #2487 under its own canonical name, with the
+    /// earlier spellings the aliases below record (`zone_id` -> `extent_id` -> `band_id`)
+    /// accepted on read only -- so dropping the field is a wire break rather than a cleanup.
+    /// Read `block_slab_id` in new code; the
     /// two cannot diverge, `reconcile_slab_manifest_with_disk` normalises this one from the map
     /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
     /// ever do.
@@ -1703,10 +1854,20 @@ pub struct BlockStoreBlockIndexReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct BlockStoreSlabManifest {
     version: u32,
-    /// ON-DISK KEY, NOT THE RUST NAME. `slab_manifest.json` is a format an already-deployed
-    /// binary reads, and the descriptor's `band_id` carries no `#[serde(default)]`, so a manifest
-    /// written under new keys is unreadable to it rather than merely unfamiliar.
-    /// `a_folded_manifest_still_writes_the_keys_on_disk` pins both keys.
+    /// EMITS `slabs`. `bands`, `extents` and `zones` are RETIRED spellings, accepted on read
+    /// and never written -- a serde `alias` widens the reader only.
+    ///
+    /// This flipped in #2487 and the decision is recorded in
+    /// `docs/temporalstore_page_block_address_contract.md`: it was available because the three
+    /// `compat/*.json` corpora anything actually reads carry the retired slab names ZERO times,
+    /// where counting all nine files made them look pinned. The readers were widened and shipped
+    /// before the writer moved, which is the only order in which such a flip exists at all.
+    ///
+    /// What the old comment here said -- that the file still says `bands` -- has been WRONG since
+    /// that change, and it is why two tests that reach in by literal string key were read as a
+    /// writer defect rather than as casualties of the flip.
+    /// `a_folded_manifest_still_writes_the_keys_on_disk` is the guard that pins which spelling
+    /// reaches the file, in both directions.
     #[serde(alias = "bands", alias = "extents", alias = "zones")]
     slabs: Vec<BlockStoreSlabDescriptor>,
 }
@@ -5229,12 +5390,35 @@ const RETIRED_NAMES: &[&str] = &[
         let manifest_path = slab_manifest_path(dir.path());
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest["bands"] = serde_json::json!([manifest["bands"]
+        // THE ON-DISK KEYS, READ BY LITERAL STRING -- which is why #2487 could flip them with a
+        // clean `cargo check`. The slab list is under `slabs` and the slab id under
+        // `block_segment_id`; `bands` and `band_id` are the RETIRED spellings, accepted on read
+        // and no longer written. `a_folded_manifest_still_writes_the_keys_on_disk` is the guard
+        // that pins which of those reaches the file, and
+        // `docs/temporalstore_page_block_address_contract.md` records why the flip was available.
+        let slabs = manifest["slabs"]
             .as_array()
-            .unwrap()
+            .unwrap_or_else(|| panic!("the slab list must be under \"slabs\": {manifest}"));
+        assert_eq!(
+            slabs.len(),
+            2,
+            "this guard drops one of two descriptors, so it needs both: {manifest}"
+        );
+        // DROP THE SEALED SLAB'S DESCRIPTOR, NOT THE ACTIVE ONE, and that choice is the whole
+        // guard. `BlockStore::new` calls `ensure_slab_descriptor` for the ACTIVE slab id
+        // immediately after `reconcile_slab_manifest_with_disk` returns, and that function
+        // inserts a descriptor for exactly that one id. So a test that drops the active
+        // descriptor is answered by the fallback: reconcile's own insert branch can be removed
+        // outright and the test still passes. A SEALED slab present on disk with no descriptor is
+        // the case nothing else repairs.
+        //
+        // Verified by plant: deleting the `None =>` insert in
+        // `reconcile_slab_manifest_with_disk` left the active-slab version of this test green and
+        // reddens this one.
+        manifest["slabs"] = serde_json::json!([slabs
             .iter()
-            .find(|slab| slab["block_segment_id"] == serde_json::json!(first.block_slab_id()))
-            .unwrap()
+            .find(|slab| slab["block_segment_id"] == serde_json::json!(second.block_slab_id()))
+            .unwrap_or_else(|| panic!("no descriptor for the active slab: {manifest}"))
             .clone()]);
         fs::write(
             &manifest_path,
@@ -5245,14 +5429,32 @@ const RETIRED_NAMES: &[&str] = &[
         let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
 
-        assert!(descriptors
-            .iter()
-            .any(|slab| slab.block_slab_id == first.block_slab_id()
-                && slab.state == BlockStoreSlabState::Sealed));
-        assert!(descriptors
-            .iter()
-            .any(|slab| slab.block_slab_id == second.block_slab_id()
-                && slab.state == BlockStoreSlabState::Active));
+        // THE LOAD-BEARING ONE: this descriptor was deleted from the manifest and the slab file
+        // it describes is sealed, so `ensure_slab_descriptor` -- which only ever inserts the
+        // ACTIVE id -- cannot have produced it. Only reconcile's insert branch can.
+        assert!(
+            descriptors
+                .iter()
+                .any(|slab| slab.block_slab_id == first.block_slab_id()
+                    && slab.state == BlockStoreSlabState::Sealed),
+            "the sealed slab is on disk with no descriptor and the open did not reconcile one \
+             for it: {descriptors:?}"
+        );
+        // The active one is kept in the manifest here, so this is a control rather than the
+        // property: it says the edit above removed one descriptor and not both.
+        assert!(
+            descriptors
+                .iter()
+                .any(|slab| slab.block_slab_id == second.block_slab_id()
+                    && slab.state == BlockStoreSlabState::Active),
+            "the descriptor this edit KEPT is missing, so the fixture removed more than it \
+             meant to: {descriptors:?}"
+        );
+        assert_eq!(
+            descriptors.len(),
+            2,
+            "exactly the two slabs on disk must be described: {descriptors:?}"
+        );
         let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.slab_manifest_reconciled_on_open);
         assert!(report.slab_manifest_disk_consistent);
@@ -5593,18 +5795,25 @@ const RETIRED_NAMES: &[&str] = &[
         let mut manifest: serde_json::Value = serde_json::from_slice(&raw).unwrap();
 
         // DENOMINATOR: the manifest really has descriptors, and they really agree to begin with.
-        // The KEYS read here are the on-disk spelling and are deliberately not the Rust one:
-        // "bands" and "band_id" are the format, `slabs` and `stored_slab_id` are the code.
-        // The slab id is read under `block_segment_id` because that is what THIS build writes; a
-        // manifest from an older build spells it `page_segment_id` and loads through the alias.
-        let entries = manifest["bands"].as_array_mut().expect("bands array");
+        //
+        // THE KEYS READ HERE ARE THE EMITTED ON-DISK SPELLING, and as of #2487 that is the
+        // canonical one: the list is under `slabs` and the stored id under `stored_slab_id`.
+        // `bands` and `band_id` are the RETIRED spellings -- still accepted on read, never
+        // written. The comment that used to sit here said the opposite, which is what a literal
+        // string key costs: the flip compiled clean and only these two tests saw it.
+        //
+        // The slab id is read under `block_segment_id` because that name did NOT move; the
+        // contract document records it as one of the three that stayed, on a count of the live
+        // compat corpora. A manifest from an older build spells it `page_segment_id` and loads
+        // through the alias.
+        let entries = manifest["slabs"].as_array_mut().expect("slabs array");
         assert!(
             entries.len() >= 3,
             "the manifest must really carry descriptors: {entries:?}"
         );
         for entry in entries.iter() {
             assert_eq!(
-                entry["band_id"].as_u64(),
+                entry["stored_slab_id"].as_u64(),
                 entry["block_segment_id"].as_u64(),
                 "they agree before the edit"
             );
@@ -5614,7 +5823,11 @@ const RETIRED_NAMES: &[&str] = &[
         // always inspected and would be rewritten whatever this file said; the two sealed ones
         // are the point.
         for entry in entries.iter_mut() {
-            entry["band_id"] = serde_json::json!(999_u64);
+            // Written under the EMITTED key. Setting the retired `band_id` instead would not
+            // merely miss: the descriptor already carries `stored_slab_id`, and `band_id` is an
+            // accepted alias for that same field, so a document holding both is a DUPLICATE
+            // FIELD and the whole manifest stops decoding.
+            entry["stored_slab_id"] = serde_json::json!(999_u64);
         }
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 
@@ -5669,16 +5882,26 @@ const RETIRED_NAMES: &[&str] = &[
         }
     }
 
-    /// The CODE says slab. The FILE still says band, and that is the point.
+    /// THE CODE AND THE FILE BOTH SAY SLAB NOW, and asserting which is the point.
     ///
-    /// `slab_manifest.json` is read by binaries that are already deployed, and the descriptor's
-    /// `band_id` carries no `#[serde(default)]` -- so a manifest written under renamed keys is
-    /// not "an older shape with a missing field", it is unreadable. There is no alias mechanism
-    /// on the WRITE side to soften that: serde writes exactly one name per field.
+    /// The file used to say `band`, and this guard used to assert that. #2487 flipped the
+    /// emitted names to the canonical spelling and inverted the body of this test with them;
+    /// the doc comment that used to sit here was left describing the old direction, and that
+    /// stale text is what later got read as evidence of a writer defect. Hence this correction.
     ///
-    /// Renaming a Rust field whose wire name was IMPLICIT is the way that happens by accident.
-    /// It compiles, every type-level test still passes, and the only thing that changed is the
-    /// bytes on disk. This asserts the bytes.
+    /// WHY THE FLIP WAS AVAILABLE, since it is a published format: the three `compat/*.json`
+    /// corpora anything reads carry the retired slab names ZERO times. Counting all nine files
+    /// made them look pinned; counting the ones a test, harness or workflow actually opens put
+    /// them at zero. `docs/temporalstore_page_block_address_contract.md` records that count,
+    /// the three emitted names that did NOT move, and the reader-first ordering.
+    ///
+    /// WHY A GUARD IS STILL NEEDED EITHER WAY: a serde `alias` widens the READER only, and
+    /// serde writes exactly one name per field. Renaming a Rust field whose wire name is
+    /// IMPLICIT therefore changes the bytes on disk with nothing at the type level to notice --
+    /// it compiles, and every test that goes through the type still passes. This asserts the
+    /// bytes. It is also the test to update FIRST if the emitted names ever move again, because
+    /// the two tests repaired alongside this comment reach into the same file by literal string
+    /// key and the compiler cannot see them.
     #[test]
     fn a_folded_manifest_still_writes_the_keys_on_disk() {
         let dir = tempfile::tempdir().unwrap();
@@ -9609,6 +9832,65 @@ mod shorter_struct_against_an_existing_row {
         }
     }
 
+    /// THE CASE THIS MODULE NEVER DROVE: A ROW **SHORT AT ITS TAIL**.
+    ///
+    /// Every arm above asks what a LONGER row does to a shorter struct, and the answer is a loud
+    /// refusal. Nothing here asked the other direction, and `BlockAddressWire`'s own
+    /// documentation says why it matters: `generation`'s PRESENCE is `ADDRESS_HAS_GENERATION`, so
+    /// a four-slot row that defaults it to `None` is not a smaller address -- it is an address
+    /// that has LOST one. Measured here rather than assumed: the decoded entry comes back with
+    /// `present: 1`, so the generation bit (`1 << 3`) is CLEAR and the row reads as carrying no
+    /// generation at all. `block_index_written_key` renders the ref key from it, so a dropped
+    /// generation moves the key the block is filed under -- an omitted ref key "restores to a
+    /// different handle entirely", which is the consequence recorded against index version 6.
+    ///
+    /// AND THE INDEX LOG HAS NO VERSION OF ITS OWN -- its container byte holds a codec and a
+    /// record SHAPE, not a version, as `BlockAddressWire` states. So `SHARD_INDEX_FORMAT_VERSION`
+    /// cannot refuse a short address array there; it guards the NAMED served index. The arity is
+    /// the only thing that can, which is exactly why `IndexItemRow` checks one one struct up. The
+    /// documented follow-up that retires `g` would write four slots, and this is what refuses
+    /// them to a reader that still expects five.
+    ///
+    /// `index_log`'s `IndexItemRow` closes exactly this hole one struct up, where the same
+    /// defaulting turned a stored TOMBSTONE into a LIVE row and brought back a deleted object
+    /// with no error anywhere. This is that defect one struct down.
+    #[test]
+    fn a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation() {
+        let four = FourSlots {
+            a: Some(0x0000_0007_0000_002A),
+            l: 4096,
+            pi: Some(GENERATION),
+            oi: Some(0xFEED_FACE_CAFE_BEEF),
+        };
+        let packed = pack_positional(&four);
+
+        // THE CONTROL, so a refusal below cannot come from an instrument that refuses everything:
+        // the full five-slot row MUST still load, and load with its generation PRESENT.
+        let full = FiveSlots {
+            a: Some(0x0000_0007_0000_002A),
+            l: 4096,
+            pi: Some(GENERATION),
+            oi: Some(0xFEED_FACE_CAFE_BEEF),
+            g: Some(GENERATION),
+        };
+        let full_packed = pack_positional(&full);
+        let loaded: super::ElementEntry = rmp_serde::from_slice(&full_packed)
+            .expect("the control: a complete five-slot address still loads");
+        assert_eq!(
+            loaded.generation(),
+            Some(GENERATION),
+            "the control must load its generation PRESENT, or this test proves nothing about the short row below"
+        );
+
+        let short: Result<super::ElementEntry, _> = rmp_serde::from_slice(&packed);
+        match short {
+            Ok(value) => panic!(
+                "a FOUR-slot positional address decoded SILENTLY as {value:?}: `generation` came back ABSENT although the row never said so, and a generation that goes missing MOVES the ref key the block is filed under, so the block is restored under a different handle entirely"
+            ),
+            Err(error) => println!("  positional, 4 slots against 5: REFUSED with {error}"),
+        }
+    }
+
     /// THE NAMED PATH KEEPS `g` BY NAME, WHICH IS WHY THIS CHANGE NEEDS NO VERSION STAMP.
     ///
     /// The served index is a map, so retiring `rs` and `h` drops two keys nothing read. `g` is
@@ -9672,7 +9954,7 @@ mod shorter_struct_against_an_existing_row {
 ///
 /// The resident block entry is being RELOCATED into this position. Today an element of a hash is
 /// described twice: once by a [`BlockAddress`] in this map, and once by a 56-byte `BlockIndex` in
-/// the bucket index, keyed by a hash of the object key, the model id, the component and five
+/// the bucket index, keyed by a hash of the object key, the model id, the element name and five
 /// address terms. The entry here can be KEY-INDEPENDENT -- the object key is the level-one key and
 /// the element name is the level-two key, so the value does not have to name either -- which is the
 /// whole reason the relocation is worth anything.
@@ -9704,7 +9986,7 @@ mod shorter_struct_against_an_existing_row {
 ///
 /// A free byte is the easiest kind of redundant stored fact to ship, which is why this says so.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(try_from = "BlockAddressWire", into = "BlockAddressWire")]
+#[serde(try_from = "BlockAddressRow", into = "BlockAddressWire")]
 pub struct ElementEntry {
     /// WHERE the element lives: one opaque word, the slab in the high half and the offset in the
     /// low. See [`BlockAddress`].

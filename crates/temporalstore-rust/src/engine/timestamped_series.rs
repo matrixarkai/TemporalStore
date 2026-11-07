@@ -289,6 +289,31 @@ where
 /// spell the allocation would say the same thing six times. Kept as its own door so that a map which CAN
 /// share does not reach the allocating path by accident -- which is exactly how the generic helper
 /// came to defeat sharing in the first place.
+/// The instants of one object's series at or BELOW a boundary, ascending.
+///
+/// For applying a trim that stated its boundary instead of every point it dropped: the record
+/// names the newest instant that went, and this resolves it back to the set. `take_while` is sound
+/// only because [`TimestampedSeries::points`] promises ascending order -- which is the invariant
+/// that makes a boundary equivalent to the enumeration in the first place.
+pub(super) fn instants_through<K, S>(
+    map: &std::collections::HashMap<K, S>,
+    object_key: &str,
+    through: u64,
+) -> Vec<u64>
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str>,
+    S: TimestampedSeries,
+{
+    let Some(series) = map.get(object_key) else {
+        return Vec::new();
+    };
+    series
+        .points()
+        .map(|(at, _)| at)
+        .take_while(|at| *at <= through)
+        .collect()
+}
+
 pub(super) fn set_point_for_owned_key<K, S>(
     map: &mut std::collections::HashMap<K, S>,
     object_key: &str,
@@ -315,7 +340,7 @@ where
 /// in this tree at one element: **312 B in 4 allocations for the B-tree against 48 B in 2 for this
 /// array** (`Vec` header 24 B, buffer 24 B for one 24-byte pair), and the owning field itself is a
 /// thin pointer at eight bytes rather than a 24-byte `BTreeMap` header. Those are two different
-/// components and are reported as two numbers, never one standing in for the other.
+/// element names and are reported as two numbers, never one standing in for the other.
 ///
 /// The access pattern is what makes the array the right shape and not a compromise: these series
 /// are append-mostly, read by one instant or walked whole. An array appends in amortised O(1),

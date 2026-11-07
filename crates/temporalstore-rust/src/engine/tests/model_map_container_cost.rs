@@ -119,7 +119,21 @@ const INSTANCES: usize = 2_000;
 fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container() {
     let nested_hashed: Vec<&str> = STATE_DECLARATIONS
         .lines()
-        .filter(|line| line.contains("pub(super)") && line.contains("HashMap<String, HashMap<"))
+        .filter(|line| {
+            // ANCHORED ON THE MODEL-KEY TYPE, which is what makes the exclusion below principled
+            // rather than a special case: `ModelKey` is the type model maps are keyed by
+            // (`engine_storage_state.rs`: `type ModelKey = Arc<str>`). The key type was `String`
+            // when this was written, and the rename made every literal pattern here match
+            // nothing -- which is why this guard fired. The code did not regress.
+            //
+            // `rollups: HashMap<RollupDomain, HashMap<String, RollupEntry>>` IS a nested hashed
+            // map and is deliberately out of population: its outer key is a bounded enum, not a
+            // per-key model key, so it is not a model map. No version of this pattern has ever
+            // matched it, and widening to catch it would change what this guard is about.
+            line.contains("pub(super)")
+                && !line.contains("fn ")
+                && line.contains("HashMap<ModelKey, HashMap<")
+        })
         .map(|line| line.trim())
         .collect();
     // THE ORDERED MAPS, WHEREVER THEY NOW LIVE -- which after the container work is two places.
@@ -139,17 +153,24 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
         .lines()
         .chain(container_declarations.lines())
         .filter(|line| {
-            (line.contains("pub(super)") || line.trim().starts_with("entries:"))
-                && (line.contains("HashMap<String, BTreeMap<")
-                    || line.contains("HashMap<String, K::Elements>"))
+            // FIELD DECLARATIONS ONLY. Under the `ModelKey` spelling the bare type pattern
+            // matches ten lines and most DECLARE NOTHING: `control_state`/`_mut`,
+            // `feature_values`/`_mut`, `from_decoded`, `take_for_test`, `restore_for_test`. This
+            // module already learned that once -- see the exact-line comment at the `inner` scan
+            // below -- so these exclusions keep the count to lines that declare storage.
+            !line.contains("fn ")
+                && !line.contains("&HashMap")
+                && (line.contains("pub(super)") || line.trim_start().starts_with("entries:"))
+                && (line.contains("HashMap<ModelKey, BTreeMap<")
+                    || line.contains("HashMap<ModelKey, K::Elements>"))
         })
         .map(|line| line.trim())
         .collect();
     // AND THE CONTAINER SIDE MUST ACTUALLY CONTRIBUTE, or this is a `engine_storage_state.rs` scan wearing a
     // wider name and the floor would start drifting down again silently.
     assert!(
-        container_declarations.contains("entries: HashMap<String, K::Elements>"),
-        "the set container's inner declaration is not findable, so the ordered count below is          really a `engine_storage_state.rs`-only count and its floor no longer means what it says"
+        container_declarations.contains("entries: HashMap<ModelKey, K::Elements>"),
+        "the container inner declaration is not findable, so the ordered count below is really an engine_storage_state.rs-only count and its floor no longer means what it says"
     );
 
     println!("--- nested HASHED model maps ({}) ---", nested_hashed.len());
@@ -226,12 +247,36 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
         "`HashKind` no longer names `HashFieldMap` as its level-two container, so \
          `hashes` no longer carries the named container this module priced: {inner:?}"
     );
+    // THE FLOOR, RE-DERIVED -- the FOURTH retarget of this guard, and the number is measured.
+    //
+    // Seventeen was right while each kind declared its own nested map inline. `hashes`, `sets`,
+    // `zsets` and `lists` then folded into one generic `RecordedMap<K>`, so seventeen inline
+    // declarations collapsed into a single field and the floor became UNMEETABLE BY DESIGN -- it
+    // was not violated by a regression. Measured on this tree, the nested ORDERED model-map FIELD
+    // declarations are exactly two:
+    //
+    //   engine_storage_state.rs  pub(super) context_event_timeline: HashMap<ModelKey, BTreeMap<..>>
+    //   recorded_map.rs          entries: HashMap<ModelKey, K::Elements>
+    //
+    // So the floor is two, and both are ALSO named below. The count catches a declaration
+    // appearing or vanishing; the named checks catch one of these two being renamed out from under
+    // the count, which a bare number cannot.
     assert!(
-        ordered_inner.len() >= 17,
-        "fewer than seventeen nested ORDERED model maps were found. The floor is here so the \
+        ordered_inner.len() >= 2,
+        "fewer than two nested ORDERED model maps were found. The floor is here so the \
          hashed count above cannot reach zero by the declarations vanishing rather than by the \
          container changing -- which would make this whole guard agree vacuously: {ordered_inner:?}"
     );
+
+    for expected in [
+        "pub(super) context_event_timeline: HashMap<ModelKey, BTreeMap<u64, u64>>,",
+        "entries: HashMap<ModelKey, K::Elements>,",
+    ] {
+        assert!(
+            ordered_inner.iter().any(|line| *line == expected),
+            "the nested ordered declaration `{expected}` is gone. Either it was renamed, in which case follow it and say so here, or the storage it declares was removed, in which case the count above is agreeing vacuously: {ordered_inner:?}"
+        );
+    }
     println!(
         "nested containers: 0 hashed, {} ordered, 1 named sorted-vector (`hashes`)",
         ordered_inner.len()

@@ -63,7 +63,7 @@ fn placement_value(user: u64, batch: u64) -> Vec<u8> {
     format!("placement-u{user}-b{batch}-{}", "y".repeat(60)).into_bytes()
 }
 
-/// The commands batch `b` writes. Every command carries upsert components, so the whole
+/// The commands batch `b` writes. Every command carries upsert element names, so the whole
 /// batch emits a single upsert delta record (the shape the scale ingest produced).
 fn batch_commands(b: u64) -> Vec<Command> {
     let user = b % USERS;
@@ -110,7 +110,7 @@ fn expected_view(
                 Command::StringSet { key, value } => {
                     strings.insert(key, value);
                 }
-                _ => unreachable!("harness batches hold only upsert-component commands"),
+                _ => unreachable!("harness batches hold only upsert-element-name commands"),
             }
         }
     }

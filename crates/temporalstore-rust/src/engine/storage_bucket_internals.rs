@@ -295,7 +295,7 @@ impl StorageManagerPhaseExecutor {
 pub(super) struct LiveBlockEntry {
     pub(super) object_key: Arc<str>,
     pub(super) kind: StoredModelKind,
-    pub(super) component: Option<Arc<str>>,
+    pub(super) element_name: Option<Arc<str>>,
     pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
@@ -402,13 +402,13 @@ impl<'a> KeyRef<'a> {
 pub(super) fn live_block_entry(
     object_key: ModelKey,
     kind: impl AsRef<str>,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
 ) -> LiveBlockEntry {
     LiveBlockEntry {
         object_key,
         kind: stored_model_kind(kind.as_ref()),
-        component: component.map(Arc::from),
+        element_name: element_name.map(Arc::from),
         // A block materialized in the block store carries a real page_id; a block
         // backed only by the hot/append-log buffer does not. Evaluate before the
         // `address` field moves it.
@@ -433,11 +433,11 @@ pub(super) fn live_block_entry(
 pub(super) fn live_block_entry_filed(
     object_key: ModelKey,
     kind: impl AsRef<str>,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     routing_bucket: u32,
 ) -> LiveBlockEntry {
-    let mut entry = live_block_entry(object_key, kind, component, address);
+    let mut entry = live_block_entry(object_key, kind, element_name, address);
     entry.filed_routing_bucket = routing_bucket;
     entry.filing_is_known = true;
     entry
@@ -509,14 +509,14 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
         (
             left.kind.as_str(),
             left.object_key.as_ref(),
-            left.component.as_deref().unwrap_or(""),
+            left.element_name.as_deref().unwrap_or(""),
             left.address.block_slab_id(),
             left.address.offset(),
         )
             .cmp(&(
                 right.kind.as_str(),
                 right.object_key.as_ref(),
-                right.component.as_deref().unwrap_or(""),
+                right.element_name.as_deref().unwrap_or(""),
                 right.address.block_slab_id(),
                 right.address.offset(),
             ))
@@ -594,9 +594,9 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
 }
 
 pub(super) fn storage_gc_ref(entry: &LiveBlockEntry) -> String {
-    match entry.component.as_deref() {
-        Some(component) if !component.is_empty() => {
-            format!("{}:{}:{}", entry.kind, entry.object_key, component)
+    match entry.element_name.as_deref() {
+        Some(element_name) if !element_name.is_empty() => {
+            format!("{}:{}:{}", entry.kind, entry.object_key, element_name)
         }
         _ => format!("{}:{}", entry.kind, entry.object_key),
     }
@@ -706,7 +706,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
             left.deleted,
             left.kind.as_str(),
             left.object_key.as_ref(),
-            left.component.as_deref().unwrap_or(""),
+            left.element_name.as_deref().unwrap_or(""),
             left.address.block_slab_id(),
             left.address.offset(),
         )
@@ -714,7 +714,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
                 right.deleted,
                 right.kind.as_str(),
                 right.object_key.as_ref(),
-                right.component.as_deref().unwrap_or(""),
+                right.element_name.as_deref().unwrap_or(""),
                 right.address.block_slab_id(),
                 right.address.offset(),
             ))
@@ -1521,7 +1521,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // the same reason: `insert_object_block_lookup` counts up from it, and a total carried over
     // from the emptied map would count blocks twice.
     shard.bucket_index.clear_object_blocks();
-    shard.bucket_index.object_component_block_refs = Some(0);
+    shard.bucket_index.object_element_name_block_refs = Some(0);
     // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
     // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
     // change exists to remove and which a compaction round would pay twice.
@@ -1637,11 +1637,11 @@ pub(super) fn rebuild_bucket_block_ownership(
         // A tombstone with NO element row cannot be asked at all. It is refiled, which is the safe
         // direction: a refiled tombstone over a live element is still outranked by the live block's
         // later append position, where a DROPPED tombstone over a removed element resurrects it.
-        let live_again = resident_holds_component(
+        let live_again = resident_holds_element_name(
             shard,
             tombstone.model_id(),
             &element.object_key,
-            &element.component,
+            &element.element_name,
         );
         if live_again {
             continue;
@@ -1678,7 +1678,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         bucket.record_tombstone_element(
             &element.object_key,
             model_id,
-            &element.component,
+            &element.element_name,
             &address,
         );
         tombstones_refiled += 1;
@@ -1802,7 +1802,7 @@ pub(super) fn reset_promote_model_map_check_counts() {
 /// restore, and again on the per-execute path in `engine.rs` whenever its fast-skip is not
 /// latched.
 ///
-/// `visit_model_live_blocks` offers `emit` the kind, key, component and address as borrows, and
+/// `visit_model_live_blocks` offers `emit` the kind, key, element name and address as borrows, and
 /// those are exactly the four arguments `contains_object_block_address` takes -- the same values
 /// the old `any()` tested, in the same order, block for block. The walk IS the check and stays
 /// whole; only the vector goes.
@@ -1831,7 +1831,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
             shard,
             ModelWalkTally::PromotionCheckBlocks,
             |_, _| true,
-            |kind, object_key, component, address| {
+            |kind, object_key, element_name, address| {
                 saw_model_entry = true;
                 // The early return below bypasses the LOOKUP, not the count. `visit_model_live_blocks`
                 // charges every block it emits before this body runs at all, so a walk over a large
@@ -1855,7 +1855,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                     && !shard.bucket_index.contains_object_block_address(
                         kind.as_str(),
                         object_key.as_str(),
-                        component,
+                        element_name,
                         address,
                     )
                 {
@@ -1902,7 +1902,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
 /// detail:
 ///
 ///   1. Rebuild them too. But these maps are keyed by TIMESTAMP and the bucket-index entries for
-///      them carry `component: None` (see the `context_event` arm of
+///      them carry `element_name: None` (see the `context_event` arm of
 ///      `collect_model_live_block_entries`), so the keys are not recoverable from the index.
 ///      Synthesising keys would make the cross-check agree while putting invented timestamps into
 ///      a time-keyed map, which is worse than the failure it cures.
@@ -1925,7 +1925,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     // THE DERIVED VIEW IS EMPTY NOW, AND IT IS EMPTY STRUCTURALLY RATHER THAN BY CIRCUMSTANCE.
     //
     // This built a `hashes` map by walking the index and reading each entry's field name out of
-    // `BlockIndex::component`. An entry has no such field, so there is nothing to derive FROM: not
+    // `BlockIndex::element_name`. An entry has no such field, so there is nothing to derive FROM: not
     // "no fields were found this time" but "a field name is not representable on an entry". The
     // durable map is the sole source, which is what the four `durable_outranks_derived` arms are
     // about.
@@ -2018,13 +2018,13 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 kind: block.model_id(),
                 // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A BLOCK.
                 //
-                // This cloned `block.component`, under a note about avoiding a double allocation
+                // This cloned `block.element_name`, under a note about avoiding a double allocation
                 // through a `String`. There is no name on an entry to clone, and there was no
-                // value in it before the field was removed either -- every entry's component was
+                // value in it before the field was removed either -- every entry's element name was
                 // `None`. So a `LiveBlockEntry` produced from the INDEX carries no element name,
                 // which is what makes the two derived-view rebuilds below unable to recover a
                 // container element from it: see `rebuild_unserialized_model_maps_from_bucket_index`.
-                component: None,
+                element_name: None,
                 address: block.address.clone(),
                 dirty: block.dirty(),
                 deleted: block.deleted(),
@@ -2083,13 +2083,13 @@ type ReleasedBlockIdentity = (String, String, Option<String>, u64, u64, u64, Opt
 fn released_block_identity(
     model_id: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     address: &ElementEntry,
 ) -> ReleasedBlockIdentity {
     released_block_identity_owned(
         model_id.to_string(),
         object_key.to_string(),
-        component.map(str::to_string),
+        element_name.map(str::to_string),
         address,
     )
 }
@@ -2102,13 +2102,13 @@ fn released_block_identity(
 fn released_block_identity_owned(
     model_id: String,
     object_key: String,
-    component: Option<String>,
+    element_name: Option<String>,
     address: &ElementEntry,
 ) -> ReleasedBlockIdentity {
     (
         model_id,
         object_key,
-        component,
+        element_name,
         address.block_slab_id(),
         address.offset(),
         address.length(),
@@ -2131,13 +2131,13 @@ fn released_block_identity_owned(
 ///      holding it out, which is worth knowing before anyone reads this list as settled.
 ///   2. A READ MUST STILL RESOLVE IT. `bucket_index_block_address` -- the slow read path -- looks
 ///      an address up THROUGH the bucket index, so a released block has to be findable in its model
-///      map by `(kind, object_key, component)` alone. `model_map_block_address` is that lookup, and
-///      it is a point lookup, not a scan. Kinds whose objects span components or timestamps
+///      map by `(kind, object_key, element_name)` alone. `model_map_block_address` is that lookup, and
+///      it is a point lookup, not a scan. Kinds whose objects span element names or timestamps
 ///      (`set`, `zset`, `list`, `feature`, the context series) are also read whole through
-///      `bucket_index_component_block_addresses`, which has no equivalent point lookup, so they
+///      `bucket_index_element_name_block_addresses`, which has no equivalent point lookup, so they
 ///      stay out until one exists.
 ///
-/// That leaves the two component-less, single-block, serialized kinds -- which is also where the
+/// That leaves the two element-name-less, single-block, serialized kinds -- which is also where the
 /// index cost being reclaimed actually is: one block and one node per key.
 fn released_model_kind_is_addressable(kind: &str) -> bool {
     matches!(kind, "string" | "context_node")
@@ -2165,27 +2165,27 @@ fn released_model_kind_is_addressable(kind: &str) -> bool {
 ///
 /// # THE SPELLINGS ARE THE WRITE PATH'S, AND AN UNREADABLE ONE ANSWERS FALSE
 ///
-/// `member_component` for a set member and for a zset member, base sixteen for a list's biased
+/// `member_element_name` for a set member and for a zset member, base sixteen for a list's biased
 /// sequence, the field itself for a hash -- each the same rendering the write path files. A name
 /// this cannot parse answers FALSE rather than defaulting to element zero or to the empty member:
 /// an unreadable name names nothing, which is the rule every arm of the derived view already
 /// follows, and the direction that errs towards keeping a tombstone rather than dropping one.
-pub(super) fn resident_holds_component(
+pub(super) fn resident_holds_element_name(
     shard: &ShardState,
     model_id: StoredModelKind,
     object_key: &str,
-    component: &str,
+    element_name: &str,
 ) -> bool {
     // THROUGH THE ONE SPELLING TABLE. This had its own four-arm decode; `container_block_ordinal`
     // needed the same four arms for a different question, and two copies of a decode is how two
-    // readers come to disagree about what a component means. `state::resident_component_address`
+    // readers come to disagree about what an element name means. `state::resident_element_name_address`
     // is the single table, and the value it finds -- an address -- is what the other callers want
     // anyway.
-    crate::engine::state::resident_component_address(
+    crate::engine::state::resident_element_name_address(
         shard,
         model_id.as_str(),
         object_key,
-        component,
+        element_name,
     )
     .is_some()
 }
@@ -2194,9 +2194,9 @@ pub(super) fn model_map_block_address(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) -> Option<ElementEntry> {
-    match (model_id, component) {
+    match (model_id, element_name) {
         ("string", None) => shard.string_address(object_key),
         ("context_node", None) => shard.context_nodes().get(object_key).cloned(),
         _ => None,
@@ -2212,12 +2212,12 @@ pub(super) fn released_bucket_block_address(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) -> Option<ElementEntry> {
     if shard.bucket_index.released_buckets.is_empty() {
         return None;
     }
-    let address = model_map_block_address(shard, model_id, object_key, component)?;
+    let address = model_map_block_address(shard, model_id, object_key, element_name)?;
     // THE CONTAINER'S ABSENCE IS THE CONDITION; THE BUCKET ID IS STILL KNOWN. This asks whether a
     // SPECIFIC bucket is released, and which bucket that is comes from the key, not from the block:
     // `released_buckets` is keyed by bucket id and the key's bucket is what a release recorded.
@@ -2610,7 +2610,7 @@ pub(super) fn release_bucket_blocks(
                     model_id.as_str(),
                     object_key,
                     // `None` -- the slot the lookup filed every block of this object under. The
-                    // triple this walked used to carry `block.component` as its third term and the
+                    // triple this walked used to carry `block.element_name` as its third term and the
                     // term was `None` for every entry, so the un-filing it drives does not move.
                     None,
                 );
@@ -2884,12 +2884,12 @@ pub mod uncovered_maintenance {
     }
 }
 
-/// Sync only the components a command actually wrote.
+/// Sync only the element names a command actually wrote.
 ///
 /// [`sync_context_blocks_for_object`] is given an object key and nothing else, so it re-upserts
 /// EVERY field that object holds. For a record hash carrying one field per record that is one
 /// upsert per stored record on every write, and each upsert removes and reinserts an entry in the
-/// object's component vector -- two `Vec` shifts whose tails are the whole object. The cost is
+/// object's element name vector -- two `Vec` shifts whose tails are the whole object. The cost is
 /// quadratic in the object's field count.
 ///
 /// Measured on a production-corpus one-box at a 260 MB store: a single-message ingest cost 40.1 s
@@ -2897,26 +2897,26 @@ pub mod uncovered_maintenance {
 /// memmove under `remove_object_block_lookup_entry`, reached from here. With this path taken the
 /// same ingest cost 0.13 s of datanode CPU.
 ///
-/// The batch path already knows the exact `(kind, object_key, component)` a command wrote --
-/// `command_upsert_components` computes it and the index-log delta has been built from it all
-/// along. Given that list the maintenance is one upsert per WRITTEN component instead of one per
-/// STORED component.
+/// The batch path already knows the exact `(kind, object_key, element_name)` a command wrote --
+/// `command_upsert_element_names` computes it and the index-log delta has been built from it all
+/// along. Given that list the maintenance is one upsert per WRITTEN element name instead of one per
+/// STORED element name.
 ///
-/// Returns false if any component's address is not in the shard maps; the caller then runs the
+/// Returns false if any element name's address is not in the shard maps; the caller then runs the
 /// whole-object sync exactly as before, so a shape this does not model costs a fallback rather
 /// than a stale index.
-pub(super) fn sync_blocks_for_written_components(
+pub(super) fn sync_blocks_for_written_element_names(
     shard: &mut ShardState,
     shard_id: ShardId,
-    components: &[(&'static str, String, Option<String>)],
+    element_names: &[(&'static str, String, Option<String>)],
 ) -> bool {
-    if components.is_empty() {
+    if element_names.is_empty() {
         return false;
     }
-    for (kind, object_key, component) in components {
+    for (kind, object_key, element_name) in element_names {
         // Read the address back from the map the write just updated, exactly as
         // `collect_upsert_index_items` does, so the block filed here is the block a reload serves.
-        let address = match (*kind, component.as_deref()) {
+        let address = match (*kind, element_name.as_deref()) {
             ("hash", Some(field)) => shard
                 .hashes
                 .get(object_key)
@@ -2936,7 +2936,53 @@ pub(super) fn sync_blocks_for_written_components(
             shard_id,
             kind,
             object_key,
-            component.clone(),
+            element_name.clone(),
+            address,
+            true,
+            false,
+        );
+    }
+    true
+}
+
+/// File the blocks of the hash fields a command wrote, and no others.
+///
+/// [`sync_context_blocks_for_object`] files every field the hash holds, and its filter against
+/// re-filing cannot work: it asks a lookup that resolves no named element. This reads each written
+/// field's address back from the map the write just updated -- the arm
+/// [`sync_blocks_for_written_element_names`] takes for a hash field -- without building a list of
+/// kind, key and name triples first.
+///
+/// Returns false if any field's address is not in the hash; the caller then runs the whole-object
+/// sync exactly as before, so a shape this does not model costs a fallback rather than a stale
+/// index.
+pub(super) fn sync_written_hash_fields(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+    fields: &[&str],
+) -> bool {
+    if fields.is_empty() {
+        return false;
+    }
+    for field in fields {
+        let address = shard
+            .hashes
+            .get(object_key)
+            .and_then(|held| held.get(*field))
+            .cloned();
+        let Some(address) = address else {
+            return false;
+        };
+        // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
+        // write staged its own outcome already and a second would have replay install the same
+        // block twice.
+        upsert_bucket_index_block_with(
+            shard,
+            shard_id,
+            "hash",
+            object_key,
+            Some((*field).to_string()),
             address,
             true,
             false,
@@ -2975,7 +3021,7 @@ pub(super) fn sync_context_blocks_for_object(
     // the one written twice and the one written once.
     //
     // ONLY THE NEWEST BLOCK IS FILED, which is what makes a maximum sufficient: the caller pops the
-    // last address and drops the rest, because these kinds carry no component and the index holds
+    // last address and drops the rest, because these kinds carry no element name and the index holds
     // one ref per object. Collecting every address the series ever held, into a HashSet and then a
     // sorted Vec, made a write carry the node's whole history -- 8,322 bytes to add a summary to a
     // node holding 20, 78,626 to add one to a node holding 320, 90.7% of the write and still
@@ -3067,8 +3113,8 @@ pub(super) fn sync_context_blocks_for_object(
     }
 
     // A context node's block lives in `shard.hashes` under a single field, so the rebuild derives
-    // it as kind "hash" with that field as the component -- a different shape from the kinds
-    // above, which carry no component. It is filed here the same way the rebuild would file it.
+    // it as kind "hash" with that field as the element name -- a different shape from the kinds
+    // above, which carry no element name. It is filed here the same way the rebuild would file it.
     //
     // Only the fields whose block is not already filed. This ran on every write and re-filed
     // EVERY field of the object each time -- cloning each field name to do it -- so writing a
@@ -3109,7 +3155,7 @@ pub(super) fn sync_context_blocks_for_object(
             shard_id,
             "hash",
             object_key,
-            // The COMPONENT position is still an owned name; that one belongs to the
+            // The ELEMENT NAME position is still an owned name; that one belongs to the
             // bucket index and is converted separately.
             Some(field.to_string()),
             address,
@@ -3126,7 +3172,7 @@ pub(super) fn sync_context_blocks_for_object(
     for (kind, key, mut live) in groups {
         // File the newest block, not every block the object has ever had.
         //
-        // These kinds carry no component, so all of an object's blocks file under the same
+        // These kinds carry no element name, so all of an object's blocks file under the same
         // (kind, key, None). `upsert_bucket_index_block_with` drops that entry's existing refs
         // before inserting, so filing a list leaves only its last element -- the other entries
         // are removed again on the way past. The index holds ONE ref per object here either way;
@@ -3529,8 +3575,8 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
 ///
 /// `accept` is given the OBJECT KEY AND THE ADDRESS, and the key is what a routing-bucket filter
 /// needs now that a block's bucket is `block_routing_bucket(object_key, ..)` rather than a field on
-/// the address. Everything owned is still built after it: several arms compose their component with
-/// `format!` or `member_component`, and a `LiveBlockEntry` costs four allocations -- an owned key and an
+/// the address. Everything owned is still built after it: several arms compose their element name with
+/// `format!` or `member_element_name`, and a `LiveBlockEntry` costs four allocations -- an owned key and an
 /// owned kind, each built as a `String` and then copied into an `Arc<str>`. None of that runs for a
 /// block the caller is not going to keep.
 ///
@@ -3562,13 +3608,13 @@ fn visit_model_live_blocks(
     //
     // The kind is a `ModelKind`, not a string literal: see `model_kind_registry` above for why
     // an arm that could name its own kind is an arm the reporting registry can fall behind.
-    /// ONE ENTRY PER DISTINCT BLOCK, CARRYING NO COMPONENT -- the whole of the collapse, written
+    /// ONE ENTRY PER DISTINCT BLOCK, CARRYING NO ELEMENT NAME -- the whole of the collapse, written
     /// once for every kind that takes it.
     ///
     /// # THE DEDUP IS LOAD-BEARING FOR CORRECTNESS, NOT ONLY FOR THE COUNT
     ///
-    /// The entries emitted here carry no component, and `state::block_index_handle` -- the key
-    /// `block_index` is still keyed by -- HASHES the component along with the object key and five
+    /// The entries emitted here carry no element name, and `state::block_index_handle` -- the key
+    /// `block_index` is still keyed by -- HASHES the element name along with the object key and five
     /// address terms. Two entries of one object that agreed on every one of those AND carried
     /// `None` would hash to one handle, and the second `insert` would displace the first: a handle
     /// collision does not fail, it returns a DIFFERENT block. That is the recorded 39-of-40 element
@@ -3721,18 +3767,18 @@ fn visit_model_live_blocks(
                 // THIS IS THE BRANCH THAT RUNS, and the note here used to say the opposite.
                 //
                 // It read: "UNREACHED TODAY: `index_entry_names_a_block` answers false for zset,
-                // because a zset component carries the SCORE and dropping it deletes data. Kept so
-                // the arm exists the moment the score moves off the component."
+                // because a zset element name carries the SCORE and dropping it deletes data. Kept so
+                // the arm exists the moment the score moves off the element name."
                 //
-                // The score DID move off the component -- see the note in the `else` arm below and
-                // `zset_component` -- and `index_entry_names_a_block` was updated to answer true for
+                // The score DID move off the element name -- see the note in the `else` arm below and
+                // `zset_element_name` -- and `index_entry_names_a_block` was updated to answer true for
                 // zset along with the other three container kinds. The comment was not. So it named
                 // the live branch unreachable and, by implication, the dead one live.
                 //
                 // Which way round this sits is not cosmetic: every container kind now converges on
-                // the BLOCK, so no live arm of this walk emits a component at all, and the
-                // `Some(component)` branches below are unreachable today. A reader costing out the
-                // component's allocations would be pricing code that never executes -- which is
+                // the BLOCK, so no live arm of this walk emits an element name at all, and the
+                // `Some(element_name)` branches below are unreachable today. A reader costing out the
+                // element name's allocations would be pricing code that never executes -- which is
                 // exactly the mistake this note caused.
                 //
                 // AND THE CLAIM IS ENFORCED, not just asserted here:
@@ -3754,15 +3800,15 @@ fn visit_model_live_blocks(
             } else {
                 for (member, (_biased, address)) in members.iter() {
                     if accept(key, address) {
-                        // THE SCORE NO LONGER RIDES THIS STRING -- see `zset_component`, the
+                        // THE SCORE NO LONGER RIDES THIS STRING -- see `zset_element_name`, the
                         // write path's own renderer, which this mirrors rather than calls (this
                         // walk is over `(member, (biased, address))` pairs already in hand, not a
                         // single member at a time). `_biased` stays bound and unused rather than
                         // dropped from the pattern, so a future reader finds the score sitting
                         // right beside the render that no longer spells it.
-                        let component =
-                            crate::engine::execute_on_shard::zset_component(member);
-                        emit(ModelKind::Zset, KeyRef::Shared(key), Some(component.as_str()), address);
+                        let element_name =
+                            crate::engine::execute_on_shard::zset_element_name(member);
+                        emit(ModelKind::Zset, KeyRef::Shared(key), Some(element_name.as_str()), address);
                     }
                 }
             }
@@ -3777,8 +3823,8 @@ fn visit_model_live_blocks(
             } else {
                 for (seq, address) in elements.iter() {
                     if accept(key, address) {
-                        let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
-                        emit(ModelKind::List, KeyRef::Shared(key), Some(component.as_str()), address);
+                        let element_name = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                        emit(ModelKind::List, KeyRef::Shared(key), Some(element_name.as_str()), address);
                     }
                 }
             }
@@ -3791,17 +3837,17 @@ fn visit_model_live_blocks(
         // compaction sweep. So changing how a container is FILED anywhere else is undone before the
         // sweep returns, and changing it HERE is the whole change.
         //
-        // UNDER THE GATE THE BLOCK ID IS THE IDENTITY. A set's component is
-        // `set_component(member)`,
+        // UNDER THE GATE THE BLOCK ID IS THE IDENTITY. A set's element name is
+        // `set_element_name(member)`,
         // and it exists only because the entry is per-element: something has to tell two entries of
         // one object apart. One entry per BLOCK needs no such name -- the block already carries each
         // element's key in its payload, written there by `container_blocks` precisely so a block is
         // interpretable without the entry that names it -- so the entry is emitted with no
-        // component at all.
+        // element name at all.
         //
         // WHY THE MEMBERS DO NOT GO MISSING, which is the question this shape raises and #2098
         // answered: the reconcile's live filter keys on `(slab, offset, length)` and carries NO
-        // component, so it asks whether an element's BLOCK is one the index names, not whether the
+        // element name, so it asks whether an element's BLOCK is one the index names, not whether the
         // element is NAMED by an entry. One entry naming the folded block therefore keeps every
         // member of that block live. The model map is already the authority for existence; this
         // stops the index pretending to be the name-holder.
@@ -3820,9 +3866,9 @@ fn visit_model_live_blocks(
             } else {
                 for (member, address) in members.iter() {
                     if accept(key, address) {
-                        let component =
-                            crate::engine::execute_on_shard::set_component(member);
-                        emit(ModelKind::Set, KeyRef::Shared(key), Some(component.as_str()), address);
+                        let element_name =
+                            crate::engine::execute_on_shard::set_element_name(member);
+                        emit(ModelKind::Set, KeyRef::Shared(key), Some(element_name.as_str()), address);
                     }
                 }
             }
@@ -3926,9 +3972,9 @@ fn visit_model_live_blocks(
     arms(
         shard,
         counting_accept,
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             emitted += 1;
-            emit(kind, object_key, component, address);
+            emit(kind, object_key, element_name, address);
         },
     );
     MODEL_MAP_ADDRESSES_VISITED.fetch_add(visited.get(), std::sync::atomic::Ordering::Relaxed);
@@ -3992,14 +4038,14 @@ pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBl
         shard,
         ModelWalkTally::WholeShardEntries,
         |_, _| true,
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             entries.push(live_block_entry(
                 // THE HANDLE, LENT RATHER THAN REBUILT. This was `object_key.to_string()`, which
                 // the constructor then turned into an `Arc` -- two allocations of characters the
                 // map already held.
                 object_key.to_handle(),
                 kind.as_str(),
-                component.map(str::to_string),
+                element_name.map(str::to_string),
                 address.clone(),
             ));
         },
@@ -4031,12 +4077,12 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
                 == routing_bucket
         },
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             entries.push(live_block_entry_filed(
                 // Lent, not rebuilt -- see `collect_model_live_block_entries`.
                 object_key.to_handle(),
                 kind.as_str(),
-                component.map(str::to_string),
+                element_name.map(str::to_string),
                 address.clone(),
                 routing_bucket,
             ));
@@ -4060,7 +4106,7 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
 ///     not name, and the only place they are is the maps.
 ///
 /// So the walk stays. What goes is materializing the store to do it: `accept` runs on the address,
-/// before any key, component or entry is built, and only a wanted block is ever turned into an
+/// before any key, element name or entry is built, and only a wanted block is ever turned into an
 /// identity.
 fn derive_released_block_identities(
     shard: &ShardState,
@@ -4078,7 +4124,7 @@ fn derive_released_block_identities(
                 end_routing_bucket,
             ))
         },
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             let routing_bucket = block_routing_bucket(
                 object_key.as_str(),
                 start_routing_bucket,
@@ -4092,7 +4138,7 @@ fn derive_released_block_identities(
                     // An OWNED identity by construction -- this one wants characters, and saying
                     // so is the point of the enum: an arm that keeps a String asks for one.
                     object_key.as_str().to_string(),
-                    component.map(str::to_string),
+                    element_name.map(str::to_string),
                     address,
                 ));
         },
@@ -4146,357 +4192,27 @@ impl BlockFiled {
 #[derive(Clone)]
 pub(super) struct ObjectDeletionFiled(());
 
-/// [`upsert_bucket_index_block`], returning the witness a recorded container needs.
-///
-/// The void-returning spelling below stays for the thirty-odd callers that are not behind a
-/// recorded container; this one exists so that those that are cannot skip it and still compile.
 /// Whether an index entry for this kind takes its identity from the BLOCK rather than the ELEMENT.
 ///
-/// # THE SET OF KINDS, AND WHY HASH AND ZSET ARE NOT IN IT
+/// True for `set`, `list`, `hash` and `zset`. Those four file one entry per block, and the entry
+/// holds an address and nothing else: `BlockIndex` has no field for an element name, so there is no
+/// other position for an entry to be in. The element's name lives where the data lives -- the
+/// resident map for the live element, the bucket's tombstone rows for a removed one -- and a rewrite
+/// in place is superseded through the address the element's resident map held, which the filer is
+/// handed as a `ReplacedBlock`.
 ///
-/// RESTATED. This said "only its SET arm consumes the answer: hash, zset and list emit one named
-/// entry per element either way". `list` is here too now, and widening the body is the change --
-/// every filing predicate reads THIS function, so the projection,
-/// `upsert_bucket_index_block_inner` and `fold_delta_block_items` move together rather than being
-/// talked into agreeing.
+/// False for `string`, `control_state` and `context_node`, which hold one block per object and
+/// converge on the object key: a string rewritten three times leaves one live entry over one block
+/// because of it, and a predicate keyed on the block address alone would leave entries over dead
+/// blocks.
 ///
-/// TWO OF THE THREE REMAINING CONTAINER KINDS WERE ATTEMPTED AND REFUSED ON MEASUREMENT. Both
-/// refusals are recorded here because each is a different kind of obstacle, and neither is about
-/// sequencing:
+/// WRITTEN ONCE AND READ BY EVERY SITE THAT NEEDS IT. `upsert_bucket_index_block_inner`,
+/// `fold_delta_block_items`, `visit_model_live_blocks` and `recorded_map::install_element` all read
+/// this function, so they agree by construction and not by being talked into it.
 ///
-///   * `zset` -- ITS COMPONENT IS NOT A NAME, IT IS THE SCORE. A zset component is
-///     `{biased_score:016x}{hex(member)}`, so the entry's name is the only copy of an element's
-///     score outside `shard.zsets`. Dropping it DELETES DATA rather than a label: a member whose
-///     durable entry a fold has not delivered cannot be rebuilt from its block at all, measured as
-///     `Some(3.0)` written and `None` served. And a RESCORE is an in-place rewrite from this
-///     function's side -- the old element key is tombstoned while its live entry is not superseded
-///     -- which left TWO live entries for one member at one score. Attempting it turned 12 tests
-///     red across 5 modules (`element_ordinal_reuse`, `durable_outranks_derived`,
-///     `container_tombstone_entry`, `container_block_ordinal`, `container_member_shadow`), several
-///     of them control arms that panic with "a zset block is named by its component". Converting
-///     zset means first taking the score OUT of the component.
-///   * `hash` -- FOUR OF ITS READERS RESOLVE THROUGH THE INDEX BY COMPONENT, with no resident-map
-///     fallback. `read_bucket_index_value` -> `bucket_index_block_address` requires
-///     `block.component.as_deref() == component` on every branch, so a nameless entry makes a
-///     present field unreachable: `HashGet` answers MISSING for a field that is there,
-///     `HashIncrBy` reads that miss as `unwrap_or_default()` and restarts the counter at zero,
-///     `HashLen` counts entries and so reports the BLOCK count, and `HashGetAll` survives only
-///     because it already serves the union with `shard.hashes`. Hash is also the one container
-///     kind that rewrites an element IN PLACE -- `HashSet` on an existing field keeps the
-///     component and takes a new address -- which is the shape the paragraph below says an
-///     address-keyed predicate mishandles. Converting hash means first moving those four readers
-///     onto `shard.hashes`.
-///
-/// `list` IS THE ONE THAT CONVERTS, and it converts because its component carries nothing the
-/// engine reads back out of the entry. The sequence that orders a list lives in `shard.lists`,
-/// which is keyed BY that sequence, and both list readers (`ListLen`, `ListRange`) read the
-/// resident map. `list` also has no `LSET`, `LINSERT` or `LREM`, so it never rewrites an element in
-/// place and the two-live-entries shape cannot arise for it.
-///
-/// Adding `Hash` or `Zset` to the list below without doing the work named above is the lethal-low
-/// direction: it reads as a smaller index and serves a short object.
-///
-/// # BOTH REFUSALS WERE RE-DRIVEN WITH THAT WORK DONE, AND BOTH STILL REFUSE
-///
-/// The two paragraphs above each name a prerequisite, and BOTH have since landed: a zset component
-/// is `member_component(member)` with the score on the WAL outcome's `value` slot, and hash's four
-/// index-by-component readers answer from `shard.hashes`. So the flip was attempted again with
-/// both in hand. IT WAS REFUSED AGAIN, ON MEASUREMENT, and the prerequisites are not what is left
-/// over -- what refuses it now is a THIRD obstacle that neither paragraph above is about and that
-/// the prerequisites could not have addressed.
-///
-/// WHAT THE BLOCK-KEYED TERM DOES AND DOES NOT FIX. `upsert_bucket_index_block_inner`'s supersede
-/// term keys on `super::live_block_key` when a kind names a block, and that solves OVER-matching:
-/// one filing no longer takes every sibling entry of the object with it. It does not solve
-/// UNDER-matching. An element rewritten IN PLACE is written to a NEW address, so the new filing's
-/// block key matches NO existing entry and the element's previous live entry is never superseded at
-/// all. `set` and `list` are immune because neither can rewrite an element in place -- a set
-/// member's block key is its member, and a list has no `LSET`, `LINSERT` or `LREM`. Hash
-/// (`HashSet` on an existing field) and zset (a rescore) both can, which is the shape the hash
-/// paragraph above already warned "an address-keyed predicate mishandles" -- a warning that
-/// survived its own prerequisite.
-///
-/// MEASURED, by flipping this function to all four kinds and running the modules that cover them.
-/// The composed base had ONE failure; the flip added SEVENTEEN. Two of them are product defects
-/// rather than fixtures that went stale, and either on its own refuses the flip:
-///
-///   * `gated_corpus_across_a_store_boundary::an_ungated_store_comes_back_whole_under_the_gate`
-///     served `hash: 41` of 40 elements -- an element MORE than was written, from the stale live
-///     entry the rewrite failed to supersede. That arm is labelled "the direction every existing
-///     deployment takes on upgrade", so this is the upgrade path and not a corner.
-///   * `container_tombstone_entry::a_rescore_sweeps_its_own_tombstone_because_the_component_no_
-///     longer_spells_the_score` found 2 live entries for one member at one score. That is the
-///     zset paragraph's own two-live-entries shape, reproduced with the score already moved off
-///     the component -- so moving the score was necessary and not sufficient.
-///
-///   * `element_ordinal_reuse::the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_
-///     next_element` also changed behaviour, and its own message asks for the module's refutation
-///     to be re-read rather than the assertion relaxed. It is listed apart because it is a
-///     behaviour change this has not finished attributing, not a demonstrated loss.
-///
-/// The other fourteen are stale PLANTS and control arms: several manufacture a component-less
-/// entry by seeding a named one and stripping it, which strips nothing once nothing files a name
-/// (`stripped 0 entries, not one`), and several assert in their own names that hash and zset are
-/// held out. Those would all be ordinary restatement work. The two above are not.
-///
-/// SO THE WIDTH STEP THIS WAS LEADING TO IS BLOCKED TWICE OVER, and the second block is the one
-/// that matters more. Even with all four kinds collapsed, `BlockIndex::component` is NOT dead: the
-/// TOMBSTONE sweep in `upsert_bucket_index_block_inner` reads it against the ELEMENT's own name,
-/// and a tombstone is a per-element fact by design -- see
-/// `super::container_index_files_one_entry_a_page`, which scopes the collapse to LIVE entries and
-/// gives two measured consequences of a nameless tombstone. Driven: making that term vacuous, as
-/// removing the field forces, turns `write_after_fold::a_re_add_after_a_removal_does_not_bring_
-/// the_removed_member_back` red and makes a gated removal serve 12 members where the invariant is
-/// 11. `state`'s `TheEntryWithoutAnElementName` records what the entry WOULD measure without the
-/// field -- 40 bytes, zero slack -- so the number is in hand for whoever moves that identity off
-/// the live entry, which is what the step actually needs and is not this function's to do.
-///
-/// MEASURED, which is why the scope is not a matter of taste: `string`, `control_state` and
-/// `context_node` file NO element name with exactly ONE block per object, and for them the
-/// component-keyed convergence is what supersedes a relocated block -- a string rewritten three
-/// times leaves one live entry over one block because of it. An address-keyed predicate applied to
-/// every kind would leave two live entries naming dead blocks on a single set rewrite and one on
-/// every string write in the engine. `write_after_fold::a_component_less_kind_rewritten_still_
-/// resolves_to_one_page` holds that.
-///
-/// WRITTEN ONCE AND READ BY EVERY SITE THAT NEEDS IT. Several copies of a condition is how most of
-/// them come to agree and the rest do not, which is the shape this series has already hit once with
-/// two filers disagreeing.
-/// # THE FLIP IS DONE AND WHAT IS LEFT IS NAMED HERE, ARM BY ARM
-///
-/// Hash and zset are IN the set now. Three consumers of a per-element name on a live entry had to
-/// move first, and a fourth turned out to be on the read path:
-///
-///  1. THE FILING SUPERSEDE TERM. Keyed on the landing address it finds nothing for a rewrite in
-///     place. `ReplacedBlock` carries the element's previous address, read from the resident map,
-///     and the filer retires that block's entry when no sibling is left on it.
-///  2. THE TOMBSTONE SWEEP. A tombstone is a per-ELEMENT fact; its name lives in
-///     `BucketNode::tombstone_elements` now, where only a removal pays for it.
-///  3. THE ORDINAL ALLOCATOR. `state::container_block_ordinal` picked an element's existing position
-///     out of the index BY COMPONENT; it asks the resident map, which answers the overwrite's own
-///     address and the live high-water mark alike.
-///  4. `Command::HashGetAll`. Its index half read a nameless entry's component through
-///     `unwrap_or_default()`, so every block was served as a field called `""` whose value was the
-///     raw block FRAME. That -- not a stale entry -- is what served `hash: 41` of 40.
-///
-/// MEASURED AFTER ALL FOUR: the two product defects that refused this before are gone. The upgrade
-/// arm serves `hash 40 set 40 zset 40 list 40 of 40`, `conformance_oracle_matches_reference_model`
-/// and `a_command_of_one_type_answers_empty_for_a_key_of_another` pass, and no zset rescore leaves
-/// two live entries.
-///
-/// ## ONE THING IS STILL ASYMMETRIC, AND IT IS A DEFECT OF FOOTPRINT RATHER THAN OF ANSWERS
-///
-/// A gated REMOVAL does not retire the live entry over the block its element vacates.
-/// `mark_bucket_index_block_deleted_recording`'s `retain` matches `block.component == component`,
-/// which a block-named entry cannot satisfy, so the live entry stays and a tombstone is added beside
-/// it. That is deliberate where the block still holds siblings -- dropping it would take them with
-/// it -- and it is a STALE LIVE ENTRY over a dead block where it does not. Membership is still right,
-/// because `container_membership` folds by append position and the tombstone is the later block:
-/// `a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds` serves every element
-/// and `a_gated_removal_leaves_every_other_member_whole_across_a_reload` holds across a reload.
-/// What it costs is an entry per removal that nothing collects.
-///
-/// THE FIX IS THE ONE THE WRITE PATH ALREADY HAS: ask the resident map whether any sibling is still
-/// on the vacated block -- `RecordedMap::block_an_element_vacates` is that question -- and retire the
-/// entry when none is. It is not done here because a removal reaches the index through a different
-/// door and that door takes no element type. `container_block_ordinal::the_ordinal_names_a_position_
-/// and_a_delete_frees_it` is the arm that reads the retained live entry.
-///
-/// ## AND THE GUARDS THAT STILL ASSERT THE PRE-COLLAPSE STATE, BY MODULE
-///
-/// The retirement of the gate turned every UNGATED-path test into a gated-path test, so this
-/// surface grew rather than shrank: seventeen before it, and 59 after.
-///
-/// THE FIGURE IS THE RUN'S OWN, WITH ITS FOUR-TERM SUM: 758 passed, 59 failed, 97 ignored, 1,941
-/// filtered out -- 2,855, which is this branch's own total, against `running 914 tests` for the
-/// filter (758 + 59 + 97). Measured with the `_scale`, `campaign_end_to_end` and `bucket_fill`
-/// measurement families excluded, which is stated because a count with no denominator and no
-/// exclusion cannot be checked.
-///
-/// TWO EARLIER DRAFTS OF THIS PARAGRAPH WERE WRONG IN THE SAME DIRECTION. The first wrote 49 as a
-/// TOTAL from a run that had not finished; the second corrected it to a FLOOR of 53, from the same
-/// unfinished run. The run ended at 59. A count read off a run in flight is a floor however it is
-/// worded, and the only fix is to wait for the verdict line.
-///
-/// AND 59 IS THE FIGURE AT THE RETIREMENT COMMIT, not now: two of them have since been fixed --
-/// `collapse_for_list`'s inverted arm and the FIFTH `BucketNode` decomposition, in
-/// `range_free_bucket_id::removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_
-/// combination`, which was the only one of the five the tombstone word did not reach when the other
-/// four were restated.
-///
-/// ## ONE OF THE 59 IS NOT A RESTATEMENT AND IS ATTRIBUTED HERE
-///
-/// `wal_reclaim_frame_boundary::reclaim_frees_more_than_accrues_at_both_corpus_sizes` asserts that
-/// the reclaimed log settles to a FLOOR rather than ratcheting, as a spread under one percent of the
-/// mean over the last three rounds. It is MINE, and it is a flake rather than a deterministic
-/// break: five runs on `9651d82fd` pass five times with `Compiling` 0, and five runs on this branch
-/// pass THREE times -- failing at spreads of 29, 49, 59 and 66 B against means near 2,875, which is
-/// 1.0 to 2.3 percent.
-///
-/// THE RATCHET ARM IS NOT THE ONE THAT FIRES. The floors do not trend upward -- [2869, 2869, 2898],
-/// [2858, 2917, 2851] -- so what moved is the VARIANCE of the settled floor, not its level. The
-/// likeliest cause is this series' own extra per-rewrite work on the index-log delta: a rewrite now
-/// retires the entry over the block it vacates, so a round's delta is a slightly different size than
-/// it was.
-///
-/// THE BAND IS NOT WIDENED, and that is deliberate. The test's own comment already says the last
-/// digits of these counts move between rounds, so the one-percent band was sitting at this
-/// magnitude's noise floor before this series touched it -- but a band that was marginal is not a
-/// licence to move it once a change pushes it over. Adjusting the assertion until it passes is the
-/// failure this campaign has recorded most often. It is left red and attributed.
-/// into four shapes:
-///
-///   * THEY IDENTIFY AN ELEMENT IN THE INDEX BY ITS COMPONENT, to establish a population that still
-///     exists and is simply no longer identifiable that way. `resident_map_readers` x2,
-///     `set_listing_block_reads` x1, `fold_hash_map_completeness` x2, `carried_block_identity` x2,
-///     `folded_block_membership`, `container_block_element_key`, `entry_object_identity` x2.
-///   * THEY ASSERT ONE ENTRY PER ELEMENT, which is the collapse written down as an expectation:
-///     `part4` x5 (`one_objects_pages_are_one_lookup_row_holding_every_ref`,
-///     `every_field_of_a_hash_is_filed_in_the_bucket_index`,
-///     `the_index_wire_keys_are_what_they_were`, `object_block_lookup_occupancy_census`,
-///     `a_bucket_holding_one_block_holds_no_node`), `entry_count_versus_block_count`,
-///     `blocks_per_bucket` x2, `block_entry_element_naming` x2, `object_is_a_key_not_an_element` x2,
-///     `container_blocks_are_batched` x1.
-///
-///     AND THE FIFTH NAME IN THAT LIST WAS WRONG, MEASURED. It read
-///     `block_index_identity_string_cardinality`, which PASSES -- driven by name, 1 of 2855. The
-///     part4 arm that is red is `the_index_wire_keys_are_what_they_were`, which is a stored-format
-///     golden rather than a one-entry-per-element expectation: the serialized key set lost
-///     `component`. The COUNT of five was right and one of its members was not, which is the shape
-///     a list of names goes stale in without the total moving.
-///   * THEIR SUBJECT NO LONGER EXISTS AT ALL, which is the case for RESTATEMENT INTO A TRIPWIRE
-///     rather than deletion: `set_listing_block_reads::every_member_a_set_listing_returns_is_
-///     already_spelled_by_its_component` (the redundancy the collapse deleted),
-///     `container_member_shadow` x2 (the same redundancy, priced), `gated_corpus_across_a_store_
-///     boundary` x2 (both arms are about an UNGATED reader or writer, and there is neither),
-///     `hash_read_union_divergence` x1.
-///   * THEY RECOVER AN ELEMENT FROM ITS NAME -- `durable_outranks_derived` x5, the one group whose
-///     subject becomes structurally UNREPRESENTABLE rather than merely absent. A test proving a
-///     defect unreachable is worth more than one proving it currently absent, so these are the ones
-///     to restate with their doc saying the divergence can no longer be REPRESENTED. The durable
-///     maps are the sole source now -- all four carry `#[serde(default)]` -- and the stamp is what
-///     bounds it: `block_entry_names::an_ungated_store_is_refused_before_it_is_served`.
-///
-/// AND TWO OF THE ORIGINAL INHERITED REDS ARE GONE, taken by the rebase onto `matrixark/main`
-/// `2ae24a03d`: PR #2123 gained three restatements after this branch copied its commit, and
-/// `container_member_shadow::a_zset_read_examines_no_page_index_entries_and_a_hash_whole_object_
-/// read_does` and `length_answer_and_listing_agree` are main's own now. `length_answer` still
-/// reddens, at a different arm.
-///
-/// Listed so they are restatement work someone can pick up rather than a red count to be rediscovered.
-/// Each was DRIVEN and its message read; none is a demonstrated loss of served data.
-///
-///   * `carried_block_identity` x2 -- both recover a hash field's name FROM THE ENTRY. "key h0
-///     recovered 0 of 25 field names after a reload" is the collapse; the module's subject is
-///     whether the name is independently recoverable, and under the collapse it is recoverable from
-///     the BLOCK's own frame and from `shard.hashes`, not from the entry.
-///   * `container_member_shadow` x3 -- its zset block walk does
-///     `.expect("a zset block is named by its component")`. The redundancy it measures between a
-///     component and the block payload is what the collapse DELETED, so two arms are measuring a
-///     cost that is gone; the third is an inherited red (below).
-///   * `durable_outranks_derived` x4 -- these plant a state where the index names an element the
-///     durable map does not hold, and assert it comes back FROM ITS NAME. A collapsed index names
-///     no element, so that recovery is gone BY DESIGN: the four resident maps are all durable
-///     (`#[serde(default)]`) and are the authority, and an index written before the collapse is
-///     refused by `SHARD_INDEX_FORMAT_VERSION` and rebuilt from the WAL. The delta-fold door those
-///     arms were written for is closed from the other side too, because
-///     `collect_upsert_index_items` reads the resident map, so an item exists only where the map
-///     held the element.
-///   * `element_ordinal_reuse` x4 -- the high-water mark and the freed-ordinal arms drive the
-///     allocator by blanking or reading INDEX entries. The allocator reads the resident map now.
-///   * `fold_hash_map_completeness` x2 -- both floor on "the block index names N fields".
-///   * `container_block_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it` -- the retained
-///     live entry described above.
-///   * `entry_object_identity` x2 -- `the_whole_object_read_path_asks_for_every_component_of_one_key`
-///     is about a read path that no longer asks by component.
-///
-/// AND THE "INHERITED" HALF OF THAT CLAIM IS REFUTED, MEASURED ON THIS BRANCH'S OWN BASE.
-///
-/// This paragraph read "AND TWO REDS ARE INHERITED, not this change's" and named
-/// `length_answer_and_listing_agree::the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_
-/// and_a_reload_restores_them` as one of them, on the evidence that it fails on `9651d82fd`. That
-/// commit is not what this branch sits on. Driven on `2ae24a03d` -- the merge-base, and
-/// `matrixark/main` itself, both at tree `ea1b7ea16d` -- IN A WORKTREE OF ITS OWN WITH ITS OWN
-/// TARGET DIR: it PASSES. 2 passed, 0 failed, 2,845 filtered out, 2.58 s. The same arm run the same
-/// way on this branch FAILS, 5 passed 1 failed of 2,855, 2.83 s. Same run shape on both sides, so
-/// the difference is not the run's width or its load.
-///
-/// SO IT IS THIS BRANCH'S OWN RED AND IT IS A RESTATEMENT, not an inheritance to be stepped around.
-/// Its message says `HashGetAll` "serves the union of the two and this change does not touch it" --
-/// and this change DOES touch it: the fourth consumer moved above is `Command::HashGetAll`, whose
-/// index half now answers from `shard.hashes`. With the container a strict subset of the index the
-/// listing therefore follows the CONTAINER (5) where the arm pins it to the INDEX (6). The source
-/// moved; the assertion names the old source. An ancestor that is not your base cannot establish
-/// that a red is inherited.
-///
-/// `container_member_shadow`'s arm is main's own, as the paragraph above this list already records.
-///
-/// ## AND THE WIDTH STEP IS MEASURED NOW, FIELD REMOVED, NOT INFERRED FROM A PROBE
-///
-/// `TheEntryWithoutAnElementName` infers 40 from a field set written out beside the real struct.
-/// The field was actually REMOVED and the width read off the live type: `size_of::<BlockIndex>()`
-/// const-evaluates EQUAL TO 40, and a bracketing `!= 39 && != 41` passes with it, so 40 is exact
-/// rather than a bound. Reverted byte-exactly afterwards by CONTENT HASH -- an `mtime`-preserving
-/// restore is what makes a control run the previous mutant's binary.
-///
-/// WHAT THE REMOVAL ACTUALLY COSTS, ENUMERATED BY THE COMPILER AND NOT BY GREP: 139 error
-/// diagnostics across 45 FILES -- 101 `E0609` (no such field), 34 `E0560` (struct literal names
-/// it), 3 `E0080` (the const decompositions). THAT IS A FLOOR, for the same reason the failure
-/// count was: `E0560` SUPPRESSES `E0063` on the same literal, so the struct-literal sites are two
-/// passes and not one. Grep is no substitute here -- `component` appears about 2,000 times in this
-/// crate and `engine_storage_state.rs` ALONE DECLARED THE SAME FIELD ON A SECOND STRUCT, `ComponentBlocks`, whose
-/// own `component: Option<Arc<str>>` a field-text match could not tell from this one. That second
-/// declaration is gone: `ComponentBlocks`, `ComponentList` and `ObjectBlockRefs` were deleted when
-/// the object lookup collapsed onto `BlockRefs`, so the entry below is the only place in the crate
-/// an element name could live.
-///
-/// AND THREE `retain` PREDICATES COMPARE A COMPONENT. TWO ARE ALREADY VACUOUS AND ONE IS LOAD-
-/// BEARING, which is the distinction whoever removes the field has to make site by site:
-///
-///   * `storage_bucket_internals`'s no-lookup arm compares `block.component` against
-///     `entry.component` -- two entries. Both are `None` for every kind now, so the term is
-///     ALREADY always true and asserts nothing before the field is touched.
-///   * `engine.rs`'s delta-fold arm compares `block.component` against `filed_name`, which is
-///     `None` whenever the kind names a block and `None` for the three kinds that do not file an
-///     element name at all. So `filed_name` is unconditionally `None` and this term is vacuous too.
-///   * `mark_bucket_index_block_deleted_recording`'s arm compares `block.component` against the
-///     FUNCTION ARGUMENT, and that one still decides something: `None == Some(member)` is false for
-///     a container and `None == None` true for a string. It must become `component.is_none()` and
-///     NOT be deleted as a tautology -- it is what keeps the ungated arm serving the kinds that
-///     converge on the object key.
-///
-/// THE THIRD ONE IS ALSO WHERE A REMOVAL'S OBJECT TOMBSTONE WENT. Because that argument match
-/// cannot fire for a container, `deleted_object_ids` stays empty and `bucket.deleted_object_index`
-/// is never extended -- so a container key whose LAST element is removed never reads as a deleted
-/// object, and `object_manager::runtime_report` asks `deleted_object_index.contains` per block.
-/// `container_tombstone_entry::a_keys_last_element_still_files_its_object_id` is the arm, and it
-/// passed on the base only by holding the gate OFF: all 7 of that module pass on `2ae24a03d` and 4
-/// fail here. So this is the collapse's consequence and not the width step's, and it is an ANSWER
-/// the shard gives through a public report rather than the footprint the paragraph above scopes it
-/// to. Nothing SERVED is short -- membership still folds by append position.
-///
-/// ## AND THE WIDTH STEP THIS LEADS TO NEEDS TWO MORE PIECES, NEITHER OF WHICH IS THIS FLIP
-///
-/// OF THESE TWO, THE FIRST IS DONE AND THE SECOND IS NOT -- read this list as one remaining piece.
-/// The gate is retired, so there is no off position left to honour. The derived view still derives
-/// a container element from `entry.component` in `rebuild_unserialized_model_maps_from_bucket_index`
-/// and `reconcile_secondary_views_from_bucket_index`, and those two are inside the 45-file census
-/// above rather than ahead of it.
-///
-/// `state`'s `TheEntryWithoutAnElementName` measures the entry at 40 bytes with zero slack, tied to
-/// the live type, so the number is in hand. Removing the field needs:
-///
-///   * THE GATE'S OFF POSITION RETIRED. `BlockIndex::component` is the only place an element name
-///     can live on an entry, so with the field gone `index_entry_names_a_block` returning false
-///     cannot be honoured: nothing could file a name, and the ungated readers that match
-///     `block.component == component` -- `bucket_store::bucket_index_block_address` and its
-///     component walk -- would answer wrongly. `TS_CONTAINER_ONE_ENTRY_A_PAGE` becomes a ONE-WAY
-///     door. Seven non-test sites read it.
-///   * THE DERIVED VIEW'S ELEMENT DERIVATION RETIRED. `rebuild_unserialized_model_maps_from_bucket_
-///     index` and `reconcile_secondary_views_from_bucket_index` rebuild the resident maps from
-///     `entry.component`; with no field they can derive NO container element and the durable maps
-///     become the sole source. That is the direction this campaign has been heading, and it is what
-///     the four `durable_outranks_derived` arms above are about.
+/// There is no gate to hold off any more and no kind is waiting to be added. How the four kinds came
+/// to be here, and what each attempt before it measured, is in the history of this function, not in
+/// a comment that has to be kept true.
 pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
     // NO GATE. Every container kind files one entry a block, unconditionally: the entry has no field
     // for an element name, so there is no other position to be in. What this function still decides
@@ -4511,52 +4227,12 @@ pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
         || kind == ModelKind::Zset.as_str()
 }
 
-/// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the block is the
-/// identity.
-///
-/// # WHY THIS IS A TYPE AND NOT AN `Option<&str>`
-///
-/// After the filing name and the element name come apart, two values of identical shape and
-/// opposite meaning are live in the same scope: this one, which becomes `None` for a gated
-/// container, and [`ElementComponent`], which stays the element's own name. Passing both as
-/// `Option<&str>` makes a transposition compile -- and a transposition here is silent and
-/// resurrects a removed member, because the tombstone sweep would then match every tombstone of an
-/// object instead of one. The newtype makes the mistake unrepresentable rather than something a
-/// test has to think to look for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FiledComponent(Option<String>);
-
-/// The name of the ELEMENT a write is about, whatever its entry is filed under.
-///
-/// The tombstone sweep needs THIS one: a re-add must clear the tombstone its own element left, and
-/// under a gated container the entry is filed under no name at all. See [`FiledComponent`] for why
-/// these are two types.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ElementComponent(Option<String>);
-
-impl FiledComponent {
-    pub(super) fn as_deref(&self) -> Option<&str> {
-        self.0.as_deref()
-    }
-
-    fn into_inner(self) -> Option<String> {
-        self.0
-    }
-}
-
-impl ElementComponent {
-    pub(super) fn as_deref(&self) -> Option<&str> {
-        self.0.as_deref()
-    }
-}
-
 /// THE BLOCK A WRITE REPLACES -- the address the element's resident map held for it before this
 /// write, and only when that write leaves the block EMPTY.
 ///
 /// # WHY A TYPE AND NOT AN `Option<ElementEntry>`
 ///
-/// The same reason [`FiledComponent`] and [`ElementComponent`] are two types rather than two
-/// `Option<&str>`. The filer already takes the address the write LANDS AT, so a bare
+/// The filer already takes the address the write LANDS AT, so a bare
 /// `Option<ElementEntry>` beside it makes a transposition compile -- and a transposition here is
 /// silent in the worst direction: the supersede would converge on the block being vacated and leave
 /// the entry over the block just written, which reads as a container that dropped the element it
@@ -4595,21 +4271,21 @@ impl ReplacedBlock {
 ///
 /// `value` rides `WalOutcomeItem.value` -- the same optional slot the `"bucket"` arm already
 /// produces-and-replays in production -- and is `None` for every kind except a zset, whose score
-/// no longer has anywhere else to go on the wire now that `component` does not spell it. See
+/// no longer has anywhere else to go on the wire now that `element_name` does not spell it. See
 /// `RecordedKind::outcome_value`, which is the only producer of a `Some` here.
 pub(super) fn upsert_bucket_index_block_filed(
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     value: Option<Vec<u8>>,
     replaces: ReplacedBlock,
 ) -> BlockFiled {
     upsert_bucket_index_block_with_value(
-        shard, shard_id, kind, object_key, component, address, dirty, true, value, replaces,
+        shard, shard_id, kind, object_key, element_name, address, dirty, true, value, replaces,
     );
     BlockFiled(())
 }
@@ -4628,11 +4304,11 @@ pub(super) fn upsert_bucket_index_block(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
 ) {
-    upsert_bucket_index_block_with(shard, shard_id, kind, object_key, component, address, dirty, true)
+    upsert_bucket_index_block_with(shard, shard_id, kind, object_key, element_name, address, dirty, true)
 }
 
 /// File the entry that keeps a removal's TOMBSTONE BLOCK reachable.
@@ -4647,7 +4323,7 @@ pub(super) fn upsert_bucket_index_block(
 ///   * it CLEARS `deleted_object_index` for the object. A removal is not a re-add -- that line
 ///     exists because writing a member back must clear the tombstone the removal filed -- so a
 ///     tombstone block clearing it would undo the object deletion the removal just recorded.
-///   * it DROPS the object's existing entry for this component first. There is none left; the
+///   * it DROPS the object's existing entry for this element name first. There is none left; the
 ///     `retain` in the caller took it, which is the whole reason this runs afterwards.
 ///
 /// # AND IT DOES NOT ENTER `object_block_lookup`
@@ -4655,7 +4331,7 @@ pub(super) fn upsert_bucket_index_block(
 /// `insert_object_block_lookup` returns early on a deleted block and always has, so calling it would
 /// be a no-op -- it is called anyway, deliberately, so that the skip lives in the one function that
 /// owns the lookup's rules rather than being a condition this site remembers. What follows from the
-/// skip is the load-bearing part: the fast per-object reader `bucket_index_component_block_addresses`
+/// skip is the load-bearing part: the fast per-object reader `bucket_index_element_name_block_addresses`
 /// resolves THROUGH that lookup, so a tombstone entry is invisible to it and every index answer is
 /// unchanged. A derivation therefore has to walk `block_index` itself, which is what
 /// `container_membership` does and what makes its walk O(blocks) rather than O(elements of one
@@ -4797,7 +4473,7 @@ pub(super) fn insert_container_tombstone_entry(
     shard: &mut ShardState,
     kind: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     address: ElementEntry,
     routing_bucket: u32,
 ) {
@@ -4836,16 +4512,16 @@ pub(super) fn insert_container_tombstone_entry(
     // `container_tombstone` when it asked for the opposite. So the refusal costs nothing anyone is
     // doing, and anything it catches is a defect.
     debug_assert!(
-        component.is_some(),
+        element_name.is_some(),
         "a tombstone entry with no element to name leaves a deleted block nothing beside it can \
          identify, so no rebuild can refile it and no dump can compose a key for it"
     );
-    let Some(named_element) = component else {
+    let Some(named_element) = element_name else {
         return;
     };
     let block = BlockIndex::new(
         stored_model_kind(kind),
-        // NO COMPONENT SLOT AT ALL NOW, where this used to spell `component: None` under a note
+        // NO ELEMENT NAME SLOT AT ALL NOW, where this used to spell `element_name: None` under a note
         // about the entry carrying no name on any path. The entry has no field for a name, so the
         // claim is held by the type instead of by this assignment. The element's name is still
         // recorded for a tombstone, in the BUCKET's `tombstone_elements` below, which is the one
@@ -4884,8 +4560,8 @@ pub(super) fn insert_container_tombstone_entry(
     // existed.
     //
     // THE ELEMENT IS NAMED UNCONDITIONALLY NOW, because a call that could not name one has
-    // already returned above. This was `if let Some(component) = component`, under a note saying a
-    // removal with no component files no row and that this was honest rather than lossy. It was --
+    // already returned above. This was `if let Some(element_name) = element_name`, under a note saying a
+    // removal with no element name files no row and that this was honest rather than lossy. It was --
     // but what it left behind was a BLOCK with no row, which is the half that cannot be served.
     // THE HANDLE, READ BEFORE THE `&mut` BORROW BELOW. This is the one caller of
     // `record_tombstone_element` that genuinely starts from a `&str`: the two rebuild callers pass
@@ -4960,7 +4636,7 @@ pub(super) fn upsert_bucket_index_block_with(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     stage: bool,
@@ -4970,7 +4646,7 @@ pub(super) fn upsert_bucket_index_block_with(
         shard_id,
         kind,
         object_key,
-        component,
+        element_name,
         address,
         dirty,
         stage,
@@ -4995,7 +4671,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     stage: bool,
@@ -5011,7 +4687,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
             shard_id,
             kind,
             object_key,
-            component,
+            element_name,
             address,
             dirty,
             stage,
@@ -5027,7 +4703,7 @@ fn upsert_bucket_index_block_inner(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     stage: bool,
@@ -5041,15 +4717,19 @@ fn upsert_bucket_index_block_inner(
     // whole range, which is what this line passed unconditionally before.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-    // THE TWO NAMES, SPLIT ONCE AND NEVER RECOMBINED.
-    //
-    // `element` is the element this write is about. `filed` is what its ENTRY is filed under, which
-    // for a gated container is nothing at all, because there the block is the identity. They are
-    // different types so that no site below can take one for the other: a transposition compiles if
-    // both are `Option<&str>`, and it resurrects a removed member rather than failing.
+    // THERE IS ONE NAME HERE: THE ELEMENT'S. An entry is not filed under a name -- it is filed under
+    // its block -- so nothing below has a second `Option<&str>` to take for it. This used to split
+    // the parameter into the element's name and a "filed" name that was `None` for a container, and
+    // gave them two types because a transposition compiled and resurrected a removed member. The
+    // second one is gone because it was always `None`: every caller that passes a name files a
+    // set, list, hash or zset, which `index_entry_names_a_block` answers for, and every caller
+    // that files a `string` or a `control_state` passes `None` -- the eleven production sites, the
+    // two replay paths and the six test sites were each read with their arguments.
     let names_a_block = index_entry_names_a_block(kind);
-    let element = ElementComponent(component.clone());
-    let filed = FiledComponent(if names_a_block { None } else { component });
+    debug_assert!(
+        names_a_block || element_name.is_none(),
+        "{kind} files an entry under its object, so a name for one of its elements has nowhere to go"
+    );
     // Filing a block into a RELEASED bucket would leave the node holding one block and claiming to
     // be resident, with the rest of its blocks still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
@@ -5069,7 +4749,7 @@ fn upsert_bucket_index_block_inner(
                 object_key: object_key.to_string(),
                 // THE ELEMENT, NOT WHAT ITS ENTRY WAS FILED UNDER, and this is the one place
                 // where that distinction costs something if it is got wrong in the other
-                // direction. This component is the only record of WHICH element a replayed block
+                // direction. This element name is the only record of WHICH element a replayed block
                 // holds: recovery decodes it to put the member back into the model map. Filing the
                 // block name here made the outcome un-installable and recovery fell back to
                 // re-executing commands -- 4 of 9 outcomes installed -- which
@@ -5079,7 +4759,7 @@ fn upsert_bucket_index_block_inner(
                 // The fold applies `index_entry_names_a_block` itself when it files the ENTRY, so
                 // the two routes still agree on the entry while the outcome stays a full record of
                 // the write.
-                component: element.as_deref().map(str::to_string),
+                element_name: element_name.as_deref().map(str::to_string),
                 object_id,
                 routing_bucket,
                 address: Some(address.clone()),
@@ -5121,10 +4801,8 @@ fn upsert_bucket_index_block_inner(
     let entry = LiveBlockEntry {
         object_key: shared_object_key,
         kind: stored_model_kind(kind),
-        component: filed
-            .clone()
-            .into_inner()
-            .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
+        // An entry is filed under its block, so it carries no element name.
+        element_name: None,
         log_backed: address.block_id().is_none(),
         address,
         dirty,
@@ -5165,7 +4843,7 @@ fn upsert_bucket_index_block_inner(
     // of the 60,162 an add moved, while the segment that consumed the copy allocated 0.0, because
     // the filter keeps at most the one or two refs naming the same physical block.
     //
-    // IT IS EVERY CONTAINER KIND. A container entry carries `component: None`, so
+    // IT IS EVERY CONTAINER KIND. A container entry carries `element_name: None`, so
     // `names_the_only_slot` is satisfied and `block_refs_for` returns the object's WHOLE slot; and
     // `index_entry_names_a_block` is true for set, list, hash and zset, so all four reach the
     // filtering arm and all four paid the copy.
@@ -5180,7 +4858,7 @@ fn upsert_bucket_index_block_inner(
         let mine = if lookup_enabled {
             shard
                 .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(|block_refs| {
                     block_refs
                         .iter()
@@ -5209,7 +4887,7 @@ fn upsert_bucket_index_block_inner(
                     shard.bucket_index.remove_object_block_lookup_ref(
                         entry.kind.as_str(),
                         &entry.object_key,
-                        filed.as_deref(),
+                        None,
                         block_ref,
                     );
                 }
@@ -5219,7 +4897,7 @@ fn upsert_bucket_index_block_inner(
                 shard.bucket_index.remove_object_block_lookup_entry(
                     entry.kind.as_str(),
                     &entry.object_key,
-                    filed.as_deref(),
+                    None,
                 );
                 None
             }
@@ -5232,7 +4910,7 @@ fn upsert_bucket_index_block_inner(
         let all = if lookup_enabled {
             shard
                 .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
         } else {
             None
@@ -5240,7 +4918,7 @@ fn upsert_bucket_index_block_inner(
         shard.bucket_index.remove_object_block_lookup_entry(
             entry.kind.as_str(),
             &entry.object_key,
-            filed.as_deref(),
+            None,
         );
         all
     };
@@ -5268,7 +4946,7 @@ fn upsert_bucket_index_block_inner(
         let buckets_still_holding: Vec<u32> = if lookup_enabled {
             shard
                 .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(|refs| refs.iter().map(|block_ref| block_ref.routing_bucket).collect())
                 .unwrap_or_default()
         } else {
@@ -5284,7 +4962,7 @@ fn upsert_bucket_index_block_inner(
             touched_buckets.push(block_ref.routing_bucket);
             // THE OBJECT IS THIS UPSERT'S OWN, which is what the supersede predicate
             // established: a block is superseded only when it matches this entry's (object key,
-            // kind, component), so the id derived here is derived from the same characters it
+            // kind, element name), so the id derived here is derived from the same characters it
             // always was.
             let removed_object_id = bucket
                 .block_index
@@ -5323,12 +5001,12 @@ fn upsert_bucket_index_block_inner(
     // its element left, and that is what bounds the cost of retaining one at ONE ENTRY PER DISTINCT
     // ELEMENT REMOVED rather than one per removal. There are THREE cases above, not two:
     //
-    //   * lookup established AND it names a live ref for this component -> the first branch removes
+    //   * lookup established AND it names a live ref for this element name -> the first branch removes
     //     that ref, and a tombstone is never IN the lookup (`insert_object_block_lookup` returns early
     //     on a deleted block), so the tombstone survives it;
-    //   * lookup NOT established -> the second branch's `retain` matches on the component and does
+    //   * lookup NOT established -> the second branch's `retain` matches on the element name and does
     //     take the tombstone with it;
-    //   * LOOKUP ESTABLISHED AND IT NAMES NOTHING for this component -- which is EXACTLY the re-add
+    //   * LOOKUP ESTABLISHED AND IT NAMES NOTHING for this element name -- which is EXACTLY the re-add
     //     case, because the removal dropped the live ref -- so `direct_block_refs` is `None`, the
     //     `else if !lookup_enabled` guard is false, and NEITHER BRANCH RUNS AT ALL.
     //
@@ -5341,21 +5019,22 @@ fn upsert_bucket_index_block_inner(
     //
     // THE ELEMENT'S NAME COMES FROM THE BUCKET'S TOMBSTONE ROWS, NOT FROM THE ENTRY.
     //
-    // This used to read `block.component == element` over the bucket's blocks. That worked only while
+    // This used to read `block.element_name == element` over the bucket's blocks. That worked only while
     // a tombstone entry named its element, and a tombstone entry does not: the name is a per-element
     // fact filed beside the entries, where only a removal pays for it. Asking the rows is also
     // STRICTLY NARROWER than the old scan -- it names one block -- where the old predicate silently
     // widened to every tombstone of the object the moment the filed name went to `None`, which is
     // the resurrection `a_re_add_after_a_removal_does_not_bring_the_removed_member_back` holds.
     //
-    // The two names are separate TYPES so that reading the FILED name here does not compile.
+    // There is no second name in scope to read here: an entry is filed under its block, so the sweep
+    // can only key on the element's own name.
     //
     // ASKED BEFORE IT IS DONE, because this runs on EVERY block write. `BlockIndexMap::retain` walks
     // the bucket and then `shrink`s it, which can reallocate, and paying that per write for a
     // tombstone that is almost never there would be a new cost on the hot path. A find over the
     // rows is bounded by the removals this bucket has seen, against the two whole-bucket block scans
     // the branches above already do, so the common case is cheaper than the scan it replaces.
-    let sweep: Option<(u64, u64, u64)> = element.as_deref().and_then(|element| {
+    let sweep: Option<(u64, u64, u64)> = element_name.as_deref().and_then(|element| {
         shard
             .bucket_index
             .bucket_map
@@ -5485,6 +5164,35 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     dirty: bool,
     replace_existing: bool,
 ) {
+    // THE FEATURE NUMERIC VIEW DIES HERE, AND IT IS HERE BECAUSE THIS IS THE CHOKE POINT.
+    //
+    // `feature_values` is a derived numeric view of a feature series, folded once and then served
+    // by the rollup ladder. Its own staleness test compares the view's LENGTH against the series'
+    // length, and nothing on the write path invalidated it, so a length test was standing in for
+    // "did the contents change". It cannot see two changes that matter:
+    //
+    //   * an append that REPLACES the value at an instant already present -- same length;
+    //   * an append of P points to a series AT ITS BOUND, which trims P -- same length, and
+    //     **that is the steady state of every bounded series**, which is what a bound is for.
+    //
+    // So a long sequence at its bound served the sum it held the first time it was ever queried,
+    // for as long as it stayed at its bound. A wrong answer, not a slow one.
+    //
+    // WHY THE INVALIDATION IS HERE RATHER THAN IN THE FOUR WRITE ARMS. Every feature write arm --
+    // append, append-with-policy, replace-range, sequence-add -- finishes by publishing its blocks
+    // through this function, as does the apply path that replays them. Four call sites is four
+    // chances for the fifth arm to forget, and a forgotten one is a wrong answer served quickly,
+    // which is the defect being removed. One site that every writer must pass cannot be forgotten.
+    //
+    // THE COST IS A REBUILD PER WRITTEN KEY, AND IT IS THE RIGHT TRADE ONLY BECAUSE IT IS EXACT.
+    // Dropping the view costs the next aggregate query on that key a fold of the retained series,
+    // which is what the ungated path pays anyway; the ladder still wins on repeated queries with
+    // no write between them. Keeping the win on write-then-query means MAINTAINING the view from
+    // the values the write already holds, which is the sibling counter path's design and a
+    // separate change -- it has to be right at every arm, and this does not.
+    if dirty && kind == "feature" {
+        super::control_rollup::feature_forget(shard, object_key);
+    }
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
     // Read before the first `&mut` borrow of the index below, and for the same reason as the
@@ -5524,10 +5232,18 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // kept in the expression because the claim belongs where the condition is read, not because
     // it can still be true.
     let lookup_can_target = !(shard.bucket_index.names_no_object_blocks()
-        || shard.bucket_index.object_component_block_refs.is_none());
-    // Components whose blocks this call drops, so the lookup can be corrected for exactly those
+        || shard.bucket_index.object_element_name_block_refs.is_none());
+    // WHETHER this call dropped any block of this object, so the lookup can be corrected for it
     // instead of being rebuilt from every block in the shard.
-    let mut removed_components: BTreeSet<Option<Arc<str>>> = BTreeSet::new();
+    //
+    // A `bool` RATHER THAN A SET OF ELEMENT NAMES. This was `BTreeSet<Option<Arc<str>>>`, and
+    // the only value ever inserted was `None` -- which the comment at the insert site already
+    // said outright: the set recorded "WHETHER anything was dropped for this object rather than
+    // how many names were". A set holding at most one `None` drives at most one un-filing call,
+    // and so does this flag, so the behaviour is identical while the type stops claiming a
+    // per-element-name index the lookup has never been able to express -- see `names_the_only_slot`,
+    // which answers `false` for every named element name by design.
+    let mut dropped_a_block_of_this_object = false;
     // THE ID THIS CALL SUPERSEDES IS NO LONGER COLLECTED HERE, because a delta over it was the
     // wrong shape: the membership a removal can change is not limited to what the removal caused.
     // See [`repair_object_index_against_its_blocks`].
@@ -5587,15 +5303,14 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             let matches_object = block.model_id().as_str() == kind
                 && names.get(handle).is_some_and(|beside| &**beside == object_key);
             if matches_object {
-                // THE SET THIS FILLS COLLAPSES TO AT MOST ONE ELEMENT, AND THAT IS NOT NEW.
+                // WHAT THIS RECORDS IS "SOMETHING WENT", NOT "WHICH NAME WENT".
                 //
-                // It collected `block.component` so the lookup un-filing below could be driven once
-                // per distinct name dropped. Every entry's component was `None` before the field
-                // was removed, so the set already held either nothing or the single value `None`,
-                // and the loop below already ran at most once per bucket sweep. Inserting `None`
-                // keeps that exactly, and keeps the set as the thing that records WHETHER anything
-                // was dropped for this object rather than how many names were.
-                removed_components.insert(None);
+                // The predecessor collected `block.element_name` so the un-filing below could run
+                // once per distinct name dropped. Every entry's element name was `None` before that
+                // field was removed, so the collection already held either nothing or the single
+                // value `None`, and the un-filing already ran at most once per bucket sweep. This
+                // flag is that same fact with the element-name-shaped container retired.
+                dropped_a_block_of_this_object = true;
             }
             !matches_object
         });
@@ -5620,19 +5335,19 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         }
     }
 
-    // UN-FILED UNCONDITIONALLY. Only this object's own entries were dropped above, so only
-    // they need correcting -- and correcting an entry the lookup does not hold is a no-op, which
-    // is why this needs no condition once the filing below has none. Filing and un-filing are one
-    // obligation: a call that files what it places must un-file what it drops.
-    {
-        // Only this object's own entries were dropped above, so only they need correcting.
-        for component in &removed_components {
-            shard.bucket_index.remove_object_block_lookup_entry(
-                kind,
-                object_key,
-                component.as_deref(),
-            );
-        }
+    // UN-FILED WITHOUT ASKING WHETHER THE LOOKUP CAN BE TARGETED. Only this object's own entries
+    // were dropped above, so only they need correcting -- and correcting an entry the lookup does
+    // not hold is a no-op, which is why this needs no targeting condition once the filing below
+    // has none. Filing and un-filing are one obligation: a call that files what it places must
+    // un-file what it drops.
+    if dropped_a_block_of_this_object {
+        // `None` IS THE ACCEPTED CASE HERE, NOT A REFUSED ONE -- which is the whole reason this
+        // call cannot simply be deleted as element-name-shaped dead work. The predecessor passed
+        // `element_name.as_deref()` over a collection holding only `None`, and
+        // `names_the_only_slot(None)` is TRUE, so the un-filing ran then and runs now. Reading
+        // that guard on its own suggests the opposite; the value the caller passes is what
+        // decides, and dropping this would leave the lookup naming blocks just removed.
+        shard.bucket_index.remove_object_block_lookup_entry(kind, object_key, None);
     }
 
     let mut unique_addresses = BTreeMap::<
@@ -5672,7 +5387,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         let entry = LiveBlockEntry {
             object_key: Arc::clone(&object_key_arc),
             kind: entry_kind,
-            component: None,
+            element_name: None,
             log_backed: address.block_id().is_none(),
             address,
             dirty,
@@ -6902,11 +6617,11 @@ pub(super) fn rebuild_bucket_first_index(
         // longer names its element, so comparing names against the entries made this test dead.
         // `shard` is still borrowed immutably here -- the rebuild is being assembled into the local
         // `bucket_index` -- which is exactly the map the live entries above were derived from.
-        let live_again = resident_holds_component(
+        let live_again = resident_holds_element_name(
             shard,
             tombstone.model_id(),
             &element.object_key,
-            &element.component,
+            &element.element_name,
         );
         if live_again {
             continue;
@@ -6930,7 +6645,7 @@ pub(super) fn rebuild_bucket_first_index(
         bucket.record_tombstone_element(
             &element.object_key,
             model_id,
-            &element.component,
+            &element.element_name,
             &address,
         );
         refiled += 1;
@@ -7043,7 +6758,7 @@ pub(super) fn reconcile_timestamped_series_membership_in_place<K, S>(
 /// The derived view, with every element the DURABLE map holds and it does not AND WHOSE BLOCK IS
 /// STILL THERE.
 ///
-/// One rule for the three kinds whose element identity is spelled into a component name. The derived
+/// One rule for the three kinds whose element identity is spelled into a element name. The derived
 /// view wins where both have an element -- it reflects the delta fold, which the persisted map does
 /// not, because `apply_key_states` folds `features` and the control-state maps and not these three.
 /// The persisted map keeps anything the derived view could not produce, which is what makes skipping
@@ -7076,7 +6791,7 @@ pub(super) fn reconcile_timestamped_series_membership_in_place<K, S>(
 /// index now.
 ///
 /// WHY THIS KEEPS #1989's ELEMENT AND DROPS #2017's, which is what makes it the right question
-/// rather than a narrowing of the function's job. #1989's case is a block whose component cannot be
+/// rather than a narrowing of the function's job. #1989's case is a block whose element name cannot be
 /// decoded: the derived view cannot NAME the element while its block sits in the index, so the block is
 /// live at the persisted address and the element is kept -- the merge still does the job it was added
 /// for. #2017's case is a block that is not in the index at all, so nothing is live at that address
@@ -7255,10 +6970,10 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             // THE FOUR CONTAINER KINDS DERIVE NOTHING NOW, AND THE REASON IS STRUCTURAL.
             //
-            // Each of these was its own arm reading the element out of `entry.component`: a hash
+            // Each of these was its own arm reading the element out of `entry.element_name`: a hash
             // field name verbatim, a set member as `hex::decode`, a zset member the same, a list
             // position as sixteen hex digits of a biased sequence word. An index entry has no
-            // component -- it names a BLOCK -- so there is no longer an input to decode. This is
+            // element name -- it names a BLOCK -- so there is no longer an input to decode. This is
             // not "the name could not be read this time", which is what the four arms counted and
             // printed; it is "an entry cannot carry an element name at all".
             //
@@ -7468,7 +7183,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
 
     if saw_strings {
         // AN OVERWRITE, NOT A BUILD -- which is the rule this function already states two
-        // paragraphs below for the three component-named kinds, and which `strings` now owes too.
+        // paragraphs below for the three element-name-named kinds, and which `strings` now owes too.
         //
         // This ASSIGNED a table of fresh `ObjectSlot::default()` rows, one per derived key. That
         // cost nothing while a row WAS an address: a default slot carrying the derived address was
@@ -7496,7 +7211,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
         }
     }
-    // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into a component
+    // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into an element name
     // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map
     // away in favour of a view rebuilt by parsing those names: a store written with one score came
     // back with another when only the name was changed, and the persisted map -- which
@@ -7516,7 +7231,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // UNCONDITIONAL, WHERE THESE THREE USED TO BE GATED ON `saw_lists` / `saw_zsets` / `saw_sets`,
     // and that is part of the change rather than tidying.
     //
-    // Each flag is set at the TOP of its arm, BEFORE the component decode. `saw_hashes` -- which
+    // Each flag is set at the TOP of its arm, BEFORE the element name decode. `saw_hashes` -- which
     // #2016 moved INSIDE its match, for a reason that applied to an arm with no durable map behind
     // it -- is GONE entirely now that the hash arm merges like the others, so that contrast is
     // history rather than a live difference. So `saw_sets == false` does not mean "no set entry
@@ -8350,7 +8065,7 @@ mod release_refusal_guards {
         );
     }
 
-    fn block(key: &str, model_id: &str, component: Option<&str>, address: ElementEntry) -> BlockIndex {
+    fn block(key: &str, model_id: &str, element_name: Option<&str>, address: ElementEntry) -> BlockIndex {
         BlockIndex::new(
             super::stored_model_kind(model_id),
             address,
@@ -8611,7 +8326,7 @@ mod release_refusal_guards {
     /// -- so the map-agreement term is SATISFIED here, and the kind term is the only thing left
     /// to refuse on. A hash is still refused, but the REASON narrowed: `hashes` is durable now, so
     /// precondition 1 (its map must survive serialization) no longer excludes it. Precondition 2
-    /// does: a hash is read WHOLE through `bucket_index_component_block_addresses` and
+    /// does: a hash is read WHOLE through `bucket_index_element_name_block_addresses` and
     /// `model_map_block_address` offers no point lookup for it, so a released hash bucket would
     /// answer `HashGetAll` and the length with nothing.
     #[test]

@@ -24,7 +24,7 @@ static INIT: Once = Once::new();
 /// Initialize the global tracing subscriber exactly once.
 ///
 /// Reads `RUST_LOG` via [`EnvFilter`], defaulting to `info` when it is absent or
-/// invalid. Subsequent calls are no-ops, and if another component already
+/// invalid. Subsequent calls are no-ops, and if another element name already
 /// installed a global subscriber this leaves it in place (the install is done
 /// with `try_init`, whose error is ignored).
 pub fn init() {

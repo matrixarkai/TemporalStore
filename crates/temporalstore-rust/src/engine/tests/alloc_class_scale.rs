@@ -736,9 +736,18 @@ fn what_a_stored_record_allocates_by_class_at_two_corpus_sizes() {
             measurement.records,
             measurement.counts.classes.report_line()
         );
-        // Non-vacuity: every class this table prints must have moved on this workload, or the
-        // report carries a row that is not a measurement.
+        // Non-vacuity: every class except recency must have moved on this workload. Recency is
+        // deliberately zero because it borrows the key vector the write already owns.
         for class in AllocClass::ALL.iter() {
+            if *class == AllocClass::RecencyStamp {
+                assert_eq!(
+                    measurement.counts.classes.row(*class).allocs,
+                    0,
+                    "recency stamping copied keys at {} records",
+                    measurement.records
+                );
+                continue;
+            }
             assert!(
                 measurement.counts.classes.row(*class).allocs > 0,
                 "{} recorded no allocation at {} records, so it is a row of zeros in a report that \

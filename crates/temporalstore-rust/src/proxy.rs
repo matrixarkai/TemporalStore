@@ -1786,7 +1786,7 @@ impl ProxyService {
     /// metaserver round-trip. It took no in-flight slot, so it was the one piece of client
     /// traffic that could not be bounded: `max_inflight_requests` capped execute and the
     /// context routes while an unbounded number of lookups went straight through to the
-    /// metaserver. A client stampede was amplified onto the metaserver by the very component
+    /// metaserver. A client stampede was amplified onto the metaserver by the very element name
     /// meant to shield it. A drained proxy served them too.
     ///
     /// Admitted as a read. There is no namespace on the wire for this route, so account
@@ -6522,7 +6522,7 @@ mod tests {
     fn shard_lookup_and_topology_refresh_are_bounded_by_the_inflight_quota() {
         // Both reach the metaserver, and neither took a slot. max_inflight_requests capped
         // execute and the context routes while an unbounded number of these went straight
-        // through -- so a client stampede was amplified onto the metaserver by the component
+        // through -- so a client stampede was amplified onto the metaserver by the element name
         // whose job is to shield it.
         let proxy = scoped_proxy(ProxyOptions {
             max_inflight_requests: 1,

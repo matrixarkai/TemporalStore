@@ -88,10 +88,12 @@ fn weigh(compressible: bool) -> (&'static str, u64, u64, u64) {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    // THE CACHE FILLS ON READS. A write-only probe reports an empty cache and a vacuous memory
-    // figure, which is how the memory quadrant of the published set first came out at 0 ppm.
+    // THE CACHE FILLS ON PRODUCTION READS. A write-only probe reports an empty cache and a vacuous
+    // memory figure, which is how the memory quadrant of the published set first came out at 0
+    // ppm. The durable entry point enables the lock-free read path and therefore includes any
+    // cache copy specific to production serving.
     for index in 0..KEYS {
-        let response = engine.execute(ExecuteRequest {
+        let response = engine.execute_durable(ExecuteRequest {
             shard_id: 1,
             command: Command::StringGet { key: format!("media-{index:06}") },
         });

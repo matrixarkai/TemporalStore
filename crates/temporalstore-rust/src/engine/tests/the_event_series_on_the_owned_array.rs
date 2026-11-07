@@ -184,7 +184,7 @@ fn the_capture_path_writes_the_array_map_with_nothing_decoded() {
 
 
 /// WHAT THE ARRAY COSTS AGAINST THE B-TREE IT REPLACES -- in BYTES and in ALLOCATIONS, reported as
-/// two numbers because they are two different components and one standing in for the other is how
+/// two numbers because they are two different element names and one standing in for the other is how
 /// a footprint claim gets published wrong.
 ///
 /// # WHY THIS IS STRUCTURAL AND NOT A COUNTER READING
@@ -217,7 +217,7 @@ fn the_owned_array_is_eight_bytes_and_two_allocations_where_the_btree_is_twenty_
          and it is 16 bytes, which is NOT the whole story and must not be quoted as it"
     );
 
-    // THE ALLOCATION COUNT, which is the other component and the larger one. A `BTreeMap` with a
+    // THE ALLOCATION COUNT, which is the other element name and the larger one. A `BTreeMap` with a
     // single element has allocated its root node; the array has a `Vec` header and a buffer.
     let mut array = OwnedTimestampedSeries::default();
     array.insert(1, address(1));

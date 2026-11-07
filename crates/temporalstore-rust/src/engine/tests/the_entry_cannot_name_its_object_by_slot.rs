@@ -119,7 +119,7 @@
 //!
 //! THE PRECEDENT THAT DOES NOT TRANSFER, and it is worth naming because it is the obvious hope. A
 //! tombstone block already stores its own element key, so "ask what already holds the fact" is the
-//! right question here. The answer is that nothing does: a tombstone stores a COMPONENT, which is
+//! right question here. The answer is that nothing does: a tombstone stores an ELEMENT NAME, which is
 //! a different field, and it stores it per block rather than per object.
 //!
 //! # THE READER CENSUS, BY COMPILER AND NOT BY GREP
@@ -227,7 +227,7 @@ use crate::engine::storage_bucket_internals::StoredModelKind;
 ///
 /// IT KEEPS ITS ELEMENT-NAME TERM ON PURPOSE, AND THAT MAKES IT A HISTORICAL FIGURE NOW. 44 of
 /// field in 48 is the ordinal step applied to the entry as it stood at `2ae24a03d`, which still
-/// carried `component`. This branch removed that field, so the ordinal step applied to the LIVE
+/// carried `element_name`. This branch removed that field, so the ordinal step applied to the LIVE
 /// entry is `BothGoneEntry` below -- 28 in 32 -- and that is the figure a reader should take from
 /// this module.
 ///
@@ -252,15 +252,15 @@ struct OrdinalEntry {
     _routing_bucket: u32,
     _object_ordinal: u32,
     _model_id: StoredModelKind,
-    _component: Option<Arc<str>>,
+    _element_name: Option<Arc<str>>,
     _address: ElementEntry,
     _dirty: bool,
     _deleted: bool,
 }
 
-/// THE FIELD SET ONCE `component` HAS GONE TOO -- the 28/32 this leg of the campaign is aiming at.
+/// THE FIELD SET ONCE `element_name` HAS GONE TOO -- the 28/32 this leg of the campaign is aiming at.
 ///
-/// AND IT IS THE LIVE TARGET NOW, NOT THE ONE AFTER NEXT. This read "`component` is another lane's
+/// AND IT IS THE LIVE TARGET NOW, NOT THE ONE AFTER NEXT. This read "`element_name` is another lane's
 /// change and nothing here touches it." That lane has LANDED: `BlockIndex` has no element-name
 /// field, so this structure is the live entry with its object key swapped for an ordinal, and
 /// reaching 32 is ONE step rather than two. The probe is unchanged -- it was already written
@@ -300,7 +300,7 @@ fn ordinal_entry_field_sum() -> usize {
         _routing_bucket: 0,
         _object_ordinal: 0,
         _model_id: StoredModelKind::String,
-        _component: None,
+        _element_name: None,
         _address: an_address(),
         _dirty: false,
         _deleted: false,
@@ -309,7 +309,7 @@ fn ordinal_entry_field_sum() -> usize {
         + std::mem::size_of_val(&probe._routing_bucket)
         + std::mem::size_of_val(&probe._object_ordinal)
         + std::mem::size_of_val(&probe._model_id)
-        + std::mem::size_of_val(&probe._component)
+        + std::mem::size_of_val(&probe._element_name)
         + std::mem::size_of_val(&probe._address)
         + std::mem::size_of_val(&probe._dirty)
         + std::mem::size_of_val(&probe._deleted)
@@ -368,7 +368,7 @@ fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
         std::mem::size_of::<OrdinalEntry>()
     );
     println!(
-        "  and component gone   field_sum {:>3}  size_of {:>3}",
+        "  and element name gone   field_sum {:>3}  size_of {:>3}",
         both_gone_field_sum(),
         std::mem::size_of::<BothGoneEntry>()
     );
@@ -377,9 +377,9 @@ fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
     //
     // FORTY, NOT FIFTY-SIX, AND THESE TWO ASSERTIONS ARE WHY THAT WAS NOT MISSED. They arrived
     // from main pinning 56 and the field sum beside it. `BlockIndex` has no element-name field on
-    // this branch -- `component: Option<Arc<str>>`, sixteen bytes -- so the entry is seven fields
+    // this branch -- `element_name: Option<Arc<str>>`, sixteen bytes -- so the entry is seven fields
     // and 40. `live_entry_field_sum` built a real `BlockIndex` and refused to compile at all
-    // (E0560, "has no field named `component`"), which is the strongest form of this guard: the
+    // (E0560, "has no field named `element_name`"), which is the strongest form of this guard: the
     // sum is taken off a real instance rather than a parallel literal, so a field that leaves the
     // declaration cannot leave the sum silently.
     assert_eq!(
@@ -442,7 +442,7 @@ fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
             std::mem::size_of::<OrdinalEntry>(),
         ),
         (
-            "and component gone",
+            "and element name gone",
             both_gone_field_sum(),
             std::mem::size_of::<BothGoneEntry>(),
         ),
@@ -525,7 +525,7 @@ fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
                 _routing_bucket: u32,
                 _object_ordinal: $width,
                 _model_id: StoredModelKind,
-                _component: Option<Arc<str>>,
+                _element_name: Option<Arc<str>>,
                 _address: ElementEntry,
                 _dirty: bool,
                 _deleted: bool,

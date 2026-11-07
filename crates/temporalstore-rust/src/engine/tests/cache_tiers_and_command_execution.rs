@@ -3690,6 +3690,89 @@ fn manifest_fold_on_does_not_resurrect_evicted_feature_points_on_reload() {
 }
 
 #[test]
+fn batched_feature_trim_survives_index_delta_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let block_dir = dir.path().join("blocks");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-a"),
+        &block_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    feature_max_size: 3,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: "f".to_string(),
+                    points: (1..=3)
+                        .map(|timestamp_ms| FeaturePoint {
+                            timestamp_ms,
+                            value: vec![timestamp_ms as u8],
+                        })
+                        .collect(),
+                },
+            })
+            .status
+            .ok
+    );
+    assert!(engine.dump_index_catalog(1));
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![Command::FeatureAppend {
+            key: "f".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 4,
+                value: vec![4],
+            }],
+        }],
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &block_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    let timestamps = match restarted
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "f".to_string(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+            },
+        })
+        .response
+    {
+        CommandResponse::FeaturePoints { points } => points
+            .into_iter()
+            .map(|point| point.timestamp_ms)
+            .collect::<Vec<_>>(),
+        other => panic!("expected FeaturePoints, got {other:?}"),
+    };
+    assert_eq!(timestamps, vec![2, 3, 4]);
+}
+
+#[test]
 fn hash_incrby_rejects_non_integer_and_overflow_like_native() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

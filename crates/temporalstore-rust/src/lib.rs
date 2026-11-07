@@ -55,6 +55,7 @@ pub mod env_flag;
 pub mod http;
 pub mod index_log;
 pub mod ingestion;
+pub mod llm_context;
 pub(crate) mod log_framing;
 #[cfg(feature = "matrixobject")]
 pub mod matrixobject_store;
@@ -113,12 +114,12 @@ pub use client::{
 };
 pub use context_workflow::{
     context_backfill_embeddings, context_embedding_ref_hash, context_pipeline_manage_report,
-    context_provider_from_env,
+    context_provider_from_env, context_scope_all_nodes, context_scope_nodes, context_scopes,
     context_pipeline_parity_evidence,
     context_skill_registry_from_parsed,
     context_workflow_state_report, default_context_model_providers, extract_context,
     ingest_extract_context, ingest_extract_context_with_l1_gate, ingest_resource_skill_context,
-    inject_context,
+    inject_context, remember_context_scope, remember_context_scope_node,
     reference_open_source_model_profiles, parse_context_resource, parse_context_skill_markdown,
     retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
     select_context_skills_for_retrieval, update_context_resource_lifecycle,
@@ -143,7 +144,7 @@ pub use context_workflow::{
     ContextSkillParseReport, ContextSkillPrecedence, ContextSkillRegistryEntry,
     ContextSkillRegistryReport, ContextSkillRegistryUpdate, ContextSkillSelectionCandidate,
     ContextSkillSelectionReport, ContextSkillSelectionRequest, ContextSourceKind, ContextTier,
-    ContextTreeTraversalDebug, ContextWorkflowStateReport,
+    ContextTreeTraversalDebug, ContextWorkflowStateReport, CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
@@ -348,8 +349,11 @@ pub use storage_backend::{
     matrixobject_feature_compiled, StorageBackend, StorageBackendConfig,
 };
 pub use types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchWriteError, BatchWriteResponse, Command,
-    CommandResponse, ContextAuditModel,
+    BatchConditionalWriteResponse, BatchExecuteRequest, BatchExecuteResponse,
+    BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue,
+    BatchHashTimestampSetRequest, BatchHashTimestampSetRow, BatchWriteError, BatchWriteResponse,
+    Command, CommandResponse,
+    ContextAuditModel,
     ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
     ContextCompressionModel,
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,

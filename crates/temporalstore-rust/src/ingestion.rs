@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::TemporalEngine;
+use crate::sdk::v1;
 use crate::types::{
     BatchExecuteRequest, Command, CommandResponse, ExecuteResponse, ShardId, Status,
 };
@@ -890,16 +891,371 @@ fn ingestion_state_path(root: &Path) -> PathBuf {
     root.join("state.json")
 }
 
+/// THE FIRST BYTE OF A BINARY INGESTION STATE.
+///
+/// A JSON document starts with `{` (0x7B), optionally behind JSON whitespace -- and the writer
+/// that produced every such file used `to_vec_pretty`, so that whitespace really is in the bytes
+/// still on disk. 0x01 is not a brace, not whitespace and not valid JSON in any position, so one
+/// byte decides the shape.
+const INGESTION_STATE_CONTAINER_PROTOBUF: u8 = 0x01;
+
+/// The binary body of an ingestion state, or `None` when the bytes are the JSON shape.
+///
+/// THE ONLY PLACE THAT DECIDES, so the shape cannot be told apart two different ways.
+fn ingestion_state_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
+    match bytes.split_first() {
+        Some((&INGESTION_STATE_CONTAINER_PROTOBUF, body)) => Some(body),
+        _ => None,
+    }
+}
+
+/// An absent `oneof` is REFUSED, not read as an API source.
+///
+/// The three arms carry different idempotence keys -- a request id, a topic/partition/offset, a
+/// Flink checkpoint coordinate -- so guessing one would let a replayed Kafka record through as a
+/// fresh API call, which is the exact duplicate this ledger exists to refuse.
+fn ingestion_source_from_proto(
+    proto: Option<v1::IngestionSource>,
+) -> Result<IngestionSource, Status> {
+    let Some(source) = proto.and_then(|wrapper| wrapper.source) else {
+        return Err(Status::error(
+            "bad_ingestion_state",
+            "a dead letter names no ingestion source, and the three sources carry different \
+             idempotence keys, so this build will not guess one",
+        ));
+    };
+    Ok(match source {
+        v1::ingestion_source::Source::Api(api) => IngestionSource::Api {
+            request_id: api.request_id,
+        },
+        v1::ingestion_source::Source::Kafka(kafka) => IngestionSource::Kafka {
+            topic: kafka.topic,
+            partition: kafka.partition,
+            offset: kafka.offset,
+            // ABSENT IS NOT EMPTY AND ABSENT IS NOT ZERO, which is why both travel as
+            // `optional` in the proto rather than as bare scalars.
+            key: kafka.key,
+            timestamp_ms: kafka.timestamp_ms,
+        },
+        v1::ingestion_source::Source::Flink(flink) => IngestionSource::Flink {
+            job_id: flink.job_id,
+            operator_uid: flink.operator_uid,
+            subtask_index: flink.subtask_index,
+            checkpoint_id: flink.checkpoint_id,
+            record_index: flink.record_index,
+        },
+    })
+}
+
+/// UNSPECIFIED and any unknown tag are REFUSED, not defaulted.
+///
+/// The three states decide whether a checkpoint's records may be replayed, so reading an
+/// unknown tag as `Precommitted` would replay committed work and reading it as `Committed`
+/// would discard precommitted work. Both are worse than refusing the file.
+fn flink_checkpoint_status_from_proto(value: i32) -> Result<FlinkCheckpointStatus, Status> {
+    match v1::FlinkCheckpointStatus::try_from(value) {
+        Ok(v1::FlinkCheckpointStatus::Precommitted) => Ok(FlinkCheckpointStatus::Precommitted),
+        Ok(v1::FlinkCheckpointStatus::Committed) => Ok(FlinkCheckpointStatus::Committed),
+        Ok(v1::FlinkCheckpointStatus::Aborted) => Ok(FlinkCheckpointStatus::Aborted),
+        Ok(v1::FlinkCheckpointStatus::Unspecified) | Err(_) => Err(Status::error(
+            "bad_ingestion_state",
+            format!(
+                "the ingestion state names Flink checkpoint status {value}, which this build \
+                 cannot read"
+            ),
+        )),
+    }
+}
+
+fn ingestion_state_from_proto(
+    proto: v1::DurableIngestionState,
+) -> Result<DurableIngestionState, Status> {
+    let mut kafka_offsets = BTreeMap::new();
+    for entry in proto.kafka_offsets {
+        // THE KEY IS READ, NOT RECOMPUTED. It is a derived key (`kafka_offset_key`), and a
+        // decoder that rebuilt it would re-key a document whose key function has since changed
+        // instead of reading what was written.
+        let value = entry.value.ok_or_else(|| {
+            Status::error(
+                "bad_ingestion_state",
+                "a Kafka offset ledger entry carries no value",
+            )
+        })?;
+        kafka_offsets.insert(
+            entry.key,
+            KafkaOffsetLedgerEntry {
+                topic: value.topic,
+                partition: value.partition,
+                committed_offset: value.committed_offset,
+                updated_unix_ms: value.updated_unix_ms,
+            },
+        );
+    }
+    let mut stream_commits = BTreeMap::new();
+    for entry in proto.stream_commits {
+        let value = entry.value.ok_or_else(|| {
+            Status::error(
+                "bad_ingestion_state",
+                "a stream commit entry carries no value",
+            )
+        })?;
+        stream_commits.insert(
+            entry.key,
+            IngestionStreamCommitState {
+                stream_id: value.stream_id,
+                committed_sequence: value.committed_sequence,
+                updated_unix_ms: value.updated_unix_ms,
+            },
+        );
+    }
+    let mut flink_checkpoints = BTreeMap::new();
+    for entry in proto.flink_checkpoints {
+        let value = entry.value.ok_or_else(|| {
+            Status::error(
+                "bad_ingestion_state",
+                "a Flink checkpoint entry carries no value",
+            )
+        })?;
+        flink_checkpoints.insert(
+            entry.key,
+            FlinkCheckpointState {
+                job_id: value.job_id,
+                operator_uid: value.operator_uid,
+                subtask_index: value.subtask_index,
+                checkpoint_id: value.checkpoint_id,
+                status: flink_checkpoint_status_from_proto(value.status)?,
+                updated_unix_ms: value.updated_unix_ms,
+            },
+        );
+    }
+    let mut dead_letters = Vec::with_capacity(proto.dead_letters.len());
+    for letter in proto.dead_letters {
+        // A dead letter's STATUS is required. Defaulting it would read as a failure with no
+        // code, which is a different fact from whatever was written.
+        let status = letter.status.ok_or_else(|| {
+            Status::error("bad_ingestion_state", "a dead letter carries no status")
+        })?;
+        dead_letters.push(IngestionDeadLetter {
+            index: usize::try_from(letter.index).map_err(|_| {
+                Status::error(
+                    "bad_ingestion_state",
+                    format!("a dead letter names record index {}", letter.index),
+                )
+            })?,
+            source: ingestion_source_from_proto(letter.source)?,
+            shard_id: letter.shard_id,
+            status: Status {
+                ok: status.ok,
+                code: status.code,
+                message: status.message,
+            },
+        });
+    }
+    // `stats` IS DEFAULTED RATHER THAN REFUSED, and that is not an inconsistency with the
+    // refusals above. Every counter here is a count, so all-zero is a real and complete value
+    // and it is the type's own `Default` -- there is nothing a default could misrepresent. The
+    // JSON shape says the same thing with `#[serde(default)]` on the field.
+    let stats = proto.stats.map(|stats| IngestionStats {
+        accepted_total: stats.accepted_total,
+        failed_total: stats.failed_total,
+        duplicate_total: stats.duplicate_total,
+        dead_letter_total: stats.dead_letter_total,
+        stream_backpressure_total: stats.stream_backpressure_total,
+        stream_duplicate_total: stats.stream_duplicate_total,
+        kafka_committed_total: stats.kafka_committed_total,
+        flink_precommit_total: stats.flink_precommit_total,
+        flink_commit_total: stats.flink_commit_total,
+        flink_abort_total: stats.flink_abort_total,
+        max_kafka_lag: stats.max_kafka_lag,
+    });
+    Ok(DurableIngestionState {
+        kafka_offsets,
+        stream_commits,
+        flink_checkpoints,
+        dead_letters,
+        stats: stats.unwrap_or_default(),
+    })
+}
+
+/// Decode an ingestion state in EITHER shape.
+///
+/// THE JSON ARM IS PERMANENT, now that no writer in this tree can produce that shape.
+///
+/// THE HOLD RULE: a reader stays if ANY build that ever shipped could have written data a live
+/// store still holds. "Which writer runs today" is the wrong question -- this writer no longer
+/// writes JSON, and that is exactly why the arm below can never be deleted on evidence found in
+/// this tree. Every state file written before the writer flip carries that shape, this is a
+/// public repo, and deleting a reader for a format on disk is silent data loss rather than a
+/// cleanup.
+///
+/// AN ENCODER IS DELETED AND A DECODER IS KEPT, FOR OPPOSITE REASONS. An encoder no caller
+/// reaches is how a retired format comes back -- a later branch finds the function and calls
+/// it. A decoder with no caller in this tree is still reached by every file already on disk.
+///
+/// The shape is decided per document from the first byte, never from a setting, so a node that
+/// has never written a JSON state file still reads one.
+fn decode_ingestion_state(bytes: &[u8]) -> Result<DurableIngestionState, Status> {
+    let Some(body) = ingestion_state_protobuf_body(bytes) else {
+        return serde_json::from_slice::<DurableIngestionState>(bytes)
+            .map_err(|err| Status::error("bad_ingestion_state", err.to_string()));
+    };
+    let proto = <v1::DurableIngestionState as prost::Message>::decode(body)
+        .map_err(|err| Status::error("bad_ingestion_state", err.to_string()))?;
+    ingestion_state_from_proto(proto)
+}
+
 fn load_ingestion_state(root: &Path) -> Result<DurableIngestionState, Status> {
     let path = ingestion_state_path(root);
     match fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice::<DurableIngestionState>(&bytes)
-            .map_err(|err| Status::error("bad_ingestion_state", err.to_string())),
+        Ok(bytes) => decode_ingestion_state(&bytes),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             Ok(DurableIngestionState::default())
         }
         Err(err) => Err(Status::error("ingestion_state_io", err.to_string())),
     }
+}
+
+fn ingestion_source_to_proto(source: &IngestionSource) -> v1::IngestionSource {
+    v1::IngestionSource {
+        source: Some(match source {
+            IngestionSource::Api { request_id } => {
+                v1::ingestion_source::Source::Api(v1::IngestionSourceApi {
+                    request_id: request_id.clone(),
+                })
+            }
+            IngestionSource::Kafka {
+                topic,
+                partition,
+                offset,
+                key,
+                timestamp_ms,
+            } => v1::ingestion_source::Source::Kafka(v1::IngestionSourceKafka {
+                topic: topic.clone(),
+                partition: *partition,
+                offset: *offset,
+                // ABSENT STAYS ABSENT. These are `optional` in the proto precisely so that a
+                // record with no key does not become one keyed by the empty string.
+                key: key.clone(),
+                timestamp_ms: *timestamp_ms,
+            }),
+            IngestionSource::Flink {
+                job_id,
+                operator_uid,
+                subtask_index,
+                checkpoint_id,
+                record_index,
+            } => v1::ingestion_source::Source::Flink(v1::IngestionSourceFlink {
+                job_id: job_id.clone(),
+                operator_uid: operator_uid.clone(),
+                subtask_index: *subtask_index,
+                checkpoint_id: *checkpoint_id,
+                record_index: *record_index,
+            }),
+        }),
+    }
+}
+
+fn flink_checkpoint_status_to_proto(status: &FlinkCheckpointStatus) -> v1::FlinkCheckpointStatus {
+    match status {
+        FlinkCheckpointStatus::Precommitted => v1::FlinkCheckpointStatus::Precommitted,
+        FlinkCheckpointStatus::Committed => v1::FlinkCheckpointStatus::Committed,
+        FlinkCheckpointStatus::Aborted => v1::FlinkCheckpointStatus::Aborted,
+    }
+}
+
+fn ingestion_state_to_proto(state: &DurableIngestionState) -> v1::DurableIngestionState {
+    v1::DurableIngestionState {
+        // THE MAP KEY IS WRITTEN OUT, not left to be rebuilt by the reader. It is a derived
+        // key, and a reader that recomputed it would read its own key function rather than
+        // what this writer wrote. The `BTreeMap` iteration order is the key order, so the
+        // bytes for one state are the same on every run -- which a proto `map` would not be.
+        kafka_offsets: state
+            .kafka_offsets
+            .iter()
+            .map(|(key, value)| v1::DurableIngestionKafkaOffsetEntry {
+                key: key.clone(),
+                value: Some(v1::KafkaOffsetLedgerEntry {
+                    topic: value.topic.clone(),
+                    partition: value.partition,
+                    committed_offset: value.committed_offset,
+                    updated_unix_ms: value.updated_unix_ms,
+                }),
+            })
+            .collect(),
+        stream_commits: state
+            .stream_commits
+            .iter()
+            .map(|(key, value)| v1::DurableIngestionStreamCommitEntry {
+                key: key.clone(),
+                value: Some(v1::IngestionStreamCommitState {
+                    stream_id: value.stream_id.clone(),
+                    committed_sequence: value.committed_sequence,
+                    updated_unix_ms: value.updated_unix_ms,
+                }),
+            })
+            .collect(),
+        flink_checkpoints: state
+            .flink_checkpoints
+            .iter()
+            .map(|(key, value)| v1::DurableIngestionFlinkCheckpointEntry {
+                key: key.clone(),
+                value: Some(v1::FlinkCheckpointState {
+                    job_id: value.job_id.clone(),
+                    operator_uid: value.operator_uid.clone(),
+                    subtask_index: value.subtask_index,
+                    checkpoint_id: value.checkpoint_id,
+                    status: flink_checkpoint_status_to_proto(&value.status) as i32,
+                    updated_unix_ms: value.updated_unix_ms,
+                }),
+            })
+            .collect(),
+        // ORDER PRESERVED: dead letters are read in arrival order.
+        dead_letters: state
+            .dead_letters
+            .iter()
+            .map(|letter| v1::IngestionDeadLetter {
+                index: letter.index as u64,
+                source: Some(ingestion_source_to_proto(&letter.source)),
+                shard_id: letter.shard_id,
+                status: Some(v1::IngestionStatus {
+                    ok: letter.status.ok,
+                    code: letter.status.code.clone(),
+                    message: letter.status.message.clone(),
+                }),
+            })
+            .collect(),
+        stats: Some(v1::IngestionStats {
+            accepted_total: state.stats.accepted_total,
+            failed_total: state.stats.failed_total,
+            duplicate_total: state.stats.duplicate_total,
+            dead_letter_total: state.stats.dead_letter_total,
+            stream_backpressure_total: state.stats.stream_backpressure_total,
+            stream_duplicate_total: state.stats.stream_duplicate_total,
+            kafka_committed_total: state.stats.kafka_committed_total,
+            flink_precommit_total: state.stats.flink_precommit_total,
+            flink_commit_total: state.stats.flink_commit_total,
+            flink_abort_total: state.stats.flink_abort_total,
+            max_kafka_lag: state.stats.max_kafka_lag,
+        }),
+    }
+}
+
+/// Encode an ingestion state. ONE SHAPE: the binary one.
+///
+/// There is no JSON arm and no gate to pick one. `DurableIngestionState` still derives
+/// `Serialize`, so building JSON from one remains POSSIBLE -- the tests do exactly that to
+/// plant a legacy document -- but no path a running node can take produces it.
+///
+/// INFALLIBLE, which is why the caller lost its serialize-error arm: a `Vec` sink cannot run
+/// out of room, and the previous arm existed only because `serde_json` returns a `Result`.
+///
+/// See `decode_ingestion_state` for why the READ still has its JSON arm and always will.
+fn encode_ingestion_state(state: &DurableIngestionState) -> Vec<u8> {
+    let proto = ingestion_state_to_proto(state);
+    let mut out = Vec::with_capacity(1 + prost::Message::encoded_len(&proto));
+    out.push(INGESTION_STATE_CONTAINER_PROTOBUF);
+    prost::Message::encode(&proto, &mut out).expect("a Vec sink cannot run out of room");
+    out
 }
 
 fn persist_ingestion_state(root: &Path, state: &DurableIngestionState) -> Status {
@@ -908,10 +1264,10 @@ fn persist_ingestion_state(root: &Path, state: &DurableIngestionState) -> Status
     }
     let path = ingestion_state_path(root);
     let temp_path = path.with_extension("json.tmp");
-    let bytes = match serde_json::to_vec_pretty(state) {
-        Ok(bytes) => bytes,
-        Err(err) => return Status::error("ingestion_state_serialize", err.to_string()),
-    };
+    // THE FILE NAME AND THE TEMP SUFFIX ARE UNCHANGED, deliberately. Renaming a path that is
+    // already on disk is a separate and riskier decision than changing what is inside it, and
+    // the reader decides the shape from the first byte rather than from the name.
+    let bytes = encode_ingestion_state(state);
     if let Err(err) = fs::write(&temp_path, bytes) {
         return Status::error("ingestion_state_io", err.to_string());
     }
@@ -1745,5 +2101,414 @@ mod tests {
         assert!(report.raft_failover_idempotence_harness_ready);
         assert!(report.production_ready);
         assert!(report.missing.is_empty());
+    }
+
+    /// A state with every collection NON-EMPTY, and with keys whose order is not their insertion
+    /// order, so a decoder that dropped, re-grouped or re-keyed a collection could not produce
+    /// an equal value.
+    fn ingestion_state_with_every_collection() -> DurableIngestionState {
+        let mut kafka_offsets = BTreeMap::new();
+        kafka_offsets.insert(
+            kafka_offset_key("topic-z", 3),
+            KafkaOffsetLedgerEntry {
+                topic: "topic-z".to_string(),
+                partition: 3,
+                committed_offset: 91,
+                updated_unix_ms: 1_700_000_000_001,
+            },
+        );
+        kafka_offsets.insert(
+            kafka_offset_key("topic-a", 0),
+            KafkaOffsetLedgerEntry {
+                topic: "topic-a".to_string(),
+                partition: 0,
+                committed_offset: 5,
+                updated_unix_ms: 1_700_000_000_002,
+            },
+        );
+        let mut stream_commits = BTreeMap::new();
+        stream_commits.insert(
+            "stream-b".to_string(),
+            IngestionStreamCommitState {
+                stream_id: "stream-b".to_string(),
+                committed_sequence: 17,
+                updated_unix_ms: 1_700_000_000_003,
+            },
+        );
+        let mut flink_checkpoints = BTreeMap::new();
+        flink_checkpoints.insert(
+            flink_checkpoint_key("job-a", "sink", 0, 42),
+            FlinkCheckpointState {
+                job_id: "job-a".to_string(),
+                operator_uid: "sink".to_string(),
+                subtask_index: 0,
+                checkpoint_id: 42,
+                status: FlinkCheckpointStatus::Aborted,
+                updated_unix_ms: 1_700_000_000_004,
+            },
+        );
+        DurableIngestionState {
+            kafka_offsets,
+            stream_commits,
+            flink_checkpoints,
+            dead_letters: vec![
+                IngestionDeadLetter {
+                    index: 7,
+                    // A Kafka source with BOTH optionals SET, so an encoder that dropped them
+                    // could not round trip.
+                    source: IngestionSource::Kafka {
+                        topic: "topic-a".to_string(),
+                        partition: 0,
+                        offset: 6,
+                        key: Some("record-key".to_string()),
+                        timestamp_ms: Some(1_700_000_000_005),
+                    },
+                    shard_id: 7,
+                    status: Status::error("duplicate_kafka_offset", "already committed"),
+                },
+                IngestionDeadLetter {
+                    index: 9,
+                    // And one with both optionals ABSENT, which is a DIFFERENT value from the
+                    // empty string and zero -- the reason they travel as `optional`.
+                    source: IngestionSource::Kafka {
+                        topic: "topic-a".to_string(),
+                        partition: 0,
+                        offset: 7,
+                        key: None,
+                        timestamp_ms: None,
+                    },
+                    shard_id: 7,
+                    status: Status::error("duplicate_kafka_offset", "already committed"),
+                },
+                IngestionDeadLetter {
+                    index: 11,
+                    source: IngestionSource::Flink {
+                        job_id: "job-a".to_string(),
+                        operator_uid: "sink".to_string(),
+                        subtask_index: 2,
+                        checkpoint_id: 43,
+                        record_index: 4,
+                    },
+                    shard_id: 7,
+                    status: Status::error("aborted_flink_checkpoint", "checkpoint aborted"),
+                },
+                IngestionDeadLetter {
+                    index: 13,
+                    source: IngestionSource::Api {
+                        request_id: "req-1".to_string(),
+                    },
+                    shard_id: 7,
+                    status: Status::error("invalid_api_source", "bad request"),
+                },
+            ],
+            stats: IngestionStats {
+                accepted_total: 3,
+                failed_total: 1,
+                duplicate_total: 2,
+                dead_letter_total: 4,
+                stream_backpressure_total: 5,
+                stream_duplicate_total: 6,
+                kafka_committed_total: 7,
+                flink_precommit_total: 8,
+                flink_commit_total: 9,
+                flink_abort_total: 10,
+                max_kafka_lag: -11,
+            },
+        }
+    }
+
+    /// BOTH SHAPES DECODE TO THE SAME STATE, AND THE READER DECIDES FROM THE FIRST BYTE.
+    ///
+    /// This is the whole point of a reader-first change, so it is asserted directly rather than
+    /// inferred from a round trip through a writer -- there is no binary writer yet. The JSON arm
+    /// is what every state file on disk carries today and must keep working unchanged.
+    #[test]
+    fn the_ingestion_state_reader_accepts_both_shapes() {
+        let original = ingestion_state_with_every_collection();
+
+        // ---- the shape on disk today
+        let json = serde_json::to_vec_pretty(&original).unwrap();
+        assert_eq!(json[0], b'{', "the JSON shape must still start with a brace");
+        let from_json = decode_ingestion_state(&json).expect("the JSON shape must still decode");
+        assert_eq!(from_json, original, "JSON round trip changed the state");
+
+        // ---- the shape THIS build writes, from the production encoder
+        let binary = encode_ingestion_state(&original);
+        assert_eq!(binary[0], INGESTION_STATE_CONTAINER_PROTOBUF);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&binary).is_err(),
+            "the binary shape must not parse as JSON, or the container byte proves nothing"
+        );
+        let from_binary =
+            decode_ingestion_state(&binary).expect("the binary shape must decode");
+        assert_eq!(from_binary, original, "binary round trip changed the state");
+
+        assert_eq!(from_json, from_binary, "the two shapes decode differently");
+
+        // DENOMINATORS, SPELLED OUT. Equality above would catch a dropped collection, but
+        // naming the counts is what says the fixture really exercised all five.
+        assert_eq!(from_binary.kafka_offsets.len(), 2);
+        assert_eq!(from_binary.stream_commits.len(), 1);
+        assert_eq!(from_binary.flink_checkpoints.len(), 1);
+        assert_eq!(from_binary.dead_letters.len(), 4);
+        assert_eq!(from_binary.stats.max_kafka_lag, -11, "a signed stat must survive");
+
+        // THE DERIVED KEYS ARE READ, NOT REBUILT. The map keys travel in the document, so a
+        // decoder that recomputed them from the values would be reading its own key function
+        // rather than what was written.
+        assert!(from_binary.kafka_offsets.contains_key(&kafka_offset_key("topic-z", 3)));
+        assert!(from_binary
+            .flink_checkpoints
+            .contains_key(&flink_checkpoint_key("job-a", "sink", 0, 42)));
+
+        // ABSENT IS NOT EMPTY. Both Kafka optionals survive in both directions.
+        let with_key = &from_binary.dead_letters[0].source;
+        let without_key = &from_binary.dead_letters[1].source;
+        assert!(matches!(
+            with_key,
+            IngestionSource::Kafka { key: Some(k), timestamp_ms: Some(_), .. } if k == "record-key"
+        ));
+        assert!(matches!(
+            without_key,
+            IngestionSource::Kafka { key: None, timestamp_ms: None, .. }
+        ));
+
+        // The container byte is the basis of the sniff, so pin what it is NOT. JSON may begin
+        // with whitespace before its brace; none of those is 0x01.
+        assert_ne!(INGESTION_STATE_CONTAINER_PROTOBUF, b'{');
+        for ws in [b' ', b'\t', b'\r', b'\n'] {
+            assert_ne!(
+                INGESTION_STATE_CONTAINER_PROTOBUF, ws,
+                "the container byte must not be JSON whitespace"
+            );
+        }
+        assert!(
+            ingestion_state_protobuf_body(b"{}").is_none(),
+            "a JSON document must not be taken for the binary shape"
+        );
+        assert!(
+            ingestion_state_protobuf_body(b"").is_none(),
+            "an empty file is not the binary shape"
+        );
+    }
+
+    /// AN UNKNOWN TAG AND AN ABSENT SOURCE ARE REFUSED, NOT GUESSED AT.
+    ///
+    /// Both would otherwise default to something that reads as a real fact: a checkpoint status
+    /// decides whether records may be replayed, and the three ingestion sources carry different
+    /// idempotence keys, so a defaulted source would let a replayed Kafka record through as a
+    /// fresh API call.
+    #[test]
+    fn an_unknown_flink_tag_or_an_absent_ingestion_source_is_refused_rather_than_defaulted() {
+        for (value, expected) in [
+            (1, FlinkCheckpointStatus::Precommitted),
+            (2, FlinkCheckpointStatus::Committed),
+            (3, FlinkCheckpointStatus::Aborted),
+        ] {
+            assert_eq!(
+                flink_checkpoint_status_from_proto(value).expect("a known tag must decode"),
+                expected
+            );
+        }
+        for value in [0, 99, -1] {
+            assert!(
+                flink_checkpoint_status_from_proto(value).is_err(),
+                "checkpoint status {value} was accepted, so an unknown tag is being guessed at"
+            );
+        }
+
+        // CONTROL: a source that IS present decodes, so the refusals below are attributable to
+        // absence rather than to a conversion that never worked.
+        assert_eq!(
+            ingestion_source_from_proto(Some(v1::IngestionSource {
+                source: Some(v1::ingestion_source::Source::Api(v1::IngestionSourceApi {
+                    request_id: "req-1".to_string(),
+                })),
+            }))
+            .expect("a present source must decode"),
+            IngestionSource::Api {
+                request_id: "req-1".to_string()
+            }
+        );
+        assert!(
+            ingestion_source_from_proto(None).is_err(),
+            "an absent source wrapper was accepted"
+        );
+        assert!(
+            ingestion_source_from_proto(Some(v1::IngestionSource { source: None })).is_err(),
+            "an empty source oneof was accepted, so a dead letter with no source reads as an \
+             API call"
+        );
+
+        // AND THE WHOLE DOCUMENT IS REFUSED, not just the helper. Corrupt at a layer the next
+        // layer accepts: the bytes below are a VALID protobuf document whose checkpoint tag is
+        // one this build cannot read, so the frame decodes and the refusal comes from the
+        // conversion rather than from prost.
+        let proto = v1::DurableIngestionState {
+            flink_checkpoints: vec![v1::DurableIngestionFlinkCheckpointEntry {
+                key: flink_checkpoint_key("job-a", "sink", 0, 42),
+                value: Some(v1::FlinkCheckpointState {
+                    job_id: "job-a".to_string(),
+                    operator_uid: "sink".to_string(),
+                    subtask_index: 0,
+                    checkpoint_id: 42,
+                    status: 99,
+                    updated_unix_ms: 1,
+                }),
+            }],
+            ..Default::default()
+        };
+        let mut bytes = vec![INGESTION_STATE_CONTAINER_PROTOBUF];
+        prost::Message::encode(&proto, &mut bytes).unwrap();
+        assert!(
+            <v1::DurableIngestionState as prost::Message>::decode(&bytes[1..]).is_ok(),
+            "the fixture must be a decodable protobuf document, or the refusal below is only \
+             prost rejecting damaged bytes"
+        );
+        let refused = decode_ingestion_state(&bytes).expect_err("tag 99 must be refused");
+        assert_eq!(refused.code, "bad_ingestion_state");
+        assert!(refused.message.contains("99"), "{refused:?}");
+    }
+
+    /// THE WRITER IS BINARY WITH NOTHING TO TURN ON, AND A PLANTED JSON FILE IS STILL READ.
+    ///
+    /// Driven through the real engine and a real restart, because the unit test above proves
+    /// nothing about the call sites. The two call sites answer differently on a decode failure
+    /// and BOTH are asserted:
+    ///
+    ///   - `ingest_batch` reads with `load_ingestion_state(..).unwrap_or_default()`, so a reader
+    ///     that could not decode the file would silently see EMPTY state and ACCEPT the replayed
+    ///     offset. Asserting the duplicate is refused is what catches that; asserting the call
+    ///     merely succeeded would not, because it succeeds either way.
+    ///   - `ingestion_state_report` has no fallback and surfaces the error as a status, so it is
+    ///     asserted `ok` with the committed offset in it.
+    ///
+    /// THE JSON DOCUMENT IS PLANTED STRAIGHT ONTO DISK, because the writer that used to produce
+    /// it has been deleted. A test that round-tripped through the writer would have had nothing
+    /// left to drive after the flip, and would have quietly become a test of the binary arm
+    /// twice over. The plant is rebuilt from the state the real writer just persisted, so the
+    /// document is a valid ingestion state in every respect except its encoding.
+    #[test]
+    fn the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let block_dir = dir.path().join("blocks");
+        let index_dir = dir.path().join("indexes");
+        let engine =
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
+        engine.load_shard(7);
+
+        let first = engine.ingest_batch(IngestionBatchRequest {
+            stop_on_error: false,
+            kafka_high_watermarks: Vec::new(),
+            flink_checkpoints: Vec::new(),
+            records: vec![IngestionRecord {
+                source: IngestionSource::Kafka {
+                    topic: "topic-a".to_string(),
+                    partition: 0,
+                    offset: 5,
+                    key: None,
+                    timestamp_ms: None,
+                },
+                shard_id: 7,
+                command: Command::StringSet {
+                    key: "ledger-key".to_string(),
+                    value: b"ledger-value".to_vec(),
+                },
+            }],
+        });
+        assert!(first.status.ok, "{first:?}");
+        assert_eq!(first.accepted_count, 1);
+        assert!(first.state_persist_status.ok);
+
+        // ---- THE SHIPPED DEFAULT IS THE BINARY SHAPE, with nothing to turn on.
+        let path = ingestion_state_path(&engine.ingestion_dir());
+        let on_disk = fs::read(&path).expect("the writer must have produced a state file");
+        assert_eq!(
+            on_disk[0], INGESTION_STATE_CONTAINER_PROTOBUF,
+            "the shipped default must write the binary shape as of the flip"
+        );
+        assert_ne!(
+            on_disk[0], b'{',
+            "the default still writes a JSON state file, so the encode path this change deleted \
+             is reachable after all"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&on_disk).is_err(),
+            "the binary state file must not parse as JSON, or the container byte proves nothing"
+        );
+
+        // DENOMINATOR: the state really holds the offset the assertions below depend on.
+        let state = decode_ingestion_state(&on_disk).expect("the written state must decode");
+        assert_eq!(
+            state.kafka_offsets[&kafka_offset_key("topic-a", 0)].committed_offset,
+            5,
+            "the fixture state does not hold the offset the assertions below depend on"
+        );
+
+        // ---- PLANT THE INSTALLED BASE: the same state in the shape every file written before
+        // ---- the flip carries, built with `serde_json` because the writer that produced it is
+        // ---- gone. `Serialize` survives on the type, so a test can still build the shape even
+        // ---- though no production path can.
+        let planted_bytes = serde_json::to_vec_pretty(&state).expect("the JSON shape must build");
+        assert_eq!(planted_bytes[0], b'{', "the plant is not the JSON shape");
+        fs::write(&path, planted_bytes).unwrap();
+        let planted = fs::read(&path).unwrap();
+        assert_eq!(
+            planted[0], b'{',
+            "the plant did not take, so nothing below reads a JSON state file"
+        );
+
+        let restarted =
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
+        restarted.load_shard(7);
+
+        // ---- the reader WITHOUT a fallback.
+        let report = restarted.ingestion_state_report();
+        assert!(report.status.ok, "{report:?}");
+        assert_eq!(
+            report.kafka_offsets[0].committed_offset, 5,
+            "the planted JSON state file was not read by the state report, so every state file \
+             written before the flip is unreadable"
+        );
+
+        // ---- the reader WITH a fallback. An undecodable file would read as empty state here
+        // ---- and the replayed offset would be ACCEPTED, so the refusal is the assertion.
+        let duplicate = restarted.ingest_batch(IngestionBatchRequest {
+            stop_on_error: false,
+            kafka_high_watermarks: Vec::new(),
+            flink_checkpoints: Vec::new(),
+            records: vec![IngestionRecord {
+                source: IngestionSource::Kafka {
+                    topic: "topic-a".to_string(),
+                    partition: 0,
+                    offset: 5,
+                    key: None,
+                    timestamp_ms: None,
+                },
+                shard_id: 7,
+                command: Command::StringSet {
+                    key: "should-not-write".to_string(),
+                    value: b"duplicate".to_vec(),
+                },
+            }],
+        });
+        assert_eq!(
+            duplicate.duplicate_count, 1,
+            "the replayed Kafka offset was accepted, so the planted JSON state file was read as \
+             empty state by the ingest path and its `unwrap_or_default` hid the failure: {duplicate:?}"
+        );
+        assert_eq!(duplicate.accepted_count, 0);
+        let missing = restarted.execute(crate::ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "should-not-write".to_string(),
+            },
+        });
+        assert_eq!(
+            missing.response,
+            CommandResponse::Bytes { value: None },
+            "the duplicate was reported but its write landed anyway"
+        );
     }
 }

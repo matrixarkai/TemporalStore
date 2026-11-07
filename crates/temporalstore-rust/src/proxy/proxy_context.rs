@@ -520,7 +520,7 @@ impl ProxyService {
                 _ => std::borrow::Cow::Borrowed("message"),
             };
             // Orders raw events by (timestamp, call, index within the call), all
-            // fixed-width so lexicographic order is arrival order. The call component is
+            // fixed-width so lexicographic order is arrival order. The call element name is
             // what stops two ingests in the same millisecond writing the same field and
             // one silently overwriting the other; `{idx}` alone restarts at zero per call.
             // 20 + 1 + 8 + 1 + 6 -- every part is fixed width, so the length is known and the
@@ -849,7 +849,7 @@ mod ingest_key_tests {
     /// The hand-built keys are byte-identical to the `format!` they replaced.
     ///
     /// Both are ordering contracts, not cosmetics: raw events are read back in lexicographic
-    /// order and that is only arrival order while every component stays fixed width. A key that
+    /// order and that is only arrival order while every element name stays fixed width. A key that
     /// merely looks right would reorder history.
     /// An absent session reads as "default", and a present one is used as given.
     ///

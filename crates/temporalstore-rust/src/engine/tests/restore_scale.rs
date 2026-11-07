@@ -118,7 +118,7 @@
 //! It is a precondition and not dead code: when the index and the model maps HAVE diverged, which
 //! is the #1822 shape, this is the check that notices, and the rebuild behind it is the repair.
 //! So the check stays and the walk stays -- the walk IS the check. What went is the VECTOR. The
-//! test is an `any()`, and `visit_model_live_blocks` already offers the kind, key, component and
+//! test is an `any()`, and `visit_model_live_blocks` already offers the kind, key, element name and
 //! address as borrows, which are exactly the four arguments the test takes, so it now runs on the
 //! same values in the same order without an owned entry being built for any of them.
 //!

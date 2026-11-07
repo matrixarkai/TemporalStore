@@ -2,9 +2,17 @@
 // Copyright 2026 MatrixArkAI
 
 //! Standalone per-shard command execution extracted from engine.rs.
-use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use crate::engine::timestamped_series::TimestampedSeries as _;
+use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use super::*;
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct HashTimestamp {
+    #[prost(int64, tag = "1")]
+    seconds: i64,
+    #[prost(int32, tag = "2")]
+    nanos: i32,
+}
 
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
 ///
@@ -13,7 +21,7 @@ use super::*;
 /// an object whose container lacks three of its fields counts three.
 ///
 /// WHY ONLY THAT DIRECTION. It is the direction that loses a read once the index stops being
-/// consulted -- which is the whole point of measuring it, because taking `component` off the block
+/// consulted -- which is the whole point of measuring it, because taking `element_name` off the block
 /// entry is what makes the container load-bearing. The other direction, a field the container
 /// holds that the index does not name, is not a loss: the union in `Command::HashGetAll` already
 /// answers it from the container, and counting it would mix a rescued read in with a threatened
@@ -103,17 +111,17 @@ pub(super) mod hash_read_divergence {
 /// The block path stages its outcome inside `upsert_bucket_index_block`, because that is where a
 /// block outcome is produced. These have no such moment, so they say it here.
 #[allow(clippy::too_many_arguments)]
-/// Record a block or a value that belongs to one COMPONENT of an object.
+/// Record a block or a value that belongs to one ELEMENT NAME of an object.
 ///
 /// `stage_meta_outcome` states something about the object as a whole -- it is gone, its deadline
 /// is this. This states what one part of it became: which block backs it, or the bytes for state no
 /// block backs at all.
 #[allow(clippy::too_many_arguments)]
-fn stage_component_outcome(
+fn stage_element_name_outcome(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     routing_bucket: u32,
     address: Option<crate::block_store::ElementEntry>,
     value: Option<Vec<u8>>,
@@ -121,12 +129,12 @@ fn stage_component_outcome(
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),
-        // MOVED, NOT CLONED. `component` is taken BY VALUE -- it is already the caller's
+        // MOVED, NOT CLONED. `element_name` is taken BY VALUE -- it is already the caller's
         // allocation handed over -- and this function ends here, so nothing reads it after.
-        // Cloning it allocated a second copy of the same characters on every staged component
+        // Cloning it allocated a second copy of the same characters on every staged element name
         // outcome: every hash field, set member, zset member, list element and context entity
         // write. `stage_meta_outcome` next door already moves its owned arguments.
-        component,
+        element_name,
         object_id: stable_block_object_id(shard_id, kind, object_key),
         routing_bucket,
         address,
@@ -150,7 +158,7 @@ fn stage_meta_outcome(
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),
-        component: None,
+        element_name: None,
         object_id: stable_block_object_id(shard_id, kind, object_key),
         routing_bucket: block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
         address: None,
@@ -241,7 +249,7 @@ fn write_context_node(
     // FRAMED AS A HASH BLOCK, because that is what it is. The outcome below records it under
     // `context_node` for a reason of its own -- it is never filed in the block index -- but the block
     // itself lands in `shard.hashes` under `CONTEXT_NODE_FIELD` and is read back through the hash
-    // door with that field as its component. Leaving this one site unframed would leave the node
+    // door with that field as its element name. Leaving this one site unframed would leave the node
     // the single hash element a later load could not recover from its block, which is the element
     // #2016 already recorded as the one whose absence reads as the node not existing at all.
     let block = crate::engine::container_blocks::single_element_block(
@@ -334,14 +342,14 @@ fn drop_if_expired(
 /// drops the index entry and stages the outcome. That left the BLOCKS saying nothing: #2028 drove
 /// what it costs -- a folded block holding twelve members the index named eleven of -- and the reason
 /// is that the block is never rewritten by a removal. So a removal now APPENDS a block that states it,
-/// and the seven sites differ in their kind and their component and in nothing else. Spelling the
+/// and the seven sites differ in their kind and their element name and in nothing else. Spelling the
 /// append at each of them is how the fourth site gets the ordinal wrong.
 ///
 /// Two of the seven are not obviously removals and are the ones this must not miss: a `ZSetAdd` or
 /// `ZSetIncrement` that changes a member's score REMOVES the old `(score, member)` element key and
 /// writes a new one. Leave the old key untombstoned and a block-derived membership holds the member
-/// TWICE, at both scores. `a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score`
-/// drives that -- and, since the component the removal tombstones and the component the new write
+/// TWICE, at both scores. `a_rescore_sweeps_its_own_tombstone_because_the_element_name_no_longer_spells_the_score`
+/// drives that -- and, since the element name the removal tombstones and the element name the new write
 /// files under are now the same string, also drives the sweep that cleans the tombstone up again
 /// in the same write.
 ///
@@ -361,13 +369,13 @@ pub(super) fn remove_container_element(
     shard_id: ShardId,
     model_id: &str,
     key: &str,
-    component: &str,
+    element_name: &str,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     async_storage: bool,
 ) -> bool {
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-    let tombstone = crate::engine::container_blocks::tombstone_block(model_id, component).and_then(
+    let tombstone = crate::engine::container_blocks::tombstone_block(model_id, element_name).and_then(
         |block| {
             // THE ORDINAL IS THE ELEMENT'S OWN, exactly as it is on the write path: the element
             // already has a position in this object and the tombstone is another block AT that
@@ -378,7 +386,7 @@ pub(super) fn remove_container_element(
                 shard,
                 model_id,
                 key,
-                component,
+                element_name,
             );
             append_value_of_object(
                 cache,
@@ -386,7 +394,7 @@ pub(super) fn remove_container_element(
                 shard_id,
                 &block,
                 Some(stable_block_object_id(shard_id, model_id, key)),
-                Some(component),
+                Some(element_name),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -402,7 +410,7 @@ pub(super) fn remove_container_element(
         shard_id,
         model_id,
         key,
-        Some(component),
+        Some(element_name),
         true,
         tombstone,
     )
@@ -416,12 +424,20 @@ pub(super) fn remove_container_element(
 /// clean result over a branch nothing reached.
 static GATED_LISTING_DERIVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GATED_LISTING_DECLINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How many set listings were answered from the durable member map rather than by a fold.
+/// It joins the two above for one reason: a test that asserts the fold served has to be able
+/// to tell "the fold served" from "something cheaper served", and without this the map path
+/// is indistinguishable from a cache hit -- both leave the fold counters at zero.
+static SET_LISTING_FROM_MAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// (derived, declined) for gated container listings.
-pub fn gated_listing_counts() -> (u64, u64) {
+/// (derived, declined, from_map) for gated container listings. The third exists so a test can
+/// still tell WHICH mechanism answered once the durable map became the preferred one: a map
+/// answer and a cache hit both leave the first two at zero, and they are not the same event.
+pub fn gated_listing_counts() -> (u64, u64, u64) {
     (
         GATED_LISTING_DERIVED.load(std::sync::atomic::Ordering::Relaxed),
         GATED_LISTING_DECLINED.load(std::sync::atomic::Ordering::Relaxed),
+        SET_LISTING_FROM_MAP.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
@@ -429,6 +445,7 @@ pub fn gated_listing_counts() -> (u64, u64) {
 pub fn reset_gated_listing_counts() {
     GATED_LISTING_DERIVED.store(0, std::sync::atomic::Ordering::Relaxed);
     GATED_LISTING_DECLINED.store(0, std::sync::atomic::Ordering::Relaxed);
+    SET_LISTING_FROM_MAP.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Removals whose tombstone block could not be APPENDED, as distinct from could not be FRAMED.
@@ -449,6 +466,438 @@ pub fn reset_tombstone_append_failure_count() {
     TOMBSTONE_APPEND_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub(super) fn execute_hash_multi_get(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    key: &str,
+    fields: &[String],
+    projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
+) -> ExecuteOutcome {
+    if remove_if_expired(shard, key) {
+        let _ = cache.invalidate_record(shard_id, "hash", key);
+        return ExecuteOutcome {
+            response: CommandResponse::Values {
+                values: vec![None; fields.len()],
+            },
+            mutated: true,
+        };
+    }
+    let hash_fields = shard.hashes.get(key);
+    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    // A packed row gives every present field the same address. Detect that common case
+    // without allocating a per-command address map, fetch its frame once, and project all
+    // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
+    // the established independent-read path.
+    let mut shared: Option<(&ElementEntry, &str)> = None;
+    let mut distinct_addresses = false;
+    if let Some(entries) = hash_fields {
+        for field in fields {
+            let Some(address) = entries.get(field) else {
+                continue;
+            };
+            match shared {
+                None => shared = Some((address, field.as_str())),
+                Some((held, _)) if held == address => {}
+                Some(_) => {
+                    distinct_addresses = true;
+                    break;
+                }
+            }
+        }
+    }
+    let values = if !distinct_addresses {
+        if let Some((address, first_field)) = shared {
+            let frame = read_block_frame_bytes(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                BlockIdentity::of(shard_id, "hash", key, Some(first_field)),
+                Some(routing_bucket),
+            );
+            match frame.as_deref().map(|bytes| {
+                container_blocks::project_utf8_container_elements_with_plan(
+                    bytes,
+                    projection_plan,
+                )
+            }) {
+                Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
+                    for (index, field) in fields.iter().enumerate() {
+                        if hash_fields.and_then(|entries| entries.get(field)).is_none() {
+                            values[index] = None;
+                        }
+                    }
+                    values
+                }
+                Some(container_blocks::Utf8ContainerProjection::Corrupt(_)) => {
+                    note_corrupt_container_block();
+                    vec![None; fields.len()]
+                }
+                Some(container_blocks::Utf8ContainerProjection::NotFramed)
+                | Some(container_blocks::Utf8ContainerProjection::OtherSpelling) => fields
+                    .iter()
+                    .map(|field| {
+                        hash_fields
+                            .and_then(|entries| entries.get(field))
+                            .and_then(|_| frame.as_deref())
+                            .and_then(|bytes| select_container_value(bytes, field))
+                    })
+                    .collect(),
+                None => vec![None; fields.len()],
+            }
+        } else {
+            vec![None; fields.len()]
+        }
+    } else {
+        fields
+            .iter()
+            .map(|field| {
+                hash_fields
+                    .and_then(|entries| entries.get(field))
+                    .and_then(|address| {
+                        read_block_bytes(
+                            cache,
+                            block_store,
+                            shard_id,
+                            address,
+                            BlockIdentity::of(shard_id, "hash", key, Some(field.as_str())),
+                            Some(routing_bucket),
+                        )
+                    })
+            })
+            .collect()
+    };
+    ExecuteOutcome {
+        response: CommandResponse::Values { values },
+        mutated: false,
+    }
+}
+
+fn deduplicate_hash_entries(mut entries: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    let mut first_positions =
+        std::collections::HashMap::<&str, usize>::with_capacity(entries.len());
+    let mut has_duplicate = false;
+    for (index, (field, _)) in entries.iter().enumerate() {
+        match first_positions.entry(field.as_str()) {
+            std::collections::hash_map::Entry::Occupied(_) => has_duplicate = true,
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(index);
+            }
+        }
+    }
+    if !has_duplicate {
+        drop(first_positions);
+        return entries;
+    }
+
+    // Preserve the first occurrence's position while moving the last occurrence's value into it.
+    // The table borrows the names already owned by `entries`; no second copy of every field is
+    // needed just to collapse a row before encoding it.
+    let mut last_for_first = vec![None; entries.len()];
+    for (index, (field, _)) in entries.iter().enumerate() {
+        last_for_first[first_positions[field.as_str()]] = Some(index);
+    }
+    drop(first_positions);
+
+    for (first, last) in last_for_first.iter().copied().enumerate() {
+        let Some(last) = last else {
+            continue;
+        };
+        if first != last {
+            entries[first].1 = std::mem::take(&mut entries[last].1);
+        }
+    }
+    let mut index = 0;
+    entries.retain(|_| {
+        let keep = last_for_first[index].is_some();
+        index += 1;
+        keep
+    });
+    entries
+}
+
+fn release_hash_entry_payloads(entries: &mut [(String, Vec<u8>)]) {
+    for (_, value) in entries {
+        *value = Vec::new();
+    }
+}
+
+fn write_packed_hash_entries(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    key: &str,
+    entries: Vec<(String, Vec<u8>)>,
+) -> (bool, Vec<(String, Vec<u8>)>) {
+    let mut packed_entries = deduplicate_hash_entries(entries);
+    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    let object_id = stable_block_object_id(shard_id, "hash", key);
+    let block_ordinal = packed_entries
+        .iter()
+        .find_map(|(field, _)| {
+            shard
+                .hashes
+                .get(key)
+                .and_then(|fields| fields.get(field))
+                .and_then(ElementEntry::block_id)
+        })
+        .or_else(|| {
+            shard
+                .hashes
+                .get(key)
+                .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
+                .map(|held| held.saturating_add(1))
+        })
+        .filter(|ordinal| *ordinal <= crate::block_store::MAX_ADDRESSABLE_BLOCK_ID)
+        .and_then(|ordinal| u32::try_from(ordinal).ok())
+        .unwrap_or(0);
+    let block = crate::engine::container_blocks::encode_utf8_container_block(&packed_entries);
+    block_in_wal::stage(object_id, None, &block);
+    let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+        block_store.append_block_of_object(
+            &block,
+            Some(object_id),
+            Some(routing_bucket),
+            block_ordinal,
+        )
+    });
+    let mutated = match address {
+        Ok(address) => {
+            for (field, _) in &packed_entries {
+                let field_handle =
+                    super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
+                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                    shard,
+                    shard_id,
+                    key,
+                    Some(field.clone()),
+                    field_handle,
+                    address.clone(),
+                    true,
+                    address.clone(),
+                );
+                invalidate_if_cached(cache, CacheKey::hash(shard_id, key, field));
+            }
+            !packed_entries.is_empty()
+        }
+        Err(_) => false,
+    };
+    release_hash_entry_payloads(&mut packed_entries);
+    (mutated, packed_entries)
+}
+
+pub(super) fn execute_hash_multi_set_reusing_metadata(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    async_storage: bool,
+    key: String,
+    mut entries: Vec<(String, Vec<u8>)>,
+) -> (ExecuteOutcome, Command) {
+    remove_if_expired(shard, &key);
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
+    let object_id = stable_block_object_id(shard_id, "hash", &key);
+
+    // A large feature and its small scalar fields stay readable as one object under cache
+    // pressure. Generic small hash writes retain their per-field representation.
+    let mutated = if contains_large_value {
+        let (mutated, returned_entries) = write_packed_hash_entries(
+            cache,
+            block_store,
+            shard_id,
+            start_routing_bucket,
+            end_routing_bucket,
+            shard,
+            &key,
+            entries,
+        );
+        entries = returned_entries;
+        mutated
+    } else {
+        let mut applied = 0usize;
+        for (field, value) in &entries {
+            let block_ordinal = crate::engine::state::container_block_ordinal(
+                shard,
+                "hash",
+                &key,
+                field,
+            );
+            let block =
+                crate::engine::container_blocks::single_element_block("hash", field, value);
+            if let Ok(address) = append_value_of_object(
+                cache,
+                block_store,
+                shard_id,
+                &block,
+                Some(object_id),
+                Some(field.as_str()),
+                Some(routing_bucket),
+                async_storage,
+                block_ordinal,
+            ) {
+                let field_handle =
+                    super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
+                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                    shard,
+                    shard_id,
+                    &key,
+                    Some(field.clone()),
+                    field_handle,
+                    address.clone(),
+                    true,
+                    address,
+                );
+                invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, field));
+                applied += 1;
+            }
+        }
+        release_hash_entry_payloads(&mut entries);
+        applied > 0
+    };
+
+    (
+        ExecuteOutcome {
+            response: CommandResponse::Empty,
+            mutated,
+        },
+        Command::HashMultiSet { key, entries },
+    )
+}
+
+pub(super) fn execute_packed_conditional_hash_write(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    key: String,
+    timestamp_field: String,
+    timestamp_seconds: i64,
+    timestamp_nanos: i32,
+    entries: Vec<(String, Vec<u8>)>,
+) -> (ExecuteOutcome, Command) {
+    let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
+    let stored_timestamp = shard
+        .hashes
+        .get(&key)
+        .and_then(|fields| fields.get(&timestamp_field))
+        .and_then(|address| {
+            read_block_bytes(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                BlockIdentity::of(
+                    shard_id,
+                    "hash",
+                    &key,
+                    Some(timestamp_field.as_str()),
+                ),
+                Some(block_routing_bucket(
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                )),
+            )
+        })
+        .and_then(|bytes| <HashTimestamp as prost::Message>::decode(bytes.as_slice()).ok())
+        .map(|timestamp| (timestamp.seconds, timestamp.nanos));
+    if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
+        let mut metadata_entries = entries;
+        release_hash_entry_payloads(&mut metadata_entries);
+        return (
+            ExecuteOutcome {
+                response: CommandResponse::Integer { value: 0 },
+                mutated,
+            },
+            Command::HashMultiSetIfTimestampOlder {
+                key,
+                timestamp_field,
+                timestamp_seconds,
+                timestamp_nanos,
+                entries: metadata_entries,
+            },
+        );
+    }
+
+    let (packed_mutated, metadata_entries) = write_packed_hash_entries(
+        cache,
+        block_store,
+        shard_id,
+        start_routing_bucket,
+        end_routing_bucket,
+        shard,
+        &key,
+        entries,
+    );
+    mutated |= packed_mutated;
+    (
+        ExecuteOutcome {
+            response: CommandResponse::Integer { value: 1 },
+            mutated,
+        },
+        Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries: metadata_entries,
+        },
+    )
+}
+
+#[cfg(test)]
+mod packed_hash_entry_tests {
+    use super::{deduplicate_hash_entries, release_hash_entry_payloads};
+
+    #[test]
+    fn duplicate_fields_keep_first_position_and_last_value() {
+        let entries = vec![
+            ("a".to_string(), b"old-a".to_vec()),
+            ("b".to_string(), b"only-b".to_vec()),
+            ("a".to_string(), b"new-a".to_vec()),
+        ];
+
+        assert_eq!(
+            deduplicate_hash_entries(entries),
+            vec![
+                ("a".to_string(), b"new-a".to_vec()),
+                ("b".to_string(), b"only-b".to_vec()),
+            ],
+        );
+    }
+
+    #[test]
+    fn released_metadata_keeps_names_without_retaining_payload_capacity() {
+        let mut entries = vec![
+            ("event_timestamp".to_string(), vec![1; 32]),
+            ("embedding".to_string(), vec![2; 256 * 1024]),
+        ];
+
+        release_hash_entry_payloads(&mut entries);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(field, value)| (field.as_str(), value.len(), value.capacity()))
+                .collect::<Vec<_>>(),
+            vec![("event_timestamp", 0, 0), ("embedding", 0, 0)],
+        );
+    }
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -456,7 +905,10 @@ pub(crate) fn execute_on_shard(
     async_storage: bool,
     control_rollup_enabled: bool,
     control_coalesce_persist: bool,
+    control_state_max_size: usize,
     control_distinct_sketch: bool,
+    trim_boundary_record: bool,
+    set_listing_from_map: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
@@ -466,8 +918,32 @@ pub(crate) fn execute_on_shard(
     // Publish per-execute hints so the write helpers don't need the flags threaded through
     // every control-state write arm.
     shard.control_coalesce_persist = control_coalesce_persist;
+    shard.control_state_max_size = control_state_max_size;
     shard.control_distinct_sketch = control_distinct_sketch;
+    shard.set_listing_from_map = set_listing_from_map;
     let mut mutated = false;
+    let command = match command {
+        Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        } => return execute_packed_conditional_hash_write(
+            cache,
+            block_store,
+            shard_id,
+            start_routing_bucket,
+            end_routing_bucket,
+            shard,
+            key,
+            timestamp_field,
+            timestamp_seconds,
+            timestamp_nanos,
+            entries,
+        ).0,
+        command => command,
+    };
     let response = match command {
         // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
         // invalidates a cache entry.
@@ -914,7 +1390,7 @@ pub(crate) fn execute_on_shard(
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD, inside the function.
             // `container_block_ordinal` used to find an existing field's position by looking for an
-            // entry filed under that field's component; a block-named entry carries none, so the
+            // entry filed under that field's element name; a block-named entry carries none, so the
             // walk fell through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
             // address, a fresh block, for a write that should land on the same one. Hash is the one
             // container kind that overwrites a field IN PLACE this way.
@@ -947,7 +1423,7 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
+                // ONE HANDLE FROM THE POOL, for the name this map keeps. The element name
                 // argument below still carries its own owned copy; that position is the
                 // bucket index's and is converted separately.
                 let field_handle =
@@ -1005,181 +1481,36 @@ pub(crate) fn execute_on_shard(
             })
         }
         Command::HashMultiGet { key, fields } => {
-            if remove_if_expired(shard, &key) {
-                mutated = true;
-                let _ = cache.invalidate_record(shard_id, "hash", &key);
-                return ExecuteOutcome {
-                    response: CommandResponse::Values {
-                        values: vec![None; fields.len()],
-                    },
-                    mutated,
-                };
-            }
-            let hash_fields = shard.hashes.get(&key);
-            let values = fields
-                .iter()
-                .map(|field| {
-                    hash_fields
-                        .and_then(|entries| entries.get(field))
-                        .and_then(|address| {
-                            read_block_bytes(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                // The hash the key names, and the field being read as its element.
-                                BlockIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
-                                Some(block_routing_bucket(
-                                    &key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
-                            )
-                        })
-                })
-                .collect();
-            CommandResponse::Values { values }
+            let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+            return execute_hash_multi_get(
+                cache,
+                block_store,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                &key,
+                &fields,
+                &projection_plan,
+            );
         }
         Command::HashMultiSet { key, entries } => {
-            remove_if_expired(shard, &key);
-            let routing_bucket =
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
-            let object_id = stable_block_object_id(shard_id, "hash", &key);
-
-            // A large feature and its small scalar fields must stay readable as
-            // one object under cache pressure. One packed block gives every
-            // field the same readable address and pays for one storage append.
-            if contains_large_value {
-                let mut positions = std::collections::HashMap::<String, usize>::new();
-                let mut packed_entries = Vec::<(String, Vec<u8>)>::with_capacity(entries.len());
-                for (field, value) in entries {
-                    if let Some(position) = positions.get(&field).copied() {
-                        packed_entries[position].1 = value;
-                    } else {
-                        positions.insert(field.clone(), packed_entries.len());
-                        packed_entries.push((field, value));
-                    }
-                }
-                let block_ordinal = packed_entries
-                    .iter()
-                    .find_map(|(field, _)| {
-                        shard
-                            .hashes
-                            .get(&key)
-                            .and_then(|fields| fields.get(field))
-                            .and_then(ElementEntry::block_id)
-                    })
-                    .or_else(|| {
-                        shard
-                            .hashes
-                            .get(&key)
-                            .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
-                            .map(|held| held.saturating_add(1))
-                    })
-                    .filter(|ordinal| *ordinal <= crate::block_store::MAX_ADDRESSABLE_BLOCK_ID)
-                    .and_then(|ordinal| u32::try_from(ordinal).ok())
-                    .unwrap_or(0);
-                let items = packed_entries
-                    .iter()
-                    .map(|(field, value)| (field.as_bytes(), value.as_slice()))
-                    .collect::<Vec<_>>();
-                let block = crate::engine::container_blocks::encode_container_block(
-                    crate::engine::container_blocks::ElementKeySpelling::Utf8,
-                    &items,
-                );
-                block_in_wal::stage(object_id, None, &block);
-                let address = crate::alloc_probe::in_class(
-                    crate::alloc_probe::AllocClass::SlabAppend,
-                    || block_store.append_block_of_object(
-                        &block,
-                        Some(object_id),
-                        Some(routing_bucket),
-                        block_ordinal,
-                    ),
-                );
-                if let Ok(address) = address {
-                    for (field, _) in packed_entries {
-                        let field_handle =
-                            super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
-                        super::recorded_map::install_element::<super::recorded_map::HashKind>(
-                            shard,
-                            shard_id,
-                            &key,
-                            Some(field.clone()),
-                            field_handle,
-                            address.clone(),
-                            true,
-                            address.clone(),
-                        );
-                        invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
-                        mutated = true;
-                    }
-                }
-                return ExecuteOutcome {
-                    response: CommandResponse::Empty,
-                    mutated,
-                };
-            }
-
-            // A COUNT, not a list of pending proofs. The install happens inline now, so nothing
-            // is carried past the loop except whether anything landed.
-            let mut applied = 0usize;
-            for (field, value) in entries {
-                // WHICH block of this object this element is. Computed BEFORE the append, because
-                // the append stamps the ordinal into the record header AND onto the address it
-                // returns from the same value -- assigning it afterwards would leave the two
-                // disagreeing, which `decode_block_record` refuses as a block id mismatch.
-                //
-                // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see
-                // `HashSet`'s identical site and `state::container_block_ordinal`.
-                let block_ordinal = crate::engine::state::container_block_ordinal(
-                        shard,
-                        "hash",
-                        &key,
-                        &field,
-                );
-                // The block STATES which field it is -- see `container_blocks`. Built per entry
-                // because the frame carries the field, so one frame cannot stand for two.
-                let block =
-                    crate::engine::container_blocks::single_element_block("hash", &field, &value);
-                if let Ok(address) = append_value_of_object(
-                    cache,
-                    block_store,
-                    shard_id,
-                    &block,
-                    Some(object_id),
-                    // The element this block holds -- the SAME expression that derived the ordinal
-                    // above and the object id beside it. All three name one block.
-                    Some(field.as_str()),
-                    Some(routing_bucket),
-                    async_storage,
-                    block_ordinal,
-                ) {
-                    // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
-                    // argument below still carries its own owned copy; that position is the
-                    // bucket index's and is converted separately.
-                    let field_handle =
-                        super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
-                    super::recorded_map::install_element::<super::recorded_map::HashKind>(
-                        shard,
-                        shard_id,
-                        &key,
-                        Some(field.clone()),
-                        field_handle,
-                        address.clone(),
-                        true,
-                        address,
-                    );
-                    invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
-                    applied += 1;
-                }
-            }
-            if applied > 0 {
-                mutated = true;
-            }
-            CommandResponse::Empty
+            return execute_hash_multi_set_reusing_metadata(
+                cache,
+                block_store,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                async_storage,
+                key,
+                entries,
+            )
+            .0;
         }
+        Command::HashMultiSetIfTimestampOlder { .. } => unreachable!(
+            "conditional hash writes are handled before command dispatch"
+        ),
         Command::HashIncrBy {
             key,
             field,
@@ -1241,14 +1572,14 @@ pub(crate) fn execute_on_shard(
                 Some(stable_block_object_id(shard_id, "hash", &key)),
                 // The element this block holds -- the same expression that derived the ordinal
                 // above, and now also the key INSIDE the block. The object id beside it no longer
-                // names the element: #2019 made it the object's, so the ordinal, the component and
+                // names the element: #2019 made it the object's, so the ordinal, the element name and
                 // the frame are the three things that say which element this is.
                 Some(field.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
             ) {
-                // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
+                // ONE HANDLE FROM THE POOL, for the name this map keeps. The element name
                 // argument below still carries its own owned copy; that position is the
                 // bucket index's and is converted separately.
                 let field_handle =
@@ -1304,7 +1635,7 @@ pub(crate) fn execute_on_shard(
             // SERVING THE UNION IS WHAT MAKES THAT SAFE. A field only one source names is still
             // answered, so a divergence is OBSERVED rather than SUFFERED and no read is lost
             // while the measurement is being taken.
-            let indexed = bucket_index_component_block_addresses(shard, "hash", &key);
+            let indexed = bucket_index_element_name_block_addresses(shard, "hash", &key);
             // Copied out before the block reads: those borrow the cache and the block store while
             // this borrows the shard, and the addresses are what both halves of the union need.
             let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
@@ -1332,8 +1663,8 @@ pub(crate) fn execute_on_shard(
             )> = Vec::with_capacity(indexed.len() + contained.len());
             let mut named_by_index: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(indexed.len());
-            for (component, address) in indexed {
-                // A `None` COMPONENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
+            for (element_name, address) in indexed {
+                // A `None` ELEMENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
                 //
                 // THIS USED TO DEFAULT IT TO `""` AND SERVE IT. The paragraph here said a nameless
                 // entry "is the whole-object door's answer for a block that belongs to the object
@@ -1355,11 +1686,11 @@ pub(crate) fn execute_on_shard(
                 // carry, arriving on the READ path. The field a nameless block holds is named inside
                 // the block's own frame and in `shard.hashes`, and the union below serves it from
                 // there -- so nothing is lost by skipping, only a name that was never written.
-                let Some(name) = component.as_deref().map(str::to_string) else {
+                let Some(name) = element_name.as_deref().map(str::to_string) else {
                     continue;
                 };
                 named_by_index.insert(name.clone());
-                resolved.push((name, component, address));
+                resolved.push((name, element_name, address));
             }
 
             // THE MEASUREMENT. See `hash_read_divergence` for what a zero from it does and does
@@ -1379,21 +1710,21 @@ pub(crate) fn execute_on_shard(
             // part that makes observing a divergence safe rather than merely informative.
             for (name, address) in contained {
                 if !named_by_index.contains(&name) {
-                    let component: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
-                    resolved.push((name, Some(component), address));
+                    let element_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
+                    resolved.push((name, Some(element_name), address));
                 }
             }
 
             let entries = resolved
                 .into_iter()
-                .filter_map(|(name, component, address)| {
+                .filter_map(|(name, element_name, address)| {
                     read_block_bytes(
                         cache,
                         block_store,
                         shard_id,
                         &address,
                         // The element the whole-object door handed back beside this address.
-                        BlockIdentity::of(shard_id, "hash", &key, component.as_deref()),
+                        BlockIdentity::of(shard_id, "hash", &key, element_name.as_deref()),
                         Some(block_routing_bucket(
                             &key,
                             start_routing_bucket,
@@ -1476,7 +1807,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetAdd { key, member } => {
             remove_if_expired(shard, &key);
-            let member_component = set_component(&member);
+            let member_element_name = set_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1486,7 +1817,7 @@ pub(crate) fn execute_on_shard(
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER, inside the function.
             // `container_block_ordinal` used to pick an element's existing position out of the INDEX
-            // by component, which a block-named entry does not carry -- so every rewrite fell
+            // by element name, which a block-named entry does not carry -- so every rewrite fell
             // through to `highest + 1` and a member written five times left five blocks instead of
             // overwriting one (measured: two blocks and ordinals [0, 1] where one and [0] are
             // right). This arm therefore carried its own `shard.sets` lookup under the gate, with
@@ -1500,14 +1831,14 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "set",
                 &key,
-                &member_component,
+                &member_element_name,
             );
             // The block STATES which member it is -- see `container_blocks`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
             let block = crate::engine::container_blocks::single_element_block(
                 "set",
-                &member_component,
+                &member_element_name,
                 &member,
             );
             if let Ok(address) = append_value_of_object(
@@ -1518,7 +1849,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(member_component.as_str()),
+                Some(member_element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -1527,7 +1858,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(member_component.clone()),
+                    Some(member_element_name.clone()),
                     member.clone(),
                     address.clone(),
                     true,
@@ -1554,7 +1885,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             if let Some(old_biased) = existed {
-                let old_component = zset_component(&member);
+                let old_element_name = zset_element_name(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -1562,13 +1893,13 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "zset",
                     &key,
-                    &old_component,
+                    &old_element_name,
                     start_routing_bucket,
                     end_routing_bucket,
                     async_storage,
                 );
             }
-            let component = zset_component(&member);
+            let element_name = zset_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1580,13 +1911,13 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "zset",
                 &key,
-                &component,
+                &element_name,
             );
             // The block STATES which element it is -- see `container_blocks`. A zset's element key is
             // its biased score followed by its member, and the value IS that member, so the frame
             // stores the member once and says where inside the key it starts.
             let block =
-                crate::engine::container_blocks::single_element_block("zset", &component, &member);
+                crate::engine::container_blocks::single_element_block("zset", &element_name, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -1595,15 +1926,15 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(component.as_str()),
+                Some(element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
             ) {
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT -- the same
                 // correction `ZSetIncrBy` and `ListPush` already carry (see their own notes). It
-                // stood here filing the SAME block under the SAME component a second time, which
-                // staged a second WAL outcome for one write: harmless while the component carried
+                // stood here filing the SAME block under the SAME element name a second time, which
+                // staged a second WAL outcome for one write: harmless while the element name carried
                 // the score twice over identically, and no longer harmless now that only
                 // `install_element`'s own filing carries the score (through
                 // `RecordedKind::outcome_value`) -- a replay of the OTHER, standalone-filed
@@ -1613,7 +1944,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     member.clone(),
                     (biased, address.clone()),
                     true,
@@ -1647,7 +1978,7 @@ pub(crate) fn execute_on_shard(
             // one ordering this conversion had to change rather than preserve.
             //
             // This arm used to drop the member from the resident map FIRST, because the removal's
-            // own return value carried the biased score that the component is rendered from -- so
+            // own return value carried the biased score that the element name is rendered from -- so
             // the resident mutation preceded the durable record, which is the order a recorded
             // container exists to make unrepresentable. Reading the score with `get` costs one
             // lookup and lets the record go first.
@@ -1659,14 +1990,14 @@ pub(crate) fn execute_on_shard(
             match biased {
                 None => CommandResponse::Integer { value: 0 },
                 Some(biased) => {
-                    let component = zset_component(&member);
+                    let element_name = zset_element_name(&member);
                     mutated |= super::recorded_map::remove_element::<super::recorded_map::ZSetKind>(
                         cache,
                         block_store,
                         shard,
                         shard_id,
                         &key,
-                        &component,
+                        &element_name,
                         member.clone(),
                         start_routing_bucket,
                         end_routing_bucket,
@@ -1922,7 +2253,7 @@ pub(crate) fn execute_on_shard(
             let score = old.map_or(0.0, zset_score_from_bits) + increment;
             let biased = zset_score_bits(score);
             if let Some(old_biased) = old {
-                let old_component = zset_component(&member);
+                let old_element_name = zset_element_name(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -1930,13 +2261,13 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "zset",
                     &key,
-                    &old_component,
+                    &old_element_name,
                     start_routing_bucket,
                     end_routing_bucket,
                     async_storage,
                 );
             }
-            let component = zset_component(&member);
+            let element_name = zset_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1948,11 +2279,11 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "zset",
                 &key,
-                &component,
+                &element_name,
             );
             // The block STATES which element it is -- see `container_blocks`.
             let block =
-                crate::engine::container_blocks::single_element_block("zset", &component, &member);
+                crate::engine::container_blocks::single_element_block("zset", &element_name, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -1961,7 +2292,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(component.as_str()),
+                Some(element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -1974,7 +2305,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     member.clone(),
                     (biased, address.clone()),
                     true,
@@ -2003,7 +2334,7 @@ pub(crate) fn execute_on_shard(
             ordered.truncate(count as usize);
             let mut members = Vec::new();
             for (member, biased) in ordered {
-                let component = zset_component(&member);
+                let element_name = zset_element_name(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -2011,7 +2342,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "zset",
                     &key,
-                    &component,
+                    &element_name,
                     start_routing_bucket,
                     end_routing_bucket,
                     async_storage,
@@ -2082,9 +2413,9 @@ pub(crate) fn execute_on_shard(
                 }
                 None => 0,
             };
-            // Two's-complement bias makes the hex component sort lexically in list order,
+            // Two's-complement bias makes the hex element name sort lexically in list order,
             // which is what lets recovery and range reads walk the bucket index directly.
-            let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+            let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
             let object_id = stable_block_object_id(shard_id, "list", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -2096,13 +2427,13 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "list",
                 &key,
-                &component,
+                &element_name,
             );
             // The block STATES which element it is -- see `container_blocks`. A list's element key is
             // its biased sequence word, which is eight bytes and is NOT the value beside it, so
             // this is the one container kind whose frame carries both in full.
             let block =
-                crate::engine::container_blocks::single_element_block("list", &component, &member);
+                crate::engine::container_blocks::single_element_block("list", &element_name, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -2111,7 +2442,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(component.as_str()),
+                Some(element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -2121,7 +2452,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "list",
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     address.clone(),
                     true,
                 );
@@ -2129,7 +2460,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     seq,
                     address.clone(),
                     true,
@@ -2162,7 +2493,7 @@ pub(crate) fn execute_on_shard(
             match popped {
                 None => CommandResponse::Bytes { value: None },
                 Some((seq, address)) => {
-                    let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
                     mutated = true;
                     super::recorded_map::remove_element::<super::recorded_map::ListKind>(
                         cache,
@@ -2170,7 +2501,7 @@ pub(crate) fn execute_on_shard(
                         shard,
                         shard_id,
                         &key,
-                        &component,
+                        &element_name,
                         seq,
                         start_routing_bucket,
                         end_routing_bucket,
@@ -2183,7 +2514,7 @@ pub(crate) fn execute_on_shard(
                             shard_id,
                             &address,
                             // The element rendered two lines up, which is the one the index removal names.
-                            BlockIdentity::of(shard_id, "list", &key, Some(component.as_str())),
+                            BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
                             Some(block_routing_bucket(
                                 &key,
                                 start_routing_bucket,
@@ -2239,7 +2570,7 @@ pub(crate) fn execute_on_shard(
                         .filter_map(|(seq, address)| {
                             // The same rendering ListPop uses, which is what the index rows
                             // for this list were filed under.
-                            let component =
+                            let element_name =
                                 format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
                             read_block_bytes(
                                 cache,
@@ -2248,7 +2579,7 @@ pub(crate) fn execute_on_shard(
                                 address,
                                 // Re-derived from the sequence the same way ListPop renders it. `.values()` used to
                                 // drop that sequence, which is why the iteration above is now `.iter()`.
-                                BlockIdentity::of(shard_id, "list", &key, Some(component.as_str())),
+                                BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -2286,11 +2617,50 @@ pub(crate) fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
+                // THE DURABLE MAP ANSWERS FIRST, AND IT READS NO BLOCKS AT ALL.
+                //
+                // `shard.sets` is keyed BY MEMBER BYTES, so it holds the member identity the
+                // bucket index cannot -- which is the whole reason the fold below had to ask
+                // the payload. A listing needs only those keys; the element address each one
+                // maps to is never consulted, so a stale address after a fold cannot reach
+                // this answer.
+                //
+                // WHAT IT REMOVES. The fold reads one block per block the object has,
+                // tombstones included: 1,033 block reads and 71.4 ms to answer 64 live
+                // members once 1,024 have been removed, against 614 us unchurned. From the
+                // map it is zero block reads and O(live) whatever the churn -- and a churned
+                // set is the steady state rather than an edge case.
+                //
+                // WHY THIS MAY BE PREFERRED, as what is driven rather than what is argued.
+                // Three places in this tree already said the map answers correctly, and
+                // three claims are not a measurement -- so
+                // `does_the_durable_map_answer_what_the_fold_answers` drives BOTH mechanisms
+                // on one store across the five shapes where they could part company,
+                // including the precedence case (live, tombstoned, live again) where the fold
+                // resolves by `append_position` and the map by the key being present. The
+                // gate is what makes that comparison possible at all.
+                //
+                // AND THE FOLD IS STILL REACHED, for a key the map holds no entry for. That
+                // matters twice: `derive_membership` does not become a zero-caller function,
+                // and a listing can never answer EMPTY for a key whose blocks say otherwise
+                // -- which is exactly the `listed=0` against 40 that killed the entries walk.
+                if shard.set_listing_from_map {
+                    if let Some(members) = shard.sets.get(&key) {
+                        SET_LISTING_FROM_MAP
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return CommandResponse::Members {
+                            members: members
+                                .iter()
+                                .map(|(member, _)| member.clone())
+                                .collect(),
+                        };
+                    }
+                }
                 // IDENTITY IS IN THE PAYLOAD, AND THERE IS NO LONGER ANOTHER WAY.
                 //
                 // This was the gated arm of an `if`, and the ungated arm walked the entries and
                 // answered each from the block it named. That walk's own `None` arm said why it
-                // cannot work once an entry names no element -- "an entry naming no component can
+                // cannot work once an entry names no element -- "an entry naming no element name can
                 // only be answered by a block that names no element either" -- so with every entry
                 // nameless it dropped every member and the listing returned EMPTY, measured as
                 // `listed=0` against 40. It is deleted rather than left unreachable: an entry
@@ -2353,7 +2723,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let member_component = set_component(&member);
+            let member_element_name = set_element_name(&member);
             // REMOVING THE LAST MEMBER REMOVES THE KEY, as it does for the other three container
             // kinds. `record_exists_exact` ORs `shard.sets.contains_key(key)` in beside its
             // bucket-index answer, so an empty member map left under a live key is a key that
@@ -2372,7 +2742,7 @@ pub(crate) fn execute_on_shard(
                 shard,
                 shard_id,
                 &key,
-                &member_component,
+                &member_element_name,
                 member.clone(),
                 start_routing_bucket,
                 end_routing_bucket,
@@ -2435,6 +2805,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2539,6 +2910,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             mutated |= trimmed;
             if replaced_any || trimmed {
@@ -2741,6 +3113,7 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
             let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_blocks(
@@ -2756,7 +3129,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::FeatureDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            // A removal with no component: the whole series went, not one point.
+            // A removal with no element name: the whole series went, not one point.
             stage_meta_outcome(
                 shard_id,
                 "feature",
@@ -2768,6 +3141,14 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated |= shard.features_mut().remove(&key[..]).is_some();
+            // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
+            // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
+            // `forget_object` already drops the view beside its own `features_mut().remove`; this
+            // arm removed the series and left the view behind. The length test hid it in the
+            // common case -- an emptied series reads as length 0 against a non-empty view -- but
+            // not when the key is re-created with the same number of points, which then answers
+            // with the sums of the DELETED series.
+            control_rollup::feature_forget(shard, &key);
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
@@ -2908,6 +3289,8 @@ pub(crate) fn execute_on_shard(
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
+            let mut published: Vec<ElementEntry> = Vec::new();
+            let mut replaced_any = false;
             if let Ok(addresses) = append_timestamped_kv_blocks(
                 cache,
                 block_store,
@@ -2921,27 +3304,52 @@ pub(crate) fn execute_on_shard(
                 next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    series.set(timestamp_ms, address);
+                    // A replaced timestamp supersedes a block, and a superseded block must be
+                    // dropped rather than joined -- so record it and take the restating path.
+                    // `set` returns nothing where `insert` returned the superseded value, so
+                    // the question has to be asked BEFORE the write rather than read off it.
+                    if series.get(timestamp_ms).is_some() {
+                        replaced_any = true;
+                    }
+                    series.set(timestamp_ms, address.clone());
+                    published.push(address);
                     mutated = true;
                 }
             }
-            mutated |= trim_timestamped_series(
+            let trimmed = trim_timestamped_series(
                 shard_id,
                 "feature",
                 &key,
                 routing_bucket,
                 series,
                 feature_max_size,
+                trim_boundary_record,
             );
-            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
-            sync_bucket_index_object_blocks(
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
-                mutated,
-            );
+            mutated |= trimmed;
+            if replaced_any || trimmed {
+                // Something was superseded or evicted: the live set has to be restated in full.
+                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
+                sync_bucket_index_object_blocks(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    live_addresses,
+                    mutated,
+                );
+            } else {
+                // A pure append. Publishing only the new blocks leaves the index in the same
+                // state, and stops a row append costing the length of the series it joins.
+                sync_bucket_index_object_blocks_with_mode(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    published,
+                    mutated,
+                    false,
+                );
+            }
             CommandResponse::Empty
         }
         Command::SequenceQuery {
@@ -3033,7 +3441,7 @@ pub(crate) fn execute_on_shard(
             };
             // The RESULT, not the increment. An increment replayed twice counts twice; a count
             // installed twice is the same count, which is what makes a record idempotent.
-            stage_component_outcome(
+            stage_element_name_outcome(
                 shard_id,
                 "control_counter",
                 &key,
@@ -3103,7 +3511,7 @@ pub(crate) fn execute_on_shard(
                 // AFTER the block, not before. Replay installs a deadline only onto a key that
                 // already exists, and outcomes install in the order they were staged; staged
                 // first, this deadline meets a shard that has not seen the key yet and is
-                // dropped in silence. Both correct siblings here stage their component first.
+                // dropped in silence. Both correct siblings here stage their element name first.
                 stage_meta_outcome(
                     shard_id,
                     "object",
@@ -3133,7 +3541,7 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            stage_component_outcome(
+            stage_element_name_outcome(
                 shard_id,
                 "control_change",
                 &key,
@@ -3482,7 +3890,7 @@ pub(crate) fn execute_on_shard(
             if should_store {
                 // The value that WON the comparison, so a replay installs the winner instead of
                 // re-running a comparison against whatever it happens to hold.
-                stage_component_outcome(
+                stage_element_name_outcome(
                     shard_id,
                     "control_selection",
                     &key,
@@ -4660,7 +5068,7 @@ pub(crate) fn execute_on_shard(
                 // insert() on the entity hash OVERWRITES: an entity has one current value, and
                 // its history is the separate context_entity_update_audit series. Keying this
                 // map by time instead would silently turn every upsert into an append.
-                stage_component_outcome(
+                stage_element_name_outcome(
                     shard_id,
                     "context_entity",
                     &collection_key,
@@ -5321,35 +5729,35 @@ pub(super) fn zset_score_string(biased: u64) -> String {
     }
 }
 
-/// The persisted component: the member alone, spelled ONCE.
+/// The persisted element name: the member alone, spelled ONCE.
 ///
 /// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
 /// it bought was never built on: every zset serving arm that returns members in score order
 /// reads the score out of `shard.zsets` and sorts explicitly (`zset_members_in_score_range`,
 /// `zset_ordered_members`), so dropping the score from this string costs that ordering nothing.
-/// What it buys is the thing this change is for: `BlockIndex.component` for a zset entry is now
+/// What it buys is the thing this change is for: `BlockIndex.element_name` for a zset entry is now
 /// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
 /// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
 /// WAL outcome's `value` field -- it is simply no longer spelled into this string.
-/// WAS `hex::encode(member)`, WHICH CHARGED TWO BYTES PER MEMBER BYTE. The component is the term
+/// WAS `hex::encode(member)`, WHICH CHARGED TWO BYTES PER MEMBER BYTE. The element name is the term
 /// that scales with member width, so that doubling was the member-width RATE of a zset write and
-/// not a fixed overhead on it. [`super::container_blocks::member_component`] charges one byte plus
+/// not a fixed overhead on it. [`super::container_blocks::member_element_name`] charges one byte plus
 /// the member, and the tag it puts in front is what keeps the two spellings tellable apart on a
 /// string that carries no spelling byte of its own.
-pub(super) fn zset_component(member: &[u8]) -> String {
-    super::container_blocks::member_component(member)
+pub(super) fn zset_element_name(member: &[u8]) -> String {
+    super::container_blocks::member_element_name(member)
 }
 
-/// The persisted component for a SET member: the member alone, spelled ONCE.
+/// The persisted element name for a SET member: the member alone, spelled ONCE.
 ///
-/// Sibling of [`zset_component`], and the same rendering as it -- a set component and a zset
-/// component have been the same shape since the score came off the zset string. They stay two
+/// Sibling of [`zset_element_name`], and the same rendering as it -- a set element name and a zset
+/// element name have been the same shape since the score came off the zset string. They stay two
 /// names because the two kinds reach this from different arms, so a per-kind divergence has
 /// somewhere to land, and because what this replaces was `hex::encode` spelled INLINE at five
 /// separate set write sites. A spelling decided at each site is a spelling that can be flipped at
 /// four of them and missed at the fifth.
-pub(super) fn set_component(member: &[u8]) -> String {
-    super::container_blocks::member_component(member)
+pub(super) fn set_element_name(member: &[u8]) -> String {
+    super::container_blocks::member_element_name(member)
 }
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.

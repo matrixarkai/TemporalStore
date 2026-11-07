@@ -6,15 +6,15 @@
 //! # THE MODULE'S PREMISE WAS DISCHARGED, SO ITS CLAIM IS INVERTED RATHER THAN DELETED
 //!
 //! This module used to assert the opposite: "TWO ELEMENTS OF ONE COMPACTED BLOCK MUST NOT SHARE A
-//! HANDLE". `block_index_handle` hashed model id, object key, **component** and five address
-//! terms, and siblings on a batched block agree on everything except the component -- so the
-//! component was the only discriminator, and dropping it collapsed forty hash fields on one block
+//! HANDLE". `block_index_handle` hashed model id, object key, **element name** and five address
+//! terms, and siblings on a batched block agree on everything except the element name -- so the
+//! element name was the only discriminator, and dropping it collapsed forty hash fields on one block
 //! onto one entry with thirty-nine lost. Its own header quoted `index_log.rs` on the condition:
-//! the component *"cannot go until the entry stops being per-element."*
+//! the element name *"cannot go until the entry stops being per-element."*
 //!
 //! THE ENTRY HAS STOPPED BEING PER-ELEMENT. `index_entry_names_a_block` answers true for all four
 //! container kinds, so the projection emits ONE entry per distinct physical block, and
-//! `BlockIndex` no longer has a `component` field at all. The state this module pinned against --
+//! `BlockIndex` no longer has an `element_name` field at all. The state this module pinned against --
 //! two entries of one object at one address -- is not something the index can hold any more.
 //!
 //! # SO WHAT IS ASSERTED NOW, AND WHY IT IS NOT THE SAME TEST WITH A FLIPPED SIGN
@@ -37,8 +37,8 @@
 //!
 //! # THE MIRROR IS GONE WITH THE TERM IT ISOLATED
 //!
-//! A mirror of `block_index_handle` stood here with an `include_component` switch, proved faithful
-//! against the real function and then re-run with the component dropped, to show that term was the
+//! A mirror of `block_index_handle` stood here with an `include_element_name` switch, proved faithful
+//! against the real function and then re-run with the element name dropped, to show that term was the
 //! only discriminator. There is no such term to drop: `block_index_handle` hashes the constant
 //! `None::<&str>` in that position -- which is what keeps every handle bit-for-bit what it was --
 //! and a constant cannot be isolated by omitting it. The real function is used directly below.
@@ -102,7 +102,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
     // ONE HANDLE, AND THAT IS THE POINT RATHER THAN A DEFECT.
     //
     // This assertion used to be `ENTRIES == handles.len()`, and it held because the entries
-    // differed in their component. They have nothing left to differ in, so they hash alike and
+    // differed in their element name. They have nothing left to differ in, so they hash alike and
     // `block_index` would hold one of them -- which is exactly the forty-fields collapse the old
     // assertion was written to catch, and the reason the next test pins that nothing files this
     // state.

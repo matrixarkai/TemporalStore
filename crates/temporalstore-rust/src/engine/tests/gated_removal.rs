@@ -19,7 +19,7 @@
 //!
 //! # THE TRAP THIS IS AIMED AT
 //!
-//! `mark_bucket_index_block_deleted` finds the entry to tombstone BY COMPONENT. Under one entry per
+//! `mark_bucket_index_block_deleted` finds the entry to tombstone BY ELEMENT NAME. Under one entry per
 //! block the entry carries none, so the match cannot select it -- the same selection-versus-meaning
 //! shape that produced an orphan at step two and five entries at step five-a. A removal that cannot
 //! find its entry, over a block that still states the member as live, is exactly the arrangement a
@@ -92,7 +92,7 @@ fn resident_members(engine: &TemporalEngine, object_key: &str) -> std::collectio
 /// THE OTHER SOURCE: every element key a live block of this object still states as PRESENT.
 ///
 /// Read off the bytes, so the disagreement below is observed rather than assumed.
-fn components_the_blocks_state(
+fn element_names_the_blocks_state(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> std::collections::BTreeSet<String> {
@@ -120,12 +120,12 @@ fn components_the_blocks_state(
                     if item.deleted {
                         continue;
                     }
-                    if let Some(component) =
-                        crate::engine::container_blocks::component_from_element_key(
+                    if let Some(element_name) =
+                        crate::engine::container_blocks::element_name_from_element_key(
                             spelling, &item.key,
                         )
                     {
-                        stated.insert(component);
+                        stated.insert(element_name);
                     }
                 }
             }
@@ -164,7 +164,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
     let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let victim = member_bytes(2);
-    let victim_component = hex::encode(&victim);
+    let victim_element_name = hex::encode(&victim);
 
     {
         let engine = TemporalEngine::with_local_dirs(
@@ -214,9 +214,9 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         );
 
         // ---- PART 2: THE BLOCK STILL STATES THE MEMBER, so the sources disagree. ----
-        let stated = components_the_blocks_state(&engine, "removal/set");
+        let stated = element_names_the_blocks_state(&engine, "removal/set");
         assert!(
-            stated.contains(&victim_component),
+            stated.contains(&victim_element_name),
             "no live block states the removed member any more, so the payload and the durable map \
              AGREE and this test cannot tell a reader that honours the removal from one that \
              enumerates the block. A block is never rewritten by the removal path, so after a fold \
@@ -256,7 +256,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
     load_on(&reloaded);
 
     let resident = resident_members(&reloaded, "removal/set");
-    let stated = components_the_blocks_state(&reloaded, "removal/set");
+    let stated = element_names_the_blocks_state(&reloaded, "removal/set");
     println!(
         "  after reload: durable holds {} member(s); blocks state {}",
         resident.len(),

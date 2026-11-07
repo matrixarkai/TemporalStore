@@ -4,6 +4,264 @@
 //! Context ingest + resource/skill secondary-index verification, split from context_workflow.rs.
 use super::*;
 
+// Amortize durability while bounding duplicated report and command payloads in memory.
+const CONTEXT_DURABLE_SOURCE_BATCH: usize = 16;
+// Bound summaries and embedding matrices retained between model calls and durable commits.
+// Sixty-four sources also fill the default 128-item embedding request exactly because each
+// source contributes one node text and one event text.
+const CONTEXT_MODEL_SOURCE_WINDOW: usize = 64;
+
+fn persist_prepared_context_batch(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    mut pending: Vec<PreparedContextExtract>,
+    extracts: &mut Vec<ContextExtractReport>,
+    failed_sources: &mut Vec<ContextIngestSourceFailure>,
+    node_hashes: &mut Vec<u64>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let command_count = pending
+        .iter()
+        .map(|prepared| prepared.commands.len())
+        .sum();
+    let mut commands = Vec::with_capacity(command_count);
+    let mut command_ranges = Vec::with_capacity(pending.len());
+    for prepared in &mut pending {
+        let start = commands.len();
+        commands.append(&mut prepared.commands);
+        command_ranges.push(start..commands.len());
+    }
+    let response = engine.batch_execute_durable(BatchExecuteRequest { shard_id, commands });
+    let batch_failure = if !response.status.ok {
+        Some(response.status)
+    } else if response.responses.len() != command_count {
+        Some(Status::error(
+            "context_ingest_batch_incomplete",
+            format!(
+                "context ingest expected {command_count} command responses but received {}",
+                response.responses.len()
+            ),
+        ))
+    } else {
+        None
+    };
+
+    for (prepared, command_range) in pending.into_iter().zip(command_ranges) {
+        let failure = batch_failure.clone().or_else(|| {
+            response.responses[command_range]
+                .iter()
+                .find_map(|response| (!response.status.ok).then(|| response.status.clone()))
+        });
+        if let Some(status) = failure {
+            let source_id = prepared.report.source_ref;
+            failed_sources.push(ContextIngestSourceFailure { source_id, status });
+        } else {
+            node_hashes.push(prepared.report.node.node_hash);
+            extracts.push(prepared.report);
+        }
+    }
+}
+
+fn process_context_source_window(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    gate_l1: bool,
+    sources: Vec<ContextExtractRequest>,
+    extracts: &mut Vec<ContextExtractReport>,
+    failed_sources: &mut Vec<ContextIngestSourceFailure>,
+    node_hashes: &mut Vec<u64>,
+) {
+    if sources.is_empty() {
+        return;
+    }
+
+    let mut summary_provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
+    for (source_index, source) in sources.iter().enumerate() {
+        if let Some((_, source_indexes)) = summary_provider_groups
+            .iter_mut()
+            .find(|(provider, _)| *provider == source.provider)
+        {
+            source_indexes.push(source_index);
+        } else {
+            summary_provider_groups.push((source.provider.clone(), vec![source_index]));
+        }
+    }
+    let mut summary_results: Vec<Option<Result<ContextExtractSummaries, ContextExtractReport>>> =
+        std::iter::repeat_with(|| None).take(sources.len()).collect();
+    for (_, source_indexes) in summary_provider_groups {
+        let requests = source_indexes
+            .iter()
+            .map(|source_index| &sources[*source_index])
+            .collect::<Vec<_>>();
+        let results = context_extract_summaries_with_fallback_batch(&requests);
+        for (source_index, result) in source_indexes.into_iter().zip(results) {
+            summary_results[source_index] = Some(result);
+        }
+    }
+
+    let mut prepared_sources = Vec::with_capacity(sources.len());
+    for (source_index, source) in sources.into_iter().enumerate() {
+        match summary_results[source_index]
+            .take()
+            .expect("every validated source receives a summary result")
+        {
+            Ok(summaries) if summaries.status.ok => prepared_sources.push((source, summaries)),
+            Ok(summaries) => failed_sources.push(ContextIngestSourceFailure {
+                source_id: source.source_id,
+                status: summaries.status,
+            }),
+            Err(report) => failed_sources.push(ContextIngestSourceFailure {
+                source_id: source.source_id,
+                status: report.status,
+            }),
+        }
+    }
+
+    // Embedding endpoints accept batches. Group by normalized provider, then subdivide by both
+    // item count and bytes. Every source addresses its two rows in the shared provider matrix,
+    // avoiding a second allocation and copy for every source in the window.
+    let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
+    for (source_index, (_, summaries)) in prepared_sources.iter().enumerate() {
+        if let Some((_, source_indexes)) = provider_groups
+            .iter_mut()
+            .find(|(provider, _)| *provider == summaries.provider)
+        {
+            source_indexes.push(source_index);
+        } else {
+            provider_groups.push((summaries.provider.clone(), vec![source_index]));
+        }
+    }
+    let mut embedding_outcomes: Vec<Option<ContextEmbeddingOutcome>> =
+        std::iter::repeat_with(|| None)
+            .take(prepared_sources.len())
+            .collect();
+    for (provider, source_indexes) in provider_groups {
+        let limits = context_embedding_batch_limits(&provider);
+        let mut chunk_start = 0usize;
+        while chunk_start < source_indexes.len() {
+            let mut chunk_end = chunk_start;
+            let mut input_count = 0usize;
+            let mut input_bytes = 0usize;
+            while chunk_end < source_indexes.len() {
+                let (source, summaries) = &prepared_sources[source_indexes[chunk_end]];
+                let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
+                let node_embedding_text = if emit_l1 {
+                    summaries.l1.as_str()
+                } else {
+                    summaries.l0.as_str()
+                };
+                let pair_bytes = node_embedding_text.len().saturating_add(source.body.len());
+                let candidate_count = input_count.saturating_add(2);
+                let candidate_bytes = input_bytes.saturating_add(pair_bytes);
+                if chunk_end > chunk_start
+                    && (candidate_count > limits.max_items
+                        || candidate_bytes > limits.max_request_bytes)
+                {
+                    break;
+                }
+                input_count = candidate_count;
+                input_bytes = candidate_bytes;
+                chunk_end += 1;
+                if node_embedding_text.len() > limits.max_input_bytes
+                    || source.body.len() > limits.max_input_bytes
+                    || input_count > limits.max_items
+                    || input_bytes > limits.max_request_bytes
+                {
+                    break;
+                }
+            }
+
+            let chunk_indexes = &source_indexes[chunk_start..chunk_end];
+            let mut embedding_inputs = Vec::with_capacity(chunk_indexes.len().saturating_mul(2));
+            for source_index in chunk_indexes {
+                let (source, summaries) = &prepared_sources[*source_index];
+                let node_hash = stable_hash64(&format!(
+                    "{}:{}:{}",
+                    source.tenant_hash, source.source_kind as u8, source.source_id
+                ));
+                let event_id_hash =
+                    stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
+                let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
+                let node_embedding_text = if emit_l1 {
+                    summaries.l1.as_str()
+                } else {
+                    summaries.l0.as_str()
+                };
+                embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
+                embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
+            }
+            let ContextEmbeddingOutcome {
+                rows,
+                report,
+                deferred,
+            } = context_embeddings_with_fallback(&provider, &embedding_inputs);
+            let batch = match rows {
+                ContextEmbeddingRows::Owned(batch) => Arc::new(batch),
+                ContextEmbeddingRows::Shared { batch, .. } => batch,
+            };
+            for (chunk_offset, source_index) in chunk_indexes.iter().copied().enumerate() {
+                let mut source_report = report.clone();
+                source_report.requested_vector_count = 2;
+                source_report.generated_vector_count = if deferred { 0 } else { 2 };
+                embedding_outcomes[source_index] = Some(ContextEmbeddingOutcome::shared(
+                    Arc::clone(&batch),
+                    chunk_offset.saturating_mul(2),
+                    source_report,
+                    deferred,
+                ));
+            }
+            chunk_start = chunk_end;
+        }
+    }
+
+    let mut pending_extracts = Vec::with_capacity(CONTEXT_DURABLE_SOURCE_BATCH);
+    for (source_index, (source, summaries)) in prepared_sources.into_iter().enumerate() {
+        let embedding_outcome = embedding_outcomes[source_index]
+            .take()
+            .unwrap_or_else(|| {
+                ContextEmbeddingOutcome::owned(
+                    EmbeddingBatch::default(),
+                    ContextEmbeddingGenerationReport::default(),
+                    true,
+                )
+            });
+        let prepared = prepare_context_gated_prepared(
+            source,
+            gate_l1,
+            summaries,
+            Some(embedding_outcome),
+        );
+        if prepared.report.status.ok {
+            pending_extracts.push(prepared);
+            if pending_extracts.len() >= CONTEXT_DURABLE_SOURCE_BATCH {
+                persist_prepared_context_batch(
+                    engine,
+                    shard_id,
+                    std::mem::take(&mut pending_extracts),
+                    extracts,
+                    failed_sources,
+                    node_hashes,
+                );
+            }
+        } else {
+            failed_sources.push(ContextIngestSourceFailure {
+                source_id: prepared.report.source_ref,
+                status: prepared.report.status,
+            });
+        }
+    }
+    persist_prepared_context_batch(
+        engine,
+        shard_id,
+        pending_extracts,
+        extracts,
+        failed_sources,
+        node_hashes,
+    );
+}
+
 /// Ingest with the public API's historical full fanout: every source emits its L1 summary.
 pub fn ingest_extract_context(
     engine: &TemporalEngine,
@@ -38,6 +296,7 @@ pub fn ingest_extract_context_with_l1_gate(
     let source_count = request.sources.len();
     let start_time_ms = request.start_time_ms;
     let end_time_ms = request.end_time_ms;
+    let mut validated_sources = Vec::with_capacity(source_count);
 
     for mut source in request.sources {
         source.shard_id = request.shard_id;
@@ -45,6 +304,7 @@ pub fn ingest_extract_context_with_l1_gate(
         if source.provider.provider_name.is_empty() {
             source.provider = provider.clone();
         }
+        source.provider = normalize_provider(source.provider);
         *source_kind_counts
             .entry(context_source_kind_name(source.source_kind).to_string())
             .or_insert(0) += 1;
@@ -59,20 +319,27 @@ pub fn ingest_extract_context_with_l1_gate(
             });
             continue;
         }
-        let source_id = source.source_id.clone();
-        // Keep the public API's historical full-fanout default, while allowing
-        // local-context backfill to opt into the same frugal L1 gate as live
-        // hook ingestion.
-        let extract = extract_context_gated(engine, source, gate_l1);
-        if extract.status.ok {
-            node_hashes.push(extract.node.node_hash);
-            extracts.push(extract);
-        } else {
-            failed_sources.push(ContextIngestSourceFailure {
-                source_id,
-                status: extract.status.clone(),
-            });
+        validated_sources.push(source);
+    }
+
+    let mut validated_sources = validated_sources.into_iter();
+    loop {
+        let source_window = validated_sources
+            .by_ref()
+            .take(CONTEXT_MODEL_SOURCE_WINDOW)
+            .collect::<Vec<_>>();
+        if source_window.is_empty() {
+            break;
         }
+        process_context_source_window(
+            engine,
+            request.shard_id,
+            gate_l1,
+            source_window,
+            &mut extracts,
+            &mut failed_sources,
+            &mut node_hashes,
+        );
     }
 
     // No reconstruct: the writes above maintain the index themselves now, so the window has
@@ -306,7 +573,7 @@ pub fn ingest_resource_skill_context(
             index_writes.push(("skill_ref".to_string(), skill_ref.clone()));
         }
 
-        for command in [
+        let commands = vec![
             Command::ContextUpsertEntity {
                 tenant_hash: request.tenant_hash,
                 entity: entity.clone(),
@@ -319,13 +586,24 @@ pub fn ingest_resource_skill_context(
                 tenant_hash: request.tenant_hash,
                 event: compression.clone(),
             },
-        ] {
-            let response = engine.execute_durable(ExecuteRequest {
-                shard_id: request.shard_id,
-                command,
-            });
-            if !response.status.ok {
-                fanout.missing_models.push(response.status.code);
+        ];
+        let command_count = commands.len();
+        let response = engine.batch_execute_durable(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands,
+        });
+        if !response.status.ok {
+            fanout.missing_models.push(response.status.code);
+        } else {
+            if response.responses.len() != command_count {
+                fanout
+                    .missing_models
+                    .push("context_resource_fanout_batch_incomplete".to_string());
+            }
+            for response in response.responses {
+                if !response.status.ok {
+                    fanout.missing_models.push(response.status.code);
+                }
             }
         }
         fanout.entity_count += 1;

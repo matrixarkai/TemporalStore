@@ -8,8 +8,8 @@
 //! item -> O(n^2) overall (~45-120s/item once the store is warm). This binary
 //! loads `TemporalEngine` ONCE and ingests a whole stream, ingest-only (no
 //! retrieval -- retrieval is what we are warming the store *for*). It shares the
-//! exact `extract_context` path, body format, source-id scheme, and session
-//! index file as the live hook, so records are identical to live ingestion.
+//! exact `extract_context` path, body format, source-id scheme, durable scope
+//! catalog, and bounded candidate index as the live hook.
 //! By default it also enables the live hook's L1 gate, so thin prompt/tool rows
 //! store raw evidence plus L0 without paying the richer L1 fanout cost.
 //! Set MATRIXARK_BACKFILL_RAW_FIRST=1 for a faster first pass that stores every
@@ -38,12 +38,15 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    ingest_extract_context_with_l1_gate, BatchExecuteRequest, Command, ContextEvent, ContextExtractRequest,
-    ContextIndexRef, ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode,
-    ContextSourceKind, ContextDirtyNode, TemporalEngine,
+    context_scope_all_nodes, context_scope_nodes, context_scopes,
+    ingest_extract_context_with_l1_gate,
+    remember_context_scope, remember_context_scope_node, BatchExecuteRequest, Command,
+    CommandResponse, ContextEvent, ContextExtractRequest, ContextIndexRef,
+    ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode, ContextSourceKind,
+    ExecuteRequest, TemporalEngine,
 };
 
 // Reason code stamped on embedding-dirty markers written by the raw-first bulk
@@ -51,7 +54,7 @@ use temporalstore_rust::{
 // failure. Purely diagnostic; the drainer treats any pending marker identically.
 const EMBEDDING_DIRTY_REASON_BULK_DEFERRED: u32 = 2;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 struct SessionIndex {
     sessions: BTreeMap<String, Vec<u64>>,
 }
@@ -135,18 +138,51 @@ fn main() {
     }
     engine.load_shard(1);
     let load_seconds = load_started.elapsed().as_secs_f64();
+    let catalog_hash = stable_hash64(&format!("{}:{}:{}", account_id, tenant_id, user_id));
+    let index_path = session_index_path(&root, &agent_name);
+    let legacy_index: SessionIndex = fs::read_to_string(&index_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    for (session_id, nodes) in &legacy_index.sessions {
+        let tenant_hash = stable_hash64(&format!(
+            "{}:{}:{}:{}",
+            account_id, tenant_id, user_id, session_id
+        ));
+        if !context_scope_all_nodes(&engine, 1, tenant_hash).is_empty() {
+            continue;
+        }
+        let _ = remember_context_scope(&engine, 1, catalog_hash, session_id);
+        for node_hash in nodes {
+            let _ = remember_context_scope_node(
+                &engine,
+                1,
+                tenant_hash,
+                &ContextIndexRef {
+                    primary_node_hash: *node_hash,
+                    primary_event_time_ms: 1,
+                    event_id_hash: *node_hash,
+                },
+            );
+        }
+    }
     let replay_from_sequence = engine.write_ahead_log_store().stats(1).last_sequence;
     std::env::set_var(
         "MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE",
         replay_from_sequence.to_string(),
     );
 
-    // Load existing session index once; accumulate in memory; write once at the end.
-    let index_path = session_index_path(&root, &agent_name);
-    let mut index: SessionIndex = fs::read_to_string(&index_path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    let durable_scopes = context_scopes(&engine, 1, catalog_hash);
+    let durable_node_count = durable_scopes
+        .iter()
+        .map(|session_id| {
+            let tenant_hash = stable_hash64(&format!(
+                "{}:{}:{}:{}",
+                account_id, tenant_id, user_id, session_id
+            ));
+            context_scope_nodes(&engine, 1, tenant_hash).len()
+        })
+        .sum::<usize>();
     if checkpoint_only {
         let flush_started = Instant::now();
         engine.flush_shard_index(1);
@@ -155,14 +191,14 @@ fn main() {
             "mode": "checkpoint_only",
             "agent_name": agent_name,
             "root": root.display().to_string(),
-            "index_path": index_path.display().to_string(),
+            "candidate_storage": "temporalstore",
             "seconds": process_started.elapsed().as_secs_f64(),
             "load_seconds": load_seconds,
             "flush_seconds": flush_started.elapsed().as_secs_f64(),
             "cache_bytes": cache_bytes,
             "cache_stats": cache_stats_json(&engine),
-            "session_count": index.sessions.len(),
-            "total_nodes": index.sessions.values().map(Vec::len).sum::<usize>(),
+            "session_count": durable_scopes.len(),
+            "total_nodes": durable_node_count,
             "replay_from_sequence": replay_from_sequence,
         });
         println!(
@@ -172,12 +208,6 @@ fn main() {
         let _ = io::stdout().flush();
         return;
     }
-    let indexed_nodes_by_session: BTreeMap<String, BTreeSet<u64>> = index
-        .sessions
-        .iter()
-        .map(|(session, nodes)| (session.clone(), nodes.iter().copied().collect()))
-        .collect();
-
     let mut scanned = 0u64;
     let mut accepted = 0u64;
     let mut failed = 0u64;
@@ -185,6 +215,8 @@ fn main() {
     let mut skipped_covered = 0u64;
     let mut checkpoint_flushes = 0u64;
     let mut checkpoint_flush_seconds = 0.0f64;
+    let mut candidate_index_writes = 0u64;
+    let mut candidate_index_failures = 0u64;
     let mut next_checkpoint_accepted = flush_every_accepted.max(1);
     let started = Instant::now();
     let end_time_ms = now_ms().saturating_add(1);
@@ -301,14 +333,32 @@ fn main() {
         let mut session_failed = 0u64;
         let mut session_skipped_covered = 0u64;
         let mut node_hashes = Vec::new();
+        let index_refs = sources
+            .iter()
+            .map(|source| {
+                let node_hash = stable_hash64(&format!(
+                    "{}:{}:{}",
+                    tenant_hash, source.source_kind as u8, source.source_id
+                ));
+                (
+                    node_hash,
+                    ContextIndexRef {
+                        primary_node_hash: node_hash,
+                        primary_event_time_ms: source.timestamp_ms.max(1),
+                        event_id_hash: stable_hash64(&format!(
+                            "event:{}:{}",
+                            source.source_id, source.body
+                        )),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         for chunk in sources.chunks(sub_batch) {
             let expected_hashes = expected_node_hashes(tenant_hash, chunk);
             if skip_covered_sessions
                 && !expected_hashes.is_empty()
-                && indexed_nodes_by_session
-                    .get(&session_id)
-                    .map(|covered| expected_hashes.iter().all(|hash| covered.contains(hash)))
-                    .unwrap_or(false)
+                && existing_node_hashes(&engine, tenant_hash, &expected_hashes).len()
+                    == expected_hashes.len()
             {
                 let rows = chunk.len() as u64;
                 skipped_covered = skipped_covered.saturating_add(rows);
@@ -353,6 +403,7 @@ fn main() {
                         accepted
                             .saturating_add(session_accepted)
                             .saturating_mul(4)
+                            .saturating_add(candidate_index_writes.saturating_mul(2))
                             .to_string(),
                     );
                 }
@@ -376,11 +427,17 @@ fn main() {
         accepted += session_accepted;
         failed += session_failed;
         if !node_hashes.is_empty() {
-            index
-                .sessions
-                .entry(session_id.clone())
-                .or_default()
-                .extend(node_hashes.iter().copied());
+            let _ = remember_context_scope(&engine, 1, catalog_hash, &session_id);
+            for node_hash in &node_hashes {
+                let indexed = index_refs.get(node_hash).is_some_and(|index_ref| {
+                    remember_context_scope_node(&engine, 1, tenant_hash, index_ref)
+                });
+                if indexed {
+                    candidate_index_writes = candidate_index_writes.saturating_add(1);
+                } else {
+                    candidate_index_failures = candidate_index_failures.saturating_add(1);
+                }
+            }
         }
         // Bulk persistence normally flushes once after all session groups below.
         // Keep an escape hatch for diagnosis, but do not rewrite the growing
@@ -407,27 +464,32 @@ fn main() {
     if raw_first && failed == 0 {
         std::env::set_var(
             "MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS",
-            accepted.saturating_mul(4).to_string(),
+            accepted
+                .saturating_mul(4)
+                .saturating_add(candidate_index_writes.saturating_mul(2))
+                .to_string(),
         );
     }
     engine.flush_shard_index(1);
     let flush_seconds = flush_started.elapsed().as_secs_f64();
 
-    // Dedup and persist the session index once.
-    for nodes in index.sessions.values_mut() {
-        nodes.sort_unstable();
-        nodes.dedup();
-    }
-    let _ = fs::write(
-        &index_path,
-        serde_json::to_vec_pretty(&index).expect("session index should serialize"),
-    );
+    let durable_scopes = context_scopes(&engine, 1, catalog_hash);
+    let durable_node_count = durable_scopes
+        .iter()
+        .map(|session_id| {
+            let tenant_hash = stable_hash64(&format!(
+                "{}:{}:{}:{}",
+                account_id, tenant_id, user_id, session_id
+            ));
+            context_scope_nodes(&engine, 1, tenant_hash).len()
+        })
+        .sum::<usize>();
 
     let report = json!({
         "status": "ok",
         "agent_name": agent_name,
         "root": root.display().to_string(),
-        "index_path": index_path.display().to_string(),
+        "candidate_storage": "temporalstore",
         "scanned": scanned,
         "accepted": accepted,
         "failed": failed,
@@ -440,8 +502,10 @@ fn main() {
         "flush_seconds": flush_seconds,
         "checkpoint_flushes": checkpoint_flushes,
         "checkpoint_flush_seconds": checkpoint_flush_seconds,
-        "session_count": index.sessions.len(),
-        "total_nodes": index.sessions.values().map(Vec::len).sum::<usize>(),
+        "session_count": durable_scopes.len(),
+        "total_nodes": durable_node_count,
+        "candidate_index_writes": candidate_index_writes,
+        "candidate_index_failures": candidate_index_failures,
         "replay_from_sequence": replay_from_sequence,
         "cache_bytes": cache_bytes,
         "cache_stats": cache_stats_json(&engine),
@@ -488,6 +552,27 @@ fn expected_node_hashes(tenant_hash: u64, sources: &[ContextExtractRequest]) -> 
     hashes.sort_unstable();
     hashes.dedup();
     hashes
+}
+
+fn existing_node_hashes(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+) -> BTreeSet<u64> {
+    let mut existing = BTreeSet::new();
+    for chunk in node_hashes.chunks(512) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNodes {
+                tenant_hash,
+                node_hashes: chunk.to_vec(),
+            },
+        });
+        if let CommandResponse::ContextNodes { nodes } = response.response {
+            existing.extend(nodes.into_iter().map(|node| node.node_hash));
+        }
+    }
+    existing
 }
 
 fn write_raw_sources(

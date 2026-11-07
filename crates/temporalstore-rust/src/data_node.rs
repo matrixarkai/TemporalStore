@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -49,8 +49,10 @@ use crate::meta::{
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, BatchWriteError, BatchWriteResponse, Command,
-    CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
+    BatchConditionalWriteResponse, BatchExecuteRequest, BatchExecuteResponse,
+    BatchHashMultiGetRequest, BatchHashMultiGetResponse, BatchHashMultiSetRequest,
+    BatchHashTimestampSetRequest, BatchWriteError,
+    BatchWriteResponse, Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status,
 };
 
 #[path = "data_node/data_node_lifecycle.rs"]
@@ -71,6 +73,7 @@ use self::task_output::*;
 use self::worker::*;
 use self::storage_manager_runtime::*;
 
+pub use lifecycle::decode_lifecycle_snapshot_file;
 use lifecycle::{
     final_loaded_lifecycle_state, lifecycle_persistence_report_for_path, lifecycle_snapshot_inner,
     lifecycle_snapshot_path_from_env, persist_lifecycle_snapshot_inner,
@@ -1266,25 +1269,65 @@ fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
     crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND
 }
 
-/// Records that must be undumped before a dump is taken.
+/// `min_undumped_wal_records` value that takes the record count out of the dump gate entirely.
 ///
-/// One meant "dump whenever anything is undumped", because the delay only applies while the count
-/// is below the threshold. Measured writing one key a hundred times, with the dumps taken: 100
-/// dumps at that setting, 10 at a threshold of ten, 2 at fifty. Dumps fall in proportion, and the
-/// only cost is that much more log to replay after a restart -- a thousand records is a few hundred
-/// kilobytes, against two orders of magnitude fewer block writes for a bucket that is written often.
+/// NOT ZERO, and that is the whole reason this constant exists rather than a bare literal. The
+/// gate reads `min_undumped_wal_records > 0 && undumped < threshold`, so zero makes the record
+/// arm say "do not wait" and RELEASES a dump on every single round -- the opposite of off. Several
+/// call sites pass zero for exactly that effect (`data_node_worker.rs`, `task_execution.rs`, the
+/// string-delete and migration corpora), so zero is taken and cannot be reused to mean "off".
+///
+/// A threshold no log can reach is what means "this trigger does not fire", and `u64::MAX` is that
+/// value without ambiguity: `undumped_wal_records` is `last_sequence - last_dumped_sequence`, a
+/// difference between two sequence numbers that are themselves `u64`, so it cannot reach it. The
+/// tree already used a large value this way before this constant named it -- see the
+/// `min_undumped_wal_records: 1_000_000` fixtures in `maintenance_and_lifecycle_recovery.rs`,
+/// commented as "far out of reach, so only the byte one can release the dump".
+pub const WAL_DUMP_RECORD_TRIGGER_OFF: u64 = u64::MAX;
+
+/// Records that must be undumped before the RECORD COUNT releases a dump. **Ships off.**
+///
+/// So the shipped gate decides on BYTES alone: `min_undumped_wal_bytes`, 128 MiB of undumped log.
+///
+/// # WHY IT SHIPS OFF
+///
+/// It was 1,000 records, and it was the arm that actually fired. A shard taking ordinary traffic
+/// crosses a thousand undumped records continuously, so the byte threshold beside it never got a
+/// turn and every maintenance round took a dump -- and the dump is where the round spends its
+/// time, because it re-serializes the selected buckets' index. The record arm was therefore not a
+/// cadence at all on a shard that is being written to: it was a permanent release.
+///
+/// # WHAT IS GIVEN UP, SAID PLAINLY
+///
+/// The log is what a restart replays, and only a dump advances the point replay starts from. With
+/// the record arm off, the worst-case replay window is set by the byte threshold alone: up to
+/// `min_undumped_wal_bytes` of log, 128 MiB, where before it was whichever of 1,000 records and
+/// 128 MiB came first -- a few hundred kilobytes on a small-record workload. So a restart can
+/// have up to roughly 128 MiB of log to replay instead of a few hundred kilobytes, and a crash
+/// leaves correspondingly more work before the shard serves again. Nothing is less durable: every
+/// record is in the log either way, and the byte threshold still bounds the window.
+///
+/// # IT IS STILL CONFIGURABLE
+///
+/// The field is read exactly as it was. Set it to any positive value and the record count releases
+/// the dump again, which is the setting to reach for when a short replay window matters more than
+/// round cost; `WAL_DUMP_RECORD_TRIGGER_OFF` is the value that means off. The guard
+/// `the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable` pins both
+/// halves of that sentence.
 fn default_storage_manager_min_undumped_wal_records() -> u64 {
-    1_000
+    WAL_DUMP_RECORD_TRIGGER_OFF
 }
 
-/// Durable write-ahead log bytes that release the dump on their own.
+/// Durable write-ahead log bytes that release the dump. **The only trigger in the shipped gate.**
 ///
 /// 128 MiB. A log allowed to reach that size before anything reclaims it is a large share of the
-/// budget on a box with a measured capacity wall near a 400 MB store, which is why the record
-/// threshold beside this one exists: whichever is reached first releases the dump.
+/// budget on a box with a measured capacity wall near a 400 MB store.
 ///
-/// It bounds what the record threshold cannot: a thousand records says nothing about how many
-/// bytes they are. Whichever threshold is reached first releases the dump.
+/// It is now the whole gate on a default deployment: `min_undumped_wal_records` ships at
+/// `WAL_DUMP_RECORD_TRIGGER_OFF`, so this value alone decides both when a dump is taken and how
+/// much log a restart can face -- raising it lengthens the replay window and lowers the round
+/// cost, lowering it does the reverse. It bounds the quantity that actually matters: a record
+/// count says nothing about how many bytes those records are.
 fn default_storage_manager_min_undumped_wal_bytes() -> u64 {
     128 * 1024 * 1024
 }
@@ -2003,7 +2046,8 @@ struct DataNodeRuntimeInner {
     next_job_id: AtomicU64,
     /// Optional durable shared-storage sink; when set, accepted writes are
     /// mirrored to shared storage for cross-restart / local-loss recovery.
-    shared_wal_sink: Mutex<Option<Arc<dyn SharedWalSink>>>,
+    /// A read guard spans unmirrored execution so attachment cannot race a moved request.
+    shared_wal_sink: RwLock<Option<Arc<dyn SharedWalSink>>>,
     /// Who answers "do I lead this shard". `None` means nobody has been told to answer, which
     /// reads as [`ShardLeadership::Unknown`] and NOT as "not the leader".
     shard_leadership: Mutex<Option<Arc<dyn ShardLeadershipSource>>>,
@@ -2262,7 +2306,13 @@ impl ShardTaskQueues {
 #[derive(Debug, Default)]
 struct DirtyTracker {
     next_object_id: u64,
-    by_key: HashMap<(ShardId, String), DirtyObjectInfo>,
+    by_key: HashMap<(ShardId, String), DirtyObjectState>,
+}
+
+#[derive(Debug)]
+struct DirtyObjectState {
+    object_id: u64,
+    last_dirty_at_ms: u64,
 }
 
 impl DataNodeRuntime {
@@ -2310,7 +2360,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: Mutex::new(None),
+            shared_wal_sink: RwLock::new(None),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2361,15 +2411,16 @@ impl DataNodeRuntime {
     }
 
     pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
+        let mut shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .write()
+            .expect("shared wal sink lock poisoned");
         // The engine emits deletions of its own -- eviction drops, expiry sweeps -- that never
         // pass through this layer. Give it the same sink, or those deletions reach the local
         // log alone and a successor replaying the shared log resurrects the keys.
         self.inner.engine.set_maintenance_wal_mirror(Arc::clone(&sink));
-        *self
-            .inner
-            .shared_wal_sink
-            .lock()
-            .expect("shared wal sink lock poisoned") = Some(sink);
+        *shared_wal_sink = Some(sink);
     }
 
     fn mirror_write(&self, shard_id: ShardId, command: &Command) {
@@ -2379,7 +2430,7 @@ impl DataNodeRuntime {
         let sink = self
             .inner
             .shared_wal_sink
-            .lock()
+            .read()
             .expect("shared wal sink lock poisoned")
             .clone();
         if let Some(sink) = sink {
@@ -2396,14 +2447,14 @@ impl DataNodeRuntime {
         let sink = self
             .inner
             .shared_wal_sink
-            .lock()
+            .read()
             .expect("shared wal sink lock poisoned")
             .clone();
         let Some(sink) = sink else {
             return;
         };
         for (command, response) in commands.iter().zip(responses.iter()) {
-            if response.status.ok && is_write_command(command) {
+            if command_was_applied(command, response) {
                 sink.record_write(shard_id, command);
             }
         }
@@ -2466,7 +2517,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: Mutex::new(None),
+            shared_wal_sink: RwLock::new(None),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2582,8 +2633,37 @@ impl DataNodeRuntime {
                 response: CommandResponse::Empty,
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let conditional = matches!(
+                &request.command,
+                Command::HashMultiSetIfTimestampOlder { .. }
+            );
+            let dirty_key = if is_write_command(&request.command) {
+                command_key(&request.command)
+            } else {
+                None
+            };
+            let response = self.inner.engine.execute(request);
+            if response.status.ok
+                && (!conditional
+                    || matches!(
+                        &response.response,
+                        CommandResponse::Integer { value } if *value > 0
+                    ))
+            {
+                mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.execute(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        if command_was_applied(&request.command, &response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
@@ -2608,8 +2688,37 @@ impl DataNodeRuntime {
                 },
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let conditional = matches!(
+                &request.command,
+                Command::HashMultiSetIfTimestampOlder { .. }
+            );
+            let dirty_key = if is_write_command(&request.command) {
+                command_key(&request.command)
+            } else {
+                None
+            };
+            let response = self.inner.engine.execute_checked(request);
+            if response.status.ok
+                && (!conditional
+                    || matches!(
+                        &response.response.response,
+                        CommandResponse::Integer { value } if *value > 0
+                    ))
+            {
+                mark_dirty(&self.inner.dirty, shard_id, dirty_key.as_deref());
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.execute_checked(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        if response.status.ok && command_was_applied(&request.command, &response.response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
@@ -2621,6 +2730,151 @@ impl DataNodeRuntime {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        self.batch_execute_inner(request)
+    }
+
+    fn batch_execute_packed_hash_rows(
+        &self,
+        request: BatchHashTimestampSetRequest,
+    ) -> BatchExecuteResponse {
+        let lifecycle_marker = Command::HashMultiSetIfTimestampOlder {
+            key: String::new(),
+            timestamp_field: String::new(),
+            timestamp_seconds: 0,
+            timestamp_nanos: 0,
+            entries: Vec::new(),
+        };
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            std::slice::from_ref(&lifecycle_marker),
+        ) {
+            return BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            };
+        }
+
+        let unique_fields = request
+            .fields
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == request.fields.len();
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none()
+            && crate::wal::wal_data_only_enabled()
+            && unique_fields
+        {
+            let shard_id = request.shard_id;
+            let (response, completed_keys) =
+                self.inner.engine.batch_execute_packed_hash_rows(request);
+            mark_dirty_for_successful_row_keys(
+                &self.inner.dirty,
+                shard_id,
+                completed_keys,
+                &response.responses,
+                true,
+            );
+            return response;
+        }
+        drop(shared_wal_sink);
+
+        let fields = request.fields;
+        let timestamp_field = request.timestamp_field;
+        self.batch_execute_inner(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSetIfTimestampOlder {
+                    key: row.0,
+                    timestamp_field: timestamp_field.clone(),
+                    timestamp_seconds: row.1,
+                    timestamp_nanos: row.2,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.3.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    fn batch_execute_shared_hash_rows(
+        &self,
+        request: BatchHashMultiSetRequest,
+    ) -> BatchExecuteResponse {
+        let lifecycle_marker = Command::HashMultiSet {
+            key: String::new(),
+            entries: Vec::new(),
+        };
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            std::slice::from_ref(&lifecycle_marker),
+        ) {
+            return BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            };
+        }
+
+        let unique_fields = request
+            .fields
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == request.fields.len();
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none()
+            && crate::wal::wal_data_only_enabled()
+            && unique_fields
+        {
+            let shard_id = request.shard_id;
+            let (response, completed_keys) =
+                self.inner.engine.batch_execute_shared_hash_rows(request);
+            mark_dirty_for_successful_row_keys(
+                &self.inner.dirty,
+                shard_id,
+                completed_keys,
+                &response.responses,
+                false,
+            );
+            return response;
+        }
+        drop(shared_wal_sink);
+
+        let fields = request.fields;
+        self.batch_execute_inner(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSet {
+                    key: row.0,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.1.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
+    fn batch_execute_inner(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             request.shard_id,
@@ -2631,6 +2885,24 @@ impl DataNodeRuntime {
                 responses: Vec::new(),
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_keys = write_command_keys(&request.commands);
+            let response = self.inner.engine.batch_execute(request);
+            mark_dirty_for_successful_keys(
+                &self.inner.dirty,
+                shard_id,
+                &dirty_keys,
+                &response.responses,
+            );
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.batch_execute(request.clone());
         mark_dirty_for_successful_commands(
             &self.inner.dirty,
@@ -2640,6 +2912,167 @@ impl DataNodeRuntime {
         );
         self.mirror_writes(request.shard_id, &request.commands, &response.responses);
         response
+    }
+
+    /// Read one shared field projection from many hashes.
+    ///
+    /// The common path builds one projection plan for the batch and streams
+    /// rows into the regular response shape. Shards carrying expiry state use
+    /// the generic batch path so lazy expiry keeps its WAL and index handling.
+    pub fn batch_hash_multi_get(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchExecuteResponse {
+        self.inner.engine.batch_hash_multi_get(request)
+    }
+
+    /// Read one shared projection with a compact success response.
+    ///
+    /// This removes repeated successful statuses and response tags from the
+    /// network result while retaining positional rows and sparse indexed
+    /// failures.
+    pub fn batch_hash_multi_get_compact(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchHashMultiGetResponse {
+        self.inner.engine.batch_hash_multi_get_compact(request)
+    }
+
+    /// Write one shared field projection to many hashes.
+    ///
+    /// The data-only path moves one shared schema through every row. Duplicate
+    /// schemas and mirrored WAL writes use the regular expanded command path.
+    pub fn batch_hash_multi_set(
+        &self,
+        request: BatchHashMultiSetRequest,
+    ) -> BatchWriteResponse {
+        if let Some((index, row)) = request
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.1.len() != request.fields.len())
+        {
+            return BatchWriteResponse {
+                status: Status::error(
+                    "field_value_count_mismatch",
+                    format!(
+                        "row {index} has {} values for {} fields",
+                        row.1.len(),
+                        request.fields.len()
+                    ),
+                ),
+                applied: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let response = self.batch_execute_shared_hash_rows(request);
+        if !response.status.ok {
+            return BatchWriteResponse {
+                status: response.status,
+                applied: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let mut applied = 0;
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if item.status.ok {
+                applied += 1;
+            } else {
+                errors.push(BatchWriteError {
+                    index,
+                    status: item.status,
+                });
+            }
+        }
+        BatchWriteResponse {
+            status: Status::ok(),
+            applied,
+            errors,
+        }
+    }
+
+    /// Write shared hash fields only when each stored timestamp is older.
+    ///
+    /// Each row becomes one conditional engine command, so the comparison and all field
+    /// replacements occur under the same shard write guard.
+    pub fn batch_hash_timestamp_set(
+        &self,
+        request: BatchHashTimestampSetRequest,
+    ) -> BatchConditionalWriteResponse {
+        if !request.fields.iter().any(|field| field == &request.timestamp_field) {
+            return BatchConditionalWriteResponse {
+                status: Status::error(
+                    "timestamp_field_missing",
+                    "timestamp_field must be present in fields",
+                ),
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+        if let Some((index, row)) = request
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.3.len() != request.fields.len())
+        {
+            return BatchConditionalWriteResponse {
+                status: Status::error(
+                    "field_value_count_mismatch",
+                    format!(
+                        "row {index} has {} values for {} fields",
+                        row.3.len(),
+                        request.fields.len()
+                    ),
+                ),
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let response = self.batch_execute_packed_hash_rows(request);
+        if !response.status.ok {
+            return BatchConditionalWriteResponse {
+                status: response.status,
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let mut applied = 0;
+        let mut skipped = 0;
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if !item.status.ok {
+                errors.push(BatchWriteError {
+                    index,
+                    status: item.status,
+                });
+                continue;
+            }
+            match item.response {
+                CommandResponse::Integer { value: 1 } => applied += 1,
+                CommandResponse::Integer { value: 0 } => skipped += 1,
+                _ => errors.push(BatchWriteError {
+                    index,
+                    status: Status::error(
+                        "unexpected_write_response",
+                        "conditional hash write returned an invalid response",
+                    ),
+                }),
+            }
+        }
+        BatchConditionalWriteResponse {
+            status: Status::ok(),
+            applied,
+            skipped,
+            errors,
+        }
     }
 
     /// Execute a write-only batch and return only its count plus sparse failures.
@@ -2708,6 +3141,26 @@ impl DataNodeRuntime {
                 },
             };
         }
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none() {
+            let shard_id = request.shard_id;
+            let dirty_keys = write_command_keys(&request.commands);
+            let response = self.inner.engine.batch_execute_checked(request);
+            if response.status.ok {
+                mark_dirty_for_successful_keys(
+                    &self.inner.dirty,
+                    shard_id,
+                    &dirty_keys,
+                    &response.response.responses,
+                );
+            }
+            return response;
+        }
+        drop(shared_wal_sink);
         let response = self.inner.engine.batch_execute_checked(request.clone());
         if response.status.ok {
             mark_dirty_for_successful_commands(
@@ -2865,8 +3318,13 @@ impl DataNodeRuntime {
             .lock()
             .expect("dirty tracker lock poisoned")
             .by_key
-            .values()
-            .cloned()
+            .iter()
+            .map(|((shard_id, key), state)| DirtyObjectInfo {
+                shard_id: *shard_id,
+                key: key.clone(),
+                object_id: state.object_id,
+                last_dirty_at_ms: state.last_dirty_at_ms,
+            })
             .collect()
     }
 
