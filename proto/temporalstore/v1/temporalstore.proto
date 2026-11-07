@@ -1389,7 +1389,7 @@ message ContextWritePackAudit {
 //
 // NOTHING ASSERTS THE FILENAME. `state.json` appears exactly once in the crate, as a
 // `root.join("state.json")` construction with no test or doc pinning it, so the spelling is
-// not a durable contract the way `slab_manifest.json` is. The name stays regardless: the
+// not a durable contract the way `slab_manifest.pb` is. The name stays regardless: the
 // writer retires either way, and renaming a path that is already on disk is a separate,
 // riskier decision.
 // ===========================================================================================

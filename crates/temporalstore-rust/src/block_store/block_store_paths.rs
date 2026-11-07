@@ -34,11 +34,7 @@ pub(super) fn slab_path(root: &Path, block_slab_id: u64) -> PathBuf {
 }
 
 pub(super) fn slab_manifest_path(root: &Path) -> PathBuf {
-    root.join("block_extent_manifest.json")
-}
-
-pub(super) fn legacy_zone_manifest_path(root: &Path) -> PathBuf {
-    root.join("page_zone_manifest.json")
+    root.join("slab_manifest.pb")
 }
 
 pub(super) fn delayed_destroy_dir(root: &Path) -> PathBuf {

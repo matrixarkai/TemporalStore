@@ -52,7 +52,7 @@ pub(crate) use record::block_index_checksums_enabled;
 
 use paths::{
     delayed_destroy_dir, delayed_destroy_path, slab_manifest_path, file_created_unix_ms,
-    file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, slab_path, sync_dir,
+    file_modified_unix_ms, now_unix_ms, slab_path, sync_dir,
     sync_parent_dir, system_time_unix_ms,
 };
 use record::{
@@ -1851,24 +1851,13 @@ pub struct BlockStoreBlockIndexReport {
     pub checksum: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The slab manifest as a value: a version and every slab descriptor.
+///
+/// Its stored shape is the protobuf in `slab_manifest_wire`, so this type carries no serde derive:
+/// there is no JSON form of it to keep in step.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockStoreSlabManifest {
     version: u32,
-    /// EMITS `slabs`. `bands`, `extents` and `zones` are RETIRED spellings, accepted on read
-    /// and never written -- a serde `alias` widens the reader only.
-    ///
-    /// This flipped in #2487 and the decision is recorded in
-    /// `docs/temporalstore_page_block_address_contract.md`: it was available because the three
-    /// `compat/*.json` corpora anything actually reads carry the retired slab names ZERO times,
-    /// where counting all nine files made them look pinned. The readers were widened and shipped
-    /// before the writer moved, which is the only order in which such a flip exists at all.
-    ///
-    /// What the old comment here said -- that the file still says `bands` -- has been WRONG since
-    /// that change, and it is why two tests that reach in by literal string key were read as a
-    /// writer defect rather than as casualties of the flip.
-    /// `a_folded_manifest_still_writes_the_keys_on_disk` is the guard that pins which spelling
-    /// reaches the file, in both directions.
-    #[serde(alias = "bands", alias = "extents", alias = "zones")]
     slabs: Vec<BlockStoreSlabDescriptor>,
 }
 
@@ -2045,8 +2034,7 @@ impl BlockStore {
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        let manifest_exists =
-            slab_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
+        let manifest_exists = slab_manifest_path(&root).exists();
         // WHAT THE OPEN READS, TAKEN ON THE OPEN'S OWN TALLY. Every byte below also lands on the
         // process counter when these tallies drop; this is the per-store figure beside it, and
         // the store keeps it because the process counter cannot answer "what did THIS open read"
@@ -3866,16 +3854,10 @@ mod tests {
     /// That is what PR #1333 did to two tests for six days. The builders are pinned to
     /// literal spellings here, and the quarantine parser is round-tripped against the
     /// builder, so moving one without the other fails.
-    ///
-    /// `page_zone_manifest.json` is deliberately NOT renamed and is asserted to keep its
-    /// old spelling. It is how the tree notices a store written before the slab manifest
-    /// existed; pointed at a new name it would look for a file that has never existed, and
-    /// the caller falls through to a rebuild and succeeds, so the miss would be silent.
     #[test]
     fn the_on_disk_names_are_the_ones_the_readers_parse() {
         use crate::block_store::paths::{
-            delayed_destroy_dir, delayed_destroy_path, legacy_zone_manifest_path,
-            slab_manifest_path, slab_path,
+            delayed_destroy_dir, delayed_destroy_path, slab_manifest_path, slab_path,
         };
         use crate::block_store::slab_ids::{delayed_destroy_slab_id_from_name, slab_ids_at};
 
@@ -3888,16 +3870,11 @@ mod tests {
         );
         assert_eq!(
             slab_manifest_path(root).file_name().unwrap(),
-            "block_extent_manifest.json"
+            "slab_manifest.pb"
         );
         assert_eq!(
             delayed_destroy_dir(root).file_name().unwrap(),
             ".block_segment_trash"
-        );
-        assert_eq!(
-            legacy_zone_manifest_path(root).file_name().unwrap(),
-            "page_zone_manifest.json",
-            "the legacy detector must keep naming the legacy file, or it detects nothing"
         );
 
         // The quarantine parser must read what the quarantine builder writes. Move one
@@ -5161,7 +5138,7 @@ const RETIRED_NAMES: &[&str] = &[
         // MANIFEST-CONFORMANCE FOLD no-O(n) proof: on the default single-barrier path the per-append
         // slab-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
         // write, growing with the slab count) is OFF the write path. Appending many records must
-        // NOT rewrite `block_extent_manifest.json` each time; the catalog is deferred and made
+        // NOT rewrite `slab_manifest.pb` each time; the catalog is deferred and made
         // durable in one shot at sync_durable()/seal. Proven by the manifest file bytes staying
         // byte-identical across a burst of appends, then changing exactly once at sync_durable.
         let dir = tempfile::tempdir().unwrap();
@@ -5377,19 +5354,14 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(reopened.read(&third).unwrap(), b"third");
     }
 
-    /// The manifest file as the store wrote it, whichever shape that is.
+    /// The manifest file as the store wrote it.
     ///
     /// A test that edits the manifest used to parse it as a JSON document and set keys by string,
     /// which the compiler could not see. It works on the TYPE now, so a renamed field is a compile
     /// error here instead of a test that quietly stops matching.
     fn read_manifest_for_test(path: &std::path::Path) -> BlockStoreSlabManifest {
         let raw = fs::read(path).expect("the manifest must be on disk");
-        if super::slab_manifest_wire::is_wire_manifest(&raw) {
-            super::slab_manifest_wire::decode_slab_manifest(&raw)
-                .expect("a binary manifest must decode")
-        } else {
-            serde_json::from_slice(&raw).expect("a JSON manifest must parse")
-        }
+        super::slab_manifest_wire::decode_slab_manifest(&raw).expect("the manifest must decode")
     }
 
     /// Put a manifest back on disk in the shape the store itself writes.
@@ -5892,9 +5864,6 @@ const RETIRED_NAMES: &[&str] = &[
     /// disk is a field number, and `the_stored_field_numbers_do_not_move` pins those against a
     /// byte fixture. What is left for this test to say is that the writer really does write the
     /// binary shape and that a store reopens from it.
-    ///
-    /// The JSON arm of the reader is held by `a_json_manifest_still_loads_through_the_same_reader`,
-    /// because this build no longer writes the shape it still reads.
     #[test]
     fn a_written_manifest_is_the_binary_shape_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
@@ -5907,15 +5876,13 @@ const RETIRED_NAMES: &[&str] = &[
 
         let raw = fs::read(slab_manifest_path(dir.path())).expect("the manifest must be on disk");
 
-        // The container byte AND not JSON. Either alone could be an empty or truncated file;
-        // together they say the writer chose the binary shape.
-        assert_eq!(
-            raw.first(),
-            Some(&super::slab_manifest_wire::SLAB_MANIFEST_CONTAINER_PROTOBUF),
-            "the manifest must open with the binary container byte, not JSON: {:?}",
+        // It is not a JSON document: the JSON writer is gone, and a file that parsed as JSON would
+        // mean a second writer had come back. The decode below is the positive half.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&raw).is_err(),
+            "the manifest must not be a JSON document: {:?}",
             &raw[..raw.len().min(16)]
         );
-        assert!(serde_json::from_slice::<serde_json::Value>(&raw).is_err());
 
         // DENOMINATOR: it holds descriptors, so the round trip below is about something.
         let manifest = super::slab_manifest_wire::decode_slab_manifest(&raw)
@@ -9414,74 +9381,6 @@ const RETIRED_NAMES: &[&str] = &[
             store.delayed_destroy_slab_ids().unwrap().len() as u64,
             blocked,
             "the blocked slabs stay in quarantine: not destroyed, not restored"
-        );
-    }
-
-    /// A store whose manifest still carries the legacy name loads its descriptors.
-    ///
-    /// `page_zone_manifest.json` is how the tree notices a store written before the slab manifest
-    /// was renamed, and `the_on_disk_names_are_the_ones_the_readers_parse` asserts the constant
-    /// still spells it. That guards the NAME and not the WIRING, which is the half that fails
-    /// silently: the fallback in `load_slab_manifest_at` and the existence probe in
-    /// `BlockStore::with_options` can each be removed with all 82 block-store tests still green.
-    /// A store that stops reading the legacy file does not error -- it finds no manifest, falls
-    /// through to `rebuild_slab_manifest_at`, and succeeds, which is exactly the silent miss the
-    /// name assertion was written to prevent.
-    ///
-    /// THE DISCRIMINATOR IS A SLAB WITH NO FILE. `rebuild_slab_manifest_at` walks the slab files
-    /// on disk, so a descriptor for a slab whose file is gone cannot come from a rebuild; it can
-    /// only come from a manifest that was read. `slab_manifest_reconciled_on_open` will NOT do
-    /// the job here -- reconcile re-inspects the freshly written descriptors either way and
-    /// reports `true` whether or not the legacy file was opened, so a test resting on it passes
-    /// on both sides of the wiring it means to pin.
-    #[test]
-    fn a_store_written_under_the_legacy_manifest_name_still_loads_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = BlockStore::new(dir.path());
-        let first = store.append(b"first-slab").unwrap();
-        store.roll_slab().unwrap();
-        let second = store.append(b"second-slab").unwrap();
-        drop(store);
-
-        // The first slab's FILE goes; the manifest still names it. Nothing on disk does.
-        fs::remove_file(slab_path(dir.path(), first.block_slab_id())).unwrap();
-
-        // Age the store back to the spelling a pre-rename deployment wrote.
-        let current = slab_manifest_path(dir.path());
-        let legacy = legacy_zone_manifest_path(dir.path());
-        assert!(current.exists(), "denominator: the store wrote a manifest");
-        fs::rename(&current, &legacy).unwrap();
-        assert!(
-            !current.exists(),
-            "denominator: the new name is gone, so anything found came from the legacy one"
-        );
-        assert!(
-            legacy.exists(),
-            "denominator: the legacy name is what is on disk"
-        );
-
-        let reopened = BlockStore::new(dir.path());
-        let descriptors = reopened.slab_descriptors();
-
-        // THE HALF A REBUILD CANNOT FAKE.
-        assert!(
-            descriptors.iter().any(|slab| slab.block_slab_id == first.block_slab_id()
-                && slab.state == BlockStoreSlabState::Purged),
-            "the legacy manifest must be READ: a slab with no file on disk is knowable only from \
-             a manifest, and a store that missed it rebuilds around the hole and looks perfectly \
-             healthy: {descriptors:?}"
-        );
-        // THE OTHER HALF, asserted separately: the slab that does have a file is still described
-        // and still reads, so the first half is not passing on a store that failed to open.
-        assert!(
-            descriptors.iter().any(|slab| slab.block_slab_id == second.block_slab_id()
-                && slab.state == BlockStoreSlabState::Active),
-            "the surviving slab must still be active: {descriptors:?}"
-        );
-        assert_eq!(
-            reopened.read(&second).unwrap(),
-            b"second-slab".to_vec(),
-            "and its records still read"
         );
     }
 
