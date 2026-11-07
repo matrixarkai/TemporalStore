@@ -7,6 +7,15 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use thiserror::Error;
 
 const MAX_EMBEDDING_DIMENSIONS: usize = 4096;
+const SIGNATURE_ROUTING_MIN_DIMENSIONS: usize = 384;
+const SIGNATURE_ROUTING_MIN_ROWS: usize = 8192;
+const SIGNATURE_ROUTING_TABLES: usize = 4;
+const SIGNATURE_ROUTING_BITS: usize = 12;
+const SIGNATURE_ROUTING_MASK: u16 = (1 << SIGNATURE_ROUTING_BITS) - 1;
+const SIGNATURE_SAMPLES_PER_BIT: usize = 16;
+const SIGNATURE_CANDIDATES_PER_HIT: usize = 128;
+const SIGNATURE_MIN_CANDIDATES: usize = 4096;
+const SIGNATURE_MAX_CANDIDATES: usize = 32_768;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EmbeddingKey {
@@ -221,6 +230,168 @@ struct TenantRows {
     positions: HashMap<u64, usize>,
     scales: Vec<f32>,
     vectors: Vec<i8>,
+    signature_routing: Option<SignatureRouting>,
+}
+
+#[derive(Debug)]
+struct SignatureRouting {
+    // Buckets retain compact row positions only; vectors stay in TenantRows.
+    buckets: [HashMap<u16, Vec<u32>>; SIGNATURE_ROUTING_TABLES],
+}
+
+impl SignatureRouting {
+    fn build(rows: &TenantRows, dimensions: usize) -> Self {
+        let mut routing = Self {
+            buckets: std::array::from_fn(|_| HashMap::new()),
+        };
+        for position in 0..rows.item_ids.len() {
+            let start = position * dimensions;
+            let signature = embedding_signature_i8(&rows.vectors[start..start + dimensions]);
+            routing.insert(signature, position);
+        }
+        routing
+    }
+
+    fn insert(&mut self, signature: u64, position: usize) {
+        let Ok(position) = u32::try_from(position) else {
+            return;
+        };
+        for table in 0..SIGNATURE_ROUTING_TABLES {
+            self.buckets[table]
+                .entry(signature_bucket(signature, table))
+                .or_default()
+                .push(position);
+        }
+    }
+
+    fn remove(&mut self, signature: u64, position: usize) {
+        let Ok(position) = u32::try_from(position) else {
+            return;
+        };
+        for table in 0..SIGNATURE_ROUTING_TABLES {
+            let bucket_key = signature_bucket(signature, table);
+            let empty = if let Some(bucket) = self.buckets[table].get_mut(&bucket_key) {
+                if let Some(offset) = bucket.iter().position(|candidate| *candidate == position) {
+                    bucket.swap_remove(offset);
+                }
+                bucket.is_empty()
+            } else {
+                false
+            };
+            if empty {
+                self.buckets[table].remove(&bucket_key);
+            }
+        }
+    }
+
+    fn candidates(&self, signature: u64, budget: usize) -> Vec<usize> {
+        let mut positions = Vec::with_capacity(budget);
+        let mut seen = HashSet::<u32>::with_capacity(budget);
+        for distance in 0..=2 {
+            for table in 0..SIGNATURE_ROUTING_TABLES {
+                let bucket = signature_bucket(signature, table);
+                match distance {
+                    0 => {
+                        if self.extend_bucket(table, bucket, budget, &mut seen, &mut positions) {
+                            return positions;
+                        }
+                    }
+                    1 => {
+                        for first in 0..SIGNATURE_ROUTING_BITS {
+                            if self.extend_bucket(
+                                table,
+                                bucket ^ (1 << first),
+                                budget,
+                                &mut seen,
+                                &mut positions,
+                            ) {
+                                return positions;
+                            }
+                        }
+                    }
+                    2 => {
+                        for first in 0..SIGNATURE_ROUTING_BITS {
+                            for second in first + 1..SIGNATURE_ROUTING_BITS {
+                                if self.extend_bucket(
+                                    table,
+                                    bucket ^ (1 << first) ^ (1 << second),
+                                    budget,
+                                    &mut seen,
+                                    &mut positions,
+                                ) {
+                                    return positions;
+                                }
+                            }
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        positions
+    }
+
+    fn extend_bucket(
+        &self,
+        table: usize,
+        bucket: u16,
+        budget: usize,
+        seen: &mut HashSet<u32>,
+        positions: &mut Vec<usize>,
+    ) -> bool {
+        let Some(bucket_positions) = self.buckets[table].get(&bucket) else {
+            return false;
+        };
+        for position in bucket_positions {
+            if seen.insert(*position) {
+                positions.push(*position as usize);
+                if positions.len() >= budget {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+impl TenantRows {
+    fn signature_at(&self, dimensions: usize, position: usize) -> Option<u64> {
+        self.signature_routing.as_ref()?;
+        let start = position * dimensions;
+        Some(embedding_signature_i8(
+            &self.vectors[start..start + dimensions],
+        ))
+    }
+
+    fn refresh_signature_routing(
+        &mut self,
+        dimensions: usize,
+        position: usize,
+        old_signature: Option<u64>,
+    ) {
+        if position > u32::MAX as usize {
+            self.signature_routing = None;
+            return;
+        }
+        if self.signature_routing.is_some() {
+            let start = position * dimensions;
+            let new_signature =
+                embedding_signature_i8(&self.vectors[start..start + dimensions]);
+            let routing = self
+                .signature_routing
+                .as_mut()
+                .expect("signature routing exists");
+            if let Some(old_signature) = old_signature {
+                routing.remove(old_signature, position);
+            }
+            routing.insert(new_signature, position);
+        } else if dimensions >= SIGNATURE_ROUTING_MIN_DIMENSIONS
+            && self.item_ids.len() >= SIGNATURE_ROUTING_MIN_ROWS
+            && self.item_ids.len() <= u32::MAX as usize
+        {
+            self.signature_routing = Some(SignatureRouting::build(self, dimensions));
+        }
+    }
 }
 
 impl EmbeddingIndex {
@@ -293,6 +464,7 @@ impl EmbeddingIndex {
 
         let rows = self.tenants.entry(input.key.tenant_id).or_default();
         let (inserted, updated) = if let Some(&position) = rows.positions.get(&input.key.item_id) {
+            let old_signature = rows.signature_at(self.config.dimensions, position);
             rows.scales[position] = scale;
             let start = position * self.config.dimensions;
             quantize_into(
@@ -300,6 +472,7 @@ impl EmbeddingIndex {
                 quantization_multiplier,
                 &mut rows.vectors[start..start + self.config.dimensions],
             );
+            rows.refresh_signature_routing(self.config.dimensions, position, old_signature);
             (0, 1)
         } else {
             let position = rows.item_ids.len();
@@ -312,6 +485,7 @@ impl EmbeddingIndex {
                     .iter()
                     .map(|value| quantize_value(*value, quantization_multiplier)),
             );
+            rows.refresh_signature_routing(self.config.dimensions, position, None);
             self.total_entries += 1;
             (1, 0)
         };
@@ -416,9 +590,15 @@ impl EmbeddingIndex {
             let vector = batch.vector(row);
             let rows = self.tenants.entry(key.tenant_id).or_default();
             if let Some(&position) = rows.positions.get(&key.item_id) {
+                let old_signature = rows.signature_at(self.config.dimensions, position);
                 rows.scales[position] = scale;
                 let start = position * self.config.dimensions;
                 rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
+                rows.refresh_signature_routing(
+                    self.config.dimensions,
+                    position,
+                    old_signature,
+                );
                 updated += 1;
             } else {
                 let position = rows.item_ids.len();
@@ -426,6 +606,7 @@ impl EmbeddingIndex {
                 rows.positions.insert(key.item_id, position);
                 rows.scales.push(scale);
                 rows.vectors.extend_from_slice(vector);
+                rows.refresh_signature_routing(self.config.dimensions, position, None);
                 inserted += 1;
             }
         }
@@ -494,6 +675,32 @@ impl EmbeddingIndex {
             return false;
         };
         let last = rows.item_ids.len() - 1;
+        let routing_move = rows.signature_routing.as_ref().map(|_| {
+            let removed_start = position * self.config.dimensions;
+            let removed = embedding_signature_i8(
+                &rows.vectors[removed_start..removed_start + self.config.dimensions],
+            );
+            let moved = if position != last {
+                let moved_start = last * self.config.dimensions;
+                Some(embedding_signature_i8(
+                    &rows.vectors[moved_start..moved_start + self.config.dimensions],
+                ))
+            } else {
+                None
+            };
+            (removed, moved)
+        });
+        if let Some((removed, moved)) = routing_move {
+            let routing = rows
+                .signature_routing
+                .as_mut()
+                .expect("signature routing exists");
+            routing.remove(removed, position);
+            if let Some(moved) = moved {
+                routing.remove(moved, last);
+                routing.insert(moved, position);
+            }
+        }
         if position != last {
             let source = last * self.config.dimensions;
             let target = position * self.config.dimensions;
@@ -506,6 +713,9 @@ impl EmbeddingIndex {
         rows.scales.swap_remove(position);
         if position != last {
             rows.positions.insert(rows.item_ids[position], position);
+        }
+        if rows.item_ids.len() < SIGNATURE_ROUTING_MIN_ROWS {
+            rows.signature_routing = None;
         }
         self.total_entries -= 1;
         if rows.item_ids.is_empty() {
@@ -528,9 +738,47 @@ impl EmbeddingIndex {
         };
         let query_inverse_norm = query_inverse_norm(query, self.config.dimensions)?;
         let limit = limit.min(rows.item_ids.len());
+        // Large tenants route first, then reuse the exact compact scorer on a bounded set.
+        if let Some(routing) = &rows.signature_routing {
+            let candidate_budget = limit
+                .saturating_mul(SIGNATURE_CANDIDATES_PER_HIT)
+                .clamp(SIGNATURE_MIN_CANDIDATES, SIGNATURE_MAX_CANDIDATES)
+                .min(rows.item_ids.len());
+            let positions = routing.candidates(embedding_signature_f32(query), candidate_budget);
+            let minimum_routed_candidates = limit.saturating_mul(4).min(rows.item_ids.len());
+            if positions.len() >= minimum_routed_candidates {
+                return Ok(self.search_positions(
+                    tenant_id,
+                    rows,
+                    query,
+                    query_inverse_norm,
+                    limit,
+                    positions,
+                ));
+            }
+        }
+        Ok(self.search_positions(
+            tenant_id,
+            rows,
+            query,
+            query_inverse_norm,
+            limit,
+            0..rows.item_ids.len(),
+        ))
+    }
+
+    fn search_positions(
+        &self,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: &[f32],
+        query_inverse_norm: f32,
+        limit: usize,
+        positions: impl IntoIterator<Item = usize>,
+    ) -> Vec<EmbeddingHit> {
         let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
 
-        for position in 0..rows.item_ids.len() {
+        for position in positions {
             let start = position * self.config.dimensions;
             let row = &rows.vectors[start..start + self.config.dimensions];
             let score = (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm)
@@ -560,7 +808,7 @@ impl EmbeddingIndex {
                 .total_cmp(&left.score)
                 .then_with(|| left.key.item_id.cmp(&right.key.item_id))
         });
-        Ok(hits)
+        hits
     }
 
     /// Score only the requested item ids without scanning the rest of the tenant.
@@ -710,6 +958,47 @@ fn quantize_value(value: f32, quantization_multiplier: f32) -> i8 {
     (value * quantization_multiplier)
         .round()
         .clamp(-127.0, 127.0) as i8
+}
+
+#[inline]
+fn signature_bucket(signature: u64, table: usize) -> u16 {
+    ((signature >> (table * 13)) as u16) & SIGNATURE_ROUTING_MASK
+}
+
+fn embedding_signature_i8(values: &[i8]) -> u64 {
+    embedding_signature(values.len(), |dimension| values[dimension] as f32)
+}
+
+fn embedding_signature_f32(values: &[f32]) -> u64 {
+    embedding_signature(values.len(), |dimension| values[dimension])
+}
+
+fn embedding_signature(
+    dimensions: usize,
+    mut value_at: impl FnMut(usize) -> f32,
+) -> u64 {
+    let mut signature = 0u64;
+    for bit in 0..64 {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64
+            .wrapping_add((bit as u64).wrapping_mul(0xd1b5_4a32_d192_ed03))
+            .wrapping_add(dimensions as u64);
+        let mut projection = 0.0f32;
+        for _ in 0..SIGNATURE_SAMPLES_PER_BIT {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let value = value_at((state as usize) % dimensions);
+            projection += if state & (1 << 63) == 0 {
+                value
+            } else {
+                -value
+            };
+        }
+        if projection >= 0.0 {
+            signature |= 1 << bit;
+        }
+    }
+    signature
 }
 
 #[inline]
