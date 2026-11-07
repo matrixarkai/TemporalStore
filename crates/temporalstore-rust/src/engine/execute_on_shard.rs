@@ -684,6 +684,88 @@ fn write_packed_hash_entries(
     (mutated, packed_entries)
 }
 
+pub(super) fn execute_hash_multi_set_reusing_metadata(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    async_storage: bool,
+    key: String,
+    mut entries: Vec<(String, Vec<u8>)>,
+) -> (ExecuteOutcome, Command) {
+    remove_if_expired(shard, &key);
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
+    let object_id = stable_block_object_id(shard_id, "hash", &key);
+
+    // A large feature and its small scalar fields stay readable as one object under cache
+    // pressure. Generic small hash writes retain their per-field representation.
+    let mutated = if contains_large_value {
+        let (mutated, returned_entries) = write_packed_hash_entries(
+            cache,
+            block_store,
+            shard_id,
+            start_routing_bucket,
+            end_routing_bucket,
+            shard,
+            &key,
+            entries,
+        );
+        entries = returned_entries;
+        mutated
+    } else {
+        let mut applied = 0usize;
+        for (field, value) in &entries {
+            let block_ordinal = crate::engine::state::container_block_ordinal(
+                shard,
+                "hash",
+                &key,
+                field,
+            );
+            let block =
+                crate::engine::container_blocks::single_element_block("hash", field, value);
+            if let Ok(address) = append_value_of_object(
+                cache,
+                block_store,
+                shard_id,
+                &block,
+                Some(object_id),
+                Some(field.as_str()),
+                Some(routing_bucket),
+                async_storage,
+                block_ordinal,
+            ) {
+                let field_handle =
+                    super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
+                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                    shard,
+                    shard_id,
+                    &key,
+                    Some(field.clone()),
+                    field_handle,
+                    address.clone(),
+                    true,
+                    address,
+                );
+                invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, field));
+                applied += 1;
+            }
+        }
+        release_hash_entry_payloads(&mut entries);
+        applied > 0
+    };
+
+    (
+        ExecuteOutcome {
+            response: CommandResponse::Empty,
+            mutated,
+        },
+        Command::HashMultiSet { key, entries },
+    )
+}
+
 pub(super) fn execute_packed_conditional_hash_write(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -1402,89 +1484,18 @@ pub(crate) fn execute_on_shard(
             );
         }
         Command::HashMultiSet { key, entries } => {
-            remove_if_expired(shard, &key);
-            let routing_bucket =
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
-            let object_id = stable_block_object_id(shard_id, "hash", &key);
-
-            // A large feature and its small scalar fields must stay readable as one object under
-            // cache pressure. Generic small hash writes retain their per-field representation.
-            if contains_large_value {
-                let (packed_mutated, _) = write_packed_hash_entries(
-                    cache,
-                    block_store,
-                    shard_id,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                    shard,
-                    &key,
-                    entries,
-                );
-                mutated |= packed_mutated;
-                return ExecuteOutcome {
-                    response: CommandResponse::Empty,
-                    mutated,
-                };
-            }
-
-            // A COUNT, not a list of pending proofs. The install happens inline now, so nothing
-            // is carried past the loop except whether anything landed.
-            let mut applied = 0usize;
-            for (field, value) in entries {
-                // WHICH block of this object this element is. Computed BEFORE the append, because
-                // the append stamps the ordinal into the record header AND onto the address it
-                // returns from the same value -- assigning it afterwards would leave the two
-                // disagreeing, which `decode_block_record` refuses as a block id mismatch.
-                //
-                // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see
-                // `HashSet`'s identical site and `state::container_block_ordinal`.
-                let block_ordinal = crate::engine::state::container_block_ordinal(
-                        shard,
-                        "hash",
-                        &key,
-                        &field,
-                );
-                // The block STATES which field it is -- see `container_blocks`. Built per entry
-                // because the frame carries the field, so one frame cannot stand for two.
-                let block =
-                    crate::engine::container_blocks::single_element_block("hash", &field, &value);
-                if let Ok(address) = append_value_of_object(
-                    cache,
-                    block_store,
-                    shard_id,
-                    &block,
-                    Some(object_id),
-                    // The element this block holds -- the SAME expression that derived the ordinal
-                    // above and the object id beside it. All three name one block.
-                    Some(field.as_str()),
-                    Some(routing_bucket),
-                    async_storage,
-                    block_ordinal,
-                ) {
-                    // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
-                    // argument below still carries its own owned copy; that position is the
-                    // bucket index's and is converted separately.
-                    let field_handle =
-                        super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
-                    super::recorded_map::install_element::<super::recorded_map::HashKind>(
-                        shard,
-                        shard_id,
-                        &key,
-                        Some(field.clone()),
-                        field_handle,
-                        address.clone(),
-                        true,
-                        address,
-                    );
-                    invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
-                    applied += 1;
-                }
-            }
-            if applied > 0 {
-                mutated = true;
-            }
-            CommandResponse::Empty
+            return execute_hash_multi_set_reusing_metadata(
+                cache,
+                block_store,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                async_storage,
+                key,
+                entries,
+            )
+            .0;
         }
         Command::HashMultiSetIfTimestampOlder { .. } => unreachable!(
             "conditional hash writes are handled before command dispatch"

@@ -2764,6 +2764,77 @@ impl DataNodeRuntime {
         })
     }
 
+    fn batch_execute_shared_hash_rows(
+        &self,
+        request: BatchHashMultiSetRequest,
+    ) -> BatchExecuteResponse {
+        let lifecycle_marker = Command::HashMultiSet {
+            key: String::new(),
+            entries: Vec::new(),
+        };
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            std::slice::from_ref(&lifecycle_marker),
+        ) {
+            return BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            };
+        }
+
+        let unique_fields = request
+            .fields
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == request.fields.len();
+        let shared_wal_sink = self
+            .inner
+            .shared_wal_sink
+            .read()
+            .expect("shared wal sink lock poisoned");
+        if shared_wal_sink.is_none()
+            && crate::wal::wal_data_only_enabled()
+            && unique_fields
+        {
+            let shard_id = request.shard_id;
+            let dirty_keys = request
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (index, row.0.clone(), false))
+                .collect::<Vec<_>>();
+            let response = self.inner.engine.batch_execute_shared_hash_rows(request);
+            mark_dirty_for_successful_keys(
+                &self.inner.dirty,
+                shard_id,
+                &dirty_keys,
+                &response.responses,
+            );
+            return response;
+        }
+        drop(shared_wal_sink);
+
+        let fields = request.fields;
+        self.batch_execute_inner(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request
+                .rows
+                .into_iter()
+                .map(|row| Command::HashMultiSet {
+                    key: row.0,
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.1.into_iter().map(|value| value.0))
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
     fn batch_execute_inner(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
@@ -2841,9 +2912,8 @@ impl DataNodeRuntime {
 
     /// Write one shared field projection to many hashes.
     ///
-    /// Expansion feeds the regular write batch so admission, WAL mirroring,
-    /// dirty tracking, and failure indexing stay identical. Only repeated field
-    /// names and command tags are removed from the network representation.
+    /// The data-only path moves one shared schema through every row. Duplicate
+    /// schemas and mirrored WAL writes use the regular expanded command path.
     pub fn batch_hash_multi_set(
         &self,
         request: BatchHashMultiSetRequest,
@@ -2868,22 +2938,32 @@ impl DataNodeRuntime {
             };
         }
 
-        let fields = request.fields;
-        self.batch_write(BatchExecuteRequest {
-            shard_id: request.shard_id,
-            commands: request
-                .rows
-                .into_iter()
-                .map(|row| Command::HashMultiSet {
-                    key: row.0,
-                    entries: fields
-                        .iter()
-                        .cloned()
-                        .zip(row.1.into_iter().map(|value| value.0))
-                        .collect(),
-                })
-                .collect(),
-        })
+        let response = self.batch_execute_shared_hash_rows(request);
+        if !response.status.ok {
+            return BatchWriteResponse {
+                status: response.status,
+                applied: 0,
+                errors: Vec::new(),
+            };
+        }
+
+        let mut applied = 0;
+        let mut errors = Vec::new();
+        for (index, item) in response.responses.into_iter().enumerate() {
+            if item.status.ok {
+                applied += 1;
+            } else {
+                errors.push(BatchWriteError {
+                    index,
+                    status: item.status,
+                });
+            }
+        }
+        BatchWriteResponse {
+            status: Status::ok(),
+            applied,
+            errors,
+        }
     }
 
     /// Write shared hash fields only when each stored timestamp is older.
