@@ -239,6 +239,39 @@ struct SignatureRouting {
     buckets: [HashMap<u16, Vec<u32>>; SIGNATURE_ROUTING_TABLES],
 }
 
+enum SeenPositions {
+    Dense(Vec<u64>),
+    Sparse(HashSet<u32>),
+}
+
+impl SeenPositions {
+    fn new(row_count: usize, budget: usize) -> Self {
+        let dense_words = row_count.div_ceil(u64::BITS as usize);
+        let dense_bytes = dense_words.saturating_mul(std::mem::size_of::<u64>());
+        let sparse_key_bytes = budget.saturating_mul(std::mem::size_of::<u32>());
+        // Never trade more query memory for direct bit tests.
+        if dense_bytes <= sparse_key_bytes {
+            Self::Dense(vec![0; dense_words])
+        } else {
+            Self::Sparse(HashSet::with_capacity(budget))
+        }
+    }
+
+    fn insert(&mut self, position: u32) -> bool {
+        match self {
+            Self::Dense(words) => {
+                let position = position as usize;
+                let word = position / u64::BITS as usize;
+                let mask = 1u64 << (position % u64::BITS as usize);
+                let inserted = words[word] & mask == 0;
+                words[word] |= mask;
+                inserted
+            }
+            Self::Sparse(positions) => positions.insert(position),
+        }
+    }
+}
+
 impl SignatureRouting {
     fn build(rows: &TenantRows, dimensions: usize) -> Self {
         let mut routing = Self {
@@ -284,9 +317,10 @@ impl SignatureRouting {
         }
     }
 
-    fn candidates(&self, signature: u64, budget: usize) -> Vec<usize> {
+    fn candidates(&self, signature: u64, row_count: usize, budget: usize) -> Vec<u32> {
+        // Routing stores u32 positions, so keep query scratch at that width until scoring.
         let mut positions = Vec::with_capacity(budget);
-        let mut seen = HashSet::<u32>::with_capacity(budget);
+        let mut seen = SeenPositions::new(row_count, budget);
         for distance in 0..=2 {
             for table in 0..SIGNATURE_ROUTING_TABLES {
                 let bucket = signature_bucket(signature, table);
@@ -336,15 +370,15 @@ impl SignatureRouting {
         table: usize,
         bucket: u16,
         budget: usize,
-        seen: &mut HashSet<u32>,
-        positions: &mut Vec<usize>,
+        seen: &mut SeenPositions,
+        positions: &mut Vec<u32>,
     ) -> bool {
         let Some(bucket_positions) = self.buckets[table].get(&bucket) else {
             return false;
         };
         for position in bucket_positions {
             if seen.insert(*position) {
-                positions.push(*position as usize);
+                positions.push(*position);
                 if positions.len() >= budget {
                     return true;
                 }
@@ -744,7 +778,11 @@ impl EmbeddingIndex {
                 .saturating_mul(SIGNATURE_CANDIDATES_PER_HIT)
                 .clamp(SIGNATURE_MIN_CANDIDATES, SIGNATURE_MAX_CANDIDATES)
                 .min(rows.item_ids.len());
-            let positions = routing.candidates(embedding_signature_f32(query), candidate_budget);
+            let positions = routing.candidates(
+                embedding_signature_f32(query),
+                rows.item_ids.len(),
+                candidate_budget,
+            );
             let minimum_routed_candidates = limit.saturating_mul(4).min(rows.item_ids.len());
             if positions.len() >= minimum_routed_candidates {
                 return Ok(self.search_positions(
@@ -753,7 +791,7 @@ impl EmbeddingIndex {
                     query,
                     query_inverse_norm,
                     limit,
-                    positions,
+                    positions.into_iter().map(|position| position as usize),
                 ));
             }
         }
