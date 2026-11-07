@@ -32,27 +32,24 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
     }
 }
 
-/// Hand each key a command touched, read or write, to `visit` -- for the per-bucket LRU
-/// recency stamp, which is the only thing that wants them.
+/// Hand each key a command touched, read or write, to `visit` for the per-bucket LRU stamp.
 ///
-/// VISITED RATHER THAN COLLECTED. The two call sites are the same four-line loop: derive a
-/// routing bucket from the key and insert a `u32 -> u64`. Neither keeps a key, so the
-/// `Vec<String>` this replaces was allocated and cloned into purely to be walked once and
-/// dropped -- TWO allocations per warm serving read, measured, of the ten #1952 found.
-///
-/// A WRITE command's keys are still built and still owned: `command_object_keys` synthesises
-/// several of them (a control-state family key, a context node key) and there is nothing to
-/// borrow from. Only the borrowing half of the fork got cheaper, which is the half a serving
-/// read takes.
-pub(super) fn for_each_touched_key(command: &Command, mut visit: impl FnMut(&str)) {
-    let object_keys = command_object_keys(command);
+/// VISITED RATHER THAN COLLECTED. Execution already derives owned write keys for durability and
+/// index maintenance, while a read can borrow its key from the command. Recency retains neither,
+/// so deriving another vector solely for this walk creates a second vector and a second copy of
+/// each ordinary feature key.
+pub(super) fn for_each_precomputed_touched_key(
+    command: &Command,
+    object_keys: &[String],
+    mut visit: impl FnMut(&str),
+) {
     if object_keys.is_empty() {
         if let Some(key) = command_read_key(command) {
             visit(key);
         }
     } else {
         for key in object_keys {
-            visit(&key);
+            visit(key);
         }
     }
 }
@@ -582,6 +579,30 @@ pub(super) fn validate_command_preconditions(
                 .map(|series| series.len())
                 .unwrap_or(0);
             if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+                return Err(Status::error(
+                    "invalid_argument",
+                    format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
+                ));
+            }
+        }
+        // THE SAME SERIES, SO THE SAME CEILING. `SequenceAdd` appends into `features` exactly as
+        // the three arms above do -- `execute_on_shard` reaches for `features_mut()` under both
+        // names -- but it was not in this block, so the ceiling the other three enforce was
+        // reachable around: a key the feature commands refuse to grow could be grown past it by
+        // sending rows instead of points.
+        //
+        // The cost of the omission is not only the ceiling. Validation runs BEFORE execution, so a
+        // refused command writes nothing; an accepted one serialises every row to JSON and appends
+        // a block per row before `trim_timestamped_series` discards everything past
+        // `feature_max_size`. An unbounded batch therefore bought an unbounded amount of durable
+        // work for data that does not survive the same command.
+        Command::SequenceAdd { key, rows } => {
+            let current = shard
+                .features()
+                .get(&key[..])
+                .map(|series| series.len())
+                .unwrap_or(0);
+            if current.saturating_add(rows.len()) > FEATURE_ADD_HARD_MAX_SIZE {
                 return Err(Status::error(
                     "invalid_argument",
                     format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),

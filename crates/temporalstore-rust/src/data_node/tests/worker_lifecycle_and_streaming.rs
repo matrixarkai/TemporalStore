@@ -228,6 +228,40 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
 }
 
 #[test]
+fn shared_field_hash_write_keeps_large_and_small_fields_readable() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let embedding = vec![7; 8 * 1024];
+
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["embedding".to_string(), "score".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![
+                BatchHashMultiSetValue(embedding.clone()),
+                BatchHashMultiSetValue(b"0.75".to_vec()),
+            ],
+        )],
+    });
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 1);
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["entity".to_string()],
+        fields: vec!["score".to_string(), "embedding".to_string()],
+    });
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![Some(b"0.75".to_vec()), Some(embedding)]
+        }
+    );
+}
+
+#[test]
 fn conditional_hash_batch_keeps_only_newer_rows() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

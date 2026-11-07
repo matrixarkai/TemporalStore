@@ -255,7 +255,15 @@ impl TemporalEngine {
             .len()
             .saturating_sub(reclaim_candidate_count);
         let log_pressure = self.storage_log_pressure_report(request.shard_id);
-        let cache_pressure = self.storage_cache_inspection_report(request.shard_id);
+        // THE STATS, NOT A LISTING. `storage_cache_inspection_report` materialises a `Vec`
+        // holding one entry per cached record for the shard and folds it into a per-bucket
+        // `BTreeMap`, then fills its `stats` field from `self.cache.stats()` -- so a caller that
+        // reads only `.stats` pays for the listing and throws it away. Every use of this
+        // snapshot below is `.stats`, so the value here is bit-identical and the listing was
+        // pure cost. It is O(cache occupancy) with a filesystem `metadata()` per entry the disk
+        // index does not hold, which is why an idle fixture with an EMPTY cache cannot show it:
+        // measured at 0 listed entries on the stage-clock fixture and 4,000 on a warm shard.
+        let cache_pressure_stats = self.cache.stats();
         let block_slab_total_bytes = reclaim_live_bytes.saturating_add(reclaim_stale_bytes);
         let block_slab_stale_density_basis_points = if block_slab_total_bytes == 0 {
             0
@@ -315,12 +323,11 @@ impl TemporalEngine {
             .follower_blocks
             .len()
             .saturating_add(retention_prune_plan.raft_snapshot_blocks.len());
-        let memory_cache_pressure_score = cache_pressure
-            .stats
+        let memory_cache_pressure_score = cache_pressure_stats
             .memory_bytes
-            .saturating_add(cache_pressure.stats.pinned_bytes)
-            .saturating_add(cache_pressure.stats.async_writeback_queue_bytes)
-            .saturating_add(cache_pressure.stats.async_writeback_queue_depth);
+            .saturating_add(cache_pressure_stats.pinned_bytes)
+            .saturating_add(cache_pressure_stats.async_writeback_queue_bytes)
+            .saturating_add(cache_pressure_stats.async_writeback_queue_depth);
         // The bucket index, which no memory term above can see. Kept out of
         // `memory_cache_pressure_score` on purpose -- see the field doc on
         // `StorageManagerPressureSignals::bucket_index_resident_bytes`: that score is re-derived
@@ -337,7 +344,7 @@ impl TemporalEngine {
             + log_pressure.wal_bytes
             + log_pressure.index_log_bytes
             + reclaim_stale_bytes
-            + cache_pressure.stats.disk_bytes
+            + cache_pressure_stats.disk_bytes
             + memory_cache_pressure_score
             + bucket_index_resident_bytes
             + delayed_destroy_bytes
@@ -352,8 +359,8 @@ impl TemporalEngine {
             stale_block_bytes: reclaim_stale_bytes,
             live_block_bytes: reclaim_live_bytes,
             block_slab_stale_density_basis_points,
-            memory_cache_bytes: cache_pressure.stats.memory_bytes,
-            disk_cache_bytes: cache_pressure.stats.disk_bytes,
+            memory_cache_bytes: cache_pressure_stats.memory_bytes,
+            disk_cache_bytes: cache_pressure_stats.disk_bytes,
             bucket_index_resident_bytes,
             memory_cache_pressure_score,
             expired_bucket_object_scan_debt,
@@ -613,7 +620,8 @@ impl TemporalEngine {
         // prepare value (warmed blocks also write through to SSD, and downstream
         // reclamation assertions compare against that pre-warm disk figure).
         if !request.dry_run {
-            let warmed_cache = self.storage_cache_inspection_report(request.shard_id).stats;
+            // Same reading as the pressure snapshot above: this only ever took `.stats`.
+            let warmed_cache = self.cache.stats();
             let warmed_memory_pressure = warmed_cache
                 .memory_bytes
                 .saturating_add(warmed_cache.pinned_bytes)

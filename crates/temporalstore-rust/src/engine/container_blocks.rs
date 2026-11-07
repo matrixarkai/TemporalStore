@@ -324,6 +324,26 @@ pub(super) enum Utf8ContainerProjection {
     Corrupt(String),
 }
 
+/// The requested-name index shared by every row in one hash projection batch.
+pub(super) struct Utf8ProjectionPlan<'a> {
+    components: &'a [String],
+    first_position: std::collections::HashMap<&'a [u8], usize>,
+}
+
+impl<'a> Utf8ProjectionPlan<'a> {
+    pub(super) fn new(components: &'a [String]) -> Self {
+        let mut first_position =
+            std::collections::HashMap::<&[u8], usize>::with_capacity(components.len());
+        for (index, component) in components.iter().enumerate() {
+            first_position.entry(component.as_bytes()).or_insert(index);
+        }
+        Self {
+            components,
+            first_position,
+        }
+    }
+}
+
 fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
@@ -424,11 +444,61 @@ pub(super) fn encode_container_block(
     spelling: ElementKeySpelling,
     items: &[(&[u8], &[u8])],
 ) -> Vec<u8> {
-    let writes: Vec<ContainerBlockWrite<'_>> = items
-        .iter()
-        .map(|(key, value)| ContainerBlockWrite::live(key, value))
-        .collect();
-    encode_container_block_items(spelling, &writes)
+    encode_live_container_block(
+        spelling,
+        items.len(),
+        items.iter().copied(),
+        items
+            .iter()
+            .map(|(key, value)| key.len() + value.len() + 6)
+            .sum(),
+    )
+}
+
+/// Encode an owned UTF-8 row without first materializing borrowed pair and write vectors.
+pub(super) fn encode_utf8_container_block<K, V>(items: &[(K, V)]) -> Vec<u8>
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+{
+    encode_live_container_block(
+        ElementKeySpelling::Utf8,
+        items.len(),
+        items
+            .iter()
+            .map(|(key, value)| (key.as_ref(), value.as_ref())),
+        items
+            .iter()
+            .map(|(key, value)| key.as_ref().len() + value.as_ref().len() + 6)
+            .sum(),
+    )
+}
+
+fn encode_live_container_block<'a>(
+    spelling: ElementKeySpelling,
+    item_count: usize,
+    items: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+    payload_capacity: usize,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(CONTAINER_BLOCK_HEADER_BYTES + payload_capacity);
+    bytes.extend_from_slice(CONTAINER_BLOCK_MAGIC_V2);
+    bytes.push(spelling.to_byte());
+    put_varint(&mut bytes, item_count as u64);
+    for (key, value) in items {
+        put_varint(&mut bytes, key.len() as u64);
+        bytes.extend_from_slice(key);
+        match suffix_offset_of(key, value) {
+            Some(offset) => {
+                put_varint(&mut bytes, TAG_SUFFIX);
+                put_varint(&mut bytes, offset as u64);
+            }
+            None => {
+                put_varint(&mut bytes, value.len() as u64 + TAG_INLINE_BIAS_V2);
+                bytes.extend_from_slice(value);
+            }
+        }
+    }
+    bytes
 }
 
 /// Write items as a block payload, each either live or a removal.
@@ -703,6 +773,14 @@ pub(super) fn project_utf8_container_elements(
     bytes: &[u8],
     components: &[String],
 ) -> Utf8ContainerProjection {
+    let plan = Utf8ProjectionPlan::new(components);
+    project_utf8_container_elements_with_plan(bytes, &plan)
+}
+
+pub(super) fn project_utf8_container_elements_with_plan(
+    bytes: &[u8],
+    plan: &Utf8ProjectionPlan<'_>,
+) -> Utf8ContainerProjection {
     let Some(header) = frame_header(bytes) else {
         return Utf8ContainerProjection::NotFramed;
     };
@@ -714,14 +792,8 @@ pub(super) fn project_utf8_container_elements(
         return Utf8ContainerProjection::OtherSpelling;
     }
 
-    let mut first_position = std::collections::HashMap::<&[u8], usize>::with_capacity(
-        components.len(),
-    );
-    for (index, component) in components.iter().enumerate() {
-        first_position.entry(component.as_bytes()).or_insert(index);
-    }
-    let mut values = vec![None; components.len()];
-    let mut found = vec![false; components.len()];
+    let mut values = vec![None; plan.components.len()];
+    let mut found = vec![false; plan.components.len()];
     let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
         Ok(count) => count,
@@ -738,7 +810,7 @@ pub(super) fn project_utf8_container_elements(
             Ok(item) => item,
             Err(error) => return Utf8ContainerProjection::Corrupt(error),
         };
-        let Some(&position) = first_position.get(key) else {
+        let Some(&position) = plan.first_position.get(key) else {
             continue;
         };
         if !found[position] {
@@ -748,8 +820,8 @@ pub(super) fn project_utf8_container_elements(
             }
         }
     }
-    for (index, component) in components.iter().enumerate() {
-        let first = first_position[component.as_bytes()];
+    for (index, component) in plan.components.iter().enumerate() {
+        let first = plan.first_position[component.as_bytes()];
         if index != first && found[first] {
             values[index] = values[first].clone();
         }
@@ -1018,6 +1090,23 @@ pub(super) fn tombstone_block(kind: &str, component: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod member_component_tests {
     use super::*;
+
+    #[test]
+    fn owned_utf8_rows_encode_identically_without_pair_vectors() {
+        let owned = vec![
+            ("first".to_string(), b"one".to_vec()),
+            ("second".to_string(), b"second".to_vec()),
+        ];
+        let borrowed = owned
+            .iter()
+            .map(|(key, value)| (key.as_bytes(), value.as_slice()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            encode_utf8_container_block(&owned),
+            encode_container_block(ElementKeySpelling::Utf8, &borrowed),
+        );
+    }
 
     /// Every component on disk today is hex, so the reader has to keep meaning what it meant.
     #[test]

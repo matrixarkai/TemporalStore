@@ -2043,6 +2043,114 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
     std::env::remove_var("TS_CONTEXT_TEST_KEY");
 }
 
+#[test]
+fn context_workflow_extracts_and_embeds_with_ollama() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        for expected_path in ["/api/chat", "/api/embed"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                let Some(header_end) = buffer
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|offset| offset + 4)
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&buffer[..header_end]);
+                assert!(headers.contains(format!("POST {expected_path} HTTP/1.1").as_str()));
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .or_else(|| line.strip_prefix("Content-Length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or_default();
+                if buffer.len() >= header_end + content_length {
+                    break;
+                }
+            }
+            let body_start = buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|offset| offset + 4)
+                .unwrap();
+            let request_body: serde_json::Value =
+                serde_json::from_slice(&buffer[body_start..]).unwrap();
+            let response = if expected_path == "/api/chat" {
+                assert_eq!(request_body["model"], "qwen-context-test");
+                assert_eq!(request_body["stream"], false);
+                assert!(request_body["format"]["properties"]["l0"].is_object());
+                serde_json::json!({
+                    "message": {
+                        "content": "{\"l0\":\"local checkout incident\",\"l1\":\"payment risk and customer impact\"}"
+                    }
+                })
+            } else {
+                assert_eq!(request_body["model"], "nomic-context-test");
+                assert_eq!(request_body["input"].as_array().unwrap().len(), 2);
+                serde_json::json!({
+                    "embeddings": [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0]
+                    ]
+                })
+            }
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            )
+            .unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    let engine = test_engine();
+    let report = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 8,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "local-chat".to_string(),
+            title: "checkout".to_string(),
+            body: "Checkout failed during payment. Risk increased and support paused the account."
+                .to_string(),
+            timestamp_ms: 17,
+            provider: ContextModelProviderConfig {
+                provider_name: "ollama-local".to_string(),
+                provider_kind: ContextProviderKind::Ollama,
+                base_url: format!("http://{addr}"),
+                model: "qwen-context-test".to_string(),
+                embedding_model: "nomic-context-test".to_string(),
+                mock_mode: false,
+                ..ContextModelProviderConfig::default()
+            },
+        },
+    );
+    handle.join().unwrap();
+
+    assert!(report.status.ok, "{}", report.status.message);
+    assert_eq!(report.l0, "local checkout incident");
+    assert!(report.l1.contains("payment risk"));
+    assert_eq!(report.provider.provider_kind, ContextProviderKind::Ollama);
+    assert_eq!(report.embedding_generation.vector_dimension, 4);
+    assert_eq!(report.embedding_generation.generated_vector_count, 2);
+    assert!(report.embedding_generation.production_evidence_ready);
+}
+
 // --- Hybrid retrieve scoring (un-embedded nodes rankable via lexical) ---
 
 // Upsert a raw ContextNode + one event with NO embedding (mirrors raw-first bulk

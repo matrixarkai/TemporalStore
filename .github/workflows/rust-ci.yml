@@ -220,6 +220,7 @@ jobs:
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
             engine::tests::part4::the_counter_coalesce_cure_is_inert_under_default_config \
+            engine::tests::part4::a_counter_series_is_bounded_by_a_write_and_not_by_a_reload \
             engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_byte_ceiling_is_a_spending_bound_in_slab_units \
             block_store::tests::a_sub_slab_byte_budget_admits_one_slab_then_yields \
             block_store::tests::policy_gc_plans_and_applies_byte_bounded_destroy \
@@ -262,12 +263,18 @@ jobs:
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
+            block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
+            block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
+            block_store::tests::a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load \
             block_store::shorter_struct_against_an_existing_row::a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation \
             wal_record::tests::the_synthetic_slab_sentinels_are_not_the_top_of_the_u64_range \
             wal_record::tests::is_wal_resident_covers_both_sentinels_and_refuses_a_real_slab \
             wal_record::tests::the_hot_block_sentinel_is_declared_in_exactly_one_file \
             shared_store::tests::a_group_commit_container::a_reader_without_this_batch_format_refuses_the_container_by_name \
             shared_store::tests::a_group_commit_container::a_tampered_payload_in_a_container_is_refused_and_its_neighbours_are_not \
+            engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_answers_to_the_feature_ceiling_on_the_same_series \
+            engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_inside_the_ceiling_is_still_accepted \
+            engine::tests::part2::feature_append_rejects_hard_size_limit_before_mutation \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -281,6 +288,36 @@ jobs:
               exit 1
             fi
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
+      # Three of these four build a corpus and compare measured surfaces, so they run far longer
+      # than the read-safety guards above -- 42s to 376s each in a debug run on a loaded box. They
+      # are pinned in a step with its own budget so that a slow cost guard cannot starve the fast
+      # guards above, and so a timeout here is attributable to this group rather than to them.
+      #
+      # Each asserts a COUNT as well as a result, for the same reason the step above does: a rename
+      # would otherwise leave this step green having run nothing at all. Until now all four ran
+      # only in the advisory step, which is `continue-on-error`, so every one of them could have
+      # started failing behind a green check.
+      - name: cargo test (round, container and key-inversion cost guards, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for t in \
+            engine::tests::round_scale::a_round_walks_the_live_block_set_a_constant_number_of_times \
+            engine::tests::round_scale::an_idle_round_still_walks_the_live_block_set \
+            engine::tests::model_map_container_cost::no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container \
+            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/cost-gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/cost-gate.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
@@ -371,6 +408,7 @@ jobs:
             engine::tests::part4::object_block_lookup_refs_per_object_census \
             engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
             engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
+            engine::tests::part4::the_pressure_snapshot_reads_cache_stats_without_listing_the_cache \
             engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             engine::tests::the_consolidated_object_map::installing_a_control_state_block_keeps_the_rows_block_refs \
             engine::container_blocks::member_component_tests::a_hex_component_still_decodes_to_the_member_it_always_did \
@@ -382,6 +420,18 @@ jobs:
             engine::container_blocks::member_component_tests::every_kind_maps_to_the_spelling_its_writers_emit \
             engine::container_blocks::member_component_tests::a_block_written_before_the_flip_is_found_by_a_component_in_either_spelling \
             engine::container_blocks::member_component_tests::a_write_after_the_flip_frames_rather_than_falling_back_to_a_bare_value \
+            engine::tests::marking_an_object_dirty_reaches_its_blocks::marking_an_object_dirty_reaches_blocks_its_row_holds_the_refs_for \
+            engine::tests::where_an_objects_refs_could_live::where_each_kinds_refs_end_up \
+            engine::tests::what_the_core_index_puts_on_the_wire::every_field_of_the_core_index_declares_whether_it_reaches_the_wire \
+            engine::tests::what_the_core_index_puts_on_the_wire::an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one \
+            block_store::slab_manifest_wire::tests::every_descriptor_field_survives_the_wire_round_trip \
+            block_store::slab_manifest_wire::tests::a_wire_manifest_loads_with_values_only_those_bytes_can_carry \
+            block_store::slab_manifest_wire::tests::a_json_manifest_still_loads_through_the_same_reader \
+            block_store::slab_manifest_wire::tests::the_two_spellings_load_to_the_same_descriptors \
+            block_store::slab_manifest_wire::tests::a_frame_of_123_bytes_starts_with_an_open_brace \
+            block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
+            block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
+            block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -418,6 +468,33 @@ jobs:
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
             ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/ratio_gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or no longer #[ignore]d"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/ratio_gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
+          # AND THE ALLOCATION GUARDS, which need --features alloc-probe ON TOP of --ignored.
+          # Without the feature the counting allocator is not installed, every counter reads zero,
+          # and an allocation assertion passes on a zero that means nothing -- so these cannot
+          # share either loop above. One name at a time under the feature, deliberately:
+          # installing the counting allocator process-wide turns a number of other tests red, and
+          # a filtered run never reaches them.
+          #
+          # an_element_write_into_a_live_object_does_not_copy_its_key pins that an install into an
+          # object that ALREADY EXISTS reaches it through a borrow. `Arc::from(&str)` always mallocs
+          # and copies and `entry()` takes its key by value, so the pre-fix path allocated, copied
+          # and dropped the key on every element write: 413 allocations for 400 installs, and
+          # 264.9 B per write at a 208-byte key against 64.9 B at an 8-byte one. The guard varies
+          # KEY LENGTH, because only a key copy can make per-write bytes depend on it.
+          for t in \
+            engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key ; do
+            echo "--- $t (ignored, alloc-probe) ---"
+            cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
+              -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
+            ran=$(grep -oE '^running [0-9]+ tests?$' /tmp/ratio_gate.log | head -1 | awk '{print $2}')
             if [ "$ran" != "1" ]; then
               echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or no longer #[ignore]d"
               exit 1

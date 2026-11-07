@@ -9,6 +9,7 @@
 
 mod embedding_index;
 mod ingest;
+mod ollama;
 mod registry;
 mod storage;
 
@@ -20,5 +21,6 @@ pub use ingest::{
     BatchEmbedder, BatchExtractor, ContextEngineError, ContextIngestReport, ContextMessage,
     ContextRole, EmbeddingBatch, ExtractedContext, LlmContextEngine,
 };
+pub use ollama::{OllamaConfig, OllamaError, OllamaProvider};
 pub use registry::{EmbeddingChannel, EmbeddingIndexRegistry};
 pub use storage::{EmbeddingRecoveryReport, TemporalEmbeddingStore, TemporalEmbeddingStoreError};

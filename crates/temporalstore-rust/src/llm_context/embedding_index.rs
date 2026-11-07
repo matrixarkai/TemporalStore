@@ -328,28 +328,30 @@ impl EmbeddingIndex {
         &self,
         batch: &[EmbeddingVector<'_>],
     ) -> Result<CompactEmbeddingBatch, EmbeddingIndexError> {
-        let mut batch_keys = HashSet::with_capacity(batch.len());
-        let mut new_entries = 0usize;
-        for input in batch {
-            self.validate_vector_dimensions(input.key, input.values)?;
-            if !batch_keys.insert(input.key) {
-                return Err(EmbeddingIndexError::DuplicateKey { key: input.key });
-            }
-            let exists = self
-                .tenants
-                .get(&input.key.tenant_id)
-                .is_some_and(|rows| rows.positions.contains_key(&input.key.item_id));
-            if !exists {
-                new_entries += 1;
-            }
-        }
-
+        let compact = self.prepare_batch_unbounded(batch)?;
+        let new_entries = (0..compact.len())
+            .filter(|row| !self.contains(compact.key(*row)))
+            .count();
         let requested = self.len().saturating_add(new_entries);
         if requested > self.config.max_entries {
             return Err(EmbeddingIndexError::CapacityExceeded {
                 capacity: self.config.max_entries,
                 requested,
             });
+        }
+        Ok(compact)
+    }
+
+    pub(crate) fn prepare_batch_unbounded(
+        &self,
+        batch: &[EmbeddingVector<'_>],
+    ) -> Result<CompactEmbeddingBatch, EmbeddingIndexError> {
+        let mut batch_keys = HashSet::with_capacity(batch.len());
+        for input in batch {
+            self.validate_vector_dimensions(input.key, input.values)?;
+            if !batch_keys.insert(input.key) {
+                return Err(EmbeddingIndexError::DuplicateKey { key: input.key });
+            }
         }
 
         let mut keys = Vec::with_capacity(batch.len());
@@ -435,6 +437,53 @@ impl EmbeddingIndex {
             total_entries: self.len(),
             quantized_vector_bytes: self.quantized_vector_bytes(),
         })
+    }
+
+    /// Inserts a prepared cache batch, recycling unprotected rows when the index is full.
+    ///
+    /// Durable vectors are owned by the caller; eviction only changes this compact hot index.
+    pub(crate) fn upsert_compact_batch_bounded(
+        &mut self,
+        batch: &CompactEmbeddingBatch,
+    ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
+        if batch.len() > self.config.max_entries {
+            return Err(EmbeddingIndexError::CapacityExceeded {
+                capacity: self.config.max_entries,
+                requested: batch.len(),
+            });
+        }
+        let protected = (0..batch.len())
+            .map(|row| batch.key(row))
+            .collect::<HashSet<_>>();
+        let new_entries = protected.iter().filter(|key| !self.contains(**key)).count();
+        let evict = self
+            .len()
+            .saturating_add(new_entries)
+            .saturating_sub(self.config.max_entries);
+        if evict > 0 {
+            let victims = self
+                .tenants
+                .iter()
+                .flat_map(|(tenant_id, rows)| {
+                    rows.item_ids.iter().map(move |item_id| EmbeddingKey {
+                        tenant_id: *tenant_id,
+                        item_id: *item_id,
+                    })
+                })
+                .filter(|key| !protected.contains(key))
+                .take(evict)
+                .collect::<Vec<_>>();
+            if victims.len() != evict {
+                return Err(EmbeddingIndexError::CapacityExceeded {
+                    capacity: self.config.max_entries,
+                    requested: self.len().saturating_add(new_entries),
+                });
+            }
+            for key in victims {
+                self.remove(key);
+            }
+        }
+        self.upsert_compact_batch(batch)
     }
 
     pub fn remove(&mut self, key: EmbeddingKey) -> bool {

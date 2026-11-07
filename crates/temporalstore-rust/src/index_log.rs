@@ -412,10 +412,15 @@ pub(crate) const INDEX_LOG_CODEC_MSGPACK_ZSTD: u8 = 2;
 /// Payload codec: the protobuf schema of the design being followed, in its superset form
 /// ([`crate::index_log_wire`]), for the DELTA shape only.
 ///
-/// READER FIRST, AS EVERY CODEC HERE HAS BEEN. This build decodes it; nothing in this build writes
-/// it. A store can therefore be rolled forward to a build that reads it before any build emits it,
-/// and a build older than this one refuses the id as an unknown codec rather than misreading it,
-/// which is what the container byte is for.
+/// READER FIRST, AS EVERY CODEC HERE HAS BEEN. Reading it is unconditional; WRITING it is gated by
+/// [`index_log_protobuf_enabled`], off by default -- the same shape codec 2 uses, and for the same
+/// reason. A store can therefore be rolled forward to a build that reads it before any build is
+/// asked to emit it, and a build older than this one refuses the id as an unknown codec rather than
+/// misreading it, which is what the container byte is for.
+///
+/// (This said "nothing in this build writes it" after the writer had landed.
+/// `encode_delta_protobuf_into` is reached from the delta append whenever that flag is on, so the
+/// sentence described the build it was written for and not this one.)
 ///
 /// Decoded by converting to the record and then taking the same msgpack path every other codec
 /// ends in, so a reader of any type that reads a delta record reads this one, and there is exactly
@@ -448,6 +453,12 @@ fn index_log_compression_enabled() -> bool {
 /// compression is, so a store can be rolled forward and back without a migration. Only the delta
 /// append reads this: the whole-index and anchor records stay as they are, and a log may hold a
 /// mixture.
+///
+/// IT COSTS SPACE, so this exists to emit the followed schema and not to save bytes: measured on a
+/// delta record carrying eight block items, this codec is 595 bytes against 550 for the positional
+/// msgpack it replaces -- about 8% more -- because a tag costs a byte per present field and a
+/// position costs nothing. The measurement and that reasoning are recorded at the positional
+/// encoder below. Turning this on is a deliberate size cost, not a tuning knob.
 fn index_log_protobuf_enabled() -> bool {
     #[cfg(test)]
     if PROTOBUF_WRITER_ON_THIS_THREAD.with(|flag| flag.get()) {

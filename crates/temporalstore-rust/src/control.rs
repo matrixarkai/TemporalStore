@@ -104,6 +104,30 @@ impl Config {
         self.flag("trim_boundary_record")
     }
 
+    /// Retained points per Control State counter series.
+    ///
+    /// WHY THIS EXISTS. `persist_control_state_block` serialises the WHOLE series on every
+    /// Counter write, and nothing trimmed it: a counter holding n points rewrote all n on the
+    /// n+1th, measured at 313,309 bytes per increment on a 3,200-point series. Unbounded series
+    /// made that unbounded. This caps the length the rewrite can reach.
+    ///
+    /// It is a WRITE bound, not a resident invariant. A series already longer than the cap --
+    /// written before the cap existed, or by a node configured higher -- is NOT trimmed when it
+    /// loads; it is trimmed by the next write that touches it. That is deliberate and it is what
+    /// `feature_max_size` does: trimming on load would silently delete durable points, and
+    /// nothing distinguishes an operator lowering the cap from a node whose config was lost and
+    /// defaulted. The load paths therefore reinstate what is on disk unchanged.
+    ///
+    /// Defaults to `feature_max_size`, the retention norm already in force for the
+    /// feature/sequence timelines, so one knob governs both unless a deployment splits them with
+    /// the `control_state_max` key. A value of 0 means unbounded, i.e. the pre-cap behaviour.
+    pub fn control_state_max_size(&self) -> usize {
+        match self.extend_config.get("control_state_max") {
+            None => self.feature_max_size,
+            Some(v) => v.trim().parse::<usize>().unwrap_or(self.feature_max_size),
+        }
+    }
+
     /// Gate for bounded distinct: convert oversized exact CHANGE sets to fixed-size HLL sketches
     /// (approximate distinct counts past the threshold). Off by default so distinct stays exact.
     pub fn control_distinct_sketch_enabled(&self) -> bool {

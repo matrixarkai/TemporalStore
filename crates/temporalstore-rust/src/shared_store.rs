@@ -394,6 +394,7 @@ pub struct SharedStoreReplicator<O> {
     /// default is the wide one. Reading is unaffected: a reader understands every format it
     /// knows regardless of what it writes.
     wal_frame_format: u32,
+    wal_batch_container: bool,
     /// Durable single-writer fence, configured by `with_fence` and applying whenever it is.
     /// Every WAL append and checkpoint publish then re-validates that this writer's
     /// `load_version` still owns the shard lease in the object store, aborting a superseded
@@ -454,6 +455,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             retry_policy: self.retry_policy,
             wal_append_mode: self.wal_append_mode,
             wal_frame_format: self.wal_frame_format,
+            wal_batch_container: self.wal_batch_container,
             fence: self.fence.clone(),
             cursor_abandon: self.cursor_abandon,
         }
@@ -765,6 +767,7 @@ where
             retry_policy: SharedStoreRetryPolicy::default(),
             wal_append_mode: SharedStoreWalAppendMode::default(),
             wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
+            wal_batch_container: false,
             fence: None,
             cursor_abandon: None,
         }
@@ -784,6 +787,7 @@ where
             },
             wal_append_mode: SharedStoreWalAppendMode::default(),
             wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
+            wal_batch_container: false,
             fence: None,
             cursor_abandon: None,
         }
@@ -837,6 +841,27 @@ where
     /// shapes this build can read back.
     pub fn with_wal_frame_format(mut self, format: u32) -> Self {
         self.wal_frame_format = format;
+        self
+    }
+
+    /// Write a batch as ONE container record instead of one frame per entry.
+    ///
+    /// A frame restates the shard, the log index and the command encoding for every entry, and
+    /// carries a 4-byte length prefix of its own. A container states the shard, the base index
+    /// and the encoding ONCE for the whole batch, and an entry inside it carries only what is
+    /// actually its own: its payload and that payload's CRC32C. An index or an encoding the
+    /// header already implies is omitted per entry and derived on read.
+    ///
+    /// **Off by default, and deliberately.** A container is refused BY NAME by a reader built
+    /// before the format existed, so turning this on makes a log that such a reader cannot
+    /// replay. One log may hold both shapes -- that is what a rolling restart leaves behind --
+    /// so the safe order is to deploy readers first and only then enable this on writers.
+    ///
+    /// Applies only to a coalesced batch of more than one entry on an append-blob store. A
+    /// single entry gains nothing (its container header would cost more than the frame fields
+    /// it hoists) and keeps the frame path.
+    pub fn with_wal_batch_container(mut self, enabled: bool) -> Self {
+        self.wal_batch_container = enabled;
         self
     }
 
@@ -1067,15 +1092,45 @@ where
         // Concatenate every entry's length-prefixed frame into one append payload, remembering each
         // frame's length (and command metadata) so per-entry offsets can be derived from the single
         // receipt below.
-        let mut wal_payload: Vec<u8> = Vec::new();
-        let mut frame_lengths: Vec<u64> = Vec::with_capacity(entries.len());
         let mut command_metadata: Vec<WalCommandMetadata> = Vec::with_capacity(entries.len());
         for entry in entries {
-            let frame = encode_wal_proto_frame(entry, self.wal_frame_format)?;
-            frame_lengths.push(frame.len() as u64);
             command_metadata.push(wal_command_metadata(entry.command.as_ref())?);
-            wal_payload.extend_from_slice(&frame);
         }
+
+        // ONE RECORD, OR ONE PER ENTRY.
+        //
+        // A container hoists the shard, the base index and the encoding into one header; frames
+        // restate all three per entry and add a 4-byte length prefix each. Which shape this is
+        // decides WHAT RANGE each entry records, and that is the whole coupling with the read
+        // side: frames each get their own slice, while every entry of a container addresses the
+        // whole container, so their ranges coincide instead of advancing. `wal_run_may_extend`
+        // is what keeps a coincident run a single request; without it a container would cost a
+        // request -- and a whole-container fetch -- for every entry it carries.
+        //
+        // A batch of one keeps frames: its container header would cost more than the per-entry
+        // fields it hoists.
+        let container = if self.wal_batch_container && entries.len() > 1 {
+            encode_wal_batch_container(entries)?
+        } else {
+            None
+        };
+        let (wal_payload, entry_spans): (Vec<u8>, Vec<(u64, u64)>) = match container {
+            Some(payload) => {
+                let whole = (0u64, payload.len() as u64);
+                (payload, vec![whole; entries.len()])
+            }
+            None => {
+                let mut payload: Vec<u8> = Vec::new();
+                let mut spans = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let frame = encode_wal_proto_frame(entry, self.wal_frame_format)?;
+                    let from = payload.len() as u64;
+                    payload.extend_from_slice(&frame);
+                    spans.push((from, payload.len() as u64));
+                }
+                (payload, spans)
+            }
+        };
         let receipt = self
             .append_blob_with_retry(&wal_blob_key, Bytes::from(wal_payload))
             .await?
@@ -1085,22 +1140,20 @@ where
         // offset-index payload, then make it durable in a single append.
         let mut offset_payload: Vec<u8> = Vec::new();
         let mut reports = Vec::with_capacity(entries.len());
-        let mut cursor = receipt.start_offset;
-        for ((entry, frame_len), metadata) in entries
+        for ((entry, (span_from, span_to)), metadata) in entries
             .iter()
-            .zip(frame_lengths.iter().copied())
+            .zip(entry_spans.into_iter())
             .zip(command_metadata.into_iter())
         {
-            let start = cursor;
-            let end = start.saturating_add(frame_len);
-            cursor = end;
+            let start = receipt.start_offset.saturating_add(span_from);
+            let end = receipt.start_offset.saturating_add(span_to);
             let offset_metadata = SharedStoreWalOffsetMetadata {
                 shard_id: entry.shard_id,
                 wal_index: entry.wal_index,
                 wal_blob_key: wal_blob_key.clone(),
                 wal_blob_start_offset: start,
                 wal_blob_end_offset: end,
-                wal_blob_bytes_written: frame_len,
+                wal_blob_bytes_written: end.saturating_sub(start),
                 wal_blob_object_length: receipt.object_length,
                 wal_blob_physical_slab_count: receipt.physical_slab_count as u64,
                 wal_blob_first_physical_offset: receipt.first_physical_offset,
@@ -1117,7 +1170,7 @@ where
                 queued: false,
                 wal_blob_start_offset: Some(start),
                 wal_blob_end_offset: Some(end),
-                wal_blob_bytes_written: Some(frame_len),
+                wal_blob_bytes_written: Some(end.saturating_sub(start)),
                 wal_blob_object_length: Some(receipt.object_length),
             });
         }
@@ -1939,15 +1992,15 @@ where
         let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
         let mut position = 0usize;
         while position < ordered.len() {
-            // A RUN REACHES AS FAR AS THE BYTES STAY ADJACENT IN ONE BLOB.
+            // A RUN REACHES AS FAR AS THE BYTES STAY IN ONE RANGE OF ONE BLOB.
             //
             // Bounded by the apply window as well, so a long log is still read and applied in
-            // steps rather than pulled into memory whole.
+            // steps rather than pulled into memory whole. Which pairs of entries a run may
+            // reach across is [`wal_run_may_extend`]; there are two shapes and it names both.
             let mut end = position + 1;
             while end < ordered.len()
                 && ordered[end].1.wal_blob_key == ordered[position].1.wal_blob_key
-                && ordered[end].1.wal_blob_start_offset == ordered[end - 1].1.wal_blob_end_offset
-                && ordered[end].1.wal_blob_end_offset > ordered[end].1.wal_blob_start_offset
+                && wal_run_may_extend(ordered[end - 1].1, ordered[end].1)
                 && end - position < REPLAY_APPLY_WINDOW
             {
                 end += 1;
@@ -2820,6 +2873,308 @@ where
 /// roughly 800 us of the 900 us an entry measured on the scale report -- while the buffer is
 /// bounded at 256 entries of already-read bytes rather than the whole log.
 const REPLAY_APPLY_WINDOW: usize = 256;
+
+/// May a run that one request will read reach from `previous` to `next`?
+///
+/// Two shapes qualify, and a writer can produce only these two:
+///
+/// * **Bytes that follow.** `next` begins exactly where `previous` ended -- a log of frames
+///   appended back to back. Coalescing this is what turned a request per entry into a request
+///   per run.
+/// * **Bytes that coincide.** `next` records the SAME range as `previous`. A container carries
+///   several entries in one record and every entry in it addresses the whole container, so
+///   consecutive entries repeat a range instead of advancing it. Admitting this is what stops a
+///   container costing one request -- and one whole-container fetch -- per entry it holds.
+///
+/// Anything else ends the run. A range that neither follows nor coincides means a hole, a
+/// partial overlap, or bytes out of order, and one range read cannot serve those. The caller has
+/// already required a single blob key across the whole run, so this answers only about offsets.
+///
+/// An empty range never extends a run, whichever shape it would otherwise match: it carries no
+/// frame, and admitting one would let the run's span stop describing what the run holds.
+fn wal_run_may_extend(
+    previous: &SharedStoreWalOffsetMetadata,
+    next: &SharedStoreWalOffsetMetadata,
+) -> bool {
+    if next.wal_blob_end_offset <= next.wal_blob_start_offset {
+        return false;
+    }
+    let follows = next.wal_blob_start_offset == previous.wal_blob_end_offset;
+    let coincides = next.wal_blob_start_offset == previous.wal_blob_start_offset
+        && next.wal_blob_end_offset == previous.wal_blob_end_offset;
+    follows || coincides
+}
+
+#[cfg(test)]
+mod wal_batch_container_writer {
+    use super::*;
+
+    fn entry(shard_id: u64, wal_index: u64, key: &str, width: usize) -> SharedStoreWalEntry {
+        SharedStoreWalEntry {
+            shard_id,
+            wal_index,
+            command: Some(Command::StringSet {
+                key: key.to_string(),
+                value: vec![b'v'; width],
+            }),
+            outcomes: Vec::new(),
+            staged_blocks: Vec::new(),
+        }
+    }
+
+    fn batch(count: u64, width: usize) -> Vec<SharedStoreWalEntry> {
+        (0..count)
+            .map(|index| entry(7, 100 + index, &format!("container-key-{index:04}"), width))
+            .collect()
+    }
+
+    /// What the frames this container replaces would have cost on the wire.
+    fn frames_len(entries: &[SharedStoreWalEntry]) -> usize {
+        entries
+            .iter()
+            .map(|entry| {
+                encode_wal_proto_frame(entry, WAL_FRAME_FORMAT_NO_SIZE)
+                    .expect("a string write encodes")
+                    .len()
+            })
+            .sum()
+    }
+
+    /// THE CLAIM, AND IT IS A BYTE CLAIM.
+    ///
+    /// Requests were already one per batch before this: a group commit concatenates the frames
+    /// and one range read serves them back. What a container buys is the ENVELOPE -- the shard,
+    /// the log index and the encoding stated once instead of per entry, and one 4-byte length
+    /// prefix instead of one each.
+    ///
+    /// Printed per entry as well as in total, because the saving is a fixed number of bytes per
+    /// entry and the percentage depends entirely on how big the entries are.
+    #[test]
+    fn a_container_costs_fewer_bytes_than_the_frames_it_replaces() {
+        for (count, width) in [(2u64, 16usize), (16, 48), (256, 280)] {
+            let entries = batch(count, width);
+            let frames = frames_len(&entries);
+            let container = encode_wal_batch_container(&entries)
+                .expect("a batch of string writes encodes")
+                .expect("a small batch fits one container");
+            let saved = frames as i64 - container.len() as i64;
+            println!(
+                "CONTAINERBYTES entries={count} value_width={width} frames={frames} \
+                 container={} saved={saved} saved_per_entry={:.2}",
+                container.len(),
+                saved as f64 / count as f64,
+            );
+            assert!(
+                container.len() < frames,
+                "a container of {count} entries took {} bytes against {frames} as frames, so \
+                 hoisting the header cost bytes instead of saving them",
+                container.len()
+            );
+        }
+    }
+
+    /// NOT VACUOUS, AND THE REASON IT IS CHEAPER: the per-entry fields really are omitted.
+    ///
+    /// A container that merely re-encoded the same fields in a different order would still be a
+    /// valid container and would still decode, so the byte assertion above could pass for the
+    /// wrong reason. This reads the packed entries back and insists the index and the encoding
+    /// are the biased 0 that means "ask the header".
+    #[test]
+    fn a_container_states_the_shard_the_base_index_and_the_encoding_once() {
+        let entries = batch(8, 32);
+        let bytes = encode_wal_batch_container(&entries).unwrap().unwrap();
+        assert!(is_wal_batch_container(&bytes), "it must be recognised as a container");
+
+        let header = decode_wal_batch_container_header(
+            &bytes[WAL_BATCH_CONTAINER_PREFIX_LEN..],
+            "container-writer-test",
+        )
+        .expect("the container header decodes");
+        assert_eq!(header.shard_id, 7, "the shard is stated once, in the header");
+        assert_eq!(header.first_wal_index, 100, "the base index is the first entry's");
+        for (position, packed) in header.entries.iter().enumerate() {
+            assert_eq!(
+                packed.wal_index_plus_one, 0,
+                "entry {position} restated an index the header already implies"
+            );
+            assert_eq!(
+                packed.command_encoding_plus_one, 0,
+                "entry {position} restated the encoding the header already declares"
+            );
+        }
+    }
+
+    /// Every entry comes back, with its own index and its own payload. A container that saved
+    /// bytes by losing or reordering an entry would satisfy every assertion above.
+    #[test]
+    fn every_entry_of_a_container_replays_with_its_own_index_and_command() {
+        let entries = batch(12, 24);
+        let bytes = encode_wal_batch_container(&entries).unwrap().unwrap();
+        let back = decode_wal_batch_container_body(
+            &bytes[WAL_BATCH_CONTAINER_PREFIX_LEN..],
+            "container-writer-test",
+        )
+        .expect("the container body decodes");
+
+        assert_eq!(back.len(), entries.len(), "the container lost or gained entries");
+        for (before, after) in entries.iter().zip(back.iter()) {
+            assert_eq!(after.shard_id, before.shard_id, "shard changed in the round trip");
+            assert_eq!(after.wal_index, before.wal_index, "log index changed in the round trip");
+            assert_eq!(after.command, before.command, "command changed in the round trip");
+        }
+    }
+
+    /// A gap in the indices is carried explicitly, because the header can only imply a run.
+    #[test]
+    fn an_index_the_header_cannot_imply_is_stated_by_its_entry() {
+        let entries = vec![
+            entry(7, 100, "a", 8),
+            entry(7, 500, "b", 8), // not 101: the header cannot imply this
+        ];
+        let bytes = encode_wal_batch_container(&entries).unwrap().unwrap();
+        let header = decode_wal_batch_container_header(
+            &bytes[WAL_BATCH_CONTAINER_PREFIX_LEN..],
+            "container-writer-test",
+        )
+        .unwrap();
+        assert_eq!(header.entries[0].wal_index_plus_one, 0, "an implied index is omitted");
+        assert_eq!(
+            header.entries[1].wal_index_plus_one, 501,
+            "an index the header cannot imply must be stated, biased by one"
+        );
+
+        let back = decode_wal_batch_container_body(
+            &bytes[WAL_BATCH_CONTAINER_PREFIX_LEN..],
+            "container-writer-test",
+        )
+        .unwrap();
+        assert_eq!(
+            back.iter().map(|entry| entry.wal_index).collect::<Vec<_>>(),
+            vec![100, 500],
+            "the stated index did not survive the round trip"
+        );
+    }
+
+    /// Three length bytes cannot describe more than 16 MiB, and a batch that large is written as
+    /// frames instead. Declined, not an error: the caller has a correct path to fall back to.
+    #[test]
+    fn a_batch_too_large_for_three_length_bytes_is_declined() {
+        let huge = vec![entry(7, 100, "big", WAL_BATCH_CONTAINER_MAX_BODY + 64)];
+        assert!(
+            encode_wal_batch_container(&huge).unwrap().is_none(),
+            "a body over {WAL_BATCH_CONTAINER_MAX_BODY} bytes must be declined, because three \
+             length bytes cannot address it"
+        );
+        // AND the cap is not so low that ordinary batches trip it.
+        assert!(
+            encode_wal_batch_container(&batch(256, 280)).unwrap().is_some(),
+            "an ordinary 256-entry batch must still fit one container"
+        );
+    }
+}
+
+#[cfg(test)]
+mod wal_run_extension {
+    use super::*;
+
+    /// An entry occupying `start..end` of its shard's own log. Only the offsets matter here --
+    /// the run rule is told the blob key is already settled by its caller.
+    fn at(start: u64, end: u64) -> SharedStoreWalOffsetMetadata {
+        SharedStoreWalOffsetMetadata {
+            shard_id: 1,
+            wal_index: 0,
+            wal_blob_key: "shard-1/wal".to_string(),
+            wal_blob_start_offset: start,
+            wal_blob_end_offset: end,
+            wal_blob_bytes_written: end.saturating_sub(start),
+            wal_blob_object_length: end,
+            wal_blob_physical_slab_count: 0,
+            wal_blob_first_physical_offset: None,
+            command_byte_size: 0,
+            command_encoding: 0,
+        }
+    }
+
+    /// A plain log: each frame begins where the last one ended.
+    #[test]
+    fn bytes_that_follow_extend_a_run() {
+        assert!(
+            wal_run_may_extend(&at(0, 300), &at(300, 640)),
+            "a frame beginning where the last ended is the adjacent case a run is built from"
+        );
+    }
+
+    /// A container: every entry in it addresses the whole container, so the range repeats.
+    #[test]
+    fn bytes_that_coincide_extend_a_run_because_a_container_repeats_its_range() {
+        assert!(
+            wal_run_may_extend(&at(4096, 20480), &at(4096, 20480)),
+            "two entries of one container record one range between them, and a run that \
+             refused it would spend a request -- and a whole-container fetch -- per entry"
+        );
+    }
+
+    /// THE CONTROL, and the reason this change is not decoration.
+    ///
+    /// A container's entries share a run ONLY because of the coincide arm: they are not
+    /// adjacent, so the arm that was already here refuses them. Were this to fail, the new arm
+    /// would be taking credit for runs adjacency already allowed, and the container case --
+    /// the whole point -- would be untested.
+    #[test]
+    fn a_container_run_is_admitted_by_coincidence_and_not_by_adjacency() {
+        let previous = at(4096, 20480);
+        let next = at(4096, 20480);
+        assert!(wal_run_may_extend(&previous, &next), "the rule admits the container pair");
+        assert_ne!(
+            next.wal_blob_start_offset, previous.wal_blob_end_offset,
+            "a container pair must NOT be adjacent, or this test is proving nothing about the \
+             arm that admits it"
+        );
+    }
+
+    /// Neither shape: a hole, a partial overlap, and a rewind each end the run, because one
+    /// range read cannot serve bytes that are missing, doubled, or out of order.
+    #[test]
+    fn a_hole_a_partial_overlap_or_a_rewind_ends_a_run() {
+        let previous = at(0, 300);
+        for (case, next) in [
+            ("a hole", at(301, 600)),
+            ("a partial overlap", at(150, 600)),
+            ("a rewind", at(0, 150)),
+            ("a shared start but a different end", at(0, 600)),
+            ("a shared end but a different start", at(100, 300)),
+        ] {
+            assert!(
+                !wal_run_may_extend(&previous, &next),
+                "{case} must end a run: {}..{} after {}..{}",
+                next.wal_blob_start_offset,
+                next.wal_blob_end_offset,
+                previous.wal_blob_start_offset,
+                previous.wal_blob_end_offset
+            );
+        }
+    }
+
+    /// An empty range carries no frame, so it never extends a run -- INCLUDING when it would
+    /// otherwise match a shape. Both arms are checked, because an empty range can satisfy
+    /// either one and a guard that tested only the adjacent case would miss the container arm.
+    #[test]
+    fn an_empty_range_never_extends_a_run() {
+        assert!(
+            !wal_run_may_extend(&at(0, 300), &at(300, 300)),
+            "an empty range that follows is still empty"
+        );
+        let empty = SharedStoreWalOffsetMetadata {
+            wal_blob_start_offset: 4096,
+            wal_blob_end_offset: 4096,
+            ..at(4096, 4096)
+        };
+        assert!(
+            !wal_run_may_extend(&empty, &empty),
+            "an empty range that coincides with itself is still empty"
+        );
+    }
+}
 
 // WHAT THE MID-LOOP APPLY IS FOR, said because a plant showed it is not what it looks like.
 // Removing it -- leaving only the apply after the loop -- loses NO entries: the window simply
@@ -3993,11 +4348,119 @@ const WAL_BATCH_FRAME_LENGTH_CEILING: u64 = 0xff00_0000;
 
 /// The largest container body three length bytes can describe: 16 MiB less one byte.
 ///
-/// Gated to tests because only a WRITER can exceed it: three length bytes cannot describe a
-/// larger body, so a reader has no reachable case to check and shipping the constant unread would
-/// make it a setting nothing consults. The writer half un-gates it and enforces it.
-#[cfg(test)]
+/// Enforced by [`encode_wal_batch_container`], which declines to build a container this large
+/// and leaves the caller to write frames instead. It was gated to tests while only a reader
+/// existed, because three length bytes cannot describe a larger body and so a reader had no
+/// reachable case to check.
 const WAL_BATCH_CONTAINER_MAX_BODY: usize = 0x00ff_ffff;
+
+/// Pack a whole batch into ONE container record, or `None` when it will not fit in one.
+///
+/// This is the writer half of [`decode_wal_batch_container_entry_exact`]. What it hoists out of
+/// the per-entry frames is the shard, the base log index and the command encoding; what it leaves
+/// per entry is the payload and that payload's CRC32C, because those are the only two things that
+/// are genuinely the entry's own. An index or an encoding that the header already implies is
+/// omitted and derived on read -- see [`wal_batch_entry_index`] and [`wal_batch_entry_encoding`]
+/// for the biasing that lets 0 mean "ask the header".
+///
+/// The checksum shape is fixed by the format: a CRC32C over the payload with no declared length,
+/// the same choice `WAL_FRAME_FORMAT_NO_SIZE` makes for a frame, because the payload's length is
+/// already on the wire as its own length delimiter.
+///
+/// Returns `None` rather than an error when the body exceeds
+/// [`WAL_BATCH_CONTAINER_MAX_BODY`]: a batch too big for three length bytes is not a failure, it
+/// is a batch that must be written as frames, and the caller does exactly that.
+fn encode_wal_batch_container(
+    entries: &[SharedStoreWalEntry],
+) -> Result<Option<Vec<u8>>, SharedStoreReplicationError> {
+    let Some(first) = entries.first() else {
+        return Ok(None);
+    };
+    let shard_id = first.shard_id;
+    let first_wal_index = first.wal_index;
+
+    let mut packed: Vec<SharedStoreWalBatchEntryProto> = Vec::with_capacity(entries.len());
+    let mut declared_encoding: Option<u32> = None;
+    for (position, entry) in entries.iter().enumerate() {
+        let (command_payload, command_encoding) = match entry.command.as_ref() {
+            // No operation to carry: the entry states results instead.
+            None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
+            Some(command) => match command_to_sdk_proto(command) {
+                Some(encoded) => (encoded.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
+                None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
+            },
+        };
+        // The first entry's encoding becomes the header's; any entry that differs states its own.
+        let header_encoding = *declared_encoding.get_or_insert(command_encoding);
+
+        // The same rule the frame follows: a carried block states the length its address covers.
+        let implied_length = if entry.outcomes.len() == 1 && entry.staged_blocks.len() == 1 {
+            let carried =
+                entry.staged_blocks[0].bytes.len() + crate::block_store::BLOCK_RECORD_HEADER_LEN;
+            Some(carried as u64)
+        } else {
+            None
+        };
+        let implied_index = first_wal_index.saturating_add(position as u64);
+
+        packed.push(SharedStoreWalBatchEntryProto {
+            command_crc32c: crate::checksum::crc32c(&command_payload),
+            command_payload,
+            // 0 means "the header's", so only a difference costs bytes.
+            command_encoding_plus_one: if command_encoding == header_encoding {
+                0
+            } else {
+                command_encoding.saturating_add(1)
+            },
+            wal_index_plus_one: if entry.wal_index == implied_index {
+                0
+            } else {
+                entry.wal_index.saturating_add(1)
+            },
+            staged_blocks: entry
+                .staged_blocks
+                .iter()
+                .map(|block| SharedStoreStagedBlockProto {
+                    object_id: block.object_id,
+                    bytes: block.bytes.clone(),
+                    component: block.component.as_deref().map(str::to_string),
+                })
+                .collect(),
+            items: entry
+                .outcomes
+                .iter()
+                .map(|item| {
+                    crate::wal_proto::item_to_proto(
+                        item,
+                        entry.shard_id,
+                        implied_length,
+                        crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
+                    )
+                })
+                .collect(),
+        });
+    }
+
+    let container = SharedStoreWalBatchProto {
+        batch_format: WAL_BATCH_FORMAT_HOISTED,
+        shard_id,
+        first_wal_index,
+        command_encoding: declared_encoding.unwrap_or(WAL_COMMAND_ENCODING_SDK_PROTO),
+        entries: packed,
+    };
+    let body = container.encode_to_vec();
+    if body.len() > WAL_BATCH_CONTAINER_MAX_BODY {
+        return Ok(None);
+    }
+
+    let mut out = Vec::with_capacity(WAL_BATCH_CONTAINER_PREFIX_LEN + body.len());
+    out.push(WAL_BATCH_CONTAINER_MARKER);
+    out.push((body.len() >> 16) as u8);
+    out.push((body.len() >> 8) as u8);
+    out.push(body.len() as u8);
+    out.extend_from_slice(&body);
+    Ok(Some(out))
+}
 
 /// Does this record begin a container rather than a frame? See [`WAL_BATCH_CONTAINER_MARKER`] for
 /// why one byte settles it.
