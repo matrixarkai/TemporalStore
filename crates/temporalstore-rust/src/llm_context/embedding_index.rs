@@ -714,6 +714,17 @@ fn quantize_value(value: f32, quantization_multiplier: f32) -> i8 {
 
 #[inline]
 fn dot_i8_f32(left: &[i8], right: &[f32]) -> f32 {
+    debug_assert_eq!(left.len(), right.len());
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the runtime feature check covers every instruction used below.
+        return unsafe { dot_i8_f32_avx2(left, right) };
+    }
+    dot_i8_f32_scalar(left, right)
+}
+
+#[inline]
+fn dot_i8_f32_scalar(left: &[i8], right: &[f32]) -> f32 {
     let mut sum = 0.0f32;
     let mut index = 0usize;
     while index + 8 <= left.len() {
@@ -727,6 +738,35 @@ fn dot_i8_f32(left: &[i8], right: &[f32]) -> f32 {
             + left[index + 7] as f32 * right[index + 7];
         index += 8;
     }
+    while index < left.len() {
+        sum += left[index] as f32 * right[index];
+        index += 1;
+    }
+    sum
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn dot_i8_f32_avx2(left: &[i8], right: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let mut accumulator = _mm256_setzero_ps();
+    let mut index = 0usize;
+    while index + 8 <= left.len() {
+        let packed = _mm_loadl_epi64(left.as_ptr().add(index).cast::<__m128i>());
+        let integers = _mm256_cvtepi8_epi32(packed);
+        let values = _mm256_cvtepi32_ps(integers);
+        let query = _mm256_loadu_ps(right.as_ptr().add(index));
+        accumulator = _mm256_add_ps(accumulator, _mm256_mul_ps(values, query));
+        index += 8;
+    }
+
+    let mut lanes = [0.0f32; 8];
+    _mm256_storeu_ps(lanes.as_mut_ptr(), accumulator);
+    let mut sum = lanes.into_iter().sum::<f32>();
     while index < left.len() {
         sum += left[index] as f32 * right[index];
         index += 1;
