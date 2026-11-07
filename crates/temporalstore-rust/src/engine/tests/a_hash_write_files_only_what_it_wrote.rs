@@ -6,7 +6,7 @@
 //! A single-command hash write ended with a whole-object index sync that re-filed EVERY field the
 //! hash held. That sync was given a filter -- "only the fields whose block is not already filed" --
 //! so the ordinary case would cost nothing, and the filter asks a lookup that resolves no named
-//! component (`names_the_only_slot`: a `Some` component has always found nothing). So it never
+//! element name (`names_the_only_slot`: a `Some` element name has always found nothing). So it never
 //! filtered, and one field write cost the fields the hash already had:
 //!
 //! ```text
@@ -16,7 +16,7 @@
 //!             1,000                          5,080
 //! ```
 //!
-//! 87% of the write at 100 fields. The batch path files only the components a command wrote and has
+//! 87% of the write at 100 fields. The batch path files only the element names a command wrote and has
 //! done since it existed; the single-command path now does the same for a hash write.
 //!
 //! TWO ARMS, BECAUSE THEY GUARD DIFFERENT FAILURES.

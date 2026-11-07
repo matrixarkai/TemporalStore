@@ -2950,7 +2950,7 @@ pub(super) fn sync_blocks_for_written_element_names(
 /// [`sync_context_blocks_for_object`] files every field the hash holds, and its filter against
 /// re-filing cannot work: it asks a lookup that resolves no named element. This reads each written
 /// field's address back from the map the write just updated -- the arm
-/// [`sync_blocks_for_written_components`] takes for a hash field -- without building a list of
+/// [`sync_blocks_for_written_element_names`] takes for a hash field -- without building a list of
 /// kind, key and name triples first.
 ///
 /// Returns false if any field's address is not in the hash; the caller then runs the whole-object
