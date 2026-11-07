@@ -36,10 +36,10 @@
 //!
 //! ## The selection could be vacuous, answering correctly for the wrong reason
 //!
-//! A selector that ignored the component and returned the first item would pass every happy-path
+//! A selector that ignored the element name and returned the first item would pass every happy-path
 //! test in this file, because at one item per block the first item IS the one asked for. So the
 //! controls are a frame holding TWO elements -- asked for each in turn, and asked for a third that
-//! is not there -- and a frame whose key spelling is deliberately wrong for the component being
+//! is not there -- and a frame whose key spelling is deliberately wrong for the element name being
 //! looked up. #2016's first mutation run had the defect SURVIVE on a one-key fixture; this module
 //! does not own a one-key fixture.
 //!
@@ -63,9 +63,10 @@
 #![allow(clippy::all)]
 use super::*;
 use crate::engine::container_blocks::{
-    component_from_element_key, decode_container_block, element_key_from_component,
-    encode_container_block, select_container_element, varint_len, ContainerElementRead,
-    ContainerBlockDecode, ContainerBlockItem, ElementKeySpelling, CONTAINER_BLOCK_MAGIC,
+    element_name_from_element_key, decode_container_block, element_key_from_element_name,
+    encode_container_block, project_utf8_container_elements, select_container_element, varint_len,
+    ContainerBlockDecode, ContainerBlockItem, ContainerElementRead, ElementKeySpelling,
+    Utf8ContainerProjection, CONTAINER_BLOCK_MAGIC,
 };
 
 /// Every spelling, so a test over "all of them" cannot silently stop covering one that is added.
@@ -149,12 +150,12 @@ fn bytes_of(width: usize, index: usize) -> Vec<u8> {
     bytes
 }
 
-/// A component this spelling can produce, built from a member of the given width.
+/// An element name this spelling can produce, built from a member of the given width.
 ///
-/// Built THROUGH the spelling rather than spelled by hand: a hand-written component would be a
+/// Built THROUGH the spelling rather than spelled by hand: a hand-written element name would be a
 /// second implementation of the thing under test, and #1863's lesson about hand-written subject
 /// lists applies to hand-written fixtures of an encoding just as well.
-fn component_for(spelling: ElementKeySpelling, width: usize, index: usize) -> String {
+fn element_name_for(spelling: ElementKeySpelling, width: usize, index: usize) -> String {
     let key = match spelling {
         ElementKeySpelling::Utf8 => format!("field-{index:04}").into_bytes(),
         ElementKeySpelling::Hex => bytes_of(width, index),
@@ -173,20 +174,20 @@ fn component_for(spelling: ElementKeySpelling, width: usize, index: usize) -> St
             key
         }
     };
-    component_from_element_key(spelling, &key)
-        .expect("a key built by this fixture spells a component")
+    element_name_from_element_key(spelling, &key)
+        .expect("a key built by this fixture spells an element name")
 }
 
 // =================================================================================================
 // 1. THE SPELLINGS ARE INVERSES, WHICH IS THE WHOLE SAFETY ARGUMENT
 // =================================================================================================
 
-/// A COMPONENT SURVIVES BEING TURNED INTO A PAGE KEY AND BACK, FOR EVERY SPELLING.
+/// An ELEMENT NAME SURVIVES BEING TURNED INTO A PAGE KEY AND BACK, FOR EVERY SPELLING.
 ///
-/// This is the property the rest of the program rests on. If the block key and the index component
+/// This is the property the rest of the program rests on. If the block key and the index element name
 /// are two spellings of one value then either can be derived from the other, and a later stage may
 /// stop storing whichever it prefers. If they were merely written consistently at the same instant
-/// by one call site -- which is how a set's component and its payload agree TODAY, with nothing
+/// by one call site -- which is how a set's element name and its payload agree TODAY, with nothing
 /// re-checking them -- then the second copy would be an unverified duplicate and deleting the first
 /// would be unsafe.
 ///
@@ -195,10 +196,10 @@ fn component_for(spelling: ElementKeySpelling, width: usize, index: usize) -> St
 ///
 /// rust-internal: exercises the block framing directly
 #[test]
-fn a_component_survives_the_round_trip_to_a_block_key_for_every_spelling() {
+fn an_element_name_survives_the_round_trip_to_a_block_key_for_every_spelling() {
     let widths = [0usize, 1, 8, 16, 64, 255, 256];
     let mut checked = 0usize;
-    println!("\n=== component -> key -> component, every spelling ===");
+    println!("\n=== element_name -> key -> element_name, every spelling ===");
     println!(
         "  {:>18}  {:>6}  {:>9}  {:>9}",
         "spelling", "width", "comp len", "key len"
@@ -211,21 +212,21 @@ fn a_component_survives_the_round_trip_to_a_block_key_for_every_spelling() {
                 continue;
             }
             for index in [0usize, 1, 7] {
-                let component = component_for(spelling, width, index);
-                let key = element_key_from_component(spelling, &component)
-                    .expect("a component this spelling produced is one it can read back");
-                let again = component_from_element_key(spelling, &key)
-                    .expect("a key this spelling produced spells a component");
+                let element_name = element_name_for(spelling, width, index);
+                let key = element_key_from_element_name(spelling, &element_name)
+                    .expect("an element name this spelling produced is one it can read back");
+                let again = element_name_from_element_key(spelling, &key)
+                    .expect("a key this spelling produced spells an element name");
                 assert_eq!(
-                    component, again,
-                    "{spelling:?} did not round trip a component of width {width}"
+                    element_name, again,
+                    "{spelling:?} did not round trip an element name of width {width}"
                 );
                 if index == 0 {
                     println!(
                         "  {:>18}  {:>6}  {:>9}  {:>9}",
                         format!("{spelling:?}"),
                         width,
-                        component.len(),
+                        element_name.len(),
                         key.len()
                     );
                 }
@@ -235,35 +236,35 @@ fn a_component_survives_the_round_trip_to_a_block_key_for_every_spelling() {
     }
     assert!(
         checked >= EVERY_SPELLING.len() * 3,
-        "the round trip exercised {checked} components, which is too few to cover every spelling"
+        "the round trip exercised {checked} element names, which is too few to cover every spelling"
     );
     println!("  round trips checked: {checked}");
 }
 
-/// AN EMPTY ZSET COMPONENT NAMES AN EMPTY MEMBER, NOT A SIXTEEN-CHARACTER SCORE PREFIX.
+/// AN EMPTY ZSET ELEMENT NAMES AN EMPTY MEMBER, NOT A SIXTEEN-CHARACTER SCORE PREFIX.
 ///
-/// RESTATED: the boundary this test drove used to be sixteen characters, because the component
+/// RESTATED: the boundary this test drove used to be sixteen characters, because the element name
 /// was a complete score with an empty member after it and `hex::decode("")` is `Ok(vec![])` --
 /// #2016's fix was keeping `<` rather than `<=` at that boundary. The boundary is zero now,
-/// because the component is the member alone: an empty component is `hex::encode(&[])`, which
+/// because the element name is the member alone: an empty element name is `hex::encode(&[])`, which
 /// `hex::decode` reads back as the empty member it is, with no score term to be short by.
 ///
 /// rust-internal: exercises the block framing directly
 #[test]
-fn an_empty_zset_component_names_an_empty_member() {
-    let component = String::new();
-    let key = element_key_from_component(ElementKeySpelling::ScoreThenMember, &component)
-        .expect("an empty component is a complete, if empty, member");
+fn an_empty_zset_element_name_names_an_empty_member() {
+    let element_name = String::new();
+    let key = element_key_from_element_name(ElementKeySpelling::ScoreThenMember, &element_name)
+        .expect("an empty element name is a complete, if empty, member");
     assert_eq!(8, key.len(), "the key is the placeholder score word and nothing else");
     assert_eq!(
-        Some(component.clone()),
-        component_from_element_key(ElementKeySpelling::ScoreThenMember, &key)
+        Some(element_name.clone()),
+        element_name_from_element_key(ElementKeySpelling::ScoreThenMember, &key)
     );
 
     // Odd-length hex is genuinely not decodable, so that boundary is tested from the other side.
     assert_eq!(
         None,
-        element_key_from_component(ElementKeySpelling::ScoreThenMember, "a"),
+        element_key_from_element_name(ElementKeySpelling::ScoreThenMember, "a"),
         "one hex digit cannot be a member"
     );
 }
@@ -271,22 +272,22 @@ fn an_empty_zset_component_names_an_empty_member() {
 /// SCORETHENMEMBER'S KEY DOES NOT SURVIVE A ROUND TRIP THAT STARTS FROM THE KEY -- THE OTHER
 /// THREE SPELLINGS STILL DO, EXACTLY AS BEFORE.
 ///
-/// THE LOST TERM IS THE SCORE. `component_from_element_key` now renders only a ScoreThenMember
-/// key's member half, so `element_key_from_component`'s way back cannot recover the score half --
+/// THE LOST TERM IS THE SCORE. `element_name_from_element_key` now renders only a ScoreThenMember
+/// key's member half, so `element_key_from_element_name`'s way back cannot recover the score half --
 /// it fills a placeholder (asserted elsewhere to be the all-zero word) where the true score was.
 /// That is the "one real cost" this change pays, and this test drives it directly: build a key
 /// with a REAL, nonzero score, round it through both functions, and show what comes back differs
 /// from what went in -- in the score half only, never in the member half.
 ///
-/// `component_from_element_key` STAYS TOTAL, asserted here rather than assumed: every key at
-/// least eight bytes long still spells a component, which is the property
+/// `element_name_from_element_key` STAYS TOTAL, asserted here rather than assumed: every key at
+/// least eight bytes long still spells an element name, which is the property
 /// `select_container_element` leans on to answer `Absent` rather than `Corrupt` for a block that
-/// is merely unaddressed by a given component.
+/// is merely unaddressed by a given element name.
 ///
 /// rust-internal: exercises the block framing directly
 #[test]
 fn a_scorethenmember_key_round_trip_is_lossy_in_its_score_half_and_bijective_in_its_member_half() {
-    // THE OTHER THREE SPELLINGS: key -> component -> key reproduces the key exactly, unchanged by
+    // THE OTHER THREE SPELLINGS: key -> element name -> key reproduces the key exactly, unchanged by
     // this series.
     for spelling in [
         ElementKeySpelling::Utf8,
@@ -299,10 +300,10 @@ fn a_scorethenmember_key_round_trip_is_lossy_in_its_score_half_and_bijective_in_
                 ElementKeySpelling::BiasedWord if width != 8 => continue,
                 _ => bytes_of(width, width),
             };
-            let component = component_from_element_key(spelling, &key)
-                .unwrap_or_else(|| panic!("{spelling:?} did not spell a component at width {width}"));
-            let back = element_key_from_component(spelling, &component).unwrap_or_else(|| {
-                panic!("{spelling:?} did not read its own component back at width {width}")
+            let element_name = element_name_from_element_key(spelling, &key)
+                .unwrap_or_else(|| panic!("{spelling:?} did not spell an element name at width {width}"));
+            let back = element_key_from_element_name(spelling, &element_name).unwrap_or_else(|| {
+                panic!("{spelling:?} did not read its own element name back at width {width}")
             });
             assert_eq!(key, back, "{spelling:?} lost the key at width {width}");
         }
@@ -315,15 +316,15 @@ fn a_scorethenmember_key_round_trip_is_lossy_in_its_score_half_and_bijective_in_
     key.extend_from_slice(&real_score.to_be_bytes());
     key.extend_from_slice(&member);
 
-    let component = component_from_element_key(ElementKeySpelling::ScoreThenMember, &key)
+    let element_name = element_name_from_element_key(ElementKeySpelling::ScoreThenMember, &key)
         .expect("still total for a key at least eight bytes long");
     assert_eq!(
-        component,
+        element_name,
         hex::encode(&member),
-        "the component is the member alone -- the score is the lost term"
+        "the element name is the member alone -- the score is the lost term"
     );
 
-    let reconstructed = element_key_from_component(ElementKeySpelling::ScoreThenMember, &component)
+    let reconstructed = element_key_from_element_name(ElementKeySpelling::ScoreThenMember, &element_name)
         .expect("still produces a validly shaped key");
     assert_eq!(reconstructed.len(), key.len(), "the shape survives even though the content does not");
     assert_eq!(
@@ -342,72 +343,72 @@ fn a_scorethenmember_key_round_trip_is_lossy_in_its_score_half_and_bijective_in_
         "the placeholder that fills the lost score half is the all-zero word"
     );
 
-    // TOTALITY: component_from_element_key still answers for every key at or above the score
+    // TOTALITY: element_name_from_element_key still answers for every key at or above the score
     // word's width, and correctly declines anything shorter.
     for len in [8usize, 9, 16, 100] {
         let probe = vec![0xABu8; len];
         assert!(
-            component_from_element_key(ElementKeySpelling::ScoreThenMember, &probe).is_some(),
+            element_name_from_element_key(ElementKeySpelling::ScoreThenMember, &probe).is_some(),
             "not total at length {len}"
         );
     }
     assert_eq!(
-        component_from_element_key(ElementKeySpelling::ScoreThenMember, &[0u8; 7]),
+        element_name_from_element_key(ElementKeySpelling::ScoreThenMember, &[0u8; 7]),
         None,
-        "a key shorter than the score word correctly has no component"
+        "a key shorter than the score word correctly has no element name"
     );
 }
 
-/// A COMPONENT A SPELLING CANNOT PRODUCE IS REFUSED RATHER THAN COERCED.
+/// An ELEMENT NAME A SPELLING CANNOT PRODUCE IS REFUSED RATHER THAN COERCED.
 ///
 /// The control on the round trip above: it would pass just as well if every spelling accepted
-/// everything, so the refusals have to be asserted too. Each row below is a component that is
+/// everything, so the refusals have to be asserted too. Each row below is an element name that is
 /// well formed for SOME spelling and not for the one being asked.
 ///
 /// rust-internal: exercises the block framing directly
 #[test]
-fn a_component_the_spelling_cannot_produce_is_refused() {
+fn an_element_name_the_spelling_cannot_produce_is_refused() {
     // Not hex at all.
     assert_eq!(
         None,
-        element_key_from_component(ElementKeySpelling::Hex, "field-0001")
+        element_key_from_element_name(ElementKeySpelling::Hex, "field-0001")
     );
     // Hex of odd length.
     assert_eq!(
         None,
-        element_key_from_component(ElementKeySpelling::Hex, "abc")
+        element_key_from_element_name(ElementKeySpelling::Hex, "abc")
     );
     // A list word is exactly sixteen characters.
     assert_eq!(
         None,
-        element_key_from_component(ElementKeySpelling::BiasedWord, "8000000000000000ff")
+        element_key_from_element_name(ElementKeySpelling::BiasedWord, "8000000000000000ff")
     );
     assert_eq!(
         None,
-        element_key_from_component(ElementKeySpelling::BiasedWord, "800000000000000")
+        element_key_from_element_name(ElementKeySpelling::BiasedWord, "800000000000000")
     );
-    // A zset component is hex of the member, whole -- there is no score half left to be hex
+    // A zset element name is hex of the member, whole -- there is no score half left to be hex
     // instead of the member.
     assert_eq!(
         None,
-        element_key_from_component(ElementKeySpelling::ScoreThenMember, "zzzzzzzzzzzzzzzz")
+        element_key_from_element_name(ElementKeySpelling::ScoreThenMember, "zzzzzzzzzzzzzzzz")
     );
     // A key that is not eight bytes cannot spell a list word.
     assert_eq!(
         None,
-        component_from_element_key(ElementKeySpelling::BiasedWord, &[0u8; 7])
+        element_name_from_element_key(ElementKeySpelling::BiasedWord, &[0u8; 7])
     );
-    // A hash field key that is not valid UTF-8 cannot spell a component.
+    // A hash field key that is not valid UTF-8 cannot spell an element name.
     assert_eq!(
         None,
-        component_from_element_key(ElementKeySpelling::Utf8, &[0xff, 0xfe])
+        element_name_from_element_key(ElementKeySpelling::Utf8, &[0xff, 0xfe])
     );
     // And a UTF-8 field name CAN be empty, which is legal and must not be refused -- #2016's
     // finding was that an ABSENT name must not become the EMPTY one, not that the empty one is
     // illegal.
     assert_eq!(
         Some(String::new()),
-        component_from_element_key(ElementKeySpelling::Utf8, b"")
+        element_name_from_element_key(ElementKeySpelling::Utf8, b"")
     );
 }
 
@@ -425,10 +426,10 @@ fn a_component_the_spelling_cannot_produce_is_refused() {
 fn a_frame_decodes_to_the_items_it_was_built_from() {
     let mut cases = 0usize;
     for spelling in EVERY_SPELLING {
-        let first_key = element_key_from_component(spelling, &component_for(spelling, 16, 1))
-            .expect("fixture component");
-        let second_key = element_key_from_component(spelling, &component_for(spelling, 16, 2))
-            .expect("fixture component");
+        let first_key = element_key_from_element_name(spelling, &element_name_for(spelling, 16, 1))
+            .expect("fixture element name");
+        let second_key = element_key_from_element_name(spelling, &element_name_for(spelling, 16, 2))
+            .expect("fixture element name");
         // The second item's value is its key's tail, so both branches of the value encoding are
         // exercised inside ONE frame.
         let first_value = bytes_of(24, 9);
@@ -558,8 +559,8 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
     for (kind, spelling) in EVERY_FRAMED_KIND {
         for width in widths {
             // What the product writes as the value for this kind, and what it names the element.
-            let component = component_for(spelling, width, 1);
-            let key = element_key_from_component(spelling, &component).expect("fixture component");
+            let element_name = element_name_for(spelling, width, 1);
+            let key = element_key_from_element_name(spelling, &element_name).expect("fixture element name");
             let value: Vec<u8> = match kind {
                 // A set's block holds the member; a zset's holds the member too.
                 "set" | "zset" => bytes_of(width, 1),
@@ -578,8 +579,8 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
 
             let bare = value.len();
             let framed = encode_container_block(spelling, &[(&key, value.as_slice())]).len();
-            let second_key = element_key_from_component(spelling, &component_for(spelling, width, 2))
-                .expect("fixture component");
+            let second_key = element_key_from_element_name(spelling, &element_name_for(spelling, width, 2))
+                .expect("fixture element name");
             let second_value: Vec<u8> = match spelling {
                 ElementKeySpelling::Hex => second_key.clone(),
                 ElementKeySpelling::ScoreThenMember => second_key[8..].to_vec(),
@@ -665,7 +666,7 @@ fn a_one_item_frame_is_exactly_its_parts() {
 
 /// A FRAME HOLDING TWO ELEMENTS ANSWERS FOR EACH OF THEM AND FOR NEITHER OF THE OTHERS.
 ///
-/// The control that catches a selector which ignores the component. Asked for the first item it must
+/// The control that catches a selector which ignores the element name. Asked for the first item it must
 /// answer the first value, asked for the second the second, and asked for an element that is not
 /// there it must answer `Absent` -- which is a different answer from `Corrupt`, because the caller
 /// treats one as a miss and the other as a block it must not trust.
@@ -675,16 +676,16 @@ fn a_one_item_frame_is_exactly_its_parts() {
 fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
     let mut covered = 0usize;
     for spelling in EVERY_SPELLING {
-        let first_component = component_for(spelling, 16, 1);
-        let second_component = component_for(spelling, 16, 2);
-        let absent_component = component_for(spelling, 16, 3);
-        assert_ne!(first_component, second_component);
-        assert_ne!(first_component, absent_component);
+        let first_element_name = element_name_for(spelling, 16, 1);
+        let second_element_name = element_name_for(spelling, 16, 2);
+        let absent_element_name = element_name_for(spelling, 16, 3);
+        assert_ne!(first_element_name, second_element_name);
+        assert_ne!(first_element_name, absent_element_name);
 
         let first_key =
-            element_key_from_component(spelling, &first_component).expect("fixture component");
+            element_key_from_element_name(spelling, &first_element_name).expect("fixture element name");
         let second_key =
-            element_key_from_component(spelling, &second_component).expect("fixture component");
+            element_key_from_element_name(spelling, &second_element_name).expect("fixture element name");
         let first_value = bytes_of(12, 1);
         let second_value = bytes_of(20, 2);
         assert_ne!(first_value, second_value);
@@ -698,18 +699,18 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
         );
         assert_eq!(
             ContainerElementRead::Found(first_value.clone()),
-            select_container_element(&block, &first_component),
+            select_container_element(&block, &first_element_name),
             "{spelling:?} did not answer for its first element"
         );
         assert_eq!(
             ContainerElementRead::Found(second_value.clone()),
-            select_container_element(&block, &second_component),
+            select_container_element(&block, &second_element_name),
             "{spelling:?} did not answer for its second element -- a selector that returns the \
              first item would pass every one-item test in this file"
         );
         assert_eq!(
             ContainerElementRead::Absent,
-            select_container_element(&block, &absent_component),
+            select_container_element(&block, &absent_element_name),
             "{spelling:?} answered for an element it does not hold"
         );
         covered += 1;
@@ -717,10 +718,53 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
     assert_eq!(EVERY_SPELLING.len(), covered, "every spelling must be covered");
 }
 
-/// A FRAME WHOSE SPELLING CANNOT NAME THE COMPONENT ASKED FOR ANSWERS ABSENT, NOT THE FIRST ITEM.
+#[test]
+fn one_utf8_projection_preserves_order_duplicates_and_misses() {
+    let a = b"value-a".to_vec();
+    let b = b"value-b".to_vec();
+    let c = b"value-c".to_vec();
+    let block = encode_container_block(
+        ElementKeySpelling::Utf8,
+        &[
+            (b"a", a.as_slice()),
+            (b"b", b.as_slice()),
+            (b"c", c.as_slice()),
+        ],
+    );
+    let fields = vec![
+        "c".to_string(),
+        "a".to_string(),
+        "missing".to_string(),
+        "c".to_string(),
+    ];
+
+    assert_eq!(
+        Utf8ContainerProjection::Values(vec![
+            Some(c.clone()),
+            Some(a),
+            None,
+            Some(c),
+        ]),
+        project_utf8_container_elements(&block, &fields)
+    );
+    assert_eq!(
+        Utf8ContainerProjection::NotFramed,
+        project_utf8_container_elements(b"bare value", &fields)
+    );
+    let other_spelling = encode_container_block(
+        ElementKeySpelling::Hex,
+        &[(b"a", b.as_slice())],
+    );
+    assert_eq!(
+        Utf8ContainerProjection::OtherSpelling,
+        project_utf8_container_elements(&other_spelling, &fields)
+    );
+}
+
+/// A FRAME WHOSE SPELLING CANNOT NAME THE ELEMENT NAME ASKED FOR ANSWERS ABSENT, NOT THE FIRST ITEM.
 ///
 /// The second control on vacuous selection, from the other side: here the frame is well formed and
-/// the component is well formed, and they belong to different spellings. An implementation that
+/// the element name is well formed, and they belong to different spellings. An implementation that
 /// compared strings loosely, or that fell back to the first item when it could not build a key,
 /// would serve one element's bytes for another's name -- which is the precise failure #2013 measured
 /// on the carried-block path ("the block that loses is handed the FIRST block's BYTES rather than
@@ -728,17 +772,17 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
 ///
 /// rust-internal: exercises the block framing directly
 #[test]
-fn a_frame_asked_for_a_component_its_spelling_cannot_name_answers_absent() {
+fn a_frame_asked_for_an_element_name_its_spelling_cannot_name_answers_absent() {
     let member = bytes_of(16, 1);
-    // A set block: its keys are raw members and its components are hex.
+    // A set block: its keys are raw members and its element names are hex.
     let block = encode_container_block(ElementKeySpelling::Hex, &[(&member, member.as_slice())]);
-    // A hash-shaped component, which is not hex.
+    // A hash-shaped element name, which is not hex.
     assert_eq!(
         ContainerElementRead::Absent,
         select_container_element(&block, "field-0001"),
-        "a hex-spelled page answered for a component that is not hex"
+        "a hex-spelled page answered for an element name that is not hex"
     );
-    // And the hex component of a DIFFERENT member, which is well formed and not present.
+    // And the hex element name of a DIFFERENT member, which is well formed and not present.
     let other = bytes_of(16, 2);
     assert_eq!(
         ContainerElementRead::Absent,
@@ -882,7 +926,7 @@ fn bytes_with_no_magic_are_not_a_frame() {
 /// rust-internal: drives the engine's own command surface
 #[test]
 fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
-    // IT FETCHES THE BLOCK BY COMPONENT, which is the ungated identity. Under one entry a block a
+    // IT FETCHES THE BLOCK BY ELEMENT NAME, which is the ungated identity. Under one entry a block a
     // live set entry carries no element name, so the fetch answers `None` and this panics BEFORE
     // comparing any value -- the instrument fails, not the readback. That the values are whole
     // under the gate is held by `gated_corpus_across_a_store_boundary` for all four kinds across a
@@ -1084,27 +1128,27 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
             "set-key",
             // BY THE ENGINE'S OWN FUNCTION, for the reason the zset arm below already gives. This
             // was a hand-written `hex::encode` and it went stale the moment the set writers
-            // flipped: the fixture asked for a component no write site files any more, so the
+            // flipped: the fixture asked for an element name no write site files any more, so the
             // lookup found no block and the test failed on a missing block rather than on the
             // spelling it is about.
-            crate::engine::execute_on_shard::set_component(&members[0]),
+            crate::engine::execute_on_shard::set_element_name(&members[0]),
         ),
         (
             "zset",
             "zset-key",
             // Spelled by the engine's OWN function rather than by hand: a hand-written zset
-            // component is a second implementation of the encoding under test, and it would agree
+            // element name is a second implementation of the encoding under test, and it would agree
             // with a write path that had stopped holding the same spelling.
-            crate::engine::execute_on_shard::zset_component(&members[0]),
+            crate::engine::execute_on_shard::zset_element_name(&members[0]),
         ),
         ("list", "list-key", format!("{:016x}", 1_u64 << 63)),
     ];
     let mut framed_kinds = 0usize;
     println!("  stored block shapes:");
-    for (kind, key, component) in &stored {
+    for (kind, key, element_name) in &stored {
         let frame = engine
-            .container_block_frame_for_test(1, kind, key, Some(component.as_str()))
-            .unwrap_or_else(|| panic!("no stored block for {kind} {key} component {component}"));
+            .container_block_frame_for_test(1, kind, key, Some(element_name.as_str()))
+            .unwrap_or_else(|| panic!("no stored block for {kind} {key} element name {element_name}"));
         match crate::engine::container_blocks::decode_container_block(&frame) {
             crate::engine::container_blocks::ContainerBlockDecode::Framed { spelling, items, .. } => {
                 assert_eq!(
@@ -1117,14 +1161,14 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
                     !items[0].deleted,
                     "{kind} wrote a live element and the block says it was removed"
                 );
-                let named = crate::engine::container_blocks::component_from_element_key(
+                let named = crate::engine::container_blocks::element_name_from_element_key(
                     spelling,
                     &items[0].key,
                 )
-                .unwrap_or_else(|| panic!("{kind}'s page key spells no component"));
+                .unwrap_or_else(|| panic!("{kind}'s page key spells no element name"));
                 assert_eq!(
-                    component, &named,
-                    "{kind}'s block names element {named} where its index entry names {component}"
+                    element_name, &named,
+                    "{kind}'s block names element {named} where its index entry names {element_name}"
                 );
                 println!(
                     "    {kind:>5}  {} bytes, spelling {spelling:?}, names {named}",

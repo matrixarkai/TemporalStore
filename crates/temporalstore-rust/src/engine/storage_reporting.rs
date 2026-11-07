@@ -183,7 +183,7 @@ pub(super) fn bucket_dump_entries_by_key(
             selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket)
         })
         .map(|entry| {
-            let component = entry.component.unwrap_or_default();
+            let element_name = entry.element_name.unwrap_or_default();
             let block_id = entry.address.block_id().unwrap_or_else(|| {
                 stable_block_object_id(
                     shard_id,
@@ -194,7 +194,7 @@ pub(super) fn bucket_dump_entries_by_key(
             (
                 format!(
                     "{}:{}:{}:{}",
-                    entry.kind, entry.object_key, component, block_id
+                    entry.kind, entry.object_key, element_name, block_id
                 ),
                 entry.address,
             )
@@ -286,7 +286,7 @@ pub(super) fn bucket_storage_summaries(
         // 0, u32::MAX)` instead, which is the same answer only while the shard spans the whole
         // range. Narrow the range -- `TS_SHARD_END_ROUTING_SLOT=1023` is the setting that cuts
         // resident memory 45% -- and the two place the same block in different buckets: this one
-        // in a bucket id above the shard's own end, no other component in agreement, and so a
+        // in a bucket id above the shard's own end, no other element name in agreement, and so a
         // summary for a bucket `bucket_map` does not hold while the bucket that does hold the
         // block reports no blocks at all. A dump naming that bucket then carries no slabs for it.
         //
@@ -515,7 +515,7 @@ pub(super) fn storage_physical_index_report(
         let mut block_index = StoragePhysicalBlockIndex {
             object_key: entry.object_key.clone().to_string(),
             model_id: entry.kind.clone().to_string(),
-            component: entry.component.clone().map(|value| value.to_string()),
+            element_name: entry.element_name.clone().map(|value| value.to_string()),
             routing_bucket,
             block_slab_id: entry.address.block_slab_id(),
             offset: entry.address.offset(),
@@ -575,8 +575,8 @@ pub(super) fn storage_physical_index_report(
             let already_present = bucket.block_indexes.iter().any(|existing| {
                 existing.object_key.as_str() == beside.object_key.as_ref()
                     && existing.model_id.as_str() == block.model_id().as_str()
-                    // THE COMPONENT TERM IS DROPPED AS A TAUTOLOGY. It compared
-                    // `existing.component` against `block.component`; the report row's component
+                    // THE ELEMENT NAME TERM IS DROPPED AS A TAUTOLOGY. It compared
+                    // `existing.element_name` against `block.element_name`; the report row's element name
                     // is filled from an index entry and an index entry has no element name, so
                     // both sides were `None` for every row and the term decided nothing. What
                     // identifies a row here is (key, kind, slab, offset) and that has not moved.
@@ -589,12 +589,12 @@ pub(super) fn storage_physical_index_report(
             let mut block_index = StoragePhysicalBlockIndex {
                 object_key: beside.object_key.to_string(),
                 model_id: block.model_id().clone().to_string(),
-                // `None`, AND THE REPORT'S SLOT IS KEPT. `StoragePhysicalBlockIndex::component` is
+                // `None`, AND THE REPORT'S SLOT IS KEPT. `StoragePhysicalBlockIndex::element_name` is
                 // a PUBLIC field of a serialized report, so retiring it is a schema change and not
                 // part of a width step; it is filled from an index entry, and an index entry names
                 // a block rather than an element, so the value it carried was already `None` for
                 // every row this arm produced.
-                component: None,
+                element_name: None,
                 routing_bucket: *routing_bucket,
                 block_slab_id: block.address.block_slab_id(),
                 offset: block.address.offset(),
@@ -619,7 +619,7 @@ pub(super) fn storage_physical_index_report(
             left.object_key
                 .cmp(&right.object_key)
                 .then(left.model_id.cmp(&right.model_id))
-                .then(left.component.cmp(&right.component))
+                .then(left.element_name.cmp(&right.element_name))
                 .then(left.block_slab_id.cmp(&right.block_slab_id))
                 .then(left.offset.cmp(&right.offset))
         });
@@ -985,14 +985,14 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(
         let routing_bucket = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        // Derived BEFORE the component moves out of the entry below: the derivation borrows the
-        // entry's own terms, and `unwrap_or_default()` takes the component by value.
+        // Derived BEFORE the element name moves out of the entry below: the derivation borrows the
+        // entry's own terms, and `unwrap_or_default()` takes the element name by value.
         let object_id = expected_live_block_object_id(shard_id, &entry);
         by_bucket.entry(routing_bucket).or_default().insert(format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             entry.kind,
             entry.object_key,
-            entry.component.unwrap_or_default(),
+            entry.element_name.unwrap_or_default(),
             entry.address.block_slab_id(),
             entry.address.offset(),
             entry.address.length(),

@@ -4,6 +4,259 @@
 //! Stream read/scan + batch execute + index snapshot publish methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+enum BatchCommandSource<'a> {
+    Commands(std::vec::IntoIter<Command>),
+    SharedHashRows {
+        entries: Vec<(String, Vec<u8>)>,
+        rows: std::vec::IntoIter<BatchHashMultiSetRow>,
+        completed_keys: &'a mut Vec<String>,
+    },
+    SharedTimestampRows {
+        entries: Vec<(String, Vec<u8>)>,
+        timestamp_field: Option<String>,
+        rows: std::vec::IntoIter<BatchHashTimestampSetRow>,
+        completed_keys: &'a mut Vec<String>,
+    },
+}
+
+impl BatchCommandSource<'_> {
+    fn command_count(&self) -> usize {
+        match self {
+            Self::Commands(commands) => commands.len(),
+            Self::SharedHashRows { rows, .. } => rows.len(),
+            Self::SharedTimestampRows { rows, .. } => rows.len(),
+        }
+    }
+
+    fn next_command(&mut self) -> Option<Command> {
+        match self {
+            Self::Commands(commands) => commands.next(),
+            Self::SharedHashRows { entries, rows, .. } => {
+                let BatchHashMultiSetRow(key, values) = rows.next()?;
+                debug_assert_eq!(entries.len(), values.len());
+                for ((_, slot), value) in entries.iter_mut().zip(values) {
+                    *slot = value.0;
+                }
+                Some(Command::HashMultiSet {
+                    key,
+                    entries: std::mem::take(entries),
+                })
+            }
+            Self::SharedTimestampRows {
+                entries,
+                timestamp_field,
+                rows,
+                ..
+            } => {
+                let BatchHashTimestampSetRow(
+                    key,
+                    timestamp_seconds,
+                    timestamp_nanos,
+                    values,
+                ) = rows.next()?;
+                debug_assert_eq!(entries.len(), values.len());
+                for ((_, slot), value) in entries.iter_mut().zip(values) {
+                    *slot = value.0;
+                }
+                Some(Command::HashMultiSetIfTimestampOlder {
+                    key,
+                    timestamp_field: timestamp_field
+                        .take()
+                        .expect("shared timestamp field returned after every row"),
+                    timestamp_seconds,
+                    timestamp_nanos,
+                    entries: std::mem::take(entries),
+                })
+            }
+        }
+    }
+
+    fn recycle(&mut self, command: Command) {
+        match self {
+            Self::Commands(_) => {}
+            Self::SharedHashRows {
+                entries: shared_entries,
+                completed_keys,
+                ..
+            } => {
+                let Command::HashMultiSet { key, entries } = command else {
+                    panic!("shared hash batch returned a different command kind");
+                };
+                debug_assert!(shared_entries.is_empty());
+                *shared_entries = entries;
+                completed_keys.push(key);
+            }
+            Self::SharedTimestampRows {
+                entries: shared_entries,
+                timestamp_field,
+                completed_keys,
+                ..
+            } => {
+                let Command::HashMultiSetIfTimestampOlder {
+                    key,
+                    timestamp_field: returned_timestamp_field,
+                    entries,
+                    ..
+                } = command
+                else {
+                    panic!("shared timestamp batch returned a different command kind");
+                };
+                debug_assert!(shared_entries.is_empty());
+                *shared_entries = entries;
+                *timestamp_field = Some(returned_timestamp_field);
+                completed_keys.push(key);
+            }
+        }
+    }
+
+    fn recycles_commands(&self) -> bool {
+        !matches!(self, Self::Commands(_))
+    }
+}
+
+#[cfg(test)]
+mod shared_timestamp_source_tests {
+    use super::*;
+    use crate::types::BatchHashMultiSetValue;
+
+    #[test]
+    fn reuses_unconditional_field_name_allocations_across_rows() {
+        let mut completed_keys = Vec::new();
+        let mut source = BatchCommandSource::SharedHashRows {
+            entries: vec![
+                ("score".to_owned(), Vec::new()),
+                ("embedding".to_owned(), Vec::new()),
+            ],
+            rows: vec![
+                BatchHashMultiSetRow(
+                    "feature:1".to_owned(),
+                    vec![
+                        BatchHashMultiSetValue(vec![1]),
+                        BatchHashMultiSetValue(vec![2]),
+                    ],
+                ),
+                BatchHashMultiSetRow(
+                    "feature:2".to_owned(),
+                    vec![
+                        BatchHashMultiSetValue(vec![3]),
+                        BatchHashMultiSetValue(vec![4]),
+                    ],
+                ),
+            ]
+            .into_iter(),
+            completed_keys: &mut completed_keys,
+        };
+
+        let first = source.next_command().expect("first row");
+        let Command::HashMultiSet { key, entries } = &first else {
+            panic!("unexpected command kind");
+        };
+        let first_key_ptr = key.as_ptr();
+        let field_ptrs = entries
+            .iter()
+            .map(|(field, _)| field.as_ptr())
+            .collect::<Vec<_>>();
+        let entries_ptr = entries.as_ptr();
+        source.recycle(first);
+
+        let second = source.next_command().expect("second row");
+        let Command::HashMultiSet { key, entries } = &second else {
+            panic!("unexpected command kind");
+        };
+        let second_key_ptr = key.as_ptr();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(field, _)| field.as_ptr())
+                .collect::<Vec<_>>(),
+            field_ptrs
+        );
+        assert_eq!(entries.as_ptr(), entries_ptr);
+        source.recycle(second);
+        drop(source);
+        assert_eq!(completed_keys[0].as_ptr(), first_key_ptr);
+        assert_eq!(completed_keys[1].as_ptr(), second_key_ptr);
+    }
+
+    #[test]
+    fn reuses_shared_field_name_allocations_across_rows() {
+        let mut completed_keys = Vec::new();
+        let mut source = BatchCommandSource::SharedTimestampRows {
+            entries: vec![
+                ("event_time".to_owned(), Vec::new()),
+                ("score".to_owned(), Vec::new()),
+            ],
+            timestamp_field: Some("event_time".to_owned()),
+            rows: vec![
+                BatchHashTimestampSetRow(
+                    "feature:1".to_owned(),
+                    10,
+                    0,
+                    vec![
+                        BatchHashMultiSetValue(vec![1]),
+                        BatchHashMultiSetValue(vec![2]),
+                    ],
+                ),
+                BatchHashTimestampSetRow(
+                    "feature:2".to_owned(),
+                    11,
+                    0,
+                    vec![
+                        BatchHashMultiSetValue(vec![3]),
+                        BatchHashMultiSetValue(vec![4]),
+                    ],
+                ),
+            ]
+            .into_iter(),
+            completed_keys: &mut completed_keys,
+        };
+
+        let first = source.next_command().expect("first row");
+        let Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            entries,
+            ..
+        } = &first
+        else {
+            panic!("unexpected command kind");
+        };
+        let first_key_ptr = key.as_ptr();
+        let timestamp_ptr = timestamp_field.as_ptr();
+        let entries_ptr = entries.as_ptr();
+        let field_ptrs = entries
+            .iter()
+            .map(|(field, _)| field.as_ptr())
+            .collect::<Vec<_>>();
+        source.recycle(first);
+
+        let second = source.next_command().expect("second row");
+        let Command::HashMultiSetIfTimestampOlder {
+            key,
+            timestamp_field,
+            entries,
+            ..
+        } = &second
+        else {
+            panic!("unexpected command kind");
+        };
+        let second_key_ptr = key.as_ptr();
+        assert_eq!(timestamp_field.as_ptr(), timestamp_ptr);
+        assert_eq!(entries.as_ptr(), entries_ptr);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(field, _)| field.as_ptr())
+                .collect::<Vec<_>>(),
+            field_ptrs
+        );
+        source.recycle(second);
+        drop(source);
+        assert_eq!(completed_keys[0].as_ptr(), first_key_ptr);
+        assert_eq!(completed_keys[1].as_ptr(), second_key_ptr);
+    }
+}
+
 impl TemporalEngine {
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
@@ -169,7 +422,307 @@ impl TemporalEngine {
         }
     }
 
+    fn visit_batch_hash_multi_get(
+        &self,
+        request: BatchHashMultiGetRequest,
+        mut visit: impl FnMut(usize, Result<Vec<Option<Vec<u8>>>, Status>),
+    ) -> Result<(), Status> {
+        let BatchHashMultiGetRequest {
+            shard_id,
+            keys,
+            fields,
+        } = request;
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return Err(Status::error(
+                "shard_not_loaded",
+                "shard is not loaded on this server",
+            ));
+        };
+        let config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_default();
+        let info = self.request_shard_info(
+            shard_id,
+            config.table_read_qps.filter(|limit| *limit > 0).is_some(),
+        );
+        if !replaying_wal() && info.recovering {
+            return Err(Status::error(
+                "shard_not_loaded",
+                "shard is recovering (WAL replay in progress)",
+            ));
+        }
+
+        // Lazy expiry is a mutating read and retains the generic batch's WAL/index handling.
+        if !shard.expires_at_ms().is_empty() {
+            drop(shards);
+            let response = self.batch_execute(BatchExecuteRequest {
+                shard_id,
+                commands: keys
+                    .into_iter()
+                    .map(|key| Command::HashMultiGet {
+                        key,
+                        fields: fields.clone(),
+                    })
+                    .collect(),
+            });
+            if !response.status.ok {
+                return Err(response.status);
+            }
+            for (index, item) in response.responses.into_iter().enumerate() {
+                if !item.status.ok {
+                    visit(index, Err(item.status));
+                    continue;
+                }
+                match item.response {
+                    CommandResponse::Values { values } => visit(index, Ok(values)),
+                    _ => visit(
+                        index,
+                        Err(Status::error(
+                            "unexpected_read_response",
+                            "hash multi-get returned a non-values response",
+                        )),
+                    ),
+                }
+            }
+            return Ok(());
+        }
+
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
+        if !(self.wal_store.flat_append() && shard.promote_scan_done) {
+            self.promote_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if promote_model_maps_to_bucket_index_authority(
+                shard_id,
+                shard,
+                start_routing_bucket,
+                end_routing_bucket,
+            ) {
+                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+            }
+            if self.wal_store.flat_append() && shard_has_model_entries(shard) {
+                shard.promote_scan_done = true;
+            }
+        }
+
+        let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+        for (index, key) in keys.iter().enumerate() {
+            let rejected = if !raft_applying() && !replaying_wal() {
+                if !self.charge_quota(shard_id, quota::QuotaKind::Read) {
+                    Some(Status::error(
+                        "quota_exhausted",
+                        format!("shard {shard_id} is over its read rate limit"),
+                    ))
+                } else {
+                    self.check_admission(
+                        shard_id,
+                        false,
+                        &config,
+                        info.table_name.as_deref(),
+                    )
+                    .err()
+                }
+            } else {
+                None
+            };
+            if let Some(status) = rejected {
+                visit(index, Err(status));
+                continue;
+            }
+
+            let outcome = execute_on_shard::execute_hash_multi_get(
+                &self.cache,
+                &self.block_store,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                key,
+                &fields,
+                &projection_plan,
+            );
+            debug_assert!(!outcome.mutated, "TTL state must use the generic batch path");
+            let now = now_ms();
+            crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
+                let routing_bucket =
+                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                shard.bucket_recency.insert(routing_bucket, now);
+            });
+            match outcome.response {
+                CommandResponse::Values { values } => visit(index, Ok(values)),
+                _ => visit(
+                    index,
+                    Err(Status::error(
+                        "unexpected_read_response",
+                        "hash multi-get returned a non-values response",
+                    )),
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn batch_hash_multi_get(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchExecuteResponse {
+        let mut responses = Vec::with_capacity(request.keys.len());
+        let status = match self.visit_batch_hash_multi_get(request, |_, result| {
+            responses.push(match result {
+                Ok(values) => ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Values { values },
+                },
+                Err(status) => ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                },
+            });
+        }) {
+            Ok(()) => Status::ok(),
+            Err(status) => status,
+        };
+        BatchExecuteResponse { status, responses }
+    }
+
+    /// Serve one shared field projection without expanding it into owned commands per row.
+    pub fn batch_hash_multi_get_compact(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> BatchHashMultiGetResponse {
+        let field_count = request.fields.len();
+        let mut rows = Vec::with_capacity(request.keys.len());
+        let mut errors = Vec::new();
+        let status = match self.visit_batch_hash_multi_get(request, |index, result| match result {
+            Ok(values) => rows.push(BatchHashMultiGetRow(values)),
+            Err(status) => {
+                errors.push(BatchHashMultiGetError { index, status });
+                rows.push(BatchHashMultiGetRow(vec![None; field_count]));
+            }
+        }) {
+            Ok(()) => Status::ok(),
+            Err(status) => status,
+        };
+        BatchHashMultiGetResponse {
+            status,
+            rows,
+            errors,
+        }
+    }
+
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::Commands(request.commands.into_iter()),
+            false,
+            None,
+        )
+    }
+
+    /// Execute a batch with synchronous storage regardless of the shard's async setting.
+    ///
+    /// This is the batch counterpart to `execute_durable`: commands share one shard lock,
+    /// crash-atomic WAL group, durability barrier, index-log append, and embedding-index publish.
+    pub fn batch_execute_durable(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::Commands(request.commands.into_iter()),
+            false,
+            Some(false),
+        )
+    }
+
+    pub(crate) fn batch_execute_shared_hash_rows(
+        &self,
+        request: BatchHashMultiSetRequest,
+    ) -> (BatchExecuteResponse, Vec<String>) {
+        if !crate::wal::wal_data_only_enabled() {
+            return (
+                BatchExecuteResponse {
+                    status: Status::error(
+                        "data_only_wal_required",
+                        "shared hash rows require the data-only WAL",
+                    ),
+                    responses: Vec::new(),
+                },
+                Vec::new(),
+            );
+        }
+        let mut completed_keys = Vec::with_capacity(request.rows.len());
+        let response = self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::SharedHashRows {
+                entries: request
+                    .fields
+                    .into_iter()
+                    .map(|field| (field, Vec::new()))
+                    .collect(),
+                rows: request.rows.into_iter(),
+                completed_keys: &mut completed_keys,
+            },
+            true,
+            None,
+        );
+        (response, completed_keys)
+    }
+
+    /// Execute timestamp-conditioned packed hash rows without retaining a second copy of every
+    /// value solely for the command-WAL fallback. Applied rows stage a complete packed block, so
+    /// the default data-only WAL can recover them from outcomes; rejected rows never enter the
+    /// WAL. The caller keeps this mode limited to that homogeneous request shape.
+    pub(crate) fn batch_execute_packed_hash_rows(
+        &self,
+        request: BatchHashTimestampSetRequest,
+    ) -> (BatchExecuteResponse, Vec<String>) {
+        if !crate::wal::wal_data_only_enabled() {
+            return (
+                BatchExecuteResponse {
+                    status: Status::error(
+                        "data_only_wal_required",
+                        "shared timestamp rows require the data-only WAL",
+                    ),
+                    responses: Vec::new(),
+                },
+                Vec::new(),
+            );
+        }
+        let mut completed_keys = Vec::with_capacity(request.rows.len());
+        let response = self.batch_execute_inner(
+            request.shard_id,
+            BatchCommandSource::SharedTimestampRows {
+                entries: request
+                    .fields
+                    .into_iter()
+                    .map(|field| (field, Vec::new()))
+                    .collect(),
+                timestamp_field: Some(request.timestamp_field),
+                rows: request.rows.into_iter(),
+                completed_keys: &mut completed_keys,
+            },
+            true,
+            None,
+        );
+        (response, completed_keys)
+    }
+
+    fn batch_execute_inner(
+        &self,
+        shard_id: ShardId,
+        mut command_source: BatchCommandSource<'_>,
+        reuse_hash_command_metadata: bool,
+        async_storage_override: Option<bool>,
+    ) -> BatchExecuteResponse {
+        let reuse_hash_command_metadata =
+            reuse_hash_command_metadata && crate::wal::wal_data_only_enabled();
         // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
         // and the records this path appends are built from the commands -- so nothing ever took
         // what was staged. Those items stayed in the thread's buffer, and the next write on that
@@ -187,7 +740,7 @@ impl TemporalEngine {
             }
         }
         let _drain_staged = DrainStagedOnExit;
-        let command_count = request.commands.len();
+        let command_count = command_source.command_count();
         let mut responses = Vec::with_capacity(command_count);
         if command_count == 0 {
             return BatchExecuteResponse {
@@ -196,7 +749,7 @@ impl TemporalEngine {
             };
         }
         let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&request.shard_id) else {
+        let Some(shard) = shards.get_mut(&shard_id) else {
             // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
             // partition is missing/not-primary (a topology error: the client should
             // refresh its shard map), not an OK batch full of per-command errors. The Rust client
@@ -209,20 +762,28 @@ impl TemporalEngine {
                 responses: Vec::new(),
             };
         };
+        let mut config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(async_storage) = async_storage_override {
+            config.async_storage = async_storage;
+        }
+        let table_admission_enabled = config
+            .table_read_qps
+            .filter(|limit| *limit > 0)
+            .or_else(|| config.table_write_qps.filter(|limit| *limit > 0))
+            .is_some();
+        let info = self.request_shard_info(shard_id, table_admission_enabled);
         // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
         // but not yet serving. Reject the whole batch with a retryable status so batch writes
         // cannot interleave with replay (anchor regression / double-apply) -- the batch path
         // must not be a hole around the single-execute recovery gate. Replay itself never
         // routes through batch_execute, but replaying_wal() is checked for symmetry.
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&request.shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
+        if !replaying_wal() && info.recovering {
             // Batch-level topology-retryable error with empty responses, as above (returns a
             // partition-level error here, not a per-command one), so the client refreshes topology
             // and retries rather than seeing an ok batch of failed commands.
@@ -234,34 +795,9 @@ impl TemporalEngine {
                 responses: Vec::new(),
             };
         }
-        let readonly = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&request.shard_id)
-            .map(|info| info.readonly)
-            .unwrap_or(false);
-        let config = self
-            .configs
-            .read()
-            .expect("config lock poisoned")
-            .get(&request.shard_id)
-            .cloned()
-            .unwrap_or_default();
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&request.shard_id)
-            .cloned();
-        let start_routing_bucket = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end_routing_bucket = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        let readonly = info.readonly;
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
         // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
         // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
         // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
@@ -278,7 +814,7 @@ impl TemporalEngine {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if promote_model_maps_to_bucket_index_authority(
-                request.shard_id,
+                shard_id,
                 shard,
                 start_routing_bucket,
                 end_routing_bucket,
@@ -297,6 +833,8 @@ impl TemporalEngine {
         // per-batch record of touched buckets and forces the full sweep below.
         let mut rebuilt_bucket_index = false;
         let mut wal_commands = Vec::new();
+        let mut wal_payloads_elided = false;
+        let mut context_embedding_commands = Vec::new();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
@@ -304,22 +842,23 @@ impl TemporalEngine {
         // capture below have anything to preserve -- see the single-command execute path, whose
         // guard this mirrors.
         let mut batch_membership_shrank = false;
-        // Some(components) while every mutating command in the batch is a pure block-upsert;
+        // Some(element names) while every mutating command in the batch is a pure block-upsert;
         // one non-upsert write downgrades the whole record to snapshot semantics.
-        let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
+        let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
         // Every container element any command in this batch added or replaced. Unlike the
-        // components above this is never downgraded to `None`: it is a list of elements, not a
+        // element names above this is never downgraded to `None`: it is a list of elements, not a
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
         // does not make the others' identities uncarryable.
         let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
-        for command in request.commands {
+        while let Some(command) = command_source.next_command() {
             let write_command = is_write_command(&command);
             if readonly && write_command {
                 responses.push(ExecuteResponse {
                     status: Status::error("readonly_shard", "readonly shard rejects write command"),
                     response: CommandResponse::Empty,
                 });
+                command_source.recycle(command);
                 continue;
             }
             // Exempt under raft apply and under replay, as the single-command path is: a
@@ -342,13 +881,13 @@ impl TemporalEngine {
                 } else {
                     quota::QuotaKind::Read
                 };
-                if !self.charge_quota(request.shard_id, kind) {
+                if !self.charge_quota(shard_id, kind) {
                     responses.push(ExecuteResponse {
                         status: Status::error(
                             "quota_exhausted",
                             format!(
                                 "shard {} is over its {} rate limit",
-                                request.shard_id,
+                                shard_id,
                                 match kind {
                                     quota::QuotaKind::Write => "write",
                                     quota::QuotaKind::Read => "read",
@@ -357,15 +896,21 @@ impl TemporalEngine {
                         ),
                         response: CommandResponse::Empty,
                     });
+                    command_source.recycle(command);
                     continue;
                 }
-                if let Err(status) =
-                    self.check_admission(request.shard_id, write_command, &config, &info)
+                if let Err(status) = self.check_admission(
+                    shard_id,
+                    write_command,
+                    &config,
+                    info.table_name.as_deref(),
+                )
                 {
                     responses.push(ExecuteResponse {
                         status,
                         response: CommandResponse::Empty,
                     });
+                    command_source.recycle(command);
                     continue;
                 }
             }
@@ -389,12 +934,13 @@ impl TemporalEngine {
                     ),
                     response: CommandResponse::Empty,
                 });
+                command_source.recycle(command);
                 continue;
             }
             if let Err(status) = validate_command_preconditions(
                 &self.cache,
                 &self.block_store,
-                request.shard_id,
+                shard_id,
                 shard,
                 &command,
             ) {
@@ -402,87 +948,158 @@ impl TemporalEngine {
                     status,
                     response: CommandResponse::Empty,
                 });
+                command_source.recycle(command);
                 continue;
             }
-            let command_for_post_write = command.clone();
+            let object_keys = command_object_keys(&command);
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(String, usize, Option<u64>)> =
-                command_object_keys(&command_for_post_write)
-                    .into_iter()
-                    .map(|key| {
-                        let size = key_membership_size(shard, &key);
-                        let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                        (key, size, deadline)
-                    })
-                    .collect();
-            let outcome = execute_on_shard(
-                &self.cache,
-                &self.block_store,
-                config.feature_max_size,
-                config.async_storage,
-                config.control_rollup_enabled(),
-                config.control_coalesce_persist_enabled(),
-                config.control_distinct_sketch_enabled(),
-                request.shard_id,
-                start_routing_bucket,
-                end_routing_bucket,
+            let membership_before: Vec<(usize, Option<u64>)> = object_keys
+                .iter()
+                .map(|key| {
+                    let size = key_membership_size(shard, key);
+                    let deadline = shard.expires_at_ms().get(key.as_str()).copied();
+                    (size, deadline)
+                })
+                .collect();
+            let feature_trimmed_membership = command_will_trim_feature_membership(
+                &command,
                 shard,
-                command,
+                config.feature_max_size,
             );
+            let reuse_consumed_metadata = reuse_hash_command_metadata
+                && matches!(
+                    &command,
+                    Command::HashMultiSet { .. }
+                        | Command::HashMultiSetIfTimestampOlder { .. }
+                );
+            let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
+            let (outcome, returned_post_write) = match command {
+                Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
+                    let (outcome, metadata) =
+                        execute_on_shard::execute_hash_multi_set_reusing_metadata(
+                            &self.cache,
+                            &self.block_store,
+                            shard_id,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            shard,
+                            config.async_storage,
+                            key,
+                            entries,
+                        );
+                    (outcome, Some(metadata))
+                }
+                Command::HashMultiSetIfTimestampOlder {
+                    key,
+                    timestamp_field,
+                    timestamp_seconds,
+                    timestamp_nanos,
+                    entries,
+                } if reuse_consumed_metadata => {
+                    let (outcome, metadata) =
+                        execute_on_shard::execute_packed_conditional_hash_write(
+                            &self.cache,
+                            &self.block_store,
+                            shard_id,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            shard,
+                            key,
+                            timestamp_field,
+                            timestamp_seconds,
+                            timestamp_nanos,
+                            entries,
+                        );
+                    (outcome, Some(metadata))
+                }
+                command => (
+                    execute_on_shard(
+                        &self.cache,
+                        &self.block_store,
+                        config.feature_max_size,
+                        config.async_storage,
+                        config.control_rollup_enabled(),
+                        config.control_coalesce_persist_enabled(),
+                        config.control_state_max_size(),
+                        config.control_distinct_sketch_enabled(),
+                        config.trim_boundary_record_enabled(),
+                        config.set_listing_from_map_enabled(),
+                        shard_id,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        shard,
+                        command,
+                    ),
+                    None,
+                ),
+            };
+            let mut command_for_post_write = Some(
+                returned_post_write
+                    .or(cloned_post_write)
+                    .expect("every batch command keeps post-write metadata"),
+            );
+            let command_for_post_write_ref = command_for_post_write
+                .as_ref()
+                .expect("post-write command remains available until WAL or recycle");
+            let payload_elided = reuse_consumed_metadata;
+            if Self::command_updates_context_embedding(command_for_post_write_ref) {
+                context_embedding_commands.push(command_for_post_write_ref.clone());
+            }
             // LRU recency: stamp the bucket(s) this command
             // touched, read or write, so eviction can prefer least-recently-used buckets.
             {
                 let now = now_ms();
                 crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                    for_each_touched_key(&command_for_post_write, |key| {
-                        let recency_bucket =
-                            block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                        shard.bucket_recency.insert(recency_bucket, now);
-                    });
+                    for_each_precomputed_touched_key(
+                        command_for_post_write_ref,
+                        &object_keys,
+                        |key| {
+                            let recency_bucket = block_routing_bucket(
+                                key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            );
+                            shard.bucket_recency.insert(recency_bucket, now);
+                        },
+                    );
                 });
             }
             if outcome.mutated {
                 mutated_any = true;
-                let object_keys = command_object_keys(&command_for_post_write);
-                delta_command_keys.extend(object_keys.iter().cloned());
                 // Same question as the single-command path, through the SAME function: a
                 // membership shrink OR a deadline change. Two spellings of this test is how
                 // one of them keeps a bug the other fixed, so there is only one.
                 if !batch_membership_shrank {
-                    batch_membership_shrank = delta_key_state_change(shard, &membership_before);
+                    batch_membership_shrank = feature_trimmed_membership
+                        || delta_key_state_change(
+                            shard,
+                            &object_keys,
+                            &membership_before,
+                        );
                 }
-                match (
-                    &mut batch_upsert_components,
-                    command_upsert_components(&command_for_post_write, shard),
-                ) {
-                    (Some(collected), Some(components)) => collected.extend(components),
-                    (state, _) => *state = None,
-                }
+                let written_element_names =
+                    command_upsert_element_names(command_for_post_write_ref, shard);
                 batch_touched_container_elements.extend(command_touched_container_elements(
-                    &command_for_post_write,
+                    command_for_post_write_ref,
                     shard,
                 ));
-                // The keys this write touched, for the maintenance below. `object_keys` is
-                // consumed by the loop, so they are kept as they go past.
-                let mut object_keys_for_maintenance: Vec<String> = Vec::new();
                 if object_keys.is_empty() {
                     rebuild_bucket_block_ownership(
-                        request.shard_id,
+                        shard_id,
                         shard,
                         start_routing_bucket,
                         end_routing_bucket,
                     );
                 } else {
-                    for object_key in object_keys {
-                        object_keys_for_maintenance.push(object_key.clone());
+                    for object_key in &object_keys {
                         // `mark_object_dirty` records the key together with the
                         // routing bucket it computes on the next line. Inserting it here as well
                         // was redundant when the set was flat and is wrong now: this site does
                         // not know the bucket, and a key filed without one belongs to no bucket.
                         mark_object_dirty(
                             shard,
-                            &object_key,
+                            object_key,
                             start_routing_bucket,
                             end_routing_bucket,
                         );
@@ -499,31 +1116,37 @@ impl TemporalEngine {
                 let maintained_bucket_index = if shard.bucket_index.bucket_map.is_empty() {
                     false
                 } else {
-                    // Prefer the components this command actually wrote. The whole-object sync
+                    // Prefer the element names this command actually wrote. The whole-object sync
                     // below re-upserts every field the object holds, which is quadratic in that
-                    // count; this is one upsert per written component. It reports false when it
+                    // count; this is one upsert per written element name. It reports false when it
                     // cannot model the write, and the whole-object sync then runs.
-                    let written = command_upsert_components(&command_for_post_write, shard);
-                    let narrow = match written.as_deref() {
-                        Some(components) => {
-                            crate::engine::storage_bucket_internals::sync_blocks_for_written_components(
+                    let narrow = match written_element_names.as_deref() {
+                        Some(element_names) => {
+                            crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
                                 shard,
-                                request.shard_id,
-                                components,
+                                shard_id,
+                                element_names,
                             )
                         }
                         None => false,
                     };
                     narrow
-                        || (!object_keys_for_maintenance.is_empty()
-                            && object_keys_for_maintenance.iter().all(|object_key| {
+                        || (!object_keys.is_empty()
+                            && object_keys.iter().all(|object_key| {
                                 crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
                                     shard,
-                                    request.shard_id,
+                                    shard_id,
                                     object_key,
                                 )
                             }))
                 };
+                match (&mut batch_upsert_element_names, written_element_names) {
+                    (Some(collected), Some(element_names)) => collected.extend(element_names),
+                    (state, _) => *state = None,
+                }
+                // Every per-command consumer above borrows these keys. The batch delta keeps
+                // them beyond this iteration, so transfer ownership only after maintenance.
+                delta_command_keys.extend(object_keys);
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
                     // A command that writes no block cannot have changed the block index, so a
@@ -531,12 +1154,12 @@ impl TemporalEngine {
                     // has always skipped it here; this path did not, so the same command walked
                     // the whole store when it arrived in a batch and nothing when it arrived
                     // alone -- measured at one visit per block in the shard, per command.
-                    && !command_writes_no_block(&command_for_post_write)
-                    && (!command_updates_bucket_index_directly(&command_for_post_write)
+                    && !command_writes_no_block(command_for_post_write_ref)
+                    && (!command_updates_bucket_index_directly(command_for_post_write_ref)
                         || shard.bucket_index.bucket_map.is_empty())
                 {
                     rebuild_bucket_first_index(
-                        request.shard_id,
+                        shard_id,
                         shard,
                         start_routing_bucket,
                         end_routing_bucket,
@@ -546,8 +1169,18 @@ impl TemporalEngine {
                     rebuilt_bucket_index = true;
                 }
                 if write_command {
-                    wal_commands.push(command_for_post_write);
+                    wal_payloads_elided |= payload_elided;
+                    if !command_source.recycles_commands() {
+                        wal_commands.push(
+                            command_for_post_write
+                                .take()
+                                .expect("post-write command is available for the WAL"),
+                        );
+                    }
                 }
+            }
+            if let Some(command) = command_for_post_write.take() {
+                command_source.recycle(command);
             }
             responses.push(ExecuteResponse {
                 status: Status::ok(),
@@ -593,13 +1226,21 @@ impl TemporalEngine {
             // address and nothing else while the rule called the batch recoverable.
             let recoverable =
                 crate::wal::every_result_can_be_found_again(&staged_outcomes, &staged_blocks);
-            let batch_result = if crate::wal::wal_data_only_enabled()
-                && !staged_outcomes.is_empty()
-                && recoverable
-            {
+            let use_data_only =
+                crate::wal::wal_data_only_enabled() && !staged_outcomes.is_empty() && recoverable;
+            if wal_payloads_elided && !use_data_only {
+                return BatchExecuteResponse {
+                    status: Status::error(
+                        "wal_commit_failed",
+                        "packed hash outcomes were not recoverable from the data-only WAL",
+                    ),
+                    responses,
+                };
+            }
+            let batch_result = if use_data_only {
                 self.wal_store
                     .append_batch_as_one_record(
-                        request.shard_id,
+                        shard_id,
                         staged_outcomes,
                         staged_blocks,
                         sync,
@@ -607,7 +1248,7 @@ impl TemporalEngine {
                     .map(|_| ())
             } else {
                 self.wal_store
-                    .append_batch_atomic(request.shard_id, wal_commands, sync)
+                    .append_batch_atomic(shard_id, wal_commands, sync)
                     .map(|_| ())
             };
             if let Err(err) = batch_result {
@@ -623,7 +1264,7 @@ impl TemporalEngine {
                     };
                 } else {
                     tracing::error!(
-                        shard_id = request.shard_id,
+                        shard_id,
                         error = %err,
                         "async WAL batch append failed: acked writes are NOT durable and will be \
                          lost on a crash before the next flush"
@@ -650,9 +1291,9 @@ impl TemporalEngine {
                     .unwrap_or_default()
                     .saturating_add(1);
                 shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
-                    self.wal_store.cached_last_sequence(request.shard_id)
+                    self.wal_store.cached_last_sequence(shard_id)
                 } else {
-                    self.wal_store.stats(request.shard_id).last_sequence
+                    self.wal_store.stats(shard_id).last_sequence
                 });
                 // The WAL half of what each bucket this batch dirtied holds over the log, stamped
                 // the way the single-command path stamps it (engine.rs, after its own append).
@@ -677,12 +1318,12 @@ impl TemporalEngine {
                 // Append the blocks this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let (items, upsert_record) = match batch_upsert_components.as_ref() {
-                    Some(components) => (
+                let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
+                    Some(element_names) => (
                         collect_upsert_index_items(
                             shard,
-                            request.shard_id,
-                            components,
+                            shard_id,
+                            element_names,
                             start_routing_bucket,
                             end_routing_bucket,
                         ),
@@ -719,7 +1360,7 @@ impl TemporalEngine {
                 let appended_index_log_sequence = self
                     .index_log_store
                     .append_delta(
-                        request.shard_id,
+                        shard_id,
                         items,
                         key_states,
                         shard.applied_wal_sequence,
@@ -752,6 +1393,8 @@ impl TemporalEngine {
                 }
             }
         }
+        drop(shards);
+        self.publish_context_embedding_commands(&context_embedding_commands);
         BatchExecuteResponse {
             status: Status::ok(),
             responses,
@@ -840,7 +1483,7 @@ impl TemporalEngine {
             /// The OBJECT key of the block, which is the key its routing bucket is derived from.
             ///
             /// A hash field's block is filed under the hash's key, not under the field -- the field
-            /// is the block's COMPONENT. Reading the bucket from the field would key the cache under
+            /// is the block's ELEMENT NAME. Reading the bucket from the field would key the cache under
             /// a bucket nothing wrote.
             fn object_key(&self) -> &str {
                 match self {
@@ -850,9 +1493,9 @@ impl TemporalEngine {
             }
 
             /// The ELEMENT of that object, which the comment above already calls the block's
-            /// component. It was named there and then thrown away; a read that resolves
+            /// element name. It was named there and then thrown away; a read that resolves
             /// through a log record needs it to pick the right block out of the record.
-            fn component(&self) -> Option<&str> {
+            fn element_name(&self) -> Option<&str> {
                 match self {
                     PublishTarget::String { .. } => None,
                     PublishTarget::Hash { field, .. } => Some(field),
@@ -863,7 +1506,7 @@ impl TemporalEngine {
             ///
             /// Named here rather than at the read because the two variants ARE the two kinds, so a
             /// `match` at the call site would be this function written out again. The kind is not
-            /// recoverable from the key or the component: a `string` and a `hash` may share a key,
+            /// recoverable from the key or the element name: a `string` and a `hash` may share a key,
             /// and it is the kind that tells their blocks apart.
             fn kind(&self) -> &'static str {
                 match self {
@@ -956,7 +1599,7 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
-                BlockIdentity::of(shard_id, target.kind(), target.object_key(), target.component()),
+                BlockIdentity::of(shard_id, target.kind(), target.object_key(), target.element_name()),
                 Some(routing_bucket),
             ) {
                 // Derived BEFORE `target` moves into the tuple: the terms are borrowed from it.

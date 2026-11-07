@@ -1925,7 +1925,7 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
 /// mistake with extra steps: the measurement cannot fail, so it cannot authorise anything.
 ///
 /// This fixture pushes on each ceiling separately:
-///   * many HASH FIELDS under ONE key, which is one object with many components, for the
+///   * many HASH FIELDS under ONE key, which is one object with many element names, for the
 ///     blocks-per-object ceiling,
 ///   * a LARGE value, for the block-length ceiling,
 ///   * many distinct keys, for the objects-per-bucket ceiling.
@@ -2213,8 +2213,8 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // BLOCKS PER OBJECT IS THE ANSWER, AND THE ANSWER CHANGED.
     //
     // This arm writes 4,000 hash fields under ONE key. It used to report 4,000 objects of one
-    // block each, because the object identity folded the component in and a field was therefore
-    // its own OBJECT rather than another block inside one. Since the component left
+    // block each, because the object identity folded the element name in and a field was therefore
+    // its own OBJECT rather than another block inside one. Since the element name left
     // `stable_block_object_id`, one key is one object and those fields are blocks of it.
     //
     // Reported and not asserted, deliberately: an earlier draft asserted first and aborted the
@@ -2222,7 +2222,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // sweep -- the run says something is wrong and nothing about what.
     println!(
         "  NOTE: blocks-per-object is {max_blocks_in_an_object} over {FIELDS_PER_OBJECT} fields \
-         of one key; the component is no longer part of the object id, so a field is another \
+         of one key; the element name is no longer part of the object id, so a field is another \
          block of one object rather than an object of its own"
     );
 }
@@ -2571,8 +2571,8 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
 /// THE NUMBER ITEM 2 TURNS ON, and the reason it is measured rather than assumed. #1973 measured
 /// BLOCKS per bucket at the operator's range (p50 39, MAX 50 at 40,000 records); OBJECTS per bucket is
 /// a different distribution. It USED to be the larger of the two, because the object identity
-/// folded the COMPONENT in -- a hash field was its own object rather than another block of one --
-/// so one key with many components contributed many objects to one bucket. The component has
+/// folded the ELEMENT NAME in -- a hash field was its own object rather than another block of one --
+/// so one key with many element names contributed many objects to one bucket. The element name has
 /// since left the identity, so a key contributes exactly ONE object however many elements it
 /// holds, and this distribution collapses onto the KEY count. That makes an eight-bit ordinal
 /// considerably more viable than the figures below used to say, which is a consequence worth
@@ -2591,7 +2591,7 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
 #[ignore = "seeds two stores of 40,000 records; run by name"]
 fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
     const RECORDS: usize = 40_000;
-    const COMPONENTS: usize = 8;
+    const ELEMENT_NAMES: usize = 8;
 
     for (label, end_routing_bucket) in [("the operator's 1023", 1023u32), ("whole keyspace", u32::MAX)] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2608,14 +2608,14 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
         });
         assert!(response.status.ok, "{label}: {:?}", response.status);
 
-        // MANY COMPONENTS UNDER ONE KEY, which is what puts many OBJECTS in one bucket: routing takes
-        // the object key and never the component, while the object id folds the component in.
-        let keys = RECORDS / COMPONENTS;
+        // MANY ELEMENT NAMES UNDER ONE KEY, which is what puts many OBJECTS in one bucket: routing takes
+        // the object key and never the element name, while the object id folds the element name in.
+        let keys = RECORDS / ELEMENT_NAMES;
         for key_index in 0..keys {
-            let commands = (0..COMPONENTS)
-                .map(|component| Command::HashSet {
+            let commands = (0..ELEMENT_NAMES)
+                .map(|element_name| Command::HashSet {
                     key: format!("obj-{key_index:06}"),
-                    field: format!("f{component}"),
+                    field: format!("f{element_name}"),
                     value: vec![b'h'; 32],
                 })
                 .collect::<Vec<_>>();
@@ -2645,21 +2645,21 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
             "{label}: no bucket holds an object, so every percentile below is over an empty set"
         );
         let total_objects: usize = per_bucket.iter().sum();
-        // ONE OBJECT PER KEY, NOT PER COMPONENT -- WHICH IS WHAT THIS TEST USED TO ASSERT.
+        // ONE OBJECT PER KEY, NOT PER ELEMENT NAME -- WHICH IS WHAT THIS TEST USED TO ASSERT.
         //
-        // It required `total_objects >= RECORDS`: one object per written COMPONENT, because the
-        // identity folded the component in. Since it no longer does, a key's components are
+        // It required `total_objects >= RECORDS`: one object per written ELEMENT NAME, because the
+        // identity folded the element name in. Since it no longer does, a key's element names are
         // elements of ONE object and the count is the key count. The assertion is inverted to
         // the exact number rather than relaxed to an inequality that would pass either way.
         assert_eq!(
             total_objects, keys,
-            "{label}: {total_objects} objects for {keys} keys ({RECORDS} written components). \
+            "{label}: {total_objects} objects for {keys} keys ({RECORDS} written element names). \
              One key is one object now, so these must be equal -- {RECORDS} would mean the \
-             component is still in the identity"
+             element name is still in the identity"
         );
         assert!(
             RECORDS > keys,
-            "DENOMINATOR: {RECORDS} components over {keys} keys. A fixture writing one component \
+            "DENOMINATOR: {RECORDS} element names over {keys} keys. A fixture writing one element name \
              per key cannot tell the two identities apart at all"
         );
 
@@ -2668,7 +2668,7 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
             per_bucket[index]
         };
         let max = *per_bucket.last().expect("non-empty");
-        println!("--- {label}: objects per occupied bucket, {RECORDS} components ---");
+        println!("--- {label}: objects per occupied bucket, {RECORDS} element names ---");
         println!(
             "  occupied buckets {}, objects {total_objects}, p50 {}, p90 {}, p99 {}, MAX {max}",
             per_bucket.len(),
@@ -2714,9 +2714,9 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
             //
             // This asserted the ceiling was UNDER a million records, and said exactly what a
             // larger number would mean: "it is headroom rather than a limit, and the argument
-            // against the 16-byte form has to be made on something else". The component leaving
+            // against the 16-byte form has to be made on something else". The element name leaving
             // the object identity is that something else arriving -- a key is one object now, so
-            // objects per bucket fell from one per written component to one per KEY, and the
+            // objects per bucket fell from one per written element name to one per KEY, and the
             // ceiling moved out by the average element count.
             //
             // So the assertion is inverted to the claim the measurement now supports, with the
@@ -2875,7 +2875,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
 // the field can LEAVE, which is the question of whether anything reads a value it could not
 // recompute.
 //
-// `BlockIndex` holds `object_key`, `model_id` and `component`, and `ShardState` holds the shard, so
+// `BlockIndex` holds `object_key`, `model_id` and `element_name`, and `ShardState` holds the shard, so
 // `stable_block_object_id(shard, kind, key)` is computable at every block entry. #1974
 // established that derivation at about thirty sites, `index_log` already STRIPS a derivable id from
 // the row it writes (`a_row_does_not_write_the_object_id_it_can_derive`), and the entry's own
@@ -2899,10 +2899,10 @@ struct DerivationCensus {
     differ: usize,
     /// No stored id at all. These are already answered by the fallback the read sites carry.
     absent: usize,
-    /// Entries carrying a component. The component is no longer a term of the id, but it is
+    /// Entries carrying an element name. The element name is no longer a term of the id, but it is
     /// still a field of the entry, and a census whose entries all carry `None` would not
     /// exercise the container population this change acts on at all.
-    with_component: usize,
+    with_element_name: usize,
     /// Distinct derived ids, so a fixture that gave every block the same identity cannot report
     /// agreement as a property of the derivation.
     distinct_derived: std::collections::HashSet<u64>,
@@ -2919,7 +2919,7 @@ impl DerivationCensus {
         };
         println!(
             "[{label}] entries={} agree={} ({:.2}%) differ={} ({:.2}%) absent={} ({:.2}%) \
-             with_component={} distinct_derived_ids={}",
+             with_element_name={} distinct_derived_ids={}",
             self.entries,
             self.agree,
             pct(self.agree),
@@ -2927,7 +2927,7 @@ impl DerivationCensus {
             pct(self.differ),
             self.absent,
             pct(self.absent),
-            self.with_component,
+            self.with_element_name,
             self.distinct_derived.len(),
         );
     }
@@ -2964,7 +2964,7 @@ fn the_stored_against_derived_census_is_retired_because_its_other_side_is_gone()
 
 
 
-/// Hash keys and fields the census seeds, so the component-bearing denominator is derived from the
+/// Hash keys and fields the census seeds, so the element-name-bearing denominator is derived from the
 /// fixture rather than restated as a literal beside the assertion that reads it.
 const HASH_KEYS: usize = 64;
 const HASH_FIELDS: usize = 8;
@@ -3151,8 +3151,8 @@ fn the_block_identity_has_no_constructor_that_takes_an_id() {
          an identity, and this test can only vouch for the one that takes the terms"
     );
     assert!(
-        block.contains("pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, component: Option<&'a str>) -> Self"),
-        "the one constructor is no longer `of(shard, kind, key, component)`. If it now takes an id, \
+        block.contains("pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, element_name: Option<&'a str>) -> Self"),
+        "the one constructor is no longer `of(shard, kind, key, element_name)`. If it now takes an id, \
          a caller can pass a stale one and the compiler cannot say so -- which is the entire reason \
          this type exists rather than a bare `u64`"
     );

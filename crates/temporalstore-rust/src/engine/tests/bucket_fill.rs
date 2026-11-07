@@ -29,10 +29,10 @@
 //!
 //! AND THE CONTAINER STORE IS NOT A DIFFERENT ROUTING CALL, A DIFFERENT RANGE OR A DIFFERENT KEY
 //! SHAPE. It is the same call on the same range. Routing takes the OBJECT KEY and never sees the
-//! component; the block HANDLE is `state::block_index_handle`, which hashes the component, and does.
+//! element name; the block HANDLE is `state::block_index_handle`, which hashes the element name, and does.
 //! So a hash's hundred fields are a hundred distinct handles under one object key, and one object
 //! key is one bucket at any range.
-//! `routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_bucket` asserts
+//! `routing_never_sees_the_element_name_which_is_why_a_containers_blocks_share_one_bucket` asserts
 //! both halves against the functions themselves.
 //!
 //! WHAT THIS MODULE DOES NOT CLAIM. It does not propose a code change, and it does not recommend
@@ -280,7 +280,7 @@ fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
 }
 
 /// Every bucket with the BLOCK HANDLES it holds -- the map's own keys, which are object ids and
-/// therefore distinguish a container's components. A key set cannot see a lost component; this
+/// therefore distinguish a container's element names. A key set cannot see a lost element name; this
 /// can.
 fn bucket_handle_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -468,7 +468,7 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
 }
 
 // =============================================================================================
-// 2. THE MECHANISM: ROUTING TAKES THE KEY, THE HANDLE TAKES THE COMPONENT
+// 2. THE MECHANISM: ROUTING TAKES THE KEY, THE HANDLE TAKES THE ELEMENT NAME
 // =============================================================================================
 
 /// WHY A CONTAINER STORE PUTS A HUNDRED BLOCKS IN ONE BUCKET, read off the two functions.
@@ -480,11 +480,11 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
 ///
 ///   * `block_routing_bucket(object_key, start, end)` takes the OBJECT KEY and nothing else;
 ///   * `state::block_index_handle(block)` -- the block's handle, and the key of `BlockIndexMap` --
-///     hashes `block.component` as a term of its own, which is what keeps a container's fields
+///     hashes `block.element_name` as a term of its own, which is what keeps a container's fields
 ///     from overwriting each other in one entry.
 ///
 /// `stable_block_object_id(shard, kind, key)` is a THIRD thing and takes neither: since the
-/// component left it, a hash's hundred fields are ONE object id, a hundred distinct block handles,
+/// element name left it, a hash's hundred fields are ONE object id, a hundred distinct block handles,
 /// and one bucket at ANY range. Narrowing the range cannot split a container; widening it cannot
 /// spread one. The seeded arm below holds the handle count -- `total(&handles)` over
 /// `bucket_handle_sets` is asserted at `CONTAINERS * MEMBERS` -- so the collapse asserted in the
@@ -496,14 +496,14 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
 /// rust-internal: reads the engine's own placement functions, no product behaviour
 #[test]
 #[ignore = "seeds a container store; run by name"]
-fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_bucket() {
+fn routing_never_sees_the_element_name_which_is_why_a_containers_blocks_share_one_bucket() {
     // --- Against the functions themselves, at both widths. ---
     for end_routing_bucket in [WIDE_END, NARROW_END] {
         let key = "bag-000000";
         let home = block_routing_bucket(key, 0, end_routing_bucket);
         let mut ids: BTreeSet<u64> = BTreeSet::new();
         for _f in 0..100 {
-            // The routing call takes the key. There is no component argument to give it,
+            // The routing call takes the key. There is no element name argument to give it,
             // and since this change there is none to give the identity call either.
             assert_eq!(
                 block_routing_bucket(key, 0, end_routing_bucket),
@@ -515,7 +515,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_b
         assert_eq!(
             ids.len(),
             1,
-            "a hundred components gave {} distinct object ids on 0..{end_routing_bucket}, not 1. \
+            "a hundred element names gave {} distinct object ids on 0..{end_routing_bucket}, not 1. \
              The id names the OBJECT now, so every field of one hash is the same object and this \
              set is supposed to hold exactly one number",
             ids.len()
@@ -1441,7 +1441,7 @@ fn an_objects_bucket_cannot_be_recomputed_from_its_key_once_the_range_has_moved(
 /// WHAT A DERIVED READ WOULD COST, COUNTED, AT BOTH POPULATIONS.
 ///
 /// Suppose the bucket were somehow known. A bucket's blocks are held as a flat list sorted by
-/// HANDLE, and `block_index_handle` hashes the object key, the component and the whole address
+/// HANDLE, and `block_index_handle` hashes the object key, the element name and the whole address
 /// together -- so the list's order carries no trace of the object key. Finding one object's
 /// blocks in it is a walk of the WHOLE list: there is no bisection, because the list is not
 /// ordered on what is being looked for, and no early stop, because nothing says how many blocks
@@ -1459,7 +1459,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
     #[derive(Default)]
     struct Walk {
         lengths: Vec<usize>,
-        components: Vec<usize>,
+        element_names: Vec<usize>,
         scattered: usize,
         objects: usize,
     }
@@ -1486,7 +1486,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
                 walk.objects += 1;
                 // A walk cannot stop before the end: it has no count to stop on.
                 walk.lengths.push(entries.len());
-                walk.components.push(positions.len());
+                walk.element_names.push(positions.len());
                 let first = *positions.first().expect("non-empty");
                 let last = *positions.last().expect("non-empty");
                 if last - first + 1 != positions.len() {
@@ -1509,12 +1509,12 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         let mut sorted = walk.lengths.clone();
         sorted.sort_unstable();
         let mean = sorted.iter().sum::<usize>() as f64 / sorted.len() as f64;
-        let blocks: usize = walk.components.iter().sum();
+        let blocks: usize = walk.element_names.iter().sum();
         let mean_blocks = blocks as f64 / walk.objects as f64;
         // What the shipped shape probes: the `One` arm is inline and probes nothing, the `Many`
         // arm bisects.
         let probes: f64 = walk
-            .components
+            .element_names
             .iter()
             .map(|n| if *n <= 1 { 0.0 } else { (*n as f64).log2().ceil() })
             .sum::<f64>()
@@ -1524,7 +1524,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
              examines p50 {} p90 {} p99 {} MAX {} mean {mean:.4} entries | the shipped lookup \
              probes {probes:.4} | {} of {} objects have their blocks SCATTERED through the list",
             walk.objects,
-            walk.components.iter().copied().max().unwrap_or(0),
+            walk.element_names.iter().copied().max().unwrap_or(0),
             pct(&sorted, 0.50),
             pct(&sorted, 0.90),
             pct(&sorted, 0.99),
@@ -1550,11 +1550,11 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         "the routed arm measured no objects, so every figure it reports is vacuous"
     );
     assert_eq!(
-        routed.components.iter().copied().max(),
+        routed.element_names.iter().copied().max(),
         Some(1),
         "the routed arm's widest object holds {:?} blocks; this population is defined by holding \
          one, and if it does not the two populations below are the same population",
-        routed.components.iter().copied().max()
+        routed.element_names.iter().copied().max()
     );
 
     // POPULATION TWO: containers on the same range -- a hundred blocks an object.
@@ -1569,11 +1569,11 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         walk
     };
     assert_eq!(
-        container.components.iter().copied().max(),
+        container.element_names.iter().copied().max(),
         Some(100),
         "the container arm's widest object holds {:?} blocks rather than 100, so it is not the \
          population it claims to be",
-        container.components.iter().copied().max()
+        container.element_names.iter().copied().max()
     );
 
     // NEITHER ARM ABOVE CAN ANSWER WHETHER AN OBJECT'S BLOCKS ARE CONTIGUOUS IN THE LIST, and
@@ -1602,7 +1602,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
     println!(
         "  CONTIGUITY, on the one arm that can answer it: {} of {} objects have their blocks \
          SCATTERED through their bucket's list rather than sitting in one run. The list is sorted \
-         by HANDLE and the handle hashes the object key, the component and the address together, \
+         by HANDLE and the handle hashes the object key, the element name and the address together, \
          so the order carries no trace of the object -- a derived walk cannot bisect to a run and \
          cannot stop at the end of one.",
         crowded.scattered, crowded.objects
@@ -1634,17 +1634,17 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
     );
 }
 
-// `a_walk_of_the_flat_list_answers_in_handle_order_not_component_order` WAS HERE, AND IT IS GONE
+// `a_walk_of_the_flat_list_answers_in_handle_order_not_element_name_order` WAS HERE, AND IT IS GONE
 // FOR TWO REASONS -- ONE OF WHICH WAS TRUE BEFORE THIS COMMIT TOUCHED ANYTHING.
 //
 // ITS SUBJECT NO LONGER EXISTS. It asserted that a walk of a bucket's flat block list answers in
-// handle order while `ObjectBlockRefs::position` bisects `by_component` in COMPONENT order, so a
-// derived read would have to sort. `by_component` and `position` are both gone: an object has one
-// slot, so there is no component order for a derived answer to come back in the wrong one of.
+// handle order while `ObjectBlockRefs::position` bisects `by_element_name` in ELEMENT NAME order, so a
+// derived read would have to sort. `by_element_name` and `position` are both gone: an object has one
+// slot, so there is no element name order for a derived answer to come back in the wrong one of.
 //
 // AND IT COULD ONLY EVER HAVE FAILED. Both sides of its comparison were vectors of EMPTY STRINGS.
 // `walked` pushed `String::new()` per block by construction, and `held` pushed
-// `component.component.as_deref().unwrap_or("")` -- and every entry's component was already `None`
+// `element_name.element_name.as_deref().unwrap_or("")` -- and every entry's element name was already `None`
 // once the element name came off the block entry, so every `held` element was `""` too. So
 // `walked == held` for every object, `differed` stayed 0, and the closing
 // `assert_eq!(differed, compared)` was unsatisfiable for any non-empty fixture. It never reported

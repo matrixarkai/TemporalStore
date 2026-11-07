@@ -25,7 +25,9 @@
 //! buckets were REAL. In that fixture the round never dumps, so nothing is ever retired and every
 //! bucket in the store genuinely is dirty -- the round was reporting the truth, not failing to
 //! distinguish anything. The fixture seeds in batches of 500, so 20,000 records make FORTY log
-//! sequences; `min_undumped_wal_records` is 1,000, which is also the production default; 40 <
+//! sequences; `min_undumped_wal_records` is 1,000 in this fixture -- the value the shipped default
+//! used to carry, and no longer does, because the record trigger now ships off
+//! (`WAL_DUMP_RECORD_TRIGGER_OFF`) and the gate decides on undumped BYTES; 40 <
 //! 1,000 delays the dump on every round for ever, `selected_dump_buckets` is empty every round,
 //! `clear_dumped_bucket_dirty_state` is never reached, and the dirty set is drained ZERO times in
 //! the life of the store. Asserted at mx#1934's own size by
@@ -140,8 +142,15 @@ const FIXED_PENDING: usize = 2_000;
 /// log threshold counts SEQUENCES, and a batch is one sequence.
 const SEED_BATCH: usize = 500;
 
-/// `default_storage_manager_min_undumped_wal_records()`, which is also what mx#1934's fixture
-/// asked for. Held here as a constant so the arithmetic against `SEED_BATCH` is visible.
+/// What mx#1934's fixture asked for, which is also what
+/// `default_storage_manager_min_undumped_wal_records()` used to return.
+///
+/// IT NO LONGER RETURNS IT. The record trigger ships off (`WAL_DUMP_RECORD_TRIGGER_OFF`) and the
+/// shipped gate decides on undumped bytes, so this is a LITERAL this fixture pins in order to
+/// reproduce mx#1934's regime -- not a mirror of a live default. Reproducing that regime is the
+/// whole point of the arm that uses it, so the value stays put; what changed is that it is no
+/// longer also a statement about what a server ships with. Held here as a constant so the
+/// arithmetic against `SEED_BATCH` is visible.
 const PUBLISHED_MIN_UNDUMPED_WAL_RECORDS: u64 = 1_000;
 
 /// The threshold the control arm uses instead, so the dump actually fires. The ONLY setting that

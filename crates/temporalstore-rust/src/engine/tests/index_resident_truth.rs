@@ -28,7 +28,7 @@
 //!   2. CAPACITY, NOT LENGTH. `reserve_one_more` steps the block list by `BLOCK_LIST_GROWTH_STEP`
 //!      with `reserve_exact`, so a list of five entries owns a buffer of eight. The report counts
 //!      `len()`.
-//!   3. NOTHING OUT OF LINE IS COUNTED. `object_key: Arc<str>` and `component: Option<Arc<str>>`
+//!   3. NOTHING OUT OF LINE IS COUNTED. `object_key: Arc<str>` and `element_name: Option<Arc<str>>`
 //!      are fat pointers; the bytes behind them are not in `size_of::<BlockIndex>()`. The LENGTH
 //!      rides in the fat pointer, so charging them costs no heap access -- but an `Arc` is SHARED,
 //!      and a walk that charges one per entry charges a shared name once per holder. The census
@@ -106,14 +106,14 @@ pub(super) struct IndexWalk {
     /// The same names charged once per ENTRY rather than once per allocation -- what a walk with
     /// no set of seen pointers would charge.
     pub(super) key_request_per_entry: u64,
-    pub(super) component_allocs: u64,
-    pub(super) component_request: u64,
-    pub(super) component_request_per_entry: u64,
+    pub(super) element_name_allocs: u64,
+    pub(super) element_name_request: u64,
+    pub(super) element_name_request_per_entry: u64,
     /// Distinct key allocations whose strong count exceeds the number of index entries holding
     /// them -- that is, which something OUTSIDE this index also owns.
     pub(super) keys_held_outside: u64,
-    /// The same census for component names.
-    pub(super) components_held_outside: u64,
+    /// The same census for element names.
+    pub(super) element_names_held_outside: u64,
     /// Block-list length histogram over the `Many` arms: length -> how many buckets.
     pub(super) list_lengths: BTreeMap<usize, u64>,
     /// The REQUEST size of every allocation the block index owns, one entry per allocation.
@@ -141,7 +141,7 @@ impl IndexWalk {
 
     /// Everything the containers hold out of line that the entry width excludes.
     pub(super) fn out_of_line_request(&self) -> u64 {
-        self.key_request.saturating_add(self.component_request)
+        self.key_request.saturating_add(self.element_name_request)
     }
 
     pub(super) fn percentile(&self, q: f64) -> usize {
@@ -173,7 +173,7 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
     // Distinct allocations, by DATA POINTER. Two entries of one object share one allocation and it
     // must be charged once, which is exactly what a per-entry charge gets wrong.
     let mut seen_keys: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-    let mut seen_components: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+    let mut seen_element_names: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
     let pair_stride = std::mem::size_of::<(u64, BlockIndex)>() as u64;
     let entry_width = std::mem::size_of::<BlockIndex>() as u64;
 
@@ -218,8 +218,8 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
             // a column of the per-entry request table, beside the block-list and entry strides
             // that still have a subject.
             //
-            // NO COMPONENT REQUEST PER ENTRY: the entry carries no element name, so it asks the
-            // allocator for nothing on that account. The counter and the `seen_components` census
+            // NO ELEMENT NAME REQUEST PER ENTRY: the entry carries no element name, so it asks the
+            // allocator for nothing on that account. The counter and the `seen_element_names` census
             // therefore stay at zero by construction rather than by measurement.
         }
     }
@@ -471,17 +471,17 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 println!(
                     "  names: {} distinct key allocations for {} entries ({} B once per \
                      allocation, {} B once per entry), {} also held outside this index; \
-                     components {} ({} B once per allocation, {} B once per entry), {} held \
+                     element names {} ({} B once per allocation, {} B once per entry), {} held \
                      outside",
                     seen.key_allocs,
                     seen.blocks,
                     seen.key_request,
                     seen.key_request_per_entry,
                     seen.keys_held_outside,
-                    seen.component_allocs,
-                    seen.component_request,
-                    seen.component_request_per_entry,
-                    seen.components_held_outside
+                    seen.element_name_allocs,
+                    seen.element_name_request,
+                    seen.element_name_request_per_entry,
+                    seen.element_names_held_outside
                 );
                 println!(
                     "  nodes inline {} B, block heap at capacity {} B, out of line {} B",
@@ -594,10 +594,10 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
 #[cfg(feature = "alloc-probe")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
-    /// One block per routed string key, and no component on any of them.
+    /// One block per routed string key, and no element name on any of them.
     Routed,
-    /// One block per hash FIELD. Routing never sees the component, so a container's blocks all share
-    /// one bucket at any range -- and every block carries a component name out of line, which is
+    /// One block per hash FIELD. Routing never sees the element name, so a container's blocks all share
+    /// one bucket at any range -- and every block carries a element name out of line, which is
     /// the half of the out-of-line question the routed arm cannot ask.
     Container,
 }

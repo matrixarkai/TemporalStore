@@ -95,10 +95,67 @@ impl Config {
         self.flag_or("control_coalesce_persist", true)
     }
 
+    /// Gate for a trim that records its BOUNDARY instead of one record per point it dropped.
+    ///
+    /// OFF by default, and it has to stay off for one release: the record is readable only by a
+    /// build carrying the apply path below, and an older one declines the item and lets the
+    /// trimmed points reappear until the next trim drops them again. Reader first, writer after.
+    pub fn trim_boundary_record_enabled(&self) -> bool {
+        self.flag("trim_boundary_record")
+    }
+
+    /// Retained points per Control State counter series.
+    ///
+    /// WHY THIS EXISTS. `persist_control_state_block` serialises the WHOLE series on every
+    /// Counter write, and nothing trimmed it: a counter holding n points rewrote all n on the
+    /// n+1th, measured at 313,309 bytes per increment on a 3,200-point series. Unbounded series
+    /// made that unbounded. This caps the length the rewrite can reach.
+    ///
+    /// It is a WRITE bound, not a resident invariant. A series already longer than the cap --
+    /// written before the cap existed, or by a node configured higher -- is NOT trimmed when it
+    /// loads; it is trimmed by the next write that touches it. That is deliberate and it is what
+    /// `feature_max_size` does: trimming on load would silently delete durable points, and
+    /// nothing distinguishes an operator lowering the cap from a node whose config was lost and
+    /// defaulted. The load paths therefore reinstate what is on disk unchanged.
+    ///
+    /// Defaults to `feature_max_size`, the retention norm already in force for the
+    /// feature/sequence timelines, so one knob governs both unless a deployment splits them with
+    /// the `control_state_max` key. A value of 0 means unbounded, i.e. the pre-cap behaviour.
+    pub fn control_state_max_size(&self) -> usize {
+        match self.extend_config.get("control_state_max") {
+            None => self.feature_max_size,
+            Some(v) => v.trim().parse::<usize>().unwrap_or(self.feature_max_size),
+        }
+    }
+
     /// Gate for bounded distinct: convert oversized exact CHANGE sets to fixed-size HLL sketches
     /// (approximate distinct counts past the threshold). Off by default so distinct stays exact.
     pub fn control_distinct_sketch_enabled(&self) -> bool {
         self.flag("control_distinct_sketch")
+    }
+
+    /// Gate for answering `SMEMBERS` from the durable member map instead of folding every
+    /// block of the object.
+    ///
+    /// DEFAULT ON, AND THE COST IT REMOVES IS NOT SMALL. The fold reads one block per block
+    /// the object has, tombstones included, so a listing of 64 live members performs 1,033
+    /// block reads once 1,024 members have been removed -- measured, 71.4 ms against 614 us
+    /// for the identical answer on an unchurned set. The durable map is keyed BY MEMBER
+    /// BYTES, so it already holds the identity the bucket index cannot, and answering from
+    /// its keys costs no block reads at all and is O(live) whatever the churn.
+    ///
+    /// WHY IT IS A GATE AND NOT A STRAIGHT SWITCH. Asking the payload is the direction that
+    /// resurrected a removed member once, so the two mechanisms must stay comparable rather
+    /// than one of them becoming unreachable: with this off the fold answers exactly as
+    /// before, which is what lets one test drive both on the same store and assert they
+    /// agree, and what lets the cost harness keep measuring the fold it was written for. It
+    /// is also the escape hatch if the map is ever found wrong on a shape no test covers.
+    ///
+    /// THE FOLD IS STILL REACHED WITH THIS ON, for a key the map holds no entry for -- see
+    /// `Command::SetMembers`. So `derive_membership` does not become a zero-caller function,
+    /// and a listing can never answer EMPTY for a key whose blocks say otherwise.
+    pub fn set_listing_from_map_enabled(&self) -> bool {
+        self.flag_or("set_listing_from_map", true)
     }
 }
 

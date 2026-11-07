@@ -1178,7 +1178,7 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
 /// The mechanism claimed here is specific: the ROUTING RANGE decides how many object keys share a
 /// bucket, and that is what moved the single-block share. It follows that a workload whose blocks
 /// already share ONE bucket at EVERY range cannot move -- routing takes the object key and never
-/// sees the component, so a container's fields are many blocks under one key and one bucket at any
+/// sees the element name, so a container's fields are many blocks under one key and one bucket at any
 /// width. If the occupancy moved for such a store, the explanation above would be describing
 /// something other than the range.
 ///
@@ -1549,7 +1549,7 @@ struct MirrorWideAddress {
 struct MirrorWideEntry {
     object_key: std::sync::Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    component: Option<std::sync::Arc<str>>,
+    element_name: Option<std::sync::Arc<str>>,
     address: MirrorWideAddress,
     dirty: bool,
     deleted: bool,
@@ -1760,7 +1760,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
             model_id: block.model_id(),
             // The MIRROR models the entry as it was WHEN IT WAS WIDE, so it keeps the slot and
             // fills it with the absence a real entry no longer has a field for.
-            component: None,
+            element_name: None,
             address: MirrorWideAddress {
                 address: 0,
                 object_id: 0,

@@ -131,7 +131,7 @@ fn budget() -> Vec<Budgeted> {
             // address              : BlockAddress
             // dirty/deleted       : bool x 2
             //
-            // `component: Option<Arc<str>>` STOOD BETWEEN `model_id` AND `address` AND WENT ONE LEG
+            // `element_name: Option<Arc<str>>` STOOD BETWEEN `model_id` AND `address` AND WENT ONE LEG
             // AGO: sixteen bytes, the whole of this row's 56 -> 40. `object_key: Arc<str>` goes
             // here: another sixteen, and the whole of 40 -> 24.
             //
@@ -205,11 +205,11 @@ fn budget() -> Vec<Budgeted> {
             fields: size_of::<Vec<BlockLookupRef>>(),
             per_item: true,
         },
-        // `ComponentBlocks`, `ComponentList` AND `ObjectBlockRefs` HAD ROWS HERE, ALL THREE AT 40.
+        // `ElementNameBlocks`, `ElementNameList` AND `ObjectBlockRefs` HAD ROWS HERE, ALL THREE AT 40.
         //
         // They were the three wrappers between an object and its block refs, and all three are
         // deleted: the lookup now holds a `BlockRefs` per object directly, which is the row above.
-        // `ComponentBlocks` was the one row in this list that still had an `opt_arc_str` term --
+        // `ElementNameBlocks` was the one row in this list that still had an `opt_arc_str` term --
         // the always-`None` element name -- which is why that binding is gone from the top of this
         // function with it.
         Budgeted {
@@ -331,7 +331,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     // THE ANTI-SHRINK GUARD, WHICH CAUGHT THIS CHANGE AND IS NOW TWO-SIDED.
     //
     // It read `rows.len() >= 15` with the note that "a shrinking list is how a structure stops
-    // being watched", and it did its job: three rows went when `ComponentBlocks`, `ComponentList`
+    // being watched", and it did its job: three rows went when `ElementNameBlocks`, `ElementNameList`
     // and `ObjectBlockRefs` were deleted, the list went from 17 to 14, and the arm went red.
     //
     // IT IS NOT LOWERED TO 14. A `>=` is satisfied on whichever side an edit moves, so moving the
@@ -387,7 +387,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(96, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
-    // THE THREE 40s THAT STOOD HERE ARE GONE WITH THEIR TYPES. `ComponentBlocks`, `ComponentList`
+    // THE THREE 40s THAT STOOD HERE ARE GONE WITH THEIR TYPES. `ElementNameBlocks`, `ElementNameList`
     // and `ObjectBlockRefs` were the wrappers between an object and its refs; the lookup now holds
     // a `BlockRefs` per object, so that is the width to pin -- pinned above as a bare equality,
     // because the `!= 23` / `!= 25` pair that stood here was dominated by it and unreachable for
@@ -403,7 +403,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
     assert_eq!(16, size_of::<WalResidentBlock>(), "WalResidentBlock width moved");
-    // 104, NOT 120, BECAUSE AN ELEMENT NAME LEFT THE ROW. `IndexItem::component` was an
+    // 104, NOT 120, BECAUSE AN ELEMENT NAME LEFT THE ROW. `IndexItem::element_name` was an
     // `Option<Arc<str>>`; `Arc<str>` is a fat pointer, so the option cost two whole words with its
     // discriminant in the pointer's niche, and those sixteen bytes are the whole of the step. It is
     // the SAME sixteen bytes, for the SAME reason, as the `BlockIndex` row's 56 -> 40 pinned above:
@@ -674,10 +674,10 @@ fn only_the_structures_that_hold_an_address_moved() {
             168,
             0,
         ),
-        // THREE CONTROL ROWS ADDED TO REPLACE THE THREE THE COMPONENT COLLAPSE DELETED, AND THE
+        // THREE CONTROL ROWS ADDED TO REPLACE THE THREE THE ELEMENT NAME COLLAPSE DELETED, AND THE
         // FLOOR BELOW IS NOT LOWERED TO MEET THE SHRINK.
         //
-        // `ComponentBlocks`, `ComponentList` and `ObjectBlockRefs` were control rows here, all
+        // `ElementNameBlocks`, `ElementNameList` and `ObjectBlockRefs` were control rows here, all
         // three at 40 and all three holding no address. Deleting them took the control group from
         // 13 to 10 and failed the `control >= 12` guard -- correctly, because that guard's reason
         // is about the control's POWER: "below twelve the control cannot distinguish 'nothing else
@@ -736,7 +736,7 @@ fn only_the_structures_that_hold_an_address_moved() {
             // against a live `size_of` rather than being frozen into a constant or restated as a
             // width the struct never had.
             let later = match *name {
-                // `object_key` and `component` became the shared names the resident entry
+                // `object_key` and `element_name` became the shared names the resident entry
                 // holds: two 24-byte owned strings became a 16-byte pointer each (16 B). And
                 // `block_id` and `size` left as fields because both were derivations of the
                 // address, which takes two more whole words (16 B) out of the eight-aligned
@@ -745,7 +745,7 @@ fn only_the_structures_that_hold_an_address_moved() {
                 // the address shed, so all 32 are named and subtracted.
                 //
                 // AND SIXTEEN MORE, BECAUSE THE ELEMENT NAME THEN LEFT THIS ROW TOO. The
-                // `component` the paragraph above names as a name this row SHARED with the
+                // `element_name` the paragraph above names as a name this row SHARED with the
                 // resident entry is now gone from both. It was an `Option<Arc<str>>` in the
                 // eight-aligned group -- a fat pointer plus a niche discriminant, so two whole
                 // words -- and it is the whole of this row's 120 -> 104. 32 + 16 = 48.
@@ -758,7 +758,7 @@ fn only_the_structures_that_hold_an_address_moved() {
                 // would read as an address defect.
                 "IndexItem" => 48i64,
                 // THE ENTRY GAVE UP ITS ELEMENT NAME, SIXTEEN BYTES, AND THAT IS NOT THE ADDRESS
-                // SHED EITHER. `BlockIndex::component` was an `Option<Arc<str>>` sitting in the
+                // SHED EITHER. `BlockIndex::element_name` was an `Option<Arc<str>>` sitting in the
                 // eight-aligned group; dropping it takes two whole words out, so this row's total
                 // delta is 24 where the address alone accounts for 8. Named and subtracted here
                 // for exactly the reason the comment above gives: without it the row would fail
@@ -2479,9 +2479,9 @@ fn occupancy_of(shard: &crate::engine::state::ShardState) -> (Occupancy, Occupan
 /// rest of this module uses.
 ///
 /// The shapes matter to the question, because they reach the object index differently. A string
-/// and a feature series are one object each: one key, no component, one id. A hash, a set, a
+/// and a feature series are one object each: one key, no element name, one id. A hash, a set, a
 /// zset and a list are one object PER MEMBER, because the object id is hashed over
-/// `shard:kind:key:component` and the member name is the component -- while the ROUTING bucket is
+/// `shard:kind:key:element_name` and the member name is the element name -- while the ROUTING bucket is
 /// hashed over the key alone. So a single hash with eight fields files eight distinct object ids
 /// into one bucket, and a seed without them cannot produce the multi-object case on purpose.
 ///
@@ -2510,7 +2510,7 @@ fn objside_seed(engine: &TemporalEngine, scale: usize, collections: bool) {
         assert!(response.status.ok, "string seed must ack: {:?}", response.status);
     }
 
-    // Hashes: eight fields per key, so eight component object ids on one routing key.
+    // Hashes: eight fields per key, so eight element name object ids on one routing key.
     let commands = (0..if collections { scale } else { 0 })
         .flat_map(|i| {
             (0..8).map(move |f| Command::HashSet {
@@ -2603,9 +2603,9 @@ fn objside_seed(engine: &TemporalEngine, scale: usize, collections: bool) {
 /// opposite representations.
 ///
 /// TWO MIXES, because the answer is not a property of the engine alone. A string or a feature
-/// series is ONE object: one key, no component, one id, one bucket. A hash, a set, a sorted set
+/// series is ONE object: one key, no element name, one id, one bucket. A hash, a set, a sorted set
 /// or a list is one object PER MEMBER, because the object id is hashed over
-/// `shard:kind:key:component` while the ROUTING bucket is hashed over the key alone -- so a hash
+/// `shard:kind:key:element_name` while the ROUTING bucket is hashed over the key alone -- so a hash
 /// with eight fields files eight distinct ids into the one bucket its key routes to. A store of
 /// strings and series therefore has NO multi-object buckets at all, and a store with collections
 /// in it has as many objects in a bucket as that key has members. Reporting one mix and calling

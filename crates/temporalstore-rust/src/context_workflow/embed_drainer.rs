@@ -22,7 +22,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::types::BatchExecuteRequest;
+use crate::types::{BatchExecuteRequest, ExecuteResponse};
 
 /// A timestamp comfortably in the future but well within the context timeline's
 /// valid range (`u64::MAX / CONTEXT_TIMELINE_FANOUT`), used as the query window's
@@ -130,58 +130,30 @@ pub fn embed_drainer_config_from_env(
     }
 }
 
-/// Read the text to embed for a node: the longest stored event text (matches the
-/// backfill bin and gives the richest signal).
-fn node_embed_text(engine: &TemporalEngine, config: &EmbedDrainerConfig, tenant_hash: u64, node_hash: u64) -> String {
-    let response = engine.execute(ExecuteRequest {
-        shard_id: config.shard_id,
-        command: Command::ContextQueryEvents {
-            tenant_hash,
-            node_hash,
-            start_time_ms: 0,
-            end_time_ms: EMBED_DRAINER_MAX_TIME_MS,
-            limit: Some(config.max_events_per_node.max(1)),
-            max_scan: None,
-            current_valid_only: false,
-            as_of_ms: 0,
-            kinds: Vec::new(),
-            statuses: Vec::new(),
-            min_confidence: 0.0,
-            min_importance: 0.0,
-        },
-    });
+/// Pick the richest event text while keeping one oversized item from poisoning
+/// every later provider batch. Truncation preserves a UTF-8 boundary.
+fn node_embed_text(response: ExecuteResponse, max_input_bytes: usize) -> Option<String> {
     match response.response {
-        CommandResponse::ContextEvents { events, .. } => events
+        CommandResponse::ContextEvents { events, .. } => {
+            let mut text = events
             .into_iter()
             .map(|event| event.text)
             .max_by_key(|text| text.len())
-            .unwrap_or_default(),
-        _ => String::new(),
+            .unwrap_or_default();
+            if text.len() > max_input_bytes {
+                let mut end = max_input_bytes;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if end == 0 && !text.is_empty() {
+                    return None;
+                }
+                text.truncate(end);
+            }
+            Some(text)
+        }
+        _ => Some(String::new()),
     }
-}
-
-/// Clear the embedding-dirty marker for a node (write path). Returns true on ok.
-fn clear_marker(
-    engine: &TemporalEngine,
-    config: &EmbedDrainerConfig,
-    tenant_hash: u64,
-    node_hash: u64,
-    event_time_ms: u64,
-) -> bool {
-    engine
-        .execute_durable(ExecuteRequest {
-            shard_id: config.shard_id,
-            command: Command::ContextMarkEmbeddingDirty {
-                tenant_hash,
-                node_hash,
-                event_time_ms: event_time_ms.max(1),
-                reason: 0,
-                propagate_depth: 0,
-                clear: true,
-            },
-        })
-        .status
-        .ok
 }
 
 /// Run a single drain pass: query pending -> read text -> batch embed -> upsert ->
@@ -217,15 +189,19 @@ pub fn drain_embedding_dirty_once(
         return report;
     }
 
-    // 2) Collect (tenant, node, event_time, text). Nodes with no text are cleared
-    //    immediately so the drainer does not re-scan them every pass.
-    struct Pending {
+    // 2) Read event text in bounded engine batches. This keeps response memory bounded while
+    //    avoiding one shard-lock round trip per pending node.
+    #[derive(Clone, Copy)]
+    struct Target {
         tenant_hash: u64,
         node_hash: u64,
         event_time_ms: u64,
+    }
+    struct Pending {
+        target: Target,
         text: String,
     }
-    let mut pending: Vec<Pending> = Vec::with_capacity(nodes.len());
+    let mut targets = Vec::with_capacity(nodes.len());
     for (index, marker) in nodes.iter().enumerate() {
         let tenant_hash = tenant_hashes
             .get(index)
@@ -233,30 +209,72 @@ pub fn drain_embedding_dirty_once(
             .filter(|value| *value != 0)
             .unwrap_or(config.tenant_hash);
         if tenant_hash == 0 {
-            // No tenant recoverable (shouldn't happen for embedding-dirty entries).
             report.failed += 1;
             continue;
         }
-        let text = node_embed_text(engine, config, tenant_hash, marker.node_hash);
-        if text.trim().is_empty() {
-            report.empty_text += 1;
-            if clear_marker(engine, config, tenant_hash, marker.node_hash, marker.last_event_time_ms) {
-                report.cleared += 1;
-            }
-            continue;
-        }
-        pending.push(Pending {
+        targets.push(Target {
             tenant_hash,
             node_hash: marker.node_hash,
-            // The coalesced entry spans a range of event times; the drain clears against the
-            // latest, which is what the mark advanced to.
             event_time_ms: marker.last_event_time_ms,
-            text,
         });
     }
 
-    // 3) Batch-embed (>= batch_size per call) and upsert node_l0 vectors, then
-    //    clear the nodes for the nodes that embedded successfully.
+    let max_input_bytes = context_embedding_batch_limits(&config.provider).max_input_bytes;
+    let mut pending: Vec<Pending> = Vec::with_capacity(nodes.len());
+    let mut clear_targets = Vec::<Target>::with_capacity(nodes.len());
+    for target_chunk in targets.chunks(config.batch_size.max(1)) {
+        let commands = target_chunk
+            .iter()
+            .map(|target| Command::ContextQueryEvents {
+                tenant_hash: target.tenant_hash,
+                node_hash: target.node_hash,
+                start_time_ms: 0,
+                end_time_ms: EMBED_DRAINER_MAX_TIME_MS,
+                limit: Some(config.max_events_per_node.max(1)),
+                max_scan: None,
+                current_valid_only: false,
+                as_of_ms: 0,
+                kinds: Vec::new(),
+                statuses: Vec::new(),
+                min_confidence: 0.0,
+                min_importance: 0.0,
+            })
+            .collect();
+        let response = engine.batch_execute(BatchExecuteRequest {
+            shard_id: config.shard_id,
+            commands,
+        });
+        if !response.status.ok {
+            report.failed += target_chunk.len();
+            continue;
+        }
+        let returned = response.responses.len().min(target_chunk.len());
+        for (target, entry) in target_chunk
+            .iter()
+            .copied()
+            .zip(response.responses.into_iter())
+        {
+            if !entry.status.ok {
+                report.failed += 1;
+                continue;
+            }
+            let Some(text) = node_embed_text(entry, max_input_bytes) else {
+                report.failed += 1;
+                continue;
+            };
+            if text.trim().is_empty() {
+                report.empty_text += 1;
+                clear_targets.push(target);
+            } else {
+                pending.push(Pending { target, text });
+            }
+        }
+        report.failed += target_chunk.len().saturating_sub(returned);
+    }
+
+    // 3) Batch-embed and durably publish each vector chunk. Marker clearing is deferred until
+    //    every model chunk finishes, then coalesced into one durable batch containing only
+    //    successful writes and textless nodes.
     let model_hash = context_embedding_model_hash(&config.provider.embedding_model);
     let updated_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -277,32 +295,59 @@ pub fn drain_embedding_dirty_once(
             .iter()
             .zip(vectors.into_iter())
             .map(|(item, vector)| Command::ContextSetNodeEmbedding {
-                tenant_hash: item.tenant_hash,
-                node_hash: item.node_hash,
+                tenant_hash: item.target.tenant_hash,
+                node_hash: item.target.node_hash,
                 model_hash,
                 vector,
                 updated_at_ms,
             })
             .collect();
-        let response = engine.batch_execute(BatchExecuteRequest {
+        let response = engine.batch_execute_durable(BatchExecuteRequest {
             shard_id: config.shard_id,
             commands,
         });
-        for (item, entry) in chunk.iter().zip(response.responses.iter()) {
-            if entry.status.ok {
+        if !response.status.ok {
+            report.failed += chunk.len();
+            continue;
+        }
+        for (index, item) in chunk.iter().enumerate() {
+            if response
+                .responses
+                .get(index)
+                .is_some_and(|entry| entry.status.ok)
+            {
                 report.embedded += 1;
-                if clear_marker(
-                    engine,
-                    config,
-                    item.tenant_hash,
-                    item.node_hash,
-                    item.event_time_ms,
-                ) {
-                    report.cleared += 1;
-                }
+                clear_targets.push(item.target);
             } else {
                 report.failed += 1;
             }
+        }
+    }
+
+    if !clear_targets.is_empty() {
+        let commands = clear_targets
+            .iter()
+            .map(|target| Command::ContextMarkEmbeddingDirty {
+                tenant_hash: target.tenant_hash,
+                node_hash: target.node_hash,
+                // The coalesced entry spans a range; clear against the latest mark.
+                event_time_ms: target.event_time_ms.max(1),
+                reason: 0,
+                propagate_depth: 0,
+                clear: true,
+            })
+            .collect();
+        let response = engine.batch_execute_durable(BatchExecuteRequest {
+            shard_id: config.shard_id,
+            commands,
+        });
+        if response.status.ok {
+            report.cleared += response
+                .responses
+                .iter()
+                .take(clear_targets.len())
+                .filter(|entry| entry.status.ok)
+                .count();
         }
     }
     report
@@ -584,6 +629,7 @@ mod tests {
             let inline = inline_vector(&engine, tenant, node);
             assert!(!inline.is_empty(), "node {node} has no vector of its own");
         }
+        assert!(engine.context_embedding_index_len() >= nodes.len());
         assert_eq!(count_pending(&engine), 0);
 
         // A second pass is a no-op (empty pending set) -> O(pending) drains to zero.

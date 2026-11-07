@@ -30,7 +30,7 @@
 //! ```
 //!
 //! THE MIDDLE ROW IS RESTATED BECAUSE IT INVERTED, NOT BECAUSE ITS NUMBER WENT STALE. It read
-//! "UNCHANGED -- `block_index_handle` hashes the component beside the address, so elements sharing
+//! "UNCHANGED -- `block_index_handle` hashes the element name beside the address, so elements sharing
 //! a block still hash to different handles". The field that element name lived on has been removed,
 //! so the term is gone from the handle and two elements on one block hash ALIKE. The entry count is
 //! the BLOCK count now, and the row that used to say what the fold did not buy says what it does.

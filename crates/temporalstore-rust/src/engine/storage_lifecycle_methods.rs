@@ -359,6 +359,19 @@ impl TemporalEngine {
         // there is not enough yet. Requiring both to be CROSSED instead would let the byte
         // threshold suppress a dump the record count had already earned, which is the opposite
         // of bounding the log.
+        //
+        // ON A DEFAULT DEPLOYMENT ONLY THE BYTE ARM CAN SPEAK. `min_undumped_wal_records` ships at
+        // `WAL_DUMP_RECORD_TRIGGER_OFF` (`u64::MAX`), which `undumped_wal_records` -- a difference
+        // between two sequence numbers -- cannot reach, so `records_say_wait` is permanently true
+        // and `bytes_say_wait` decides alone. That is deliberate: at the 1,000 records it used to
+        // ship, a shard under ordinary traffic crossed the record arm continuously and every round
+        // took a dump, so the byte threshold never got a turn.
+        //
+        // NOTE THE ASYMMETRY IN WHAT ZERO MEANS, because it is why the record arm is disabled with
+        // `u64::MAX` and not with 0. Bytes at 0 makes `bytes_say_wait` true, which is "this trigger
+        // never fires". Records at 0 fails the `> 0` guard, which makes `records_say_wait` FALSE --
+        // a dump on every round. Callers that want exactly that pass 0 on purpose, so 0 is not
+        // available as an off switch.
         let records_say_wait = request.min_undumped_wal_records > 0
             && undumped_wal_records < request.min_undumped_wal_records;
         let bytes_say_wait = request.min_undumped_wal_bytes == 0

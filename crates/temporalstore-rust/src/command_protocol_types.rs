@@ -1368,6 +1368,18 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde::pairs")]
         entries: Vec<(String, Vec<u8>)>,
     },
+    /// Atomically replace hash fields when the stored protobuf timestamp is older.
+    ///
+    /// The condition and writes execute under one shard guard. A skipped command does not
+    /// mutate storage and therefore does not enter the WAL.
+    HashMultiSetIfTimestampOlder {
+        key: String,
+        timestamp_field: String,
+        timestamp_seconds: i64,
+        timestamp_nanos: i32,
+        #[serde(with = "crate::bytes_serde::pairs")]
+        entries: Vec<(String, Vec<u8>)>,
+    },
     HashIncrBy {
         key: String,
         field: String,
@@ -2871,6 +2883,84 @@ pub struct BatchExecuteRequest {
     pub commands: Vec<Command>,
 }
 
+/// Read the same hash fields from many keys without repeating the field names
+/// in every command on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatchHashMultiGetRequest {
+    pub shard_id: ShardId,
+    pub keys: Vec<String>,
+    pub fields: Vec<String>,
+}
+
+/// One positional row in a compact shared-field hash response.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct BatchHashMultiGetRow(
+    #[serde(with = "response_values")] pub Vec<Option<Vec<u8>>>,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiGetError {
+    pub index: usize,
+    pub status: Status,
+}
+
+/// A shared-field read response with one top-level status and sparse errors.
+/// Successful rows carry only their positional values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiGetResponse {
+    pub status: Status,
+    pub rows: Vec<BatchHashMultiGetRow>,
+    pub errors: Vec<BatchHashMultiGetError>,
+}
+
+/// One entity row in a shared-field hash write. A tuple keeps the binary wire
+/// shape to ``[key, values]`` instead of repeating member names per entity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiSetRow(pub String, pub Vec<BatchHashMultiSetValue>);
+
+/// A hash value carried as a native byte string by binary codecs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct BatchHashMultiSetValue(
+    #[serde(with = "crate::bytes_serde::binary")] pub Vec<u8>,
+);
+
+/// Write the same hash fields to many keys without repeating field names in
+/// every command on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashMultiSetRequest {
+    pub shard_id: ShardId,
+    pub fields: Vec<String>,
+    pub rows: Vec<BatchHashMultiSetRow>,
+}
+
+/// One row in a shared-field conditional hash write.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashTimestampSetRow(
+    pub String,
+    pub i64,
+    pub i32,
+    pub Vec<BatchHashMultiSetValue>,
+);
+
+/// Atomically write shared hash fields when each row's timestamp is newer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchHashTimestampSetRequest {
+    pub shard_id: ShardId,
+    pub fields: Vec<String>,
+    pub timestamp_field: String,
+    pub rows: Vec<BatchHashTimestampSetRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchConditionalWriteResponse {
+    pub status: Status,
+    pub applied: usize,
+    pub skipped: usize,
+    pub errors: Vec<BatchWriteError>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BatchExecuteResponse {
     pub status: Status,
@@ -2893,6 +2983,129 @@ pub struct BatchWriteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_hash_fields_are_encoded_once_per_batch() {
+        let keys: Vec<String> = (0..512)
+            .map(|index| format!("entity-{index:04}"))
+            .collect();
+        let fields: Vec<String> = (0..64)
+            .map(|index| format!("feature-{index:02}"))
+            .collect();
+        let compact = BatchHashMultiGetRequest {
+            shard_id: 1,
+            keys: keys.clone(),
+            fields: fields.clone(),
+        };
+        let expanded = BatchExecuteRequest {
+            shard_id: 1,
+            commands: keys
+                .iter()
+                .map(|key| Command::HashMultiGet {
+                    key: key.clone(),
+                    fields: fields.clone(),
+                })
+                .collect(),
+        };
+
+        let compact_bytes = rmp_serde::to_vec_named(&compact).unwrap();
+        let expanded_bytes = rmp_serde::to_vec_named(&expanded).unwrap();
+        assert!(
+            compact_bytes.len() * 20 < expanded_bytes.len(),
+            "shared={} expanded={}",
+            compact_bytes.len(),
+            expanded_bytes.len()
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<BatchHashMultiGetRequest>(&compact_bytes).unwrap(),
+            compact
+        );
+    }
+
+    #[test]
+    fn compact_shared_hash_read_drops_per_row_envelopes() {
+        let values = vec![Some(vec![1, 2, 3]); 16];
+        let compact = BatchHashMultiGetResponse {
+            status: Status::ok(),
+            rows: (0..512)
+                .map(|_| BatchHashMultiGetRow(values.clone()))
+                .collect(),
+            errors: Vec::new(),
+        };
+        let expanded = BatchExecuteResponse {
+            status: Status::ok(),
+            responses: (0..512)
+                .map(|_| ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Values {
+                        values: values.clone(),
+                    },
+                })
+                .collect(),
+        };
+
+        let compact_bytes = rmp_serde::to_vec_named(&compact).unwrap();
+        let expanded_bytes = rmp_serde::to_vec_named(&expanded).unwrap();
+        assert!(
+            compact_bytes.len() * 3 < expanded_bytes.len() * 2,
+            "compact={} expanded={}",
+            compact_bytes.len(),
+            expanded_bytes.len()
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<BatchHashMultiGetResponse>(&compact_bytes).unwrap(),
+            compact
+        );
+    }
+
+    #[test]
+    fn shared_hash_write_fields_are_encoded_once_per_batch() {
+        let fields: Vec<String> = (0..64)
+            .map(|index| format!("feature-{index:02}"))
+            .collect();
+        let rows: Vec<BatchHashMultiSetRow> = (0..512)
+            .map(|index| {
+                BatchHashMultiSetRow(
+                    format!("entity-{index:04}"),
+                    (0..fields.len())
+                        .map(|value| BatchHashMultiSetValue(vec![value as u8; 3]))
+                        .collect(),
+                )
+            })
+            .collect();
+        let compact = BatchHashMultiSetRequest {
+            shard_id: 1,
+            fields: fields.clone(),
+            rows: rows.clone(),
+        };
+        let expanded = BatchExecuteRequest {
+            shard_id: 1,
+            commands: rows
+                .iter()
+                .map(|row| Command::HashMultiSet {
+                    key: row.0.clone(),
+                    entries: fields
+                        .iter()
+                        .cloned()
+                        .zip(row.1.iter().map(|value| value.0.clone()))
+                        .collect(),
+                })
+                .collect(),
+        };
+
+        let compact_bytes = rmp_serde::to_vec_named(&compact).unwrap();
+        let expanded_bytes = rmp_serde::to_vec_named(&expanded).unwrap();
+        assert!(
+            compact_bytes.len() * 2 < expanded_bytes.len(),
+            "shared={} expanded={}",
+            compact_bytes.len(),
+            expanded_bytes.len()
+        );
+        assert_eq!(
+            rmp_serde::from_slice::<BatchHashMultiSetRequest>(&compact_bytes).unwrap(),
+            compact
+        );
+    }
 
     #[test]
     fn compact_batch_write_success_does_not_grow_per_command() {

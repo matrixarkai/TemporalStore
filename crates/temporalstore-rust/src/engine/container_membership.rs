@@ -62,16 +62,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::container_blocks::{
-    component_from_element_key, decode_container_block, ContainerBlockDecode, ContainerBlockShape,
+    element_name_from_element_key, decode_container_block, ContainerBlockDecode, ContainerBlockShape,
 };
 use crate::block_store::ElementEntry;
 
 /// What the blocks of one container say its membership is.
 #[derive(Debug, Default, Clone)]
 pub(super) struct DerivedMembership {
-    /// Component to value, for every element the blocks say is present.
+    /// Element name to value, for every element the blocks say is present.
     pub(super) live: BTreeMap<String, Vec<u8>>,
-    /// Components the blocks say were REMOVED and nothing later re-added. Kept rather than discarded
+    /// Element names the blocks say were REMOVED and nothing later re-added. Kept rather than discarded
     /// because it is what a tombstone-collection decision is made from, and because a guard
     /// distinguishing "the block names it gone" from "no block mentions it" needs both sides.
     pub(super) removed: BTreeSet<String>,
@@ -87,7 +87,7 @@ pub(super) struct DerivedMembership {
     pub(super) unframed: usize,
     /// Blocks of the first shape, which cannot state a removal.
     pub(super) live_only_blocks: usize,
-    /// Items whose key its own page's spelling could not render back to a component.
+    /// Items whose key its own page's spelling could not render back to an element name.
     pub(super) unrenderable_items: usize,
 }
 
@@ -153,7 +153,7 @@ where
     ordered.sort_by_key(append_position);
     ordered.dedup_by_key(|address| append_position(address));
 
-    // What the most recent block to mention each component said about it. A tombstone and a value are
+    // What the most recent block to mention each element name said about it. A tombstone and a value are
     // the same kind of statement here -- the later one simply replaces the earlier -- which is why
     // there is one map and not a set beside it.
     let mut latest: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
@@ -177,15 +177,15 @@ where
                     derived.live_only_blocks += 1;
                 }
                 for item in items {
-                    let Some(component) = component_from_element_key(spelling, &item.key) else {
+                    let Some(element_name) = element_name_from_element_key(spelling, &item.key) else {
                         // A key its own page's spelling cannot render is a corrupt page, not an
-                        // absent element -- the same reading `component_from_element_key`'s own
+                        // absent element -- the same reading `element_name_from_element_key`'s own
                         // doc comment gives it.
                         derived.unrenderable_items += 1;
                         continue;
                     };
                     latest.insert(
-                        component,
+                        element_name,
                         if item.deleted {
                             None
                         } else {
@@ -203,13 +203,13 @@ where
         }
     }
 
-    for (component, value) in latest {
+    for (element_name, value) in latest {
         match value {
             Some(value) => {
-                derived.live.insert(component, value);
+                derived.live.insert(element_name, value);
             }
             None => {
-                derived.removed.insert(component);
+                derived.removed.insert(element_name);
             }
         }
     }

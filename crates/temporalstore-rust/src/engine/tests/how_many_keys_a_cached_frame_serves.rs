@@ -34,7 +34,7 @@
 //! # ANSWERABLE FROM THE INDEX ALONE
 //!
 //! Two keys share a frame if and only if they share `(slab, offset, length)` — those are the
-//! components of the frame's cache key that come from the block. So grouping the live object rows by
+//! element names of the frame's cache key that come from the block. So grouping the live object rows by
 //! their address triple and counting the keys per group answers it, with no cache internals
 //! involved.
 //!
@@ -101,7 +101,7 @@ fn measure(value: usize) -> (usize, usize, usize, usize, usize) {
         assert!(response.status.ok, "read {index}: {:?}", response.status);
     }
 
-    // GROUP BY THE FRAME'S OWN IDENTITY. `(slab, offset, length)` are the block-derived components
+    // GROUP BY THE FRAME'S OWN IDENTITY. `(slab, offset, length)` are the block-derived element names
     // of `CacheKey::page_with_slot`, so two rows in one group are two keys one frame would serve.
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");

@@ -1140,7 +1140,7 @@ pub(super) struct ObjectSlot {
     ///
     /// PRIVATE, for the reason `many` is: the doors below are the only way in, so a module that
     /// wants to hand an object a block cannot bypass the bookkeeping that keeps
-    /// `object_component_block_refs` honest.
+    /// `object_element_name_block_refs` honest.
     refs: Option<crate::engine::state::BlockRefs>,
 }
 

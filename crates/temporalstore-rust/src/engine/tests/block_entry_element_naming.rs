@@ -7,24 +7,24 @@
 //! # WHAT CHANGED, STATED FIRST BECAUSE THIS MODULE'S HEADLINE MOVED
 //!
 //! This module was opened as a refutation and its stop condition was one sentence: for a hash the
-//! component is not a second copy of the field name, it is the ONLY one. `container_blocks` makes the
+//! element name is not a second copy of the field name, it is the ONLY one. `container_blocks` makes the
 //! block carry its own element key, so there is now a second copy, and the refutation below is
 //! recorded as HAVING HELD rather than as holding.
 //!
 //! The first test is the one that moved, and it moved in the direction its own failure message named:
 //! "If this fails the hash field name has a second copy somewhere and the refutation is stale." It
 //! failed, for that reason, which is the strongest evidence this module can offer that the frame does
-//! what it was added to do. What a swapped component now produces is written into
-//! `a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contradicts_it`.
+//! what it was added to do. What a swapped element name now produces is written into
+//! `a_swapped_hash_element_name_no_longer_renames_the_field_because_the_page_contradicts_it`.
 //!
 //! WHAT IS STILL BLOCKED, AND WHY THIS MODULE IS NOT DELETED. A second copy of the name is a
-//! PRECONDITION for the entry dropping it, not the whole of it. The entry's component is still what
-//! `bucket_index_component_block_addresses` walks, still what `HashGetAll` returns as the field name,
-//! and still what the load path derives `shard.bucket_index.hashes` from. Removing it needs the load path to
+//! PRECONDITION for the entry dropping it, not the whole of it. The entry's element name is still what
+//! `bucket_index_element_name_block_addresses` walks, still what `HashGetAll` returns as the field name,
+//! and still what the load path derives `shard.hashes` from. Removing it needs the load path to
 //! rebuild those maps out of the blocks instead, which is a later stage and is not started here. The
 //! pricing below is the prize for that stage and is kept for it.
 //!
-//! `BlockIndex.component: Option<Arc<str>>` is sixteen bytes on every block entry plus a heap string
+//! `BlockIndex.element_name: Option<Arc<str>>` is sixteen bytes on every block entry plus a heap string
 //! per element, and #1996 priced that string exactly: `16 + 2n` request bytes for a set member and
 //! `32 + 2n` for a zset member, slope 2.00 per member byte, because `hex::encode` spells two
 //! characters per byte. Those numbers are CITED here and not re-derived.
@@ -32,35 +32,35 @@
 //! Two prerequisites landed since, and both are real:
 //!
 //!   * #2005 made the delta fold carry element identity through `key_states`, so an element folded
-//!     out of the delta log no longer depends on its component being decodable.
+//!     out of the delta log no longer depends on its element name being decodable.
 //!   * #2008 gave a container block a real `BlockAddress::block_id` ordinal instead of the hardcoded
 //!     zero, threaded so header and address are built from one value.
 //!
-//! #2005 names what it unblocks: "a 2-byte element ordinal replacing `component: Option<Arc<str>>`".
+//! #2005 names what it unblocks: "a 2-byte element ordinal replacing `element_name: Option<Arc<str>>`".
 //! THAT STEP DOES NOT FOLLOW, and this module is the driven reason.
 //!
 //! # THE STOP CONDITION, IN ONE LINE, AS IT STOOD
 //!
-//! For a HASH the component is the caller's field name, `shard.bucket_index.hashes` is `skip_serializing`, and
-//! `Command::HashGetAll` RETURNS THE COMPONENT AS THE FIELD NAME. So the component was not a second
+//! For a HASH the element name is the caller's field name, `shard.hashes` is `skip_serializing`, and
+//! `Command::HashGetAll` RETURNS THE ELEMENT NAME AS THE FIELD NAME. So the element name was not a second
 //! copy of a hash field name. It was the only one, on the live read path and across a reload alike.
 //!
 //! THAT LAST SENTENCE IS WHAT `container_blocks` CHANGED, and only that sentence. Everything else in
-//! the table below still holds: the entry still carries the component, the three spelled kinds still
+//! the table below still holds: the entry still carries the element name, the three spelled kinds still
 //! have a durable map and the hash still has none, and `HashGetAll` still names its fields from the
 //! entry rather than from the block.
 //!
 //! ```text
-//!     set     set_index_serde    (member bytes, address)            component is a 2nd copy
-//!     zset    zset_index_serde   (member, (score, address))         component is a 2nd copy
-//!     list    plain serde        (i64 sequence, address)            component is a 2nd copy
-//!     string  no component at all                                   nothing to lose
-//!     hash    skip_serializing -- NOTHING WRITTEN                   THE COMPONENT IS THE COPY
+//!     set     set_index_serde    (member bytes, address)            element name is a 2nd copy
+//!     zset    zset_index_serde   (member, (score, address))         element name is a 2nd copy
+//!     list    plain serde        (i64 sequence, address)            element name is a 2nd copy
+//!     string  no element name at all                                   nothing to lose
+//!     hash    skip_serializing -- NOTHING WRITTEN                   THE ELEMENT NAME IS THE COPY
 //! ```
 //!
 //! The three spelled kinds would survive the removal: their durable map holds what the name
 //! re-spells, and since #2005 the fold carries identity for them too. The hash does not, and one
-//! kind is enough, because the component is ONE field on ONE struct -- keeping it for the hash keeps
+//! kind is enough, because the element name is ONE field on ONE struct -- keeping it for the hash keeps
 //! all sixteen bytes on every entry of every kind, which is the whole prize.
 //!
 //! # WHY THIS IS NOT THE RELOAD ARGUMENT #1996 ALREADY MADE
@@ -70,31 +70,31 @@
 //!
 //! ```text
 //!     execute_on_shard.rs:799   Command::HashGetAll
-//!         bucket_index_component_block_addresses(shard, "hash", &key)
+//!         bucket_index_element_name_block_addresses(shard, "hash", &key)
 //!             .filter_map(|(field, address)| ...
 //!                 (field.map(|name| name.to_string()).unwrap_or_default(), value))
 //! ```
 //!
-//! `field` there IS `block.component`. `engine/hash_field_map.rs:46` says so deliberately:
+//! `field` there IS `block.element_name`. `engine/hash_field_map.rs:46` says so deliberately:
 //! "`HashGetAll` and `HashLen` do not read this map at all, they resolve through
-//! `bucket_index_component_block_addresses`". So a component-less entry does not degrade a hash on
+//! `bucket_index_element_name_block_addresses`". So an element-name-less entry does not degrade a hash on
 //! the next reload -- it answers `HashGetAll` with every field named `""` immediately.
 //!
 //! And behind that, `rebuild_unserialized_model_maps_from_bucket_index` and the big derive's hash arm
-//! both took the field name from `entry.component.unwrap_or_default()`, and the derive ASSIGNS
-//! `shard.bucket_index.hashes = hashes` wholesale -- unlike the three arms below it, which merge, because those
+//! both took the field name from `entry.element_name.unwrap_or_default()`, and the derive ASSIGNS
+//! `shard.hashes = hashes` wholesale -- unlike the three arms below it, which merge, because those
 //! three have a durable map to merge with and the hash has none.
 //!
 //! BOTH OF THOSE TWO NOW SKIP AND COUNT instead of defaulting, which is test 4 in this module. The
 //! sentence above is kept in the past tense because it is the reason the step is still blocked: the
 //! skip stops an absent name becoming a REAL empty field name, and it does not give the derive a
-//! field name it never had. `HashGetAll` above is UNCHANGED and still spells a component-less entry
+//! field name it never had. `HashGetAll` above is UNCHANGED and still spells an element-name-less entry
 //! as `""` on the live read path -- that is a listing, not a durable map, and moving it would move
 //! the `HashLen`/`HashGetAll` pair a sibling is guarding.
 //!
 //! # WHAT THE STEP WAS WORTH, SO NOBODY RE-DERIVES IT
 //!
-//! Priced below rather than described. The entry is 64 with 60 bytes of field; without the component
+//! Priced below rather than described. The entry is 64 with 60 bytes of field; without the element name
 //! it is 48 with 44, and the list stride goes 72 -> 56. That is the real prize and it is why the step
 //! keeps being proposed. It is stated here as a MEASURED counterfactual on a declared mirror, so the
 //! next reader gets the number without spending a session on it.
@@ -103,21 +103,21 @@
 //!
 //! One prerequisite, not a family of them: `shard.bucket_index.hashes` would have to become DURABLE -- the
 //! `skip_serializing` on `engine/engine_storage_state.rs` removed -- and `HashGetAll`/`HashLen` moved onto that
-//! map instead of onto `bucket_index_component_block_addresses`. That is a MOVE rather than a
-//! duplication: the field names it would start writing are the same characters the component writes
+//! map instead of onto `bucket_index_element_name_block_addresses`. That is a MOVE rather than a
+//! duplication: the field names it would start writing are the same characters the element name writes
 //! today through `block_index_written_key`.
 //!
 //! THE FIRST HALF IS DONE AND THE SECOND HALF IS NOT, which is the whole state of it. `hashes` is
 //! `#[serde(default)]` now and the reconcile MERGES it per element through `fill_absent_elements`
 //! like the other three, so the map is a durable record of every hash field name. `HashGetAll` and
-//! `HashLen` still answer from `bucket_index_component_block_addresses`, and moving them is the
+//! `HashLen` still answer from `bucket_index_element_name_block_addresses`, and moving them is the
 //! remaining step -- deliberately not taken in the same change, because #1989 is the recorded
 //! incident for moving the length answer onto a map before the map is complete, and
 //! `length_answer_and_listing_agree` pins the two answers to each other in the meantime.
 //!
-//! SO THE STOP CONDITION HAS MOVED RATHER THAN LIFTED. What still holds the component on the entry
-//! is not durability any more: it is that `block_index_handle` HASHES the component, and the
-//! component is the only field in that hash distinguishing two elements of ONE folded block. Drop it
+//! SO THE STOP CONDITION HAS MOVED RATHER THAN LIFTED. What still holds the element name on the entry
+//! is not durability any more: it is that `block_index_handle` HASHES the element name, and the
+//! element name is the only field in that hash distinguishing two elements of ONE folded block. Drop it
 //! without making the entry per-block and two elements collide on one slot. See the report on #1976
 //! for the enumerated remainder.
 //!
@@ -197,14 +197,14 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 }
 
 // =================================================================================================
-// 1. THE REFUTATION, AND WHAT LIFTED IT. A SWAPPED HASH COMPONENT NO LONGER RENAMES THE FIELD.
+// 1. THE REFUTATION, AND WHAT LIFTED IT. A SWAPPED HASH ELEMENT NAME NO LONGER RENAMES THE FIELD.
 // =================================================================================================
 
-/// SWAP A HASH FIELD'S COMPONENT ON DISK AND THE FIELD COMES BACK NEITHER RENAMED NOR SERVED.
+/// SWAP A HASH FIELD'S ELEMENT NAME ON DISK AND THE FIELD COMES BACK NEITHER RENAMED NOR SERVED.
 ///
 /// # WHAT THIS TEST USED TO SAY, AND WHY IT SAYS SOMETHING ELSE NOW
 ///
-/// It used to assert that the field came back RENAMED: the swapped component became the field name,
+/// It used to assert that the field came back RENAMED: the swapped element name became the field name,
 /// because nothing else held it. That was the refutation, and it was correct at the time.
 ///
 /// `container_blocks` puts the element key inside the block. So the index now says `hfield-Z` and the
@@ -231,13 +231,13 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 ///
 /// `HashLen` counts block-index ENTRIES and `HashGetAll` returns entries whose block will read, so on
 /// a store whose index and blocks disagree the two now answer differently. That pair is what #2014
-/// guards, and it still agrees on every store this engine writes -- the divergence needs a component
+/// guards, and it still agrees on every store this engine writes -- the divergence needs an element name
 /// that was edited underneath it, which is exactly what this test does and nothing else does. Both
 /// numbers are asserted below so the cost is recorded rather than discovered later.
 ///
 /// # THE CONTROL, UNCHANGED
 ///
-/// A zset member's component is swapped in the same pass, and that member still answers because
+/// A zset member's element name is swapped in the same pass, and that member still answers because
 /// `zset_index_serde` persisted it beside the page and `fill_absent_elements` keeps what the derived
 /// view could not produce. An arm that moved and an arm that did not, from one swap pass, is what
 /// makes this a measurement rather than a demonstration that editing an index breaks things.
@@ -248,7 +248,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     let dir = tempfile::tempdir().unwrap();
     let hash_key = "en-hash";
     let zset_key = "en-zset";
-    // Chosen so each spells a component this test can find and swap at a FIXED width.
+    // Chosen so each spells an element name this test can find and swap at a FIXED width.
     let hash_fields = ["hfield-a", "hfield-b", "hfield-c"];
     let zset_member = b"zmember-a".to_vec();
 
@@ -279,12 +279,12 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     // --- THE MUTATION. Both length-preserving, both in the same pass. ---
     let indexes = dir.path().join("indexes");
     let hash_swaps = swap_across_index_files(&indexes, "hfield-b", "hfield-Z");
-    // A zset component is `{score:016x}{hex(member)}`, so the member travels as hex characters.
+    // A zset element name is `{score:016x}{hex(member)}`, so the member travels as hex characters.
     let member_hex = hex::encode(&zset_member);
     let mut mangled_hex = member_hex.clone();
     // Flip the LAST hex digit, keeping the width and keeping it valid hex, so the arm is exercised
     // as a DIFFERENT member rather than as an unreadable name -- the unreadable path is already
-    // driven by `an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element`.
+    // driven by `an_unreadable_element_name_name_is_skipped_and_the_durable_map_keeps_the_element`.
     let last = mangled_hex.pop().expect("a member spells at least one hex digit");
     mangled_hex.push(if last == '0' { '1' } else { '0' });
     let zset_swaps = swap_across_index_files(&indexes, &member_hex, &mangled_hex);
@@ -293,7 +293,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     //
     // Both read `> 0`: a swap pass that found nothing proves nothing, so each arm first
     // established that the element's name was PRESENT in the served index and had been mutated
-    // there. An entry carries no component now, so the obvious reading is that neither name is in
+    // there. An entry carries no element name now, so the obvious reading is that neither name is in
     // the index and both floors are dead. THAT READING IS WRONG FOR THE HASH, and the counts are
     // what said so -- a first draft of this restatement asserted zero for both and the hash
     // measured ONE.
@@ -305,9 +305,9 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     // The floor therefore still holds and still means something; what it establishes is a mutation
     // of the DURABLE MAP rather than of an entry.
     //
-    // WHY THE ZSET MEMBER IS NOT: `shard.bucket_index.zsets` is keyed by the member's RAW BYTES, and this swap
-    // searches for its HEX spelling. Hex was only ever how the ENTRY's component rendered it, and
-    // there is no component -- so there is no occurrence to find and the control cannot be
+    // WHY THE ZSET MEMBER IS NOT: `shard.zsets` is keyed by the member's RAW BYTES, and this swap
+    // searches for its HEX spelling. Hex was only ever how the ENTRY's element name rendered it, and
+    // there is no element name -- so there is no occurrence to find and the control cannot be
     // exercised at all. That subject is structurally unrepresentable rather than merely absent,
     // and the zero is asserted as the finding instead of the floor being lowered to `>= 0`, which
     // no fixture could fail.
@@ -321,7 +321,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     assert_eq!(
         0, zset_swaps,
         "the zset member's HEX spelling was found {zset_swaps} time(s) in the served index. \
-         `shard.bucket_index.zsets` is keyed by raw member bytes and the entry carries no component, so hex is \
+         `shard.zsets` is keyed by raw member bytes and the entry carries no element name, so hex is \
          not a spelling the stored form uses any more -- a nonzero count means a hex rendering of \
          a member has come back into the index, which is the third copy this change removed"
     );
@@ -346,7 +346,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
 
     // --- WHAT A SWAPPED **DURABLE-MAP** NAME PRODUCES, OBSERVED AND THEN ASSERTED. ---
     //
-    // The swap no longer edits an entry's component -- there is none -- it edits the field name
+    // The swap no longer edits an entry's element name -- there is none -- it edits the field name
     // inside the durable `hashes` map. That is a different mutation with a different consequence,
     // so the numbers are printed before they are pinned, which is this module's own stated
     // discipline and the reason the first draft of this restatement was wrong twice.
@@ -439,7 +439,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
         length - names.len() as i64
     );
 
-    // THE CONTROL: the zset member is served, and no component was swapped for it to follow.
+    // THE CONTROL: the zset member is served, and no element name was swapped for it to follow.
     let score = match read(
         &engine,
         Command::ZSetScore {
@@ -479,7 +479,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
 /// RETARGETED, NOT DELETED, and the previous shape of this test is why it had to be. It asserted
 /// that `hashes` was ABSENT from the written index, and its own failure message said what to do if
 /// that ever stopped being true: "if that is deliberate then the stop condition in this module is
-/// stale and removing the component becomes reachable -- re-read the header". It is deliberate now,
+/// stale and removing the element name becomes reachable -- re-read the header". It is deliberate now,
 /// so the guard is retargeted at the invariant the change ESTABLISHES -- four durable maps, not
 /// three -- rather than deleted along with the condition it was watching. A guard whose subject the
 /// fix deletes still has a job.
@@ -522,7 +522,7 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 // 3. THE PRIZE, PRICED, SO THE NEXT READER DOES NOT SPEND A SESSION ON IT.
 // =================================================================================================
 
-/// The block entry with the component GONE -- not thinned, not an ordinal, removed.
+/// The block entry with the element name GONE -- not thinned, not an ordinal, removed.
 ///
 /// Declared rather than asserted about a structure this engine does not have. #1997 reached the same
 /// 48 by holding BOTH names one word each and declined it on soundness; this mirror reaches it by
@@ -530,7 +530,7 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 #[allow(dead_code)]
 /// THE LIVE SHAPE, which is what this arm reconstructs. It was carrying two readings at once.
 ///
-/// It modelled 'the live entry minus its component' AND 'the historical three-bool tail', and
+/// It modelled 'the live entry minus its element name' AND 'the historical three-bool tail', and
 /// those agreed for as long as the live entry HAD a three-bool tail. The packing separated them:
 /// the spelling and both flags are bits in the word the address lends its holder, so the live
 /// entry is its address alone and the two readings differ by a whole word.
@@ -538,7 +538,7 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 /// This arm is named for reconstructing the live entry and its stride, so it keeps the live
 /// reading. The historical three-bool tail is modelled by the mirrors in `blocks_per_bucket`,
 /// which compare against each other rather than against the live type.
-struct MirrorEntryNoComponent {
+struct MirrorEntryNoElementName {
     address: ElementEntry,
 }
 
@@ -556,8 +556,8 @@ fn round_up_to_eight(bytes: usize) -> usize {
 fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // --- THE LIVE ENTRY, RECONSTRUCTED. ---
     //
-    // THE COMPONENT TERM WENT ONE LEG AGO AND THE `object_key` TERM GOES HERE. The
-    // reconstruction read `+ size_of::<Option<Arc<str>>>()` for the component and came to 56;
+    // THE ELEMENT NAME TERM WENT ONE LEG AGO AND THE `object_key` TERM GOES HERE. The
+    // reconstruction read `+ size_of::<Option<Arc<str>>>()` for the element name and came to 56;
     // without it, 35; without the key's sixteen-byte fat pointer, NINETEEN, which rounds to the
     // twenty-four the live type measures.
     // THE SUM IS THE ADDRESS ALONE NOW, and the terms below it are not fields of this type any
@@ -581,15 +581,15 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
         size_of::<BlockIndex>()
     );
 
-    // --- WHAT THE COMPONENT'S SHARE WAS, now a counterfactual rather than a measurement. ---
+    // --- WHAT THE ELEMENT NAME'S SHARE WAS, now a counterfactual rather than a measurement. ---
     //
     // Sixteen bytes, a fat optional pointer. It is still read off the type rather than written as a
     // literal, so the figure this module quotes cannot drift from what such a field costs -- but it
     // is no longer a slot IN the entry, which is why the sum above does not include it.
-    let component_width = size_of::<Option<Arc<str>>>();
+    let element_name_width = size_of::<Option<Arc<str>>>();
     assert_eq!(
-        16, component_width,
-        "the component slot was {component_width} B, not the sixteen this module is about"
+        16, element_name_width,
+        "the element name slot was {element_name_width} B, not the sixteen this module is about"
     );
     // THE BASELINE MOVED BECAUSE THE KEY LEFT TOO, AND BOTH ENDS ARE PINNED SO NEITHER DRIFTS.
     //
@@ -603,10 +603,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // Derived from the types either way; this literal is the part that moves.
     assert_eq!(
         32,
-        round_up_to_eight(live_fields + component_width),
+        round_up_to_eight(live_fields + element_name_width),
         "the entry with a name slot added back is {} B, not the forty today's field set plus a \
          name slot comes to",
-        round_up_to_eight(live_fields + component_width)
+        round_up_to_eight(live_fields + element_name_width)
     );
     // FORTY-EIGHT, NOT FIFTY-SIX: the baseline this module measures its step DOWN from moved with
     // the entry. The saving it reports is a DIFFERENCE, so quoting the old base makes the
@@ -614,15 +614,15 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // names. Derived two assertions above; this literal is what has to follow it.
     assert_eq!(
         48,
-        round_up_to_eight(live_fields + component_width + size_of::<Arc<str>>()),
+        round_up_to_eight(live_fields + element_name_width + size_of::<Arc<str>>()),
         "the entry this module measured the step DOWN from is {} B, not the 56 it quotes -- so \
          the saving it reports is against the wrong baseline",
-        round_up_to_eight(live_fields + component_width + size_of::<Arc<str>>())
+        round_up_to_eight(live_fields + element_name_width + size_of::<Arc<str>>())
     );
 
     // --- THE MIRROR, WHICH IS NOW THE SAME SHAPE AS THE LIVE ENTRY. ---
     //
-    // `MirrorEntryNoComponent` was the counterfactual: the entry as it would be without its element
+    // `MirrorEntryNoElementName` was the counterfactual: the entry as it would be without its element
     // name. The entry IS that now, so the mirror and the live type have converged. That is the step
     // landing, not the instrument breaking -- and it is asserted as an EQUALITY, so a mirror that
     // drifts from the live entry reddens here rather than going on describing a shape the engine
@@ -642,34 +642,34 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     let mirror_fields = size_of::<ElementEntry>();
     assert_eq!(
         round_up_to_eight(mirror_fields),
-        size_of::<MirrorEntryNoComponent>(),
-        "the component-less entry reconstructs to {} B from {mirror_fields} B of field, but \
+        size_of::<MirrorEntryNoElementName>(),
+        "the element-name-less entry reconstructs to {} B from {mirror_fields} B of field, but \
          `size_of` says {}",
         round_up_to_eight(mirror_fields),
-        size_of::<MirrorEntryNoComponent>()
+        size_of::<MirrorEntryNoElementName>()
     );
     assert_eq!(
         size_of::<BlockIndex>(),
-        size_of::<MirrorEntryNoComponent>(),
+        size_of::<MirrorEntryNoElementName>(),
         "the live entry is {} B and the mirror of a nameless entry is {} B. They must be the SAME \
          shape now that the entry carries no name: a difference means the mirror has drifted and \
          every figure below is about a structure the engine does not have",
         size_of::<BlockIndex>(),
-        size_of::<MirrorEntryNoComponent>()
+        size_of::<MirrorEntryNoElementName>()
     );
 
     // --- THE STRIDE, WHICH IS THE NUMBER THAT ACTUALLY MOVES, because `BlockIndexMap` IS its list
     //     and a tuple re-aligns to eight. #1997 states this distinction and it has been conflated
     //     before, so both are asserted and both are printed. ---
     let live_stride = size_of::<(u64, BlockIndex)>();
-    let mirror_stride = size_of::<(u64, MirrorEntryNoComponent)>();
+    let mirror_stride = size_of::<(u64, MirrorEntryNoElementName)>();
     assert_eq!(
         round_up_to_eight(size_of::<u64>() + size_of::<BlockIndex>()),
         live_stride,
         "the live stride does not reconstruct from its parts"
     );
     assert_eq!(
-        round_up_to_eight(size_of::<u64>() + size_of::<MirrorEntryNoComponent>()),
+        round_up_to_eight(size_of::<u64>() + size_of::<MirrorEntryNoElementName>()),
         mirror_stride,
         "the mirror stride does not reconstruct from its parts"
     );
@@ -677,7 +677,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // --- THE VERDICT, AS NUMBERS. ---
     // THE ENTRY IS THE MIRROR NOW, WHICH IS THIS MODULE'S OWN STEP TAKEN -- AND THEN A SECOND
     // STEP TOOK BOTH OF THEM. It pinned 56 for the live entry against 40 for
-    // `MirrorEntryNoComponent`; the component left and they converged on 40; the IDENTITY then
+    // `MirrorEntryNoElementName`; the element name left and they converged on 40; the IDENTITY then
     // left as well and they converged again on 24. The mirror had to lose its own `object_key` to
     // follow, which the convergence equality above is what caught.
     assert_eq!(16, size_of::<BlockIndex>(), "the entry pin moved");
@@ -698,15 +698,15 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     assert_eq!(24, live_stride, "the stride pin moved");
     assert_eq!(
         16,
-        size_of::<MirrorEntryNoComponent>(),
-        "the component-less entry is not 24"
+        size_of::<MirrorEntryNoElementName>(),
+        "the element-name-less entry is not 24"
     );
     // TWENTY-FOUR, AND THIS IS THE THIRD PIN IN THIS ARM THAT THE ENTRY DRAGGED WITH IT. The
     // mirror is the live field set with the name slot left out, and the live field set is now the
     // address word alone -- so the mirror is 16 and its stride 8 + 16 = 24, the same as the live
     // one. The equality two assertions below is the claim; these two literals only say where both
     // sides landed, and they land together because the mirror and the live entry are one shape.
-    assert_eq!(24, mirror_stride, "the component-less stride is not 24");
+    assert_eq!(24, mirror_stride, "the element-name-less stride is not 24");
 
     // THE STEP IS NOW ZERO, AND THAT IS THE STEP BEING TAKEN RATHER THAN BEING WORTHLESS.
     //
@@ -736,10 +736,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // this literal is the only part that has had to be edited each time.
     assert_eq!(
         40,
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width)),
         "the stride of an entry with a name slot added back is {} B, not the 48 the per-block \
          saving was quoted against",
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width))
     );
 
     println!(
@@ -747,10 +747,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
          back it would be {} B of field in {} B at a {} B stride -- the {} B a block this step \
          banked",
         size_of::<BlockIndex>(),
-        live_fields + component_width,
-        round_up_to_eight(live_fields + component_width),
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
+        live_fields + element_name_width,
+        round_up_to_eight(live_fields + element_name_width),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width)),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width))
             - live_stride
     );
 }
@@ -761,21 +761,21 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
 
 /// A HASH BLOCK THAT NAMES NO FIELD IS SKIPPED; A BLOCK THAT NAMES THE EMPTY FIELD IS KEPT.
 ///
-/// Both derive arms read `entry.component` to get a hash field name, and both ended
-/// `.unwrap_or_default()` -- so a block entry carrying NO component became a field named `""`. That
+/// Both derive arms read `entry.element_name` to get a hash field name, and both ended
+/// `.unwrap_or_default()` -- so a block entry carrying NO element name became a field named `""`. That
 /// is not a missing value standing in for itself: an empty hash field name is LEGAL, so the default
 /// manufactures a real, addressable field, which then collides with a genuine empty-named field and
 /// takes its address. The two states this test separates are:
 ///
 /// ```text
-///     component = Some("")   a genuine field whose name is zero characters    KEEP
-///     component = None       a block that says nothing about which field       SKIP AND COUNT
+///     element name = Some("")   a genuine field whose name is zero characters    KEEP
+///     element name = None       a block that says nothing about which field       SKIP AND COUNT
 /// ```
 ///
 /// # WHY THIS ARM AND NOT THE THREE THAT WERE ALREADY CORRECTED
 ///
 /// `sets`, `zsets` and `lists` are merged through `fill_absent_elements`, because each has a durable
-/// map holding what its component re-spells -- which is what lets their comment say "skipping loses
+/// map holding what its element name re-spells -- which is what lets their comment say "skipping loses
 /// it from the derived view and not from the store". `hashes` is `skip_serializing` (test 2 in this
 /// module drives that off the serializer), so this arm ASSIGNS, there is no durable map behind it,
 /// and a phantom field is the only answer the shard has. For a context node, whose block is filed
@@ -785,10 +785,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
 /// # THE THREE LEGS, EACH DRIVEN
 ///
 /// A. THE WIRE ADMITS IT. Both structures that can carry a hash block into the derive declare
-///    `component` as an `Option` with `#[serde(default)]`, so an absent component is not a
+///    `element_name` as an `Option` with `#[serde(default)]`, so an absent element name is not a
 ///    corruption -- it is a shape the decoder is specified to accept. Read off the real serde impls
 ///    rather than off the attributes.
-/// B. THE FOLD FILES THE BLOCK. This said `fold_delta_block_items` copies `item.component`
+/// B. THE FOLD FILES THE BLOCK. This said `fold_delta_block_items` copies `item.element_name`
 ///    straight onto the block entry, so an item that named nothing produced an entry that named
 ///    nothing. NEITHER the entry nor the item has that field any more, so what the fold files is
 ///    an entry naming no element BY CONSTRUCTION rather than by copying an absent name. The leg
@@ -812,7 +812,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
 ///     ef-empty      one named field + a genuine "" field  both -> 2 fields, "" at its own address
 /// ```
 ///
-/// THE CONTROL is the `string` kind, where `component: None` is the NORMAL and CORRECT state -- it
+/// THE CONTROL is the `string` kind, where `element_name: None` is the NORMAL and CORRECT state -- it
 /// means the block IS its whole object. The change cannot move it, and the number of string blocks the
 /// derive actually walked is asserted, because a control over nothing reports success.
 ///
@@ -838,8 +838,8 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // ---------------------------------------------------------------------------------------------
     // LEG A. THE WIRE ADMITS A BLOCK THAT NAMES NO FIELD.
     // ---------------------------------------------------------------------------------------------
-    // The block entry first. `component` is `skip_serializing_if = "Option::is_none"`, so a `None`
-    // leaves the key out entirely and reads back as `None` -- an absent component round-trips as a
+    // The block entry first. `element_name` is `skip_serializing_if = "Option::is_none"`, so a `None`
+    // leaves the key out entirely and reads back as `None` -- an absent element name round-trips as a
     // STABLE shape rather than as damage.
     let nameless_entry = BlockIndex::new(stored_model_kind("hash"), ElementEntry::default(), false, false);
     let encoded = serde_json::to_string(&crate::engine::state::BlockEntryAt {
@@ -853,11 +853,11 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     );
     assert!(
         !encoded.contains("component"),
-        "a component-less block entry still wrote a component key, so the absent shape this finding \
+        "an element-name-less block entry still wrote an element name key, so the absent shape this finding \
          rests on is not what the encoder produces: {encoded}"
     );
     let decoded = serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&encoded)
-        .expect("a component-less block entry decodes")
+        .expect("an element-name-less block entry decodes")
         .into_parts_from_key(&crate::engine::state::block_index_written_key(
             "ef-wire-probe",
             &nameless_entry,
@@ -866,11 +866,11 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         .1;
     // THE DECODER CANNOT ADMIT A NAME INTO AN ENTRY ANY MORE, so this assertion is gone.
     //
-    // It decoded a component-less entry and asserted the decoded value carried no component, to
+    // It decoded an element-name-less entry and asserted the decoded value carried no element name, to
     // establish that the absent shape comes from the ENCODER rather than from the decoder. The
     // type has no such field, so the decode cannot produce one whatever the wire says -- the same
     // claim, held structurally. The ENCODER half above still runs and still matters: it asserts
-    // the written text carries no component key, which is what keeps the stored spelling from
+    // the written text carries no element name key, which is what keeps the stored spelling from
     // moving.
     let _ = &decoded;
 
@@ -878,7 +878,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // emptiest legal record still decodes.
     //
     // RESTATED TWICE, AND THE SECOND RESTATEMENT INVERTS HALF OF IT. The first: this asserted
-    // `bare_item.component.is_none()`, and `IndexItem` has no such field -- the claim became
+    // `bare_item.element_name.is_none()`, and `IndexItem` has no such field -- the claim became
     // unwritable rather than false.
     //
     // THE SECOND: it then asserted that a row CARRYING a name "must still decode", on the ground
@@ -891,7 +891,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // gone with the drop it detected.
     //
     // SO LEG A'S CLAIM IS NARROWED TO WHAT IT ACTUALLY ESTABLISHES, and both halves are driven:
-    // an ABSENT component is a legal wire shape on both carriers (the block entry writes no key, the
+    // an ABSENT element name is a legal wire shape on both carriers (the block entry writes no key, the
     // emptiest legal delta row decodes), and a row that names an element is refused BY ITS KEY. The
     // "the other slots are not shifted" half survives on a row that spells them WITHOUT `"c"`,
     // because "it decoded" alone would be satisfied by garbage.
@@ -933,8 +933,8 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
          unintended reason is not a passing control"
     );
     println!(
-        "[leg A] an absent component is a legal wire shape on both carriers: block entry {} B with \
-         no component key, delta item decodes from an empty document. A row that NAMES one is \
+        "[leg A] an absent element name is a legal wire shape on both carriers: block entry {} B with \
+         no element name key, delta item decodes from an empty document. A row that NAMES one is \
          refused: {refusal}",
         encoded.len()
     );
@@ -961,7 +961,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             },
         );
     }
-    // The control's object, written through the surface that files a component-less block legitimately.
+    // The control's object, written through the surface that files an element-name-less block legitimately.
     write(
         &engine,
         Command::StringSet {
@@ -1020,7 +1020,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // ---------------------------------------------------------------------------------------------
     // A DISTINCT address -- one slab further on -- so the phantom is traceable to this block and not
     // to the real one. The fold is the real one: this is the shape a delta record carrying no
-    // component produces on reload.
+    // element name produces on reload.
     let nameless_address = ElementEntry::from_compact_slab_address(
         nameless_key_address.address_word().wrapping_add(1u64 << 32),
         nameless_key_address.length(),
@@ -1042,7 +1042,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         object_key: nameless_key.into(),
         model_id: "hash".to_string(),
         // THE WHOLE POINT USED TO BE THIS FIELD, AND IT IS NOW THE TYPE. The literal stated
-        // `component: None` under the note "this item names no field"; the row has no such field,
+        // `element_name: None` under the note "this item names no field"; the row has no such field,
         // so naming no field is what every item is, by construction rather than by choice. The arm
         // picks this planted block out by ADDRESS, which is what still distinguishes it.
         object_id: stable_block_object_id(1, "hash", nameless_key),
@@ -1077,7 +1077,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             .into_iter()
             // SELECTED BY ADDRESS, NOT BY THE ABSENCE OF A NAME.
             //
-            // This filtered `entry.component.is_none()` to pick out the block the fold planted. No
+            // This filtered `entry.element_name.is_none()` to pick out the block the fold planted. No
             // entry names an element, so that predicate is true of EVERY block of the key and the
             // count came to 2 -- the genuine block and the planted one -- failing with "leg B has
             // not built the state leg C is about" when leg B had built it exactly. The planted
@@ -1157,7 +1157,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         // derived map and expected one field from the named block and none from the nameless one.
         //
         // BOTH DERIVES NOW CONTRIBUTE NOTHING, which is a stronger statement than the skip was.
-        // They decoded a field name out of `entry.component`; an entry has no component, so there
+        // They decoded a field name out of `entry.element_name`; an entry has no element name, so there
         // is no input and the derived view is EMPTY for every key. An absent name cannot become the
         // empty name because no name is produced at all -- the defect is unreachable rather than
         // handled, and the durable `hashes` map (`#[serde(default)]`) is the sole source.
@@ -1181,7 +1181,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             empty_after.is_none_or(|fields| fields.is_empty()),
             "[{arm}] the derive minted {} field(s) for `{empty_key}`, including possibly the \
              genuine empty-named one. The durable map is the only source for those names now; a \
-             derive that reproduces them is reading an entry's component again",
+             derive that reproduces them is reading an entry's element name again",
             empty_after.map_or(0, |fields| fields.len())
         );
         // AND SPECIFICALLY NOT THE EMPTY FIELD NAME, named on its own because it is the defect this
@@ -1200,10 +1200,10 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         // block it wrote for the genuine empty-named field stops being built.
         let _ = (named_field, genuine_empty_address.address_word());
 
-        // --- THE CONTROL, at 0.00% on a kind whose component is LEGITIMATELY absent. ---
+        // --- THE CONTROL, at 0.00% on a kind whose element name is LEGITIMATELY absent. ---
         assert!(
             shard.strings().contains_key(string_key),
-            "[{arm}] the control's string is gone: a block whose component is absent BY DESIGN was \
+            "[{arm}] the control's string is gone: a block whose element name is absent BY DESIGN was \
              caught by a change that is only about the hash arm"
         );
         println!(
@@ -1330,7 +1330,7 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
 /// # THE CLAIM THIS EXISTS TO STOP BEING A CITATION
 ///
 /// `IndexItem::block_ref_key` is built by `index_log::block_ref_key_from_parts`, whose THIRD term
-/// is the element name: `kind:object_key:component:slab:offset:length:block_id:generation`.
+/// is the element name: `kind:object_key:element_name:slab:offset:length:block_id:generation`.
 ///
 /// TWO ROUTES FILL THAT TERM, AND THEY USED TO DISAGREE. `engine::collect_upsert_index_items`
 /// passed the element's own name through; the entry walk in `collect_command_index_items_for`
@@ -1378,7 +1378,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
     // ONLY A HANDLE TERM NOW. The row itself cannot carry an element name, so this varies the one
     // place a name can still appear -- the third term of the handle derivation -- which is exactly
     // the term under test.
-    let component = "f0";
+    let element_name = "f0";
     let address = ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
     let routing_bucket = block_routing_bucket(object_key, 0, OPERATOR_END);
     let object_id = stable_block_object_id(1, kind, object_key);
@@ -1395,7 +1395,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
             address.generation().unwrap_or_default(),
         )
     };
-    let named = authority(Some(component));
+    let named = authority(Some(element_name));
     let unnamed = authority(None);
     let nonsense = "not-a-derivation-of-anything".to_string();
 
@@ -1409,11 +1409,11 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
     assert_ne!(named, nonsense, "the nonsense arm is the authority's own output");
     assert_ne!(unnamed, nonsense, "the nonsense arm is the authority's own output");
     assert!(
-        named.contains(&format!(":{component}:")),
+        named.contains(&format!(":{element_name}:")),
         "the named spelling must actually carry the element name, got {named:?}"
     );
     assert!(
-        !unnamed.contains(&format!(":{component}:")),
+        !unnamed.contains(&format!(":{element_name}:")),
         "the unnamed spelling must not carry the element name, got {unnamed:?}"
     );
 

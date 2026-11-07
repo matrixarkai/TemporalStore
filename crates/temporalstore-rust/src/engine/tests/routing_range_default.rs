@@ -59,7 +59,7 @@
 //! The mechanism claimed is that the RANGE WIDTH is the modulus, so narrowing it groups keys.
 //! `narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object_key` is the
 //! workload where that mechanism predicts NO effect: routing takes the object key and never the
-//! component, so a single key's many component blocks sit in one bucket at every range. If the
+//! element name, so a single key's many element name blocks sit in one bucket at every range. If the
 //! sweep's effect showed up there too, the explanation would be wrong.
 
 #![allow(clippy::all)]
@@ -1182,11 +1182,11 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
 /// Everything above is attributed to one mechanism: the range width is the MODULUS, so narrowing
 /// it maps more object keys onto one bucket. That explanation makes a falsifiable prediction in
 /// the other direction -- a store whose blocks all share ONE OBJECT KEY cannot be regrouped by any
-/// range, because `block_routing_bucket` takes the object key and never the component while the
+/// range, because `block_routing_bucket` takes the object key and never the element name while the
 /// block handle `stable_block_object_id(shard, kind, key)` takes both. One key is one
 /// bucket at every range.
 ///
-/// So this seeds a single container key with many component blocks and sweeps the same five ranges
+/// So this seeds a single container key with many element name blocks and sweeps the same five ranges
 /// over it. If the byte and fill figures moved here too, the mechanism named above would not be
 /// the mechanism and the sweep would be measuring something else.
 ///
@@ -1236,12 +1236,12 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
     let (_, wide_blocks, wide_max) = *observed.get(&WIDE_END).expect("the wide arm ran");
     assert!(
         wide_blocks >= MEMBERS,
-        "the container arm wrote {wide_blocks} blocks for {MEMBERS} components; an absent effect \
+        "the container arm wrote {wide_blocks} blocks for {MEMBERS} element names; an absent effect \
          over an empty store is not a control"
     );
     assert!(
         wide_max > 1,
-        "the container arm's widest bucket holds {wide_max} block, so the components did not share \
+        "the container arm's widest bucket holds {wide_max} block, so the element names did not share \
          a bucket even on the shipped default and this control is not the shape it names"
     );
 
@@ -1254,7 +1254,7 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
             "on 0..{end_routing_bucket} a store of one object key occupied {buckets} buckets \
              holding {blocks} blocks with a widest of {max}, against the shipped default's 1 \
              bucket, {wide_blocks} blocks, widest {wide_max}. Routing takes the object key and \
-             never the component, so the range cannot split one key -- if it did here, the \
+             never the element name, so the range cannot split one key -- if it did here, the \
              mechanism every figure in this module is attributed to is not the mechanism"
         );
     }
@@ -1295,7 +1295,7 @@ fn try_load_on(engine: &TemporalEngine, end_routing_bucket: u32) -> crate::types
 }
 
 /// Every bucket that holds a block, with the block HANDLES it holds. A key set cannot see a lost
-/// component; this can.
+/// element name; this can.
 fn bucket_handle_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");

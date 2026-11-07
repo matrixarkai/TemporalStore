@@ -128,14 +128,22 @@ fn every_maintenance_phase_is_enabled_under_the_shipped_default() {
 /// A dump actually happens under the shipped default, once enough has accumulated to be worth
 /// one.
 ///
-/// Being ENABLED is not being REACHED. The default holds a dump back until
-/// `min_undumped_wal_records` = 1000 records are undumped, so a handful of writes produces no
-/// dump at all -- correctly, because the delay exists to let repeated writes to the same bucket
-/// coalesce into one dumped generation. A guard that only checked the phase flags would pass on
-/// a store that never dumps, which is the state this whole line of work started from.
+/// Being ENABLED is not being REACHED. A guard that only checked the phase flags would pass on a
+/// store that never dumps, which is the state this whole line of work started from -- and a gate
+/// whose only trigger were unreachable would be exactly that, so this is the test that refuses it.
 ///
-/// So: write past the threshold, run one round with the options a server ships with, and require
-/// that buckets were actually selected and a manifest written.
+/// THE THRESHOLD IT CROSSES IS THE BYTE ONE, and that is what changed here. The default used to
+/// hold a dump back until `min_undumped_wal_records` = 1,000 records were undumped, and this
+/// fixture wrote 1,256 tiny records to cross it. The record arm now ships off
+/// (`WAL_DUMP_RECORD_TRIGGER_OFF`), so those 1,256 records would prove nothing: they are a few
+/// tens of kilobytes against a 128 MiB byte threshold, and the dump would correctly be delayed.
+/// So the fixture writes the bytes instead. The claim is unchanged -- the shipped gate is
+/// REACHABLE, not merely configured -- and it is now made against the trigger that is actually
+/// armed.
+///
+/// So: write past the shipped BYTE threshold, assert the log really took those bytes, run one
+/// round with the options a server ships with, and require that buckets were actually selected
+/// and a manifest written.
 #[test]
 fn a_dump_fires_under_the_shipped_default_once_the_threshold_is_crossed() {
     let dir = tempfile::tempdir().unwrap();
@@ -159,19 +167,45 @@ fn a_dump_fires_under_the_shipped_default_once_the_threshold_is_crossed() {
         max_dump_buckets_per_round: 64,
         ..StorageManagerOptions::default()
     };
-    // Past the coalescing delay, and not by one: the threshold counts UNDUMPED records, so a
-    // round that dumps resets it, and a fixture sitting exactly on the line would be deciding
-    // the test on an off-by-one in the counter rather than on whether a dump happens.
-    let writes = options.min_undumped_wal_records as usize + 256;
+    // Past the coalescing delay, and not by one: the threshold counts UNDUMPED bytes, so a round
+    // that dumps resets it, and a fixture sitting exactly on the line would be deciding the test
+    // on an off-by-one in the counter rather than on whether a dump happens.
+    //
+    // THE VALUES ARE PSEUDO-RANDOM, NOT A REPEATED BYTE, and that is not decoration.
+    // `undumped_len_since_dump` counts the bytes the log actually took, and a run of identical
+    // bytes is the one input a compressing writer gives back for free -- a `vec![b'v'; n]` fixture
+    // could cross the threshold on paper while putting almost nothing on disk, and would then be
+    // measuring the arithmetic rather than the log. The generator is a fixed-seed xorshift, so the
+    // fixture is still deterministic.
+    const VALUE_BYTES: usize = 64 * 1024;
+    let writes = (options.min_undumped_wal_bytes as usize / VALUE_BYTES) + 64;
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut value = vec![0u8; VALUE_BYTES];
     for index in 0..writes {
+        for word in value.chunks_exact_mut(8) {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            word.copy_from_slice(&seed.to_le_bytes());
+        }
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
                 key: format!("dumped-{index:05}"),
-                value: vec![b'v'; 32],
+                value: value.clone(),
             },
         });
     }
+    // THE DENOMINATOR, read from the log rather than assumed from the loop above. Without this the
+    // test passes on a gate that was released for some other reason, and says nothing about
+    // whether the shipped byte threshold is reachable at all.
+    let undumped_bytes = engine.write_ahead_log_store().undumped_len_since_dump(1);
+    assert!(
+        undumped_bytes >= options.min_undumped_wal_bytes,
+        "the fixture put {undumped_bytes} B of undumped log on disk against a shipped threshold of \
+         {} B, so whatever the round below does is not this threshold firing",
+        options.min_undumped_wal_bytes
+    );
 
     let runtime = DataNodeRuntime::new_without_workers_with_options(
         engine,
@@ -185,7 +219,8 @@ fn a_dump_fires_under_the_shipped_default_once_the_threshold_is_crossed() {
 
     assert!(
         !report.lifecycle_plan.dump_delayed,
-        "past {writes} writes the dump is still being delayed: {:?}",
+        "past {writes} writes and {undumped_bytes} undumped bytes the dump is still being \
+         delayed, so the shipped byte threshold cannot be reached: {:?} undumped records",
         report.lifecycle_plan.undumped_wal_records
     );
     assert!(
@@ -322,9 +357,23 @@ fn the_shipped_default_bounds_the_log_by_size() {
         "with no byte threshold the record count alone decides, and a record count does not \
          bound a file"
     );
-    // Both thresholds are set, because each bounds something the other cannot: records bound how
-    // much replay a restart faces, bytes bound the file.
-    assert!(options.min_undumped_wal_records > 0);
+    // AND THE RECORD THRESHOLD IS OFF. This is the half that was retired, deliberately, and it
+    // used to assert the opposite: "both thresholds are set, because each bounds something the
+    // other cannot". They did not share the work. At the 1,000 records the record arm shipped at,
+    // a shard under ordinary traffic crossed it continuously, so the byte threshold above never
+    // got a turn and every maintenance round took a dump. What the byte threshold alone now bounds
+    // is BOTH things: when a dump is taken, and how much log a restart replays -- up to 128 MiB of
+    // it, where the record arm used to cut that to a few hundred kilobytes on a small-record
+    // workload. That is the cost of this, and it is stated here rather than left to be discovered.
+    //
+    // Asserted against the SENTINEL rather than as a range, because `> 0` is satisfied by
+    // `u64::MAX` -- the old assertion would still have passed here and said nothing.
+    assert_eq!(
+        options.min_undumped_wal_records,
+        crate::data_node::WAL_DUMP_RECORD_TRIGGER_OFF,
+        "the record arm is back in the shipped gate, so the byte threshold above is no longer what \
+         decides a dump and the replay window is no longer what this test documents"
+    );
 }
 
 /// Switching WAL reclaim off stops the reclaim, however large the log is.
@@ -436,7 +485,17 @@ fn the_running_scheduler_reaches_every_phase() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    let options = StorageManagerOptions::default();
+    // THE RECORD TRIGGER, PUT BACK EXPLICITLY, because this fixture writes kilobytes and the
+    // shipped gate is denominated in 128 MiB of bytes (`min_undumped_wal_records` ships at
+    // `WAL_DUMP_RECORD_TRIGGER_OFF`). Under the bare default this fixture's dump would correctly
+    // never be released and `reclaim_wal` would decline for want of one -- which is not the claim
+    // this test makes. The claim is that the LOOP reaches every phase, so the fixture names a
+    // trigger it can reach. That the field is still read on the shipped path is pinned separately,
+    // by `the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable`.
+    let options = StorageManagerOptions {
+        min_undumped_wal_records: 1_000,
+        ..StorageManagerOptions::default()
+    };
     // Pressure of several kinds, so a phase that declines for want of work is distinguishable
     // from one the loop never reaches: volume for the dump threshold, overwrites for stale
     // blocks, deletes for tombstones, and a small cache so memory pressure is reachable.
@@ -3688,7 +3747,16 @@ fn what_the_periodic_loop_reclaims() {
         engine
     }
 
-    let records = StorageManagerOptions::default().min_undumped_wal_records as usize + 512;
+    // The record trigger, named explicitly: the shipped gate is byte-denominated at 128 MiB and
+    // this fixture writes kilobytes, so under the bare default both arms would decline and the
+    // probe would print two zeroes. See `the_running_scheduler_reaches_every_phase`.
+    fn cadence() -> StorageManagerOptions {
+        StorageManagerOptions {
+            min_undumped_wal_records: 1_000,
+            ..StorageManagerOptions::default()
+        }
+    }
+    let records = cadence().min_undumped_wal_records as usize + 512;
 
     // ARM A: the periodic loop, run enough times that no threshold can be the explanation.
     let periodic_engine = build(records);
@@ -3703,7 +3771,7 @@ fn what_the_periodic_loop_reclaims() {
         },
     );
     for _ in 0..6 {
-        runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+        runtime.run_storage_manager_once(1, cadence());
     }
     let periodic_engine = runtime.engine();
     let after_low = first_record_offset(&periodic_engine, 1);
@@ -3775,11 +3843,21 @@ fn the_periodic_loop_actually_reclaims_the_write_ahead_log() {
         runtime.engine()
     }
 
-    let records = StorageManagerOptions::default().min_undumped_wal_records as usize + 256;
+    // The record trigger, named explicitly: reclaim follows a DUMP, the shipped gate releases one
+    // on 128 MiB of bytes, and this fixture writes kilobytes. Under the bare default no dump is
+    // released, nothing is reclaimed, and this test would be asserting the gate rather than the
+    // reclaim it is about. See `the_running_scheduler_reaches_every_phase`.
+    fn cadence() -> StorageManagerOptions {
+        StorageManagerOptions {
+            min_undumped_wal_records: 1_000,
+            ..StorageManagerOptions::default()
+        }
+    }
+    let records = cadence().min_undumped_wal_records as usize + 256;
 
     let engine = build(records);
     let before = record_count(&engine);
-    let engine = run(engine, StorageManagerOptions::default());
+    let engine = run(engine, cadence());
     let after = record_count(&engine);
     assert!(
         after < before,
@@ -3791,10 +3869,7 @@ fn the_periodic_loop_actually_reclaims_the_write_ahead_log() {
     // and it is the stage under test that has to be responsible.
     let control = build(records);
     let control_before = record_count(&control);
-    let control = run(
-        control,
-        StorageManagerOptions { enable_wal_reclaim: false, ..StorageManagerOptions::default() },
-    );
+    let control = run(control, StorageManagerOptions { enable_wal_reclaim: false, ..cadence() });
     let control_after = record_count(&control);
     assert_eq!(
         control_after, control_before,
@@ -3862,6 +3937,17 @@ fn a_retention_cursor_reaches_the_loop_a_server_actually_starts() {
         }
         runtime.engine()
     }
+    // The record trigger, named explicitly, and shared by BOTH arms so the cursor stays the only
+    // difference between them. Every decision this test reaches is downstream of a dump, the
+    // shipped gate releases one on 128 MiB of bytes, and these fixtures write kilobytes -- so
+    // under the bare default both arms would decline and the controls would pass vacuously. See
+    // `the_running_scheduler_reaches_every_phase`.
+    fn cadence() -> StorageManagerOptions {
+        StorageManagerOptions {
+            min_undumped_wal_records: 1_000,
+            ..StorageManagerOptions::default()
+        }
+    }
     // Sequence 1 in both logs: behind everything this fixture writes, and still above zero, so the
     // plan clamps to it rather than refusing outright (a zero floor reclaims nothing and would
     // make this pass for the wrong reason).
@@ -3873,11 +3959,11 @@ fn a_retention_cursor_reaches_the_loop_a_server_actually_starts() {
                 wal_sequence: 1,
                 index_log_sequence: 1,
             }],
-            ..StorageManagerOptions::default()
+            ..cadence()
         }
     }
 
-    let records = StorageManagerOptions::default().min_undumped_wal_records as usize + 256;
+    let records = cadence().min_undumped_wal_records as usize + 256;
 
     // ---- HALF ONE: the write-ahead log floor. Its own denominator and its own control. ----
     fn wal_records(engine: &TemporalEngine) -> usize {
@@ -3895,7 +3981,7 @@ fn a_retention_cursor_reaches_the_loop_a_server_actually_starts() {
         wal_before > 0,
         "DENOMINATOR: the fixture must leave write-ahead log records to reclaim, got {wal_before}"
     );
-    let wal_control = run(wal_control, StorageManagerOptions::default());
+    let wal_control = run(wal_control, cadence());
     let wal_control_after = wal_records(&wal_control);
     assert!(
         wal_control_after < wal_before,
@@ -3949,7 +4035,7 @@ fn a_retention_cursor_reaches_the_loop_a_server_actually_starts() {
         prune_before >= 2,
         "DENOMINATOR: pruning is vacuous without older dumps to take, got {prune_before}"
     );
-    let prune_control = run(prune_control, StorageManagerOptions::default());
+    let prune_control = run(prune_control, cadence());
     let prune_control_after = manifest_count(&prune_control);
     assert!(
         prune_control_after < prune_before,
@@ -4688,6 +4774,18 @@ fn the_dump_cap_bounds_a_stage_but_not_a_round() {
     assert!(cap > 0, "this test is about a non-zero cap");
     let keys = cap * 20;
 
+    // The record trigger, named explicitly. Both facts above are about what a DUMP drains, the
+    // shipped gate releases one on 128 MiB of bytes (`min_undumped_wal_records` ships at
+    // `WAL_DUMP_RECORD_TRIGGER_OFF`), and this fixture writes about 4,000 records of 64 B. Under
+    // the bare default no dump is released and both arms drain nothing, which would make this a
+    // test of the gate rather than of the cap. See `the_running_scheduler_reaches_every_phase`.
+    fn cadence() -> StorageManagerOptions {
+        StorageManagerOptions {
+            min_undumped_wal_records: 1_000,
+            ..StorageManagerOptions::default()
+        }
+    }
+
     fn dirty_after_one_round(keys: usize, options: StorageManagerOptions) -> (usize, usize) {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -4722,7 +4820,7 @@ fn the_dump_cap_bounds_a_stage_but_not_a_round() {
         StorageManagerOptions {
             enable_memory_reclaim: false,
             enable_index_gc: false,
-            ..StorageManagerOptions::default()
+            ..cadence()
         },
     );
     assert_eq!(
@@ -4732,7 +4830,7 @@ fn the_dump_cap_bounds_a_stage_but_not_a_round() {
     );
 
     // A whole round does not, because reclaim_index dumps the rest on purpose.
-    let (before, after) = dirty_after_one_round(keys, StorageManagerOptions::default());
+    let (before, after) = dirty_after_one_round(keys, cadence());
     assert_eq!(
         after, 0,
         "a default round dumps the whole dirty set, because index GC needs the coverage: \

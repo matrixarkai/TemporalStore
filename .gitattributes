@@ -5,3 +5,9 @@
 *.sh text eol=lf
 *.md text eol=lf
 Dockerfile text eol=lf
+
+# The engine test-module list is a flat list of `mod` declarations. Two branches that each
+# add a module should not conflict, so keep BOTH added lines. Union is safe here ONLY because the
+# file has no structure: an edited declaration becomes a duplicate `mod`, a compile error rather
+# than silent corruption. Anything with structure belongs in engine_regression_tests.rs.
+crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs merge=union

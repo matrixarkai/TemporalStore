@@ -1020,6 +1020,16 @@ fn probe_engine_on_for_record(
 /// `dry_run` skips it (`storage_manager_cycle.rs:546`) -- and whose dump is released by
 /// `min_undumped_wal_records` or `min_undumped_wal_bytes`, whichever is crossed first.
 ///
+/// # AND ON THE SHIPPED DEFAULT ONLY ONE OF THOSE TWO IS ARMED, WHICH NARROWS THIS FINDING
+///
+/// `min_undumped_wal_records` now ships at `WAL_DUMP_RECORD_TRIGGER_OFF`, so a default deployment
+/// releases its dump on 128 MiB of undumped BYTES and the record count never speaks. The
+/// divergence measured below -- object count against record count -- is therefore no longer a
+/// property of a shipped deployment. It is a property of a deployment that has configured the
+/// record trigger back on, which remains supported and is the reason the field is kept. This probe
+/// configures it, explicitly, rather than reading a default that would make both of its arms
+/// decline and print two zeroes.
+///
 /// # TWO ARMS, BECAUSE THE GATE COUNTS SOMETHING DIFFERENT FROM WHAT THE COST COUNTS
 ///
 /// The gate counts undumped WAL RECORDS. The dirty index costs per OBJECT. **A batch append is
@@ -1080,8 +1090,16 @@ fn what_the_default_dump_cadence_actually_drains() {
          would drain the whole dirty set and the cap arm below is void"
     );
 
+    // THE RECORD TRIGGER, PUT BACK, because the divergence this probe measures only exists while
+    // it is armed -- see the note above. Read from the struct and not copied as a literal for
+    // everything the shipped default still decides; overridden only for the one field that now
+    // ships off, where there is no reachable record count to derive an object count from.
+    let cadence = crate::data_node::StorageManagerOptions {
+        min_undumped_wal_records: 1_000,
+        ..crate::data_node::StorageManagerOptions::default()
+    };
     // Enough single writes to cross the record threshold, and the same object count batched.
-    let objects = (shipped.min_undumped_wal_records as usize + 100).max(1_100);
+    let objects = (cadence.min_undumped_wal_records as usize + 100).max(1_100);
     let mut declined_arm: Option<(u64, u64)> = None;
     let mut released_arm: Option<(usize, usize, usize)> = None;
 
@@ -1130,8 +1148,8 @@ fn what_the_default_dump_cadence_actually_drains() {
         let request = |shard_id: crate::types::ShardId| StorageLifecycleRequest {
             shard_id,
             max_dump_buckets_per_round: shipped.max_dump_buckets_per_round,
-            min_undumped_wal_records: shipped.min_undumped_wal_records,
-            min_undumped_wal_bytes: shipped.min_undumped_wal_bytes,
+            min_undumped_wal_records: cadence.min_undumped_wal_records,
+            min_undumped_wal_bytes: cadence.min_undumped_wal_bytes,
             ..StorageLifecycleRequest::default()
         };
 
@@ -1159,7 +1177,7 @@ fn what_the_default_dump_cadence_actually_drains() {
                 "  => THE CADENCE DECLINED: {} undumped records is below the threshold of {}, so \
                  no bucket was selected. The cadence is WORKING. Note the object count beside it \
                  -- {} objects are dirty and the gate cannot see them, because it counts records.",
-                plan.undumped_wal_records, shipped.min_undumped_wal_records, plan.undumped_wal_objects
+                plan.undumped_wal_records, cadence.min_undumped_wal_records, plan.undumped_wal_objects
             );
             declined_arm = Some((plan.undumped_wal_records, plan.undumped_wal_objects));
         } else {
@@ -1226,7 +1244,7 @@ fn what_the_default_dump_cadence_actually_drains() {
          RECORD count against {}; the cost is per OBJECT. `undumped_wal_objects` is computed and \
          REPORTED beside it and deliberately not compared.",
         declined_objects as f64 / declined_records.max(1) as f64,
-        shipped.min_undumped_wal_records
+        cadence.min_undumped_wal_records
     );
     match released_arm {
         Some((first, total, rounds)) => println!(

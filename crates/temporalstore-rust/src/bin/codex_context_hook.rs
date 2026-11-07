@@ -3,18 +3,19 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    extract_context, inject_context, ContextExtractRequest, ContextInjectRequest,
-    ContextModelProviderConfig, ContextRetrieveRequest, ContextSourceKind, ContextTier,
-    TemporalEngine,
+    context_scope_nodes, extract_context, inject_context, remember_context_scope,
+    remember_context_scope_node, ContextExtractRequest, ContextIndexRef, ContextInjectRequest,
+    ContextModelProviderConfig, ContextRetrieveRequest, ContextSourceKind, ContextTier, TemporalEngine,
+    CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT,
 };
 
 #[derive(Debug, Clone)]
@@ -22,8 +23,6 @@ struct Args {
     agent_name: String,
     event: String,
     root: PathBuf,
-    event_log: Option<PathBuf>,
-    event_log_enabled: bool,
     account_id: String,
     tenant_id: String,
     user_id: String,
@@ -32,7 +31,7 @@ struct Args {
     max_context_tokens: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 struct SessionIndex {
     sessions: BTreeMap<String, Vec<u64>>,
 }
@@ -71,6 +70,11 @@ fn main() {
         "{}:{}:{}:{}",
         args.account_id, args.tenant_id, args.user_id, args.session_id
     ));
+    let catalog_hash = stable_hash64(&format!(
+        "{}:{}:{}",
+        args.account_id, args.tenant_id, args.user_id
+    ));
+    let _ = remember_context_scope(&engine, 1, catalog_hash, &args.session_id);
     let now_ms = now_ms();
     let source_id = format!(
         "{}:{}:{}:{:016x}",
@@ -114,16 +118,18 @@ fn main() {
         });
         if extract.status.ok && extract.node.node_hash != 0 {
             extracted_node_hash = Some(extract.node.node_hash);
-            remember_session_node(
-                &args.root,
-                &args.agent_name,
-                &args.session_id,
-                extract.node.node_hash,
-            );
+            let _ = remember_context_scope_node(&engine, 1, tenant_hash, &extract.index_ref);
         }
     }
 
-    let mut node_hashes = session_nodes(&args.root, &args.agent_name, &args.session_id);
+    let mut node_hashes = scope_nodes_with_legacy_import(
+        &engine,
+        tenant_hash,
+        catalog_hash,
+        &args.root,
+        &args.agent_name,
+        &args.session_id,
+    );
     if let Some(node_hash) = extracted_node_hash {
         node_hashes.push(node_hash);
     }
@@ -148,7 +154,14 @@ fn main() {
             "{}:{}:{}:_global",
             args.account_id, args.tenant_id, args.user_id
         ));
-        let global_nodes = session_nodes(&args.root, &args.agent_name, "_global");
+        let global_nodes = scope_nodes_with_legacy_import(
+            &engine,
+            global_tenant_hash,
+            catalog_hash,
+            &args.root,
+            &args.agent_name,
+            "_global",
+        );
         let (glob_ctx, glob_blocks, glob_tokens) =
             retrieve_scope(&engine, global_tenant_hash, &global_nodes, &query, now_ms, &args, "global");
         let merged = merge_context_blocks(&[sess_ctx.as_str(), glob_ctx.as_str()]);
@@ -188,13 +201,11 @@ fn main() {
         "retrieve": retrieve_status,
         "node_index": {
             "session_node_count": node_hashes.len(),
-            "path": session_index_path(&args.root, &args.agent_name),
+            "storage": "temporalstore",
+            "candidate_limit": CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT,
         },
         "root": args.root,
-        "event_log": args.event_log.as_ref().map(|path| path.display().to_string()),
-        "event_log_enabled": args.event_log_enabled,
     });
-    append_event_log(args.event_log.as_ref(), args.event_log_enabled, &report);
     println!(
         "{}",
         serde_json::to_string(&report).expect("hook report should serialize")
@@ -213,11 +224,6 @@ fn parse_args() -> Args {
             std::env::var("TEMPORALSTORE_RUST_CODEX_HOOK_ROOT")
                 .unwrap_or_else(|_| "/tmp/temporalstore-rust-codex-hook".to_string()),
         ),
-        event_log: std::env::var("TEMPORALSTORE_RUST_CODEX_EVENT_LOG")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(PathBuf::from),
-        event_log_enabled: env_bool("TEMPORALSTORE_RUST_CODEX_EVENT_LOG_ENABLE"),
         account_id: std::env::var("MATRIXARK_ACCOUNT_ID")
             .unwrap_or_else(|_| "acct_codex".to_string()),
         tenant_id: std::env::var("MATRIXARK_TENANT_ID")
@@ -240,10 +246,6 @@ fn parse_args() -> Args {
             }
             "--event" => parsed.event = args.next().unwrap_or(parsed.event),
             "--root" => parsed.root = PathBuf::from(args.next().unwrap_or_default()),
-            "--event-log" => {
-                parsed.event_log = Some(PathBuf::from(args.next().unwrap_or_default()));
-                parsed.event_log_enabled = true;
-            }
             "--account-id" => parsed.account_id = args.next().unwrap_or(parsed.account_id),
             "--tenant-id" => parsed.tenant_id = args.next().unwrap_or(parsed.tenant_id),
             "--user-id" => parsed.user_id = args.next().unwrap_or(parsed.user_id),
@@ -368,7 +370,7 @@ fn role_for_event(event: &str) -> &'static str {
     }
 }
 
-fn session_nodes(root: &PathBuf, agent_name: &str, session_id: &str) -> Vec<u64> {
+fn legacy_session_nodes(root: &PathBuf, agent_name: &str, session_id: &str) -> Vec<u64> {
     let path = session_index_path(root, agent_name);
     fs::read_to_string(path)
         .ok()
@@ -377,20 +379,36 @@ fn session_nodes(root: &PathBuf, agent_name: &str, session_id: &str) -> Vec<u64>
         .unwrap_or_default()
 }
 
-fn remember_session_node(root: &PathBuf, agent_name: &str, session_id: &str, node_hash: u64) {
-    let path = session_index_path(root, agent_name);
-    let mut index = fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<SessionIndex>(&text).ok())
-        .unwrap_or_default();
-    let nodes = index.sessions.entry(session_id.to_string()).or_default();
-    nodes.push(node_hash);
-    nodes.sort_unstable();
-    nodes.dedup();
-    let _ = fs::write(
-        path,
-        serde_json::to_vec_pretty(&index).expect("session index should serialize"),
-    );
+fn scope_nodes_with_legacy_import(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    catalog_hash: u64,
+    root: &PathBuf,
+    agent_name: &str,
+    session_id: &str,
+) -> Vec<u64> {
+    let nodes = context_scope_nodes(engine, 1, tenant_hash);
+    if !nodes.is_empty() {
+        return nodes;
+    }
+
+    let legacy_nodes = legacy_session_nodes(root, agent_name, session_id);
+    if !legacy_nodes.is_empty() {
+        let _ = remember_context_scope(engine, 1, catalog_hash, session_id);
+    }
+    for node_hash in legacy_nodes {
+        let _ = remember_context_scope_node(
+            engine,
+            1,
+            tenant_hash,
+            &ContextIndexRef {
+                primary_node_hash: node_hash,
+                primary_event_time_ms: 1,
+                event_id_hash: node_hash,
+            },
+        );
+    }
+    context_scope_nodes(engine, 1, tenant_hash)
 }
 
 fn session_index_path(root: &PathBuf, agent_name: &str) -> PathBuf {
@@ -426,10 +444,6 @@ fn agent_profile(agent_name: &str) -> &'static str {
         "cursor" | "cursor-ai" => "cursor",
         _ => "generic",
     }
-}
-
-fn env_bool(name: &str) -> bool {
-    temporalstore_rust::env_flag::env_bool(name, false)
 }
 
 /// How many characters of retrieved context one hook invocation may hand back.
@@ -477,25 +491,6 @@ fn additional_context_from_injected(injected: &str, limit: usize) -> String {
         block
     } else {
         block.chars().take(limit).collect()
-    }
-}
-
-fn append_event_log(path: Option<&PathBuf>, enabled: bool, report: &Value) {
-    if !enabled {
-        return;
-    }
-    let Some(path) = path else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(
-            file,
-            "{}",
-            serde_json::to_string(report).expect("hook event should serialize")
-        );
     }
 }
 
@@ -660,24 +655,6 @@ mod tests {
         );
         assert_eq!(role_for_event("cursor.tool"), "tool");
         assert_eq!(role_for_event("claude.stop"), "assistant");
-    }
-
-    #[test]
-    fn external_event_log_is_debug_opt_in() {
-        let path = std::env::temp_dir().join(format!(
-            "temporalstore-rust-codex-hook-test-{}.jsonl",
-            now_ms()
-        ));
-        let _ = fs::remove_file(&path);
-        let report = json!({"status": "ok", "event": "UserPromptSubmit"});
-
-        append_event_log(Some(&path), false, &report);
-        assert!(!path.exists());
-
-        append_event_log(Some(&path), true, &report);
-        let written = fs::read_to_string(&path).expect("debug event log should be written");
-        assert!(written.contains("UserPromptSubmit"));
-        let _ = fs::remove_file(&path);
     }
 
     // shared-corpus: codex_mcp_multi_agent_context_hook_parity

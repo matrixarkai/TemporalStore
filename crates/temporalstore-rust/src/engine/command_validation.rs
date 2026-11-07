@@ -32,27 +32,24 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
     }
 }
 
-/// Hand each key a command touched, read or write, to `visit` -- for the per-bucket LRU
-/// recency stamp, which is the only thing that wants them.
+/// Hand each key a command touched, read or write, to `visit` for the per-bucket LRU stamp.
 ///
-/// VISITED RATHER THAN COLLECTED. The two call sites are the same four-line loop: derive a
-/// routing bucket from the key and insert a `u32 -> u64`. Neither keeps a key, so the
-/// `Vec<String>` this replaces was allocated and cloned into purely to be walked once and
-/// dropped -- TWO allocations per warm serving read, measured, of the ten #1952 found.
-///
-/// A WRITE command's keys are still built and still owned: `command_object_keys` synthesises
-/// several of them (a control-state family key, a context node key) and there is nothing to
-/// borrow from. Only the borrowing half of the fork got cheaper, which is the half a serving
-/// read takes.
-pub(super) fn for_each_touched_key(command: &Command, mut visit: impl FnMut(&str)) {
-    let object_keys = command_object_keys(command);
+/// VISITED RATHER THAN COLLECTED. Execution already derives owned write keys for durability and
+/// index maintenance, while a read can borrow its key from the command. Recency retains neither,
+/// so deriving another vector solely for this walk creates a second vector and a second copy of
+/// each ordinary feature key.
+pub(super) fn for_each_precomputed_touched_key(
+    command: &Command,
+    object_keys: &[String],
+    mut visit: impl FnMut(&str),
+) {
     if object_keys.is_empty() {
         if let Some(key) = command_read_key(command) {
             visit(key);
         }
     } else {
         for key in object_keys {
-            visit(&key);
+            visit(key);
         }
     }
 }
@@ -70,6 +67,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
         | Command::HashMultiSet { key, .. }
+        | Command::HashMultiSetIfTimestampOlder { key, .. }
         | Command::HashIncrBy { key, .. }
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
@@ -298,6 +296,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::StringSetConditional { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
@@ -357,6 +356,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
@@ -406,7 +406,7 @@ pub(super) fn admission_limits(
     shard_id: ShardId,
     write_command: bool,
     config: &Config,
-    info: &Option<ShardInfo>,
+    table_name: Option<&str>,
 ) -> Vec<AdmissionLimit> {
     let mut limits = Vec::new();
     // A configured qps of 0 means UNLIMITED on EVERY scope below, not deny-all. Zero is what
@@ -433,9 +433,8 @@ pub(super) fn admission_limits(
             },
         });
     }
-    if let Some(table_name) = info
-        .as_ref()
-        .map(|info| info.table_name.trim())
+    if let Some(table_name) = table_name
+        .map(str::trim)
         .filter(|table_name| !table_name.is_empty())
     {
         if let Some(limit) = (if write_command {
@@ -514,6 +513,14 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::HashMultiSetIfTimestampOlder {
+            timestamp_nanos, ..
+        } if !(0..1_000_000_000).contains(timestamp_nanos) => {
+            return Err(Status::error(
+                "invalid_argument",
+                "timestamp_nanos must be between 0 and 999999999",
+            ));
+        }
         // Expiry checks here use the SAME replay-aware clock as the executor's
         // `remove_if_expired`. Validation runs only on the leader today, where the two
         // clocks coincide, so this changes no production behaviour. It removes a split
@@ -571,6 +578,30 @@ pub(super) fn validate_command_preconditions(
                 .map(|series| series.len())
                 .unwrap_or(0);
             if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+                return Err(Status::error(
+                    "invalid_argument",
+                    format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
+                ));
+            }
+        }
+        // THE SAME SERIES, SO THE SAME CEILING. `SequenceAdd` appends into `features` exactly as
+        // the three arms above do -- `execute_on_shard` reaches for `features_mut()` under both
+        // names -- but it was not in this block, so the ceiling the other three enforce was
+        // reachable around: a key the feature commands refuse to grow could be grown past it by
+        // sending rows instead of points.
+        //
+        // The cost of the omission is not only the ceiling. Validation runs BEFORE execution, so a
+        // refused command writes nothing; an accepted one serialises every row to JSON and appends
+        // a block per row before `trim_timestamped_series` discards everything past
+        // `feature_max_size`. An unbounded batch therefore bought an unbounded amount of durable
+        // work for data that does not survive the same command.
+        Command::SequenceAdd { key, rows } => {
+            let current = shard
+                .features()
+                .get(&key[..])
+                .map(|series| series.len())
+                .unwrap_or(0);
+            if current.saturating_add(rows.len()) > FEATURE_ADD_HARD_MAX_SIZE {
                 return Err(Status::error(
                     "invalid_argument",
                     format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
@@ -1000,13 +1031,15 @@ pub(super) fn validate_command_preconditions(
 /// None of it shows in what is stored: the same answer packs into 4,117 bytes, a 1.005x encoding.
 /// The cost is entirely on the read side.
 ///
-/// So the tag is read on its own first, and the payload is then read into a plain struct that
-/// carries no tag and so needs no buffering. What is STORED does not change at all -- these are the
-/// same bytes the encoder already wrote -- which matters because the cache admits and evicts by
-/// size, and an entry of a different size lives a different life.
+/// So the tag is read on its own first and borrowed from the packed input, and the payload is then
+/// read into a plain struct that carries no tag and so needs no buffering. Matching the tag needs
+/// no owned `String`; the returned payload remains the only allocation. What is STORED does not
+/// change at all -- these are the same bytes the encoder already wrote -- which matters because
+/// the cache admits and evicts by size, and an entry of a different size lives a different life.
 #[derive(serde::Deserialize)]
-struct CachedKind {
-    kind: String,
+struct CachedKind<'a> {
+    #[serde(borrow)]
+    kind: &'a str,
 }
 
 #[derive(serde::Deserialize)]
@@ -1048,8 +1081,8 @@ pub(super) fn encode_cached_response(response: &CommandResponse) -> Option<Vec<u
 pub(super) fn decode_cached_response(bytes: &[u8]) -> Option<CommandResponse> {
     // Reading the tag on its own steps over the payload instead of building it: the fields this
     // struct does not name are skipped, not materialised.
-    let kind = rmp_serde::from_slice::<CachedKind>(bytes).ok()?.kind;
-    match kind.as_str() {
+    let kind = rmp_serde::from_slice::<CachedKind<'_>>(bytes).ok()?.kind;
+    match kind {
         "bytes" => Some(CommandResponse::Bytes {
             value: rmp_serde::from_slice::<CachedBytes>(bytes).ok()?.value,
         }),

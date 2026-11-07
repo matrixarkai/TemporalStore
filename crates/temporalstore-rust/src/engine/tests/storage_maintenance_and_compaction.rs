@@ -9599,17 +9599,17 @@ fn what_each_home_costs() {
     assert!(total > 0.0, "measured nothing");
 }
 
-// `would_an_inline_component_pay` WAS HERE, AND THE QUESTION IT HELD OPEN IS ANSWERED.
+// `would_an_inline_element_name_pay` WAS HERE, AND THE QUESTION IT HELD OPEN IS ANSWERED.
 //
-// It asked whether specialising `ObjectBlockRefs::by_component` for the one-component case would
+// It asked whether specialising `ObjectBlockRefs::by_element_name` for the one-element-name case would
 // pay -- an inline `One`/`Many` enum in place of the outer `Vec`, mirroring what `BlockRefs`
 // already did for the inner list. It was deliberately left undone pending a measurement, because
 // inline was 56 bytes against a `Vec` header's 24 and the byte comparison alone was a wash, so it
-// measured both halves: how many components an object really has, and what the two shapes cost in
+// measured both halves: how many element names an object really has, and what the two shapes cost in
 // allocations as well as bytes.
 //
 // IT WAS DONE, AND THEN SUPERSEDED BY A STRONGER RESULT. The specialisation shipped --
-// `ComponentList` was exactly that enum -- and it is now deleted along with `ComponentBlocks` and
+// `ElementNameList` was exactly that enum -- and it is now deleted along with `ElementNameBlocks` and
 // `ObjectBlockRefs`, because the thing the list was holding was a caller-supplied element name and
 // there is no longer a name to hold. An object maps straight to its `BlockRefs`. Removing the
 // level beats inlining it, so there is no comparison left to run.
@@ -9618,7 +9618,7 @@ fn what_each_home_costs() {
 // 238 B/record (`what_each_home_costs`), second only to the slot map, and unlike the slot map it
 // did not shrink when the slot range was bounded because it is keyed per object either way. That
 // per-object cost is now 24 bytes of `BlockRefs` where it was 40 of `ObjectBlockRefs` over 40 of
-// `ComponentList` over 40 of `ComponentBlocks`.
+// `ElementNameList` over 40 of `ElementNameBlocks`.
 //
 // It would not have reported any of this itself. Its sole assertion was `objects > 0` after 20,000
 // writes whose responses were already checked one by one, so it could not fail; and it carried

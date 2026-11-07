@@ -213,7 +213,7 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
     // it. The blocks are untouched, so the container's own addresses still resolve.
     //
     // IT CANNOT SELECT BY FIELD NAME, AND IT NO LONGER NEEDS TO. It read
-    // `entry.component.as_deref() == Some(INDEX_PLANTED_FIELD)` and then, after the field left the
+    // `entry.element_name.as_deref() == Some(INDEX_PLANTED_FIELD)` and then, after the field left the
     // entry, selected "the object's one live entry" on the belief that one entry a block meant one
     // entry an OBJECT. It does not: each element is written to its own block, so this object holds
     // three. Marking all of them is the stronger plant anyway -- it leaves the container answering

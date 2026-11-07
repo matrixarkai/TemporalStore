@@ -276,6 +276,13 @@ message Command {
     ContextWriteIndexRef context_write_index_ref = 54;
     ContextUpsertNode context_upsert_node = 55;
     ContextSetNodeEmbedding context_set_node_embedding = 56;
+    ContextWriteEvent context_write_event = 57;
+    ContextWriteExtractedEvent context_write_extracted_event = 58;
+    ContextUpsertEntity context_upsert_entity = 59;
+    ContextUpsertSummary context_upsert_summary = 60;
+    ContextWriteCompressionEvent context_write_compression_event = 61;
+    ContextWritePackAudit context_write_pack_audit = 62;
+    HashMultiSetIfTimestampOlder hash_multi_set_if_timestamp_older = 63;
   }
 }
 
@@ -323,6 +330,14 @@ message HashEntry {
 message HashMultiSet {
   string key = 1;
   repeated HashEntry entries = 2;
+}
+
+message HashMultiSetIfTimestampOlder {
+  string key = 1;
+  string timestamp_field = 2;
+  int64 timestamp_seconds = 3;
+  int32 timestamp_nanos = 4;
+  repeated HashEntry entries = 5;
 }
 
 message HashMultiGet {
@@ -616,7 +631,7 @@ message WalBlockAddress {
 //
 // Fields 1-10 described a write and were derived FROM the command beside them, so nothing ever
 // read them back and writing them was pure amplification. Fields 11-14 are the difference: the
-// block a write produced, the bytes for state no block backs, and which component of an object
+// block a write produced, the bytes for state no block backs, and which element of an object
 // they belong to. With those, a shard can be rebuilt from items alone and the command becomes
 // removable rather than merely redundant.
 //
@@ -634,10 +649,10 @@ message EngineWalItem {
   bool meta_log = 9;
   bool block_log = 10;
 
-  // Which component of the object this is: a hash field, a set member, a timestamp, a score and
+  // Which element of the object this is: a hash field, a set member, a timestamp, a score and
   // member packed together. Absent for an object with exactly one value.
-  optional string component = 11;
-  // Where the block for this component went. Absent for state no block backs -- a seen-set
+  optional string element_name = 11;
+  // Where the block for this element went. Absent for state no block backs -- a seen-set
   // member, a token bucket -- which carries its bytes in `value` instead.
   WalBlockAddress block = 12;
   // The bytes themselves, for state that has no block behind it.
@@ -653,17 +668,17 @@ message EngineWalItem {
   optional uint32 routing_bucket = 15;
   // The stored key of a timestamped entry, as a number.
   //
-  // It used to travel inside `component` as a decimal string: thirteen characters for something a
+  // It used to travel inside `element_name` as a decimal string: thirteen characters for something a
   // varint says in seven, and a context event packed two of them as thirty-two hex characters
-  // where two varints cost about twelve. `component` keeps its job of naming a hash field or a
+  // where two varints cost about twelve. `element_name` keeps its job of naming a hash field or a
   // set member, and stops doubling as a number.
   optional uint64 timestamp_ms = 16;
   // A second key for an entry the index keys by something other than its timestamp -- a context
   // event, whose block packs by time and whose index keys by event id.
   optional uint64 entry_id = 17;
-  // The whole object is gone, not one component of it.
+  // The whole object is gone, not one element of it.
   //
-  // Previously implied by `deleted` with no component. A reader had to know the convention to
+  // Previously implied by `deleted` with no element name. A reader had to know the convention to
   // tell the two apart, and a reader that did not silently removed the wrong amount.
   bool object_deleted = 18;
 }
@@ -683,8 +698,8 @@ message WalStagedBlock {
   // exists to stop a durably acknowledged write reading as missing.
   //
   // Absent for a page that IS its whole object (a string, a control state), which is what `None`
-  // has always meant for `BlockIndex::component`. Never absent for a container element.
-  optional string component = 4;
+  // has always meant for `BlockIndex::element_name`. Never absent for a container element.
+  optional string element_name = 4;
 }
 
 message EngineWalMetadata {
@@ -1156,4 +1171,493 @@ message ContextSetNodeEmbedding {
   uint64 model_hash = 3;
   repeated float vector = 4;
   uint64 updated_at_ms = 5;
+}
+
+// THE DURABLE EVENT. ALL FIFTEEN FIELDS.
+//
+// NOT a client projection. `ContextEvent` has no client message at all, and the one that exists
+// for its sibling -- `message ContextNode`, four fields against a fifteen-field durable struct,
+// whose converter fabricates `parent_hash`, `kind` and `status` as zero -- is exactly what a
+// durable record must not reuse. `ContextNodeRecord` above is the same decision for the node.
+//
+// SEVEN OF THE FIFTEEN ARE `skip_serializing` IN THE JSON FORM, so the durable JSON this replaces
+// never wrote them. They are carried anyway, as `ContextNodeRecord` carries its three: the WAL's
+// contract is to reproduce the COMMAND, not to re-apply the JSON form's write policy. That makes
+// this record STRICTLY MORE FAITHFUL than the JSON it replaces, which is a property the round-trip
+// test asserts rather than a claim made here -- `event_type_code()` falls back to `kind`, so a
+// replay that lost it resolves a different event type.
+//
+// `vector` is `repeated float` -- packed by default, and NOT quantised. Int8 quantisation is a
+// separately gated decision with its own quality bar.
+//
+// NO MODEL HASH, and that is `ContextEvent`'s existing design rather than an omission here: the
+// event vector has never carried one. Inventing a guard during a format port would put a field on
+// disk that the shipped reader does not know, for a check this record has never made. The three
+// that do exist -- `ContextNodeRecord.embedding_model_hash`,
+// `ContextNodeRecord.summary_vector_model_hash` and `ContextSetNodeEmbedding.model_hash` -- stay
+// individual and are not shared with this one.
+message ContextEventRecord {
+  uint64 event_id_hash = 1;
+  uint64 event_time_ms = 2;
+  uint64 ingestion_time_ms = 3;
+  // Deprecated hot-schema field, `skip_serializing` in the JSON form; carried so the command
+  // round-trips. `event_type_code()` reads this when `event_type` is zero.
+  uint32 kind = 4;
+  uint32 event_type = 5;
+  // Deprecated hot-schema field; carried for the same reason.
+  uint64 actor_hash = 6;
+  // Deprecated hot-schema field; carried for the same reason.
+  uint32 status = 7;
+  // Deprecated hot-schema field; carried for the same reason.
+  uint64 valid_until_ms = 8;
+  float confidence = 9;
+  float importance = 10;
+  string text = 11;
+  // Deprecated hot-schema field; carried for the same reason.
+  string source_ref = 12;
+  // Deprecated hot-schema field; carried for the same reason.
+  repeated uint64 related_node_hashes = 13;
+  // Deprecated hot-schema field; carried for the same reason.
+  bytes compact_attrs = 14;
+  repeated float vector = 15;
+}
+
+// The five internal secondary indexes an extraction can switch off.
+//
+// A proto3 enum must have a zero value and `InternalContextIndex` in Rust has no sixth variant, so
+// UNSPECIFIED exists to satisfy the wire format and is NOT one of the five. The decode REFUSES it,
+// and refuses any number it does not know: a repeated proto enum is open and arrives as `i32`, so
+// an unmapped number defaulted to the first variant would switch off whichever index happens to
+// sort first rather than the one that was asked for.
+enum InternalContextIndex {
+  INTERNAL_CONTEXT_INDEX_UNSPECIFIED = 0;
+  INTERNAL_CONTEXT_INDEX_EVENT_KIND = 1;
+  INTERNAL_CONTEXT_INDEX_ENTITY = 2;
+  INTERNAL_CONTEXT_INDEX_STATUS = 3;
+  INTERNAL_CONTEXT_INDEX_SOURCE = 4;
+  INTERNAL_CONTEXT_INDEX_EVENT_TIME_BUCKET = 5;
+}
+
+message ContextExtractedEventIndexesRecord {
+  uint64 scope_hash = 1;
+  repeated uint64 entity_hashes = 2;
+  uint64 status_hash = 3;
+  uint64 source_hash = 4;
+  uint64 event_time_bucket_ms = 5;
+  repeated InternalContextIndex disabled_indexes = 6;
+}
+
+message ContextWriteEvent {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  // The Rust field is boxed -- the variant decides how wide EVERY command is -- and `Box<T>`
+  // serialises identically to `T`, so it is transparent to both codecs.
+  //
+  // REFUSED BY NAME when absent, never defaulted: a nested message is always optional on the wire,
+  // and an all-zero event filed as if real cannot be told from a real one afterwards.
+  ContextEventRecord event = 3;
+  bool first_write_only = 4;
+  bool cold_storage = 5;
+}
+
+message ContextWriteExtractedEvent {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  // Refused by name when absent, as above.
+  ContextEventRecord event = 3;
+  // DEFAULTED when absent, unlike `event`, and the difference is read off the Rust declaration
+  // rather than decided here: `indexes` is `#[serde(default)] indexes:
+  // ContextExtractedEventIndexes`, a plain field with a `Default`, so the JSON reader this replaces
+  // already treats an absent block as the empty default. `event` has no default and no absence the
+  // JSON form accepts. The writer always emits this field, even when empty, so an absent block on
+  // disk means an older build rather than an empty one.
+  ContextExtractedEventIndexesRecord indexes = 4;
+  bool first_write_only = 5;
+  bool cold_storage = 6;
+}
+
+// THE DURABLE ENTITY. ALL TEN FIELDS.
+message ContextEntityRecord {
+  uint64 entity_hash = 1;
+  uint64 node_hash = 2;
+  // `#[serde(rename = "type", alias = "entity_type")]` in Rust, so the JSON key is `type` and the
+  // identifier is `entity_type`. A proto field name is not a JSON key and nothing reads it as one,
+  // so it is named for the identifier.
+  uint32 entity_type = 3;
+  string name = 4;
+  string value = 5;
+  uint64 updated_at_ms = 6;
+  uint64 valid_from_ms = 7;
+  float confidence = 8;
+  repeated uint64 source_event_hashes = 9;
+  // Inline, `repeated float`, packed, and NOT quantised.
+  //
+  // NO MODEL HASH, which is `ContextEntity`'s existing design rather than a guard dropped here --
+  // the entity vector has never carried one, exactly as the event vector has not. Compare
+  // ContextSummaryRecord below, which DOES carry one and must keep it.
+  repeated float vector = 10;
+}
+
+// THE DURABLE SUMMARY. ALL SIX FIELDS, AND ONE OF THEM IS AN ENCODER GUARD IN ITS OWN RIGHT.
+//
+// `embedding_model_hash` here is the FOURTH such guard in this file and must not be shared with,
+// defaulted from or folded into any of the other three -- `ContextNodeRecord.embedding_model_hash`,
+// `ContextNodeRecord.summary_vector_model_hash` and `ContextSetNodeEmbedding.model_hash`. The
+// reason is in the Rust doc on the field: the retrieve pass scores a node's OWN vector and this
+// summary's vector into ONE score map, so a summary scored under a replaced encoder marks the node
+// scored and withdraws the lexical fallback the declined node was routed to. That is worse than
+// being un-embedded, not equal to it.
+//
+// Zeroing it loses no datum: it disarms the check. Two encoders truncated to the same width give
+// no length error, only a cosine across two vector spaces. Zero means unknown -- a summary written
+// before the field existed, or one carrying no vector -- and unknown never conflicts.
+message ContextSummaryRecord {
+  uint64 node_hash = 1;
+  uint32 level = 2;
+  string text = 3;
+  uint64 valid_from_ms = 4;
+  // NOT quantised.
+  repeated float vector = 5;
+  // The guard, beside the vector it describes. See above.
+  uint64 embedding_model_hash = 6;
+}
+
+message ContextCompressionEventRecord {
+  uint64 compression_id_hash = 1;
+  uint64 node_hash = 2;
+  uint64 source_start_ms = 3;
+  uint64 source_end_ms = 4;
+  uint64 compressed_time_ms = 5;
+  string summary = 6;
+}
+
+message ContextAuditRefRecord {
+  uint64 node_hash = 1;
+  uint64 event_time_ms = 2;
+  string reason = 3;
+}
+
+message ContextPackAuditRecord {
+  string query_id = 1;
+  uint64 session_hash = 2;
+  uint64 request_time_ms = 3;
+  uint64 query_hash = 4;
+  uint32 max_prompt_tokens = 5;
+  uint32 selected_tokens = 6;
+  // REPEATED, so there is nothing to refuse: a repeated field has no presence on the wire in
+  // proto3, and `#[serde(default)]` on the Rust side already takes an absent list as empty.
+  //
+  // The two lists are kept SEPARATE and are asserted separately. Selected and blocked are the two
+  // halves of the audit's verdict, so a converter that crossed them would reverse every decision
+  // the audit records while every field still round-tripped.
+  repeated ContextAuditRefRecord selected_refs = 7;
+  repeated ContextAuditRefRecord blocked_refs = 8;
+}
+
+message ContextUpsertEntity {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, never defaulted: a nested message is always optional on the wire,
+  // and an upsert with no entity would file a record of all zeros that cannot afterwards be told
+  // from a real one.
+  ContextEntityRecord entity = 2;
+}
+
+message ContextUpsertSummary {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextSummaryRecord summary = 2;
+}
+
+message ContextWriteCompressionEvent {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextCompressionEventRecord event = 2;
+}
+
+message ContextWritePackAudit {
+  uint64 tenant_hash = 1;
+  // Refused by name when absent, as above.
+  ContextPackAuditRecord audit = 2;
+}
+
+// ===========================================================================================
+// THE DURABLE INGESTION STATE, the one file under the engine's ingestion directory.
+//
+// It is rewritten WHOLE under a temp-and-rename, so there is no partial-document shape to
+// model and no append framing: one message is one file. The reader lands first and accepts
+// both shapes; the writer that produces this one follows in its own change.
+//
+// NOTHING ASSERTS THE FILENAME. `state.json` appears exactly once in the crate, as a
+// `root.join("state.json")` construction with no test or doc pinning it, so the spelling is
+// not a durable contract the way `slab_manifest.json` is. The name stays regardless: the
+// writer retires either way, and renaming a path that is already on disk is a separate,
+// riskier decision.
+// ===========================================================================================
+
+// The ingestion crate's own `Status`, which rides inside a dead letter. Distinct from the
+// service-level status messages above because it is a DURABLE field here, not a response.
+message IngestionStatus {
+  bool ok = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message IngestionSourceApi {
+  string request_id = 1;
+}
+
+message IngestionSourceKafka {
+  string topic = 1;
+  int32 partition = 2;
+  int64 offset = 3;
+  // ABSENT IS NOT EMPTY, AND ABSENT IS NOT ZERO. Both of these are `Option` in the durable
+  // shape, and a record with no key reads differently from one keyed by the empty string, so
+  // they are `optional` rather than bare scalars.
+  optional string key = 4;
+  optional uint64 timestamp_ms = 5;
+}
+
+message IngestionSourceFlink {
+  string job_id = 1;
+  string operator_uid = 2;
+  uint32 subtask_index = 3;
+  uint64 checkpoint_id = 4;
+  uint64 record_index = 5;
+}
+
+// A `oneof`, and an ABSENT one is refused on decode rather than read as an API source. The
+// three arms carry different idempotence keys, so guessing one would let a replayed Kafka
+// record through as a fresh API call.
+message IngestionSource {
+  oneof source {
+    IngestionSourceApi api = 1;
+    IngestionSourceKafka kafka = 2;
+    IngestionSourceFlink flink = 3;
+  }
+}
+
+message KafkaOffsetLedgerEntry {
+  string topic = 1;
+  int32 partition = 2;
+  int64 committed_offset = 3;
+  uint64 updated_unix_ms = 4;
+}
+
+message IngestionStreamCommitState {
+  string stream_id = 1;
+  uint64 committed_sequence = 2;
+  uint64 updated_unix_ms = 3;
+}
+
+// UNSPECIFIED is refused on decode. Precommitted, Committed and Aborted decide whether a
+// Flink checkpoint's records may be replayed, so defaulting the tag would either replay
+// committed work or discard precommitted work.
+enum FlinkCheckpointStatus {
+  FLINK_CHECKPOINT_STATUS_UNSPECIFIED = 0;
+  FLINK_CHECKPOINT_STATUS_PRECOMMITTED = 1;
+  FLINK_CHECKPOINT_STATUS_COMMITTED = 2;
+  FLINK_CHECKPOINT_STATUS_ABORTED = 3;
+}
+
+message FlinkCheckpointState {
+  string job_id = 1;
+  string operator_uid = 2;
+  uint32 subtask_index = 3;
+  uint64 checkpoint_id = 4;
+  FlinkCheckpointStatus status = 5;
+  uint64 updated_unix_ms = 6;
+}
+
+message IngestionDeadLetter {
+  uint64 index = 1;
+  IngestionSource source = 2;
+  uint64 shard_id = 3;
+  IngestionStatus status = 4;
+}
+
+message IngestionStats {
+  uint64 accepted_total = 1;
+  uint64 failed_total = 2;
+  uint64 duplicate_total = 3;
+  uint64 dead_letter_total = 4;
+  uint64 stream_backpressure_total = 5;
+  uint64 stream_duplicate_total = 6;
+  uint64 kafka_committed_total = 7;
+  uint64 flink_precommit_total = 8;
+  uint64 flink_commit_total = 9;
+  uint64 flink_abort_total = 10;
+  int64 max_kafka_lag = 11;
+}
+
+// KEYED ENTRIES, NOT A PROTO `map`. The three collections are `BTreeMap`s in memory, so their
+// iteration order IS their key order and a re-encode of one state produces the same bytes. A
+// proto `map` has no defined order, which would make the same state encode differently on
+// different runs -- and this file is compared and checksummed by operators.
+//
+// The key is carried EXPLICITLY rather than rebuilt from the value's fields. It is derived
+// (`kafka_offset_key`, `flink_checkpoint_key`), and a decoder that recomputed it would quietly
+// re-key a document whose key function has since changed, instead of reading what was written.
+message DurableIngestionKafkaOffsetEntry {
+  string key = 1;
+  KafkaOffsetLedgerEntry value = 2;
+}
+
+message DurableIngestionStreamCommitEntry {
+  string key = 1;
+  IngestionStreamCommitState value = 2;
+}
+
+message DurableIngestionFlinkCheckpointEntry {
+  string key = 1;
+  FlinkCheckpointState value = 2;
+}
+
+message DurableIngestionState {
+  repeated DurableIngestionKafkaOffsetEntry kafka_offsets = 1;
+  repeated DurableIngestionStreamCommitEntry stream_commits = 2;
+  repeated DurableIngestionFlinkCheckpointEntry flink_checkpoints = 3;
+  // ORDER PRESERVED: dead letters are a `Vec` and operators read them in arrival order.
+  repeated IngestionDeadLetter dead_letters = 4;
+  IngestionStats stats = 5;
+}
+
+// ===========================================================================================
+// DURABLE BUCKET-DUMP MANIFEST AND INSTALL MARKER, BINARY SHAPE.
+//
+// A dump manifest is the durable reclaim watermark plus the recovery index for the data it
+// covers; the install marker is the roll-forward record of an install in flight. Both used to be
+// JSON files. A reader decides the shape per file from the first byte (see
+// `BUCKET_DUMP_CONTAINER_PROTOBUF` in `engine/bucket_dump_codec.rs`), never from a setting.
+//
+// NO `map` FIELD, ON PURPOSE. The manifest carries a checksum, and for a binary manifest that
+// checksum is a SHA-256 over THIS message's own encoding (`checksum_version` 1). A protobuf `map`
+// has no defined iteration order, so a digest over one would depend on the encoder. Every
+// collection below is a `repeated` field, which encodes in the order the writer gave it.
+//
+// FIELD ORDER IS PART OF THE DIGEST. `index_bytes` and `checksum` take the two HIGHEST tags so a
+// writer can stream the whole-shard index image into the hash without copying it into a message
+// first: the encoding of every other field comes before it, in tag order. A field added later
+// takes a tag BELOW 22, or the streamed digest stops being the encoding of the message -- and a
+// test in `bucket_dump_codec.rs` compares the two and says so.
+// ===========================================================================================
+
+message DurableBucketStorageSummary {
+  uint32 routing_bucket = 1;
+  uint64 object_count = 2;
+  uint64 block_ref_count = 3;
+  uint64 logical_bytes = 4;
+  uint64 physical_bytes = 5;
+  uint64 dirty_object_count = 6;
+  uint64 dirty_generation = 7;
+  uint64 last_dump_sequence = 8;
+  repeated uint64 block_slab_ids = 9;
+  // Absent is not slab 0: a bucket never compacted has no value here at all.
+  optional uint64 last_compacted_slab = 10;
+}
+
+message DurableStorageObjectLifecycle {
+  uint64 live_object_ids = 1;
+  uint64 live_block_refs = 2;
+  uint64 stale_object_ids = 3;
+  uint64 delete_marked_object_ids = 4;
+  uint64 reused_object_id_conflicts = 5;
+  uint64 missing_owner_block_refs = 6;
+  uint64 owner_mismatch_block_refs = 7;
+  repeated uint64 reused_object_ids = 8;
+  repeated string delete_marked_object_keys = 9;
+}
+
+message DurableBucketDumpSourceCoverage {
+  string manifest_id = 1;
+  repeated uint32 bucket_ids = 2;
+}
+
+message DurableBucketDumpLoadVersionHandoff {
+  uint64 previous_load_version = 1;
+  uint64 next_load_version = 2;
+  bool applied = 3;
+}
+
+message DurableBucketDumpManifest {
+  uint32 version = 1;
+  uint64 shard_id = 2;
+  string manifest_id = 3;
+  string manifest_kind = 4;
+  string dump_generation_id = 5;
+  repeated string source_manifest_ids = 6;
+  repeated DurableBucketDumpSourceCoverage source_manifest_coverage = 7;
+  // `optional`: an empty parent id is a parent that was named and happens to be empty, which is
+  // not the same as no parent.
+  optional string parent_manifest_id = 8;
+  optional DurableBucketDumpLoadVersionHandoff load_version_handoff = 9;
+  uint64 created_unix_ms = 10;
+  repeated uint32 bucket_ids = 11;
+  repeated uint64 block_slab_ids = 12;
+  uint64 wal_sequence = 13;
+  uint64 index_log_sequence = 14;
+  uint64 live_block_refs = 15;
+  uint64 logical_bytes = 16;
+  uint64 physical_bytes = 17;
+  repeated DurableBucketStorageSummary bucket_summaries = 18;
+  // Absent means the all-zero report, which is what a manifest without one has always meant.
+  optional DurableStorageObjectLifecycle object_lifecycle = 19;
+  string index_sha256 = 20;
+  // Which derivation `checksum` was computed with. 0 is a manifest written before this field
+  // existed: its checksum is a SHA-256 over the manifest's canonical JSON. 1 is a SHA-256 over
+  // this message's own encoding with `checksum` empty. Any other value is refused, never guessed.
+  uint32 checksum_version = 21;
+  // The whole-shard index image. Second-highest tag: see the note above.
+  bytes index_bytes = 22;
+  // Highest tag, and EMPTY while the digest is computed.
+  string checksum = 23;
+}
+
+message DurableBucketDumpInstallMarker {
+  uint64 shard_id = 1;
+  string manifest_id = 2;
+  string phase = 3;
+  uint64 wal_sequence = 4;
+  uint64 index_log_sequence = 5;
+  uint64 created_unix_ms = 6;
+}
+
+// ===========================================================================================
+// DURABLE SHARD CONFIG LOG ENTRY, BINARY SHAPE.
+//
+// One entry of `shard-<id>.configlog.jsonl`: the shard config that became effective for every WAL
+// write with a sequence strictly greater than `after_seq`. The file holds JSON lines (every entry
+// written so far) and, as of the writer change, length-prefixed checksummed frames whose payload is
+// this message behind `BINARY_PAYLOAD_MAGIC`. A frame is used because the payload is binary and may
+// contain a newline, so the line format's delimiter cannot be trusted to find its end.
+//
+// NO DIGEST here depends on byte order, so `extend_config` is a `repeated` pair list in the order
+// the map iterates (sorted by key) rather than a protobuf `map`.
+// ===========================================================================================
+
+message DurableConfigExtendEntry {
+  string key = 1;
+  string value = 2;
+}
+
+message DurableShardConfig {
+  uint64 version = 1;
+  // Every `optional` below is an `Option` in the config: absent is not zero.
+  optional uint64 maxmemory_bytes = 2;
+  optional string tenant_name = 3;
+  optional uint64 read_qps = 4;
+  optional uint64 write_qps = 5;
+  optional uint64 table_read_qps = 6;
+  optional uint64 table_write_qps = 7;
+  optional uint64 tenant_read_qps = 8;
+  optional uint64 tenant_write_qps = 9;
+  repeated DurableConfigExtendEntry extend_config = 10;
+  uint64 feature_max_size = 11;
+  bool async_storage = 12;
+}
+
+message DurableConfigLogEntry {
+  uint64 after_seq = 1;
+  // A message field is optional on the wire; an entry with no config is refused, not defaulted
+  // (a defaulted config would silently reset every flag the entry was written to carry).
+  DurableShardConfig config = 2;
 }

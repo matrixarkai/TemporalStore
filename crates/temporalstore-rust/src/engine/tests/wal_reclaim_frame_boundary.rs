@@ -72,7 +72,7 @@ fn outcomes(count: usize) -> Vec<WalOutcomeItem> {
         .map(|index| WalOutcomeItem {
             kind: "string".to_string(),
             object_key: format!("batch-key-{index:09}"),
-            component: None,
+            element_name: None,
             object_id: index as u64,
             routing_bucket: index as u32,
             address: None,

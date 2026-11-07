@@ -124,10 +124,10 @@ pub(crate) fn read_routing_range_stamp(
     shard_id: ShardId,
 ) -> Option<RoutingRangeStamp> {
     let bytes = fs::read(routing_range_stamp_path(index_dir, shard_id)).ok()?;
-    // BOTH SHAPES, same as the published object. The stamp travels to the shared store and back,
-    // so a store that has seen a binary stamp can land one here; a reader that understood only
-    // JSON would answer None, and None on this path means "unstamped", which is REFUSED by name.
-    // A widened reader is what keeps that refusal meaning what it says.
+    // BOTH SHAPES, same as the published object, and the JSON arm is PERMANENT. The writer below
+    // is binary, so JSON is now only what an older build left behind -- which is exactly why this
+    // arm cannot go: a reader that understood only the new shape would answer None for every
+    // existing store, and None on this path means "unstamped", which is REFUSED by name.
     crate::shared_store::decode_routing_range_stamp(&bytes).ok()
 }
 
@@ -137,8 +137,16 @@ pub(crate) fn write_routing_range_stamp(
     stamp: RoutingRangeStamp,
 ) -> Result<(), std::io::Error> {
     fs::create_dir_all(index_dir)?;
-    let bytes = serde_json::to_vec(&stamp)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    // BINARY, through the encoder the published copy uses, so the two cannot disagree about the
+    // shape. There is NO JSON encode path left: `read_routing_range_stamp` above keeps its JSON arm
+    // permanently, because every store written before this change carries a JSON stamp and a reader
+    // that answered None for one would turn "unstamped" into a REFUSED load. An encoder nobody
+    // calls is how a retired format comes back; a decoder is held by what is on disk.
+    //
+    // The file keeps the name `shard-<id>.routing-range.json`. It is opened by exact path, and the
+    // shape is decided from the first byte, so the name is not what makes it readable.
+    let bytes = crate::shared_store::encode_routing_range_stamp(&stamp)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
     fs::write(routing_range_stamp_path(index_dir, shard_id), bytes)
 }
 

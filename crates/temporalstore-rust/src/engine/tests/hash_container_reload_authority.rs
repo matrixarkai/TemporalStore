@@ -6,11 +6,11 @@
 //! #2054 made `hashes` durable -- `#[serde(default)]` with no `skip_serializing` -- which is what
 //! makes it possible for `HashLen` to answer from the container instead of from the block-index entry
 //! count. `HashLen` answers from the entry count today
-//! (`bucket_index_component_block_addresses(..).len()`), and that fact is what closed the batching
+//! (`bucket_index_element_name_block_addresses(..).len()`), and that fact is what closed the batching
 //! route in #1999: an entry that stopped naming an element would silently change what HLEN returns.
 //!
 //! SO THE REROUTE DEPENDS ON A PROPERTY NOBODY HAS ASSERTED IN GENERAL. #2054 drove exactly one
-//! case -- a block entry carrying no component, where only the durable map can supply the element --
+//! case -- a block entry carrying no element name, where only the durable map can supply the element --
 //! and asserted both fields present after a reload. That is the mechanism working, not the general
 //! claim that the map's LENGTH is right after a reload for an arbitrary container. This module
 //! asserts the general claim, for the four container kinds, before anything is pointed at it.

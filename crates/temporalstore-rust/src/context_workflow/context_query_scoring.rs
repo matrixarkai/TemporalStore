@@ -1180,11 +1180,11 @@ pub(super) fn context_query_embedding(
 ) -> Result<Vec<f32>, Status> {
     let inputs = [("query", stable_hash64(query), 0_u32, query)];
     match context_embeddings_for_extract(provider, &inputs) {
-        Ok((vectors, _)) => Ok(vectors.into_iter().next().unwrap_or_default()),
+        Ok((batch, _)) => Ok(batch.values),
         Err(status) => {
             if let Some(fallback) = provider.fallback_provider.as_deref() {
                 context_embeddings_for_extract(&normalize_provider(fallback.clone()), &inputs)
-                    .map(|(vectors, _)| vectors.into_iter().next().unwrap_or_default())
+                    .map(|(batch, _)| batch.values)
             } else {
                 Err(status)
             }

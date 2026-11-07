@@ -12,24 +12,40 @@ pub(super) fn mark_dirty(dirty: &Mutex<DirtyTracker>, shard_id: ShardId, key: Op
     let Some(key) = key else {
         return;
     };
+    mark_dirty_owned(dirty, shard_id, key.to_owned());
+}
+
+pub(super) fn mark_dirty_owned(
+    dirty: &Mutex<DirtyTracker>,
+    shard_id: ShardId,
+    key: String,
+) {
     let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
-    let object_key = (shard_id, key.to_string());
-    let now = now_ms();
-    if !dirty.by_key.contains_key(&object_key) {
-        dirty.next_object_id += 1;
-        let object_id = dirty.next_object_id;
-        dirty.by_key.insert(
-            object_key.clone(),
-            DirtyObjectInfo {
-                shard_id,
-                key: key.to_string(),
-                object_id,
+    mark_dirty_in(&mut dirty, shard_id, key, now_ms());
+}
+
+fn mark_dirty_in(
+    dirty: &mut DirtyTracker,
+    shard_id: ShardId,
+    key: String,
+    now: u64,
+) {
+    let next_object_id = dirty.next_object_id + 1;
+    let inserted = match dirty.by_key.entry((shard_id, key)) {
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            entry.get_mut().last_dirty_at_ms = now;
+            false
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(DirtyObjectState {
+                object_id: next_object_id,
                 last_dirty_at_ms: now,
-            },
-        );
-    }
-    if let Some(entry) = dirty.by_key.get_mut(&object_key) {
-        entry.last_dirty_at_ms = now;
+            });
+            true
+        }
+    };
+    if inserted {
+        dirty.next_object_id = next_object_id;
     }
 }
 
@@ -71,10 +87,83 @@ pub(super) fn mark_dirty_for_successful_commands(
     responses: &[ExecuteResponse],
 ) {
     for (command, response) in commands.iter().zip(responses.iter()) {
-        if response.status.ok && is_write_command(command) {
+        if command_was_applied(command, response) {
             mark_dirty(dirty, shard_id, command_key(command).as_deref());
         }
     }
+}
+
+pub(super) fn write_command_keys(commands: &[Command]) -> Vec<(usize, String, bool)> {
+    commands
+        .iter()
+        .enumerate()
+        .filter_map(|(index, command)| {
+            if is_write_command(command) {
+                command_key(command).map(|key| {
+                    (
+                        index,
+                        key,
+                        matches!(command, Command::HashMultiSetIfTimestampOlder { .. }),
+                    )
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+pub(super) fn mark_dirty_for_successful_keys(
+    dirty: &Mutex<DirtyTracker>,
+    shard_id: ShardId,
+    keys: &[(usize, String, bool)],
+    responses: &[ExecuteResponse],
+) {
+    let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
+    for (index, key, conditional) in keys {
+        if responses
+            .get(*index)
+            .map(|response| {
+                response.status.ok
+                    && (!conditional
+                        || matches!(
+                            &response.response,
+                            CommandResponse::Integer { value } if *value > 0
+                        ))
+            })
+            .unwrap_or(false)
+        {
+            mark_dirty_in(&mut dirty, shard_id, key.clone(), now_ms());
+        }
+    }
+}
+
+pub(super) fn mark_dirty_for_successful_row_keys(
+    dirty: &Mutex<DirtyTracker>,
+    shard_id: ShardId,
+    keys: Vec<String>,
+    responses: &[ExecuteResponse],
+    conditional: bool,
+) {
+    let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
+    for (key, response) in keys.into_iter().zip(responses) {
+        if response.status.ok
+            && (!conditional
+                || matches!(
+                    &response.response,
+                    CommandResponse::Integer { value } if *value > 0
+                ))
+        {
+            mark_dirty_in(&mut dirty, shard_id, key, now_ms());
+        }
+    }
+}
+
+pub(super) fn command_was_applied(command: &Command, response: &ExecuteResponse) -> bool {
+    response.status.ok
+        && (!matches!(command, Command::HashMultiSetIfTimestampOlder { .. })
+            || matches!(&response.response, CommandResponse::Integer { value } if *value > 0))
+        && is_write_command(command)
 }
 
 // Delegate to the engine's canonical object-key extractor (same one used for validation), so

@@ -10,9 +10,9 @@
 // assumption wearing a test's clothes. This module is that proof for `sets`, or its refutation.
 //
 // WHY IT MATTERS HERE, which is the same reason it mattered for hash. A block entry carries
-// `component` -- for a set, the member hex -- and the model map is a second copy of the same
-// identity. The entry's `component` is 16 of the 56 bytes a resident entry weighs, and taking it off
-// leaves `SetMembers` nowhere to read a member name FROM except `shard.bucket_index.sets`. So the order is not
+// `element_name` -- for a set, the member hex -- and the model map is a second copy of the same
+// identity. The entry's `element_name` is 16 of the 56 bytes a resident entry weighs, and taking it off
+// leaves `SetMembers` nowhere to read a member name FROM except `shard.sets`. So the order is not
 // "reroute the readers, then remove the field": it is prove the map complete FIRST, because the
 // removal is what makes the map load-bearing.
 //
