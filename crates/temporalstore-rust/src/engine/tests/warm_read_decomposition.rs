@@ -46,16 +46,16 @@
 //! clones without allocating. A shard loaded the way a metaserver loads one carries both, and
 //! `execute_with_storage_override` clones the whole `ShardInfo` on EVERY command to read four
 //! fields, three of which are `Copy`. Measured on the same fixture with the two names filled in:
-//! **12.00 allocations, not 10.00**. That row is `shard_info_clone 2.00`, it is the single
-//! largest avoidable item on this path, and no fixture in #1952 could see it.
+//! **12.00 allocations, not 10.00**. Two of those were a full `ShardInfo` clone: the table name
+//! and a shard URI that command execution never reads.
 //!
-//! WHAT THIS CHANGES, AND WHAT IT PRICES AND LEAVES. The recency stamp -- 2.00 of the ten, 49
+//! WHAT THIS CHANGES. The recency stamp -- 2.00 of the ten, 49
 //! bytes -- built a `Vec<String>` and cloned each key into it so that a routing bucket could be
-//! derived and a `u32 -> u64` inserted. It visits the keys now. Everything else is priced in the
-//! pull request with the reason it stands, and the largest of them, the `ShardInfo` clone, is
-//! named rather than taken: removing it means holding the `infos` read guard across the
-//! admission check, and `admission_limits` reads `table_name` out of an owned
-//! `&Option<ShardInfo>`.
+//! derived and a `u32 -> u64` inserted. It visits precomputed keys now. Command execution also
+//! takes one lightweight metadata snapshot: routing bounds and state flags are copied, the unused
+//! URI is left behind, and the table name is copied only when a table-level admission limit is
+//! active. That removes both name allocations from the ordinary serving path without holding the
+//! `infos` read guard across admission accounting.
 //!
 //! COUNTS CARRY EVERY CLAIM. The byte columns wobble between otherwise identical runs and the
 //! counts do not -- #1952 observed that and so does this. The store path length is asserted
@@ -85,11 +85,9 @@ const VALUE_BYTES: usize = 1_024;
 /// EXCLUDES it: the assertion is strictly less than this, so no value can satisfy both.
 #[cfg(feature = "alloc-probe")]
 const ALLOCS_BEFORE: f64 = 10.0;
-/// What the per-command `ShardInfo` clone costs a shard that carries the two names a metaserver
-/// gives it: one allocation for the table name and one for the shard URI. This is the whole of
-/// the difference between the two fixtures below, and it is asserted as an equality.
+/// A named shard must cost exactly the same as an unnamed one when table admission is disabled.
 #[cfg(feature = "alloc-probe")]
-const SHARD_INFO_CLONE_ALLOCS: f64 = 2.0;
+const NAMED_SHARD_EXTRA_ALLOCS: f64 = 0.0;
 
 /// The key for a record, twenty-five characters wide at every index this module uses -- the same
 /// width #1952 held, so the two modules' figures are comparable.
@@ -267,12 +265,12 @@ fn report(label: &str, arm: &WarmArm) {
 ///
 /// ```text
 ///   fixture                 512 records        4,096 records     ratio
-///   load_shard (unnamed)     8.00 allocs        8.00 allocs      1.00x
-///   named shard             10.00 allocs       10.00 allocs      1.00x
+///   load_shard (unnamed)     7.00 allocs        7.00 allocs      1.00x
+///   named shard              7.00 allocs        7.00 allocs      1.00x
 /// ```
 ///
-/// Against 10.00 and 12.00 before it. The 2.00 that comes off is the recency stamp, and the
-/// 2.00 that separates the two fixtures is the `ShardInfo` clone, which stands.
+/// The named arm was 9.00 before the lightweight metadata snapshot. Its two extra allocations
+/// were the table name and shard URI copied by the full `ShardInfo` clone.
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
@@ -300,22 +298,15 @@ fn where_a_warm_serving_reads_allocations_go() {
         assert_reached_a_warm_hit_and_only_that("named shard", &with_names);
         drop(engine);
 
-        // The named shard must cost MORE, and the difference is the clone of two names this
-        // engine makes on every command to read four fields. An arm that did not show it would
-        // mean the clone had stopped happening -- which is the change this file declines to make
-        // and therefore the thing most worth noticing if someone else makes it.
-        //
-        // AN EQUALITY, NOT AN INEQUALITY. `ShardInfo` carries TWO names and the clone allocates
-        // once for each, so the difference is exactly 2.00. Asserting only that it costs
-        // MORE would stay true with one of the two names emptied -- the fixture would quietly
-        // stop being the production shape it claims to be, and the headline figure would drift
-        // from 12.00 to 11.00 without anything failing.
+        // AN EQUALITY, NOT AN INEQUALITY. Named shards are the production shape, and with table
+        // admission disabled neither name belongs on a command's hot path. A positive difference
+        // means metadata copying returned; a negative one means the fixtures stopped matching.
         let names_cost = with_names.allocs_per_read() - plain.allocs_per_read();
         assert_eq!(
-            names_cost, SHARD_INFO_CLONE_ALLOCS,
+            names_cost, NAMED_SHARD_EXTRA_ALLOCS,
             "the named shard cost {:.2} against the unnamed {:.2}, a difference of {names_cost:.2} \
-             and not {SHARD_INFO_CLONE_ALLOCS:.2}. That difference IS the per-command ShardInfo \
-             clone of a table name and a shard URI, and it is the whole of correction 2",
+             and not {NAMED_SHARD_EXTRA_ALLOCS:.2}. With table admission disabled, command \
+             execution must copy neither the table name nor the unused shard URI",
             with_names.allocs_per_read(),
             plain.allocs_per_read()
         );
@@ -373,7 +364,7 @@ fn where_a_warm_serving_reads_allocations_go() {
     }
     println!(
         "\n  store path held at {first} characters across all {} arms; \
-         unnamed {:.2}, named {:.2}, the difference is the per-command ShardInfo clone",
+         unnamed {:.2}, named {:.2}, named-shard metadata adds no allocations",
         path_lengths.len(),
         unnamed[0],
         named[0],

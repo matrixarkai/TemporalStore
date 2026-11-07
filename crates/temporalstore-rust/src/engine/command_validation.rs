@@ -406,7 +406,7 @@ pub(super) fn admission_limits(
     shard_id: ShardId,
     write_command: bool,
     config: &Config,
-    info: &Option<ShardInfo>,
+    table_name: Option<&str>,
 ) -> Vec<AdmissionLimit> {
     let mut limits = Vec::new();
     // A configured qps of 0 means UNLIMITED on EVERY scope below, not deny-all. Zero is what
@@ -433,9 +433,8 @@ pub(super) fn admission_limits(
             },
         });
     }
-    if let Some(table_name) = info
-        .as_ref()
-        .map(|info| info.table_name.trim())
+    if let Some(table_name) = table_name
+        .map(str::trim)
         .filter(|table_name| !table_name.is_empty())
     {
         if let Some(limit) = (if write_command {

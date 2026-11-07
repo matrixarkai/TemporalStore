@@ -1723,6 +1723,57 @@ fn table_write_qps_config_is_shared_across_loaded_table_shards() {
 }
 
 #[test]
+fn a_batch_keeps_the_table_name_when_table_admission_is_active() {
+    let engine = TemporalEngine::default();
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 1,
+                local_node_id: Some(1),
+                shard_uri: "local://feature_table/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: u32::MAX,
+                readonly: false,
+                table_name: "feature_table".to_string(),
+            })
+            .status
+            .ok
+    );
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            table_write_qps: Some(1),
+            ..Config::default()
+        },
+    });
+    wait_for_fresh_admission_second();
+
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            Command::StringSet {
+                key: "first".to_string(),
+                value: b"x".to_vec(),
+            },
+            Command::StringSet {
+                key: "second".to_string(),
+                value: b"y".to_vec(),
+            },
+        ],
+    });
+    assert!(response.status.ok, "batch failed: {:?}", response.status);
+    assert_eq!(response.responses.len(), 2);
+    assert!(response.responses[0].status.ok);
+    assert_eq!(response.responses[1].status.code, "admission_rejected");
+    assert_eq!(
+        response.responses[1].status.message,
+        "table_write_qps limit exceeded"
+    );
+}
+
+#[test]
 fn tenant_read_qps_config_is_shared_across_tables() {
     let engine = TemporalEngine::default();
     for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "control_state_table", "k2")] {

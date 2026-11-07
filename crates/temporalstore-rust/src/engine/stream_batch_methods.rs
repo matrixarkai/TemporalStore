@@ -443,15 +443,18 @@ impl TemporalEngine {
                 "shard is not loaded on this server",
             ));
         };
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
+        let config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_default();
+        let info = self.request_shard_info(
+            shard_id,
+            config.table_read_qps.filter(|limit| *limit > 0).is_some(),
+        );
+        if !replaying_wal() && info.recovering {
             return Err(Status::error(
                 "shard_not_loaded",
                 "shard is recovering (WAL replay in progress)",
@@ -493,27 +496,8 @@ impl TemporalEngine {
             return Ok(());
         }
 
-        let config = self
-            .configs
-            .read()
-            .expect("config lock poisoned")
-            .get(&shard_id)
-            .cloned()
-            .unwrap_or_default();
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start_routing_bucket = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end_routing_bucket = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
         if !(self.wal_store.flat_append() && shard.promote_scan_done) {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -539,7 +523,13 @@ impl TemporalEngine {
                         format!("shard {shard_id} is over its read rate limit"),
                     ))
                 } else {
-                    self.check_admission(shard_id, false, &config, &info).err()
+                    self.check_admission(
+                        shard_id,
+                        false,
+                        &config,
+                        info.table_name.as_deref(),
+                    )
+                    .err()
                 }
             } else {
                 None
@@ -772,20 +762,28 @@ impl TemporalEngine {
                 responses: Vec::new(),
             };
         };
+        let mut config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(async_storage) = async_storage_override {
+            config.async_storage = async_storage;
+        }
+        let table_admission_enabled = config
+            .table_read_qps
+            .filter(|limit| *limit > 0)
+            .or_else(|| config.table_write_qps.filter(|limit| *limit > 0))
+            .is_some();
+        let info = self.request_shard_info(shard_id, table_admission_enabled);
         // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
         // but not yet serving. Reject the whole batch with a retryable status so batch writes
         // cannot interleave with replay (anchor regression / double-apply) -- the batch path
         // must not be a hole around the single-execute recovery gate. Replay itself never
         // routes through batch_execute, but replaying_wal() is checked for symmetry.
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
+        if !replaying_wal() && info.recovering {
             // Batch-level topology-retryable error with empty responses, as above (returns a
             // partition-level error here, not a per-command one), so the client refreshes topology
             // and retries rather than seeing an ok batch of failed commands.
@@ -797,37 +795,9 @@ impl TemporalEngine {
                 responses: Vec::new(),
             };
         }
-        let readonly = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .map(|info| info.readonly)
-            .unwrap_or(false);
-        let mut config = self
-            .configs
-            .read()
-            .expect("config lock poisoned")
-            .get(&shard_id)
-            .cloned()
-            .unwrap_or_default();
-        if let Some(async_storage) = async_storage_override {
-            config.async_storage = async_storage;
-        }
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start_routing_bucket = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end_routing_bucket = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        let readonly = info.readonly;
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
         // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
         // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
         // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
@@ -929,8 +899,12 @@ impl TemporalEngine {
                     command_source.recycle(command);
                     continue;
                 }
-                if let Err(status) =
-                    self.check_admission(shard_id, write_command, &config, &info)
+                if let Err(status) = self.check_admission(
+                    shard_id,
+                    write_command,
+                    &config,
+                    info.table_name.as_deref(),
+                )
                 {
                     responses.push(ExecuteResponse {
                         status,
