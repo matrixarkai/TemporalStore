@@ -251,8 +251,7 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// the bytes.
 ///
 /// WHAT IT FEEDS, AFTER THE REPLAY PATH STOPPED ASKING THE OUTCOME. Both readers are inside
-/// `upsert_bucket_index_block_inner`, which splits it into `ElementComponent` and
-/// `FiledComponent`:
+/// `upsert_bucket_index_block_inner`:
 ///
 ///   1. `WalOutcomeItem::component`. The replay path no longer READS that field for a container
 ///      kind -- it reads the block -- so this reader is now the record's own copy rather than

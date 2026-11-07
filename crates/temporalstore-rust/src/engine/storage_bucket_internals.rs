@@ -4511,52 +4511,12 @@ pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
         || kind == ModelKind::Zset.as_str()
 }
 
-/// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the block is the
-/// identity.
-///
-/// # WHY THIS IS A TYPE AND NOT AN `Option<&str>`
-///
-/// After the filing name and the element name come apart, two values of identical shape and
-/// opposite meaning are live in the same scope: this one, which becomes `None` for a gated
-/// container, and [`ElementComponent`], which stays the element's own name. Passing both as
-/// `Option<&str>` makes a transposition compile -- and a transposition here is silent and
-/// resurrects a removed member, because the tombstone sweep would then match every tombstone of an
-/// object instead of one. The newtype makes the mistake unrepresentable rather than something a
-/// test has to think to look for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FiledComponent(Option<String>);
-
-/// The name of the ELEMENT a write is about, whatever its entry is filed under.
-///
-/// The tombstone sweep needs THIS one: a re-add must clear the tombstone its own element left, and
-/// under a gated container the entry is filed under no name at all. See [`FiledComponent`] for why
-/// these are two types.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ElementComponent(Option<String>);
-
-impl FiledComponent {
-    pub(super) fn as_deref(&self) -> Option<&str> {
-        self.0.as_deref()
-    }
-
-    fn into_inner(self) -> Option<String> {
-        self.0
-    }
-}
-
-impl ElementComponent {
-    pub(super) fn as_deref(&self) -> Option<&str> {
-        self.0.as_deref()
-    }
-}
-
 /// THE BLOCK A WRITE REPLACES -- the address the element's resident map held for it before this
 /// write, and only when that write leaves the block EMPTY.
 ///
 /// # WHY A TYPE AND NOT AN `Option<ElementEntry>`
 ///
-/// The same reason [`FiledComponent`] and [`ElementComponent`] are two types rather than two
-/// `Option<&str>`. The filer already takes the address the write LANDS AT, so a bare
+/// The filer already takes the address the write LANDS AT, so a bare
 /// `Option<ElementEntry>` beside it makes a transposition compile -- and a transposition here is
 /// silent in the worst direction: the supersede would converge on the block being vacated and leave
 /// the entry over the block just written, which reads as a container that dropped the element it
@@ -5041,15 +5001,19 @@ fn upsert_bucket_index_block_inner(
     // whole range, which is what this line passed unconditionally before.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-    // THE TWO NAMES, SPLIT ONCE AND NEVER RECOMBINED.
-    //
-    // `element` is the element this write is about. `filed` is what its ENTRY is filed under, which
-    // for a gated container is nothing at all, because there the block is the identity. They are
-    // different types so that no site below can take one for the other: a transposition compiles if
-    // both are `Option<&str>`, and it resurrects a removed member rather than failing.
+    // THERE IS ONE NAME HERE: THE ELEMENT'S. An entry is not filed under a name -- it is filed under
+    // its block -- so nothing below has a second `Option<&str>` to take for it. This used to split
+    // the parameter into the element's name and a "filed" name that was `None` for a container, and
+    // gave them two types because a transposition compiled and resurrected a removed member. The
+    // second one is gone because it was always `None`: every caller that passes a name files a
+    // set, list, hash or zset, which `index_entry_names_a_block` answers for, and every caller
+    // that files a `string` or a `control_state` passes `None` -- the eleven production sites, the
+    // two replay paths and the six test sites were each read with their arguments.
     let names_a_block = index_entry_names_a_block(kind);
-    let element = ElementComponent(component.clone());
-    let filed = FiledComponent(if names_a_block { None } else { component });
+    debug_assert!(
+        names_a_block || component.is_none(),
+        "{kind} files an entry under its object, so a name for one of its elements has nowhere to go"
+    );
     // Filing a block into a RELEASED bucket would leave the node holding one block and claiming to
     // be resident, with the rest of its blocks still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
@@ -5079,7 +5043,7 @@ fn upsert_bucket_index_block_inner(
                 // The fold applies `index_entry_names_a_block` itself when it files the ENTRY, so
                 // the two routes still agree on the entry while the outcome stays a full record of
                 // the write.
-                component: element.as_deref().map(str::to_string),
+                component: component.as_deref().map(str::to_string),
                 object_id,
                 routing_bucket,
                 address: Some(address.clone()),
@@ -5121,10 +5085,8 @@ fn upsert_bucket_index_block_inner(
     let entry = LiveBlockEntry {
         object_key: shared_object_key,
         kind: stored_model_kind(kind),
-        component: filed
-            .clone()
-            .into_inner()
-            .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
+        // An entry is filed under its block, so it carries no element name.
+        component: None,
         log_backed: address.block_id().is_none(),
         address,
         dirty,
@@ -5180,7 +5142,7 @@ fn upsert_bucket_index_block_inner(
         let mine = if lookup_enabled {
             shard
                 .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(|block_refs| {
                     block_refs
                         .iter()
@@ -5209,7 +5171,7 @@ fn upsert_bucket_index_block_inner(
                     shard.bucket_index.remove_object_block_lookup_ref(
                         entry.kind.as_str(),
                         &entry.object_key,
-                        filed.as_deref(),
+                        None,
                         block_ref,
                     );
                 }
@@ -5219,7 +5181,7 @@ fn upsert_bucket_index_block_inner(
                 shard.bucket_index.remove_object_block_lookup_entry(
                     entry.kind.as_str(),
                     &entry.object_key,
-                    filed.as_deref(),
+                    None,
                 );
                 None
             }
@@ -5232,7 +5194,7 @@ fn upsert_bucket_index_block_inner(
         let all = if lookup_enabled {
             shard
                 .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
         } else {
             None
@@ -5240,7 +5202,7 @@ fn upsert_bucket_index_block_inner(
         shard.bucket_index.remove_object_block_lookup_entry(
             entry.kind.as_str(),
             &entry.object_key,
-            filed.as_deref(),
+            None,
         );
         all
     };
@@ -5268,7 +5230,7 @@ fn upsert_bucket_index_block_inner(
         let buckets_still_holding: Vec<u32> = if lookup_enabled {
             shard
                 .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(|refs| refs.iter().map(|block_ref| block_ref.routing_bucket).collect())
                 .unwrap_or_default()
         } else {
@@ -5348,14 +5310,15 @@ fn upsert_bucket_index_block_inner(
     // widened to every tombstone of the object the moment the filed name went to `None`, which is
     // the resurrection `a_re_add_after_a_removal_does_not_bring_the_removed_member_back` holds.
     //
-    // The two names are separate TYPES so that reading the FILED name here does not compile.
+    // There is no second name in scope to read here: an entry is filed under its block, so the sweep
+    // can only key on the element's own name.
     //
     // ASKED BEFORE IT IS DONE, because this runs on EVERY block write. `BlockIndexMap::retain` walks
     // the bucket and then `shrink`s it, which can reallocate, and paying that per write for a
     // tombstone that is almost never there would be a new cost on the hot path. A find over the
     // rows is bounded by the removals this bucket has seen, against the two whole-bucket block scans
     // the branches above already do, so the common case is cheaper than the scan it replaces.
-    let sweep: Option<(u64, u64, u64)> = element.as_deref().and_then(|element| {
+    let sweep: Option<(u64, u64, u64)> = component.as_deref().and_then(|element| {
         shard
             .bucket_index
             .bucket_map
