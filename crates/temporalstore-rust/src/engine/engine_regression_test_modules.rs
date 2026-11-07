@@ -121,6 +121,8 @@ mod reclaiming_space_is_its_own_pass;
 mod cache_invalidation_cost;
 #[path = "tests/cache_read_cost.rs"]
 mod cache_read_cost;
+#[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
+mod a_hash_write_files_only_what_it_wrote;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]

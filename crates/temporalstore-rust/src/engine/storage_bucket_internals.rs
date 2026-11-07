@@ -2945,6 +2945,52 @@ pub(super) fn sync_blocks_for_written_element_names(
     true
 }
 
+/// File the blocks of the hash fields a command wrote, and no others.
+///
+/// [`sync_context_blocks_for_object`] files every field the hash holds, and its filter against
+/// re-filing cannot work: it asks a lookup that resolves no named element. This reads each written
+/// field's address back from the map the write just updated -- the arm
+/// [`sync_blocks_for_written_components`] takes for a hash field -- without building a list of
+/// kind, key and name triples first.
+///
+/// Returns false if any field's address is not in the hash; the caller then runs the whole-object
+/// sync exactly as before, so a shape this does not model costs a fallback rather than a stale
+/// index.
+pub(super) fn sync_written_hash_fields(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+    fields: &[&str],
+) -> bool {
+    if fields.is_empty() {
+        return false;
+    }
+    for field in fields {
+        let address = shard
+            .hashes
+            .get(object_key)
+            .and_then(|held| held.get(*field))
+            .cloned();
+        let Some(address) = address else {
+            return false;
+        };
+        // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
+        // write staged its own outcome already and a second would have replay install the same
+        // block twice.
+        upsert_bucket_index_block_with(
+            shard,
+            shard_id,
+            "hash",
+            object_key,
+            Some((*field).to_string()),
+            address,
+            true,
+            false,
+        );
+    }
+    true
+}
+
 pub(super) fn sync_context_blocks_for_object(
     shard: &mut ShardState,
     shard_id: ShardId,

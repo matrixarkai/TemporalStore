@@ -1185,15 +1185,47 @@ impl TemporalEngine {
             // arm and reports whether it found anything, so a write it does not cover still gets
             // the rebuild rather than a quietly stale index. An empty bucket_map still rebuilds:
             // maintenance updates an index, it does not construct one.
+            //
+            // A HASH WRITE FILES THE FIELDS IT WROTE AND NOTHING ELSE. The whole-object sync
+            // re-files every field the hash holds: its "already filed?" filter asks a lookup that
+            // resolves no named element, so it never filters, and one field write cost the fields
+            // the hash already had -- 571 allocations at 100 fields, 5,080 at 1,000, 87% of the
+            // write at 100. The batch path has filed only what a command wrote since it existed.
+            // A command not named here takes the whole-object sync exactly as before, so a new
+            // hash command costs more rather than leaving a field unfiled.
+            let narrow_hash_sync = !shard.bucket_index.bucket_map.is_empty()
+                && match &command {
+                    Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => {
+                        storage_bucket_internals::sync_written_hash_fields(
+                            shard,
+                            request.shard_id,
+                            key,
+                            &[field.as_str()],
+                        )
+                    }
+                    Command::HashMultiSet { key, entries }
+                    | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
+                        let fields: Vec<&str> =
+                            entries.iter().map(|(field, _)| field.as_str()).collect();
+                        storage_bucket_internals::sync_written_hash_fields(
+                            shard,
+                            request.shard_id,
+                            key,
+                            &fields,
+                        )
+                    }
+                    _ => false,
+                };
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
                 && !object_keys.is_empty()
-                && object_keys.iter().all(|object_key| {
-                    storage_bucket_internals::sync_context_blocks_for_object(
-                        shard,
-                        request.shard_id,
-                        object_key,
-                    )
-                });
+                && (narrow_hash_sync
+                    || object_keys.iter().all(|object_key| {
+                        storage_bucket_internals::sync_context_blocks_for_object(
+                            shard,
+                            request.shard_id,
+                            object_key,
+                        )
+                    }));
             let rebuilt_bucket_index = !maintained_bucket_index
                 && !defer_bucket_index_reconstruct()
                 // A command that writes no block cannot have changed the block index, so rebuilding it
