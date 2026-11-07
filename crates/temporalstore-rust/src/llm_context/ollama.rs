@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -367,6 +368,15 @@ impl OllamaProvider {
         user_prompt: &str,
         schema: &Value,
     ) -> Result<Value, OllamaError> {
+        self.generate_structured(system_prompt, user_prompt, schema)
+    }
+
+    fn generate_structured<T: DeserializeOwned>(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &Value,
+    ) -> Result<T, OllamaError> {
         for (index, prompt) in [system_prompt, user_prompt].into_iter().enumerate() {
             if prompt.len() > self.config.max_input_bytes {
                 return Err(OllamaError::InputTooLarge {
@@ -428,13 +438,11 @@ impl OllamaProvider {
         let mut start = 0usize;
         while start < messages.len() {
             let (end, prompt) = self.extraction_batch_prompt(messages, start)?;
-            let output: OllamaExtractionOutput =
-                serde_json::from_value(self.generate_structured_json(
-                    EXTRACTION_SYSTEM_PROMPT,
-                    &prompt,
-                    extraction_schema(),
-                )?)
-                .map_err(OllamaError::ContentJson)?;
+            let output: OllamaExtractionOutput = self.generate_structured(
+                EXTRACTION_SYSTEM_PROMPT,
+                &prompt,
+                extraction_schema(),
+            )?;
             for item in output.items {
                 let source = messages[start..end]
                     .iter()
