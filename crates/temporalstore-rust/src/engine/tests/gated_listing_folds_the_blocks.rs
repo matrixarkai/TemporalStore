@@ -6,9 +6,9 @@
 //! # WHAT CHANGED AND WHY IT IS THE RISKY DIRECTION
 //!
 //! The ungated listing asks the ENTRIES which members exist and the block only what each one holds.
-//! Its own `None` arm states why that cannot survive this gate: "an entry naming no component can
+//! Its own `None` arm states why that cannot survive this gate: "an entry naming no element name can
 //! only be answered by a block that names no element either". Under the gate every entry names no
-//! component and every block IS framed, so that arm drops every member and the listing answered
+//! element name and every block IS framed, so that arm drops every member and the listing answered
 //! EMPTY -- measured at `listed=0` against 40 ungated, by two independent fixtures.
 //!
 //! So the gated listing takes identity out of the PAYLOAD. That is the direction that
@@ -64,6 +64,24 @@ fn load_on(engine: &TemporalEngine) {
         local_node_id: Some(1),
     });
     assert!(response.status.ok, "load failed: {:?}", response.status);
+    // THE GATE IS OFF FOR THIS FIXTURE, AND THAT IS THE SUBJECT RATHER THAN A DETAIL. The
+    // durable member map is the preferred answer now, so a listing driven with the gate on
+    // never reaches the fold -- and every assertion in this file is about what the fold does.
+    let mut extend_config = std::collections::BTreeMap::new();
+    extend_config.insert("set_listing_from_map".to_string(), "off".to_string());
+    assert!(
+        engine
+            .set_config(crate::control::SetConfigRequest {
+                shard_id: 1,
+                config: crate::control::Config {
+                    version: 2,
+                    extend_config,
+                    ..Default::default()
+                },
+            })
+            .ok,
+        "the gate under test has to be the one that is set"
+    );
 }
 
 fn member_bytes(index: usize) -> Vec<u8> {
@@ -138,7 +156,8 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
         let (expected, victim) = seed_fold_remove(&engine);
         crate::engine::execute_on_shard::reset_gated_listing_counts();
         let seen = listed(&engine);
-        let (derived, declined) = crate::engine::execute_on_shard::gated_listing_counts();
+        let (derived, declined, from_map) =
+            crate::engine::execute_on_shard::gated_listing_counts();
 
         println!("\n=== the gated listing ===");
         println!(
@@ -147,7 +166,17 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
             expected.len(),
             seen.contains(&victim)
         );
-        println!("  answered by: derived={derived}, declined={declined}");
+        println!("  answered by: derived={derived}, declined={declined}, from_map={from_map}");
+
+        // THE GATE REALLY IS OFF, asserted rather than assumed. If the durable map answered,
+        // the two floors below would be passing over a fold that never ran -- and a floor on
+        // an unreached path is the one thing they exist to refuse.
+        assert_eq!(
+            0, from_map,
+            "the durable map answered {from_map} time(s), so this fixture did not exercise \
+             the fold at all. The two assertions below are about what the FOLD does with a \
+             tombstone, and a listing that never called it cannot make them"
+        );
 
         // THE FLOOR, on the reaching of the path and not on the answer: the FOLD must have served.
         // The decline path answers from the durable map and would return the same members, so
@@ -231,8 +260,8 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
 ///
 /// # WHEN A GATED STORE CAN ACTUALLY MEET ONE, WHICH IS NARROWER THAN IT SOUNDS
 ///
-/// Not from its own writes. A set's component is `hex::encode(member)`, `ElementKeySpelling::Hex`
-/// renders it back, and `element_key_from_component` cannot fail on it — so a gated binary writing
+/// Not from its own writes. A set's element name is `hex::encode(member)`, `ElementKeySpelling::Hex`
+/// renders it back, and `element_key_from_element_name` cannot fail on it — so a gated binary writing
 /// a set **always** frames, and `unframed_container_write_count` is floored at zero over all four
 /// kinds elsewhere.
 ///
@@ -249,7 +278,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     }
 
     let member = b"member-000".to_vec();
-    let component = hex::encode(&member);
+    let element_name = hex::encode(&member);
 
     // A real framed block for that member, through the codec rather than hand-assembled.
     let framed = crate::engine::container_blocks::encode_container_block(
@@ -302,7 +331,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
         only_framed.live.len()
     );
     assert!(
-        only_framed.live.contains_key(&component),
+        only_framed.live.contains_key(&element_name),
         "the framed-only fold does not name the member, so the codec and the fold disagree about \
          the spelling and nothing here is about unframed blocks"
     );

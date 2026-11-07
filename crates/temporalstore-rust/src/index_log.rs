@@ -531,30 +531,37 @@ pub(crate) fn encode_index_payload_into<T: serde::Serialize>(
     out.clear();
     out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
     let mut serializer = rmp_serde::Serializer::new(&mut *out);
-    if serde::Serialize::serialize(record, &mut serializer).is_ok() {
-        // `out` is the container byte plus the packed record, so the packed length -- the number
-        // the two conditions below are written in terms of -- is one less than it.
-        let packed_len = out.len() - 1;
-        if index_log_compression_enabled() && packed_len >= index_log_compression_min_bytes() {
-            if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], 3) {
-                // Only when it actually helps, and the comparison is between the PACKED forms,
-                // exactly as it was: both shapes carry one container byte, so comparing
-                // `squeezed` against `packed_len` and comparing the two whole payloads are the
-                // same test.
-                if squeezed.len() < packed_len {
-                    out.clear();
-                    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
-                    out.extend_from_slice(&squeezed);
-                }
+    if let Err(error) = serde::Serialize::serialize(record, &mut serializer) {
+        // REFUSED, NOT WRITTEN AS JSON. This used to fall through to `serde_json::to_writer`, on
+        // the stated ground that "an encode failure must not cost the record ... the reader still
+        // takes it". The reader does NOT: `decode_index_payload` reads the first byte as a
+        // container byte, a JSON record starts with `{` (0x7B), which is codec 7, and codec 7 is
+        // refused by name. So the fallback wrote a record this build cannot read back, framed
+        // and checksummed like a good one, and the loss surfaced at the next load rather than at
+        // the append that caused it. An error here is the append failing where it happened.
+        //
+        // The buffer comes back EMPTY, never half a record, so a caller that ignores the error
+        // and reuses the buffer cannot frame a torn payload.
+        out.clear();
+        return Err(IndexLogError::Encoding(format!(
+            "index-log record could not be packed: {error}"
+        )));
+    }
+    // `out` is the container byte plus the packed record, so the packed length -- the number the
+    // two conditions below are written in terms of -- is one less than it.
+    let packed_len = out.len() - 1;
+    if index_log_compression_enabled() && packed_len >= index_log_compression_min_bytes() {
+        if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], 3) {
+            // Only when it actually helps, and the comparison is between the PACKED forms,
+            // exactly as it was: both shapes carry one container byte, so comparing `squeezed`
+            // against `packed_len` and comparing the two whole payloads are the same test.
+            if squeezed.len() < packed_len {
+                out.clear();
+                out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
+                out.extend_from_slice(&squeezed);
             }
         }
-        return Ok(());
     }
-    // An encode failure must not cost the record: fall through to the bytes that always work,
-    // which the reader still takes. This is the only path that now produces JSON, and it carries
-    // NO container byte -- so the partial msgpack above has to come off first.
-    out.clear();
-    serde_json::to_writer(&mut *out, record)?;
     Ok(())
 }
 
@@ -583,27 +590,29 @@ pub(crate) fn encode_index_payload<T: serde::Serialize>(
     // Values in field order, for the record as well as for the rows inside it: nothing written
     // here spells a field name.
     let mut serializer = rmp_serde::Serializer::new(&mut packed);
-    if serde::Serialize::serialize(record, &mut serializer).is_ok() {
-        if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
-            if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
-                // Only when it actually helps: a record that does not compress would
-                // otherwise pay the frame overhead for nothing.
-                if squeezed.len() < packed.len() {
-                    let mut out = Vec::with_capacity(squeezed.len() + 1);
-                    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
-                    out.extend_from_slice(&squeezed);
-                    return Ok(out);
-                }
+    if let Err(error) = serde::Serialize::serialize(record, &mut serializer) {
+        // REFUSED, NOT WRITTEN AS JSON. See `encode_index_payload_into`: the JSON this used to
+        // return carries no container byte, and `decode_index_payload` refuses it as codec 7.
+        return Err(IndexLogError::Encoding(format!(
+            "index-log record could not be packed: {error}"
+        )));
+    }
+    if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
+        if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
+            // Only when it actually helps: a record that does not compress would otherwise pay
+            // the frame overhead for nothing.
+            if squeezed.len() < packed.len() {
+                let mut out = Vec::with_capacity(squeezed.len() + 1);
+                out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
+                out.extend_from_slice(&squeezed);
+                return Ok(out);
             }
         }
-        let mut out = Vec::with_capacity(packed.len() + 1);
-        out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
-        out.extend_from_slice(&packed);
-        return Ok(out);
     }
-    // An encode failure must not cost the record: fall through to the bytes that always work,
-    // which the reader still takes. This is the only path that now produces JSON.
-    Ok(serde_json::to_vec(record)?)
+    let mut out = Vec::with_capacity(packed.len() + 1);
+    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
+    out.extend_from_slice(&packed);
+    Ok(out)
 }
 
 /// The single place index-log payload bytes become a record, whatever wrote them.
@@ -1200,7 +1209,7 @@ impl IndexItem {
     /// Drop the composite key when the record already carries every part of it.
     ///
     /// `page_ref_key` is `block_ref_key_from_parts` of this item's own model, object key,
-    /// component and address -- measured at 43 bytes of a 176-byte record, the largest single
+    /// element name and address -- measured at 43 bytes of a 176-byte record, the largest single
     /// field in the index log, and every byte of it is spelled out again in the fields beside it.
     /// A reader rebuilds it with the same function, so the log carries the parts and not the
     /// concatenation.
@@ -1230,27 +1239,27 @@ impl IndexItem {
     /// Driven: a record whose handle was OMITTED, and a record carrying a handle that is no derivation
     /// of anything, BOTH load and serve -- filed, WAL-resident, slab, offset and length intact.
     ///
-    /// SO THE CLAIM THIS COMMENT USED TO MAKE IS FALSE: that removing `component` would make every
+    /// SO THE CLAIM THIS COMMENT USED TO MAKE IS FALSE: that removing `element_name` would make every
     /// already-stripped record rebuild a different key and resolve a durably acknowledged write to
     /// MISSING, needing a migration no stamp could buy. It reasoned from "the field is an input to a
     /// derivation whose output is stored" to "changing it corrupts stored data", and never asked
     /// whether anything reads the output. Every step was true; the conclusion was not.
     ///
-    /// `component` WAS BLOCKED FOR A SECOND AND STRONGER REASON, AND THE BLOCK IS DISCHARGED --
+    /// `element_name` WAS BLOCKED FOR A SECOND AND STRONGER REASON, AND THE BLOCK IS DISCHARGED --
     /// recorded rather than deleted, because the condition it named is exactly what lifted it. The
     /// paragraph read: unlike `block_ref_key` the element name is carried into memory and
     /// participates in MATCHING, because `fold_delta_block_items` set it on the `BlockIndex` and the
-    /// upsert `retain` compared `block.component.as_deref() == item.component.as_deref()`; it was the
+    /// upsert `retain` compared `block.element_name.as_deref() == item.element_name.as_deref()`; it was the
     /// only discriminator between two elements of ONE folded block, which share model id, object key
     /// AND address; and it "cannot go until the entry stops being per-element".
     ///
-    /// THE ENTRY HAS STOPPED BEING PER-ELEMENT. `BlockIndex::component` came off when the block entry
+    /// THE ENTRY HAS STOPPED BEING PER-ELEMENT. `BlockIndex::element_name` came off when the block entry
     /// went 56 bytes to 40, so the fold has no field to set, and that comparison is deleted as a
     /// tautology with the reason at its own site -- both sides were already `None` for every kind.
     /// What discriminates two elements of one block now is the block's own payload, which names every
     /// element on it, and the four durable maps, which are keyed by the element.
     ///
-    /// So `IndexItem::component` is gone too and slot 5 carries a constant nil. The rule below is
+    /// So `IndexItem::element_name` is gone too and slot 5 carries a constant nil. The rule below is
     /// what settled it, asked in the right order: nothing reads the reconstruction. The compiler
     /// enumerated the readers -- 39 diagnostics across 10 files -- and the only ones were this
     /// function, its inverse, and the positional encoder.
@@ -1337,7 +1346,7 @@ impl IndexItem {
     /// carries the last two, with the record carrying the shard. So the nine bytes it takes are
     /// nine bytes restating a hash of fields sitting beside it.
     ///
-    /// The component used to be a term of that hash and is not one now. It does not matter here:
+    /// The element name used to be a term of that hash and is not one now. It does not matter here:
     /// the row still carries it as its own field, and what this strips is a REPEAT of the
     /// derivation, which is recomputed from the same terms on the way back in.
     ///
@@ -1971,7 +1980,7 @@ pub struct IndexDeltaRecord {
     #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact blocks the write produced: replay replaces
-    /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
+    /// each item's (kind, object, element name) predecessor and inserts, WITHOUT the covered-key
     /// wipe -- mirroring the write path's upsert_bucket_index_block. When false (the default,
     /// and every record written before this field existed), the record snapshots each covered
     /// object's whole block set and replay wipes-then-restores. The snapshot shape is what made
@@ -1988,10 +1997,10 @@ pub struct IndexDeltaRecord {
     /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
     #[serde(rename = "ks", alias = "key_states", default)]
     pub key_states: Vec<serde_json::Value>,
-    /// The one object key every item carries, when they all carry the same one.
+    /// The one object key every item carries, when at least two items carry the same one.
     ///
     /// A timestamped write stages ONE ITEM PER REF -- all for the same object, differing only in
-    /// their component -- so a feature append of thirty-two points wrote that key thirty-two
+    /// their element name -- so a feature append of thirty-two points wrote that key thirty-two
     /// times. Measured on a record of that shape: 21 bytes per item, 24-31% of the record.
     ///
     /// Set only when every item agrees, and then each item's own `object_key` is written empty
@@ -2040,7 +2049,7 @@ pub struct IndexDeltaRecord {
 pub fn block_ref_key_from_parts(
     kind: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     block_slab_id: u64,
     offset: u64,
     length: u64,
@@ -2051,14 +2060,14 @@ pub fn block_ref_key_from_parts(
     // allocates again to hand back a String. This runs once per block on every dump of the index,
     // where it was the largest single source of allocations.
     use std::fmt::Write as _;
-    let component = component.unwrap_or("");
+    let element_name = element_name.unwrap_or("");
     // Five u64 at their widest, plus the seven separators.
-    let mut key = String::with_capacity(kind.len() + object_key.len() + component.len() + 7 + 100);
+    let mut key = String::with_capacity(kind.len() + object_key.len() + element_name.len() + 7 + 100);
     key.push_str(kind);
     key.push(':');
     key.push_str(object_key);
     key.push(':');
-    key.push_str(component);
+    key.push_str(element_name);
     // `write!` into a String appends in place; it does not allocate.
     let _ = write!(
         key,
@@ -2077,7 +2086,7 @@ pub fn block_ref_key_from_parts(
 pub struct BlockRefKeyParts<'a> {
     pub kind: &'a str,
     pub object_key: &'a str,
-    pub component: &'a str,
+    pub element_name: &'a str,
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -2140,20 +2149,20 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 ///
 /// # WHERE IT IS NOT EXACT, AND WHY NOTHING THIS TREE WRITES CAN REACH THERE
 ///
-/// A NON-EMPTY COMPONENT CONTAINING A COLON MAKES THE COMPONENT/OBJECT-KEY BOUNDARY
+/// A NON-EMPTY ELEMENT NAME CONTAINING A COLON MAKES THE ELEMENT NAME/OBJECT-KEY BOUNDARY
 /// UNRECOVERABLE, and that is a property of the format rather than of this parse:
 /// `block_ref_key_from_parts("string", "a:b", None, ..)` and
 /// `block_ref_key_from_parts("string", "a", Some("b:"), ..)` compose the IDENTICAL key.
 /// `what_the_core_index_puts_on_the_wire::the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it`
 /// is the proof and it still stands. This parse resolves the ambiguity one way -- positionally,
-/// reading that key as the object `a:b` with no component.
+/// reading that key as the object `a:b` with no element name.
 ///
 /// NO BLOCK KEY THIS TREE WRITES CAN BE AMBIGUOUS, and that is structural rather than measured:
-/// [`crate::engine::state::block_index_written_key`] takes no component parameter and passes a
+/// [`crate::engine::state::block_index_written_key`] takes no element name parameter and passes a
 /// literal `None`, so the slot is always empty. It is also MEASURED, on 8,000 blocks of two key
 /// shapes, by
 /// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus`,
-/// which asserts the component slot empty block by block. An index carrying the ambiguous shape
+/// which asserts the element name slot empty block by block. An index carrying the ambiguous shape
 /// predates `SHARD_INDEX_FORMAT_VERSION` 27 and is refused by `persistence`'s `<` comparison at
 /// every one of `decode_index_bytes`'s production callers before anything acts on it.
 ///
@@ -2169,7 +2178,7 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 /// `a_key_that_does_not_round_trip_is_refused_rather_than_guessed` drives the refusals.
 pub fn block_ref_key_parts(key: &str) -> Result<BlockRefKeyParts<'_>, BlockRefKeyUnparsable> {
     let refuse = |because: &'static str| BlockRefKeyUnparsable { key: key.to_string(), because };
-    // Six fields from the right -- the five numbers and the component slot -- so six separators.
+    // Six fields from the right -- the five numbers and the element name slot -- so six separators.
     let mut cut = key.len();
     let mut at = [0usize; 6];
     for slot in 0..6 {
@@ -2199,7 +2208,7 @@ pub fn block_ref_key_parts(key: &str) -> Result<BlockRefKeyParts<'_>, BlockRefKe
     Ok(BlockRefKeyParts {
         kind,
         object_key,
-        component: &key[at[5] + 1..at[4]],
+        element_name: &key[at[5] + 1..at[4]],
         block_slab_id: numeric(
             &key[at[4] + 1..at[3]],
             "its slab id slot is not a decimal in the spelling the renderer writes",
@@ -3168,13 +3177,18 @@ impl LocalIndexLogStore {
             item.strip_address_repeats();
             item.strip_object_id_repeat(shard_id);
         }
-        // Hoist the object key when every item names the same one, and blank the copies.
+        // Hoist the object key when at least two items name the same one, and blank the copies.
+        // A one-item record has no repeated key to remove: moving its key to the record writes the
+        // same number of bytes while allocating a String here and rebuilding an Arc on replay.
         //
         // LAST, after the strips above. `strip_block_ref_key_repeat` DERIVES the block handle from
         // the item's own fields and `object_key` is one of them, so blanking the key first would
         // derive a different handle and the strip would decline -- costing more than this saves.
         let shared_object_key = match items.split_first() {
-            Some((first, rest)) if rest.iter().all(|item| item.object_key == first.object_key) => {
+            Some((first, rest))
+                if !rest.is_empty()
+                    && rest.iter().all(|item| item.object_key == first.object_key) =>
+            {
                 Some(first.object_key.to_string())
             }
             _ => None,
@@ -5207,7 +5221,7 @@ mod tests {
     /// last two while the record carries the shard. Nine bytes restating a hash of fields sitting
     /// beside it.
     ///
-    /// The COMPONENT was a term of that hash until #2019 and is not one now. The row still carries
+    /// The ELEMENT NAME was a term of that hash until #2019 and is not one now. The row still carries
     /// it as its own field; what it no longer does is contribute to this id.
     #[test]
     fn a_row_does_not_write_the_object_id_it_can_derive() {
@@ -6616,7 +6630,7 @@ mod tests {
         // restored the key too late would still pass -- which is what the first version of this
         // test did.
         // THE PARAMETER THAT VARIED THE FIXTURE IS NOW AN OFFSET, NOT AN ELEMENT NAME. These
-        // items were distinguished only by their component, and nothing can carry one: with the
+        // items were distinguished only by their element name, and nothing can carry one: with the
         // name gone the four cases below would have built runs of IDENTICAL rows, and a fixture
         // parameter that varies nothing is how a case list stops testing what it names. The
         // offset is in the handle derivation, so it varies the thing the round trip is about.
@@ -6683,10 +6697,53 @@ mod tests {
             let hoisted = read[0].shared_object_key.is_some();
             assert_eq!(
                 hoisted,
-                distinct == 1,
-                "{label}: hoisted={hoisted} with {distinct} distinct key(s)"
+                items.len() > 1 && distinct == 1,
+                "{label}: hoisted={hoisted} with {} item(s) and {distinct} distinct key(s)",
+                items.len(),
             );
         }
+    }
+
+    #[test]
+    fn a_single_item_keeps_its_key_without_growing_the_record() {
+        let item = block_item(1, "ctx:event:41", false);
+        let mut blanked = item.clone();
+        blanked.object_key = empty_object_key();
+
+        let record = |item, shared_object_key| IndexDeltaRecord {
+            shard_id: 11,
+            sequence: 1,
+            items: vec![item],
+            meta: None,
+            applied_wal_sequence: Some(1),
+            upsert: true,
+            key_states: Vec::new(),
+            shared_object_key,
+        };
+        let inline = encode_index_payload(&record(item.clone(), None), INDEX_LOG_SHAPE_DELTA).unwrap();
+        let moved = encode_index_payload(
+            &record(blanked, Some(item.object_key.to_string())),
+            INDEX_LOG_SHAPE_DELTA,
+        )
+        .unwrap();
+        assert_eq!(
+            inline.len(),
+            moved.len(),
+            "moving a lone key must not be described as byte compression",
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(11, vec![item], Vec::new(), Some(1), None, false, true)
+            .unwrap();
+        let records = store.read_delta_records(11, 0).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0].shared_object_key.is_none(),
+            "a lone item must keep its existing shared key allocation",
+        );
+        assert_eq!(records[0].items[0].object_key.as_ref(), "ctx:event:41");
     }
 
     /// What hoisting the key is worth, on a record shaped like a timestamped write.
@@ -6702,7 +6759,7 @@ mod tests {
                 object_key: "ctx:event:41:tenant-7".into(),
                 model_id: "feature".to_string(),
                 // THE ROWS ARE IDENTICAL NOW, AND THAT IS HONEST FOR THIS FIXTURE. They were
-                // distinguished only by a component, which no row can carry. This arm measures a
+                // distinguished only by an element name, which no row can carry. This arm measures a
                 // per-row FLOOR -- address-less, handle-less, by design -- so a run of identical
                 // rows is the floor it is about rather than a weakened case.
                 object_id: 0,
@@ -7582,6 +7639,135 @@ mod tests {
         assert!(matches!(result, Err(IndexLogError::Encoding(_))));
     }
 
+    /// A RECORD THE BINARY ENCODER CANNOT PACK IS AN ERROR, NOT A JSON RECORD NO READER TAKES.
+    ///
+    /// Both encoders used to fall through to JSON when msgpack refused a record, on the stated
+    /// ground that the reader still takes it. This pins that it does not: a bare JSON record
+    /// starts with `{`, which `decode_index_payload` reads as codec 7, and refuses by name. A
+    /// record written that way was framed and checksummed like any other and only failed at the
+    /// next load.
+    ///
+    /// No record type in this tree fails to pack (they all derive `Serialize`), so the failure is
+    /// MADE: `Refuses` serialises fine to a human-readable format and errors on a binary one, which
+    /// is exactly the shape of failure the fallback existed for. It is the only way to drive the
+    /// arm, and the control is the same value through a human-readable serializer succeeding.
+    #[test]
+    fn a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json() {
+        struct Refuses;
+        impl serde::Serialize for Refuses {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if serializer.is_human_readable() {
+                    serializer.serialize_str("fine as text")
+                } else {
+                    Err(serde::ser::Error::custom("refused by a binary serializer"))
+                }
+            }
+        }
+
+        // CONTROL: the value is serialisable, so the refusals below are the BINARY encoder's.
+        assert!(serde_json::to_vec(&Refuses).is_ok());
+
+        // ---- the buffer-reusing encoder: an error, and the buffer left EMPTY.
+        let mut out = vec![0xAA; 16];
+        let err = encode_index_payload_into(&Refuses, INDEX_LOG_SHAPE_DELTA, &mut out)
+            .expect_err("a record msgpack refuses was written anyway");
+        assert!(matches!(err, IndexLogError::Encoding(_)), "{err:?}");
+        assert!(out.is_empty(), "a half-written payload was left in the buffer: {out:?}");
+
+        // ---- the allocating encoder.
+        let err = encode_index_payload(&Refuses, INDEX_LOG_SHAPE_DELTA)
+            .expect_err("a record msgpack refuses was written anyway");
+        assert!(matches!(err, IndexLogError::Encoding(_)), "{err:?}");
+
+        // ---- WHY an error beats the fallback: JSON of a record is not readable by this build.
+        let a_record = IndexLogRecord {
+            shard_id: 1,
+            sequence: 2,
+            index: serde_json::Value::Null,
+        };
+        let bare_record = serde_json::to_vec(&a_record).unwrap();
+        assert_eq!(
+            bare_record[0], b'{',
+            "a JSON record starts with the byte the container reads as codec 7"
+        );
+        let refused: Result<IndexLogRecord, _> = decode_index_payload(&bare_record);
+        match refused {
+            Err(IndexLogError::Encoding(message)) => assert!(
+                message.contains('7'),
+                "the reader should refuse a bare JSON record as codec 7: {message}"
+            ),
+            other => panic!("a bare JSON record was read back, so the fallback was safe: {other:?}"),
+        }
+
+        // ---- CONTROL: a record that packs still encodes, in both encoders, with a container byte.
+        let ok = a_record;
+        let mut buffer = Vec::new();
+        encode_index_payload_into(&ok, INDEX_LOG_SHAPE_DELTA, &mut buffer).unwrap();
+        assert_eq!(index_container_parts(buffer[0]), (INDEX_LOG_CODEC_MSGPACK, INDEX_LOG_SHAPE_DELTA));
+        let allocated = encode_index_payload(&ok, INDEX_LOG_SHAPE_DELTA).unwrap();
+        assert_eq!(buffer, allocated);
+    }
+
+    /// NO JSON ENCODE ARM IS LEFT IN THE TWO INDEX-LOG PAYLOAD ENCODERS.
+    ///
+    /// The test above drives the failure; this sees an arm nobody reaches YET. It reads each
+    /// function's own code with comment lines removed, anchored on its declaration up to the next
+    /// function, and its POSITIVE CONTROL is the log's own record reader of legacy lines in this
+    /// file, which calls `serde_json`: a scan that could not see a `serde_json` call at all would
+    /// pass over any encoder.
+    #[test]
+    fn no_json_encode_arm_is_left_in_the_index_log_payload_encoders() {
+        let source = include_str!("index_log.rs");
+        fn body(source: &'static str, from: &str, to: &str) -> String {
+            let start = source
+                .find(from)
+                .unwrap_or_else(|| panic!("no declaration {from}"));
+            let rest = &source[start..];
+            let end = rest[from.len()..]
+                .find(to)
+                .unwrap_or_else(|| panic!("no declaration {to} after {from}"))
+                + from.len();
+            rest[..end]
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let into = body(
+            source,
+            "pub(crate) fn encode_index_payload_into<",
+            "pub(crate) fn encode_index_payload<",
+        );
+        let alloc = body(
+            source,
+            "pub(crate) fn encode_index_payload<",
+            "pub(crate) fn decode_index_payload<",
+        );
+        for (name, code) in [("encode_index_payload_into", &into), ("encode_index_payload", &alloc)] {
+            assert!(code.len() > 300, "{name}: the scan found almost nothing");
+            assert!(
+                code.contains("rmp_serde::Serializer"),
+                "{name} is not the msgpack encoder this scan thinks it is"
+            );
+            assert!(
+                !code.contains("serde_json"),
+                "{name} still reaches for serde_json: a JSON encode arm survives, and the reader \
+                 refuses what it writes"
+            );
+        }
+        // The control: this file's struct definitions name `serde_json::Value`, so the scan's
+        // notion of "contains serde_json" is demonstrably able to fire on code in this file.
+        let record_def = body(
+            source,
+            "pub struct IndexLogRecord {",
+            "pub enum IndexItemKind {",
+        );
+        assert!(
+            record_def.contains("serde_json::Value"),
+            "the control no longer sees a serde_json use, so this scan could pass over an encoder"
+        );
+    }
+
     /// An item that omits its default-valued fields still decodes, with those defaults.
     ///
     /// This is what makes omitting them safe in ONE step, with no ordering between writers and
@@ -8317,14 +8503,14 @@ mod tests {
             #[serde(rename = "mi")]
             model_id: String,
             #[serde(rename = "c", skip_serializing_if = "Option::is_none")]
-            component: Option<std::sync::Arc<str>>,
+            element_name: Option<std::sync::Arc<str>>,
         }
         let plant = |named: Option<&str>| {
             encode_as_map(
                 &PlantedRow {
                     object_key: "tenant/1/object/9".into(),
                     model_id: "feature".to_string(),
-                    component: named.map(std::sync::Arc::from),
+                    element_name: named.map(std::sync::Arc::from),
                 },
                 INDEX_LOG_SHAPE_DELTA,
             )
@@ -9245,7 +9431,7 @@ flag exists to say",
         );
     }
 
-    /// THE HOISTED COMPONENTLESS ROW IS THIRTY BYTES, AND THE KIND SPELLING IS NOT A CONFOUND.
+    /// THE HOISTED ELEMENT_NAMELESS ROW IS THIRTY BYTES, AND THE KIND SPELLING IS NOT A CONFOUND.
     ///
     /// # WHAT THIS ARM MEASURED, AND WHY THAT HALF IS DELETED RATHER THAN LEFT RED
     ///
@@ -9258,7 +9444,7 @@ flag exists to say",
     /// reviewer nothing to read. What the three verdicts claimed was: a name is not free on any
     /// arm; it is paid PER ROW at its own length plus a header, so between `length` and
     /// `length + 2`; and at 64 characters the name alone outweighed the entire 30-byte
-    /// componentless row. The post-change measurement is that a 1-character name left the row at
+    /// nameless row. The post-change measurement is that a 1-character name left the row at
     /// 30 B against a 30 B control -- a delta of ZERO, which is what reddened the first verdict.
     ///
     /// AND THE 30 IS 29 NOW, WHICH IS A SECOND STEP AND NOT A RE-GOLDENING. The slot that held the
@@ -9284,19 +9470,19 @@ flag exists to say",
     /// # WHAT SURVIVES, AND IT IS THE TWO CONTROLS
     ///
     /// The 30-byte pin and the kind-spelling control are unaffected by the removal -- both rows
-    /// were already componentless -- and both catch a real failure: a fixture that stopped
+    /// were already nameless -- and both catch a real failure: a fixture that stopped
     /// hoisting, or a strip that stopped firing, moves them. They are kept and the arm is renamed
     /// to what it now does.
     ///
-    /// EVERY ROW FIGURE THIS CAMPAIGN PUBLISHED WAS MEASURED ON A ROW WITH `component: None`.
+    /// EVERY ROW FIGURE THIS CAMPAIGN PUBLISHED WAS MEASURED ON A ROW WITH `element_name: None`.
     /// 119 B unstripped and 55 B stripped come from `what_every_byte_of_an_index_item_is_spent_on`;
     /// the hoisted common row comes from `what_the_remaining_index_item_mechanisms_are_worth`
     /// directly above. All three fixtures build a `string` record, and a string record's block
     /// names no element inside its object because there is no element -- those rows are
-    /// COMPONENTLESS.
+    /// ELEMENT_NAMELESS.
     ///
     /// A CONTAINER ROW IS NOT. A hash field, a set member and a zset member each carry the
-    /// element's own name in the `component` slot, at the length of that name, ONCE PER ROW. So
+    /// element's own name in the `element_name` slot, at the length of that name, ONCE PER ROW. So
     /// the conclusion that was drawn from those figures -- that the identity still on a row is
     /// down to a couple of bytes, so sharing it would buy nothing -- is a true statement about
     /// the rows that were measured and says nothing at all about the rows that carry an element
@@ -9304,13 +9490,13 @@ flag exists to say",
     ///
     /// WHY THE CONTROL IS ASSERTED AND NOT MERELY PRINTED. A fixture that quietly stopped
     /// hoisting, or a strip that stopped firing, moves every arm here in the same direction, and
-    /// three deltas against a moved baseline still read as plausible. So the componentless row is
+    /// three deltas against a moved baseline still read as plausible. So the nameless row is
     /// built on this same fixture and asserted equal to the figure the campaign's own rows were
     /// taken against, and the three arms are reported as deltas FROM it.
     ///
     /// AND THE KIND NAME IS ELIMINATED AS A CONFOUND IN THE SAME BREATH. The campaign's rows say
     /// `string` in the model slot and a container row says `hash`, which is a different number of
-    /// characters -- so a second control re-measures the componentless row under `hash` and
+    /// characters -- so a second control re-measures the nameless row under `hash` and
     /// asserts the two agree. They do, because both spellings go through
     /// `model_id_as_number_when_it_is_known` and both are known; without this arm the element
     /// deltas below would silently carry the model slot's difference as well.
@@ -9321,7 +9507,7 @@ flag exists to say",
 
         // The eight-blocks-of-one-object fixture of the mechanism pricing above, verbatim apart
         // from the two things being varied: the model spelling and the element name.
-        // THE ELEMENT-NAME PARAMETER IS GONE, NOT RENAMED TO `_component`. It could no longer
+        // THE ELEMENT-NAME PARAMETER IS GONE, NOT RENAMED TO `_element_name`. It could no longer
         // reach the row, so keeping it would have made the three arms below encode the SAME row
         // three times and compare it with itself -- a fixture parameter that varies nothing, which
         // is how an arm reads as a tree fact while asserting only its own setup. A caller that
@@ -9366,8 +9552,8 @@ flag exists to say",
                         deleted: false,
                     };
                     // The writer's order. The handle strip DERIVES from `object_key` AND from
-                    // `component`, so it fires for an element row exactly as it does for a
-                    // componentless one -- which is the only reason these arms are comparable.
+                    // `element_name`, so it fires for an element row exactly as it does for a
+                    // nameless one -- which is the only reason these arms are comparable.
                     item.strip_block_ref_key_repeat();
                     item.strip_size_repeat();
                     item.strip_address_repeats();
@@ -9406,14 +9592,14 @@ flag exists to say",
             rmp_serde::to_vec(&items[0]).expect("encode a row").len()
         };
 
-        // THE CONTROL: the componentless hoisted row every published figure in this campaign was
+        // THE CONTROL: the nameless hoisted row every published figure in this campaign was
         // measured against. 29, NOT 30, SINCE THE ELEMENT-NAME SLOT CAME OFF -- one byte of
         // msgpack nil, written on every row of every kind, and now not written at all.
         const CONTROL_ROW_BYTES: usize = 29;
         let control = row_of("string");
         assert_eq!(
             CONTROL_ROW_BYTES, control,
-            "the componentless hoisted row measured {control} B, not the {CONTROL_ROW_BYTES} B \
+            "the nameless hoisted row measured {control} B, not the {CONTROL_ROW_BYTES} B \
              the campaign's row figures were taken against. The fixture, the strips or the \
              encoding has moved, and every delta below would be against the wrong baseline",
         );
@@ -9422,12 +9608,12 @@ flag exists to say",
         let control_hash = row_of("hash");
         assert_eq!(
             control, control_hash,
-            "a componentless row costs {control} B under `string` and {control_hash} B under \
+            "a nameless row costs {control} B under `string` and {control_hash} B under \
              `hash`, so the model slot differs between the campaign's fixture and a container's \
              and the element deltas below would carry that difference too",
         );
 
-        println!("=== the hoisted componentless row ===");
+        println!("=== the hoisted nameless row ===");
         println!("  string  {control} B");
         println!("  hash    {control_hash} B");
         println!(

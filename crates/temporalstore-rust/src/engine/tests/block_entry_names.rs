@@ -17,17 +17,17 @@
 //! declines the change.
 //!
 //! "SHARED" IS AN ASSUMPTION ABOUT WHERE THE NAMES COME FROM, and this module measures it instead.
-//! The three are `object_key`, `model_id` and `component`. If all three were the same for every
+//! The three are `object_key`, `model_id` and `element_name`. If all three were the same for every
 //! block of a routing bucket, storing them once per block would be pure duplication and the entry
 //! could carry a handle to the bucket's copy. That is the change this module was written to
 //! justify, and it does not survive the measurement.
 //!
 //! WHAT THE COUNTS SAY, over real stores seeded through the engine:
 //!
-//!   * `component` is a PER-BLOCK fact, by construction. A container key's fields, members and
+//!   * `element_name` is a PER-BLOCK fact, by construction. A container key's fields, members and
 //!     elements are each their own block and they all route to the container key's one bucket; the
-//!     component is the only thing that tells them apart. A bucket of 100 blocks holds 100 distinct
-//!     components. Hoisting it would file a hundred hash fields as one block.
+//!     element name is the only thing that tells them apart. A bucket of 100 blocks holds 100 distinct
+//!     element names. Hoisting it would file a hundred hash fields as one block.
 //!   * `object_key` and `model_id` are per-OBJECT facts, and a routing bucket is not an object.
 //!     A bucket is `hash(key) % routing_bucket_count`, so whether one bucket holds one object or
 //!     forty is a property of the SHARD'S CONFIGURED BUCKET RANGE and nothing else. At the range
@@ -69,12 +69,12 @@ use crate::alloc_probe::Probe;
 struct NameSpread {
     object_key: BTreeMap<usize, usize>,
     model_id: BTreeMap<usize, usize>,
-    component: BTreeMap<usize, usize>,
+    element_name: BTreeMap<usize, usize>,
     /// Buckets keyed by blocks held, so the container case can be asserted reached.
     blocks_held: BTreeMap<usize, usize>,
-    /// Buckets whose every block carries the SAME component, counted separately: a bucket holding
+    /// Buckets whose every block carries the SAME element name, counted separately: a bucket holding
     /// one block trivially does, and a claim built on those would be vacuous.
-    multi_block_buckets_with_one_component: usize,
+    multi_block_buckets_with_one_element_name: usize,
     multi_block_buckets: usize,
 }
 
@@ -106,7 +106,7 @@ impl NameSpread {
         for (name, map) in [
             ("object_key", &self.object_key),
             ("model_id", &self.model_id),
-            ("component", &self.component),
+            ("component", &self.element_name),
         ] {
             let buckets = self.buckets();
             let multi = Self::buckets_with_more_than_one(map);
@@ -127,15 +127,15 @@ impl NameSpread {
             }
         }
         println!(
-            "  multi-block buckets = {}, of which all-one-component = {}",
-            self.multi_block_buckets, self.multi_block_buckets_with_one_component
+            "  multi-block buckets = {}, of which all-one-element-name = {}",
+            self.multi_block_buckets, self.multi_block_buckets_with_one_element_name
         );
     }
 }
 
 /// Walk every bucket of the loaded shard and count distinct names across its blocks.
 ///
-/// `component` is counted over the OPTION, so a bucket where some blocks have a component and some
+/// `element_name` is counted over the OPTION, so a bucket where some blocks have an element name and some
 /// do not counts two -- which is the honest answer for "could one stored value serve them all".
 fn name_spread(engine: &TemporalEngine) -> NameSpread {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -145,7 +145,7 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut keys: BTreeSet<&str> = BTreeSet::new();
         let mut models: BTreeSet<&str> = BTreeSet::new();
-        let mut components: BTreeSet<Option<&str>> = BTreeSet::new();
+        let mut element_names: BTreeSet<Option<&str>> = BTreeSet::new();
         let mut held = 0usize;
         for (handle, block) in bucket.block_index.iter() {
             held += 1;
@@ -153,16 +153,16 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
             models.insert(block.model_id().as_str());
             // Every entry's name is the same absence, so this set holds one member for any
             // non-empty bucket. The histogram it feeds is restated where it is read.
-            components.insert(None::<&str>);
+            element_names.insert(None::<&str>);
         }
         *spread.blocks_held.entry(held).or_default() += 1;
         *spread.object_key.entry(keys.len()).or_default() += 1;
         *spread.model_id.entry(models.len()).or_default() += 1;
-        *spread.component.entry(components.len()).or_default() += 1;
+        *spread.element_name.entry(element_names.len()).or_default() += 1;
         if held > 1 {
             spread.multi_block_buckets += 1;
-            if components.len() == 1 {
-                spread.multi_block_buckets_with_one_component += 1;
+            if element_names.len() == 1 {
+                spread.multi_block_buckets_with_one_element_name += 1;
             }
         }
     }
@@ -353,18 +353,18 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
         assert!(spread.blocks() > 0, "denominator: no block entries in this arm");
     }
 
-    // --- 1. `component` is a PER-BLOCK fact, in both ranges. ---
+    // --- 1. `element_name` is a PER-BLOCK fact, in both ranges. ---
     //
     // The container arm is where this is visible at all, and the assertion is EQUALITY with the
-    // blocks held rather than ">1": a bucket of a hundred blocks holding two distinct components
+    // blocks held rather than ">1": a bucket of a hundred blocks holding two distinct element names
     // would still refute hoisting, but it would not be the structure this engine actually has.
     for (index, spread) in wide_container.iter().chain(narrow_container.iter()).enumerate() {
         assert_eq!(
-            0, spread.multi_block_buckets_with_one_component,
-            "container arm {index}: {} multi-block buckets hold ONE distinct component; every block \
+            0, spread.multi_block_buckets_with_one_element_name,
+            "container arm {index}: {} multi-block buckets hold ONE distinct element name; every block \
              of a container is a distinct field, member or element, so a bucket whose blocks shared \
-             a component would mean the component had stopped telling blocks apart",
-            spread.multi_block_buckets_with_one_component
+             an element name would mean the element name had stopped telling blocks apart",
+            spread.multi_block_buckets_with_one_element_name
         );
         assert!(
             spread.multi_block_buckets > 0,
@@ -372,10 +372,10 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
              anything about whether a name is shared ACROSS blocks -- it would be vacuous"
         );
         assert!(
-            NameSpread::widest(&spread.component) >= 100,
-            "container arm {index}: the widest bucket holds {} distinct components; the fixture is \
+            NameSpread::widest(&spread.element_name) >= 100,
+            "container arm {index}: the widest bucket holds {} distinct element names; the fixture is \
              supposed to reach the container case where the per-block entry dominates at 52x",
-            NameSpread::widest(&spread.component)
+            NameSpread::widest(&spread.element_name)
         );
     }
 
@@ -679,7 +679,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
     fn block(
         key: &str,
         model: &str,
-        component: Option<&str>,
+        element_name: Option<&str>,
         slab: u64,
         offset: u64,
         length: u64,
@@ -706,7 +706,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
         encoded(&block("k", "string", None, 1, 2, 3, (false, false, true)))
     );
     println!(
-        "WITH_COMPONENT = {}",
+        "WITH_ELEMENT_NAME = {}",
         encoded(&block("k", "string", Some("f0"), 1, 2, 3, (false, false, true)))
     );
     println!(
@@ -718,7 +718,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
         encoded(&block("k", "string", None, 1, 2, u64::MAX, (false, false, true)))
     );
 
-    // A whole index: one bucket, five blocks of one object (one with a component) and a second
+    // A whole index: one bucket, five blocks of one object (one with an element name) and a second
     // object in the SAME bucket -- the shape a cluster-range shard produces routinely.
     let mut node = BucketNode {
         routing_bucket: 7,
@@ -781,7 +781,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
                 "        (\"{}\", \"{}\", {}, {}, {}, {}, {}, {}, {}),",
                 named.at(bucket.routing_bucket, *handle),
                 entry.model_id(),
-                // The component column is `None` on every row now: an entry names a block. The
+                // The element name column is `None` on every row now: an entry names a block. The
                 // column is kept in the printed shape so an existing golden still lines up.
                 "None".to_string(),
                 entry.address.block_slab_id(),
@@ -831,7 +831,7 @@ const ENTRY_OBJECT_KEY_AT_STAMP_26: &str = r#""object_key":"k","#;
 const ENTRY_MODEL_ID_AT_STAMP_26: &str = r#""model_id":"string","#;
 
 /// A whole shard index written at `15583789e`: one bucket holding six blocks -- five of one object
-/// (four plain, one carrying a component and a different kind) and one of a SECOND object in the
+/// (four plain, one carrying an element name and a different kind) and one of a SECOND object in the
 /// same bucket, which is what a cluster-range shard produces routinely.
 /// The routing bucket an index written before this change carries, and what this binary writes in
 /// its place -- which is NOTHING, the slot having been retired from the wire struct rather than
@@ -887,7 +887,7 @@ const BLOCK_NAMED_HANDLE: &str = r#""hash:k::1:9:3:4:4""#;
 
 /// Every page of that index, spelled out independently of the text it came from.
 ///
-/// `(object_key, model_id, component, slab, offset, length, dirty, deleted, log_backed)`.
+/// `(object_key, model_id, element_name, slab, offset, length, dirty, deleted, log_backed)`.
 #[allow(clippy::type_complexity)]
 const OLD_STORE_BLOCKS: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, bool)] = &[
     ("k", "hash", Some("f0"), 1, 9, 3, true, false, false),
@@ -911,11 +911,11 @@ const OLD_STORE_BLOCKS: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, 
 /// warning, because a tuple field is not an unused variable. Narrowing the tuple makes the
 /// compiler demand the change at each call site, which is the only way a caller finds out.
 ///
-/// AND THE `component` ARGUMENT WENT THE SAME WAY, for the same reason and one step later. The
+/// AND THE `element_name` ARGUMENT WENT THE SAME WAY, for the same reason and one step later. The
 /// literal below stopped setting an element name when the field left `BlockIndex`, so the argument
 /// decided nothing: `block_fixture(Some("f0"), ..)` and `block_fixture(None, ..)` returned the SAME
 /// value, and the golden over the second shape was a second copy of the first. It is removed rather
-/// than renamed to `_component`, so a caller that still tries to name an element is a compile error.
+/// than renamed to `_element_name`, so a caller that still tries to name an element is a compile error.
 ///
 /// THE LITERAL IS EXHAUSTIVE AND HAS NO `..`, which is what makes it the tripwire the fourth shape
 /// used to be: an element-name field returning to the entry breaks THIS function to compile, before
@@ -943,12 +943,12 @@ pub(super) fn block_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
 /// representation change becomes data loss is by moving a byte nobody was watching.
 ///
 /// THREE SHAPES, NOT FOUR, AND THE FOURTH WAS NOT DROPPED FOR CONVENIENCE. It read: "Four shapes
-/// rather than one, because the component is `skip_serializing_if = "Option::is_none"`: a golden
+/// rather than one, because the element name is `skip_serializing_if = "Option::is_none"`: a golden
 /// over a single shape would pin the branch that omits it and say nothing about the branch that
 /// writes it." There is no branch that writes it. `BlockIndex` has no element-name field, so the
-/// WITH_COMPONENT shape serialized to the same bytes as PLAIN -- the two goldens were one golden
-/// twice, and the control asserting them different (`assert_ne!(plain, with_component)`, "a block
-/// carrying a component must not write the same bytes as one without it") had become a comparison
+/// WITH_ELEMENT_NAME shape serialized to the same bytes as PLAIN -- the two goldens were one golden
+/// twice, and the control asserting them different (`assert_ne!(plain, with_element_name)`, "a block
+/// carrying an element name must not write the same bytes as one without it") had become a comparison
 /// of a value with itself, asserted unequal.
 ///
 /// WHAT REPLACES IT IS STRONGER THAN A FOURTH GOLDEN. The shape it was pinning cannot be
@@ -1121,7 +1121,7 @@ fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
 /// AN INDEX WRITTEN BEFORE THIS CHANGE, LOADED BY THIS BINARY, COMPARED ELEMENT BY ELEMENT.
 ///
 /// The text below is the shard index a store built at `15583789e` writes for a bucket holding
-/// five blocks of one object -- four plain and one carrying a component -- plus a second object in
+/// five blocks of one object -- four plain and one carrying an element name -- plus a second object in
 /// the same bucket. It is the bytes, not a paraphrase of them.
 ///
 /// THE DIRECTION THAT MATTERS is the one nothing reports. A reader that cannot find a block does
@@ -1185,7 +1185,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
             // disagreement was a documented defect. The property is derived from the address now,
             // so there is no stored copy left to round-trip and nothing to compare it against.
             //
-            // AND THE COMPONENT COLUMN IS NOW THE SAME KIND OF COLUMN: KEPT, AND DERIVED THROUGH.
+            // AND THE ELEMENT NAME COLUMN IS NOW THE SAME KIND OF COLUMN: KEPT, AND DERIVED THROUGH.
             // It reads `Some("f0")` for the hash row because that is what the old index stored,
             // and the table is the record of those bytes spelled out independently of the text. The
             // expectation is DERIVED from it by applying the one difference this binary makes --
@@ -1193,7 +1193,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
             // than by editing `Some("f0")` to `None`. Editing the table would destroy the record
             // and leave this arm asserting that an index with no element name loads as one with no
             // element name, which is a statement about nothing.
-            .map(|(key, model, _component, slab, offset, length, dirty, deleted, _log_backed)| {
+            .map(|(key, model, _element_name, slab, offset, length, dirty, deleted, _log_backed)| {
                 (
                     (*key).to_string(),
                     (*model).to_string(),
@@ -1227,7 +1227,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     );
     // THE DERIVATION ABOVE MUST HAVE SOMETHING TO DERIVE, asserted on the SOURCE rather than on the
     // result. This read `loaded.iter().any(|block| block.2.is_some())` -- "no loaded block carries a
-    // component, so the component's stored round trip is untested" -- and no loaded block CAN carry
+    // element name, so the element name's stored round trip is untested" -- and no loaded block CAN carry
     // one, so it could only ever fail. What it was protecting is still worth protecting: that the
     // stored bytes really do contain an element name for the decode to drop. So it is asked of the
     // fixture, in both of the places the name appears in a stored row.
@@ -1401,7 +1401,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     // field, so a stored row that carries one is written back without it -- and the name appears
     // TWICE in a stored row, which is why this is two substitutions and not one:
     //
-    //   * the entry's own `"component":"f0"` key, which the wire struct no longer declares; and
+    //   * the entry's own `"element_name":"f0"` key, which the wire struct no longer declares; and
     //   * the block_index MAP KEY, `"hash:k:f0:1:9:3:4:4"`. `block_index_written_key` renders the
     //     element name into that key, and it passes `None` now, so the slot between the object key
     //     and the slab id is empty -- the same shape the five string rows in this fixture already
@@ -1648,31 +1648,31 @@ fn what_a_container_store_charges_the_allocator_a_block() {
     }
 }
 
-/// A COMPONENT CANNOT CROWD A KIND OUT OF THE POOL THEY SHARE.
+/// An ELEMENT NAME CANNOT CROWD A KIND OUT OF THE POOL THEY SHARE.
 ///
 /// `part4::blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling` asserts the PAGE's
 /// half of this: a block entry holds one byte for its kind and reads the registry's `&'static str`
 /// through it, so a block cannot hold a pooled copy at all. Its fixture is 200 strings and 40
-/// hashes whose field is always `"f"` -- ONE component name in the whole store -- so the pool it
+/// hashes whose field is always `"f"` -- ONE element name in the whole store -- so the pool it
 /// would have checked holds three entries against a cap of sixty-four and can never be full. The
 /// failure this test is about needs the pool FULL, and the only thing in this engine that fills it
 /// is a container.
 ///
 /// WHO STILL NEEDS THE POOL, now that the entry does not: the object lookup, whose `by_model` head
 /// is keyed by the kind's SHARED name. That is the holder this test protects, and it is why a
-/// component crowding a kind out still costs something -- one allocation per (kind, object) head
+/// element name crowding a kind out still costs something -- one allocation per (kind, object) head
 /// instead of one per kind.
 ///
-/// Both counts are read, and the kind count is the claim. The component pool is asserted to be AT
+/// Both counts are read, and the kind count is the claim. The element name pool is asserted to be AT
 /// ITS CAP in the same breath, so this cannot pass by the containers having quietly stopped
-/// producing components.
+/// producing element names.
 #[test]
 #[ignore = "seeds a container store; run by name"]
 fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = probe_engine(dir.path());
     load_shard_over(&engine, u32::MAX);
-    // Four container keys, one of each kind, a hundred elements each: 400 distinct component
+    // Four container keys, one of each kind, a hundred elements each: 400 distinct element name
     // names against a pool cap of 64.
     seed_container_keys(&engine, 4, 100);
 
@@ -1681,15 +1681,15 @@ fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
     let pooled = shard.bucket_index.kind_pool.len();
     println!("kind_pool={pooled} entries");
 
-    // The pool must be PAST the component ceiling, or the crowding-out this test is about cannot
+    // The pool must be PAST the element name ceiling, or the crowding-out this test is about cannot
     // happen and every assertion below is free.
     assert!(
         pooled > 64,
         "the pool holds {pooled} entries; this fixture is supposed to produce four hundred \
-         distinct component names and so drive it past the component ceiling of 64. Below that, \
-         a component could not have crowded a kind out even before this change"
+         distinct element names and so drive it past the element name ceiling of 64. Below that, \
+         an element name could not have crowded a kind out even before this change"
     );
-    // And still bounded: components stop at 64, kinds may use 16 more, nothing else may.
+    // And still bounded: element names stop at 64, kinds may use 16 more, nothing else may.
     assert!(
         pooled <= 64 + 16,
         "the pool holds {pooled} entries against a ceiling of 80; it is supposed to stay bounded \
@@ -1875,7 +1875,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     // at this layer. `load_index_inner` is. Saying so here keeps the two from being confused. ---
     assert_eq!(
         30, SHARD_INDEX_FORMAT_VERSION,
-         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `ElementEntry`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. Moved 8 -> 9 when a zset's component stopped spelling its score: `block_index_written_key` renders `component` into the map key the served index is serialized under, so `\"0000000000000000<member>\"` became `\"<member>\"` under the same named map. The decode stays clean on both sides of this one too -- `component` keeps its `String` type -- and what disagrees is what the text MEANS on the recovery path that reads it back as a page's element, the same shape as 2->3, 3->5 and 6->7. All four bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. Moved 9 -> 11 when a TOMBSTONE'S ELEMENT NAME LEFT THE ENTRY: a tombstone entry files no component and the element it records is a new key on the BUCKET NODE, so the entry's rendered key loses the element text AND the node grows a key. The named served index DROPS an undeclared key silently, so a binary before that change reading an index written after it loads every tombstone with no element at all -- a removal nothing can identify, which is the resurrection the change exists to prevent. Same shape as every bump above: the row decodes cleanly and the disagreement appears on a recovery path. TEN IS NOT A HOLE AND IS NOT SPENDABLE: it is claimed by an UNCOMMITTED edit in another working tree, which no ref holds and no sweep of refs can see -- a lane swept 2,567 refs, found nothing above 9, and was wrong for exactly that reason. Moved 11 -> 12 when HASH AND ZSET joined the page-named set: the same key `block_index_written_key` renders, moved for two more kinds, which is 8 -> 9 again with a wider scope. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did. Moved 12 -> 13 when THE INDEX-LOG ROW LOST A SLOT: `index_log::INDEX_ITEM_SLOTS` went twelve to eleven, the element-name slot coming off a positional array that had carried a constant nil there since the entry stopped naming its element. THIS BUMP HAS A DIFFERENT SHAPE FROM EVERY ONE ABOVE IT, and that is the thing worth reading here rather than the number. All the others share one shape -- the stored row decodes cleanly and the disagreement appears later, on a recovery path -- so the stamp was the ONLY thing that could refuse them. This one does not decode cleanly: a stored twelve-slot row is refused outright by `index_log::IndexItemRow`'s arity check, in a message naming both arities, and a named row carrying the key is refused by `deny_unknown_fields` on `IndexItemWire`. So the stamp is NOT what makes this one safe; the row's own gate is. What 13 buys is that a store written by a twelve-slot binary is DISCARDED and rebuilt from the WAL rather than being read as far as the first row and then failing, which turns a load error into a rebuild on a store nothing is serving -- and `index_log_record`'s module doc is right that a row-shape change owes this constant nothing, which is why it is spent for the rebuild and not for the refusal. The value is free: measured over every `matrixark` remote ref, no tip held 13 and the highest any held was this constant's own 12. That note's own claim that 13 was live on four branches had expired. Moved 13 -> 14 when A RESIDENT ADDRESS MAP'S VALUE BECAME A CONSOLIDATED RECORD: `control_state_blocks` held a bare address holder and now holds an `ObjectRecord`, which carries that address plus a deadline, state bits and a model id. THIS ONE HAS THE COMMON SHAPE AND NOT 13'S, which is the thing worth reading here. The two wire forms overlap on exactly ONE key: `a`, the address word. An old row also carries `l`, `pi`, `oi` and `g`; the record declares `n`, `f`, `m` and `t` instead. The served index is a NAMED map and a reader DROPS the keys its struct no longer declares, silently, with every remaining value intact -- measured, and stated beside `BlockAddressWire`. So an old row decodes CLEANLY into a record holding the right address word with a page size of ZERO and no flags at all: a read then asks for zero bytes, and the cleared `BLOCK_IN_LOG` claims a slab-resident page for one that was log-resident. Nothing refuses that but this constant. So 14 is spent on the REFUSAL, which is the opposite of what 13 bought -- 13 was spent on a rebuild because the row's own arity gate already refused the shape. Moved 14 -> 15 when THE TWO DISTINCT-COUNT MAPS BECAME ONE: `control_state_change_sketch` left the named map set entirely, and `control_state_changes`' bucket value went from a bare member array to an externally-tagged `hll::DistinctBucket`. THIS IS THE FIRST BUMP TO CARRY BOTH SHAPES AT ONCE, one per tenant, which is the thing worth reading here rather than the number. THE DEPARTING MAP HAS THE COMMON SHAPE: the served index is a NAMED map and a reader DROPS the keys its struct no longer declares, silently, so a binary after this change reading an index written before it loads every sketched bucket as though it had never existed -- a bounded distinct count that quietly becomes exact-over-nothing, with no error anywhere, and nothing but this constant refuses it. THE CHANGED VALUE HAS 13'S SHAPE INSTEAD: a stored bucket is a JSON array where the enum now expects a variant tag, so the decode FAILS rather than producing a plausible value, and the stamp buys the rebuild rather than the refusal there. Measured, not inferred from the types, in `one_map_for_both_distinct_shapes::the_pre_bump_bucket_shape_cannot_be_read_as_the_new_one`. So one tenant of this bump is 14's case and the other is 13's, and a reader who assumes a bump has one shape will get this one wrong. The value is free, measured the way 13's note prescribes -- by reading this constant out of every `matrixark` remote ref rather than by grepping history: the maximum any tip held was 14, on seventeen refs, and no tip held 15. Moved 15 -> 16 when `ObjectSlot` GAINED A STORED FORM for its owned element array: the slot's image stopped being the bare record's and became an `r` key holding the record, beside an `e` array the slot carries only when the object has elements. 16 -> 17 and 17 -> 18 are the first four of the eight per-element series maps moving into the consolidated map -- `context_children` alone, then `context_audits`, `context_summaries` and `context_compressions` together. Each removes a top-level key from the stored image, which is 14's shape and not 13's: a named map DROPS an undeclared key silently, so without the bump an index written before the move loads with those maps EMPTY and no error anywhere. AND THIS PIN WAS RED FOR ALL THREE BEFORE ANYONE READ IT. It sat at 15 while main reached 17, through two merged changes, because the gate sets those changes ran named the OTHER stamp tripwire -- the one in `adopting_the_ported_index_log_record` -- and not this module. A literal pin only works if something runs it, so a stamp bump owes a sweep for EVERY pin that resolves the constant literally, not just the one the author remembers. Moved 18 -> 19 when THE FEATURE SERIES MOVED INTO THE CONSOLIDATED MAP: the largest of the eight per-element maps, and the only one the decode's canonical-key adoption pass covers -- that pass had to follow the series onto the kind's inner table, because dropping it would have cost every feature key its canonical handle with NOTHING failing, the keys comparing equal and only the sharing being lost. The bump itself has 17's and 18's shape: a key leaves the stored image, a named map drops an undeclared key in silence, and this constant is the only thing that refuses an index written before the move rather than loading it with every feature series empty. Moved 19 -> 20 for the LAST THREE of the eight -- `context_events`, `context_entities` and `context_indexes` -- and that bump carries a shape none of the others did. `context_entities` is the familiar case: a stored key leaves the top level. The other two were `#[serde(skip)]` and had NO stored image at all, so moving them into the serialized `objects` makes them DURABLE for the first time. The load side is unchanged (an older index carries nothing for them and rebuilds), but every index written after this one carries more than any index before it, which is a durability change rather than a key moving. Moved 20 -> 21 when `control_state_uuid` and `context_compression_watermark` became one domain-keyed `u64_ledgers`. The first was a stored top-level key, so this is 14's shape again -- but with a sharper consequence than the others: a dedup ledger that loads EMPTY does not lose a read, it makes a duplicate control write look new and apply twice. The second was `#[serde(skip)]` and becomes stored by joining a stored map, as the event and index series did at 20, and its writer is environment-gated so it stays empty in the shipped configuration. Moved 21 -> 22 when `control_state` and `feature_values` became one domain-keyed `counter_series`. `control_state` was a stored top-level key, so 14's shape again: an index written at 21 would load with every control-state counter series EMPTY and a windowed aggregate would answer zero over a store that holds the counts. `feature_values` was `#[serde(skip)]` and becomes stored by joining a stored map, as the compression watermark did at 21. Moved 22 -> 23 when `strings` and `context_nodes` became one domain-keyed `address_maps`. `strings` was a stored top-level key, and its loss is the worst consequence in this family: an index written at 22 would load with EVERY STRING VALUE's address missing, so a store full of keys serves none of them. It is a SAME-SHAPE merge and not a fold into `objects` -- an `ElementEntry` carries a block id and a generation the 24-byte record has no field for, which #2259 drove -- so it buys a map and not bytes. Moved 23 -> 24 when `expires_at_ms` joined `u64_ledgers` as a third domain. It was a stored top-level key, and the consequence is specific: an index written at 23 loads with NO DEADLINES, so every key with a TTL becomes immortal until something writes its expiry again -- a dropped guarantee rather than a missing read. The inner container became a `BTreeMap` for all three domains at the same time, because three production sites ITERATE the expiry table and a `HashMap` would have made those walks hash-seeded. Moved 24 -> 25 when `address_maps` and `counter_series` BECAME ONE FIELD, `side_tables`, keyed by a single `SideTable` enum. THIS BUMP REMOVES TWO STORED TOP-LEVEL KEYS AND ADDS ONE, which is the first time more than one has left at once, and both departing keys were stored rather than skipped -- so it is 14's shape twice over. A named map drops an undeclared key silently, so an index written at 24 loads under this binary with BOTH the string addresses and the control-state counters empty: a store full of string keys serves none of them, and every windowed aggregate answers zero over counts the store still holds. Nothing but this constant refuses that. What is NOT part of this bump is any change to the spellings or to the tables themselves: all four domain spellings -- `strings`, `context_nodes`, `control_state`, `feature_values` -- carry over unchanged, and each table's serialized form is still its bare inner map, because a domain's table SHAPE is resolved from its spelling on decode rather than from a variant tag on the wire. So the stored bytes are the same four objects they were, moved under one key instead of two, and the merge costs no key a byte: the variant wraps the TABLE, not the entry, which is what distinguishes it from the union priced in `index_bytes_per_key::what_merging_the_key_sharing_maps_would_cost_as_a_record` at 16.4 B/key saved at best and 144.2 lost at worst. Moved 25 -> 26 when THE STRING MAP'S VALUE BECAME A ROW: `strings` left `side_tables` entirely and its keys now live in `objects` under the String kind, holding an `ObjectSlot` rather than a bare `ElementEntry`. THIS BUMP HAS 14'S SHAPE, which is the one to read it as: the served index is a NAMED map and a reader DROPS the keys its struct no longer declares, so a binary after this change reading an index written before it finds no `strings` domain under `side_tables` and no String kind under `objects`, and loads with EVERY STRING VALUE's address missing -- a store full of keys serving none of them, with no error anywhere. Nothing but this constant refuses that. What the move buys is that a string row finally has somewhere to put a deadline and a dirty bit, which a bare address does not: the per-key expiry table is the duplicate it exists to delete, priced at a 27% crossover in `one_record_per_object::what_moving_the_string_map_onto_the_record_would_cost`. The row is still 24 bytes and the layout arm is still unused -- 400 of 400 real string addresses take the inline arm -- so the conversion adds the record's width and no allocation. Moved 26 -> 27 when A PAGE ENTRY STOPPED RESTATING THE KEY IT IS FILED UNDER: `object_key` and `model_id` are the composite key's second and first slots, the entry wrote both again as named fields, and #2350 measured that the key's characters were NOT READ BACK -- every page key in a 2,000-key index replaced by the decimal of its handle, fed to the production decoder and re-encoded, produced a byte-identical `slot_index`. The decoder parses the key now and the entry writes three keys rather than five. THIS BUMP CARRIES BOTH SHAPES, ONE PER DIRECTION, AND THE DIRECTION THAT NEEDS IT IS NOT THE ONE A READER EXPECTS. A new binary reading OLD bytes is 13's shape and needs no stamp: the named decoder drops the entry's two extra keys silently and the reconstruction reads the SAME values out of the key beside them, so an old index decodes to exactly the index it decoded to before -- driven against committed bytes by `an_index_written_before_this_change_loads_block_for_block` in this module, field by field on every page. What the stamp is spent on is an OLD binary reading NEW bytes: the msgpack container refuses on EQUALITY in its header before decoding, so 27 makes a rollback refuse cleanly where without it the old binary would reach `StoredBlockEntry`, fail on a missing required field and report corruption for a format step. The cost is that every existing store replays once on first load -- which it did not strictly need, since the new reader can read it -- and that is the trade taken, stated here rather than left to be inferred. `address` did NOT go with the other two and that is a measurement: `block_index_written_key` renders `block_id().unwrap_or_default()`, `ElementEntry::block_id()` is `None` EXACTLY while a block is log-resident, so a staged page and the first page of an object in a slab render ONE key and differ in `log_backed()` -- `the_key_a_block_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders` builds both and asserts the keys identical. Moved 27 -> 28 when THE WRITER MOVED TO THE BLOCK SPELLING: every emitted page-spelled serde key in the crate flipped to its block spelling, with the page spelling kept beside it as the accepted ALIAS, and two of those keys are in the stored index image -- `object_page_layouts` became `object_block_layouts`, and an index-log item's kind token `page` became `block`. THIS BUMP HAS THE COMMON SHAPE, 14's and not 13's: the served index is a NAMED map and a reader DROPS the keys its struct no longer declares, so a binary predating the reader widening that shipped just before this flip would read an image written after it, find no `object_block_layouts`, and load every multi-block object's layout EMPTY -- an object whose blocks are on disk and unreachable, with no error anywhere. A binary that CARRIES the widening accepts both spellings and needs no stamp at all, so what 28 buys is a clean refusal across the pre-widening window rather than a silent miss. The cost is one replay per existing store on first load, which is exactly what 27 cost. Moved 28 -> 29 when THE LAST HAND-WRITTEN PAGE-SPELLED KEY MOVED: the bucket node's block map was serialized as `page_index` by a hand-rolled `serialize_field`, which is why the attribute sweep at 28 could not reach it -- there is no attribute to read. Its reader has accepted the set `block_index` / `page_index` / `page_refs` since the widening, so an index written before this loads unchanged; what 29 is spent on is the other direction, an older binary reading an image written after it, where the served index is a named map and a reader DROPS the key it does not declare -- loading every bucket with an EMPTY block map, which is every block in the shard unreachable with no error anywhere. 14's shape, and the sharpest instance of it in this family. Moved 29 -> 30 when THE CONSOLIDATED OBJECT MAP MOVED UNDER `slot_index`: each object's block refs live in its `ObjectSlot` now, `impl Serialize for CoreIndex` composes every live page's written key from those refs, and `serialize_block_index` REFUSES a page it cannot name -- so the map had to be somewhere that encoder can reach, and a sibling field of `bucket_index` is not, because no derive and no `serialize_with` can pass a sibling down. THIS BUMP HAS 14'S SHAPE IN BOTH DIRECTIONS, which is unusual in this family and is the thing to read it as. A new binary reading OLD bytes finds `objects` at the top level, where `CoreIndex`'s decoder names no arm for it and `ShardState`'s derive no longer has a field to put it in: BOTH halves ignore it rather than failing, so without this bump an older store loads SILENTLY into a shard holding no objects at all -- a store full of keys serving none of them, and for the kinds that live there, no record of where any page is. An old binary reading NEW bytes finds no top-level `objects` and the same silence. So neither direction has a gate of its own and this constant is the only thing that refuses either. What is NOT part of this bump: the refs themselves are NOT written. `ObjectSlotWire` carries the record and the element array and drops the refs, because the decode re-files every page it reads -- so the per-object stored bytes are unchanged and what moved is one key's PARENT MAP, not any value. The cost is one replay per existing store on first load, which is what 27, 28 and 29 each cost."
+         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the element_name in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `ElementEntry`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. Moved 8 -> 9 when a zset's element_name stopped spelling its score: `block_index_written_key` renders `element_name` into the map key the served index is serialized under, so `\"0000000000000000<member>\"` became `\"<member>\"` under the same named map. The decode stays clean on both sides of this one too -- `element_name` keeps its `String` type -- and what disagrees is what the text MEANS on the recovery path that reads it back as a page's element, the same shape as 2->3, 3->5 and 6->7. All four bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. Moved 9 -> 11 when a TOMBSTONE'S ELEMENT NAME LEFT THE ENTRY: a tombstone entry files no element_name and the element it records is a new key on the BUCKET NODE, so the entry's rendered key loses the element text AND the node grows a key. The named served index DROPS an undeclared key silently, so a binary before that change reading an index written after it loads every tombstone with no element at all -- a removal nothing can identify, which is the resurrection the change exists to prevent. Same shape as every bump above: the row decodes cleanly and the disagreement appears on a recovery path. TEN IS NOT A HOLE AND IS NOT SPENDABLE: it is claimed by an UNCOMMITTED edit in another working tree, which no ref holds and no sweep of refs can see -- a lane swept 2,567 refs, found nothing above 9, and was wrong for exactly that reason. Moved 11 -> 12 when HASH AND ZSET joined the page-named set: the same key `block_index_written_key` renders, moved for two more kinds, which is 8 -> 9 again with a wider scope. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did. Moved 12 -> 13 when THE INDEX-LOG ROW LOST A SLOT: `index_log::INDEX_ITEM_SLOTS` went twelve to eleven, the element-name slot coming off a positional array that had carried a constant nil there since the entry stopped naming its element. THIS BUMP HAS A DIFFERENT SHAPE FROM EVERY ONE ABOVE IT, and that is the thing worth reading here rather than the number. All the others share one shape -- the stored row decodes cleanly and the disagreement appears later, on a recovery path -- so the stamp was the ONLY thing that could refuse them. This one does not decode cleanly: a stored twelve-slot row is refused outright by `index_log::IndexItemRow`'s arity check, in a message naming both arities, and a named row carrying the key is refused by `deny_unknown_fields` on `IndexItemWire`. So the stamp is NOT what makes this one safe; the row's own gate is. What 13 buys is that a store written by a twelve-slot binary is DISCARDED and rebuilt from the WAL rather than being read as far as the first row and then failing, which turns a load error into a rebuild on a store nothing is serving -- and `index_log_record`'s module doc is right that a row-shape change owes this constant nothing, which is why it is spent for the rebuild and not for the refusal. The value is free: measured over every `matrixark` remote ref, no tip held 13 and the highest any held was this constant's own 12. That note's own claim that 13 was live on four branches had expired. Moved 13 -> 14 when A RESIDENT ADDRESS MAP'S VALUE BECAME A CONSOLIDATED RECORD: `control_state_blocks` held a bare address holder and now holds an `ObjectRecord`, which carries that address plus a deadline, state bits and a model id. THIS ONE HAS THE COMMON SHAPE AND NOT 13'S, which is the thing worth reading here. The two wire forms overlap on exactly ONE key: `a`, the address word. An old row also carries `l`, `pi`, `oi` and `g`; the record declares `n`, `f`, `m` and `t` instead. The served index is a NAMED map and a reader DROPS the keys its struct no longer declares, silently, with every remaining value intact -- measured, and stated beside `BlockAddressWire`. So an old row decodes CLEANLY into a record holding the right address word with a page size of ZERO and no flags at all: a read then asks for zero bytes, and the cleared `BLOCK_IN_LOG` claims a slab-resident page for one that was log-resident. Nothing refuses that but this constant. So 14 is spent on the REFUSAL, which is the opposite of what 13 bought -- 13 was spent on a rebuild because the row's own arity gate already refused the shape. Moved 14 -> 15 when THE TWO DISTINCT-COUNT MAPS BECAME ONE: `control_state_change_sketch` left the named map set entirely, and `control_state_changes`' bucket value went from a bare member array to an externally-tagged `hll::DistinctBucket`. THIS IS THE FIRST BUMP TO CARRY BOTH SHAPES AT ONCE, one per tenant, which is the thing worth reading here rather than the number. THE DEPARTING MAP HAS THE COMMON SHAPE: the served index is a NAMED map and a reader DROPS the keys its struct no longer declares, silently, so a binary after this change reading an index written before it loads every sketched bucket as though it had never existed -- a bounded distinct count that quietly becomes exact-over-nothing, with no error anywhere, and nothing but this constant refuses it. THE CHANGED VALUE HAS 13'S SHAPE INSTEAD: a stored bucket is a JSON array where the enum now expects a variant tag, so the decode FAILS rather than producing a plausible value, and the stamp buys the rebuild rather than the refusal there. Measured, not inferred from the types, in `one_map_for_both_distinct_shapes::the_pre_bump_bucket_shape_cannot_be_read_as_the_new_one`. So one tenant of this bump is 14's case and the other is 13's, and a reader who assumes a bump has one shape will get this one wrong. The value is free, measured the way 13's note prescribes -- by reading this constant out of every `matrixark` remote ref rather than by grepping history: the maximum any tip held was 14, on seventeen refs, and no tip held 15. Moved 15 -> 16 when `ObjectSlot` GAINED A STORED FORM for its owned element array: the slot's image stopped being the bare record's and became an `r` key holding the record, beside an `e` array the slot carries only when the object has elements. 16 -> 17 and 17 -> 18 are the first four of the eight per-element series maps moving into the consolidated map -- `context_children` alone, then `context_audits`, `context_summaries` and `context_compressions` together. Each removes a top-level key from the stored image, which is 14's shape and not 13's: a named map DROPS an undeclared key silently, so without the bump an index written before the move loads with those maps EMPTY and no error anywhere. AND THIS PIN WAS RED FOR ALL THREE BEFORE ANYONE READ IT. It sat at 15 while main reached 17, through two merged changes, because the gate sets those changes ran named the OTHER stamp tripwire -- the one in `adopting_the_ported_index_log_record` -- and not this module. A literal pin only works if something runs it, so a stamp bump owes a sweep for EVERY pin that resolves the constant literally, not just the one the author remembers. Moved 18 -> 19 when THE FEATURE SERIES MOVED INTO THE CONSOLIDATED MAP: the largest of the eight per-element maps, and the only one the decode's canonical-key adoption pass covers -- that pass had to follow the series onto the kind's inner table, because dropping it would have cost every feature key its canonical handle with NOTHING failing, the keys comparing equal and only the sharing being lost. The bump itself has 17's and 18's shape: a key leaves the stored image, a named map drops an undeclared key in silence, and this constant is the only thing that refuses an index written before the move rather than loading it with every feature series empty. Moved 19 -> 20 for the LAST THREE of the eight -- `context_events`, `context_entities` and `context_indexes` -- and that bump carries a shape none of the others did. `context_entities` is the familiar case: a stored key leaves the top level. The other two were `#[serde(skip)]` and had NO stored image at all, so moving them into the serialized `objects` makes them DURABLE for the first time. The load side is unchanged (an older index carries nothing for them and rebuilds), but every index written after this one carries more than any index before it, which is a durability change rather than a key moving. Moved 20 -> 21 when `control_state_uuid` and `context_compression_watermark` became one domain-keyed `u64_ledgers`. The first was a stored top-level key, so this is 14's shape again -- but with a sharper consequence than the others: a dedup ledger that loads EMPTY does not lose a read, it makes a duplicate control write look new and apply twice. The second was `#[serde(skip)]` and becomes stored by joining a stored map, as the event and index series did at 20, and its writer is environment-gated so it stays empty in the shipped configuration. Moved 21 -> 22 when `control_state` and `feature_values` became one domain-keyed `counter_series`. `control_state` was a stored top-level key, so 14's shape again: an index written at 21 would load with every control-state counter series EMPTY and a windowed aggregate would answer zero over a store that holds the counts. `feature_values` was `#[serde(skip)]` and becomes stored by joining a stored map, as the compression watermark did at 21. Moved 22 -> 23 when `strings` and `context_nodes` became one domain-keyed `address_maps`. `strings` was a stored top-level key, and its loss is the worst consequence in this family: an index written at 22 would load with EVERY STRING VALUE's address missing, so a store full of keys serves none of them. It is a SAME-SHAPE merge and not a fold into `objects` -- an `ElementEntry` carries a block id and a generation the 24-byte record has no field for, which #2259 drove -- so it buys a map and not bytes. Moved 23 -> 24 when `expires_at_ms` joined `u64_ledgers` as a third domain. It was a stored top-level key, and the consequence is specific: an index written at 23 loads with NO DEADLINES, so every key with a TTL becomes immortal until something writes its expiry again -- a dropped guarantee rather than a missing read. The inner container became a `BTreeMap` for all three domains at the same time, because three production sites ITERATE the expiry table and a `HashMap` would have made those walks hash-seeded. Moved 24 -> 25 when `address_maps` and `counter_series` BECAME ONE FIELD, `side_tables`, keyed by a single `SideTable` enum. THIS BUMP REMOVES TWO STORED TOP-LEVEL KEYS AND ADDS ONE, which is the first time more than one has left at once, and both departing keys were stored rather than skipped -- so it is 14's shape twice over. A named map drops an undeclared key silently, so an index written at 24 loads under this binary with BOTH the string addresses and the control-state counters empty: a store full of string keys serves none of them, and every windowed aggregate answers zero over counts the store still holds. Nothing but this constant refuses that. What is NOT part of this bump is any change to the spellings or to the tables themselves: all four domain spellings -- `strings`, `context_nodes`, `control_state`, `feature_values` -- carry over unchanged, and each table's serialized form is still its bare inner map, because a domain's table SHAPE is resolved from its spelling on decode rather than from a variant tag on the wire. So the stored bytes are the same four objects they were, moved under one key instead of two, and the merge costs no key a byte: the variant wraps the TABLE, not the entry, which is what distinguishes it from the union priced in `index_bytes_per_key::what_merging_the_key_sharing_maps_would_cost_as_a_record` at 16.4 B/key saved at best and 144.2 lost at worst. Moved 25 -> 26 when THE STRING MAP'S VALUE BECAME A ROW: `strings` left `side_tables` entirely and its keys now live in `objects` under the String kind, holding an `ObjectSlot` rather than a bare `ElementEntry`. THIS BUMP HAS 14'S SHAPE, which is the one to read it as: the served index is a NAMED map and a reader DROPS the keys its struct no longer declares, so a binary after this change reading an index written before it finds no `strings` domain under `side_tables` and no String kind under `objects`, and loads with EVERY STRING VALUE's address missing -- a store full of keys serving none of them, with no error anywhere. Nothing but this constant refuses that. What the move buys is that a string row finally has somewhere to put a deadline and a dirty bit, which a bare address does not: the per-key expiry table is the duplicate it exists to delete, priced at a 27% crossover in `one_record_per_object::what_moving_the_string_map_onto_the_record_would_cost`. The row is still 24 bytes and the layout arm is still unused -- 400 of 400 real string addresses take the inline arm -- so the conversion adds the record's width and no allocation. Moved 26 -> 27 when A PAGE ENTRY STOPPED RESTATING THE KEY IT IS FILED UNDER: `object_key` and `model_id` are the composite key's second and first slots, the entry wrote both again as named fields, and #2350 measured that the key's characters were NOT READ BACK -- every page key in a 2,000-key index replaced by the decimal of its handle, fed to the production decoder and re-encoded, produced a byte-identical `slot_index`. The decoder parses the key now and the entry writes three keys rather than five. THIS BUMP CARRIES BOTH SHAPES, ONE PER DIRECTION, AND THE DIRECTION THAT NEEDS IT IS NOT THE ONE A READER EXPECTS. A new binary reading OLD bytes is 13's shape and needs no stamp: the named decoder drops the entry's two extra keys silently and the reconstruction reads the SAME values out of the key beside them, so an old index decodes to exactly the index it decoded to before -- driven against committed bytes by `an_index_written_before_this_change_loads_block_for_block` in this module, field by field on every page. What the stamp is spent on is an OLD binary reading NEW bytes: the msgpack container refuses on EQUALITY in its header before decoding, so 27 makes a rollback refuse cleanly where without it the old binary would reach `StoredBlockEntry`, fail on a missing required field and report corruption for a format step. The cost is that every existing store replays once on first load -- which it did not strictly need, since the new reader can read it -- and that is the trade taken, stated here rather than left to be inferred. `address` did NOT go with the other two and that is a measurement: `block_index_written_key` renders `block_id().unwrap_or_default()`, `ElementEntry::block_id()` is `None` EXACTLY while a block is log-resident, so a staged page and the first page of an object in a slab render ONE key and differ in `log_backed()` -- `the_key_a_block_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders` builds both and asserts the keys identical. Moved 27 -> 28 when THE WRITER MOVED TO THE BLOCK SPELLING: every emitted page-spelled serde key in the crate flipped to its block spelling, with the page spelling kept beside it as the accepted ALIAS, and two of those keys are in the stored index image -- `object_page_layouts` became `object_block_layouts`, and an index-log item's kind token `page` became `block`. THIS BUMP HAS THE COMMON SHAPE, 14's and not 13's: the served index is a NAMED map and a reader DROPS the keys its struct no longer declares, so a binary predating the reader widening that shipped just before this flip would read an image written after it, find no `object_block_layouts`, and load every multi-block object's layout EMPTY -- an object whose blocks are on disk and unreachable, with no error anywhere. A binary that CARRIES the widening accepts both spellings and needs no stamp at all, so what 28 buys is a clean refusal across the pre-widening window rather than a silent miss. The cost is one replay per existing store on first load, which is exactly what 27 cost. Moved 28 -> 29 when THE LAST HAND-WRITTEN PAGE-SPELLED KEY MOVED: the bucket node's block map was serialized as `page_index` by a hand-rolled `serialize_field`, which is why the attribute sweep at 28 could not reach it -- there is no attribute to read. Its reader has accepted the set `block_index` / `page_index` / `page_refs` since the widening, so an index written before this loads unchanged; what 29 is spent on is the other direction, an older binary reading an image written after it, where the served index is a named map and a reader DROPS the key it does not declare -- loading every bucket with an EMPTY block map, which is every block in the shard unreachable with no error anywhere. 14's shape, and the sharpest instance of it in this family. Moved 29 -> 30 when THE CONSOLIDATED OBJECT MAP MOVED UNDER `slot_index`: each object's block refs live in its `ObjectSlot` now, `impl Serialize for CoreIndex` composes every live page's written key from those refs, and `serialize_block_index` REFUSES a page it cannot name -- so the map had to be somewhere that encoder can reach, and a sibling field of `bucket_index` is not, because no derive and no `serialize_with` can pass a sibling down. THIS BUMP HAS 14'S SHAPE IN BOTH DIRECTIONS, which is unusual in this family and is the thing to read it as. A new binary reading OLD bytes finds `objects` at the top level, where `CoreIndex`'s decoder names no arm for it and `ShardState`'s derive no longer has a field to put it in: BOTH halves ignore it rather than failing, so without this bump an older store loads SILENTLY into a shard holding no objects at all -- a store full of keys serving none of them, and for the kinds that live there, no record of where any page is. An old binary reading NEW bytes finds no top-level `objects` and the same silence. So neither direction has a gate of its own and this constant is the only thing that refuses either. What is NOT part of this bump: the refs themselves are NOT written. `ObjectSlotWire` carries the record and the element array and drops the refs, because the decode re-files every page it reads -- so the per-object stored bytes are unchanged and what moved is one key's PARENT MAP, not any value. The cost is one replay per existing store on first load, which is what 27, 28 and 29 each cost."
     );
     // --- AND THE REFUSAL IS COUNTED APART FROM AN ABSENCE, which is the whole reason the counters
     //     exist: `load_index_inner` answers `Ok(None)` for stale, undecodable and absent alike, so
@@ -2324,7 +2324,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
 ///
 /// Captured by `capture_an_ungated_store_index` from this branch's own ungated writer, with
 /// `index_format_version` set to 8 -- what `matrixark/main` holds. Three entries, each NAMING its
-/// element: `component` `f0` and `f1` on a hash and `6d30` (hex `m0`) on a zset, and the written
+/// element: `element_name` `f0` and `f1` on a hash and `6d30` (hex `m0`) on a zset, and the written
 /// key of each embedding that name.
 ///
 /// A STRING CONSTANT, WHICH IS THE WHOLE POINT. Once `BlockIndex` has no field for an element
@@ -2621,7 +2621,7 @@ fn an_ungated_store_is_refused_before_it_is_served() {
 /// The element name a block entry carries, read in the one place that has to change when the field
 /// goes.
 ///
-/// A HELPER AND NOT AN INLINE FIELD READ, so that removing `BlockIndex::component` leaves ONE
+/// A HELPER AND NOT AN INLINE FIELD READ, so that removing `BlockIndex::element_name` leaves ONE
 /// compile error here with a comment attached rather than silently turning the naming assertion
 /// above into `None == None`. When the field goes this answers `None` for every entry, which is
 /// precisely the silent drop arm 1 is about -- and the assertion above compares against the golden's

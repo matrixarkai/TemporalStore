@@ -443,15 +443,18 @@ impl TemporalEngine {
                 "shard is not loaded on this server",
             ));
         };
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
+        let config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_default();
+        let info = self.request_shard_info(
+            shard_id,
+            config.table_read_qps.filter(|limit| *limit > 0).is_some(),
+        );
+        if !replaying_wal() && info.recovering {
             return Err(Status::error(
                 "shard_not_loaded",
                 "shard is recovering (WAL replay in progress)",
@@ -493,27 +496,8 @@ impl TemporalEngine {
             return Ok(());
         }
 
-        let config = self
-            .configs
-            .read()
-            .expect("config lock poisoned")
-            .get(&shard_id)
-            .cloned()
-            .unwrap_or_default();
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start_routing_bucket = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end_routing_bucket = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
         if !(self.wal_store.flat_append() && shard.promote_scan_done) {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -539,7 +523,13 @@ impl TemporalEngine {
                         format!("shard {shard_id} is over its read rate limit"),
                     ))
                 } else {
-                    self.check_admission(shard_id, false, &config, &info).err()
+                    self.check_admission(
+                        shard_id,
+                        false,
+                        &config,
+                        info.table_name.as_deref(),
+                    )
+                    .err()
                 }
             } else {
                 None
@@ -772,20 +762,28 @@ impl TemporalEngine {
                 responses: Vec::new(),
             };
         };
+        let mut config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(async_storage) = async_storage_override {
+            config.async_storage = async_storage;
+        }
+        let table_admission_enabled = config
+            .table_read_qps
+            .filter(|limit| *limit > 0)
+            .or_else(|| config.table_write_qps.filter(|limit| *limit > 0))
+            .is_some();
+        let info = self.request_shard_info(shard_id, table_admission_enabled);
         // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
         // but not yet serving. Reject the whole batch with a retryable status so batch writes
         // cannot interleave with replay (anchor regression / double-apply) -- the batch path
         // must not be a hole around the single-execute recovery gate. Replay itself never
         // routes through batch_execute, but replaying_wal() is checked for symmetry.
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
+        if !replaying_wal() && info.recovering {
             // Batch-level topology-retryable error with empty responses, as above (returns a
             // partition-level error here, not a per-command one), so the client refreshes topology
             // and retries rather than seeing an ok batch of failed commands.
@@ -797,37 +795,9 @@ impl TemporalEngine {
                 responses: Vec::new(),
             };
         }
-        let readonly = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .map(|info| info.readonly)
-            .unwrap_or(false);
-        let mut config = self
-            .configs
-            .read()
-            .expect("config lock poisoned")
-            .get(&shard_id)
-            .cloned()
-            .unwrap_or_default();
-        if let Some(async_storage) = async_storage_override {
-            config.async_storage = async_storage;
-        }
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start_routing_bucket = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end_routing_bucket = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        let readonly = info.readonly;
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
         // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
         // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
         // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
@@ -872,12 +842,12 @@ impl TemporalEngine {
         // capture below have anything to preserve -- see the single-command execute path, whose
         // guard this mirrors.
         let mut batch_membership_shrank = false;
-        // Some(components) while every mutating command in the batch is a pure block-upsert;
+        // Some(element names) while every mutating command in the batch is a pure block-upsert;
         // one non-upsert write downgrades the whole record to snapshot semantics.
-        let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
+        let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
         // Every container element any command in this batch added or replaced. Unlike the
-        // components above this is never downgraded to `None`: it is a list of elements, not a
+        // element names above this is never downgraded to `None`: it is a list of elements, not a
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
         // does not make the others' identities uncarryable.
         let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
@@ -929,8 +899,12 @@ impl TemporalEngine {
                     command_source.recycle(command);
                     continue;
                 }
-                if let Err(status) =
-                    self.check_admission(shard_id, write_command, &config, &info)
+                if let Err(status) = self.check_admission(
+                    shard_id,
+                    write_command,
+                    &config,
+                    info.table_name.as_deref(),
+                )
                 {
                     responses.push(ExecuteResponse {
                         status,
@@ -1050,6 +1024,7 @@ impl TemporalEngine {
                         config.control_state_max_size(),
                         config.control_distinct_sketch_enabled(),
                         config.trim_boundary_record_enabled(),
+                        config.set_listing_from_map_enabled(),
                         shard_id,
                         start_routing_bucket,
                         end_routing_bucket,
@@ -1103,8 +1078,8 @@ impl TemporalEngine {
                             &membership_before,
                         );
                 }
-                let written_components =
-                    command_upsert_components(command_for_post_write_ref, shard);
+                let written_element_names =
+                    command_upsert_element_names(command_for_post_write_ref, shard);
                 batch_touched_container_elements.extend(command_touched_container_elements(
                     command_for_post_write_ref,
                     shard,
@@ -1141,16 +1116,16 @@ impl TemporalEngine {
                 let maintained_bucket_index = if shard.bucket_index.bucket_map.is_empty() {
                     false
                 } else {
-                    // Prefer the components this command actually wrote. The whole-object sync
+                    // Prefer the element names this command actually wrote. The whole-object sync
                     // below re-upserts every field the object holds, which is quadratic in that
-                    // count; this is one upsert per written component. It reports false when it
+                    // count; this is one upsert per written element name. It reports false when it
                     // cannot model the write, and the whole-object sync then runs.
-                    let narrow = match written_components.as_deref() {
-                        Some(components) => {
-                            crate::engine::storage_bucket_internals::sync_blocks_for_written_components(
+                    let narrow = match written_element_names.as_deref() {
+                        Some(element_names) => {
+                            crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
                                 shard,
                                 shard_id,
-                                components,
+                                element_names,
                             )
                         }
                         None => false,
@@ -1165,8 +1140,8 @@ impl TemporalEngine {
                                 )
                             }))
                 };
-                match (&mut batch_upsert_components, written_components) {
-                    (Some(collected), Some(components)) => collected.extend(components),
+                match (&mut batch_upsert_element_names, written_element_names) {
+                    (Some(collected), Some(element_names)) => collected.extend(element_names),
                     (state, _) => *state = None,
                 }
                 // Every per-command consumer above borrows these keys. The batch delta keeps
@@ -1343,12 +1318,12 @@ impl TemporalEngine {
                 // Append the blocks this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let (items, upsert_record) = match batch_upsert_components.as_ref() {
-                    Some(components) => (
+                let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
+                    Some(element_names) => (
                         collect_upsert_index_items(
                             shard,
                             shard_id,
-                            components,
+                            element_names,
                             start_routing_bucket,
                             end_routing_bucket,
                         ),
@@ -1508,7 +1483,7 @@ impl TemporalEngine {
             /// The OBJECT key of the block, which is the key its routing bucket is derived from.
             ///
             /// A hash field's block is filed under the hash's key, not under the field -- the field
-            /// is the block's COMPONENT. Reading the bucket from the field would key the cache under
+            /// is the block's ELEMENT NAME. Reading the bucket from the field would key the cache under
             /// a bucket nothing wrote.
             fn object_key(&self) -> &str {
                 match self {
@@ -1518,9 +1493,9 @@ impl TemporalEngine {
             }
 
             /// The ELEMENT of that object, which the comment above already calls the block's
-            /// component. It was named there and then thrown away; a read that resolves
+            /// element name. It was named there and then thrown away; a read that resolves
             /// through a log record needs it to pick the right block out of the record.
-            fn component(&self) -> Option<&str> {
+            fn element_name(&self) -> Option<&str> {
                 match self {
                     PublishTarget::String { .. } => None,
                     PublishTarget::Hash { field, .. } => Some(field),
@@ -1531,7 +1506,7 @@ impl TemporalEngine {
             ///
             /// Named here rather than at the read because the two variants ARE the two kinds, so a
             /// `match` at the call site would be this function written out again. The kind is not
-            /// recoverable from the key or the component: a `string` and a `hash` may share a key,
+            /// recoverable from the key or the element name: a `string` and a `hash` may share a key,
             /// and it is the kind that tells their blocks apart.
             fn kind(&self) -> &'static str {
                 match self {
@@ -1624,7 +1599,7 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
-                BlockIdentity::of(shard_id, target.kind(), target.object_key(), target.component()),
+                BlockIdentity::of(shard_id, target.kind(), target.object_key(), target.element_name()),
                 Some(routing_bucket),
             ) {
                 // Derived BEFORE `target` moves into the tuple: the terms are borrowed from it.

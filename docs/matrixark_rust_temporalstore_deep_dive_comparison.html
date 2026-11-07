@@ -319,8 +319,8 @@
           <tr>
             <td><code>PageIndex</code></td>
             <td><code>engine/engine_storage_state.rs</code></td>
-            <td><code>object_key</code>, <code>model_id</code>, <code>component</code>, <code>object_id</code>, <code>address</code>, <code>dirty</code>, <code>deleted</code>, <code>log_backed</code></td>
-            <td>Logical object/component to durable page address.</td>
+            <td><code>object_key</code>, <code>model_id</code>, <code>element_name</code>, <code>object_id</code>, <code>address</code>, <code>dirty</code>, <code>deleted</code>, <code>log_backed</code></td>
+            <td>Logical object/element name to durable page address.</td>
           </tr>
           <tr>
             <td><code>BlockAddress</code></td>
@@ -563,7 +563,7 @@ ContextInjectRequest
           </tr>
           <tr>
             <td>Page index</td>
-            <td>Rust <code>PageIndex</code> stores strings for model/object/component plus <code>PageAddress</code>.</td>
+            <td>Rust <code>PageIndex</code> stores strings for model/object/element name plus <code>PageAddress</code>.</td>
             <td><code>PageIndex</code> is 17 bytes packed: object id, model id, page id, flags, size, address.</td>
             <td>wins compactness; Rust wins schema clarity and reportability.</td>
           </tr>

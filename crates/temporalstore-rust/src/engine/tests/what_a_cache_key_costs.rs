@@ -188,7 +188,7 @@ fn what_a_cache_key_costs() {
     for part in &parts {
         assert!(
             part.parse::<u64>().is_ok(),
-            "selector component {part:?} is not an integer, so the selector carries something \
+            "selector element name {part:?} is not an integer, so the selector carries something \
              other than the three numbers this arm prices"
         );
     }

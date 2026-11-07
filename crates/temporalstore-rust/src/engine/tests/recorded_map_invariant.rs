@@ -420,7 +420,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
     drain_records();
     let mut shard = shard_for_records();
 
-    // HASH: element is a `String` field name, which IS its component.
+    // HASH: element is a `String` field name, which IS its element name.
     let before = staged();
     install_element::<HashKind>(
         &mut shard,
@@ -440,7 +440,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
     );
     assert_eq!(shard.hashes.get("rec-hash").map(|e| e.len()), Some(1));
 
-    // SET: element is the member BYTES, and its component is those bytes in hex -- a different
+    // SET: element is the member BYTES, and its element name is those bytes in hex -- a different
     // rendering of one identity, which is why both are passed rather than one derived here.
     let member = b"member-a".to_vec();
     let before = staged();

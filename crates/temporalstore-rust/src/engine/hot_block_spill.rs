@@ -47,7 +47,7 @@ fn hot_block_record_key() -> String {
 
 /// Parse `(offset, routing_bucket)` out of a hot-page cache key selector. Selector forms produced
 /// for a hot block are `slot-{routing}:{offset}:{length}` or `{offset}:{length}`; the offset is the
-/// second-to-last colon-separated component and any leading `slot-{n}` carries the routing bucket.
+/// second-to-last colon-separated element name and any leading `slot-{n}` carries the routing bucket.
 fn parse_hot_selector(selector: &str) -> Option<(u64, Option<u32>)> {
     let parts: Vec<&str> = selector.split(':').collect();
     if parts.len() < 2 {

@@ -3,7 +3,7 @@
 
 //! AN OBJECT IS A KEY, NOT ONE OF ITS ELEMENTS.
 //!
-//! `stable_block_object_id` folded the component into the object's identity, so an object held
+//! `stable_block_object_id` folded the element name into the object's identity, so an object held
 //! exactly one block: a hash of twenty-five fields was twenty-five objects that happened to share a
 //! key. #1986 recorded the result as "the object id names a block's triple, not an object" -- a
 //! DESCRIPTION OF A DEFECT rather than a property to preserve. The parameter is REMOVED here, not
@@ -16,12 +16,12 @@
 //! between blocks INSIDE ONE WAL RECORD, because `StagedBlock` was `{ object_id, bytes }` and
 //! `block_in_wal::read_block` picked with `find(|block| block.object_id == object_id)`. One record
 //! routinely carries many blocks -- `append_batch_as_one_record` writes a whole batch as one -- so a
-//! component-free id served the FIRST block's bytes for the second. Measured there: 2/2 today,
-//! 1/2 with WRONG BYTES component-free, 96.00% of hash blocks unreachable at batch scale.
+//! element-name-free id served the FIRST block's bytes for the second. Measured there: 2/2 today,
+//! 1/2 with WRONG BYTES element-name-free, 96.00% of hash blocks unreachable at batch scale.
 //!
-//! #2013 closed exactly that. `stage()` takes a component, `StagedBlock` carries it, and both
+//! #2013 closed exactly that. `stage()` takes an element name, `StagedBlock` carries it, and both
 //! in-record `find` sites share one predicate: `block.object_id == object_id &&
-//! block.component.as_deref() == component`. The registry key became `(u64, Option<Arc<str>>)`.
+//! block.element_name.as_deref() == element name`. The registry key became `(u64, Option<Arc<str>>)`.
 //! Its measured result was 96.00% -> 0.00% unreachable with a negative control still at 1/2.
 //!
 //! So the acceptance test for THIS change is #2011's failing case passing on the product's own
@@ -38,7 +38,7 @@
 //!   2. THE TOMBSTONE, which is where this most easily becomes data loss. `deleted_object_index`
 //!      is filed per removed block's id, and one id now covers every element of a key.
 //!   3. HLEN, asserted unmoved beside the listing it must agree with.
-//!   4. THE READ PATH, asserted from outside to select on the component at every arm, including
+//!   4. THE READ PATH, asserted from outside to select on the element name at every arm, including
 //!      the first-match fallback #1964 enumerates.
 //!
 //! # THE HANDLE CONSEQUENCE, AND THE STAMP
@@ -63,7 +63,7 @@ const OPERATOR_END: u32 = 1023;
 /// `entry_object_identity` both use, so the rows here are comparable to theirs line for line.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
-/// The CONTROL population. A string block's component is already `None`, so this change is the
+/// The CONTROL population. A string block's element name is already `None`, so this change is the
 /// IDENTITY on it and the mechanism predicts no movement whatever.
 const ROUTED_KEYS: usize = 200;
 
@@ -203,11 +203,11 @@ fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
         .any(|bucket| bucket.deleted_object_index.contains(&object_id))
 }
 
-/// The components of one key's live blocks, sorted. An absent component reads as the empty string,
+/// The element names of one key's live blocks, sorted. An absent element name reads as the empty string,
 /// which is distinguishable here because no fixture in this module writes one.
 /// LIVE BLOCK ENTRIES THIS OBJECT HOLDS. A COUNT, AND IT SAYS SO IN ITS NAME.
 ///
-/// THIS WAS `live_components` RETURNING A `Vec<String>` AND IT HAD STOPPED RETURNING COMPONENTS.
+/// THIS WAS `live_element_names` RETURNING A `Vec<String>` AND IT HAD STOPPED RETURNING ELEMENT NAMES.
 /// When the element-name field came off `BlockIndex` the body was left pushing `String::new()` per
 /// live entry, so every caller that only took `.len()` still measured the right thing and the two
 /// callers that looked at the CONTENTS were reading a run of blanks -- one of them asking whether
@@ -270,7 +270,7 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
 /// So the number below is not a claim about a whole store. It is the size of the effect where the
 /// effect exists, printed beside the distribution that says where that is.
 ///
-/// THE CONTROL is the routed string arm, whose component was already `None`: one block per key
+/// THE CONTROL is the routed string arm, whose element name was already `None`: one block per key
 /// before and after, so its rows-per-block must be 1.0000. Its block count is asserted FIRST -- a
 /// control that read nothing reports no movement for the wrong reason.
 ///
@@ -318,7 +318,7 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
         hash_rows, CONTAINER_KEYS,
         "the container arm holds {hash_rows} object-index rows for {CONTAINER_KEYS} keys and \
          {hash_blocks} blocks. One key is one object now, so the row count is the KEY count -- if it \
-         is the BLOCK count, the component is still reaching the id"
+         is the BLOCK count, the element name is still reaching the id"
     );
     assert!(
         hash_blocks > hash_rows,
@@ -329,7 +329,7 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     // THE CONTROL, flat by construction.
     assert_eq!(
         string_rows, ROUTED_KEYS,
-        "the control holds {string_rows} rows for {ROUTED_KEYS} one-block keys. Its component was \
+        "the control holds {string_rows} rows for {ROUTED_KEYS} one-block keys. Its element name was \
          already `None`, so this change is the identity on it and the count cannot move"
     );
     println!(
@@ -378,9 +378,9 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
 /// DELETING ONE ELEMENT DOES NOT TOMBSTONE THE OBJECT; DELETING ITS LAST ELEMENT DOES.
 ///
 /// `mark_bucket_index_block_deleted_with` removes ONE element -- its `retain` matches on
-/// `(model_id, object_key, component)` -- and then files the ids of what it removed into
+/// `(model_id, object_key, element_name)` -- and then files the ids of what it removed into
 /// `bucket.deleted_object_index`. That was exactly right while the id named a block: every block
-/// sharing a removed block's id had the same component and was removed with it, so no survivor
+/// sharing a removed block's id had the same element name and was removed with it, so no survivor
 /// could carry it.
 ///
 /// It is WRONG the moment one id covers every element of a key, and the damage is not theoretical.
@@ -476,9 +476,9 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
          elements -- the map is where the answer is"
     );
     // AND THE BLOCK-COUNT ASSERTION BELOW IS A TRIPWIRE, NOT A DRIVEN GUARD. Widening
-    // `mark_bucket_index_block_deleted_recording`'s retain from `component.is_none()` to `true`
+    // `mark_bucket_index_block_deleted_recording`'s retain from `element_name.is_none()` to `true`
     // leaves it GREEN, because for a container that retain never runs at all: `target_buckets`
-    // comes from `block_refs_for(model_id, key, component)` and a container removal resolves no
+    // comes from `block_refs_for(model_id, key, element_name)` and a container removal resolves no
     // bucket there. So the number below is pinned to make someone come and read this when the
     // retirement lands, and the only thing that moves it is the retirement itself.
     assert_eq!(
@@ -558,9 +558,9 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
 
 /// HLEN IS UNMOVED, AND SO IS THE LISTING IT MUST AGREE WITH.
 ///
-/// `HashLen` is `bucket_index_component_block_addresses(...).len()`, which filters on `model_id`
+/// `HashLen` is `bucket_index_element_name_block_addresses(...).len()`, which filters on `model_id`
 /// and `object_key` and never consults the object id; and `upsert_bucket_index_block_inner`'s
-/// replacement `retain` matches `(object_key, model_id, component)`, so collapsing the id cannot
+/// replacement `retain` matches `(object_key, model_id, element_name)`, so collapsing the id cannot
 /// merge two entries into one. That is an ARGUMENT, and #2008 (7 before, 7 after) and #2016
 /// (3->3, 2->2) both chose to assert it anyway. So does this.
 ///
@@ -569,7 +569,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
 ///
 /// rust-internal: drives HashSet and HashLen, no external surface
 #[test]
-fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
+fn hash_len_and_its_listing_are_unmoved_by_an_element_name_free_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -588,7 +588,7 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
     }
     // A REWRITE MUST NOT ADD AN ENTRY. This is the arm the id could plausibly have moved: two
     // writes of one field are two blocks sharing an id, and had the replacement `retain` matched on
-    // the id rather than the component, it would now also match every OTHER field of the key.
+    // the id rather than the element name, it would now also match every OTHER field of the key.
     write(
         &engine,
         Command::HashSet {
@@ -625,9 +625,9 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
     );
     // THE NO-DUPLICATE CLAIM, RE-ATTRIBUTED TO WHERE ELEMENT IDENTITY LIVES.
     //
-    // This counted DISTINCT COMPONENTS in the index listing and required one per block: "the listing
-    // repeats a component, so a rewrite accumulated a second entry for one field". The entry has no
-    // element-name field, so that listing had become a run of blanks -- `live_components` pushed
+    // This counted DISTINCT ELEMENT NAMES in the index listing and required one per block: "the listing
+    // repeats an element name, so a rewrite accumulated a second entry for one field". The entry has no
+    // element-name field, so that listing had become a run of blanks -- `live_element_names` pushed
     // `String::new()` per block -- and the count was 1 against 7 rather than 7 against 7. It was not
     // vacuous, it was simply measuring nothing that exists.
     //
@@ -651,7 +651,7 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
     );
 }
 
-/// THE READ PATH SELECTS ON THE COMPONENT AT EVERY ARM, INCLUDING THE FIRST-MATCH FALLBACK.
+/// THE READ PATH SELECTS ON THE ELEMENT NAME AT EVERY ARM, INCLUDING THE FIRST-MATCH FALLBACK.
 ///
 /// #1964 enumerated five readers that take an ascending walk as given, and the fifth is
 /// `bucket_index_block_address`'s first-match fallback -- `.next()` over a filtered walk. A

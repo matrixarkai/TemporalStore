@@ -6,7 +6,7 @@
 //!
 //! # WHAT WAS ASKED
 //!
-//! `BlockIndex.component` is `Option<Arc<str>>` -- sixteen bytes on every block entry, plus one heap
+//! `BlockIndex.element_name` is `Option<Arc<str>>` -- sixteen bytes on every block entry, plus one heap
 //! allocation per block for a name this engine RENDERED rather than received. For the container kinds
 //! the name is content-derived:
 //!
@@ -15,7 +15,7 @@
 //!     set     hex::encode(member)
 //!     list    format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64))
 //!     hash    the caller's OWN field name
-//!     string  no component at all
+//!     string  no element name at all
 //! ```
 //!
 //! So: replace the name with a small per-element ordinal. #1985 refuted the idea on three grounds and
@@ -36,7 +36,7 @@
 //!
 //! `apply_key_states` folds THIRTEEN maps and `sets`, `zsets`, `lists` and `hashes` are **not** among
 //! them, while `fold_delta_block_items` DOES restore the block items. So after a fold the index holds
-//! blocks for elements the durable map never received, and for those the component is the ONLY copy of
+//! blocks for elements the durable map never received, and for those the element name is the ONLY copy of
 //! the member. Driven with #1989's own fixture and the name made ordinal-shaped: the control comes back
 //! at 1.0 and the ordinal-named member comes back as `None`. Its bytes survive only in the block
 //! PAYLOAD, which the reconcile deliberately does not read.
@@ -115,7 +115,7 @@
 //! The reuse idea is refuted on three grounds that the fix does not touch, all in
 //! `the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot`:
 //!
-//!   1. **IT IS A MEMBERSHIP SET, NOT A MARK.** It holds a HASH of the component. It answers "was
+//!   1. **IT IS A MEMBERSHIP SET, NOT A MARK.** It holds a HASH of the element name. It answers "was
 //!      ordinal N used?" and cannot answer "what is the highest?", so an assignment on it probes
 //!      one candidate at a time and cannot reach a ceiling without 65,535 probes.
 //!   2. **CLEARING IS WHAT KEEPS THE REPORT HONEST, AND A RESERVATION CANNOT ALLOW IT.** Both
@@ -190,11 +190,11 @@
 //! #1982 asserted its two:
 //!
 //! ```text
-//!     list    AN ORDINAL ALREADY EXISTS AND IS ALREADY PERSISTED. The component IS
+//!     list    AN ORDINAL ALREADY EXISTS AND IS ALREADY PERSISTED. The element name IS
 //!             `format!("{:016x}", biased_seq)` and `shard.lists` is keyed by the `i64` itself. The
 //!             only thing left to change is the SPELLING -- sixteen characters for eight bytes -- and
 //!             that is not an ordinal proposal, it is #1976's fixed-width one with a narrower field.
-//!     hash    REFUTED OUTRIGHT AND NOT ON PERFORMANCE. The component is the CALLER'S field name.
+//!     hash    REFUTED OUTRIGHT AND NOT ON PERFORMANCE. The element name is the CALLER'S field name.
 //!             An ordinal does not respell it, it destroys it -- and `hash` is the only kind the point
 //!             read path reaches at all, twice, with that name as the argument.
 //!     zset    THE ONLY TWO AN ORDINAL WOULD HELP, and the only two where it has to be ASSIGNED.
@@ -211,27 +211,27 @@
 //! `StringGet` with `None`, `HashGet` with `Some(field)`, `HashIncrBy` with `Some(field)`. **No
 //! container kind is reached by the point lookup at all.**
 //!
-//! `bucket_index_component_block_addresses` -- the reader #1986 found refutes ideas its neighbours
+//! `bucket_index_element_name_block_addresses` -- the reader #1986 found refutes ideas its neighbours
 //! survive -- has three callers, `hash` twice and `set` once, and its signature is the whole of why:
-//! `(shard, model_id, object_key)`. It takes no component and its caller has none to give, so an
+//! `(shard, model_id, object_key)`. It takes no element name and its caller has none to give, so an
 //! ordinal answers it exactly as well as a name does. **It is not the obstacle here**, and that is
 //! worth writing down because it was the obstacle twice before.
 //!
 //! # THE ORDERING PROPERTY, WHICH IS THE OBVIOUS REFUTATION AND IS NOT ONE
 //!
-//! A zset component is score-bits-then-member and a list component is an `i64::MIN`-biased sequence,
+//! A zset element name is score-bits-then-member and a list element name is an `i64::MIN`-biased sequence,
 //! both so that lexical order IS the element's order; the write arm says the bias is "what lets
 //! recovery and range reads walk the bucket index directly". An ordinal that did not preserve that
 //! would force those readers to sort, and the sort could easily cost more than the bytes.
 //!
-//! **No reader on this revision takes its order from the component.**
-//! `the_component_ordering_property_is_consumed_by_the_set_listing` classifies every consumer: the three
-//! reconcile arms decode each component and insert into a `BTreeMap` keyed by the MEMBER BYTES or the
+//! **No reader on this revision takes its order from the element name.**
+//! `the_element_name_ordering_property_is_consumed_by_the_set_listing` classifies every consumer: the three
+//! reconcile arms decode each element name and insert into a `BTreeMap` keyed by the MEMBER BYTES or the
 //! `i64` SEQUENCE, so order is re-established by the map rather than inherited from the walk; range
 //! reads use `shard.zsets` (keyed by member, "derived per query -- V1 accepts the per-range sort") and
-//! `shard.lists` (keyed by the `i64`); and the three readers that do sort by component need only a
+//! `shard.lists` (keyed by the `i64`); and the three readers that do sort by element name need only a
 //! TOTAL order, which an ordinal has. Of the three callers of
-//! `bucket_index_component_block_addresses`, `SetMembers` discards the component, `HashLen` reads
+//! `bucket_index_element_name_block_addresses`, `SetMembers` discards the element name, `HashLen` reads
 //! `len()`, and `HashGetAll` keeps a field name an ordinal never touches.
 //!
 //! So the sixteen characters of score prefix on every zset element buy nothing that is consumed. That
@@ -251,18 +251,18 @@
 //!     zset      20 of 20000                                                0.100%
 //! ```
 //!
-//! **THE SET ROW IS THE ONE NOBODY PREDICTED: 25.035%.** A set component is `hex::encode(member)` and
+//! **THE SET ROW IS THE ONE NOBODY PREDICTED: 25.035%.** A set element name is `hex::encode(member)` and
 //! nothing else, so every EIGHT-BYTE member spells exactly sixteen hexadecimal characters -- an
 //! ordinary member length, not a corner. #1976's 1.935% was measured against a different spelling; a
 //! sixteen-character ordinal against set names is thirteen times worse. The list row is the one that decides the stored
-//! shape, and it is 100.00% by construction rather than by luck: a list component is SIXTEEN
+//! shape, and it is 100.00% by construction rather than by luck: a list element name is SIXTEEN
 //! hexadecimal characters and so is a sixteen-character ordinal, and `"0000000000000000"` is
 //! simultaneously sequence `i64::MIN` and ordinal 0.
 //!
 //! # WHAT IT WOULD HAVE BEEN WORTH, AND IT IS NOT SIXTEEN BYTES -- THE MEMBER IS STORED TWICE
 //!
-//! The sixteen-byte pointer is the smaller half. `what_a_component_costs_an_element_at_five_member_widths`
-//! measures the component against the member it names, per kind, at five widths, request and chunk,
+//! The sixteen-byte pointer is the smaller half. `what_an_element_name_costs_an_element_at_five_member_widths`
+//! measures the element name against the member it names, per kind, at five widths, request and chunk,
 //! as a HISTOGRAM with the store path held at 15 characters:
 //!
 //! ```text
@@ -279,7 +279,7 @@
 //!     zset    256     100         528      560.00     576.32     2.06
 //!     list      8     100          16       48.00      64.96     2.00   <- CONTROL, flat
 //!     list    256     100          16       48.00      65.76     0.06   <- CONTROL, flat
-//!     string  any     100        none        0.00       0.00        -   <- CONTROL, no component
+//!     string  any     100        none        0.00       0.00        -   <- CONTROL, no element name
 //! ```
 //!
 //! **`chars/n` IS EXACTLY 2.00 FOR `set` AT EVERY WIDTH.** `hex::encode` spells the member at two
@@ -292,14 +292,14 @@
 //! pays 576.32 + 16. That is far more than the sixteen-byte pointer this work was scoped around, and
 //! it is why the refutation below is worth stating precisely rather than briefly.
 //!
-//! **TWO CONTROLS, BOTH AT THE PREDICTED ZERO EFFECT.** `list`'s component is sixteen characters
+//! **TWO CONTROLS, BOTH AT THE PREDICTED ZERO EFFECT.** `list`'s element name is sixteen characters
 //! whatever the member is, and it reads 48.00 B a name at n=8 and 48.00 at n=256 -- flat across a 32x
-//! change, asserted as an equality. `string` has no component and reads 0.00 at every width. A kind
+//! change, asserted as an equality. `string` has no element name and reads 0.00 at every width. A kind
 //! that moved in either control would mean the measurement was picking up something other than the
 //! member's spelling.
 //!
 //! **AND THE DOUBLING CAN BE ATTACKED WITHOUT AN ORDINAL, WHICH IS THE ACTIONABLE HALF OF THIS.** The
-//! hex is there because the component is `Arc<str>` and a member is arbitrary bytes. A component that
+//! hex is there because the element name is `Arc<str>` and a member is arbitrary bytes. An element name that
 //! held BYTES rather than characters halves it -- 2n back to n -- and needs no assignment, no
 //! high-water mark and no non-reuse enforcement, because the name is still derived from the member.
 //! That is a different change from this one and it is not refuted by anything below.
@@ -307,7 +307,7 @@
 //! The pointer half is measured separately by `what_an_element_ordinal_would_have_saved_a_block`, at
 //! both routing ranges and two corpus sizes: 58.06-58.13 B requested and 69.20-69.32 B of chunk a
 //! name over a container store whose mean name is 22.4 characters, against 0.00 on the routed control
-//! where no block carries a component at all. Two populations and never a mean: routed p50 1 block an
+//! where no block carries an element name at all. Two populations and never a mean: routed p50 1 block an
 //! object, containers p50 100.
 //!
 //! # THE WIDTH AND THE CEILING, IF IT EVER LANDS
@@ -364,7 +364,7 @@ fn write(engine: &TemporalEngine, command: Command) {
     assert!(response.status.ok, "the fixture write failed: {response:?}");
 }
 
-/// Every block this object holds, as `(component, block_id)`, whatever its state.
+/// Every block this object holds, as `(element_name, block_id)`, whatever its state.
 ///
 /// Reads the SAME walk `next_block_index_for_object` reads -- every block of the object in the
 /// bucket, with no filter on `deleted` -- so a count taken here is the count the assignment would
@@ -459,7 +459,7 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
 /// exactly the object's live elements -- so the high-water mark it reports is over live elements by
 /// construction and a retained index entry is invisible to it.
 ///
-/// THE PROBE COMPONENT IS ASSERTED ABSENT, because the allocator has two arms and this helper is
+/// THE PROBE ELEMENT NAME IS ASSERTED ABSENT, because the allocator has two arms and this helper is
 /// only ever asking about one. An element that already holds a block gets its own ordinal back; a
 /// new one gets `high-water + 1`. A probe that accidentally named a held element would measure the
 /// overwrite arm and report that element's position as though it were the next free one.
@@ -468,8 +468,8 @@ fn next_element_ordinal_would_be(engine: &TemporalEngine, kind: &str, key: &str)
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     assert!(
-        crate::engine::state::resident_component_address(shard, kind, key, &probe).is_none(),
-        "the probe component IS held by an element of {kind}/{key}, so the allocator would answer \
+        crate::engine::state::resident_element_name_address(shard, kind, key, &probe).is_none(),
+        "the probe element name IS held by an element of {kind}/{key}, so the allocator would answer \
          its overwrite arm and this helper would be reporting that element's position as the next \
          free ordinal"
     );
@@ -484,11 +484,11 @@ fn ordinal_of_element(
     engine: &TemporalEngine,
     kind: &str,
     key: &str,
-    component: &str,
+    element_name: &str,
 ) -> Option<u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    crate::engine::state::resident_component_address(shard, kind, key, component)
+    crate::engine::state::resident_element_name_address(shard, kind, key, element_name)
         .and_then(crate::block_store::ElementEntry::block_id)
 }
 
@@ -517,7 +517,7 @@ fn durable_element_count(engine: &TemporalEngine, kind: &str, key: &str) -> usiz
 }
 
 fn zset_name(member: &[u8]) -> String {
-    crate::engine::execute_on_shard::zset_component(member)
+    crate::engine::execute_on_shard::zset_element_name(member)
 }
 
 // =================================================================================================
@@ -841,7 +841,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
     // A NEW FACT, not a relaxation of the one above: the removal keeps an entry pointing at the block
     // that records it, and `container_block_ordinal` filters `deleted`, so the tombstone keeps the
     // number it had while the arrival is handed the same number. That is safe for exactly the reason
-    // this module has always given -- an ordinal names a POSITION and identity lives in the component
+    // this module has always given -- an ordinal names a POSITION and identity lives in the element name
     // -- and it is asserted here rather than left implicit, because "two entries share ordinal 2" is
     // what corruption would also look like.
     let tombstones = tombstone_ordinals_of(&engine, "zset", "eo-reuse");
@@ -921,7 +921,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     load_on(&engine, OPERATOR_END);
 
     let member = b"tombstone-member".to_vec();
-    let component = zset_name(&member);
+    let element_name = zset_name(&member);
     let object_id = crate::engine::hashing::stable_block_object_id(
         1,
         "zset",
@@ -1239,10 +1239,10 @@ fn a_high_water_mark_lives_only_where_the_rebuild_recomputes_it() {
 /// The shape #1982 used: an enumeration is only a finding if the arms that do NOT need the change are
 /// asserted not to need it, in the same test as the ones that do.
 ///
-///   * `list` -- the component IS already an ordinal. Asserted by spelling one and matching it.
-///   * `hash` -- the component IS the caller's field name. Asserted by writing a field and finding
+///   * `list` -- the element name IS already an ordinal. Asserted by spelling one and matching it.
+///   * `hash` -- the element name IS the caller's field name. Asserted by writing a field and finding
 ///     that exact text on the block.
-///   * `zset`, `set` -- the component is the member's CONTENT, and the member is already held in a
+///   * `zset`, `set` -- the element name is the member's CONTENT, and the member is already held in a
 ///     persisted map keyed by itself. Asserted both ways: the name contains the member's hex, and the
 ///     durable map holds the member.
 ///
@@ -1292,21 +1292,21 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
         },
     );
 
-    // ONE ELEMENT'S COMPONENT SPELLING, READ FROM THE PAGE THAT SPELLS IT.
+    // ONE ELEMENT'S ELEMENT NAME SPELLING, READ FROM THE PAGE THAT SPELLS IT.
     //
-    // RE-ATTRIBUTED. This read `blocks_of(...)[0].0` -- the component off the index entry -- and
-    // `unwrap_or_else(|| panic!("{kind}/{key} holds a page with no component"))` is exactly what it
+    // RE-ATTRIBUTED. This read `blocks_of(...)[0].0` -- the element name off the index entry -- and
+    // `unwrap_or_else(|| panic!("{kind}/{key} holds a page with no element_name"))` is exactly what it
     // did, because an entry has no element-name field to hold one. The four spellings this arm is
     // about did NOT go anywhere: a container block states its own elements in its payload, which is
     // what `container_blocks::ElementKeySpelling` renders and what makes several pages foldable into
-    // one. So the component comes off the block, through the engine's own
+    // one. So the element name comes off the block, through the engine's own
     // `container_membership::derive_membership`, which is the same door `SetMembers` answers from.
     //
     // THE DERIVATION IS FLOORED BOTH WAYS before its key is read: complete, and holding exactly one
     // live element. An incomplete derivation that happened to yield one key would yield it by luck,
     // and a derivation holding two would make `keys().next()` an arbitrary choice dressed as a
     // measurement.
-    let one_component = |kind: &str, key: &str| -> String {
+    let one_element_name = |kind: &str, key: &str| -> String {
         let (addresses, live_entries) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -1363,57 +1363,57 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 
     // list: ALREADY an ordinal. Sixteen hexadecimal characters, and the value is the biased
     // sequence the durable map is keyed by.
-    let list_component = one_component("list", "eo-k-list");
+    let list_element_name = one_element_name("list", "eo-k-list");
     assert_eq!(
-        list_component.len(),
+        list_element_name.len(),
         16,
-        "a list component is {} characters, not the sixteen an ordinal spelling would need",
-        list_component.len()
+        "a list element name is {} characters, not the sixteen an ordinal spelling would need",
+        list_element_name.len()
     );
     assert_eq!(
-        list_component,
+        list_element_name,
         format!("{:016x}", (0i64 as u64).wrapping_sub(i64::MIN as u64)),
-        "a list component is not the biased sequence this arm claims it is"
+        "a list element name is not the biased sequence this arm claims it is"
     );
     assert!(
-        !list_component.contains(&member_hex),
-        "a list component holds the member's bytes, so it is not a pure ordinal after all"
+        !list_element_name.contains(&member_hex),
+        "a list element name holds the member's bytes, so it is not a pure ordinal after all"
     );
 
     // hash: the CALLER'S text. An ordinal would not respell this, it would destroy it.
-    let hash_component = one_component("hash", "eo-k-hash");
+    let hash_element_name = one_element_name("hash", "eo-k-hash");
     assert_eq!(
-        hash_component, "a-callers-own-field",
-        "a hash component is not the caller's field name; it reads {hash_component}"
+        hash_element_name, "a-callers-own-field",
+        "a hash element name is not the caller's field name; it reads {hash_element_name}"
     );
 
     // set and zset: the member's content, twice over -- once in the name, once in a persisted map.
     //
-    // RESTATED TWICE NOW. The score left the component first, which made a zset component EQUAL
+    // RESTATED TWICE NOW. The score left the element name first, which made a zset element name EQUAL
     // to a set one -- both were exactly `hex::encode(member)`. Then the spelling left hex: both
-    // are `member_component(member)`, one tag byte and the member, so the content is still
+    // are `member_element_name(member)`, one tag byte and the member, so the content is still
     // restated once in the name and once in the persisted map and that is still the finding. What
     // changed is the PRICE of the restatement, from two bytes a member byte to one.
-    let set_component = one_component("set", "eo-k-set");
-    let zset_component = one_component("zset", "eo-k-zset");
+    let set_element_name = one_element_name("set", "eo-k-set");
+    let zset_element_name = one_element_name("zset", "eo-k-zset");
     assert_eq!(
-        set_component, zset_component,
+        set_element_name, zset_element_name,
         "set and zset must spell one member the same way"
     );
     assert_ne!(
-        set_component, member_hex,
-        "a set component is STILL the member's hex -- the writer flip did not reach this path"
+        set_element_name, member_hex,
+        "a set element name is STILL the member's hex -- the writer flip did not reach this path"
     );
     assert!(
-        set_component.len() < member_hex.len(),
-        "a component of {} characters is not shorter than the {} hex charged",
-        set_component.len(),
+        set_element_name.len() < member_hex.len(),
+        "an element name of {} characters is not shorter than the {} hex charged",
+        set_element_name.len(),
         member_hex.len()
     );
     assert_eq!(
-        crate::engine::container_blocks::member_from_component(&set_component),
+        crate::engine::container_blocks::member_from_element_name(&set_element_name),
         hex::decode(&member_hex).ok(),
-        "the component no longer names the member it is filed for"
+        "the element name no longer names the member it is filed for"
     );
 
     assert_eq!(
@@ -1428,11 +1428,11 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     );
 
     println!(
-        "\n  list  {list_component}  ALREADY an ordinal ({} chars)\n  hash  {hash_component}  the \
-         CALLER's field name -- an ordinal destroys it\n  set   {set_component}  the member once, \
-         and the durable map holds the member too\n  zset  {zset_component}  the member once as \
+        "\n  list  {list_element_name}  ALREADY an ordinal ({} chars)\n  hash  {hash_element_name}  the \
+         CALLER's field name -- an ordinal destroys it\n  set   {set_element_name}  the member once, \
+         and the durable map holds the member too\n  zset  {zset_element_name}  the member once as \
          well, and the durable map holds the member AND the score",
-        list_component.len()
+        list_element_name.len()
     );
 }
 
@@ -1514,29 +1514,29 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
          the point lookup DOES resolve a content-derived name"
     );
 
-    // The component-blind whole-object reader takes no component and its caller has none to give.
+    // The element-name-blind whole-object reader takes no element name and its caller has none to give.
     //
     // THIS WAS THREE CALLERS -- hash twice, set once -- AND IT IS ONE. The remaining one is
     // `HashGetAll`'s divergence-observing half, which reads the index beside `shard.hashes` so a
     // disagreement is OBSERVED rather than suffered. That it is down to one is the same movement
     // as the two point reads above, counted at a different door.
-    let blind_sites = execute.matches("bucket_index_component_block_addresses(").count();
+    let blind_sites = execute.matches("bucket_index_element_name_block_addresses(").count();
     assert_eq!(
         blind_sites, 1,
-        "bucket_index_component_block_addresses has {blind_sites} callers in execute_on_shard.rs, \
+        "bucket_index_element_name_block_addresses has {blind_sites} callers in execute_on_shard.rs, \
          not one"
     );
     assert!(
-        store.contains("pub(super) fn bucket_index_component_block_addresses(\n    shard: &ShardState,\n    model_id: &str,\n    object_key: &str,\n) -> Vec<(Option<Arc<str>>, ElementEntry)>"),
-        "bucket_index_component_block_addresses no longer takes exactly (shard, model_id, \
-         object_key) -- if it has gained a component argument, the reason it is NOT the obstacle \
+        store.contains("pub(super) fn bucket_index_element_name_block_addresses(\n    shard: &ShardState,\n    model_id: &str,\n    object_key: &str,\n) -> Vec<(Option<Arc<str>>, ElementEntry)>"),
+        "bucket_index_element_name_block_addresses no longer takes exactly (shard, model_id, \
+         object_key) -- if it has gained an element name argument, the reason it is NOT the obstacle \
          here has changed"
     );
 
     println!(
         "\n  [read path] bucket_index_block_address: 1 caller (read_bucket_index_value)\n  \
          read_bucket_index_value: {read_sites} call site, kinds {kinds:?}\n  \
-         bucket_index_component_block_addresses: {blind_sites} caller, component-blind by \
+         bucket_index_element_name_block_addresses: {blind_sites} caller, element-name-blind by \
          signature\n  source read: {} + {} bytes",
         execute.len(),
         store.len()
@@ -1557,7 +1557,7 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
 /// yields is not the element it actually names.
 ///
 /// **THE LIST ROW IS 100.000% BY CONSTRUCTION, NOT BY LUCK**, and that is the row that decides the
-/// stored shape: a list component and a sixteen-character ordinal are the same sixteen hexadecimal
+/// stored shape: a list element name and a sixteen-character ordinal are the same sixteen hexadecimal
 /// characters, so `"0000000000000000"` is sequence `i64::MIN` and ordinal 0 at once. ALL 20,000 and
 /// not 19,999 -- this arm was first written expecting one fixed point, and there is none, because a
 /// name equals its own ordinal only where `seq - i64::MIN == seq`.
@@ -1567,7 +1567,7 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
 fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds() {
     const NAMES: usize = 20_000;
 
-    // A sixteen-character hexadecimal ordinal, the same field width a list component already is.
+    // A sixteen-character hexadecimal ordinal, the same field width a list element name already is.
     fn parses_as_ordinal(name: &str) -> Option<u64> {
         if name.len() != 16 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return None;
@@ -1577,7 +1577,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
 
     let mut rows: Vec<(&str, usize, usize)> = Vec::new();
 
-    // list: the component IS sixteen hexadecimal characters.
+    // list: the element name IS sixteen hexadecimal characters.
     let mut list_total = 0usize;
     let mut list_hits = 0usize;
     for element in 0..NAMES {
@@ -1631,7 +1631,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
         } else {
             format!("member-{element}").into_bytes()
         };
-        let name = crate::engine::execute_on_shard::set_component(&member);
+        let name = crate::engine::execute_on_shard::set_element_name(&member);
         set_total += 1;
         if parses_as_ordinal(&name).is_some() {
             set_hits += 1;
@@ -1659,21 +1659,21 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
     );
     // THE ASSERTION INVERTED, AND THIS IS THE SECOND TIME. It first read `zset_hits > 0` because
     // an empty member spelled a score-shaped sixteen characters; when the score left the
-    // component that mechanism went and the row was re-attributed to the other one -- an
+    // element name that mechanism went and the row was re-attributed to the other one -- an
     // EIGHT-byte member spells sixteen hex characters, and `member-{element}` is eight bytes for
     // every single-digit element. The spelling flip removes THAT mechanism too, and this time not
-    // by accident: a component now begins with `BINARY_TAG`, which is not an ASCII hex digit, so
+    // by accident: an element name now begins with `BINARY_TAG`, which is not an ASCII hex digit, so
     // `parses_as_ordinal` can never accept one at ANY member width or content.
     //
     // SO THE COLLISION CLASS IS GONE BY CONSTRUCTION, NOT MERELY UNOBSERVED, and that is a
-    // correctness result the byte measurement does not show. An element ordinal and a component
+    // correctness result the byte measurement does not show. An element ordinal and an element name
     // can no longer be confused for one another in either direction. Zero is therefore the
-    // REQUIRED answer and a nonzero one means a writer is filing untagged components again.
+    // REQUIRED answer and a nonzero one means a writer is filing untagged element names again.
     assert_eq!(
         0, zset_hits,
         "{zset_hits} of {NAMES} zset names parse as a sixteen-character ordinal. A tagged \
-         component cannot: its first byte is BINARY_TAG, which is not a hex digit. A nonzero \
-         count means some write site is still filing an untagged component"
+         element name cannot: its first byte is BINARY_TAG, which is not a hex digit. A nonzero \
+         count means some write site is still filing an untagged element name"
     );
     assert_eq!(
         0, set_hits,
@@ -1681,7 +1681,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
          reason the zset row states"
     );
     // AND THE CONTROL ABOVE IS WHAT KEEPS THIS FROM BEING AN INSTRUMENT THAT REPORTS ZERO
-    // BECAUSE IT STOPPED LOOKING. `list` did not flip -- its component is still sixteen hex
+    // BECAUSE IT STOPPED LOOKING. `list` did not flip -- its element name is still sixteen hex
     // characters -- and the `list_hits == NAMES` assertion a few lines up already requires every
     // one of them to mis-parse. Two zeroes here with a full count there is the tag working; three
     // zeroes would be the fixture broken.
@@ -1698,13 +1698,13 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
 ///
 /// THE ARITHMETIC HERE INVERTED, AND THAT IS A THIRD REFUSAL THIS MODULE DID NOT HAVE. The case for
 /// an element ordinal was a TRADE: sixteen bytes of rendered name on every entry for two or four
-/// bytes of number. `BlockIndex::component` has been REMOVED outright rather than swapped for a
+/// bytes of number. `BlockIndex::element_name` has been REMOVED outright rather than swapped for a
 /// narrower stand-in -- the entry went 56 bytes to 40 -- so those sixteen bytes are already banked
 /// and there is nothing left to trade. An ordinal is now an ADDED field on a structure with ZERO
 /// SLACK, and 40 is a multiple of eight, so it costs a whole word whether it is two bytes or four.
 ///
-/// WHAT THIS ARM USED TO COMPUTE, so the change is legible: `field_bytes_now - component_width +
-/// ordinal` against a hand-written `field_bytes_now = 56`. With no component term in the struct
+/// WHAT THIS ARM USED TO COMPUTE, so the change is legible: `field_bytes_now - element_name_width +
+/// ordinal` against a hand-written `field_bytes_now = 56`. With no element_name term in the struct
 /// that subtracts a field that is not there, and it reported 44 and 48 as NARROWINGS of a 40-byte
 /// entry -- both larger than the thing they were narrowing. Its own floor caught it: "the block
 /// entry is 40 bytes, not the 56 this arithmetic is written against; re-derive the field sum before
@@ -1733,7 +1733,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     }
 
     let name: Option<std::sync::Arc<str>> = Some(std::sync::Arc::from("a-component-name"));
-    let component_width = field_width(&name);
+    let element_name_width = field_width(&name);
     let u16_ordinal = field_width(&Some(0u16));
     let u32_ordinal = field_width(&Some(0u32));
 
@@ -1742,8 +1742,8 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // the type the field used to have rather than dropped, and the paragraph below prices the
     // ordinal against the entry as it is now.
     assert_eq!(
-        component_width, 16,
-        "`Option<Arc<str>>` reads {component_width} bytes, not the sixteen this whole proposal was \
+        element_name_width, 16,
+        "`Option<Arc<str>>` reads {element_name_width} bytes, not the sixteen this whole proposal was \
          stated in"
     );
 
@@ -1773,7 +1773,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 
     println!(
         "\n  [width] the name this proposal would have traded: Option<Arc<str>> = \
-         {component_width} B, ALREADY REMOVED; Option<u16> = {u16_ordinal} B, Option<u32> = \
+         {element_name_width} B, ALREADY REMOVED; Option<u16> = {u16_ordinal} B, Option<u32> = \
          {u32_ordinal} B\n  entry now {entry_now} B holding {field_bytes_now} of field, zero \
          slack; ADDING a u16 ordinal gives {field_bytes_with_u16} of field in {width_with_u16}, a \
          u32 {field_bytes_with_u32} in {width_with_u32}"
@@ -1913,8 +1913,8 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 // 9. THE PRIZE, MEASURED ON ONE INSTRUMENT
 // =================================================================================================
 
-/// Every block of this shard, as `(kind, key, component length)`.
-fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usize>)> {
+/// Every block of this shard, as `(kind, key, element_name length)`.
+fn element_name_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usize>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut rows = Vec::new();
@@ -1982,7 +1982,7 @@ fn seed_routed_strings(engine: &TemporalEngine, keys: usize) {
 /// Recorded so the refutation carries the number it is declining rather than waving at it.
 ///
 /// ONE INSTRUMENT, BOTH COLUMNS. `ALLOC_BYTES` charges `layout.size()` -- what the caller asked for
-/// -- and `ALLOC_CHUNK_BYTES` reads `malloc_usable_size`, what was handed over. The component name is
+/// -- and `ALLOC_CHUNK_BYTES` reads `malloc_usable_size`, what was handed over. The element name is
 /// one `Arc<str>` a block, so the span measured is exactly that: every name this store holds,
 /// re-allocated as the write path allocated it, and nothing else inside the probe.
 ///
@@ -1991,7 +1991,7 @@ fn seed_routed_strings(engine: &TemporalEngine, keys: usize) {
 ///
 /// **TWO POPULATIONS, NEVER A MEAN.** #1986 found the mixed histogram holds only 1 and 100 and
 /// nothing at two, so a single average over both is a number no object has. The routed population
-/// (strings, p50 1 block an object, no component at all) is measured as the control that must save
+/// (strings, p50 1 block an object, no element name at all) is measured as the control that must save
 /// ZERO -- a change to a field that is `None` on every block of it cannot pay there, and a table that
 /// showed it paying would be measuring something else.
 ///
@@ -2002,7 +2002,7 @@ fn seed_routed_strings(engine: &TemporalEngine, keys: usize) {
 fn what_an_element_ordinal_would_have_saved_a_block() {
     use crate::alloc_probe::Probe;
 
-    let component_field_bytes = std::mem::size_of::<Option<std::sync::Arc<str>>>();
+    let element_name_field_bytes = std::mem::size_of::<Option<std::sync::Arc<str>>>();
     let ordinal_field_bytes = std::mem::size_of::<Option<u16>>();
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut rows_reported = 0usize;
@@ -2020,16 +2020,16 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             load_on(&engine, end);
             seed_containers(&engine, keys, 100);
 
-            let census = component_census(&engine);
+            let census = element_name_census(&engine);
             let named: Vec<usize> = census.iter().filter_map(|row| row.2).collect();
             assert!(
                 !named.is_empty(),
-                "DENOMINATOR: {range_label} / {size_label} produced no block carrying a component"
+                "DENOMINATOR: {range_label} / {size_label} produced no block carrying an element name"
             );
             assert_eq!(
                 named.len(),
                 census.len(),
-                "{range_label} / {size_label}: {} of {} container blocks carry a component; a block \
+                "{range_label} / {size_label}: {} of {} container blocks carry an element name; a block \
                  without one is not part of this claim",
                 named.len(),
                 census.len()
@@ -2069,7 +2069,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
                 named.len(),
                 counts.alloc_bytes as f64 / blocks,
                 counts.chunk_bytes as f64 / blocks,
-                component_field_bytes,
+                element_name_field_bytes,
                 ordinal_field_bytes
             );
             rows_reported += 1;
@@ -2080,7 +2080,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             let routed = engine_on(routed_dir.path());
             load_on(&routed, end);
             seed_routed_strings(&routed, keys * 100);
-            let routed_census = component_census(&routed);
+            let routed_census = element_name_census(&routed);
             assert!(
                 !routed_census.is_empty(),
                 "DENOMINATOR: the routed control seeded no block at all"
@@ -2088,12 +2088,12 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             let routed_named = routed_census.iter().filter(|row| row.2.is_some()).count();
             println!(
                 "    routed      {range_label:<20} {size_label:<14} blocks={:<6} blocks carrying a \
-                 component={routed_named}  -> 0.00 B a block to save",
+                 element_name={routed_named}  -> 0.00 B a block to save",
                 routed_census.len()
             );
             assert_eq!(
                 routed_named, 0,
-                "{routed_named} of {} routed blocks carry a component; the control's whole point is \
+                "{routed_named} of {} routed blocks carry an element name; the control's whole point is \
                  that this population has none, so an ordinal cannot pay on it",
                 routed_census.len()
             );
@@ -2180,26 +2180,26 @@ fn at_the_ceiling_the_address_refuses_rather_than_truncating() {
 // 11. IS THE MEMBER STORED TWICE, AT DOUBLE WIDTH? MEASURED PER KIND AND PER MEMBER WIDTH
 // =================================================================================================
 
-/// THE COMPONENT IS A SECOND COPY OF THE MEMBER AT TWO CHARACTERS A BYTE, AND IT IS MEASURED HERE
+/// THE ELEMENT NAME IS A SECOND COPY OF THE MEMBER AT TWO CHARACTERS A BYTE, AND IT IS MEASURED HERE
 /// RATHER THAN DERIVED FROM THE FORMAT STRING.
 ///
 /// The arithmetic off the write arms says a member of n bytes costs n in the block payload and 2n again
-/// in the component, because both `set` and `zset` spell the member with `hex::encode`. That is a
+/// in the element name, because both `set` and `zset` spell the member with `hex::encode`. That is a
 /// prediction, and predictions about this structure have been wrong four times in this campaign, so
 /// every number below comes off a seeded store and the allocator.
 ///
 /// # WHAT IS MEASURED
 ///
-/// For each kind and each member width: the component lengths actually found on the block entries (a
+/// For each kind and each member width: the element name lengths actually found on the block entries (a
 /// HISTOGRAM, never a mean -- a mean over a bimodal population is a number no element has), and the
 /// request and chunk bytes for exactly those names, allocated as the write path allocates them.
 ///
 /// # THE CONTROLS, AND WHY THERE ARE TWO
 ///
-///   * `list` -- its component is SIXTEEN characters whatever the member is, so the doubling
+///   * `list` -- its element name is SIXTEEN characters whatever the member is, so the doubling
 ///     prediction says it must be FLAT across every width. A kind that moved here would mean the
 ///     measurement is picking up something other than the member's spelling.
-///   * `string` -- no component at all, so it must read ZERO at every width.
+///   * `string` -- no element name at all, so it must read ZERO at every width.
 ///
 /// **`ALLOC_CHUNK_BYTES` IS A FLOOR, NOT AN EQUALITY** (#1969: a 104-byte request read 128), so the
 /// chunk column is reported and the request column carries the claim.
@@ -2209,7 +2209,7 @@ fn at_the_ceiling_the_address_refuses_rather_than_truncating() {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "counting allocator; run by name under --features alloc-probe"]
-fn what_a_component_costs_an_element_at_five_member_widths() {
+fn what_an_element_name_costs_an_element_at_five_member_widths() {
     use crate::alloc_probe::Probe;
 
     const WIDTHS: [usize; 5] = [8, 16, 32, 64, 256];
@@ -2222,7 +2222,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
         std::collections::BTreeMap::new();
 
     println!(
-        "\n  [what a component costs an element]  member payload n, component length, and the \
+        "\n  [what an element name costs an element]  member payload n, element name length, and the \
          allocation behind it"
     );
     println!(
@@ -2258,7 +2258,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
                         member,
                         left: false,
                     }),
-                    // The second control: one block per key, no component at all.
+                    // The second control: one block per key, no element name at all.
                     _ => commands.push(Command::StringSet {
                         key: format!("{key}-{element}"),
                         value: member,
@@ -2273,8 +2273,8 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
                 assert!(response.status.ok, "the seed must ack: {:?}", response.status);
             }
 
-            // The component lengths the store ACTUALLY holds, as a histogram.
-            let census = component_census(&engine);
+            // The element name lengths the store ACTUALLY holds, as a histogram.
+            let census = element_name_census(&engine);
             let held: Vec<&(String, String, Option<usize>)> =
                 census.iter().filter(|row| row.0 == kind).collect();
             assert_eq!(
@@ -2354,7 +2354,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
     let set_256 = request_per_name[&("set", 256)];
     assert!(
         set_256 > set_8 * 8.0,
-        "a set component at n=256 costs {set_256:.2} B a name against {set_8:.2} at n=8; if the \
+        "a set element name at n=256 costs {set_256:.2} B a name against {set_8:.2} at n=8; if the \
          cost does not grow with the member then the member is NOT being spelled into the name and \
          the whole doubling claim is wrong"
     );
@@ -2362,24 +2362,24 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
     let zset_256 = request_per_name[&("zset", 256)];
     assert!(
         zset_256 > zset_8 * 4.0,
-        "a zset component at n=256 costs {zset_256:.2} B a name against {zset_8:.2} at n=8"
+        "a zset element name at n=256 costs {zset_256:.2} B a name against {zset_8:.2} at n=8"
     );
 
-    // ---- CONTROL 1: list is FLAT, because its component is fixed width ------------------------
+    // ---- CONTROL 1: list is FLAT, because its element name is fixed width ------------------------
     let list_8 = request_per_name[&("list", 8)];
     let list_256 = request_per_name[&("list", 256)];
     assert_eq!(
         list_8, list_256,
         "the list control moved from {list_8:.2} to {list_256:.2} B a name across a 32x change in \
-         member width; its component is sixteen characters whatever the member is, so a change here \
+         member width; its element name is sixteen characters whatever the member is, so a change here \
          means this measurement is picking up something other than the member's spelling"
     );
 
-    // ---- CONTROL 2: string has no component, so zero at every width ---------------------------
+    // ---- CONTROL 2: string has no element name, so zero at every width ---------------------------
     for width in WIDTHS {
         assert_eq!(
             request_per_name[&("string", width)], 0.0,
-            "the string control charged {:.2} B a name at n={width}; a kind with no component \
+            "the string control charged {:.2} B a name at n={width}; a kind with no element name \
              cannot charge anything for one",
             request_per_name[&("string", width)]
         );
@@ -2388,29 +2388,29 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
     println!(
         "\n    CLAIM     set  {set_8:.2} -> {set_256:.2} B a name over n=8 -> 256  (grows with the \
          member)\n    CLAIM     zset {zset_8:.2} -> {zset_256:.2} B a name\n    CONTROL   list \
-         {list_8:.2} -> {list_256:.2} B a name  (FLAT: fixed-width component)\n    CONTROL   \
-         string 0.00 B a name at every width  (no component at all)"
+         {list_8:.2} -> {list_256:.2} B a name  (FLAT: fixed-width element_name)\n    CONTROL   \
+         string 0.00 B a name at every width  (no element_name at all)"
     );
 }
 
 // =================================================================================================
-// 12. WHO CONSUMES COMPONENT ORDER
+// 12. WHO CONSUMES ELEMENT NAME ORDER
 // =================================================================================================
 
 /// THE ORDERING PROPERTY IS CLAIMED BY THREE COMMENTS AND THE SET LISTING CONSUMES IT.
 ///
-/// A zset component is score-bits-then-member and a list component is a `i64::MIN`-biased sequence,
+/// A zset element name is score-bits-then-member and a list element name is a `i64::MIN`-biased sequence,
 /// both so that LEXICAL order is the element's order. `execute_on_shard.rs` says the bias is "what
 /// lets recovery and range reads walk the bucket index directly", and `engine_storage_state.rs` says "the index
-/// component already encodes score-then-member, so recovery has the order for free". An ordinal that
+/// element name already encodes score-then-member, so recovery has the order for free". An ordinal that
 /// did not preserve that ordering would force those readers to sort -- which would be the refutation,
 /// and it is the reason this arm exists.
 ///
-/// **IT IS NOT THE REFUTATION, BECAUSE NO READER TAKES ITS ORDER FROM THE COMPONENT.** Enumerated,
+/// **IT IS NOT THE REFUTATION, BECAUSE NO READER TAKES ITS ORDER FROM THE ELEMENT NAME.** Enumerated,
 /// with each consumer classified rather than counted:
 ///
-///   * **RECOVERY DERIVES NOTHING FROM A COMPONENT.** This read "RECOVERY RE-KEYS BY THE DECODED
-///     VALUE. The three arms of `reconcile_secondary_views_from_bucket_index` decode each component
+///   * **RECOVERY DERIVES NOTHING FROM An ELEMENT NAME.** This read "RECOVERY RE-KEYS BY THE DECODED
+///     VALUE. The three arms of `reconcile_secondary_views_from_bucket_index` decode each element name
 ///     and insert into a `BTreeMap` keyed by the MEMBER BYTES (`set`, `zset`) or by the `i64`
 ///     SEQUENCE (`list`)." Those three arms are GONE. An entry has no element-name field, so there
 ///     is nothing to decode: `rebuild_unserialized_model_maps_from_bucket_index` passes an empty
@@ -2420,18 +2420,18 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 ///   * **RANGE READS USE THE DURABLE MAPS.** `zset_members_in_score_range` and `zset_ordered_members`
 ///     read `shard.zsets`, which is keyed by MEMBER and not by score -- `engine_storage_state.rs` says so directly:
 ///     "is derived per query -- V1 accepts the per-range sort". `ListRange` reads `shard.lists`, keyed
-///     by the `i64` itself. Neither touches a component.
-///   * **THE THREE READERS THAT DO SORT BY COMPONENT NEED ONLY A TOTAL ORDER.**
-///     `bucket_index_component_block_addresses` sorts before returning;
+///     by the `i64` itself. Neither touches an element name.
+///   * **THE THREE READERS THAT DO SORT BY ELEMENT NAME NEED ONLY A TOTAL ORDER.**
+///     `bucket_index_element_name_block_addresses` sorts before returning;
 ///     `ObjectBlockRefs::position` binary-searches; `storage_reporting` sorts for a stable report.
 ///     Any total order satisfies all three, and an ordinal has one.
 ///   * **AND THE SET LISTING CONSUMES IT NOW, WHICH REVERSES THIS SECTION.** This bullet read "OF
-///     ITS THREE CALLERS, ONE DISCARDS THE COMPONENT AND ONE READS ONLY `len()`. `SetMembers` takes
+///     ITS THREE CALLERS, ONE DISCARDS THE ELEMENT NAME AND ONE READS ONLY `len()`. `SetMembers` takes
 ///     `|(_, address)|`", and that was the last leg the "consumed by nobody" conclusion stood on.
 ///     `SetMembers` does not walk index entries at all now: an entry naming no element "can only be
 ///     answered by a block that names no element either", so that arm was deleted and the command
 ///     folds the object's BLOCKS through `container_membership::derive_membership` -- whose map is
-///     KEYED BY THE COMPONENT SPELLING. The listing therefore comes back in component order.
+///     KEYED BY THE ELEMENT NAME SPELLING. The listing therefore comes back in element name order.
 ///     Measured in the arm below, on one population: write order [07, 01, 09, 03, 05, 00, 08, 02,
 ///     06, 04], the whole-object door's walk in address order [01, 04, 00, 06, 05, 08, 09, 02, 03,
 ///     07], and the listing [00 .. 09].
@@ -2442,7 +2442,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 /// is a finding in favour of the ordinal on this axis, recorded because the refutation is about
 /// non-reuse and should not be allowed to collect support it has not earned."
 ///
-/// A reader consumes it. Respelling a set's component as an ordinal would change the order
+/// A reader consumes it. Respelling a set's element name as an ordinal would change the order
 /// `SetMembers` answers in -- from member order to ordinal order -- which is an observable change
 /// to a served answer rather than an internal one. That does not refute the ordinal by itself:
 /// `SMEMBERS` promises no order, and this module's refusal rests on non-reuse and on the fold
@@ -2450,14 +2450,14 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 /// sentence above is withdrawn rather than left to be read as evidence.
 ///
 /// THE ZSET HALF OF THE ORIGINAL CLAIM IS GONE A DIFFERENT WAY, and the two should not be confused:
-/// `zset_component` is `hex::encode(member)` alone, so there is no score prefix left to cost
+/// `zset_element_name` is `hex::encode(member)` alone, so there is no score prefix left to cost
 /// anything. The assertion below that the retired score-then-member claim is absent from the tree
 /// is what holds that.
 ///
 /// rust-internal: reads the crate's own source and drives one reload
 #[test]
-fn the_component_ordering_property_is_consumed_by_the_set_listing() {
-    // THE WALK THIS COMPARES AGAINST WAS BUILT BY DECODING EACH ENTRY'S COMPONENT, through an
+fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
+    // THE WALK THIS COMPARES AGAINST WAS BUILT BY DECODING EACH ENTRY'S ELEMENT NAME, through an
     // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same defaulting
     // the production readers were fixed to stop doing. With no element name on an entry it yielded
     // ten empty members, so the instrument failed and not the read. It is read off the walk's
@@ -2476,7 +2476,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 
     // The comment that makes the list claim is still there, so this arm is answering a live claim
     // and not a remembered one.
-    let claims = ["Two's-complement bias makes the hex component sort lexically in list order"];
+    let claims = ["Two's-complement bias makes the hex element name sort lexically in list order"];
     for claim in claims {
         assert!(
             execute.contains(claim),
@@ -2486,21 +2486,21 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     }
 
     // THE ZSET CLAIM IS RETIRED, NOT RESTATED, which is the strongest form "consumed by no
-    // reader" can take: the (score, member) order this component used to carry by construction
-    // is not merely unread now, it does not exist any more -- `zset_component` is
+    // reader" can take: the (score, member) order this element name used to carry by construction
+    // is not merely unread now, it does not exist any more -- `zset_element_name` is
     // `hex::encode(member)` alone, so there is no score term left for anything to sort by. If
     // that claim's TEXT is somehow still in the tree, something restored the old encoding and
     // this change has been undone.
     assert!(
         !execute.contains(
-            "The persisted component: score bits then member, so lexical order is (score, \
+            "The persisted element name: score bits then member, so lexical order is (score, \
              member) order"
         ),
         "the retired zset ordering claim is back in the tree -- the score has returned to the \
-         component"
+         element name"
     );
 
-    // RECOVERY DERIVES NO ELEMENT FROM A COMPONENT AT ALL, AND THAT IS A FOURTH PROXY RETIRED.
+    // RECOVERY DERIVES NO ELEMENT FROM An ELEMENT NAME AT ALL, AND THAT IS A FOURTH PROXY RETIRED.
     //
     // This asserted three literals -- `.insert(member, entry.address);`,
     // `.insert(seq, entry.address);` and `.insert(member, (score, entry.address));` -- as evidence
@@ -2510,21 +2510,21 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // keeps only its live-address filter, because an entry has no element-name field to derive a
     // member, a sequence or a field name from.
     //
-    // SO THE PROPERTY IS NO LONGER "NO READER TAKES ITS ORDER FROM THE COMPONENT". It is that
-    // there is no component on an entry for an order to be taken from -- the defect is
+    // SO THE PROPERTY IS NO LONGER "NO READER TAKES ITS ORDER FROM THE ELEMENT NAME". It is that
+    // there is no element name on an entry for an order to be taken from -- the defect is
     // UNREACHABLE rather than merely absent, which is the stronger of the two things a guard can
     // say.
     //
     // AND IT IS ASSERTED BY THE COMPILER, NOT BY A TEXT MATCH. This arm's own history is why: it
     // records three text proxies that each "died of the arm changing shape", the third on a
     // COMMENT whose wording the ban matched. A fourth absence check would be defeated by a rename.
-    // The literal below names every field of `BlockIndex` with no `..`, so a component field
+    // The literal below names every field of `BlockIndex` with no `..`, so an element name field
     // returning to the entry is a COMPILE ERROR here rather than a silently passing grep.
-    let _no_component_field_exists = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Set, crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)), false, false);
+    let _no_element_name_field_exists = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Set, crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)), false, false);
 
     // AND THE WEAK HALF, KEPT AND LABELLED AS SUCH. A rename defeats it, which is exactly why it
     // is not carrying the claim on its own. What it adds to the literal above is the direction: the
-    // literal says no component CAN be read, these say nothing in the reconcile still tries.
+    // literal says no element name CAN be read, these say nothing in the reconcile still tries.
     for retired in [
         ".insert(member, entry.address);",
         ".insert(seq, entry.address);",
@@ -2533,42 +2533,42 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         assert!(
             !internals.contains(retired),
             "the reconcile still carries {retired:?}, so a container element is being derived from \
-             something again -- if that something is an entry's component, this whole arm is wrong"
+             something again -- if that something is an entry's element name, this whole arm is wrong"
         );
     }
 
-    // RANGE READS use the durable maps, not the component.
+    // RANGE READS use the durable maps, not the element name.
     assert!(
         execute.contains("let mut ordered: Vec<(Vec<u8>, u64)> = shard\n        .zsets"),
         "zset_members_in_score_range no longer reads shard.zsets; if it has started walking the \
-         bucket index, component order IS load-bearing"
+         bucket index, element name order IS load-bearing"
     );
 
-    // AND THE ONE CALLER THAT COULD HAVE CARED DOES NOT ORDER BY THE COMPONENT.
+    // AND THE ONE CALLER THAT COULD HAVE CARED DOES NOT ORDER BY THE ELEMENT NAME.
     //
     // RETARGETED, and the reason matters more than the new pattern. This arm used to assert the
-    // literal `filter_map(|(_, address)| {` -- that SetMembers THREW THE COMPONENT AWAY -- as a
-    // proxy for the property it means, which is that set member order is not component order.
+    // literal `filter_map(|(_, address)| {` -- that SetMembers THREW THE ELEMENT NAME AWAY -- as a
+    // proxy for the property it means, which is that set member order is not element name order.
     // The proxy stopped holding when a carried block started needing to say which element it is:
-    // `read_block_bytes` now takes the component, so this arm binds it and passes it on. The
+    // `read_block_bytes` now takes the element name, so this arm binds it and passes it on. The
     // PROPERTY did not move. Member order is still the order
-    // `bucket_index_component_block_addresses` walked in, exactly as before.
+    // `bucket_index_element_name_block_addresses` walked in, exactly as before.
     //
-    // So the assertion is now on what would actually break it: the component must reach
+    // So the assertion is now on what would actually break it: the element name must reach
     // `read_block_bytes` and NOTHING ELSE. If this arm ever sorts, compares or keys by it, member
-    // order becomes component order and an ordinal would change it -- which is the thing this
+    // order becomes element name order and an ordinal would change it -- which is the thing this
     // whole module is about.
     // THE PROXY IS RETIRED HERE. Three source-text proxies have stood for this property and all
-    // three died of the arm changing shape -- the discarded component, then the bare component in
+    // three died of the arm changing shape -- the discarded element name, then the bare element name in
     // the identity slot, then `.into_iter()` with a ban on `sort`/`BTreeSet`. The third died on a
     // COMMENT: the arm stopped sorting altogether, and the sentence explaining why it no longer
     // needs to contains the word the ban matched. A text proxy a comment can fail is measuring the
     // wrong thing, so the property is asserted by DRIVING instead.
     //
     // THE PROPERTY, STATED ONCE: `SetMembers` inherits the order
-    // `bucket_index_component_block_addresses` walked in and imposes no ordering of its own. That
+    // `bucket_index_element_name_block_addresses` walked in and imposes no ordering of its own. That
     // is what makes an ordinal safe here -- it changes the walk and the listing together, rather
-    // than leaving the listing ordered by something the component has stopped being.
+    // than leaving the listing ordered by something the element name has stopped being.
     {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
@@ -2592,14 +2592,14 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // THE WALK'S OWN ORDER, read from the door the listing is built on.
         //
         // RE-ATTRIBUTED, AND THIS ARM'S OWN DOC PREDICTED THE RED. It decoded each entry's
-        // component through `hex::decode(component.as_deref().unwrap_or_default())`, and the
+        // element name through `hex::decode(element_name.as_deref().unwrap_or_default())`, and the
         // comment above this test already said what that would do: "an `unwrap_or_default()` that
         // turns an absent name into the EMPTY member -- the same defaulting the production readers
         // were fixed to stop doing". With no element name on an entry it yielded ten EMPTY members
         // and compared them against a correct listing, so the instrument failed and not the read.
         //
         // WHAT THE DOOR STILL GIVES IS THE ORDER, which is the only thing this comparison is about.
-        // `bucket_index_component_block_addresses` returns the object's blocks sorted, and
+        // `bucket_index_element_name_block_addresses` returns the object's blocks sorted, and
         // `SetMembers` is built by walking exactly that. So the walk is taken as its ADDRESS
         // sequence and each address is turned back into its member through `shard.sets` -- the same
         // address join the engine makes on the write path. The property is unchanged: the listing
@@ -2624,13 +2624,13 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
                     member.clone(),
                 );
             }
-            crate::engine::bucket_store::bucket_index_component_block_addresses(
+            crate::engine::bucket_store::bucket_index_element_name_block_addresses(
                 shard,
                 "set",
                 "eo-set-order",
             )
             .into_iter()
-            .filter_map(|(_component, address)| {
+            .filter_map(|(_element_name, address)| {
                 member_at
                     .get(&(
                         address.block_slab_id(),
@@ -2644,7 +2644,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         assert_eq!(
             members.len(),
             walked.len(),
-            "DENOMINATOR: the walk yielded {} component(s) for {} members, so comparing orders \
+            "DENOMINATOR: the walk yielded {} element_name(s) for {} members, so comparing orders \
              below would compare different populations",
             walked.len(),
             members.len()
@@ -2664,30 +2664,30 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // AND THIS IS WHERE THE SECTION'S CONCLUSION REVERSED. MEASURED, NOT ARGUED.
         //
         // This asserted `walked == listed`: that `SetMembers` INHERITS the whole-object door's
-        // order and imposes none of its own, which is what made component order free to respell.
+        // order and imposes none of its own, which is what made element name order free to respell.
         // It is false now, and the mechanism is the landed change. `SetMembers` no longer walks
         // index entries and answers each from the block it named -- that arm was deleted, because an
         // entry naming no element "can only be answered by a block that names no element either"
         // and it returned an EMPTY listing. It asks the PAYLOAD through
         // `container_membership::derive_membership`, which folds every block of the object into a
-        // `BTreeMap` KEYED BY THE COMPONENT SPELLING.
+        // `BTreeMap` KEYED BY THE ELEMENT NAME SPELLING.
         //
-        // So the listing's order IS component order, and a reader does consume it. Measured here:
+        // So the listing's order IS element name order, and a reader does consume it. Measured here:
         // the walk came back [01, 04, 00, 06, 05, 08, 09, 02, 03, 07] and the listing [00 .. 09].
         //
         // THE THREE ORDERS ARE ALL DISTINGUISHABLE, which is what stops this being one tautology
         // replacing another: the write order is [07, 01, 09, 03, 05, 00, 08, 02, 06, 04], the walk
-        // is address order, and the listing is component order. The assertion below can be failed
+        // is address order, and the listing is element name order. The assertion below can be failed
         // by the listing matching either of the other two.
-        let by_component: Vec<Vec<u8>> = {
+        let by_element_name: Vec<Vec<u8>> = {
             let mut sorted = members.clone();
             sorted.sort_by_key(|member| hex::encode(member));
             sorted
         };
         assert_eq!(
-            listed, by_component,
-            "the set listing is not in component order. It is built by folding the object's blocks \
-             in `derive_membership`, whose map is keyed by the component spelling, so this is the \
+            listed, by_element_name,
+            "the set listing is not in element name order. It is built by folding the object's blocks \
+             in `derive_membership`, whose map is keyed by the element name spelling, so this is the \
              order it must come back in -- if it has stopped being, find out what imposed the new \
              one before trusting anything else in this section"
         );
@@ -2763,10 +2763,10 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     }
 
     println!(
-        "\n  [component order] 2 write-arm claims still in the tree; 3 reconcile arms re-key by the \
-         DECODED value; range reads use shard.zsets / shard.lists; 3 component-sorting readers need \
-         only a total order; SetMembers discards the component and HashLen reads len()\n  \
-         [component order] {} list elements came back in order across a reload",
+        "\n  [element name order] 2 write-arm claims still in the tree; 3 reconcile arms re-key by the \
+         DECODED value; range reads use shard.zsets / shard.lists; 3 element-name-sorting readers need \
+         only a total order; SetMembers discards the element name and HashLen reads len()\n  \
+         [element name order] {} list elements came back in order across a reload",
         reloaded.len()
     );
 }
@@ -2792,17 +2792,17 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 ///     below at source level with the input size checked first.
 ///   * `fold_delta_block_items` DOES restore the block items, so after a fold the bucket index holds
 ///     blocks for elements whose durable map entry was never written.
-///   * So on that path the component is the only copy of the member, which is exactly what #1989's
+///   * So on that path the element name is the only copy of the member, which is exactly what #1989's
 ///     `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name` exists to protect.
 ///
 /// # THE EXPERIMENT NO LONGER HAS TO MANUFACTURE ITS STATE, AND THE PROPOSAL IS SUPERSEDED
 ///
 /// It read: "Two zset members. One is dropped from the durable map only -- the shape a fold
-/// produces. Then its page entry's component is rewritten to a SIXTEEN-CHARACTER ordinal spelling,
+/// produces. Then its page entry's element name is rewritten to a SIXTEEN-CHARACTER ordinal spelling,
 /// which is what a 2-byte inline block id would leave behind: a name that identifies the block and
 /// carries no member. Reload."
 ///
-/// THE SECOND STEP IS GONE. `BlockIndex` has no component field, so an entry already carries no
+/// THE SECOND STEP IS GONE. `BlockIndex` has no element name field, so an entry already carries no
 /// member name -- there is nothing to overwrite and no width to make it. The fixture drops the
 /// member from the durable map and reloads, which is the whole of the shape a fold produces.
 ///
@@ -2817,7 +2817,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 ///
 ///   * The untouched member comes back -- the control, so a total loss cannot pass as this finding.
 ///   * The member whose name became an ordinal **does not**, and cannot: the reconcile's zset arm
-///     requires `component.len() > 16` and the durable map has nothing, so the element is skipped and
+///     requires `element_name.len() > 16` and the durable map has nothing, so the element is skipped and
 ///     there is no second source. Its bytes are still in the block PAYLOAD, and the reconcile
 ///     deliberately does not read blocks -- that is the whole reason a record carries its outcomes.
 ///
@@ -2908,14 +2908,14 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // the fold restoring the durable container maps "is the one change that would make an element
     // ordinal safe". That change has landed: the fold now restores all four from the member bytes
     // the delta record carries, so a folded element's identity no longer arrives by decoding the
-    // component its block was filed under. Inverted rather than deleted, because what has to keep
+    // element name its block was filed under. Inverted rather than deleted, because what has to keep
     // holding is that the fold DOES carry them.
     let carried = window("fn fold_carried_container_elements(");
     for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
         assert!(
             carried.contains(container),
             "the fold no longer restores {container}. The carry that lifted this stop condition has \
-             been removed, so an element a delta delivers is once again known only by its component \
+             been removed, so an element a delta delivers is once again known only by its element name \
              name -- read what changed rather than restoring the old assertion."
         );
     }
@@ -2955,8 +2955,8 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
 
     // The shape a fold produces for ONE element: a block entry with no durable map entry.
     //
-    // The component this used to look up (`let doomed_component = zset_name(&doomed);`) was the
-    // handle by which the rewrite below found the doomed block. There is no component to look up
+    // The element name this used to look up (`let doomed_element_name = zset_name(&doomed);`) was the
+    // handle by which the rewrite below found the doomed block. There is no element name to look up
     // and no rewrite to do -- see the block below for both.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
@@ -2975,12 +2975,12 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         // THE REWRITE IS GONE, AND THE STATE IT MANUFACTURED IS THE SHIPPED STATE NOW.
         //
         // Thirty-five lines stood here. They removed the doomed member's block entry from
-        // `block_index`, overwrote its component with a sixteen-character ordinal spelling -- "a
+        // `block_index`, overwrote its element name with a sixteen-character ordinal spelling -- "a
         // name that identifies the block and carries no member" -- re-inserted it, asserted exactly
         // one entry had been rewritten, and rebuilt the object lookup. All of it existed to
         // MANUFACTURE the state a 2-byte inline block id would leave behind.
         //
-        // `BlockIndex` has no component field, so that state cannot be manufactured and does not
+        // `BlockIndex` has no element name field, so that state cannot be manufactured and does not
         // need to be: an entry carries no member name of any width, ordinal or otherwise. What the
         // fixture still builds is the half that matters -- a block entry whose element the DURABLE
         // MAP does not hold, which is the shape a fold produces -- and that is the `remove` above,

@@ -68,12 +68,12 @@ pub(super) fn begin_write() {
 /// leaves no note behind gets cited later as though it still decided something. It was, in the
 /// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
 /// somebody reads to decide what an ack promises.
-pub(super) fn stage(object_id: u64, component: Option<&str>, bytes: &[u8]) {
+pub(super) fn stage(object_id: u64, element_name: Option<&str>, bytes: &[u8]) {
     // Charged here rather than at the two call sites inside `append_value`: this copy is what
     // carrying a block in its record COSTS, and a third caller staging a block would otherwise add
     // that cost to the store while adding nothing to the count.
     //
-    // The component's copy is charged to the same class for the same reason. It is a second,
+    // The element name's copy is charged to the same class for the same reason. It is a second,
     // smaller cost of carrying the block -- a hash field name is two or three bytes, a zset member
     // is `16 + 2n` characters -- and it belongs beside the block copy it travels with rather than
     // against whichever caller happened to render the name.
@@ -81,7 +81,7 @@ pub(super) fn stage(object_id: u64, component: Option<&str>, bytes: &[u8]) {
         STAGED.with(|staged| {
             staged.borrow_mut().push(StagedBlock {
                 object_id,
-                component: component.map(std::sync::Arc::from),
+                element_name: element_name.map(std::sync::Arc::from),
                 bytes: bytes.to_vec(),
             })
         });
@@ -185,9 +185,9 @@ type Registration = (LocalWriteAheadLogStore, u64, u64);
 /// block of a key to be written owns that key's entry and every earlier one becomes unreachable.
 pub(super) type BlockKey = (u64, Option<std::sync::Arc<str>>);
 
-/// Build a key without owning the component until the map needs it.
-fn block_key(object_id: u64, component: Option<&str>) -> BlockKey {
-    (object_id, component.map(std::sync::Arc::from))
+/// Build a key without owning the element name until the map needs it.
+fn block_key(object_id: u64, element_name: Option<&str>) -> BlockKey {
+    (object_id, element_name.map(std::sync::Arc::from))
 }
 
 /// The same block identity, folded into ONE `u64`, for the persisted map that survives a reload.
@@ -205,16 +205,16 @@ fn block_key(object_id: u64, component: Option<&str>) -> BlockKey {
 /// calls safe ("a stale entry costs a miss, never wrong bytes"), because the read falls through to
 /// the block store and, failing that, to a WAL replay that re-derives the block.
 ///
-/// FNV-1a over the id's bytes and then the component's, which is the mixing `stable_block_object_id`
-/// uses one level up, so a component that distinguishes two blocks there distinguishes them here.
-pub(super) fn wal_resident_key(object_id: u64, component: Option<&str>) -> u64 {
-    let Some(component) = component else {
+/// FNV-1a over the id's bytes and then the element name's, which is the mixing `stable_block_object_id`
+/// uses one level up, so an element name that distinguishes two blocks there distinguishes them here.
+pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u64 {
+    let Some(element_name) = element_name else {
         return object_id;
     };
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = FNV_OFFSET;
-    for byte in object_id.to_le_bytes().iter().chain(b":").chain(component.as_bytes()) {
+    for byte in object_id.to_le_bytes().iter().chain(b":").chain(element_name.as_bytes()) {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
@@ -231,7 +231,7 @@ pub(super) fn wal_resident_key(object_id: u64, component: Option<&str>) -> u64 {
 /// The element term is here for the same shape of reason one level down: two blocks of one object
 /// are two entries, not one, and which of them a read wants is a question the object id cannot be
 /// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
-/// INSIDE that record -- which is why [`StagedBlock::component`] exists as well.
+/// INSIDE that record -- which is why [`StagedBlock::element_name`] exists as well.
 fn registry() -> &'static Mutex<HashMap<(usize, ShardId, BlockKey), Registration>> {
     static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, BlockKey), Registration>>> =
         OnceLock::new();
@@ -260,7 +260,7 @@ pub(super) fn register_record(
                 (
                     block_store.store_id(),
                     shard_id,
-                    (block.object_id, block.component.clone()),
+                    (block.object_id, block.element_name.clone()),
                 ),
                 (store.clone(), log_id, sequence),
             );
@@ -277,14 +277,14 @@ pub(super) fn register_at(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
-    component: Option<&str>,
+    element_name: Option<&str>,
     log_id: u64,
     sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) {
     if let Ok(mut map) = registry().lock() {
         map.insert(
-            (block_store.store_id(), shard_id, block_key(object_id, component)),
+            (block_store.store_id(), shard_id, block_key(object_id, element_name)),
             (store.clone(), log_id, sequence),
         );
     }
@@ -366,13 +366,13 @@ pub(super) fn deregister(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) {
     if let Ok(mut map) = registry().lock() {
         map.remove(&(
             block_store.store_id(),
             shard_id,
-            block_key(object_id, component),
+            block_key(object_id, element_name),
         ));
     }
 }
@@ -396,12 +396,12 @@ pub(super) fn read_block(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) -> Option<Vec<u8>> {
     let (store, log_id, _) = {
         let map = registry().lock().ok()?;
         let owner = block_store.store_id();
-        map.get(&(owner, shard_id, block_key(object_id, component)))
+        map.get(&(owner, shard_id, block_key(object_id, element_name)))
             .or_else(|| map.get(&(owner, shard_id, block_key(object_id, None))))?
             .clone()
     };
@@ -418,7 +418,7 @@ pub(super) fn read_block(
         {
             if let Some(block) = blocks
                 .iter()
-                .find(|block| names_block(block, object_id, component))
+                .find(|block| names_block(block, object_id, element_name))
                 .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
             {
                 return Some(block.bytes.clone());
@@ -457,7 +457,7 @@ pub(super) fn read_block(
     }
     blocks
         .iter()
-        .find(|block| names_block(block, object_id, component))
+        .find(|block| names_block(block, object_id, element_name))
         .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
         .map(|block| block.bytes.clone())
 }
@@ -472,8 +472,8 @@ pub(super) fn read_block(
 ///
 /// Written once and used at both sites deliberately. The two were separate copies of a one-line
 /// predicate, which is how one of them would come to test one term while the other tested two.
-fn names_block(block: &StagedBlock, object_id: u64, component: Option<&str>) -> bool {
-    block.object_id == object_id && block.component.as_deref() == component
+fn names_block(block: &StagedBlock, object_id: u64, element_name: Option<&str>) -> bool {
+    block.object_id == object_id && block.element_name.as_deref() == element_name
 }
 
 /// Decoded staged blocks of recently read records, keyed by (log identity, shard, log id).

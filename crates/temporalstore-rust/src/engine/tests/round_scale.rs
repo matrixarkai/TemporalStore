@@ -852,7 +852,7 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
         "an Arc<str> is {arc_str_bytes} B and a String {string_bytes} B; this test's whole \
          premise is that the entry's text fields are shared rather than owned"
     );
-    // object_key + kind + component are the three text fields; the rest is the address and
+    // object_key + kind + element name are the three text fields; the rest is the address and
     // three flags. If a text field became owned this would grow by at least 8 B.
     let text_field_bytes = 3 * arc_str_bytes;
     assert!(

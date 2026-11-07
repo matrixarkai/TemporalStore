@@ -171,6 +171,7 @@ impl TemporalEngine {
             object_lifecycle,
             index_bytes,
             index_sha256,
+            checksum_version: BUCKET_DUMP_CHECKSUM_PROTOBUF,
             checksum: String::new(),
         };
         manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
@@ -516,6 +517,8 @@ impl TemporalEngine {
                         continue;
                     }
                     manifest.parent_manifest_id = None;
+                    // The checksum is re-derived under the manifest's OWN version: a legacy manifest
+                    // is detached and re-persisted (binary) still verifying under the JSON derivation.
                     manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
                     let detached_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest);
                     if let Ok(checksum) = detached_checksum {
@@ -1157,7 +1160,7 @@ impl TemporalEngine {
                 self.routing_bucket_for_key(manifest.shard_id, key)
             })
         };
-        // bucket_dump_entries_by_key keys pages by "kind:object_key:component:page_id",
+        // bucket_dump_entries_by_key keys pages by "kind:object_key:element name:page_id",
         // so a value update (which allocates a new page_id) shows up as a removed block
         // plus a new block for the same object. Classify at the object level (strip the
         // trailing :page_id): a block whose object still exists on the other side is a

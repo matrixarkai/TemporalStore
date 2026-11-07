@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -234,6 +235,77 @@ impl OllamaProvider {
         Ok(end)
     }
 
+    fn extraction_batch_prompt(
+        &self,
+        messages: &[ContextMessage],
+        start: usize,
+    ) -> Result<(usize, String), OllamaError> {
+        let max_end = messages
+            .len()
+            .min(start.saturating_add(self.config.max_batch_items));
+        let mut end = start;
+        let mut prompt = Vec::with_capacity(2);
+        prompt.push(b'[');
+
+        while end < max_end {
+            let message = &messages[end];
+            if message.text.len() > self.config.max_input_bytes {
+                return Err(OllamaError::InputTooLarge {
+                    index: end,
+                    bytes: message.text.len(),
+                    limit: self.config.max_input_bytes,
+                });
+            }
+
+            let item_start = prompt.len();
+            if end > start {
+                prompt.push(b',');
+            }
+            serde_json::to_writer(
+                &mut prompt,
+                &OllamaExtractionPromptMessage {
+                    source_message_id: message.message_id,
+                    role: match message.role {
+                        ContextRole::User => "user",
+                        ContextRole::Assistant => "assistant",
+                        ContextRole::Tool => "tool",
+                        ContextRole::System => "system",
+                    },
+                    text: &message.text,
+                },
+            )
+            .map_err(OllamaError::ContentJson)?;
+
+            let prompt_bytes = prompt.len().saturating_add(1);
+            let request_bytes = EXTRACTION_SYSTEM_PROMPT.len().saturating_add(prompt_bytes);
+            if prompt_bytes > self.config.max_input_bytes
+                || request_bytes > self.config.max_request_bytes
+            {
+                if end > start {
+                    prompt.truncate(item_start);
+                    break;
+                }
+                let (bytes, limit) = if prompt_bytes > self.config.max_input_bytes {
+                    (prompt_bytes, self.config.max_input_bytes)
+                } else {
+                    (request_bytes, self.config.max_request_bytes)
+                };
+                return Err(OllamaError::InputTooLarge {
+                    index: 1,
+                    bytes,
+                    limit,
+                });
+            }
+            end += 1;
+        }
+
+        prompt.push(b']');
+        Ok((
+            end,
+            String::from_utf8(prompt).expect("JSON serialization always produces UTF-8"),
+        ))
+    }
+
     fn embed(&self, texts: &[&str]) -> Result<EmbeddingBatch, OllamaError> {
         if texts.is_empty() {
             return Ok(EmbeddingBatch {
@@ -296,6 +368,15 @@ impl OllamaProvider {
         user_prompt: &str,
         schema: &Value,
     ) -> Result<Value, OllamaError> {
+        self.generate_structured(system_prompt, user_prompt, schema)
+    }
+
+    fn generate_structured<T: DeserializeOwned>(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &Value,
+    ) -> Result<T, OllamaError> {
         for (index, prompt) in [system_prompt, user_prompt].into_iter().enumerate() {
             if prompt.len() > self.config.max_input_bytes {
                 return Err(OllamaError::InputTooLarge {
@@ -356,15 +437,12 @@ impl OllamaProvider {
         let mut extracted = Vec::new();
         let mut start = 0usize;
         while start < messages.len() {
-            let end = self.batch_end(messages, start, |message| message.text.len())?;
-            let prompt = extraction_prompt(&messages[start..end])?;
-            let output: OllamaExtractionOutput =
-                serde_json::from_value(self.generate_structured_json(
-                    EXTRACTION_SYSTEM_PROMPT,
-                    &prompt,
-                    extraction_schema(),
-                )?)
-                .map_err(OllamaError::ContentJson)?;
+            let (end, prompt) = self.extraction_batch_prompt(messages, start)?;
+            let output: OllamaExtractionOutput = self.generate_structured(
+                EXTRACTION_SYSTEM_PROMPT,
+                &prompt,
+                extraction_schema(),
+            )?;
             for item in output.items {
                 let source = messages[start..end]
                     .iter()
@@ -435,30 +513,6 @@ fn context_id(tenant_id: u64, source_message_id: u64, text: &str) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-fn extraction_prompt(messages: &[ContextMessage]) -> Result<String, OllamaError> {
-    #[derive(Serialize)]
-    struct PromptMessage<'a> {
-        source_message_id: u64,
-        role: &'static str,
-        text: &'a str,
-    }
-
-    let rows = messages
-        .iter()
-        .map(|message| PromptMessage {
-            source_message_id: message.message_id,
-            role: match message.role {
-                ContextRole::User => "user",
-                ContextRole::Assistant => "assistant",
-                ContextRole::Tool => "tool",
-                ContextRole::System => "system",
-            },
-            text: &message.text,
-        })
-        .collect::<Vec<_>>();
-    serde_json::to_string(&rows).map_err(OllamaError::ContentJson)
-}
-
 fn extraction_schema() -> &'static Value {
     static SCHEMA: OnceLock<Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
@@ -493,6 +547,13 @@ struct OllamaEmbedRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct OllamaEmbedResponse {
     embeddings: Vec<Vec<f32>>,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaExtractionPromptMessage<'a> {
+    source_message_id: u64,
+    role: &'static str,
+    text: &'a str,
 }
 
 #[derive(Debug, Serialize)]

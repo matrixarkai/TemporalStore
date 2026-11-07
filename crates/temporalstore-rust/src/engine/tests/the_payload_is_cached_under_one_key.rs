@@ -54,7 +54,10 @@ fn the_payload_is_cached_under_one_key() {
     });
     assert!(write.status.ok, "write: {:?}", write.status);
 
-    let read = engine.execute(ExecuteRequest {
+    // Production reads use the durable entry point, which enables the lock-free read path. This
+    // assertion must cover that route: the ordinary path already avoids the logical response
+    // copy, so exercising only `execute` would leave a production-only duplicate invisible.
+    let read = engine.execute_durable(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet { key: key.to_string() },
     });

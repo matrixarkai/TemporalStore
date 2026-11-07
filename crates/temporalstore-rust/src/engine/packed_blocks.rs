@@ -85,14 +85,14 @@ fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
 /// Emitted from the producer rather than from its callers: eleven handlers append timestamped
 /// blocks -- feature series, sequences, control state, context events -- and each one having to
 /// remember to record the outcome is exactly how a kind ends up silently missing. The series is
-/// keyed by timestamp, so that is the component.
+/// keyed by timestamp, so that is the element name.
 /// How a recorded item names the entry a write created.
 ///
 /// Most timestamped series are keyed by the stored timestamp, so the timestamp alone names the
 /// entry. A context event is not: its block is timestamp-keyed but its index entry is keyed by the
 /// event id, so the timestamp alone names nothing and the identity has to travel with it. Packing
 /// both is what list and zset already do with their own keys.
-pub(super) fn timestamped_component(stored_key: u64, identity: Option<u64>) -> String {
+pub(super) fn timestamped_element_name(stored_key: u64, identity: Option<u64>) -> String {
     match identity {
         Some(identity) => format!("{stored_key:016x}{identity:016x}"),
         None => stored_key.to_string(),
@@ -111,11 +111,11 @@ fn stage_timestamped_outcomes(
         return;
     }
     for (timestamp_ms, address) in refs {
-        let component = timestamped_component(*timestamp_ms, identity);
+        let element_name = timestamped_element_name(*timestamp_ms, identity);
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: kind.to_string(),
             object_key: key.to_string(),
-            component: Some(component.clone()),
+            element_name: Some(element_name.clone()),
             object_id: stable_block_object_id(shard_id, kind, key),
             routing_bucket,
             address: Some(address.clone()),
@@ -138,11 +138,11 @@ fn stage_timestamped_removal(
     routing_bucket: u32,
     timestamp_ms: u64,
 ) {
-    let component = timestamp_ms.to_string();
+    let element_name = timestamp_ms.to_string();
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: key.to_string(),
-        component: Some(component.clone()),
+        element_name: Some(element_name.clone()),
         object_id: stable_block_object_id(shard_id, kind, key),
         routing_bucket,
         address: None,
@@ -153,20 +153,20 @@ fn stage_timestamped_removal(
     });
 }
 
-/// The component spelling for a removal that states a BOUNDARY: every instant up to and
+/// The element name spelling for a removal that states a BOUNDARY: every instant up to and
 /// including this one is gone.
 ///
 /// Shared by the writer and the apply path on purpose. The spelling IS the contract between them,
 /// and two copies of a literal is how a reader comes to disagree with its writer.
 pub(super) const TRIM_BOUNDARY_MARK: &str = "<=";
 
-pub(super) fn timestamped_boundary_component(through: u64) -> String {
+pub(super) fn timestamped_boundary_element_name(through: u64) -> String {
     format!("{TRIM_BOUNDARY_MARK}{through}")
 }
 
-/// The boundary a component states, or `None` when it states a single instant instead.
-pub(super) fn timestamped_boundary_through(component: Option<&str>) -> Option<u64> {
-    component?.strip_prefix(TRIM_BOUNDARY_MARK)?.parse::<u64>().ok()
+/// The boundary an element name states, or `None` when it states a single instant instead.
+pub(super) fn timestamped_boundary_through(element_name: Option<&str>) -> Option<u64> {
+    element_name?.strip_prefix(TRIM_BOUNDARY_MARK)?.parse::<u64>().ok()
 }
 
 /// Record that every timestamped point up to an instant is gone, in ONE item.
@@ -183,7 +183,7 @@ fn stage_timestamped_boundary_removal(
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: key.to_string(),
-        component: Some(timestamped_boundary_component(through)),
+        element_name: Some(timestamped_boundary_element_name(through)),
         object_id: stable_block_object_id(shard_id, kind, key),
         routing_bucket,
         address: None,

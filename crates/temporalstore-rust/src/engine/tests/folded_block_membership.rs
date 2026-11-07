@@ -131,7 +131,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     crate::engine::execute_on_shard::reset_tombstone_append_failure_count();
 
     let victim = members[3].clone();
-    let victim_component = hex::encode(&victim);
+    let victim_element_name = hex::encode(&victim);
     write(
         &engine,
         Command::SetRemove {
@@ -157,7 +157,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     // SIDE 1: what the engine SERVES as this object's membership -- the resident map.
     //
     // RE-ATTRIBUTED, AND THAT IS THE ONE EDIT THE WIDTH STEP FORCED IN THIS ARM. This side read
-    // `bucket_index_component_block_addresses` and recovered each member from the block entry's own
+    // `bucket_index_element_name_block_addresses` and recovered each member from the block entry's own
     // element name. `BlockIndex` has no element-name field now, so that walk answers for NO
     // members, and this arm's floor is what said so: "the live index names 0 of 12 members after
     // one removal, so the removal did not do what this fixture assumes". The removal was fine; the
@@ -230,8 +230,8 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
         "  the removed member: held by the resident map = {}, derived live from the blocks = {}, \
          NAMED REMOVED by the blocks = {}",
         served.contains(&victim),
-        derived.live.contains_key(&victim_component),
-        derived.removed.contains(&victim_component)
+        derived.live.contains_key(&victim_element_name),
+        derived.removed.contains(&victim_element_name)
     );
     println!(
         "  derivation failures: {} read, {} undecodable, {} unframed, {} unrenderable",
@@ -275,7 +275,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
 
     // THE INVERTED CONSTRAINT. This is the assertion whose flip is the result.
     assert!(
-        derived.removed.contains(&victim_component),
+        derived.removed.contains(&victim_element_name),
         "THE BLOCKS DO NOT STATE THE REMOVAL. This is the refutation #2028 recorded, back: a folded \
          block stays live for its other elements and nothing rewrote it, so the removed member is \
          still in it and a block-derived membership resurrects it. Either the removal did not append \
@@ -283,7 +283,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
          did not reach it."
     );
     assert!(
-        !derived.live.contains_key(&victim_component),
+        !derived.live.contains_key(&victim_element_name),
         "the blocks derive the removed member as LIVE as well as removed, so the tombstone did not \
          outrank the block it supersedes -- which is an ORDERING failure, not a missing tombstone"
     );
@@ -294,7 +294,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     let derived_members: BTreeSet<Vec<u8>> = derived
         .live
         .keys()
-        .filter_map(|component| hex::decode(component).ok())
+        .filter_map(|element_name| hex::decode(element_name).ok())
         .collect();
     assert_eq!(
         served, derived_members,
@@ -307,12 +307,12 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     let mismatched: BTreeMap<String, usize> = derived
         .live
         .iter()
-        .filter(|(component, value)| hex::decode(component).as_deref() != Ok(value.as_slice()))
-        .map(|(component, value)| (component.clone(), value.len()))
+        .filter(|(element_name, value)| hex::decode(element_name).as_deref() != Ok(value.as_slice()))
+        .map(|(element_name, value)| (element_name.clone(), value.len()))
         .collect();
     assert!(
         mismatched.is_empty(),
-        "{} derived element(s) carry a value that is not the member their component spells: {:?}",
+        "{} derived element(s) carry a value that is not the member their element name spells: {:?}",
         mismatched.len(),
         mismatched
     );

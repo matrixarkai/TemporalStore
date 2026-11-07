@@ -17,7 +17,8 @@ use std::time::Instant;
 use serde::Deserialize;
 use serde_json::json;
 use temporalstore_rust::{
-    retrieve_context, ContextModelProviderConfig, ContextProviderKind, ContextRetrieveRequest,
+    context_scope_nodes, remember_context_scope, remember_context_scope_node, retrieve_context,
+    ContextIndexRef, ContextModelProviderConfig, ContextProviderKind, ContextRetrieveRequest,
     ContextSourceKind, ContextTier, TemporalEngine,
 };
 
@@ -126,26 +127,45 @@ fn main() {
         eprintln!("stage=shard_loaded seconds={shard_load_seconds:.6}");
     }
 
-    let index_path = root.join(format!("{}-session-index.json", agent));
-    let index: SessionIndex = fs::read_to_string(&index_path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
+    let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
+    let catalog_hash = stable_hash64(&format!("{}:{}:{}", account, tenant, user));
+    let mut full_node_hashes = context_scope_nodes(&engine, 1, tenant_hash);
+    if full_node_hashes.is_empty() {
+        let index_path = root.join(format!("{}-session-index.json", agent));
+        let legacy_nodes = fs::read_to_string(&index_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<SessionIndex>(&text).ok())
+            .and_then(|index| index.sessions.get(&session).cloned())
+            .unwrap_or_default();
+        if !legacy_nodes.is_empty() {
+            let _ = remember_context_scope(&engine, 1, catalog_hash, &session);
+            for node_hash in legacy_nodes {
+                let _ = remember_context_scope_node(
+                    &engine,
+                    1,
+                    tenant_hash,
+                    &ContextIndexRef {
+                        primary_node_hash: node_hash,
+                        primary_event_time_ms: 1,
+                        event_id_hash: node_hash,
+                    },
+                );
+            }
+            full_node_hashes = context_scope_nodes(&engine, 1, tenant_hash);
+        }
+    }
     if trace_stages {
         eprintln!(
-            "stage=session_index_loaded path={} sessions={}",
-            index_path.display(),
-            index.sessions.len()
+            "stage=scope_index_loaded storage=temporalstore candidates={}",
+            full_node_hashes.len()
         );
     }
-    let full_node_hashes: Vec<u64> = index.sessions.get(&session).cloned().unwrap_or_default();
     let fallback_node_hashes: Vec<u64> = if max_nodes == 0 {
         full_node_hashes.clone()
     } else {
         full_node_hashes.iter().take(max_nodes).copied().collect()
     };
 
-    let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
     let emit_blocks = arg("--emit-blocks", "0") == "1";
 
     // Run a single retrieve at a given fanout cap and serialize the result.

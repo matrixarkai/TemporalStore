@@ -38,7 +38,7 @@ use crate::engine::state::{
 use crate::engine::storage_bucket_internals::stored_model_kind;
 use std::sync::Arc;
 
-fn block(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
+fn block(object: &str, element_name: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
     BlockIndex::new(
         stored_model_kind("hash"),
         ElementEntry::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
@@ -55,7 +55,7 @@ fn block(object: &str, component: Option<&str>, slab: u64, offset: u32, length: 
 /// call either, which is the one thing this change is removing -- so it hands back what the
 /// callers need.
 ///
-/// Two share an object and differ by component; the rest differ by address.
+/// Two share an object and differ by element name; the rest differ by address.
 fn fixture() -> Vec<(Arc<str>, BlockIndex)> {
     vec![
         (Arc::from("tenant/1/obj/aaa"), block("tenant/1/obj/aaa", Some("f-1"), 7, 0, 64)),
@@ -138,12 +138,12 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
 
     // --- NEGATIVE CONTROL TWO IS GONE: THERE IS NO NAME ON THE ENTRY TO PERTURB. ---
     //
-    // Two controls stood here. One renamed the entry's component and asserted the handle moved;
+    // Two controls stood here. One renamed the entry's element name and asserted the handle moved;
     // the other dropped it and asserted the same. Both existed because "the address and the name
     // are two different sources and an instrument blind to one is not blind to both" -- a real
     // argument while the entry had a name.
     //
-    // `BlockIndex` has no component field, so neither perturbation can be written. The handle
+    // `BlockIndex` has no element name field, so neither perturbation can be written. The handle
     // still hashes a name TERM -- `block_index_handle` passes the constant `None::<&str>`, which
     // keeps every handle bit-for-bit what it was -- but a constant cannot be perturbed, so a
     // control over it would move nothing and assert nothing. The controls that remain perturb the
@@ -204,7 +204,7 @@ fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
     for (object_key, entry) in fixture() {
         bucket.insert_block(&object_key, entry, &mut live);
     }
-    // THE THREE OBJECTS `fixture()` WRITES. Two of its four blocks are components of the same
+    // THE THREE OBJECTS `fixture()` WRITES. Two of its four blocks are element names of the same
     // object, which is why this is a list of three rather than four.
     let written = serde_json::to_value(&crate::engine::state::NodeNamedBy(
         &bucket,

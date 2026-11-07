@@ -52,6 +52,7 @@ mod stream_batch_methods;
 mod recovery_sweep_compact;
 #[path = "engine/engine_persistence.rs"]
 mod persistence;
+pub(crate) mod bucket_dump_codec;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
@@ -136,7 +137,8 @@ use self::hashing::*;
 use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
 use self::bucket_dump_io::*;
-use self::bucket_store::{read_bucket_index_value, bucket_index_component_block_addresses};
+use self::bucket_dump_codec::*;
+use self::bucket_store::{read_bucket_index_value, bucket_index_element_name_block_addresses};
 use self::state::*;
 use crate::block_store::BlockAppendRecord;
 // FOR `set` ON A SLOT. A migrated series map's writer records a point through the write
@@ -391,7 +393,33 @@ fn wal_resident_block_floor(limit: usize) -> usize {
     limit.saturating_sub(limit / 4).max(1)
 }
 
+#[derive(Default)]
+struct RequestShardInfo {
+    recovering: bool,
+    readonly: bool,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    table_name: Option<String>,
+}
+
 impl TemporalEngine {
+    fn request_shard_info(&self, shard_id: ShardId, copy_table_name: bool) -> RequestShardInfo {
+        let infos = self.infos.read().expect("info lock poisoned");
+        let Some(info) = infos.get(&shard_id) else {
+            return RequestShardInfo {
+                end_routing_bucket: u32::MAX,
+                ..RequestShardInfo::default()
+            };
+        };
+        RequestShardInfo {
+            recovering: info.recovering,
+            readonly: info.readonly,
+            start_routing_bucket: info.start_routing_bucket,
+            end_routing_bucket: info.end_routing_bucket,
+            table_name: copy_table_name.then(|| info.table_name.clone()),
+        }
+    }
+
     /// Rebuild the bucket first-index once, for a caller that deferred it across a window.
     ///
     /// Only meaningful after an `IngestReconstructWindow` has held off the per-record rebuilds;
@@ -545,7 +573,7 @@ impl TemporalEngine {
     ///
     /// The sweep's own report says what it REMOVED, which looks equally healthy whether the backlog
     /// behind it is draining or growing. This says which. The engine already decides how hard to
-    /// work from this number -- it becomes the expiry component of the storage cycle's pressure
+    /// work from this number -- it becomes the expiry element name of the storage cycle's pressure
     /// signal -- so publishing it only makes visible what is already being acted on.
     ///
     /// Every shard in one pass, for the same reason as the trailing distance: a caller inside the
@@ -855,43 +883,8 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         };
-        // While a shard is replaying its WAL on load it is present in `shards` but not yet
-        // serving (keeps it in PartitionLoadStage::LOADING). Reject client commands with
-        // a retryable status so a concurrent write cannot interleave with replay -- which
-        // would regress the WAL anchor and double-apply on the next restart. The replay
-        // thread re-drives records under replaying_wal(), which bypasses this gate.
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&request.shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
-            return ExecuteResponse {
-                status: Status::error(
-                    "shard_not_loaded",
-                    "shard is recovering (WAL replay in progress)",
-                ),
-                response: CommandResponse::Empty,
-            };
-        }
         let command = request.command;
-        if self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&request.shard_id)
-            .map(|info| info.readonly)
-            .unwrap_or(false)
-            && is_write_command(&command)
-        {
-            return ExecuteResponse {
-                status: Status::error("readonly_shard", "readonly shard rejects write command"),
-                response: CommandResponse::Empty,
-            };
-        }
+        let write_command = is_write_command(&command);
         let mut config = self
             .configs
             .read()
@@ -902,20 +895,38 @@ impl TemporalEngine {
         if let Some(async_storage) = async_storage_override {
             config.async_storage = async_storage;
         }
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&request.shard_id)
-            .cloned();
-        let start_routing_bucket = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end_routing_bucket = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        let table_admission_enabled = (if write_command {
+            config.table_write_qps
+        } else {
+            config.table_read_qps
+        })
+        .filter(|limit| *limit > 0)
+        .is_some();
+        // Read shard metadata once and copy only what command execution consumes. The shard URI
+        // is not on this path, and the table name is needed only by an active table-level limit.
+        let info = self.request_shard_info(request.shard_id, table_admission_enabled);
+        // While a shard is replaying its WAL on load it is present in `shards` but not yet
+        // serving (keeps it in PartitionLoadStage::LOADING). Reject client commands with
+        // a retryable status so a concurrent write cannot interleave with replay -- which
+        // would regress the WAL anchor and double-apply on the next restart. The replay
+        // thread re-drives records under replaying_wal(), which bypasses this gate.
+        if !replaying_wal() && info.recovering {
+            return ExecuteResponse {
+                status: Status::error(
+                    "shard_not_loaded",
+                    "shard is recovering (WAL replay in progress)",
+                ),
+                response: CommandResponse::Empty,
+            };
+        }
+        if info.readonly && write_command {
+            return ExecuteResponse {
+                status: Status::error("readonly_shard", "readonly shard rejects write command"),
+                response: CommandResponse::Empty,
+            };
+        }
+        let start_routing_bucket = info.start_routing_bucket;
+        let end_routing_bucket = info.end_routing_bucket;
         // Bulk backfill AND WAL replay defer this model-map -> bucket-index promotion
         // (an O(store) scan plus secondary-view rebuild) to a single reconstruct pass
         // (flush_shard_index() / replay_wal_into_shard()'s tail). Run per command it is
@@ -948,7 +959,6 @@ impl TemporalEngine {
                 shard.promote_scan_done = true;
             }
         }
-        let write_command = is_write_command(&command);
         // Exempt for exactly the reason the token-bucket limit at the top of this function is
         // exempt, and the reason is not symmetry for its own sake. A follower that refuses what
         // its leader committed diverges from the leader. A replay that refuses a record already
@@ -959,8 +969,12 @@ impl TemporalEngine {
         // Measured before this guard existed: a shard configured write_qps=3 applied 0 of 40
         // committed entries, and a replay of 40 records refused the 4th.
         if !raft_applying() && !replaying_wal() {
-            if let Err(status) =
-                self.check_admission(request.shard_id, write_command, &config, &info)
+            if let Err(status) = self.check_admission(
+                request.shard_id,
+                write_command,
+                &config,
+                info.table_name.as_deref(),
+            )
             {
                 return ExecuteResponse {
                     status,
@@ -1043,6 +1057,22 @@ impl TemporalEngine {
         );
         let context_embedding_command =
             Self::command_updates_context_embedding(&command).then(|| command.clone());
+        let read_recency_bucket = if object_keys.is_empty() {
+            command_read_key(&command)
+                .map(|key| block_routing_bucket(key, start_routing_bucket, end_routing_bucket))
+        } else {
+            None
+        };
+        // Writes retain the original command for their WAL record. Reads can transfer ownership
+        // straight into execution unless lazy expiry is armed somewhere on the shard, in which
+        // case a read may mutate state and must retain the same post-execution metadata as a
+        // write. The common feature-serving shard with no deadlines avoids a full command clone.
+        let retain_command = write_command || !shard.expires_at_ms().is_empty();
+        let (execution_command, retained_command) = if retain_command {
+            (command.clone(), Some(command))
+        } else {
+            (command, None)
+        };
 
         let outcome = execute_on_shard(
             &self.cache,
@@ -1054,22 +1084,27 @@ impl TemporalEngine {
             config.control_state_max_size(),
             config.control_distinct_sketch_enabled(),
                 config.trim_boundary_record_enabled(),
+            config.set_listing_from_map_enabled(),
             request.shard_id,
             start_routing_bucket,
             end_routing_bucket,
             shard,
-            command.clone(),
+            execution_command,
         );
         // LRU recency: record that this command touched its
         // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
         {
             let now = now_ms();
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                for_each_precomputed_touched_key(&command, &object_keys, |key| {
-                    let recency_bucket =
-                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                if let Some(recency_bucket) = read_recency_bucket {
                     shard.bucket_recency.insert(recency_bucket, now);
-                });
+                } else {
+                    for key in &object_keys {
+                        let recency_bucket =
+                            block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                        shard.bucket_recency.insert(recency_bucket, now);
+                    }
+                }
             });
         }
         // Set to the reserved WAL sequence when the concurrent-commit path defers this
@@ -1081,12 +1116,15 @@ impl TemporalEngine {
         // set on only one of the two paths.
         let mut appended_sequence: Option<u64> = None;
         if outcome.mutated {
+            let command = retained_command.expect(
+                "a mutating command must be retained for WAL and index-log metadata",
+            );
             // Captured here for the same reason as the keys above: the command is moved into
             // the WAL append before the index-log items are built, so anything the items need
             // from it has to be taken while it is still owned.
-            let removed_component = command_removed_component(&command);
-            let upsert_components = command_upsert_components(&command, shard);
-            // Taken here, beside the components, for the same ownership reason and -- for a list
+            let removed_element_name = command_removed_element_name(&command);
+            let upsert_element_names = command_upsert_element_names(&command, shard);
+            // Taken here, beside the element names, for the same ownership reason and -- for a list
             // push -- at the same point, because the sequence it files under is only knowable
             // post-apply.
             let touched_container_elements =
@@ -1095,23 +1133,11 @@ impl TemporalEngine {
                 rebuild_bucket_block_ownership(
                     request.shard_id,
                     shard,
-                    info.as_ref()
-                        .map(|info| info.start_routing_bucket)
-                        .unwrap_or_default(),
-                    info.as_ref()
-                        .map(|info| info.end_routing_bucket)
-                        .unwrap_or(u32::MAX),
+                    start_routing_bucket,
+                    end_routing_bucket,
                 );
             } else {
                 for object_key in &object_keys {
-                    let start_routing_bucket = info
-                        .as_ref()
-                        .map(|info| info.start_routing_bucket)
-                        .unwrap_or_default();
-                    let end_routing_bucket = info
-                        .as_ref()
-                        .map(|info| info.end_routing_bucket)
-                        .unwrap_or(u32::MAX);
                     // ONE MARKING PATH, CALLED ONCE.
                     //
                     // This site used to do four things -- compute the routing bucket, fetch the
@@ -1159,15 +1185,47 @@ impl TemporalEngine {
             // arm and reports whether it found anything, so a write it does not cover still gets
             // the rebuild rather than a quietly stale index. An empty bucket_map still rebuilds:
             // maintenance updates an index, it does not construct one.
+            //
+            // A HASH WRITE FILES THE FIELDS IT WROTE AND NOTHING ELSE. The whole-object sync
+            // re-files every field the hash holds: its "already filed?" filter asks a lookup that
+            // resolves no named element, so it never filters, and one field write cost the fields
+            // the hash already had -- 571 allocations at 100 fields, 5,080 at 1,000, 87% of the
+            // write at 100. The batch path has filed only what a command wrote since it existed.
+            // A command not named here takes the whole-object sync exactly as before, so a new
+            // hash command costs more rather than leaving a field unfiled.
+            let narrow_hash_sync = !shard.bucket_index.bucket_map.is_empty()
+                && match &command {
+                    Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => {
+                        storage_bucket_internals::sync_written_hash_fields(
+                            shard,
+                            request.shard_id,
+                            key,
+                            &[field.as_str()],
+                        )
+                    }
+                    Command::HashMultiSet { key, entries }
+                    | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
+                        let fields: Vec<&str> =
+                            entries.iter().map(|(field, _)| field.as_str()).collect();
+                        storage_bucket_internals::sync_written_hash_fields(
+                            shard,
+                            request.shard_id,
+                            key,
+                            &fields,
+                        )
+                    }
+                    _ => false,
+                };
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
                 && !object_keys.is_empty()
-                && object_keys.iter().all(|object_key| {
-                    storage_bucket_internals::sync_context_blocks_for_object(
-                        shard,
-                        request.shard_id,
-                        object_key,
-                    )
-                });
+                && (narrow_hash_sync
+                    || object_keys.iter().all(|object_key| {
+                        storage_bucket_internals::sync_context_blocks_for_object(
+                            shard,
+                            request.shard_id,
+                            object_key,
+                        )
+                    }));
             let rebuilt_bucket_index = !maintained_bucket_index
                 && !defer_bucket_index_reconstruct()
                 // A command that writes no block cannot have changed the block index, so rebuilding it
@@ -1342,7 +1400,7 @@ impl TemporalEngine {
                                     // elements of one key files several entries here.
                                     block_in_wal::wal_resident_key(
                                         block.object_id,
-                                        block.component.as_deref(),
+                                        block.element_name.as_deref(),
                                     ),
                                     crate::engine::state::WalResidentBlock {
                                         log_id,
@@ -1444,14 +1502,14 @@ impl TemporalEngine {
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
                 // is gone); the base is materialized at compaction/unload, the funnel serves
                 // the live in-memory shard between them, and cold reload folds base + deltas.
-                let (items, upsert_record) = match upsert_components
+                let (items, upsert_record) = match upsert_element_names
                     .as_ref()
                 {
-                    Some(components) => (
+                    Some(element_names) => (
                         collect_upsert_index_items(
                             shard,
                             request.shard_id,
-                            components,
+                            element_names,
                             start_routing_bucket,
                             end_routing_bucket,
                         ),
@@ -1463,11 +1521,11 @@ impl TemporalEngine {
                             &delta_command_keys,
                             start_routing_bucket,
                             end_routing_bucket,
-                            // A removal that can name its component states that one block, not
+                            // A removal that can name its element name states that one block, not
                             // every block the object holds.
-                            removed_component
+                            removed_element_name
                                 .as_ref()
-                                .map(|(kind, component)| (*kind, component.as_deref())),
+                                .map(|(kind, element_name)| (*kind, element_name.as_deref())),
                         ),
                         false,
                     ),
@@ -1503,7 +1561,7 @@ impl TemporalEngine {
                 // the write whose element the fold could not restore -- answers no. The gate's own
                 // reasoning is that an add "leaves nothing to resurrect: replay rebuilds the same
                 // membership from the same blocks", which is true only because rebuilding decodes
-                // the member out of the component. This is what stops that being load-bearing.
+                // the member out of the element name. This is what stops that being load-bearing.
                 //
                 // It costs one blob per touched key holding one entry per touched element, so it
                 // does not reintroduce the whole-collection capture that gate exists to avoid.
@@ -1763,23 +1821,24 @@ impl TemporalEngine {
                         response: CommandResponse::Bytes { value: None },
                     });
                 };
+                // Keep the payload under its physical block key only. The ordinary StringGet
+                // path already does this: a second encoded response under the logical string key
+                // is memory-only, has one reader, and doubles resident payload bytes. Reading the
+                // block cache here gives the lock-free path the same single-copy layout and keeps
+                // persistent-tier refill available.
                 Some(ExecuteResponse {
                     status: Status::ok(),
-                    response: cached_response(
-                        &self.cache,
-                        CacheKey::string(request.shard_id, key),
-                        || CommandResponse::Bytes {
-                            value: read_block_bytes(
-                                &self.cache,
-                                &self.block_store,
-                                request.shard_id,
-                                &address,
-                                // A string block IS its whole object, so the element is `None`.
-                                BlockIdentity::of(request.shard_id, "string", key, None),
-                                Some(routing_bucket),
-                            ),
-                        },
-                    ),
+                    response: CommandResponse::Bytes {
+                        value: read_block_bytes(
+                            &self.cache,
+                            &self.block_store,
+                            request.shard_id,
+                            &address,
+                            // A string block IS its whole object, so the element is `None`.
+                            BlockIdentity::of(request.shard_id, "string", key, None),
+                            Some(routing_bucket),
+                        ),
+                    },
                 })
             }
             FastPathRead::Hash {
@@ -1835,9 +1894,9 @@ impl TemporalEngine {
         shard_id: ShardId,
         write_command: bool,
         config: &Config,
-        info: &Option<ShardInfo>,
+        table_name: Option<&str>,
     ) -> Result<(), Status> {
-        let limits = admission_limits(shard_id, write_command, config, info);
+        let limits = admission_limits(shard_id, write_command, config, table_name);
         if limits.is_empty() {
             return Ok(());
         }
@@ -1915,6 +1974,18 @@ impl TemporalEngine {
     /// Append one config-log entry `{after_seq, config}` and fsync it. `after_seq` is the WAL
     /// sequence the config became effective AFTER (it applies to writes with sequence >
     /// after_seq). Append-only + fsync'd so a crash cannot lose an acked config change.
+    ///
+    /// WRITTEN AS ONE BINARY FRAME: a length, a CRC32C and a protobuf entry. There is no JSON
+    /// encode path here; `config_log_entries` keeps its JSON arm for the lines already on disk.
+    ///
+    /// A TORN TAIL IS CUT OFF BEFORE APPENDING. A line could be glued onto a partial line and cost
+    /// only that line. A frame appended behind a partial frame is swallowed by it: the partial
+    /// frame declares more bytes than it has, so the reader would take the new entry as the rest of
+    /// the old one, fail its checksum, and stop -- and the entry it lost is the NEWEST config. So
+    /// the tail is walked first and anything after the last whole entry is truncated, which is safe
+    /// because an entry that did not finish was never acknowledged (the caller returns only after
+    /// the fsync below). A frame that is complete but fails its checksum is NOT cut: that is
+    /// committed corruption, and the file is left intact for an operator.
     pub(super) fn append_config_log_entry(
         &self,
         shard_id: ShardId,
@@ -1927,13 +1998,24 @@ impl TemporalEngine {
             after_seq,
             config: config.clone(),
         };
-        let mut bytes = serde_json::to_vec(&entry)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        bytes.push(b'\n');
+        let path = self.config_log_path(shard_id);
+        let existing = std::fs::read(&path).unwrap_or_default();
+        let walk = walk_config_log(&existing, shard_id);
+        if walk.torn_tail {
+            let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+            file.set_len(walk.good_end as u64)?;
+            file.sync_all()?;
+        }
+        let mut bytes = Vec::new();
+        // A complete JSON line with no terminator would have the frame glued onto it.
+        if walk.unterminated_json_tail {
+            bytes.push(b'\n');
+        }
+        bytes.extend(encode_config_log_frame(&entry));
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.config_log_path(shard_id))?;
+            .open(&path)?;
         file.write_all(&bytes)?;
         file.flush()?;
         file.sync_data()?;
@@ -1943,16 +2025,13 @@ impl TemporalEngine {
     /// Read the config-log entries for a shard, sorted by ascending `after_seq` (stable). Empty
     /// when the shard has no config-log (no single-barrier config change was ever persisted).
     pub(super) fn config_log_entries(&self, shard_id: ShardId) -> Vec<ConfigLogEntry> {
-        let path = self.config_log_path(shard_id);
-        let contents = match std::fs::read_to_string(&path) {
-            Ok(contents) => contents,
+        // BYTES, NOT A STRING: a framed entry's payload is binary and is not required to be valid
+        // UTF-8, so `read_to_string` would refuse the whole file for one such entry.
+        let data = match std::fs::read(self.config_log_path(shard_id)) {
+            Ok(data) => data,
             Err(_) => return Vec::new(),
         };
-        let mut entries: Vec<ConfigLogEntry> = contents
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| serde_json::from_str::<ConfigLogEntry>(line).ok())
-            .collect();
+        let mut entries = walk_config_log(&data, shard_id).entries;
         entries.sort_by_key(|entry| entry.after_seq);
         entries
     }
@@ -2712,14 +2791,14 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// 3 IS THAT CASE, EXACTLY AS THE SENTENCE ABOVE DESCRIBES IT, and this is why the bump is not
 /// optional. `oi` is a `u64` before and a `u64` after, so an index written by the previous binary
 /// decodes without complaint and every value in it is intact. What moved is what the number
-/// MEANS: it used to name a block (shard, kind, key, component) and now names an object
+/// MEANS: it used to name a block (shard, kind, key, element name) and now names an object
 /// (shard, kind, key).
 ///
 /// Nothing in the decode can see that. `BlockAddress::try_from` compares the stored `g` against
 /// `block_id.or(object_id)`, and BOTH sides of that comparison come off the wire -- an old row
 /// agrees with itself and is admitted. The disagreement appears later and elsewhere:
 /// `bucket.object_index` is filled from `address.object_id()`, the STORED value, so it would hold
-/// component-folded ids, while `validate_bucket_ownership_index_from_entries` recomputes
+/// element-name-folded ids, while `validate_bucket_ownership_index_from_entries` recomputes
 /// `stable_block_object_id(shard, kind, key)` under the new rule and asks
 /// `object_index.contains(..)`. Every container block in such a store answers no. That runs on a
 /// recovery path (`recovery_sweep_compact`, four call sites), not in a test.
@@ -2802,20 +2881,20 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// with `!=` -- but only in its MSGPACK arm, and `persistence.rs` compares with `<`. #2051 tracks
 /// that asymmetry and the decision it needs; nothing here depends on the equality claim.
 ///
-/// 8 -> 9 WHEN A ZSET COMPONENT STOPPED SPELLING THE SCORE. `state::block_index_written_key`
-/// renders `component` into the map key the served index is serialized under, and a zset entry's
-/// `component` moved from `{biased:016x}` then the member in hex to the member alone -- so a block
+/// 8 -> 9 WHEN A ZSET ELEMENT NAME STOPPED SPELLING THE SCORE. `state::block_index_written_key`
+/// renders `element_name` into the map key the served index is serialized under, and a zset entry's
+/// `element_name` moved from `{biased:016x}` then the member in hex to the member alone -- so a block
 /// that used to render `"0000000000000000<member>"` now renders `"<member>"`, a different key under
-/// the same named map. The decode itself stays clean either way: `component` keeps its `String`
+/// the same named map. The decode itself stays clean either way: `element_name` keeps its `String`
 /// type on both sides of the change, so an old-stamped index still deserializes, and what disagrees
 /// is what the text MEANS, on the recovery path that reads it back as a block's element -- the same
 /// shape the three bumps above this one each describe. The positional index log is untouched: it
 /// keeps its slot and refuses only on length mismatch, so nothing there needed a bump to stay
 /// correct. `wal_proto` is untouched too -- the score rides the WAL outcome's existing `value` byte
-/// slot now, never the component, and that slot's presence was already optional on the wire.
+/// slot now, never the element name, and that slot's presence was already optional on the wire.
 ///
 /// 9 -> 11 WHEN A TOMBSTONE'S ELEMENT NAME LEFT THE ENTRY. A tombstone entry no longer carries
-/// `component` -- it files `None` -- and the element it is about is a new key on the BUCKET NODE,
+/// `element_name` -- it files `None` -- and the element it is about is a new key on the BUCKET NODE,
 /// `tombstone_elements`. Both halves move the served index: the entry's rendered key drops the
 /// element text it used to carry (`block_index_written_key`), and the node grows a key a reader
 /// without this change does not know. The named served index DROPS an undeclared key silently, so
@@ -2835,7 +2914,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// stale value falls through to Accepted.
 ///
 /// 11 -> 12 WHEN HASH AND ZSET JOINED THE BLOCK-NAMED SET. `block_index_written_key` renders
-/// `component` into the map key the served index is serialized under, so a hash block that used to
+/// `element_name` into the map key the served index is serialized under, so a hash block that used to
 /// render under its field name and a zset block that used to render under its member now render
 /// under neither -- a different key in the same named map, for two more kinds. Same shape as 8 -> 9,
 /// which moved that key for zset alone, and the same reason a bump is needed rather than optional:
@@ -2846,9 +2925,9 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 ///
 /// AND REMOVING THE ELEMENT-NAME FIELD OWES NO FURTHER BUMP. TWELVE IS ENOUGH, AND THIS IS WHY.
 ///
-/// The step after the one above took `BlockIndex::component` off the entry altogether -- 56 bytes
+/// The step after the one above took `BlockIndex::element_name` off the entry altogether -- 56 bytes
 /// of field to 40. That is a change to the stored form: the named served index stops writing a
-/// `"component"` key, and `block_index_written_key` renders the element slot of the map key empty.
+/// `"element_name"` key, and `block_index_written_key` renders the element slot of the map key empty.
 /// Both are exactly the kind of movement the four paragraphs above each paid a number for, so the
 /// question is a real one rather than a formality.
 ///
@@ -2880,7 +2959,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// that distinction is written into each of them in `engine::tests::block_entry_names`. All three
 /// HAND-CONSTRUCT an element name: two canonicalise a stored row that carries one so they can
 /// assert what this binary writes back, and the third goldened a `BlockIndex` built with a
-/// component argument that the struct literal had already stopped using. The combination they
+/// element name argument that the struct literal had already stopped using. The combination they
 /// exercise -- an element name beside a CURRENT stamp -- is one no production binary has ever
 /// written, which is the whole reason the floor argument above holds.
 ///
@@ -3483,11 +3562,14 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// from tests, which is where the claim "both shapes still load" has to be proved.
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
     if index_container_codec() == INDEX_CODEC_ZSTD_MSGPACK {
-        // A binary payload only works from the struct itself, so the version-stamping path (which
-        // patches a `Value`) keeps to JSON; both still land inside the same container.
-        if let Some(encoded) = encode_index_msgpack(shard) {
-            return encoded;
-        }
+        // NO FALLBACK TO JSON. This used to fall through to the JSON arm below when the binary
+        // encode returned `None`. The JSON arm already assumed the shard serialises (it ends in
+        // the same `expect`), and a `ShardState` that msgpack refuses and JSON accepts is not a
+        // shape any type in it can produce, so the fall-through was a second way to write the
+        // image that nothing could take. The JSON writes left in this file are chosen, not fallen
+        // into: the `TS_INDEX_CODEC=zstd-json` setting below, and `serialize_index`'s
+        // stale-version arm, which is a separate decision.
+        return encode_index_msgpack(shard).expect("shard index should serialize");
     }
     wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
 }
@@ -3607,11 +3689,11 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
 /// touched key. Deleted blocks ride as `deleted` tombstones so a fold applies the removal.
 /// Empty when the command has no object keys (e.g. a context rebuild command); the caller
 /// still appends the record so the index-log sequence advances per write.
-/// The (kind, object_key, component) writes a command performs when -- and only when -- every
-/// one of them lands through the block-upsert path (one new block per component, predecessor
+/// The (kind, object_key, element name) writes a command performs when -- and only when -- every
+/// one of them lands through the block-upsert path (one new block per element name, predecessor
 /// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
 /// rewrites), and the caller must fall back to the whole-object snapshot record.
-fn command_upsert_components(
+fn command_upsert_element_names(
     command: &Command,
     shard: &ShardState,
 ) -> Option<Vec<(&'static str, String, Option<String>)>> {
@@ -3630,7 +3712,7 @@ fn command_upsert_components(
             Some(vec![("hash", key.clone(), Some(field.clone()))])
         }
         Command::StringSet { key, .. } => Some(vec![("string", key.clone(), None)]),
-        // A feature append writes ONE NEW BLOCK PER POINT, and each one's component is that
+        // A feature append writes ONE NEW BLOCK PER POINT, and each one's element name is that
         // point's timestamp -- which is in the command. Same shape as the zset arm below, and it
         // was in the `None` bucket until now, so every append wrote a record holding one
         // `IndexItem` per point the series already had.
@@ -3650,7 +3732,7 @@ fn command_upsert_components(
         // takes the whole-object record whatever this arm returns.
         //
         // DEDUPED, because `sorted_feature_points` collapses repeated timestamps before the write
-        // and the components have to be the ones that actually landed.
+        // and the element names have to be the ones that actually landed.
         Command::FeatureAppend { key, points } => {
             let mut seen = std::collections::BTreeSet::new();
             Some(
@@ -3661,7 +3743,7 @@ fn command_upsert_components(
                         (
                             "feature",
                             key.clone(),
-                            Some(crate::engine::packed_blocks::timestamped_component(
+                            Some(crate::engine::packed_blocks::timestamped_element_name(
                                 point.timestamp_ms,
                                 None,
                             )),
@@ -3680,7 +3762,7 @@ fn command_upsert_components(
                         (
                             "feature",
                             key.clone(),
-                            Some(crate::engine::packed_blocks::timestamped_component(
+                            Some(crate::engine::packed_blocks::timestamped_element_name(
                                 point.timestamp_ms,
                                 None,
                             )),
@@ -3689,19 +3771,19 @@ fn command_upsert_components(
                     .collect(),
             )
         }
-        // A zset add writes exactly one component, and it is derivable from the command. Declaring
+        // A zset add writes exactly one element name, and it is derivable from the command. Declaring
         // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
         Command::ZSetAdd { key, member, score: _ } => Some(vec![(
             "zset",
             key.clone(),
-            Some(crate::engine::execute_on_shard::zset_component(member)),
+            Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )]),
         Command::SetAdd { key, member } => {
             Some(vec![(
                 "set",
                 key.clone(),
-                Some(crate::engine::execute_on_shard::set_component(member)),
+                Some(crate::engine::execute_on_shard::set_element_name(member)),
             )])
         }
         // A push files its block under its sequence number, which is only knowable once the
@@ -3727,29 +3809,29 @@ fn command_upsert_components(
 }
 
 /// Build the exact index items for an upsert record from post-apply shard state: each written
-/// component's address is read back from the map the write just updated, so the logged block is
-/// precisely the one a reload must serve. A component absent from the map (its append failed)
+/// element name's address is read back from the map the write just updated, so the logged block is
+/// precisely the one a reload must serve. An element name absent from the map (its append failed)
 /// is skipped -- it produced no block to pin.
 fn collect_upsert_index_items(
     shard: &ShardState,
     shard_id: ShardId,
-    components: &[(&'static str, String, Option<String>)],
+    element_names: &[(&'static str, String, Option<String>)],
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> Vec<crate::index_log::IndexItem> {
-    let mut items = Vec::with_capacity(components.len());
-    for (kind, object_key, component) in components {
-        let address = match (*kind, component) {
+    let mut items = Vec::with_capacity(element_names.len());
+    for (kind, object_key, element_name) in element_names {
+        let address = match (*kind, element_name) {
             ("hash", Some(field)) => shard
                 .hashes
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
             ("string", None) => shard.string_address(object_key.as_str()),
-            // THE ARM #2232 ASSUMED WAS HERE. That change made `command_upsert_components` name a
-            // component for `FeatureAppend` so an append takes the O(1) delta path instead of
-            // snapshotting the whole series -- and this match, which turns a component back into
-            // the address the item carries, had no `feature` arm. A declared feature component
+            // THE ARM #2232 ASSUMED WAS HERE. That change made `command_upsert_element_names` name a
+            // element name for `FeatureAppend` so an append takes the O(1) delta path instead of
+            // snapshotting the whole series -- and this match, which turns an element name back into
+            // the address the item carries, had no `feature` arm. A declared feature element name
             // therefore fell to `_ => None`, the item was dropped, and the delta record named no
             // block for the append at all. Part of that change's measured byte saving was the
             // record becoming empty.
@@ -3757,13 +3839,13 @@ fn collect_upsert_index_items(
             // THE SUITE ALREADY SPELLED THIS HAZARD OUT, for the hash pairing, in the failure
             // message of `replay_under_the_gate`: `collect_upsert_index_items` "would fall to its
             // `_ => None` arm, build no item, and the write would never reach the index log".
-            // Declaring a component is half of a pair; this is the other half, and the test below
+            // Declaring an element name is half of a pair; this is the other half, and the test below
             // this function's own guard now asserts both halves together.
             //
-            // The component is the point's stored timestamp in decimal -- `timestamped_component`
+            // The element name is the point's stored timestamp in decimal -- `timestamped_element_name`
             // with no identity is `stored_key.to_string()` -- so the series is read at exactly the
             // key the write filed it under.
-            ("feature", Some(component)) => component
+            ("feature", Some(element_name)) => element_name
                 .parse::<u64>()
                 .ok()
                 .and_then(|at| {
@@ -3773,10 +3855,10 @@ fn collect_upsert_index_items(
                         .and_then(|series| series.get(at))
                         .cloned()
                 }),
-            // `zset_component` is `member_component(member)` -- one tag byte then the member,
+            // `zset_element_name` is `member_element_name(member)` -- one tag byte then the member,
             // with the score long since off this string -- so the member the map is keyed by is
-            // recoverable from the whole of it, in EITHER spelling, by `member_from_component`.
-            ("zset", Some(component)) => container_blocks::member_from_component(component)
+            // recoverable from the whole of it, in EITHER spelling, by `member_from_element_name`.
+            ("zset", Some(element_name)) => container_blocks::member_from_element_name(element_name)
                 .and_then(|member| {
                     shard
                         .zsets
@@ -3784,11 +3866,11 @@ fn collect_upsert_index_items(
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
                 }),
-            // `set_component(member)` is the component a set add files its block under, so
-            // the member the map is keyed by is recoverable from the component itself.
+            // `set_element_name(member)` is the element name a set add files its block under, so
+            // the member the map is keyed by is recoverable from the element name itself.
             // `{biased:016x}` of the entry's sequence, so the key the list map is keyed by
-            // is recoverable from the component it was filed under.
-            ("list", Some(component)) => u64::from_str_radix(component, 16)
+            // is recoverable from the element name it was filed under.
+            ("list", Some(element_name)) => u64::from_str_radix(element_name, 16)
                 .ok()
                 .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
                 .and_then(|seq| {
@@ -3798,7 +3880,7 @@ fn collect_upsert_index_items(
                         .and_then(|entries| entries.get(&seq))
                         .cloned()
                 }),
-            ("set", Some(component)) => container_blocks::member_from_component(component)
+            ("set", Some(element_name)) => container_blocks::member_from_element_name(element_name)
                 .and_then(|member| {
                     shard
                         .sets
@@ -3855,17 +3937,17 @@ fn collect_upsert_index_items(
     items
 }
 
-/// The (kind, component) a typed removal deleted, when the command names it outright.
+/// The (kind, element name) a typed removal deleted, when the command names it outright.
 ///
-/// Only commands whose component is derivable from their own fields appear here. ZSetRemove's
-/// component folds in the score it is deleting, and ListPop's is the sequence it just took --
+/// Only commands whose element name is derivable from their own fields appear here. ZSetRemove's
+/// element name folds in the score it is deleting, and ListPop's is the sequence it just took --
 /// neither survives the operation, so neither can be named from the command afterwards. Those
-/// keep restating the whole object until the component is carried out of the arm.
-fn command_removed_component(command: &Command) -> Option<(&'static str, Option<String>)> {
+/// keep restating the whole object until the element name is carried out of the arm.
+fn command_removed_element_name(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
         Command::SetRemove { member, .. } => Some((
             "set",
-            Some(crate::engine::execute_on_shard::set_component(member)),
+            Some(crate::engine::execute_on_shard::set_element_name(member)),
         )),
         Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
         _ => None,
@@ -3881,13 +3963,13 @@ fn collect_command_index_items(
     collect_command_index_items_for(shard, command_keys, start_routing_bucket, end_routing_bucket, None)
 }
 
-/// The same, restricted to one component when the command can name what it touched.
+/// The same, restricted to one element name when the command can name what it touched.
 ///
 /// Without a filter this states EVERY block the object holds, and each item costs four string
 /// allocations -- so a removal from a 3,200-member collection built 3,200 items to record that
-/// one member went away, measured at ~2.5 MB per call. A command that can name its component
+/// one member went away, measured at ~2.5 MB per call. A command that can name its element name
 /// states that one block instead, which is what the add path already does through
-/// `command_upsert_components`.
+/// `command_upsert_element_names`.
 ///
 /// The block is still found: a typed removal marks its block deleted in the bucket index rather
 /// than dropping it, so the item this emits carries `deleted: true` and the deletion is recorded
@@ -3944,13 +4026,13 @@ fn collect_command_index_items_for(
             if !keys.contains(beside.object_key.as_ref()) {
                 continue;
             }
-            if let Some((kind, component)) = only {
+            if let Some((kind, element_name)) = only {
                 // NARROWED BY THE ENTRY'S OWN NAME, WHICH IT NO LONGER HAS. This read
-                // `block.component.as_deref() != component`; every entry's name was already `None`,
+                // `block.element_name.as_deref() != element_name`; every entry's name was already `None`,
                 // so the surviving question is whether the CALLER asked for a named element at
                 // all. It did not match a named element before this change and it does not now --
-                // `component.is_some()` is the same predicate with the entry's constant folded in.
-                if block.model_id().as_str() != kind || component.is_some() {
+                // `element_name.is_some()` is the same predicate with the entry's constant folded in.
+                if block.model_id().as_str() != kind || element_name.is_some() {
                     continue;
                 }
             }
@@ -3968,10 +4050,10 @@ fn collect_command_index_items_for(
                 // still carries whatever name it was given.
                 //
                 // RESOLVED ACROSS TWO CHANGES TO ONE ARGUMENT LIST, and they are orthogonal. Main
-                // retired the `component` field from the row entirely, so there is nothing to pass
+                // retired the `element_name` field from the row entirely, so there is nothing to pass
                 // for it. This branch changed what `object_id` TAKES -- the identity arrives as a
                 // parameter because the entry is losing its own copy -- which is a change to the
-                // call, not to the row. Keeping both means: no component term, and the key handed
+                // call, not to the row. Keeping both means: no element name term, and the key handed
                 // in explicitly.
                 object_id: block.object_id(shard_id, beside.object_key),
                 deleted: block.deleted(),
@@ -4111,7 +4193,7 @@ fn delta_key_state_change(
 }
 
 /// One container element a write added or replaced, named by the identity its DURABLE map is keyed
-/// by -- member bytes, list sequence, hash field -- and not by the component its block was filed
+/// by -- member bytes, list sequence, hash field -- and not by the element name its block was filed
 /// under.
 ///
 /// PER ELEMENT, AND THAT IS THE WHOLE POINT. `apply_key_states` folds twelve maps and restores
@@ -4144,9 +4226,9 @@ impl TouchedContainerElement {
 
 /// The container elements a command added or replaced, read from the command's own fields.
 ///
-/// THE IDENTITY COMES FROM THE COMMAND, NOT FROM THE COMPONENT, and that is the difference between
-/// this and `command_upsert_components` beside it. That function answers the same question in the
-/// block index's vocabulary and spells each element as a component -- `member_component(member)`
+/// THE IDENTITY COMES FROM THE COMMAND, NOT FROM THE ELEMENT NAME, and that is the difference between
+/// this and `command_upsert_element_names` beside it. That function answers the same question in the
+/// block index's vocabulary and spells each element as an element name -- `member_element_name(member)`
 /// for a set and for a zset alike, the score having left the zset string. Recovering the member
 /// back
 /// out of one of those is what the reconcile does, and it is precisely the dependency this removes:
@@ -4188,7 +4270,7 @@ fn command_touched_container_elements(
             })
             .collect(),
         // A push files its element under a sequence that is only knowable once the write has
-        // landed, so this reads it back exactly as `command_upsert_components` does: post-apply the
+        // landed, so this reads it back exactly as `command_upsert_element_names` does: post-apply the
         // pushed element is the list's FIRST entry for a left push and its LAST for a right one.
         Command::ListPush { key, left, .. } => shard
             .lists
@@ -4919,7 +5001,7 @@ fn fold_delta_block_items(
         Vec::new();
     let mut filed_blocks: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
     if upsert {
-        // Upsert record: each item replaces exactly its (kind, object, component) predecessor,
+        // Upsert record: each item replaces exactly its (kind, object, element name) predecessor,
         // the same replacement the write path performed in memory. The predecessor lives in the
         // same routing bucket (the bucket derives from the object key), so the removal scans one
         // bucket per item and the covered-key wipe below stays untouched for snapshot records.
@@ -4931,10 +5013,10 @@ fn fold_delta_block_items(
             // upsert does -- and through the SAME condition, so the two routes cannot come to
             // disagree about which entries one filing supersedes.
             //
-            // Keyed on the component alone this matches every entry of a gated container, because
+            // Keyed on the element name alone this matches every entry of a gated container, because
             // all of them carry `None`: replaying one item would drop every other block of the
             // object. The item's own address is what distinguishes the block it is about. An item
-            // carrying no address cannot name a block, so it keeps the component-keyed behaviour it
+            // carrying no address cannot name a block, so it keeps the element-name-keyed behaviour it
             // has always had rather than matching everything.
             let names_a_block =
                 crate::engine::storage_bucket_internals::index_entry_names_a_block(&item.model_id);
@@ -4945,8 +5027,8 @@ fn fold_delta_block_items(
             // THE FILING-NAME TERM IS DELETED AS A TAUTOLOGY, WITH THE REASON HERE RATHER THAN
             // IN A COMMIT MESSAGE.
             //
-            // It read `block.component.as_deref() == filed_name`, where
-            // `filed_name = if names_a_block { None } else { item.component.as_deref() }`. BOTH
+            // It read `block.element_name.as_deref() == filed_name`, where
+            // `filed_name = if names_a_block { None } else { item.element_name.as_deref() }`. BOTH
             // SIDES WERE ALREADY `None` FOR EVERY KIND: `names_a_block` answers true for all four
             // container kinds, and the kinds it answers false for -- `string`, `control_state`,
             // `context_node` and the timestamped series -- carry no element name to begin with, so
@@ -5067,7 +5149,7 @@ fn fold_delta_block_items(
             BlockIndex::new(
                 crate::engine::storage_bucket_internals::stored_model_kind( &item.model_id, ),
                 // NO NAME IS FILED, AND THERE IS NO LONGER A CONDITION DECIDING IT. This read
-                // `if index_entry_names_a_block(..) { None } else { item.component }`, on the
+                // `if index_entry_names_a_block(..) { None } else { item.element_name }`, on the
                 // reasoning that the two routes must compute the same written key for the same
                 // block. Both branches are gone with the field: the entry has no slot for an
                 // element name, so there is nothing for the two routes to disagree about.
@@ -5076,7 +5158,7 @@ fn fold_delta_block_items(
                 // "still carries the element's own name ... which recovery needs to restore the
                 // model map". It was wrong about which record recovery reads, and the row has no
                 // such field now. The model maps come back from two places, neither of them this
-                // row: `apply_outcome_item` installs elements from `wal::WalOutcomeItem::component`,
+                // row: `apply_outcome_item` installs elements from `wal::WalOutcomeItem::element_name`,
                 // which is the WAL's own record of the write; and `shard.hashes`, `sets`, `zsets`
                 // and `lists` carry `#[serde(default)]` and come back from the index snapshot
                 // directly. What a FOLD needs arrives beside these items in the record's own
@@ -5487,10 +5569,10 @@ fn env_flag_on(name: &str) -> bool {
 /// # WHY IT COULD NOT STAY
 ///
 /// `BlockIndex` is the structure the index is MADE of -- one per block, millions of them -- and
-/// `component` was the only place on it an element name could live. Taking that field out is the
+/// `element_name` was the only place on it an element name could live. Taking that field out is the
 /// whole point of this series, and with it gone the gate's OFF position is not a slower layout, it
 /// is an UNIMPLEMENTABLE one: nothing could file a name, and every reader that resolved an element
-/// by matching `block.component == component` would answer wrongly rather than slowly. A flag whose
+/// by matching `block.element_name == element_name` would answer wrongly rather than slowly. A flag whose
 /// two positions are "correct" and "silently wrong" is not a flag.
 ///
 /// # WHAT IT WAS, MEASURED, SO THE DECISION IS NOT TAKEN ON A RECOLLECTION
@@ -5560,6 +5642,156 @@ pub(crate) fn env_flag_default_on(name: &str) -> bool {
 pub(super) struct ConfigLogEntry {
     pub after_seq: u64,
     pub config: Config,
+}
+
+/// One config-log payload, in EITHER shape: a protobuf entry behind `BINARY_PAYLOAD_MAGIC`, or the
+/// JSON line every entry written so far is. `None` when it parses as neither.
+///
+/// The JSON arm is PERMANENT. Every config log on disk is JSON lines, and a reader that dropped
+/// them would reload every shard with a defaulted config, which silently resets the flags that
+/// change how already-written data is read.
+fn decode_config_log_payload(payload: &[u8]) -> Option<ConfigLogEntry> {
+    use prost::Message as _;
+    if payload.first() == Some(&crate::log_framing::BINARY_PAYLOAD_MAGIC) {
+        let proto = crate::sdk::v1::DurableConfigLogEntry::decode(&payload[1..]).ok()?;
+        let config = proto.config?;
+        return Some(ConfigLogEntry {
+            after_seq: proto.after_seq,
+            config: Config {
+                version: config.version,
+                maxmemory_bytes: config.maxmemory_bytes,
+                tenant_name: config.tenant_name,
+                read_qps: config.read_qps,
+                write_qps: config.write_qps,
+                table_read_qps: config.table_read_qps,
+                table_write_qps: config.table_write_qps,
+                tenant_read_qps: config.tenant_read_qps,
+                tenant_write_qps: config.tenant_write_qps,
+                extend_config: config
+                    .extend_config
+                    .into_iter()
+                    .map(|pair| (pair.key, pair.value))
+                    .collect(),
+                feature_max_size: usize::try_from(config.feature_max_size).ok()?,
+                async_storage: config.async_storage,
+            },
+        });
+    }
+    serde_json::from_slice::<ConfigLogEntry>(payload).ok()
+}
+
+/// What one pass over a config-log file found.
+struct ConfigLogWalk {
+    entries: Vec<ConfigLogEntry>,
+    /// Where the last WHOLE record ends. The only point the file may be cut back to.
+    good_end: usize,
+    /// The file ends in a record shorter than it declares: a write that did not finish.
+    torn_tail: bool,
+    /// The file ends in a complete JSON line with no newline after it.
+    unterminated_json_tail: bool,
+}
+
+/// Walk a config log once: unframed JSON lines and length-prefixed checksummed frames, from one
+/// file, by the same reader the metadata log uses.
+///
+/// An entry that does not parse is SKIPPED and the next is read, as an unparsable JSON line always
+/// was. A COMPLETE frame whose checksum fails stops the walk and says so: its declared length
+/// cannot be trusted to step over it, so nothing after it can be found, and resynchronising on a
+/// byte could land inside a payload.
+fn walk_config_log(data: &[u8], shard_id: ShardId) -> ConfigLogWalk {
+    let mut walk = ConfigLogWalk {
+        entries: Vec::new(),
+        good_end: 0,
+        torn_tail: false,
+        unterminated_json_tail: false,
+    };
+    let mut offset = 0usize;
+    while offset < data.len() {
+        // A blank separator is not an entry: the line format leaves bare newlines between them.
+        if data[offset] == b'\n' || data[offset] == b'\r' {
+            offset += 1;
+            walk.good_end = offset;
+            continue;
+        }
+        match crate::log_framing::next_frame(&data[offset..]) {
+            Ok(Some((consumed, payload))) => {
+                offset += consumed;
+                walk.good_end = offset;
+                match decode_config_log_payload(payload) {
+                    Some(entry) => walk.entries.push(entry),
+                    None => tracing::warn!(
+                        shard_id,
+                        "a config-log entry did not parse and was skipped"
+                    ),
+                }
+            }
+            // What remains is shorter than the entry it declares. A final JSON line with no
+            // terminator that is nonetheless complete is still an entry, which reading it line by
+            // line always allowed; anything else is a torn write.
+            Ok(None) => {
+                let rest = &data[offset..];
+                let complete_line = if rest.first() == Some(&b'{') {
+                    decode_config_log_payload(rest.trim_ascii_end())
+                } else {
+                    None
+                };
+                match complete_line {
+                    Some(entry) => {
+                        walk.entries.push(entry);
+                        walk.good_end = data.len();
+                        walk.unterminated_json_tail = true;
+                    }
+                    None => walk.torn_tail = true,
+                }
+                break;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    shard_id,
+                    error = %error.0,
+                    entries_read = walk.entries.len(),
+                    "a framed config-log entry failed its checksum; entries after it were not read"
+                );
+                break;
+            }
+        }
+    }
+    walk
+}
+
+/// One config-log entry as a binary frame. THE ONLY ENCODER: `append_config_log_entry` calls it and
+/// nothing writes the JSON line any more. An encoder nobody calls is how a retired format comes back;
+/// `decode_config_log_payload` keeps its JSON arm because the lines already on disk are JSON.
+pub(super) fn encode_config_log_frame(entry: &ConfigLogEntry) -> Vec<u8> {
+    use prost::Message as _;
+    let config = &entry.config;
+    let proto = crate::sdk::v1::DurableConfigLogEntry {
+        after_seq: entry.after_seq,
+        config: Some(crate::sdk::v1::DurableShardConfig {
+            version: config.version,
+            maxmemory_bytes: config.maxmemory_bytes,
+            tenant_name: config.tenant_name.clone(),
+            read_qps: config.read_qps,
+            write_qps: config.write_qps,
+            table_read_qps: config.table_read_qps,
+            table_write_qps: config.table_write_qps,
+            tenant_read_qps: config.tenant_read_qps,
+            tenant_write_qps: config.tenant_write_qps,
+            extend_config: config
+                .extend_config
+                .iter()
+                .map(|(key, value)| crate::sdk::v1::DurableConfigExtendEntry {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            feature_max_size: config.feature_max_size as u64,
+            async_storage: config.async_storage,
+        }),
+    };
+    let mut payload = vec![crate::log_framing::BINARY_PAYLOAD_MAGIC];
+    payload.extend(proto.encode_to_vec());
+    crate::log_framing::encode_frame(&payload)
 }
 
 fn next_temp_counter() -> u64 {
@@ -6138,7 +6370,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // invariant where it used to repair it.
         //
         // THE REF TOTAL'S DISJUNCT WAS ALREADY DEAD. It read
-        // `|| object_component_block_refs.is_none()`, on the reasoning that only a rebuild can
+        // `|| object_element_name_block_refs.is_none()`, on the reasoning that only a rebuild can
         // lift the total from `None`. No construction route leaves it there: `impl Default for
         // CoreIndex` starts it at `Some(0)` and the decoder assigns `Some(0)` before it files.
         //
@@ -6192,9 +6424,9 @@ fn mark_bucket_index_block_deleted(
     shard_id: ShardId,
     model_id: &str,
     key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) -> bool {
-    mark_bucket_index_block_deleted_with(shard, shard_id, model_id, key, component, true)
+    mark_bucket_index_block_deleted_with(shard, shard_id, model_id, key, element_name, true)
 }
 
 /// The same, with a say over whether an outcome is staged for the record.
@@ -6207,10 +6439,10 @@ fn mark_bucket_index_block_deleted_with(
     shard_id: ShardId,
     model_id: &str,
     key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     stage: bool,
 ) -> bool {
-    mark_bucket_index_block_deleted_recording(shard, shard_id, model_id, key, component, stage, None)
+    mark_bucket_index_block_deleted_recording(shard, shard_id, model_id, key, element_name, stage, None)
 }
 
 /// The same, with the BLOCK THAT RECORDS THE REMOVAL.
@@ -6239,7 +6471,7 @@ fn mark_bucket_index_block_deleted_with(
 ///
 /// A removal used to FREE an entry and now retains one. The bound is ONE ENTRY PER DISTINCT ELEMENT
 /// CURRENTLY REMOVED, not one per removal: `upsert_bucket_index_block_inner`'s `retain` matches on
-/// `(object_key, model_id, component)`, so writing an element back CLEARS its tombstone as a side
+/// `(object_key, model_id, element_name)`, so writing an element back CLEARS its tombstone as a side
 /// effect of behaviour that predates tombstones -- five add/remove cycles on one member leave one
 /// entry, which `a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumulate`
 /// drives. `a_removal_retains_one_entry_and_nothing_yet_collects_it` measures the other half.
@@ -6266,12 +6498,12 @@ fn mark_bucket_index_block_deleted_recording(
     shard_id: ShardId,
     model_id: &str,
     key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     stage: bool,
     tombstone: Option<ElementEntry>,
 ) -> bool {
     // Removing a member IS an outcome, and it is the one a command log states worst: replay has
-    // to re-run the removal and hope the state it removes from matches. Saying "this component
+    // to re-run the removal and hope the state it removes from matches. Saying "this element name
     // is gone" needs no such hope. Recorded here because every typed removal comes through.
     //
     // AND THE OUTCOME NOW CARRIES THE TOMBSTONE'S ADDRESS, which is what makes the removal durable
@@ -6285,7 +6517,7 @@ fn mark_bucket_index_block_deleted_recording(
         block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: model_id.to_string(),
             object_key: key.to_string(),
-            component: component.map(str::to_string),
+            element_name: element_name.map(str::to_string),
             object_id: stable_block_object_id(shard_id, model_id, key),
             routing_bucket: block_routing_bucket(key, 0, u32::MAX),
             address: tombstone.clone(),
@@ -6344,7 +6576,7 @@ fn mark_bucket_index_block_deleted_recording(
     } else {
         shard
             .bucket_index
-            .block_refs_for(model_id, key, component)
+            .block_refs_for(model_id, key, element_name)
             .map(|block_refs| {
                 block_refs
                     .iter()
@@ -6368,9 +6600,9 @@ fn mark_bucket_index_block_deleted_recording(
             &mut shard.bucket_index.block_slab_live,
             crate::engine::state::StaleCause::Removed,
             |handle, block| {
-            // THE THIRD COMPONENT `retain` IN THE ENGINE, AND THE ONLY ONE THAT WAS NOT VACUOUS.
+            // THE THIRD ELEMENT NAME `retain` IN THE ENGINE, AND THE ONLY ONE THAT WAS NOT VACUOUS.
             //
-            // This read `block.component.as_deref() == component`, and with every entry's name
+            // This read `block.element_name.as_deref() == element_name`, and with every entry's name
             // already `None` that comparison still DECIDED something, because the other side is
             // this function's ARGUMENT and not another entry: `None == Some(member)` is false for
             // a container and `None == None` true for the kinds that converge on the object key.
@@ -6378,7 +6610,7 @@ fn mark_bucket_index_block_deleted_recording(
             // removal to take a container's whole block entry, and taking that entry takes every
             // sibling member on the block with it.
             //
-            // `component.is_none()` is that same predicate with the entry's constant folded in,
+            // `element_name.is_none()` is that same predicate with the entry's constant folded in,
             // so the kinds it matches are exactly the kinds it matched before: `string`,
             // `control_state` and `context_node` converge on the object key and are removed here;
             // a container's removal matches nothing here and is recorded by the tombstone arm at
@@ -6388,7 +6620,7 @@ fn mark_bucket_index_block_deleted_recording(
             };
             let matches = block.model_id().as_str() == model_id
                 && &**beside == key
-                && component.is_none();
+                && element_name.is_none();
             if matches {
                 // THE KEY IS THIS FUNCTION'S ARGUMENT and the match above is what says this block
                 // belongs to it, so the id is derived from the same characters it always was.
@@ -6412,9 +6644,9 @@ fn mark_bucket_index_block_deleted_recording(
             // A DELETED ELEMENT IS NOT A DELETED OBJECT, AND THE ID NO LONGER SAYS WHICH IS WHICH.
             //
             // This function removes ONE element -- the `retain` above matches on
-            // `(model_id, object_key, component)` -- and then tombstones the ids of what it
+            // `(model_id, object_key, element_name)` -- and then tombstones the ids of what it
             // removed. That was exactly right while the object id named a block: every block
-            // sharing the removed block's id had the same component and was removed with it, so
+            // sharing the removed block's id had the same element name and was removed with it, so
             // no surviving block could carry it and the tombstone could not be premature.
             //
             // Now one id covers every element of the key. Dropping field `f0` of a
@@ -6432,7 +6664,7 @@ fn mark_bucket_index_block_deleted_recording(
             //
             // ON THE PREVIOUS IDENTITY THIS FILTER REMOVES NOTHING, and that is what makes it
             // attributable: a surviving block could only carry a removed block's id by sharing its
-            // component, and `retain` took every such block.
+            // element name, and `retain` took every such block.
             //
             // A TOMBSTONE ENTRY IS NOT A SURVIVING BLOCK. The filter asks whether any block still
             // carries the id, and since a removal now leaves an entry behind, the removed element's
@@ -6473,7 +6705,7 @@ fn mark_bucket_index_block_deleted_recording(
     if removed {
         // Removes exactly the entry it deleted, instead of rebuilding the whole lookup.
         //
-        // `rebuild_object_block_lookup` clears `object_page_lookup` and `object_component_lookup`
+        // `rebuild_object_block_lookup` clears `object_page_lookup` and `object_element_name_lookup`
         // and re-inserts one entry per block in the shard -- 58 696 of them on a 250 MB store --
         // and this ran once per deleted block. A purge deleting five fields paid it five times.
         // That is why deleting an identical, freshly created memory cost 41.7 ms against a 20 MB
@@ -6483,13 +6715,13 @@ fn mark_bucket_index_block_deleted_recording(
         // entry.
         //
         // This is the exact inverse of the `insert_object_block_lookup` the block went in through,
-        // keyed on the same (model_id, object_key, component) -- which is how the upsert path
+        // keyed on the same (model_id, object_key, element name) -- which is how the upsert path
         // has always maintained the lookup. The whole-object deleter above still rebuilds; it
-        // drops every component of a key at once, so the entry-at-a-time inverse does not apply
+        // drops every element name of a key at once, so the entry-at-a-time inverse does not apply
         // to it unchanged.
         shard
             .bucket_index
-            .remove_object_block_lookup_entry(model_id, key, component);
+            .remove_object_block_lookup_entry(model_id, key, element_name);
     }
     // THE ENTRY THAT KEEPS THE TOMBSTONE BLOCK REACHABLE, filed after the drop above rather than
     // instead of it -- see this function's doc comment on why the two halves of the slab-live
@@ -6500,22 +6732,22 @@ fn mark_bucket_index_block_deleted_recording(
     // never happened, and `a_removal_that_matched_nothing_writes_no_tombstone_entry` drives that.
     // The block has already been appended by then and is simply never pointed at, which is the same
     // orphaned-block state every superseded block is already in.
-    if let (true, Some(address), Some(component), Some(routing_bucket)) =
-        (removed, tombstone, component, tombstone_bucket)
+    if let (true, Some(address), Some(element_name), Some(routing_bucket)) =
+        (removed, tombstone, element_name, tombstone_bucket)
     {
         crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
             shard,
             model_id,
             key,
-            Some(component),
+            Some(element_name),
             address,
             routing_bucket,
         );
     }
     // UNDER ONE ENTRY A BLOCK THE MATCH ABOVE CANNOT FIRE, AND THE BLOCK WOULD BE ORPHANED.
     //
-    // The `retain` matches `block.component.as_deref() == component`, and a block-named entry has no
-    // component, so a gated removal matches NOTHING: `removed` stays false, `tombstone_bucket` is
+    // The `retain` matches `block.element_name.as_deref() == element_name`, and a block-named entry has no
+    // element name, so a gated removal matches NOTHING: `removed` stays false, `tombstone_bucket` is
     // never set, and the tombstone block -- already appended, correct and decodable -- is named by
     // nothing at all. `a_gated_removal_leaves_a_tombstone_block_the_index_can_reach` measured that
     // state before this branch existed: one live entry before AND after the removal, zero
@@ -6566,7 +6798,7 @@ fn mark_bucket_index_block_deleted_recording(
             // `insert_container_tombstone_entry`. The gate's scope is therefore not "live entries
             // only": NO entry names an element now, and a removal pays for its own name in a
             // structure only removals have.
-            let already_tombstoned = component.is_some_and(|component| {
+            let already_tombstoned = element_name.is_some_and(|element_name| {
                 shard
                     .bucket_index
                     .bucket_map
@@ -6575,7 +6807,7 @@ fn mark_bucket_index_block_deleted_recording(
                         bucket.tombstone_element_block(
                             key,
                             crate::engine::storage_bucket_internals::stored_model_kind(model_id),
-                            component,
+                            element_name,
                         )
                     })
                     .is_some()
@@ -6585,7 +6817,7 @@ fn mark_bucket_index_block_deleted_recording(
                     shard,
                     model_id,
                     key,
-                    component,
+                    element_name,
                     address,
                     routing_bucket,
                 );
@@ -6775,7 +7007,7 @@ fn append_value(
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
-    component: Option<&str>,
+    element_name: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
 ) -> Result<ElementEntry, BlockStoreError> {
@@ -6785,7 +7017,7 @@ fn append_value(
         shard_id,
         bytes,
         object_id,
-        component,
+        element_name,
         routing_bucket,
         async_storage,
         0,
@@ -6810,7 +7042,7 @@ fn append_value_of_object(
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
-    component: Option<&str>,
+    element_name: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
     block_ordinal: u32,
@@ -6825,7 +7057,7 @@ fn append_value_of_object(
             shard_id,
             bytes,
             object_id,
-            component,
+            element_name,
             routing_bucket,
             async_storage,
             block_ordinal,
@@ -6840,7 +7072,7 @@ fn append_value_inner(
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
-    component: Option<&str>,
+    element_name: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
     block_ordinal: u32,
@@ -6863,7 +7095,7 @@ fn append_value_inner(
         // storage manager's reclaim stage moves carried blocks into the block store and drops the
         // registration that pins the log floor.
         if let Some(object_id) = object_id {
-            block_in_wal::stage(object_id, component, bytes);
+            block_in_wal::stage(object_id, element_name, bytes);
         }
         return block_store.append_block_of_object(
             bytes,
@@ -6885,7 +7117,7 @@ fn append_value_inner(
     // Put the block aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
-        block_in_wal::stage(object_id, component, bytes);
+        block_in_wal::stage(object_id, element_name, bytes);
     }
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes, || {
         let bytes = bytes.to_vec();
@@ -7607,7 +7839,7 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// for an address that carried no bucket.
 /// `identity` NAMES THE BLOCK, AND THE CALLER HAS TO BE ABLE TO NAME IT.
 ///
-/// It used to be `component: Option<&str>` beside an object recovered from `address.object_id()`
+/// It used to be `element_name: Option<&str>` beside an object recovered from `address.object_id()`
 /// with `and_then`, and that was the one `Option` on this path that could lose data rather than
 /// weaken a cache key. The in-log fallbacks below are what serve a block whose only durable copy is
 /// its WAL record; a caller that could not name the object got `None` from the `and_then` and the
@@ -7670,7 +7902,7 @@ fn read_block_frame_bytes(
             block_store,
             shard_id,
             identity.object_id(),
-            identity.component(),
+            identity.element_name(),
         ) {
             let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
@@ -7699,7 +7931,7 @@ fn read_block_frame_bytes(
         block_store,
         shard_id,
         identity.object_id(),
-        identity.component(),
+        identity.element_name(),
     ) {
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
@@ -7709,7 +7941,7 @@ fn read_block_frame_bytes(
 
 /// One element's value out of the block an address names.
 ///
-/// # WHY `None` FOR THE COMPONENT HANDS BACK THE FRAME
+/// # WHY `None` FOR THE ELEMENT NAME HANDS BACK THE FRAME
 ///
 /// `None` has one meaning at every call site of this function and it is not "no element in
 /// particular": it means THE BLOCK IS ITS WHOLE OBJECT -- a string, a control state, a packed
@@ -7731,7 +7963,7 @@ fn read_block_frame_bytes(
 /// This door asks the frame reader for a block and then picks one element out of it. Those are two
 /// questions about the same block -- which object, and which element of it -- and they were two
 /// parameters that happened to be spelled once. A [`BlockIdentity`] is the pair: the element the
-/// frame reader resolves a WAL record by is `identity.component()`, and so is the element selected
+/// frame reader resolves a WAL record by is `identity.element_name()`, and so is the element selected
 /// out of the bytes, because there is only one place either can come from.
 fn read_block_bytes(
     cache: &MultiLayerCache,
@@ -7749,18 +7981,18 @@ fn read_block_bytes(
         identity,
         routing_bucket,
     )?;
-    let Some(component) = identity.component() else {
+    let Some(element_name) = identity.element_name() else {
         return Some(bytes);
     };
-    select_container_value(&bytes, component)
+    select_container_value(&bytes, element_name)
 }
 
-/// Select one component from bytes already fetched by the caller.
+/// Select one element name from bytes already fetched by the caller.
 ///
 /// Keeping this separate from the storage funnel lets a multi-field projection retain one packed
 /// frame and select several values without repeating the cache lookup or block read.
-fn select_container_value(bytes: &[u8], component: &str) -> Option<Vec<u8>> {
-    match container_blocks::select_container_element(&bytes, component) {
+fn select_container_value(bytes: &[u8], element_name: &str) -> Option<Vec<u8>> {
+    match container_blocks::select_container_element(&bytes, element_name) {
         container_blocks::ContainerElementRead::NotFramed => Some(bytes.to_vec()),
         container_blocks::ContainerElementRead::Found(value) => Some(value),
         // A BLOCK THAT STATES THE REMOVAL HAS NO VALUE TO HAND BACK, and this funnel's contract is a
@@ -7806,9 +8038,9 @@ pub fn reset_corrupt_container_block_count() {
 /// Identical to `read_block_bytes` in every other way: same key, same lookup, same spill and log
 /// fallbacks, same promotion. It differs only in not owning the result. Callers that keep or mutate
 /// the bytes should keep using `read_block_bytes`.
-/// `component` says WHICH ELEMENT of the object this address names, and it is not optional
+/// `element_name` says WHICH ELEMENT of the object this address names, and it is not optional
 /// information dressed as an `Option`: `None` means the block IS its whole object -- a string,
-/// a control state -- and `Some` names the element, exactly as `BlockIndex::component` beside
+/// a control state -- and `Some` names the element, exactly as `BlockIndex::element_name` beside
 /// this address already does. The in-log fallback below needs it because a record carries many
 /// blocks and picks one out of itself by identity; handed only the object id it answers with the
 /// FIRST block of that object, which is another element's bytes rather than a miss.
@@ -7837,10 +8069,10 @@ fn read_block_shared(
         // store read. Returning the hit unselected is the one way the two doors can disagree, and
         // it would disagree only when the block is warm: a cold read would answer correctly and a
         // second read of the same element would answer with framing bytes.
-        let Some(component) = identity.component() else {
+        let Some(element_name) = identity.element_name() else {
             return Some(bytes);
         };
-        return match container_blocks::select_container_element(&bytes, component) {
+        return match container_blocks::select_container_element(&bytes, element_name) {
             container_blocks::ContainerElementRead::NotFramed => Some(bytes),
             container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
             // Collapsed for the same reason as the owning funnel above: no value either way.
@@ -7931,7 +8163,7 @@ fn object_manager_stats(
                     // Maintained incrementally; the walk is the fallback for an index that has
                     // been deserialized but not yet rebuilt. This runs on the heartbeat timer
                     // under the shard read lock, so walking here shows up as write contention.
-                    shard.bucket_index.object_component_block_refs.unwrap_or_else(|| {
+                    shard.bucket_index.object_element_name_block_refs.unwrap_or_else(|| {
                         shard
                             .bucket_index
                             .object_block_lookup

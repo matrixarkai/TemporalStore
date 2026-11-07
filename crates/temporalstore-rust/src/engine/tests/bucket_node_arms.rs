@@ -389,7 +389,7 @@ fn assert_every_claimed_arm_has_samples(claimed: &[&str], reached: &ArmHistogram
 /// deployment.
 ///
 /// THE CONTAINER WORKLOAD IS HERE BECAUSE IT IS THE ONE THE RANGE CANNOT SPLIT. Routing takes the
-/// object key and never the component, so a hash's hundred fields are a hundred blocks under one
+/// object key and never the element name, so a hash's hundred fields are a hundred blocks under one
 /// key and therefore in one bucket at ANY range. It is the arm distribution a narrow range
 /// cannot reach and a wide range cannot escape, and it is where the maximum comes from.
 ///
@@ -521,11 +521,11 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     // CHANGE SHOWING UP IN THE CLASSIFIER.
     //
     // This test asserted `multi_object` and said why: a hash's hundred fields looked like one
-    // object with a hundred blocks and were not, because the object id took the COMPONENT, so a
+    // object with a hundred blocks and were not, because the object id took the ELEMENT NAME, so a
     // hundred fields were a hundred distinct ids filed under one routing key and `object_index`
     // held a hundred rows.
     //
-    // Since the component left `stable_block_object_id`, `object_index` holds ONE row for that
+    // Since the element name left `stable_block_object_id`, `object_index` holds ONE row for that
     // key and `classify_bucket_layout(1, many)` answers `MultiBlockObject`. So the arm the
     // container workload lands in has moved, and `multi_block_object` -- which this module used to
     // report as reached by nothing -- is now exactly what a container reaches.
@@ -2206,16 +2206,16 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
 }
 
 // =============================================================================================
-// THE COMPONENT LEVEL IS GONE, AND THIS SECTION'S OWN CLOSING ASSERTION SAID SO FIRST
+// THE ELEMENT NAME LEVEL IS GONE, AND THIS SECTION'S OWN CLOSING ASSERTION SAID SO FIRST
 // =============================================================================================
 //
-// `the_component_level_is_not_a_list_of_one` was here. It asked whether `ComponentList`'s three
+// `the_element_name_level_is_not_a_list_of_one` was here. It asked whether `ElementNameList`'s three
 // arms were machinery for a population that is always one, and it answered in two halves. Both
 // halves are worth keeping on the record, because one of them was RIGHT AND IRRELEVANT and the
 // other had already failed.
 //
-// THE FIRST HALF MEASURED THE WRONG DENOMINATOR. It asserted `size_of::<ComponentList>() ==
-// size_of::<ComponentBlocks>()` and concluded, in as many words, "there are no bytes here to
+// THE FIRST HALF MEASURED THE WRONG DENOMINATOR. It asserted `size_of::<ElementNameList>() ==
+// size_of::<ElementNameBlocks>()` and concluded, in as many words, "there are no bytes here to
 // reclaim". Both were 40, so the claim was true: the three-arm WRAPPER cost nothing over the
 // payload it wrapped. But the question the level posed was not what the wrapper cost over its
 // payload -- it was what the payload cost over what it had to carry, and the payload was a
@@ -2224,13 +2224,13 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
 // them however carefully it is measured.
 //
 // THE SECOND HALF COULD ONLY EVER HAVE FAILED. Its closing assertion was `many_total > 0`, with
-// the message "if it reached ZERO Many arms then a field is not a component of its key's object
+// the message "if it reached ZERO Many arms then a field is not an element name of its key's object
 // and the whole reading of this level is wrong". Once the element name came off the block entry,
 // `insert_object_block_lookup` filed every block of an object under one nameless slot -- so every
-// object had exactly one component, no `Many` arm could arise, and `many_total` was 0 for any
+// object had exactly one element name, no `Many` arm could arise, and `many_total` was 0 for any
 // fixture at all. The arm carries `#[ignore]` and runs only by name, so it never reported the
 // conclusion its own failure message spelled out.
 //
-// Both levels of `ComponentList` and `ComponentBlocks` are now deleted, so there is nothing left
+// Both levels of `ElementNameList` and `ElementNameBlocks` are now deleted, so there is nothing left
 // here to count arms of. The surviving distribution question -- how many refs one object's slot
 // holds -- is `index_bytes_per_key`'s.

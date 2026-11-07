@@ -479,7 +479,7 @@ struct SharedStoreStagedBlockProto {
     /// `optional`, so a frame written for a whole-object block omits it and stays
     /// byte-identical to one written before this field existed.
     #[prost(string, optional, tag = "3")]
-    component: Option<String>,
+    element_name: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -987,14 +987,13 @@ where
             return self.publish_wal_entry_protobuf_blob(entry).await;
         }
         let key = self.wal_key(entry.shard_id, entry.wal_index);
-        let entry_bytes = serde_json::to_vec(&entry)?;
-        let object = SharedStoreWalObject {
-            entry,
-            entry_byte_size: entry_bytes.len() as u64,
-            entry_sha256: sha256_hex(&entry_bytes),
-        };
-        self.put_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
-            .await?;
+        // BINARY: the container byte, a CRC32C, and one protobuf WAL frame. The key keeps its
+        // `.json` name -- the layout is found by listing a prefix and parsing the index out of the
+        // name, and the shape is decided from the first byte, so the name is not what makes it
+        // readable. There is NO JSON encode path left; `decode_wal_entry_object` keeps the JSON
+        // arms for every per-key log written before this change.
+        let bytes = encode_wal_entry_object(&entry, self.wal_frame_format)?;
+        self.put_with_retry(&key, Bytes::from(bytes)).await?;
         Ok(None)
     }
 
@@ -1692,7 +1691,9 @@ where
             self.object_store
                 .put(
                     &self.bucket_dump_manifest_key(shard_id, &manifest.manifest_id),
-                    Bytes::from(serde_json::to_vec_pretty(manifest)?),
+                    Bytes::from(crate::engine::bucket_dump_codec::encode_bucket_dump_manifest(
+                        manifest,
+                    )),
                 )
                 .await?;
             published += 1;
@@ -1729,8 +1730,12 @@ where
             if !is_bucket_dump_manifest_key(&key) {
                 continue;
             }
+            // Either shape. The JSON arm is permanent: every manifest published before the
+            // binary shape existed is still in the store.
             let manifest: crate::BucketDumpManifest =
-                serde_json::from_slice(&self.object_store.get(&key).await?)?;
+                crate::engine::bucket_dump_codec::decode_bucket_dump_manifest(
+                    &self.object_store.get(&key).await?,
+                )?;
             // A manifest filed under another shard's prefix, or one this node already has,
             // is not ours to write.
             if manifest.shard_id != shard_id || existing.contains(&manifest.manifest_id) {
@@ -2498,17 +2503,7 @@ where
         key: &str,
     ) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
         let bytes = self.object_store.get(key).await?;
-        if let Ok(object) = serde_json::from_slice::<SharedStoreWalObject>(&bytes) {
-            let entry_bytes = serde_json::to_vec(&object.entry)?;
-            verify_checksum(
-                key,
-                &entry_bytes,
-                object.entry_byte_size,
-                &object.entry_sha256,
-            )?;
-            return Ok(object.entry);
-        }
-        Ok(serde_json::from_slice(&bytes)?)
+        decode_wal_entry_object(key, &bytes)
     }
 
     fn parse_wal_entry_object(
@@ -2516,17 +2511,7 @@ where
         key: &str,
         bytes: &[u8],
     ) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
-        if let Ok(object) = serde_json::from_slice::<SharedStoreWalObject>(bytes) {
-            let entry_bytes = serde_json::to_vec(&object.entry)?;
-            verify_checksum(
-                key,
-                &entry_bytes,
-                object.entry_byte_size,
-                &object.entry_sha256,
-            )?;
-            return Ok(object.entry);
-        }
-        Ok(serde_json::from_slice(bytes)?)
+        decode_wal_entry_object(key, bytes)
     }
 
     /// The highest WAL index currently persisted in shared storage for
@@ -3739,7 +3724,7 @@ pub(crate) fn decode_routing_range_stamp(
 /// Encode a routing-range stamp. ONE SHAPE, with no gate to pick another.
 /// `decode_routing_range_stamp` above keeps its JSON arm permanently, for the stamps already on
 /// disk.
-fn encode_routing_range_stamp(
+pub(crate) fn encode_routing_range_stamp(
     stamp: &crate::engine::routing_range_stamp::RoutingRangeStamp,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
     Ok(encode_shared_object_protobuf(
@@ -3748,6 +3733,72 @@ fn encode_routing_range_stamp(
             end_routing_bucket: stamp.end_routing_bucket,
         },
     ))
+}
+
+// ---- the per-key WAL object (`JsonPerKey` mode), in either shape
+
+/// A per-key WAL object in EITHER shape. THE ONLY READER of one.
+///
+/// Two shapes live under `wal_<index>.json`:
+///
+///   * the original envelope -- a JSON `SharedStoreWalObject` carrying the entry, its JSON byte
+///     length and a SHA-256 of that JSON, or (older still) the bare entry as JSON; and
+///   * the binary object -- the shared-store container byte, a CRC32C, then ONE protobuf WAL frame
+///     (the same frame the append-blob log writes), so a per-key log and a blob log hold the same
+///     bytes for the same entry.
+///
+/// The shape is decided from the first byte and never from a setting. The JSON arms are PERMANENT:
+/// every per-key log written before the binary object existed is JSON, and "which writer runs
+/// today" is the wrong question for a reader -- the hold is on what is on disk.
+///
+/// THE CRC COVERS THE WHOLE FRAME, ON PURPOSE. The frame's own digest covers only its command
+/// payload, so the outcomes, staged blocks, shard id and WAL index inside it would otherwise be
+/// unchecked -- and the JSON envelope this replaces checked all of them, through a SHA-256 over the
+/// whole entry. Dropping to the frame's check alone would have been a quiet loss of integrity for
+/// this layout.
+fn decode_wal_entry_object(
+    key: &str,
+    bytes: &[u8],
+) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        if body.len() < 4 {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("truncated binary WAL object at {key}"),
+            )));
+        }
+        let stored = u32::from_be_bytes(body[..4].try_into().expect("four bytes"));
+        let frame = &body[4..];
+        verify_crc32c(key, frame, None, stored)?;
+        return decode_wal_proto_frame_exact(frame, key);
+    }
+    if let Ok(object) = serde_json::from_slice::<SharedStoreWalObject>(bytes) {
+        let entry_bytes = serde_json::to_vec(&object.entry)?;
+        verify_checksum(
+            key,
+            &entry_bytes,
+            object.entry_byte_size,
+            &object.entry_sha256,
+        )?;
+        return Ok(object.entry);
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+/// A per-key WAL object in the binary shape. THE ONLY ENCODER: `publish_wal_entry` calls it in the
+/// per-key layout and nothing writes the JSON envelope any more. An encoder nobody calls is how a
+/// retired format comes back; `decode_wal_entry_object` keeps its JSON arms because the objects
+/// already in a store are JSON. Opposite reasons, so one is deleted and the other held.
+fn encode_wal_entry_object(
+    entry: &SharedStoreWalEntry,
+    frame_format: u32,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    let frame = encode_wal_proto_frame(entry, frame_format)?;
+    let mut out = Vec::with_capacity(5 + frame.len());
+    out.push(SHARED_OBJECT_CONTAINER_PROTOBUF);
+    out.extend_from_slice(&crate::checksum::crc32c(&frame).to_be_bytes());
+    out.extend_from_slice(&frame);
+    Ok(out)
 }
 
 fn parse_wal_index(key: &str) -> Option<u64> {
@@ -3935,6 +3986,45 @@ fn digest_text_to_bytes(digest: &str) -> Option<Vec<u8>> {
     bytes.filter(|bytes| hex::encode(bytes) == digest)
 }
 
+/// THE PROTOBUF ENCODING OF A COMMAND, OR A REFUSAL THAT NAMES IT.
+///
+/// This used to be a two-armed `match` whose second arm wrote the command as JSON, so a command the
+/// proto could not carry was published anyway, in a shape no one reading the log was told to
+/// expect. The arm is gone: every write the shared log can carry has a mapping
+/// (`COMMANDS_STILL_ENCODED_AS_JSON` is empty and a guard keeps it so), and the commands left over
+/// are not writes, which a local log never records and so nothing publishes. A command with no
+/// mapping is therefore a bug in the caller or a new write that skipped the mapping, and the
+/// useful answer to either is an error at publish time that says which command, not a record that
+/// replays on one build and is unreadable on the next.
+///
+/// THE DECODER IS NOT SYMMETRIC WITH THIS, ON PURPOSE. `wal_command_from_payload` keeps its JSON
+/// arm for ever: a log written before this change can hold JSON command payloads, and the hold is
+/// on what is on disk. An encoder nobody should reach is deleted; a decoder for what already exists
+/// stays.
+///
+/// NOT TO BE CONFUSED WITH AN OUTCOME-ONLY RECORD. An entry with no command at all is written as an
+/// EMPTY payload under the tag that is also JSON's (zero), with no JSON in it; that is `None` of
+/// `entry.command`, handled by the callers before they get here, and it needs no encoding.
+fn wal_command_payload(command: &Command) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    match command_to_sdk_proto(command) {
+        Some(encoded) => Ok(encoded.encode_to_vec()),
+        None => {
+            let shown = format!("{command:?}");
+            let name: String = shown
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "command {name} has no protobuf encoding, so it cannot be published to the \
+                     shared WAL; it is not written as JSON"
+                ),
+            )))
+        }
+    }
+}
+
 struct WalCommandMetadata {
     byte_size: u64,
     encoding: u32,
@@ -3969,16 +4059,10 @@ fn wal_command_metadata(
             encoding: WAL_COMMAND_ENCODING_JSON_SERDE,
         });
     };
-    let (command_payload, command_encoding) = match command_to_sdk_proto(command) {
-        Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-        None => (
-            serde_json::to_vec(command)?,
-            WAL_COMMAND_ENCODING_JSON_SERDE,
-        ),
-    };
+    let command_payload = wal_command_payload(command)?;
     Ok(WalCommandMetadata {
         byte_size: command_payload.len() as u64,
-        encoding: command_encoding,
+        encoding: WAL_COMMAND_ENCODING_SDK_PROTO,
     })
 }
 
@@ -3989,10 +4073,7 @@ fn encode_wal_proto_frame(
     let (command_payload, command_encoding) = match entry.command.as_ref() {
         // No operation to carry: the entry states results instead.
         None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
-        Some(command) => match command_to_sdk_proto(command) {
-            Some(encoded) => (encoded.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-            None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
-        },
+        Some(command) => (wal_command_payload(command)?, WAL_COMMAND_ENCODING_SDK_PROTO),
     };
     // The same rule the log frame follows: a carried block states the length its address
     // covers, so the address need not restate it.
@@ -4061,7 +4142,7 @@ fn encode_wal_proto_frame(
             .map(|block| SharedStoreStagedBlockProto {
                 object_id: block.object_id,
                 bytes: block.bytes.clone(),
-                component: block.component.as_deref().map(str::to_string),
+                element_name: block.element_name.as_deref().map(str::to_string),
             })
             .collect(),
         items: entry
@@ -4303,7 +4384,7 @@ fn wal_entry_from_parts(
                 object_id: block.object_id,
                 // Never defaulted: an absent element MEANS a whole-object block, and
                 // inventing one would make a string block claim to be an element.
-                component: block.component.map(std::sync::Arc::from),
+                element_name: block.element_name.map(std::sync::Arc::from),
                 bytes: block.bytes,
             })
             .collect(),
@@ -4324,7 +4405,7 @@ const WAL_BATCH_FORMAT_HOISTED: u32 = 1;
 /// A log frame is `[4-byte big-endian body length][body]`, and the walk over a log reads that
 /// prefix to find the next record. A container has to be distinguishable from a frame at exactly
 /// that position, by its first byte, with no second guess -- the same rule a container member
-/// component follows, where one reserved leading byte makes the first byte a total discriminator.
+/// element name follows, where one reserved leading byte makes the first byte a total discriminator.
 ///
 /// So a container is `[0xff][3-byte big-endian body length][body]`. The first byte of a frame
 /// prefix is the HIGH byte of its body length, so it is `0xff` only for a frame body of at least
@@ -4385,10 +4466,7 @@ fn encode_wal_batch_container(
         let (command_payload, command_encoding) = match entry.command.as_ref() {
             // No operation to carry: the entry states results instead.
             None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
-            Some(command) => match command_to_sdk_proto(command) {
-                Some(encoded) => (encoded.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-                None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
-            },
+            Some(command) => (wal_command_payload(command)?, WAL_COMMAND_ENCODING_SDK_PROTO),
         };
         // The first entry's encoding becomes the header's; any entry that differs states its own.
         let header_encoding = *declared_encoding.get_or_insert(command_encoding);
@@ -4423,7 +4501,7 @@ fn encode_wal_batch_container(
                 .map(|block| SharedStoreStagedBlockProto {
                     object_id: block.object_id,
                     bytes: block.bytes.clone(),
-                    component: block.component.as_deref().map(str::to_string),
+                    element_name: block.element_name.as_deref().map(str::to_string),
                 })
                 .collect(),
             items: entry
@@ -5535,7 +5613,7 @@ mod tests {
                     if let Some(address) = item.resolved_address() {
                         staged_blocks.push(crate::wal::StagedBlock {
                             object_id: item.object_id,
-                            component: item.component.as_deref().map(Arc::from),
+                            element_name: item.element_name.as_deref().map(Arc::from),
                             bytes: primary.block_store().read(&address).unwrap(),
                         });
                     }
@@ -5619,7 +5697,7 @@ mod tests {
             outcomes: vec![crate::wal::WalOutcomeItem {
                 kind: "string".to_string(),
                 object_key: key.to_string(),
-                component: None,
+                element_name: None,
                 object_id: crate::engine::hashing::stable_block_object_id(1, "string", key),
                 routing_bucket: 7,
                 address: None,
@@ -7862,8 +7940,8 @@ mod tests {
                                 object_id: item.object_id,
                                 // The outcome has named its element all along; the BLOCK is
                                 // what could not say so, and a read picks the block.
-                                component: item
-                                    .component
+                                element_name: item
+                                    .element_name
                                     .as_deref()
                                     .map(std::sync::Arc::from),
                                 bytes,
@@ -7993,8 +8071,8 @@ mod tests {
                     if let Ok(bytes) = primary.block_store().read(&address) {
                         carried.push(crate::wal::StagedBlock {
                             object_id: item.object_id,
-                            component: item
-                                .component
+                            element_name: item
+                                .element_name
                                 .as_deref()
                                 .map(std::sync::Arc::from),
                             bytes,
@@ -9301,7 +9379,7 @@ mod tests {
             }),
             staged_blocks: vec![crate::wal::StagedBlock {
                 object_id: 77,
-                component: None,
+                element_name: None,
                 bytes: b"derived-block-bytes".to_vec(),
             }],
                     outcomes: Vec::new(),
@@ -9537,6 +9615,91 @@ mod tests {
         let inherited = successor.list_bucket_dump_manifests(1);
         assert_eq!(inherited.len(), 1);
         assert_eq!(inherited[0].manifest_id, dumped.manifest_id);
+    }
+
+    /// THE PUBLISHED MANIFEST IS BINARY, AND A PLANTED JSON ONE IS STILL RESTORED BESIDE IT.
+    ///
+    /// The binary one is published by the REAL writer from a real engine. The JSON one is the
+    /// installed base -- every manifest published before the flip -- and is PLANTED into the store
+    /// because the writer that used to produce it has been deleted. Each carries a checksum from its
+    /// own derivation, and the successor's local listing re-verifies both, so a restore that
+    /// accepted a body but mis-derived its digest would land a manifest the listing then drops --
+    /// and the count of the successor's LISTING, not the restore's return value, is the assertion
+    /// that sees that.
+    #[tokio::test]
+    async fn restore_reads_a_published_binary_dump_manifest_beside_a_planted_json_one() {
+        use crate::engine::bucket_dump_codec::BUCKET_DUMP_CONTAINER_PROTOBUF;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        let written = primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+        replicator
+            .publish_bucket_dump_manifests(1, &primary.list_bucket_dump_manifests(1))
+            .await
+            .unwrap();
+        let written_key = replicator.bucket_dump_manifest_key(1, &written.manifest_id);
+        let published = store.get(&written_key).await.unwrap();
+        assert_eq!(
+            published[0], BUCKET_DUMP_CONTAINER_PROTOBUF,
+            "the shared-store publisher did not write the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&published).is_err(),
+            "the published manifest parses as JSON"
+        );
+
+        // The installed base: a version-0 manifest whose checksum is over its canonical JSON.
+        let mut legacy = written.clone();
+        legacy.manifest_id = format!("{}-legacy", written.manifest_id);
+        legacy.index_log_sequence = written.index_log_sequence + 1;
+        legacy.wal_sequence = written.wal_sequence + 5;
+        let legacy = crate::engine::bucket_dump_codec::into_legacy_json_manifest_for_test(legacy);
+        assert_eq!(legacy.checksum_version, 0);
+        assert_ne!(legacy.checksum, written.checksum);
+        let planted = serde_json::to_vec_pretty(&legacy).unwrap();
+        assert_eq!(planted[0], b'{', "the planted manifest is not the JSON shape");
+        let legacy_key = replicator.bucket_dump_manifest_key(1, &legacy.manifest_id);
+        store.put(&legacy_key, Bytes::from(planted)).await.unwrap();
+        assert_eq!(
+            store.get(&legacy_key).await.unwrap()[0],
+            b'{',
+            "the plant did not take, so nothing below reads a JSON manifest"
+        );
+
+        let successor = test_engine(dir.path(), "successor");
+        successor.load_shard(1);
+        assert!(successor.list_bucket_dump_manifests(1).is_empty());
+        let restored = replicator
+            .restore_bucket_dump_manifests(1, &successor)
+            .await
+            .unwrap();
+        assert_eq!(restored, 2, "restore skipped or refused one of the two shapes");
+
+        let inherited = successor.list_bucket_dump_manifests(1);
+        assert_eq!(
+            inherited.len(),
+            2,
+            "a restored manifest failed the successor's own checksum verification: {inherited:?}"
+        );
+        let got_written = inherited
+            .iter()
+            .find(|m| m.manifest_id == written.manifest_id)
+            .expect("the binary manifest was not inherited");
+        assert_eq!(got_written, &written, "the restore changed the binary manifest");
+        let got_legacy = inherited
+            .iter()
+            .find(|m| m.manifest_id == legacy.manifest_id)
+            .expect("the JSON manifest was not inherited");
+        assert_eq!(got_legacy, &legacy, "the restore changed the JSON manifest");
     }
 
     /// The same, for the checkpoint manifest, where the skip produces an EMPTY LIST.
@@ -10327,37 +10490,45 @@ mod tests {
         ));
     }
 
+    /// The JSON envelope the per-key writer used to produce, built by hand with a valid SHA-256.
+    ///
+    /// No writer produces this shape any more; a test that needs the installed base plants it.
+    fn a_legacy_json_wal_object(entry: &SharedStoreWalEntry) -> Vec<u8> {
+        let entry_json = serde_json::to_vec(entry).unwrap();
+        let envelope = SharedStoreWalObject {
+            entry: entry.clone(),
+            entry_byte_size: entry_json.len() as u64,
+            entry_sha256: sha256_hex(&entry_json),
+        };
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        assert_eq!(bytes[0], b'{', "the planted object is not the JSON shape");
+        bytes
+    }
+
     #[tokio::test]
     async fn shared_store_rejects_corrupt_wal_checksum() {
         let dir = tempfile::tempdir().unwrap();
         let (store, replicator) = test_shared_store(dir.path());
-        replicator
-            .publish_wal_entry(SharedStoreWalEntry {
-                shard_id: 1,
-                wal_index: 1,
-                command: Some(Command::StringSet {
-                    key: "k".to_string(),
-                    value: b"v".to_vec(),
-                }),
-            
-                                   staged_blocks: Vec::new(),
-                                               outcomes: Vec::new(),
-            })
-            .await
-            .unwrap();
-
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            }),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        replicator.publish_wal_entry(entry.clone()).await.unwrap();
         let key = "cluster-a/shards/1/shared/wal/wal_00000000000000000001.json";
-        let mut object: SharedStoreWalObject =
-            serde_json::from_slice(&store.get(key).await.unwrap()).unwrap();
-        object.entry_sha256 = "bad".to_string();
-        store
-            .put(
-                key,
-                Bytes::from(serde_json::to_vec_pretty(&object).unwrap()),
-            )
-            .await
-            .unwrap();
 
+        // ---- the BINARY object the real writer produced: one byte changed.
+        let good = store.get(key).await.unwrap();
+        assert_eq!(good[0], SHARED_OBJECT_CONTAINER_PROTOBUF);
+        let mut damaged = good.to_vec();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 0x01;
+        store.put(key, Bytes::from(damaged)).await.unwrap();
         let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
         assert!(matches!(
@@ -10367,6 +10538,34 @@ mod tests {
                 .unwrap_err(),
             SharedStoreReplicationError::ChecksumMismatch { .. }
         ));
+
+        // ---- the LEGACY JSON envelope, PLANTED with a wrong digest: the same refusal, by the
+        // ---- arm that checked it before the writer changed.
+        let entry_json = serde_json::to_vec(&entry).unwrap();
+        let object = SharedStoreWalObject {
+            entry: entry.clone(),
+            entry_byte_size: entry_json.len() as u64,
+            entry_sha256: "bad".to_string(),
+        };
+        store
+            .put(key, Bytes::from(serde_json::to_vec_pretty(&object).unwrap()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            replicator
+                .replay_wal_strict(1, 0, &follower)
+                .await
+                .unwrap_err(),
+            SharedStoreReplicationError::ChecksumMismatch { .. }
+        ));
+
+        // ---- CONTROL: the same legacy object with its true digest replays, so the refusal above
+        // ---- was the digest and not the shape.
+        store
+            .put(key, Bytes::from(a_legacy_json_wal_object(&entry)))
+            .await
+            .unwrap();
+        assert!(replicator.replay_wal_strict(1, 0, &follower).await.is_ok());
     }
 
     #[tokio::test]
@@ -11412,7 +11611,7 @@ mod tests {
                         if let Ok(bytes) = primary.block_store().read(&address) {
                             carried.push(crate::wal::StagedBlock {
                                 object_id: item.object_id,
-                                component: item.component.as_deref().map(std::sync::Arc::from),
+                                element_name: item.element_name.as_deref().map(std::sync::Arc::from),
                                 bytes,
                             });
                         }
@@ -15293,5 +15492,447 @@ fn no_write_command_quietly_joins_the_json_fallback() {
          shrinks, and leaving a covered command in it hides the progress."
     );
 }
+
+/// A COMMAND WITH NO PROTOBUF ENCODING IS REFUSED BY NAME AT EVERY ENCODER, AND NOTHING IS WRITTEN.
+///
+/// The three encoders used to fall through to `serde_json::to_vec(command)` for a command
+/// `command_to_sdk_proto` does not map. That arm is gone. The command used here is a READ with no
+/// mapping, which is exactly the shape of command that can still reach it: every write has a
+/// mapping (`no_write_command_quietly_joins_the_json_fallback` keeps that true), and the unmapped
+/// ones are reads a local log never records.
+///
+/// Driven at the three encoders AND through a real publish, because the encoders are what choose
+/// the arm and the publish is what a running node calls. The store is listed afterwards: a refusal
+/// that had already written something would still be an error, and an error is not the claim.
+#[tokio::test]
+async fn a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_json() {
+    let command = Command::LeaderEstablish;
+    // DENOMINATORS: it is really unmapped and really not a write, or the refusals below are about
+    // a command that happened to be unusual.
+    assert!(
+        command_to_sdk_proto(&command).is_none(),
+        "this command is now mapped, so it no longer exercises the arm this test is about; pick \
+         another unmapped read"
+    );
+    assert!(!crate::engine::is_write_command(&command));
+
+    let entry = SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index: 1,
+        command: Some(command.clone()),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+    let refusals: Vec<(&str, Result<(), SharedStoreReplicationError>)> = vec![
+        ("metadata", wal_command_metadata(Some(&command)).map(|_| ())),
+        (
+            "frame",
+            encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT).map(|_| ()),
+        ),
+        (
+            "container",
+            encode_wal_batch_container(&[entry.clone()]).map(|_| ()),
+        ),
+    ];
+    assert_eq!(refusals.len(), 3, "three encoders lost their JSON arm");
+    for (what, result) in refusals {
+        let text = result
+            .expect_err(&format!("the {what} encoder accepted a command it cannot encode"))
+            .to_string();
+        assert!(
+            text.contains("LeaderEstablish") && text.contains("no protobuf encoding"),
+            "the {what} refusal must name the command and the reason: {text}"
+        );
+    }
+
+    // CONTROL: a mapped command goes through all three, so the refusals are about THIS command.
+    let mapped = Command::StringSet {
+        key: "k".to_string(),
+        value: b"v".to_vec(),
+    };
+    let mapped_entry = SharedStoreWalEntry {
+        command: Some(mapped.clone()),
+        ..entry.clone()
+    };
+    assert!(wal_command_metadata(Some(&mapped)).is_ok());
+    assert!(encode_wal_proto_frame(&mapped_entry, WAL_FRAME_FORMAT_DEFAULT).is_ok());
+    assert!(encode_wal_batch_container(&[mapped_entry.clone()]).is_ok());
+
+    // ---- through a real publish: refused, and the store is still empty.
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+    let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+    let err = replicator
+        .publish_wal_entry(entry)
+        .await
+        .expect_err("a command with no protobuf encoding was published");
+    assert!(err.to_string().contains("LeaderEstablish"), "{err}");
+    assert!(
+        store.list("").await.unwrap().is_empty(),
+        "the refused publish left objects in the store"
+    );
+    // CONTROL: the mapped command publishes and leaves something, so the empty listing above was
+    // the refusal and not a listing that cannot see this store.
+    replicator.publish_wal_entry(mapped_entry).await.unwrap();
+    assert!(!store.list("").await.unwrap().is_empty());
+}
+
+/// NO JSON ENCODE ARM IS LEFT IN THE THREE WAL COMMAND ENCODERS.
+///
+/// The test above drives them; this sees an arm nobody reaches YET. The scan reads each function's
+/// own code with comment lines removed, anchored on its declaration up to the closing brace at
+/// column zero. Its POSITIVE CONTROL is `wal_command_from_payload`, which still calls
+/// `serde_json::from_slice` (the permanent decode arm for logs written before this change): a scan
+/// that could not see that call would pass over any encoder.
+#[test]
+fn no_json_encode_arm_is_left_in_the_wal_command_encoders() {
+    let source = include_str!("shared_store.rs");
+    fn body(source: &'static str, from: &str) -> String {
+        let start = source
+            .find(from)
+            .unwrap_or_else(|| panic!("no declaration {from}"));
+        let rest = &source[start..];
+        let end = rest.find("\n}\n").unwrap_or_else(|| panic!("{from} never closes"));
+        rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let encoders = [
+        "fn wal_command_payload(",
+        "fn wal_command_metadata(",
+        "fn encode_wal_proto_frame(",
+        "fn encode_wal_batch_container(",
+    ];
+    assert_eq!(encoders.len(), 4);
+    for declaration in encoders {
+        let code = body(source, declaration);
+        assert!(
+            code.len() > 100,
+            "{declaration}: the scan found almost nothing, so it proves nothing"
+        );
+        assert!(
+            !code.contains("serde_json"),
+            "{declaration} still reaches for serde_json: a JSON encode arm survives for a WAL \
+             command. Delete it; `wal_command_from_payload` keeps the JSON decode arm for logs \
+             already written."
+        );
+    }
+    assert!(
+        body(source, "fn wal_command_from_payload(").contains("serde_json::from_slice"),
+        "the control no longer sees the permanent JSON decode arm, so this scan could pass over \
+         an encoder it cannot see"
+    );
+}
+
+/// A PER-KEY WAL OBJECT IS READ IN EITHER SHAPE, THROUGH BOTH READERS, AND A CHANGED FIELD IS NOT
+/// TRUSTED.
+///
+/// The JSON envelopes are the installed base and are PLANTED (no writer produces them any more); the
+/// binary objects are planted beside them with the production encoder.
+/// They are then read through `load_wal_entries` (the batched path, `parse_wal_entry_object`) and
+/// through `read_wal_entry` (the fallback path), because the two are separate call sites and a
+/// pass through one says nothing about the other.
+///
+/// The corruption is made at a layer the NEXT layer accepts. The frame's own check covers only its
+/// command payload, so a changed WAL index inside it decodes cleanly as a different entry; only the
+/// object-wide CRC can refuse it. The test shows the frame decoder accepting the changed bytes
+/// first, so the refusal is demonstrably the object check and not the frame's.
+#[tokio::test]
+async fn a_per_key_wal_object_is_read_in_either_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, replicator) = test_shared_store(dir.path());
+    let entry = |wal_index: u64| SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index,
+        command: Some(Command::StringSet {
+            key: format!("k{wal_index}"),
+            value: vec![wal_index as u8; 3],
+        }),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+
+    // ---- the installed base: JSON envelopes PLANTED, because no writer produces them any more.
+    for index in 1..=3u64 {
+        store
+            .put(
+                &replicator.wal_key(1, index),
+                Bytes::from(a_legacy_json_wal_object(&entry(index))),
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.get(&replicator.wal_key(1, index)).await.unwrap()[0], b'{');
+    }
+    // ---- binary objects PLANTED beside them.
+    for index in 4..=5u64 {
+        let bytes = encode_wal_entry_object(&entry(index), WAL_FRAME_FORMAT_DEFAULT).unwrap();
+        assert_eq!(bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
+            "the planted object parses as JSON, so the binary arm is not what is being read"
+        );
+        store
+            .put(&replicator.wal_key(1, index), Bytes::from(bytes))
+            .await
+            .unwrap();
+    }
+
+    // ---- the batched reader.
+    let loaded = replicator.load_wal_entries(1).await.unwrap();
+    assert_eq!(
+        loaded.keys().copied().collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5],
+        "an object was passed over, and a short list is a successful answer"
+    );
+    for index in 1..=5u64 {
+        assert_eq!(loaded[&index], entry(index), "entry {index} read back differently");
+    }
+    assert_eq!(replicator.latest_persisted_wal_index(1).await.unwrap(), 5);
+
+    // ---- the single-object reader, over one of each shape.
+    for index in [2u64, 5] {
+        assert_eq!(
+            replicator
+                .read_wal_entry(&replicator.wal_key(1, index))
+                .await
+                .unwrap(),
+            entry(index),
+            "read_wal_entry disagrees with load_wal_entries on entry {index}"
+        );
+    }
+
+    // ---- one WAL index changed inside the frame. The frame decoder accepts it...
+    let key = replicator.wal_key(1, 5);
+    let good = encode_wal_entry_object(&entry(5), WAL_FRAME_FORMAT_DEFAULT).unwrap();
+    // Locate the index byte by encoding the SAME command at two adjacent indices.
+    let same_command = |wal_index: u64| SharedStoreWalEntry {
+        wal_index,
+        ..entry(5)
+    };
+    let (a, b) = (
+        encode_wal_entry_object(&same_command(5), WAL_FRAME_FORMAT_DEFAULT).unwrap(),
+        encode_wal_entry_object(&same_command(6), WAL_FRAME_FORMAT_DEFAULT).unwrap(),
+    );
+    assert_eq!(a, good, "the located encoding is not the planted one");
+    assert_eq!(a.len(), b.len());
+    // Skip the CRC bytes (1..5): they differ too, because the CRC covers the index.
+    let differing: Vec<usize> = (5..a.len()).filter(|&i| a[i] != b[i]).collect();
+    assert_eq!(
+        differing.len(),
+        1,
+        "the index is not a single byte of the frame, so the flip below is not what it claims"
+    );
+    let mut changed = good.clone();
+    changed[differing[0]] = b[differing[0]];
+    let frame_only = decode_wal_proto_frame_exact(&changed[5..], &key)
+        .expect("the frame's own check covers only the command payload, so it accepts this");
+    assert_eq!(frame_only.wal_index, 6, "the changed index is not the one the frame now carries");
+    store.put(&key, Bytes::from(changed)).await.unwrap();
+    let refused = replicator
+        .read_wal_entry(&key)
+        .await
+        .expect_err("an object whose stored WAL index changed was trusted");
+    assert!(
+        matches!(refused, SharedStoreReplicationError::ChecksumMismatch { .. }),
+        "refused for the wrong reason: {refused:?}"
+    );
+    assert!(
+        replicator.load_wal_entries(1).await.is_err(),
+        "the batched reader trusted an object whose stored WAL index changed"
+    );
+
+    // ---- CONTROL: the original bytes read again, so the refusals above were the changed byte.
+    store.put(&key, Bytes::from(good)).await.unwrap();
+    assert_eq!(replicator.read_wal_entry(&key).await.unwrap(), entry(5));
+    assert_eq!(replicator.load_wal_entries(1).await.unwrap().len(), 5);
+
+    // ---- a truncated object is an error, never an empty entry.
+    store
+        .put(&key, Bytes::from(vec![SHARED_OBJECT_CONTAINER_PROTOBUF, 0, 0]))
+        .await
+        .unwrap();
+    assert!(replicator.read_wal_entry(&key).await.is_err());
+}
+
+/// THE PER-KEY WAL WRITER IS BINARY, AND A PLANTED JSON OBJECT IS STILL REPLAYED BESIDE IT.
+///
+/// The real writer publishes two entries; the JSON envelope the old writer produced is the
+/// installed base and is PLANTED at the third index, built by hand with a valid SHA-256, because
+/// the writer that made such objects is gone. A real replay then walks all three into a follower
+/// and the follower serves what each carried -- the end-to-end claim, rather than a decode that
+/// round-trips in isolation.
+///
+/// A command with no protobuf encoding is also refused by this layout now, and the store is left
+/// empty: this layout used to write ANY command as JSON.
+#[tokio::test]
+async fn the_per_key_wal_writer_is_binary_and_a_planted_json_object_is_still_replayed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, replicator) = test_shared_store(dir.path());
+    let entry = |wal_index: u64| SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index,
+        command: Some(Command::StringSet {
+            key: format!("k{wal_index}"),
+            value: vec![wal_index as u8; 2],
+        }),
+        staged_blocks: Vec::new(),
+        outcomes: Vec::new(),
+    };
+
+    // ---- the real writer.
+    for index in 1..=2u64 {
+        replicator.publish_wal_entry(entry(index)).await.unwrap();
+        let written = store.get(&replicator.wal_key(1, index)).await.unwrap();
+        assert_eq!(
+            written[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "the per-key writer did not write the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&written).is_err(),
+            "the per-key object parses as JSON, so the container byte proves nothing"
+        );
+    }
+
+    // ---- the installed base: a JSON envelope planted at index 3.
+    let legacy_entry = entry(3);
+    let entry_json = serde_json::to_vec(&legacy_entry).unwrap();
+    let envelope = SharedStoreWalObject {
+        entry: legacy_entry.clone(),
+        entry_byte_size: entry_json.len() as u64,
+        entry_sha256: sha256_hex(&entry_json),
+    };
+    let planted = serde_json::to_vec(&envelope).unwrap();
+    assert_eq!(planted[0], b'{', "the planted object is not the JSON shape");
+    store
+        .put(&replicator.wal_key(1, 3), Bytes::from(planted))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get(&replicator.wal_key(1, 3)).await.unwrap()[0],
+        b'{',
+        "the plant did not take, so nothing below reads a JSON object"
+    );
+
+    // ---- a real replay over the mixture.
+    let follower = test_engine(dir.path(), "follower");
+    follower.load_shard(1);
+    let replayed = replicator.replay_wal(1, 0, &follower).await.unwrap();
+    assert_eq!(replayed.applied, 3, "the replay stopped short of the mixed log");
+    for index in 1..=3u64 {
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("k{index}")
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![index as u8; 2])
+            },
+            "entry {index} did not replay (1 and 2 are binary, 3 is the planted JSON object)"
+        );
+    }
+
+    // ---- a command with no protobuf encoding is refused here too, and nothing is written.
+    let empty_dir = tempfile::tempdir().unwrap();
+    let (empty_store, empty_replicator) = test_shared_store(empty_dir.path());
+    let refused = empty_replicator
+        .publish_wal_entry(SharedStoreWalEntry {
+            command: Some(Command::LeaderEstablish),
+            ..entry(1)
+        })
+        .await
+        .expect_err("an unmappable command was published to the per-key layout");
+    assert!(refused.to_string().contains("LeaderEstablish"), "{refused}");
+    assert!(empty_store.list("").await.unwrap().is_empty());
+    empty_replicator.publish_wal_entry(entry(1)).await.unwrap();
+    assert!(!empty_store.list("").await.unwrap().is_empty());
+}
+
+/// NO JSON ENCODE PATH IS LEFT IN THE PER-KEY PUBLISH.
+///
+/// The test above reads the first byte of what the writer produced; this sees an encoder nobody
+/// calls YET. The scan reads `publish_wal_entry` with comment lines removed, anchored on its
+/// declaration up to the next method. Its POSITIVE CONTROL is `decode_wal_entry_object`, which
+/// still calls `serde_json` (the permanent JSON arm): a scan that could not see that would pass
+/// over any writer.
+#[test]
+fn no_json_encode_path_is_left_in_the_per_key_wal_publish() {
+    let source = include_str!("shared_store.rs");
+    fn body(source: &'static str, from: &str, to: &str) -> String {
+        let start = source
+            .find(from)
+            .unwrap_or_else(|| panic!("no declaration {from}"));
+        let rest = &source[start..];
+        let end = rest[from.len()..]
+            .find(to)
+            .unwrap_or_else(|| panic!("no declaration {to} after {from}"))
+            + from.len();
+        rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let publish = body(
+        source,
+        "pub async fn publish_wal_entry(",
+        "async fn publish_wal_entry_protobuf_blob(",
+    );
+    assert!(publish.len() > 100, "the scan found almost nothing");
+    assert!(
+        publish.contains("encode_wal_entry_object("),
+        "the per-key publish does not call the binary encoder"
+    );
+    assert!(
+        !publish.contains("serde_json"),
+        "the per-key publish still reaches for serde_json: a JSON encode path survives. Delete it; \
+         `decode_wal_entry_object` keeps the JSON arm for the objects already on disk."
+    );
+    let decoder = body(
+        source,
+        "fn decode_wal_entry_object(",
+        "fn encode_wal_entry_object(",
+    );
+    assert!(
+        decoder.contains("serde_json::from_slice"),
+        "the control no longer sees the permanent JSON arm, so this scan could pass over a writer \
+         it cannot see"
+    );
+}
+
+}
+
+#[cfg(test)]
+mod a_staged_blocks_name_keeps_its_tag {
+    use super::*;
+    use prost::Message;
+
+    /// The name of the element a staged block holds rides tag 3 of its frame message, and the
+    /// bytes below are what a build before the Rust field was renamed wrote for object 7, the
+    /// payload 1-2-3 and the name `f0`. Decoded and written back, they must come back unchanged:
+    /// a tag that moved would drop the name on the way in and write nothing for it on the way out.
+    #[test]
+    fn the_frame_of_a_named_block_round_trips_byte_for_byte() {
+        let written: [u8; 11] = [
+            0x08, 0x07, // tag 1, varint: the object id
+            0x12, 0x03, 0x01, 0x02, 0x03, // tag 2, bytes: the payload
+            0x1a, 0x02, b'f', b'0', // tag 3, string: the name
+        ];
+        let decoded = SharedStoreStagedBlockProto::decode(&written[..])
+            .expect("a frame an earlier build wrote must decode");
+        assert_eq!(decoded.encode_to_vec(), written);
+        let whole_object: [u8; 7] = [0x08, 0x07, 0x12, 0x03, 0x01, 0x02, 0x03];
+        let decoded = SharedStoreStagedBlockProto::decode(&whole_object[..]).expect("decodes");
+        assert_eq!(
+            decoded.encode_to_vec(),
+            whole_object,
+            "a block with no name writes no tag 3"
+        );
+    }
 
 }

@@ -62,7 +62,7 @@ fn served_hash_fields(engine: &TemporalEngine, key: &str) -> usize {
 /// The two sources, read the way each is read in production.
 ///
 /// THE SECOND SOURCE IS RE-ATTRIBUTED, AND THAT IS THIS MODULE'S WHOLE EDIT. It was
-/// `bucket_index_component_block_addresses`, which recovered each field's name from the block
+/// `bucket_index_element_name_block_addresses`, which recovered each field's name from the block
 /// entry's element-name field. `BlockIndex` has no such field now, so that walk answers for NO
 /// fields and both arms failed on their own vacuity floors -- "the block index names 0 field(s) ...
 /// so the comparison below would be vacuous". The floors were right to fire: with one side empty
@@ -136,7 +136,7 @@ fn both_sources(
 /// THE QUESTION, AND WHY IT IS NOT "IS THE FIELD READABLE".
 ///
 /// RESTATED, BECAUSE THE READER IT NAMED HAS MOVED. This read "`HashGetAll` resolves through
-/// `bucket_index_component_block_addresses`, which is keyed BY THE COMPONENT -- it reads each
+/// `bucket_index_element_name_block_addresses`, which is keyed BY THE ELEMENT NAME -- it reads each
 /// field's name off the block entry. The fold installs block entries. So a folded hash field is
 /// readable today whether the durable map received it or not, and a test asserting 'readable
 /// through the served path' would go green while proving nothing about the map."
@@ -149,7 +149,7 @@ fn both_sources(
 ///
 /// THE DEPENDENCY ON THE MAP EXISTS NOW -- IT WAS CREATED BY REMOVING THE ELEMENT NAME. This read
 /// "DOES NOT EXIST YET ... Today the entry carries the field name and the map is a second copy.
-/// Take `component` off the entry -- 16 of the 56 bytes a resident entry weighs -- and
+/// Take `element_name` off the entry -- 16 of the 56 bytes a resident entry weighs -- and
 /// `HashGetAll` has nowhere left to read a name FROM except `shard.hashes`. So the order is not
 /// 'reroute the readers, then remove the field'. It is: prove the map is complete FIRST, because
 /// the removal is what makes the map load-bearing. This module is that proof, or its refutation."
@@ -243,7 +243,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     // ---------------------------------------------------------------------------------------
     // AND WHAT THE HANDLE DISCRIMINATES NOW, WHICH THE SET EQUALITY ABOVE DOES NOT TOUCH.
     //
-    // RESTATED: this read "`block_index_handle` hashes the component along with `model_id`,
+    // RESTATED: this read "`block_index_handle` hashes the element name along with `model_id`,
     // `object_key` and five address fields, and `index_log.rs` calls it 'the only discriminator'
     // between two elements of ONE folded block ... so dropping it would collapse them onto one
     // slot." It was dropped. The handle is the model spelling, the object key and the address, and
@@ -275,8 +275,8 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     };
 
     println!("[fold-hash] the {} block entries this object holds:", blocks.len());
-    for (handle, component, address) in &blocks {
-        println!("    handle {handle:>20}  component {component:<10}  address {address}");
+    for (handle, element_name, address) in &blocks {
+        println!("    handle {handle:>20}  element name {element_name:<10}  address {address}");
     }
     assert_eq!(
         FIELDS,
@@ -297,11 +297,11 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         FIELDS,
         handles.len(),
         "two of these entries already share a handle, which is a collision today rather than \
-         anything to do with removing the component",
+         anything to do with removing the element name",
     );
 
     // THE VERDICT ON THE SECOND JOB, stated either way rather than asserted one way. If the six
-    // fields sit at six addresses, the component is not what keeps them apart and the collapse the
+    // fields sit at six addresses, the element name is not what keeps them apart and the collapse the
     // doc warns about does not arise for this shape. If they share one address, it IS what keeps
     // them apart and removing it would take six entries to one -- and this fixture is then the
     // counter-example.
@@ -309,7 +309,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         // AND WHERE THE SHARED-ADDRESS CASE DOES COME FROM, so the bound is a location and not
         // merely a caveat. Every element gets its own block on the write path; several blocks are
         // folded into one only by `container_blocks`, and that module states it is done "at
-        // COMPACTION and nowhere else". So the component becomes the only discriminator exactly
+        // COMPACTION and nowhere else". So the element name becomes the only discriminator exactly
         // for a COMPACTED batched block -- which is the case the campaign already recorded
         // collapsing, forty hash fields on one block arriving as one entry with thirty-nine lost.
         println!(
@@ -493,7 +493,7 @@ fn every_hash_install_path_reports_a_touched_element_and_only_a_removal_does_not
             !touched.is_empty(),
             "{name} installs a hash block and reports NO touched element, so its field reaches the \
              block index and never the durable map -- which is the gap that makes removing \
-             `component` lose data",
+             `element_name` lose data",
         );
     }
 

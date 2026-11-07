@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Context model-provider calls for summaries and embeddings across supported provider protocols.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::llm_context::{BatchEmbedder, EmbeddingBatch, OllamaConfig, OllamaProvider};
@@ -34,6 +34,16 @@ struct ContextSummaryBatchItem {
     source_index: usize,
     l0: String,
     l1: String,
+}
+
+#[derive(Serialize)]
+struct ContextSummaryBatchSource<'a> {
+    source_index: usize,
+    source_kind: &'static str,
+    source_id: &'a str,
+    title: &'a str,
+    rich_source: bool,
+    body: &'a str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -186,9 +196,8 @@ pub(crate) fn context_summaries_for_extract_batch(
         std::iter::repeat_with(|| None).take(requests.len()).collect();
     let mut start = 0usize;
     while start < requests.len() {
-        let end = ollama_summary_batch_end(&client, requests, start);
+        let (end, prompt) = ollama_summary_batch_prompt(&client, requests, start);
         let chunk = &requests[start..end];
-        let prompt = context_summary_batch_prompt(chunk);
         let output = client
             .generate_structured_json(
                 CONTEXT_SUMMARY_SYSTEM_PROMPT,
@@ -375,13 +384,56 @@ pub(crate) fn context_embeddings_for_extract(
         return context_embeddings_for_extract_one_batch(&provider, inputs);
     }
 
+    // Encoder output depends on the configured model and text, not the caller's label or object
+    // id. Preserve the first occurrence for the provider request and remember where every input
+    // maps so repeated event bodies or summaries do not consume duplicate local-model work.
+    let mut unique_by_text = HashMap::<&str, usize>::with_capacity(inputs.len());
+    let mut unique_inputs = Vec::with_capacity(inputs.len());
+    let mut input_rows = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let row = if let Some(row) = unique_by_text.get(input.3) {
+            *row
+        } else {
+            let row = unique_inputs.len();
+            unique_by_text.insert(input.3, row);
+            unique_inputs.push(*input);
+            row
+        };
+        input_rows.push(row);
+    }
+
+    let (unique_batch, mut report) =
+        context_embeddings_for_unique_inputs(&provider, &unique_inputs)?;
+    if unique_inputs.len() == inputs.len() {
+        return Ok((unique_batch, report));
+    }
+
+    let dimensions = unique_batch.dimensions;
+    let mut values = Vec::with_capacity(inputs.len().saturating_mul(dimensions));
+    for row in input_rows {
+        let start = row.saturating_mul(dimensions);
+        values.extend_from_slice(&unique_batch.values[start..start + dimensions]);
+    }
+    report.requested_vector_count = inputs.len();
+    report.generated_vector_count = inputs.len();
+    Ok((EmbeddingBatch { dimensions, values }, report))
+}
+
+fn context_embeddings_for_unique_inputs(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    if inputs.is_empty() {
+        return context_embeddings_for_extract_one_batch(provider, inputs);
+    }
+
     let mut start = 0usize;
     let mut combined = EmbeddingBatch::default();
     let mut combined_report: Option<ContextEmbeddingGenerationReport> = None;
     while start < inputs.len() {
-        let end = context_embedding_batch_end(&provider, inputs, start);
+        let end = context_embedding_batch_end(provider, inputs, start);
         let (batch, report) =
-            context_embeddings_for_extract_one_batch(&provider, &inputs[start..end])?;
+            context_embeddings_for_extract_one_batch(provider, &inputs[start..end])?;
         if combined.dimensions == 0 {
             combined.dimensions = batch.dimensions;
             combined
@@ -837,67 +889,73 @@ fn context_summary_prompt(request: &ContextExtractRequest) -> String {
     context_summary_prompt_with_guidance(request, guidance)
 }
 
-fn ollama_summary_batch_end(
+fn ollama_summary_batch_prompt(
     client: &OllamaProvider,
     requests: &[&ContextExtractRequest],
     start: usize,
-) -> usize {
+) -> (usize, String) {
     let config = client.config();
     let max_end = requests
         .len()
         .min(start.saturating_add(config.max_batch_items));
     let mut end = start;
-    let mut prompt_bytes = CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2;
+    let mut prompt = Vec::with_capacity(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2);
+    prompt.extend_from_slice(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.as_bytes());
+    prompt.push(b'[');
     while end < max_end {
-        let candidate_end = end + 1;
         let source_index = end - start;
-        let item_bytes = context_summary_batch_source(source_index, requests[end])
-            .to_string()
-            .len();
-        let candidate_bytes = prompt_bytes
-            .saturating_add(usize::from(source_index > 0))
-            .saturating_add(item_bytes);
-        let fits = candidate_bytes <= config.max_input_bytes
+        let item_start = prompt.len();
+        if source_index > 0 {
+            prompt.push(b',');
+        }
+        serde_json::to_writer(
+            &mut prompt,
+            &context_summary_batch_source(source_index, requests[end]),
+        )
+        .expect("borrowed context summary source serializes");
+        let candidate_prompt_bytes = prompt
+            .len()
+            .saturating_add(1);
+        let fits = candidate_prompt_bytes <= config.max_input_bytes
             && CONTEXT_SUMMARY_SYSTEM_PROMPT
                 .len()
-                .saturating_add(candidate_bytes)
+                .saturating_add(candidate_prompt_bytes)
                 <= config.max_request_bytes;
         if !fits && end > start {
+            prompt.truncate(item_start);
             break;
         }
-        end = candidate_end;
-        prompt_bytes = candidate_bytes;
+        end += 1;
         if !fits {
             break;
         }
     }
-    end.max(start + 1)
-}
-
-fn context_summary_batch_prompt(requests: &[&ContextExtractRequest]) -> String {
-    let sources = requests
-        .iter()
-        .enumerate()
-        .map(|(source_index, request)| context_summary_batch_source(source_index, request))
-        .collect::<Vec<_>>();
-    format!(
-        "{CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX}{}",
-        serde_json::Value::Array(sources)
+    prompt.push(b']');
+    (
+        end.max(start + 1),
+        String::from_utf8(prompt).expect("serialized context summary prompt is UTF-8"),
     )
 }
 
 fn context_summary_batch_source(
     source_index: usize,
     request: &ContextExtractRequest,
-) -> Value {
-    serde_json::json!({
-        "source_index": source_index,
-        "source_kind": format!("{:?}", request.source_kind),
-        "source_id": request.source_id,
-        "title": request.title,
-        "rich_source": context_source_warrants_l1(&request.body),
-        "body": request.body,
-    })
+) -> ContextSummaryBatchSource<'_> {
+    ContextSummaryBatchSource {
+        source_index,
+        source_kind: match request.source_kind {
+            ContextSourceKind::Document => "Document",
+            ContextSourceKind::Chat => "Chat",
+            ContextSourceKind::Ticket => "Ticket",
+            ContextSourceKind::Code => "Code",
+            ContextSourceKind::Incident => "Incident",
+            ContextSourceKind::UserEvent => "UserEvent",
+        },
+        source_id: &request.source_id,
+        title: &request.title,
+        rich_source: context_source_warrants_l1(&request.body),
+        body: &request.body,
+    }
 }
 
 fn context_summary_prompt_with_guidance(

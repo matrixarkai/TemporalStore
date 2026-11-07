@@ -7,7 +7,7 @@
 //!
 //! `promote_model_maps_to_bucket_index_authority` runs on the request path and asks, per live
 //! model-map block, whether the bucket index names it. `contains_object_block_address` requires
-//! `block.component.as_deref() == component`, so a projection that files entries with no component
+//! `block.element_name.as_deref() == element_name`, so a projection that files entries with no element name
 //! while the check asks about a NAMED one would answer "missing" for every element -- and a single
 //! missing block rebuilds the whole shard index. **Per execute.**
 //!
@@ -99,7 +99,7 @@ fn write_to(engine: &TemporalEngine, command: Command) {
 ///
 /// The re-derivation comes first on purpose: the check compares the model maps against the index,
 /// so both sides have to be speaking the same projection for the answer to mean anything. That is
-/// the question -- whether a projection that files entries with no component makes a check that
+/// the question -- whether a projection that files entries with no element name makes a check that
 /// asks about a named one report every element missing.
 fn one_check_under(gate_on: bool) -> (u64, u64, u64, bool) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -185,7 +185,7 @@ fn what_the_authority_check_answers_under_each_projection() {
         !on.4,
         "the gated projection made the authority check report the index incomplete, so it \
          rebuilt the whole shard index. The check asks whether each live block is NAMED by the \
-         index; a projection filing entries with no component against a check asking about a \
+         index; a projection filing entries with no element name against a check asking about a \
          named one reads every element as missing. That is a rebuild per load, per post-replay \
          fold, and per stream batch before the latch -- a latency regression no footprint or \
          correctness guard would catch"
