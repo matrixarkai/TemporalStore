@@ -510,8 +510,16 @@ jobs:
           # and dropped the key on every element write: 413 allocations for 400 installs, and
           # 264.9 B per write at a 208-byte key against 64.9 B at an 8-byte one. The guard varies
           # KEY LENGTH, because only a key copy can make per-write bytes depend on it.
+          #
+          # a_hash_field_write_does_not_pay_for_the_fields_it_already_has pins that a single-command
+          # hash write files the field it wrote and not the fields the hash already held. The
+          # whole-object sync it used to run cost 118 allocations at 10 fields and about 2,300 at
+          # 400 (571 at 100, 5,080 at 1,000), because its filter against re-filing asks a lookup
+          # that resolves no named element. The guard varies the FIELD COUNT and carries a control:
+          # a read of the whole hash must grow with it, or the probe cannot see that dimension.
           for t in \
-            engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key ; do
+            engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
+            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
