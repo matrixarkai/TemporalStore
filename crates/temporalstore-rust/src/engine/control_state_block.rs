@@ -94,8 +94,9 @@ pub(super) fn decode_control_state_block(bytes: &[u8]) -> Result<BTreeMap<u64, i
     }
 }
 
-/// A series as the packed block. Test-only until the writer flips.
-#[cfg(test)]
+/// A series as the packed block. THE ONLY ENCODER: `persist_control_state_block` calls it and
+/// nothing writes the JSON object any more. See the module note for why the decoder keeps its JSON
+/// arm while this one has none.
 pub(crate) fn encode_control_state_block(series: &BTreeMap<u64, i64>) -> Vec<u8> {
     let proto = v1::DurableControlStateSeries {
         timestamps_ms: series.keys().copied().collect(),

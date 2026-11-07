@@ -7235,9 +7235,10 @@ fn persist_control_state_block(
     if async_storage && shard.control_coalesce_persist {
         return true;
     }
-    let Ok(bytes) = serde_json::to_vec(series) else {
-        return false;
-    };
+    // PACKED: the container byte and two parallel arrays. There is NO JSON encode path left here;
+    // `decode_control_state_block` keeps its JSON arm for the blocks already on disk, and an
+    // encoder nobody calls is how a retired format comes back.
+    let bytes = encode_control_state_block(series);
     append_control_state_block(
         cache,
         block_store,
