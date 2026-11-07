@@ -476,3 +476,5 @@ mod routing_range_stamp_binary;
 mod the_config_log_in_either_shape;
 #[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
 mod the_served_index_encoder_has_no_json_fallback;
+#[path = "tests/the_control_state_block_in_either_shape.rs"]
+mod the_control_state_block_in_either_shape;
