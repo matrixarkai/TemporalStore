@@ -381,6 +381,7 @@ pub fn ingest_extract_context_with_l1_gate(
         prefer_current_agent: false,
         current_agent_scope_key: default_current_agent_scope_key(),
         provider: request.provider,
+        include_debug: false,
     };
     let summary = ContextIngestExtractSummary {
         source_count,

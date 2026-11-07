@@ -1232,6 +1232,9 @@ pub struct ContextRetrieveRequest {
     pub current_agent_scope_key: String,
     #[serde(default)]
     pub provider: ContextModelProviderConfig,
+    /// Include candidate lineage and fanout details in the response.
+    #[serde(default)]
+    pub include_debug: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1240,9 +1243,9 @@ pub struct ContextRetrieveReport {
     pub blocks: Vec<ContextBlock>,
     pub node_count: usize,
     pub event_count: usize,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "context_query_debug_is_default")]
     pub query_understanding_debug: ContextQueryUnderstandingDebug,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "context_fanout_plan_is_default")]
     pub fanout_plan: ContextFanoutPlanReport,
     #[serde(default)]
     pub parity: ContextPipelineParityEvidence,
@@ -1321,6 +1324,14 @@ pub struct ContextQueryUnderstandingDebug {
     pub selected_refs: Vec<ContextSelectedRefDebug>,
     #[serde(default)]
     pub injection_ordering: Vec<ContextInjectionOrderingDebug>,
+}
+
+fn context_query_debug_is_default(value: &ContextQueryUnderstandingDebug) -> bool {
+    value == &ContextQueryUnderstandingDebug::default()
+}
+
+fn context_fanout_plan_is_default(value: &ContextFanoutPlanReport) -> bool {
+    value == &ContextFanoutPlanReport::default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2181,22 +2192,30 @@ pub fn retrieve_context(
     let mut node_count = 0usize;
     let mut event_count = 0usize;
     let query_plan = context_query_plan(&request.query);
-    let mut query_understanding_debug =
-        context_query_understanding_debug_for_plan(&request, &query_plan);
-    let mut fanout_plan = ContextFanoutPlanReport {
-        strategy: "hierarchical_summary_secondary_index_node_resource_colocation".to_string(),
-        current_agent_default_boost: if request.prefer_current_agent {
-            125
-        } else {
-            100
-        },
-        peer_agent_default_boost: 100,
-        prefer_current_agent_configured: request.prefer_current_agent,
-        peer_agent_demoted_by_default: false,
-        secondary_index_filter_group_count: query_understanding_debug
-            .filter_group_summary
-            .secondary_index_group_count,
-        ..ContextFanoutPlanReport::default()
+    let include_debug = request.include_debug;
+    let mut query_understanding_debug = if include_debug {
+        context_query_understanding_debug_for_plan(&request, &query_plan)
+    } else {
+        ContextQueryUnderstandingDebug::default()
+    };
+    let mut fanout_plan = if include_debug {
+        ContextFanoutPlanReport {
+            strategy: "hierarchical_summary_secondary_index_node_resource_colocation".to_string(),
+            current_agent_default_boost: if request.prefer_current_agent {
+                125
+            } else {
+                100
+            },
+            peer_agent_default_boost: 100,
+            prefer_current_agent_configured: request.prefer_current_agent,
+            peer_agent_demoted_by_default: false,
+            secondary_index_filter_group_count: query_understanding_debug
+                .filter_group_summary
+                .secondary_index_group_count,
+            ..ContextFanoutPlanReport::default()
+        }
+    } else {
+        ContextFanoutPlanReport::default()
     };
     let tiers = if request.tiers.is_empty() {
         default_tiers()
@@ -2783,67 +2802,71 @@ pub fn retrieve_context(
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(2);
-    let skipped_node_hashes = summary_scores
-        .iter()
-        .skip(event_node_limit)
-        .map(|(node_hash, _, _, _, _)| *node_hash)
-        .collect::<Vec<_>>();
+    let skipped_node_count = summary_scores.len().saturating_sub(event_node_limit);
     fanout_plan.summary_candidate_nodes = summary_scores.len();
     fanout_plan.summary_selected_nodes = node_hashes.len();
     fanout_plan.event_expanded_nodes = event_node_hashes.len();
-    fanout_plan.skipped_node_count = skipped_node_hashes.len();
+    fanout_plan.skipped_node_count = skipped_node_count;
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
     fanout_plan.event_query_budget = if include_l2 { event_pack_budget } else { 0 };
     fanout_plan.event_query_node_count = event_node_hashes.len();
-    fanout_plan.selected_node_hashes = node_hashes.clone();
-    fanout_plan.skipped_node_hashes = skipped_node_hashes;
-    fanout_plan.locality_keys = event_node_hashes
-        .iter()
-        .map(|node_hash| format!("tenant:{}:node:{node_hash}", request.tenant_hash))
-        .collect();
+    if include_debug {
+        fanout_plan.selected_node_hashes = node_hashes.clone();
+        fanout_plan.skipped_node_hashes = summary_scores
+            .iter()
+            .skip(event_node_limit)
+            .map(|(node_hash, _, _, _, _)| *node_hash)
+            .collect();
+        fanout_plan.locality_keys = event_node_hashes
+            .iter()
+            .map(|node_hash| format!("tenant:{}:node:{node_hash}", request.tenant_hash))
+            .collect();
+    }
     fanout_plan.fanout_reduced =
         fanout_plan.event_expanded_nodes < fanout_plan.namespace_node_candidates;
-    query_understanding_debug.tree_traversal_summary.enabled = true;
-    query_understanding_debug
-        .tree_traversal_summary
-        .fallback_to_flat = false;
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embedding_candidate_count = summary_scores.len();
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embedding_selected_count = summary_scores
-        .iter()
-        .filter(|(_, _, found, _, _)| *found > 0)
-        .count();
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embedding_lookup_batches = usize::from(!summary_scores.is_empty());
-    query_understanding_debug
-        .tree_traversal_summary
-        .query_embedding_dimension = query_embedding.len();
-    query_understanding_debug
-        .tree_traversal_summary
-        .query_embedding_provider = retrieval_provider.provider_name.clone();
-    query_understanding_debug
-        .tree_traversal_summary
-        .namespace_node_candidates = fanout_plan.namespace_node_candidates;
-    query_understanding_debug
-        .tree_traversal_summary
-        .event_expanded_node_count = fanout_plan.event_expanded_nodes;
-    query_understanding_debug
-        .tree_traversal_summary
-        .skipped_node_count = fanout_plan.skipped_node_count;
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embeddings = summary_scores
-        .iter()
-        .map(|(node_hash, score, found, summary_score, freshness_ms)| {
-            format!(
-                "node:{node_hash}:score:{score}:refs:{found}:summary_score:{summary_score}:last_event:{freshness_ms}"
-            )
-        })
-        .collect();
+    if include_debug {
+        query_understanding_debug.tree_traversal_summary.enabled = true;
+        query_understanding_debug
+            .tree_traversal_summary
+            .fallback_to_flat = false;
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_candidate_count = summary_scores.len();
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_selected_count = summary_scores
+            .iter()
+            .filter(|(_, _, found, _, _)| *found > 0)
+            .count();
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_lookup_batches = usize::from(!summary_scores.is_empty());
+        query_understanding_debug
+            .tree_traversal_summary
+            .query_embedding_dimension = query_embedding.len();
+        query_understanding_debug
+            .tree_traversal_summary
+            .query_embedding_provider = retrieval_provider.provider_name.clone();
+        query_understanding_debug
+            .tree_traversal_summary
+            .namespace_node_candidates = fanout_plan.namespace_node_candidates;
+        query_understanding_debug
+            .tree_traversal_summary
+            .event_expanded_node_count = fanout_plan.event_expanded_nodes;
+        query_understanding_debug
+            .tree_traversal_summary
+            .skipped_node_count = fanout_plan.skipped_node_count;
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embeddings = summary_scores
+            .iter()
+            .map(|(node_hash, score, found, summary_score, freshness_ms)| {
+                format!(
+                    "node:{node_hash}:score:{score}:refs:{found}:summary_score:{summary_score}:last_event:{freshness_ms}"
+                )
+            })
+            .collect();
+    }
 
     let event_node_set = event_node_hashes.iter().copied().collect::<HashSet<_>>();
     let mut event_query_returned_count = 0usize;
@@ -2934,13 +2957,15 @@ pub fn retrieve_context(
                         break;
                     }
                     let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
-                    context_query_debug_record_candidate(
-                        &mut query_understanding_debug,
-                        request.tenant_hash,
-                        node_hash,
-                        &event,
-                        passes_prefilter,
-                    );
+                    if include_debug {
+                        context_query_debug_record_candidate(
+                            &mut query_understanding_debug,
+                            request.tenant_hash,
+                            node_hash,
+                            &event,
+                            passes_prefilter,
+                        );
+                    }
                     if !passes_prefilter {
                         continue;
                     }
@@ -2974,13 +2999,17 @@ pub fn retrieve_context(
         )
     });
     dedupe_context_blocks_by_source_ref(&mut blocks);
-    context_query_debug_finalize(
-        &mut query_understanding_debug,
-        &query_plan,
-        &blocks,
-        node_count,
-        tiers.as_slice(),
-    );
+    if include_debug {
+        context_query_debug_finalize(
+            &mut query_understanding_debug,
+            &query_plan,
+            &blocks,
+            node_count,
+            tiers.as_slice(),
+        );
+    } else {
+        fanout_plan = ContextFanoutPlanReport::default();
+    }
     ContextRetrieveReport {
         status: Status::ok(),
         blocks,

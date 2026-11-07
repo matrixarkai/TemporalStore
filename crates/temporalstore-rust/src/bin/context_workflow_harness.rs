@@ -421,6 +421,7 @@ fn main() {
         prefer_current_agent: false,
         current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
+        include_debug: true,
     };
     let retrieve = retrieve_context(&engine, retrieve_request.clone());
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -991,6 +992,7 @@ fn run_resource_skill_conversation_scale(
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     let retrieve_ms = retrieve_started.elapsed().as_millis();
@@ -3167,6 +3169,7 @@ mod tests {
                 prefer_current_agent: false,
                 current_agent_scope_key: "agent:codex".to_string(),
                 provider: ContextModelProviderConfig::default(),
+                include_debug: true,
             },
         );
         assert!(retrieve.status.ok);
