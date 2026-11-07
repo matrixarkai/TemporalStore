@@ -5,6 +5,7 @@
 
 use super::*;
 use super::slab_ids::*;
+use super::slab_manifest_wire::{decode_slab_manifest, is_wire_manifest};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
@@ -62,13 +63,20 @@ pub(super) fn load_slab_manifest_at(
     }
     let raw = read_block_store_file(&path, tally)?
         .into_bytes_charged_to_the_process_only();
+    // THE SHAPE IS DECIDED PER DOCUMENT FROM THE FIRST BYTE, never from a setting. A store that
+    // has only ever been written by this build still reads a JSON manifest an older build left
+    // behind, and the JSON arm stays for as long as any build that wrote one could have written
+    // data a live store still holds.
+    let decoded = if is_wire_manifest(&raw) {
+        decode_slab_manifest(&raw)
+    } else {
+        serde_json::from_slice(&raw).map_err(|err| err.to_string())
+    };
     let manifest: BlockStoreSlabManifest =
-        serde_json::from_slice(&raw).map_err(|err| {
-            BlockStoreError::CorruptBlockEnvelope {
-                block_slab_id: 0,
-                offset: 0,
-                reason: format!("corrupt slab manifest: {err}"),
-            }
+        decoded.map_err(|reason| BlockStoreError::CorruptBlockEnvelope {
+            block_slab_id: 0,
+            offset: 0,
+            reason: format!("corrupt slab manifest: {reason}"),
         })?;
     Ok(manifest
         .slabs

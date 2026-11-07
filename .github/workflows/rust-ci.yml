@@ -421,6 +421,14 @@ jobs:
             engine::tests::where_an_objects_refs_could_live::where_each_kinds_refs_end_up \
             engine::tests::what_the_core_index_puts_on_the_wire::every_field_of_the_core_index_declares_whether_it_reaches_the_wire \
             engine::tests::what_the_core_index_puts_on_the_wire::an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one \
+            block_store::slab_manifest_wire::tests::every_descriptor_field_survives_the_wire_round_trip \
+            block_store::slab_manifest_wire::tests::a_wire_manifest_loads_with_values_only_those_bytes_can_carry \
+            block_store::slab_manifest_wire::tests::a_json_manifest_still_loads_through_the_same_reader \
+            block_store::slab_manifest_wire::tests::the_two_spellings_load_to_the_same_descriptors \
+            block_store::slab_manifest_wire::tests::a_frame_of_123_bytes_starts_with_an_open_brace \
+            block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
+            block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
+            block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
