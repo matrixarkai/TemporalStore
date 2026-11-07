@@ -44,8 +44,8 @@ impl DataNodeRuntime {
         let running_shard_count = queue.running_shards.len();
         let dirty_shard_count = dirty
             .by_key
-            .values()
-            .map(|info| info.shard_id)
+            .keys()
+            .map(|(shard_id, _)| *shard_id)
             .collect::<BTreeSet<_>>()
             .len();
         DataNodeRuntimeStats {

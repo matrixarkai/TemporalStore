@@ -2265,7 +2265,13 @@ impl ShardTaskQueues {
 #[derive(Debug, Default)]
 struct DirtyTracker {
     next_object_id: u64,
-    by_key: HashMap<(ShardId, String), DirtyObjectInfo>,
+    by_key: HashMap<(ShardId, String), DirtyObjectState>,
+}
+
+#[derive(Debug)]
+struct DirtyObjectState {
+    object_id: u64,
+    last_dirty_at_ms: u64,
 }
 
 impl DataNodeRuntime {
@@ -2725,18 +2731,14 @@ impl DataNodeRuntime {
             && unique_fields
         {
             let shard_id = request.shard_id;
-            let dirty_keys = request
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(index, row)| (index, row.0.clone(), true))
-                .collect::<Vec<_>>();
-            let response = self.inner.engine.batch_execute_packed_hash_rows(request);
-            mark_dirty_for_successful_keys(
+            let (response, completed_keys) =
+                self.inner.engine.batch_execute_packed_hash_rows(request);
+            mark_dirty_for_successful_row_keys(
                 &self.inner.dirty,
                 shard_id,
-                &dirty_keys,
+                completed_keys,
                 &response.responses,
+                true,
             );
             return response;
         }
@@ -2800,18 +2802,14 @@ impl DataNodeRuntime {
             && unique_fields
         {
             let shard_id = request.shard_id;
-            let dirty_keys = request
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(index, row)| (index, row.0.clone(), false))
-                .collect::<Vec<_>>();
-            let response = self.inner.engine.batch_execute_shared_hash_rows(request);
-            mark_dirty_for_successful_keys(
+            let (response, completed_keys) =
+                self.inner.engine.batch_execute_shared_hash_rows(request);
+            mark_dirty_for_successful_row_keys(
                 &self.inner.dirty,
                 shard_id,
-                &dirty_keys,
+                completed_keys,
                 &response.responses,
+                false,
             );
             return response;
         }
@@ -3290,8 +3288,13 @@ impl DataNodeRuntime {
             .lock()
             .expect("dirty tracker lock poisoned")
             .by_key
-            .values()
-            .cloned()
+            .iter()
+            .map(|((shard_id, key), state)| DirtyObjectInfo {
+                shard_id: *shard_id,
+                key: key.clone(),
+                object_id: state.object_id,
+                last_dirty_at_ms: state.last_dirty_at_ms,
+            })
             .collect()
     }
 
