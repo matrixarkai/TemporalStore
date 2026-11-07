@@ -402,10 +402,10 @@ fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>)
         address.object_id,
     )
 }
-/// The numeric key a component is carrying, if it is carrying one.
+/// The numeric key an element name is carrying, if it is carrying one.
 ///
 /// Returns the stored key and, for a context event, the entry id packed beside it. Anything whose
-/// component is genuinely text -- a hash field, a hex-encoded set member, a packed zset score --
+/// element name is genuinely text -- a hash field, a hex-encoded set member, a packed zset score --
 /// returns None and keeps its string.
 fn numeric_element_name(kind: &str, element_name: Option<&str>) -> Option<(u64, Option<u64>)> {
     let element_name = element_name?;
@@ -429,11 +429,11 @@ fn numeric_element_name(kind: &str, element_name: Option<&str>) -> Option<(u64, 
 }
 
 
-/// The component text a reader rebuilds from the numeric fields, absent if there are none.
+/// The element name text a reader rebuilds from the numeric fields, absent if there are none.
 ///
 /// Shared with `item_from_proto` on purpose. The writer decides whether to drop the object id by
-/// deriving it, and it has to derive against the component the READER will hold -- a numeric
-/// component does not round trip character for character, since `007` is written as the number
+/// deriving it, and it has to derive against the element name the READER will hold -- a numeric
+/// element name does not round trip character for character, since `007` is written as the number
 /// seven and read back as `7`. Deriving against the pre-trip form would drop an id that then
 /// comes back different.
 fn numeric_element_name_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> Option<String> {
@@ -450,7 +450,7 @@ fn numeric_element_name_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -
 /// carries the last two while the record carries the shard. So the nine bytes a `fixed64` takes are
 /// nine bytes restating a hash of the fields sitting beside it.
 ///
-/// The component was a fourth term until #2019. It is still a field of the item; it is no longer a
+/// The element name was a fourth term until #2019. It is still a field of the item; it is no longer a
 /// term of this id.
 ///
 /// Dropped only when the derivation AGREES with what the item holds. An id that came from
@@ -503,11 +503,11 @@ fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardI
     // AS THE READER WILL SEE IT: a coded kind comes back through the code table, so the id is
     // derived from the round-tripped spelling rather than from this item's own.
     //
-    // THE COMPONENT USED TO BE RECONSTRUCTED HERE TOO, and it no longer is, because the id no
-    // longer takes one. That reconstruction existed only to feed this hash: a numeric component
+    // THE ELEMENT NAME USED TO BE RECONSTRUCTED HERE TOO, and it no longer is, because the id no
+    // longer takes one. That reconstruction existed only to feed this hash: a numeric element name
     // travels as a number and returns as text, so the writer had to rebuild the exact string the
     // reader would rebuild or the two would derive different ids for the same block and this
-    // omission would stop being safe. With the component out of the identity the whole round-trip
+    // omission would stop being safe. With the element name out of the identity the whole round-trip
     // concern is gone -- the kind is the only term left that changes spelling on the wire.
     let kind = kind_code(&item.kind)
         .and_then(kind_from_code)
@@ -542,7 +542,7 @@ pub(crate) fn item_to_proto(
         deleted: item.deleted,
         meta_log: item.meta,
         block_log: false,
-        // A component that IS a number travels as one. What stays in `component` is what the
+        // An element name that IS a number travels as one. What stays in `element_name` is what the
         // field is actually for: a hash field, a set member, a packed score.
         element_name: match numeric_element_name(&item.kind, item.element_name.as_deref()) {
             Some(_) => None,
@@ -550,7 +550,7 @@ pub(crate) fn item_to_proto(
         },
         timestamp_ms: numeric_element_name(&item.kind, item.element_name.as_deref()).map(|(key, _)| key),
         entry_id: numeric_element_name(&item.kind, item.element_name.as_deref()).and_then(|(_, id)| id),
-        // A removal with no component is the whole object, which is now said rather than implied.
+        // A removal with no element name is the whole object, which is now said rather than implied.
         object_deleted: item.deleted && item.element_name.is_none(),
         block,
         value: item.value.clone(),
@@ -597,7 +597,7 @@ fn wal_item_body_len(item: &WalOutcomeItem, derived: &DerivedItem<'_>) -> usize 
     len
 }
 
-/// Write an outcome item as field `tag`, its key, component, value and kind name borrowed.
+/// Write an outcome item as field `tag`, its key, element name, value and kind name borrowed.
 fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out: &mut Vec<u8>) {
     let body = wal_item_body_len(item, derived);
     prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
@@ -1201,7 +1201,7 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
             .into_iter()
             .map(|block| StagedBlock {
                 object_id: block.object_id.or(implied).unwrap_or_default(),
-                // Never defaulted the way the object id is. An absent component MEANS the block is
+                // Never defaulted the way the object id is. An absent element name MEANS the block is
                 // its whole object, and inventing one would make a string block claim to be an
                 // element; an absent one on a record written before this field existed means the
                 // same thing that record has always meant.
@@ -1336,7 +1336,7 @@ mod command_key_tests {
     /// A record with several outcomes KEEPS its keys, because stripping them costs more.
     ///
     /// This is the opposite of what the change set out to do, and the measurement is why. A
-    /// packed write stages one outcome per component, all naming the same key, and with
+    /// packed write stages one outcome per element name, all naming the same key, and with
     /// compression on those repeats cost almost nothing: eight of them encode to 88 bytes
     /// unstripped and 119 stripped. Removing the repetition takes away exactly the redundancy
     /// zstd was feeding on.
@@ -1638,7 +1638,7 @@ mod tests {
     /// means explicit presence, so `Some(0)` and `Some("")` are written where a plain field holding
     /// its default is omitted, and that distinction is the one a hand-written encoder gets wrong.
     /// So the axes are: an empty and a non-empty string, a zero and a non-zero integer, absent and
-    /// present optionals, both booleans, a kind with a code and a kind without one, a component
+    /// present optionals, both booleans, a kind with a code and a kind without one, an element name
     /// that parses as a number and one that does not, and an address whose object id repeats the
     /// item's (which is dropped) against one that does not.
     #[test]
@@ -1661,7 +1661,7 @@ mod tests {
 
         let mut checked = 0usize;
         // `list` and `zset` were missing, and kind drives both `kind_code` and
-        // `numeric_component`, so the matrix skipped exactly the two kinds whose outcomes replay
+        // `numeric_element_name`, so the matrix skipped exactly the two kinds whose outcomes replay
         // refuses in list_recovery and zset_recovery.
         for kind in [
             "page", "feature", "context_index", "an_unmapped_kind_name", "list", "zset",
@@ -1725,7 +1725,7 @@ mod tests {
                                             // decodes, so a field the decoder drops is invisible
                                             // to both -- and an outcome whose address comes back
                                             // absent is exactly what `wal_replay_outcome_refused`
-                                            // reports, with the component intact beside it.
+                                            // reports, with the element name intact beside it.
                                             let decoded =
                                                 item_from_proto(item_to_proto(&item, SHARD, None, None), SHARD, None, None);
                                             assert_eq!(

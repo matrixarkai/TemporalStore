@@ -48,7 +48,7 @@
 //! ```text
 //!  #  site                                                  verdict
 //!  1  engine.rs:3783 fold_carried_container_elements        CORRECT  `if !block.deleted` -- a tombstone is not a live block key
-//!  2  engine.rs:3907 fold_delta_block_items                 CORRECT  retain by (kind,key,component): a delta restating that
+//!  2  engine.rs:3907 fold_delta_block_items                 CORRECT  retain by (kind,key,element name): a delta restating that
 //!                                                                    element takes its tombstone with it
 //!  3  engine.rs:3921 fold_delta_block_items                 CORRECT  retain by covered_keys, whole-object
 //!  4  engine.rs:4740 mark_bucket_index_object_deleted       CORRECT  a whole-object delete takes tombstones too; the
@@ -71,7 +71,7 @@
 //!                                                                    bucket does need dumping
 //! 10  bucket_store.rs:105 runtime_report                    CORRECT  counts it as deleted_block_ref_count, which is what it is
 //! 11  bucket_store.rs:204 bucket_index_block_address        CORRECT  `!block.deleted`
-//! 12  bucket_store.rs:253 ..._component_block_addresses     CORRECT  `!block.deleted`. THE reader every serving path resolves
+//! 12  bucket_store.rs:253 ..._element_name_block_addresses     CORRECT  `!block.deleted`. THE reader every serving path resolves
 //!                                                                    through, and the reason index answers do not move
 //! 13  lifecycle.rs:2141 synthetic_address_count_for_test    HARMLESS a test helper counting addresses; a tombstone has one
 //! 14  lifecycle.rs:2188 rehydrate_wal_resident_blocks       CORRECT  skips it, so a WAL-resident tombstone block is not
@@ -106,7 +106,7 @@
 //! 26  sbi.rs:2174 release_bucket_blocks                     UNREACHABLE -- same
 //! 27  sbi.rs:3574 upsert_bucket_index_block_inner           CORRECT  keeps object_index while a tombstone holds the id; the
 //!                                                                    object does still have blocks
-//! 28  sbi.rs:3592 upsert_bucket_index_block_inner           CORRECT AND LOAD-BEARING. Its retain matches on component, so a
+//! 28  sbi.rs:3592 upsert_bucket_index_block_inner           CORRECT AND LOAD-BEARING. Its retain matches on element name, so a
 //!                                                                    RE-ADD clears the tombstone entry. That is the difference
 //!                                                                    between one entry per DISTINCT element removed and one per
 //!                                                                    REMOVAL, it was not written for this, and nothing else
@@ -129,7 +129,7 @@
 //!                                                                    small undercount, named rather than left implicit
 //! 38  storage_reporting.rs:40 filing_by_object_key          HARMLESS object_key -> bucket; a tombstone has the same key
 //! 39  storage_reporting.rs:489 storage_physical_index_...   HARMLESS includes tombstones in a physical report, deduped by
-//!                                                                    (key,kind,component,slab,offset)
+//!                                                                    (key,kind,element name,slab,offset)
 //! ```
 //!
 //! # THE TWO KNOWN CONSEQUENCES, NAMED RATHER THAN UNMENTIONED
@@ -225,7 +225,7 @@ fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize
     (live, tombstoned)
 }
 
-/// The components the tombstone entries of one object name.
+/// The element names the tombstone entries of one object name.
 fn tombstoned_element_names(engine: &TemporalEngine, kind: &str, key: &str) -> BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -250,7 +250,7 @@ fn tombstoned_element_names(engine: &TemporalEngine, kind: &str, key: &str) -> B
 /// rust-internal: drives SetAdd/SetRemove and the readers #2025 enumerated
 #[test]
 fn no_index_reader_answers_from_a_tombstone_entry() {
-    // THE FIVE READERS THIS ENUMERATES NAME ELEMENTS BY COMPONENT, which a block-named entry
+    // THE FIVE READERS THIS ENUMERATES NAME ELEMENTS BY ELEMENT NAME, which a block-named entry
     // does not carry, so gated it counts names rather than readers. The gated tombstone's
     // reachability is `removal_the_index_can_find`'s subject.
     let dir = tempfile::tempdir().expect("tempdir");
@@ -354,7 +354,7 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
         0,
         named.len(),
         "the index reader named {} member(s). An entry carries no element name, so every pair it \
-         returns must be nameless -- a name here means a component has come back onto the entry",
+         returns must be nameless -- a name here means an element name has come back onto the entry",
         named.len()
     );
     assert_eq!(
@@ -823,7 +823,7 @@ fn a_keys_last_element_still_files_its_object_id() {
 #[test]
 fn a_removal_that_matched_nothing_writes_no_tombstone_entry() {
     // THIS INVARIANT IS GENUINELY NARROWER GATED, AND THAT IS WORTH SAYING RATHER THAN HIDING.
-    // Ungated, a removal matching no entry files nothing. Gated, the component match cannot
+    // Ungated, a removal matching no entry files nothing. Gated, the element name match cannot
     // fire at all, so the arm keys on whether the OBJECT has a live block entry -- and a removal
     // naming an absent member of a KNOWN object therefore does file one. It is bounded (one
     // live plus one tombstone, not accumulating) and correctness-neutral, because
@@ -1043,8 +1043,8 @@ fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumula
 
     // THE MECHANISM IS NOT IN THIS CHANGE, AND THAT IS WHY IT NEEDS A GUARD.
     //
-    // `upsert_bucket_index_block_inner`'s `retain` matches on `(object_key, model_id, component)`, and
-    // a tombstone entry carries the component it removed -- so writing the element back drops the
+    // `upsert_bucket_index_block_inner`'s `retain` matches on `(object_key, model_id, element_name)`, and
+    // a tombstone entry carries the element name it removed -- so writing the element back drops the
     // tombstone as a side effect of the upsert's existing behaviour. Nobody wrote that for tombstones;
     // it falls out, and it is the difference between "a removal costs one entry per DISTINCT element
     // ever removed" and "one entry per REMOVAL". Nothing else in the tree would notice if it stopped.
@@ -1061,7 +1061,7 @@ fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumula
     // lookup-enabled arm removes only what the lookup NAMES, and a tombstone entry is never in it --
     // `insert_object_block_lookup` returns early on a deleted block -- so that arm left the tombstone
     // behind and the entry count grew once per removal forever. The other arm is a `retain` matching
-    // on the component and takes the tombstone with it.
+    // on the element name and takes the tombstone with it.
     //
     // This fixture originally ran with an empty lookup, took the second arm, and PASSED while the
     // first was wrong. It was `a_bucket_holding_one_block_holds_no_node`, on a hash, with the lookup
@@ -1137,7 +1137,7 @@ fn run_cycles(
             (live_added, tombstoned_added),
             "cycle {cycle}: after the add there are {live_added} live and {tombstoned_added} \
              tombstone entries. A tombstone surviving the re-add is the accumulation this asserts \
-             against: `upsert_bucket_index_block_inner`'s retain matches on component and must have \
+             against: `upsert_bucket_index_block_inner`'s retain matches on element name and must have \
              taken it."
         );
 
@@ -1176,9 +1176,9 @@ fn run_cycles(
 ///
 /// A zset's BLOCK key is still the biased score followed by the member -- unchanged -- so a score
 /// change still removes the old block and writes a new one, still as two distinct physical blocks.
-/// What changed is the INDEX COMPONENT each block's `BlockIndex` entry is filed under: it used to
+/// What changed is the INDEX ELEMENT NAME each block's `BlockIndex` entry is filed under: it used to
 /// be `{biased:016x}` then the member, so the old and new entries were filed under two DIFFERENT
-/// component names and the old one's tombstone survived as its own entry. It is `hex::encode(member)`
+/// element names and the old one's tombstone survived as its own entry. It is `hex::encode(member)`
 /// alone now, with no score in it, so a rescore's old and new entries are filed under the SAME
 /// name -- which is exactly the condition `upsert_bucket_index_block_inner`'s tombstone sweep
 /// looks for ("a re-add must clear the tombstone its own element left"): the new write's own
@@ -1199,7 +1199,7 @@ fn a_rescore_sweeps_its_own_tombstone_because_the_element_name_no_longer_spells_
     let new_element_name = crate::engine::execute_on_shard::zset_element_name(&member);
     assert_eq!(
         old_element_name, new_element_name,
-        "DENOMINATOR: the two scores no longer spell different components -- if they did, the \
+        "DENOMINATOR: the two scores no longer spell different element names -- if they did, the \
          sweep below would not fire and this test would be driving the old behaviour by accident"
     );
 
@@ -1232,7 +1232,7 @@ fn a_rescore_sweeps_its_own_tombstone_because_the_element_name_no_longer_spells_
     println!("=== a zset score change ===");
     println!("  {live} live, {tombstoned} tombstone entries");
     println!("  the element key it left and took (now the same name): {old_element_name}");
-    println!("  tombstoned components:     {tombstoned_names:?}");
+    println!("  tombstoned element names:     {tombstoned_names:?}");
 
     assert_eq!(
         1, live,
@@ -1241,7 +1241,7 @@ fn a_rescore_sweeps_its_own_tombstone_because_the_element_name_no_longer_spells_
     assert_eq!(
         0, tombstoned,
         "A RESCORE LEFT {tombstoned} TOMBSTONES, NOT ZERO. One would mean the sweep did not find \
-         its own tombstone -- the component the removal tombstoned and the component the new write \
+         its own tombstone -- the element name the removal tombstoned and the element name the new write \
          files under must be the same string now, which is the whole premise of this test."
     );
     assert!(

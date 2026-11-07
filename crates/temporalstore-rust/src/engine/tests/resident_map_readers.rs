@@ -15,7 +15,7 @@
 //!     collect_live_block_slab_ids          the reclaim live-slab set
 //!     compact_shard_blocks_relocating      rewrites block addresses in place
 //!     collect_upsert_index_items           resolves a member to build its WAL index item
-//!     visit_model_live_blocks              re-renders the component; bucket release and rebuild
+//!     visit_model_live_blocks              re-renders the element name; bucket release and rebuild
 //! ```
 //!
 //! This module asks each of them, on a driven over-complete state rather than from the source. Two
@@ -65,7 +65,7 @@
 //! the states differ by a COUNT and not by which address wins a walk, and asks every reader.
 //!
 //! `visit_model_live_blocks` EMITTED THE GHOST. It walks `shard.sets` and re-renders each member's
-//! component, so a resurrected member is emitted as a live block entry with a component naming it.
+//! element name, so a resurrected member is emitted as a live block entry with an element name naming it.
 //! That feeds `collect_model_live_block_entries`, bucket release and the bucket-index rebuild.
 //!
 //! `collect_live_block_slab_ids` ABSORBED THE GHOST'S SLAB. It walks the model maps directly -- the
@@ -86,12 +86,12 @@
 //! element-bearing models, because the loop has an arm for each.
 //!
 //! `collect_upsert_index_items` WOULD build an item for the ghost -- asked directly with the ghost's
-//! component it resolves the address straight out of `shard.sets` and emits a block item, which on
+//! element name it resolves the address straight out of `shard.sets` and emits a block item, which on
 //! replay would re-install an index entry for a block that was removed. Nothing asks it: the
-//! component list it is driven from comes from `command_upsert_components`, which has arms for the
-//! six ADD/SET commands and none for any removal. `SetRemove`'s component is produced by
-//! `command_removed_component` instead, on the `collect_command_index_items_for` path. LATENT, and
-//! the test asserts the exact condition -- `command_upsert_components` answers `None` for
+//! element name list it is driven from comes from `command_upsert_element_names`, which has arms for the
+//! six ADD/SET commands and none for any removal. `SetRemove`'s element name is produced by
+//! `command_removed_element_name` instead, on the `collect_command_index_items_for` path. LATENT, and
+//! the test asserts the exact condition -- `command_upsert_element_names` answers `None` for
 //! `SetRemove` -- so an arm added there fails this module.
 //!
 //! # WHETHER THE MERGE CAN BE MADE UNABLE TO RESURRECT
@@ -113,7 +113,7 @@
 //!
 //! `fill_absent_elements` now asks #2005's question of the persisted map too. That KEEPS #1989's
 //! element and DROPS #2017's, which is what makes it the right question rather than a narrowing:
-//! #1989's case is a block whose component cannot be decoded, so the derived view cannot name the
+//! #1989's case is a block whose element name cannot be decoded, so the derived view cannot name the
 //! element while the block is RIGHT THERE in the index -- live at its address, kept. #2017's case is
 //! a block that is gone from the index -- not live at its address, dropped. The function's stated job,
 //! "keep every durable element the derived view could not produce", becomes "keep every durable
@@ -136,7 +136,7 @@
 //!     }
 //! ```
 //!
-//! `saw_sets` is assigned at the TOP of the set arm, BEFORE the component decode. So it never meant
+//! `saw_sets` is assigned at the TOP of the set arm, BEFORE the element name decode. So it never meant
 //! "at least one set entry decoded" -- `saw_hashes` means that, because #2016 moved it inside its
 //! match for a reason that applies to the one arm with no durable map behind it. `saw_sets == false`
 //! means the settled block index holds NO SET BLOCK AT ALL, and the skip then left the deserialized
@@ -155,11 +155,11 @@
 //!
 //! The map can no longer hold a member the block index does not, which was #2017's whole objection,
 //! and every reader above now agrees with the index. It does not follow that `SMEMBERS` can be served
-//! from it, and the residual is in the other direction: a live block whose component cannot be decoded
+//! from it, and the residual is in the other direction: a live block whose element name cannot be decoded
 //! is in the index and, unless the persisted map happens to hold it, in NO map -- #1989's case, where
 //! the derived view cannot name the element. A listing served from `shard.sets` would MISS it, and a
 //! listing that under-reports is worse than the reads it saves. Nothing in this engine writes a
-//! non-hex set component, so that is latent, and it is latent on the write path rather than on this
+//! non-hex set element name, so that is latent, and it is latent on the write path rather than on this
 //! function.
 //!
 //! So the saving #2017 measured -- `SMEMBERS` at 1.00 block reads per member, flat across a 32x width
@@ -297,15 +297,15 @@ fn resident_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
 /// The members the SERVING PATH answers for one set key -- the population a listing hands back.
 ///
 /// IT REPLACED `page_index_members`, WHICH CANNOT EXIST ANY MORE, and that is recorded here because
-/// two arms in this module turn on it. The old helper decoded members out of the component each block
+/// two arms in this module turn on it. The old helper decoded members out of the element name each block
 /// was filed under; the index entry stopped naming its element, so
-/// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on all three
+/// `bucket_index_element_name_block_addresses` hardcodes `None` in the pair's first slot on all three
 /// of its return paths and the walk now hands back addresses and nothing else. The helper returned
 /// an empty set for every key, which is what fired the per-row controls.
 ///
 /// AND THE DERIVED SIDE OF THE MERGE IS EMPTY, measured by handing `fill_absent_elements` an empty
 /// persisted map and finding `shard.sets` empty afterwards. Rebuilding a set's members from the live
-/// block index needs the component the entry no longer carries, so nothing arrives from that side:
+/// block index needs the element name the entry no longer carries, so nothing arrives from that side:
 /// the resident set map is wholly the durable snapshot's, and the address test is the only filter
 /// there is. That is why these arms compare the map against the SERVING path and not against a
 /// second derivation of the same thing.
@@ -655,7 +655,7 @@ fn build_divergence(
 ///
 /// # WHAT MOVED, AND WHY THE LOCK IS NOW SCOPED
 ///
-/// The population each row was compared against came out of the index entry's component. The entry
+/// The population each row was compared against came out of the index entry's element name. The entry
 /// stopped naming its element, so that read returns NOTHING for every key and the per-row control
 /// fired -- correctly: it says in as many words that this fixture's block index says nothing. The
 /// population is re-attributed to the SERVING PATH, which means releasing the shard lock to ask the
@@ -676,7 +676,7 @@ fn build_divergence(
 /// AND READER 4'S SAFETY PROPERTY STILL HOLDS, FOR A BETTER REASON THAN BEFORE. Every address the
 /// resident maps name is a live block -- including the resurrected ones, whose blocks are live exactly
 /// because the collapse keeps them. `compact_shard_blocks_relocating` therefore relocates nothing
-/// that is not there, and the hazard reader 2 was asserted against -- re-rendering a component for a
+/// that is not there, and the hazard reader 2 was asserted against -- re-rendering an element name for a
 /// member whose block was REMOVED -- is now unreachable rather than absent.
 ///
 /// rust-internal: calls the engine's own reconcile and its map readers directly, then the commands
@@ -758,7 +758,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         );
 
         // -----------------------------------------------------------------------------------------
-        // READER 2: visit_model_live_blocks -- walks the map and re-renders the component.
+        // READER 2: visit_model_live_blocks -- walks the map and re-renders the element name.
         // -----------------------------------------------------------------------------------------
         let emitted_set_entries =
             crate::engine::storage_bucket_internals::collect_model_live_block_entries(shard)
@@ -879,8 +879,8 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         // -----------------------------------------------------------------------------------------
         // READER 5: collect_upsert_index_items -- would resolve a ghost, and nothing asks it to.
         // -----------------------------------------------------------------------------------------
-        // Nothing asks: every arm of `command_upsert_components` is an ADD/SET. A removal's
-        // component goes down `collect_command_index_items_for` instead.
+        // Nothing asks: every arm of `command_upsert_element_names` is an ADD/SET. A removal's
+        // element name goes down `collect_command_index_items_for` instead.
         for removal in [
             Command::SetRemove {
                 key: "ghost".to_string(),
@@ -901,14 +901,14 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         ] {
             assert!(
                 crate::engine::command_upsert_element_names(&removal, shard).is_none(),
-                "`command_upsert_element_names` now names a component for a REMOVAL. \
-                 `collect_upsert_index_items` resolves that component's address out of the resident \
+                "`command_upsert_element_names` now names an element name for a REMOVAL. \
+                 `collect_upsert_index_items` resolves that element name's address out of the resident \
                  map, so a removal reaching it would build a WAL index item pinning a block the \
                  removal dropped -- and a replay would re-install it"
             );
         }
         // Asked outright, it does resolve one: the mechanism is live, only unreached. Driven with
-        // the ADD command's own component spelling, so this is the item a reachable caller would get.
+        // the ADD command's own element name spelling, so this is the item a reachable caller would get.
         let ghost_element_name = hex::encode(&ghost.removed[0]);
         let items_for_a_ghost = crate::engine::collect_upsert_index_items(
             shard,
@@ -920,7 +920,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         println!(
             "  reader collect_upsert_index_items LATENT: no removal reaches it (4 removal commands \
              answer None from `command_upsert_element_names`); asked outright with the ghost's \
-             component it builds {} item(s)",
+             element name it builds {} item(s)",
             items_for_a_ghost.len()
         );
 
@@ -1018,8 +1018,8 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
     // every address the maps name is live; this says reader 2 emits no more than the map holds.
     //
     // THE ASSERTION THIS REPLACES IS DELETED WITH ITS REASON. It read `ghost_index_members ==
-    // emitted_set_entries` and said a mismatch meant the reader was "re-rendering a component for a
-    // member whose block was removed". Both sides of it are gone: the left was the component-decoded
+    // emitted_set_entries` and said a mismatch meant the reader was "re-rendering an element_name for a
+    // member whose block was removed". Both sides of it are gone: the left was the element-name-decoded
     // population, which is now always 0, and the hazard is unreachable rather than absent, because
     // the blocks the resurrected members name are live. Reader 4's `named_but_not_live.is_empty()`
     // asserts that property directly, over all five models instead of one.
@@ -1225,7 +1225,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
 ///
 /// IT CANNOT, AND THE REASON IS AN ALLOW-LIST. `released_model_kind_is_addressable` admits exactly
 /// `string` and `context_node`, and names `set`, `zset` and `list` among the kinds held out: they are
-/// read whole through `bucket_index_component_block_addresses`, which has no point-lookup equivalent,
+/// read whole through `bucket_index_element_name_block_addresses`, which has no point-lookup equivalent,
 /// so a released block of those kinds could not be resolved. A candidate bucket holding one is refused
 /// with `BlockKindNotAddressable`. The allow-list and the three merged kinds are disjoint.
 ///
@@ -1387,7 +1387,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 /// THROUGH.
 ///
 /// The three merges were gated on `saw_sets` / `saw_zsets` / `saw_lists`. Each is set at the TOP of
-/// its arm, BEFORE the component decode -- which is what distinguishes them from `saw_hashes`, moved
+/// its arm, BEFORE the element name decode -- which is what distinguishes them from `saw_hashes`, moved
 /// INSIDE its match by #2016 for a reason that applies to an arm with no durable map behind it. So
 /// `saw_sets == false` never meant "no set entry decoded"; it meant the settled block index held NO
 /// SET BLOCK AT ALL, and skipping the merge there left the deserialized persisted map standing WHOLE.
@@ -1403,7 +1403,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 ///
 /// # THE POPULATION IS NOW THE SERVED ONE, AND THE ARMS NO LONGER AGREE
 ///
-/// The comparison used to be against members decoded out of the index entry's component. The entry
+/// The comparison used to be against members decoded out of the index entry's element name. The entry
 /// stopped naming its element, so that population is gone -- it reads 0 on BOTH arms now, which is
 /// why the control's `assert_eq!(1, in_index)` fired. It is re-attributed to the serving path.
 ///

@@ -187,7 +187,7 @@ pub enum AllocClass {
     /// the address, and what the block store keeps about where it went.
     SlabAppend,
     /// The per-routing-bucket block index: the bucket node, its block entries, the object-id set,
-    /// and the object/component lookup that resolves a key to its blocks. This is the row a store
+    /// and the object/element name lookup that resolves a key to its blocks. This is the row a store
     /// whose index is outgrowing its data shows it in.
     BucketIndex,
     /// The dirty-object index: which keys a later storage round has to sweep, under which bucket.

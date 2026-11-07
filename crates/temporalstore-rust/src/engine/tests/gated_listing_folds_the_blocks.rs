@@ -6,9 +6,9 @@
 //! # WHAT CHANGED AND WHY IT IS THE RISKY DIRECTION
 //!
 //! The ungated listing asks the ENTRIES which members exist and the block only what each one holds.
-//! Its own `None` arm states why that cannot survive this gate: "an entry naming no component can
+//! Its own `None` arm states why that cannot survive this gate: "an entry naming no element name can
 //! only be answered by a block that names no element either". Under the gate every entry names no
-//! component and every block IS framed, so that arm drops every member and the listing answered
+//! element name and every block IS framed, so that arm drops every member and the listing answered
 //! EMPTY -- measured at `listed=0` against 40 ungated, by two independent fixtures.
 //!
 //! So the gated listing takes identity out of the PAYLOAD. That is the direction that
@@ -260,8 +260,8 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
 ///
 /// # WHEN A GATED STORE CAN ACTUALLY MEET ONE, WHICH IS NARROWER THAN IT SOUNDS
 ///
-/// Not from its own writes. A set's component is `hex::encode(member)`, `ElementKeySpelling::Hex`
-/// renders it back, and `element_key_from_component` cannot fail on it — so a gated binary writing
+/// Not from its own writes. A set's element name is `hex::encode(member)`, `ElementKeySpelling::Hex`
+/// renders it back, and `element_key_from_element_name` cannot fail on it — so a gated binary writing
 /// a set **always** frames, and `unframed_container_write_count` is floored at zero over all four
 /// kinds elsewhere.
 ///

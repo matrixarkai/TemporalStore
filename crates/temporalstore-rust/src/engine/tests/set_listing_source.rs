@@ -217,7 +217,7 @@ fn live_block_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<Elemen
 /// block store rather than through the index.
 ///
 /// IT HAS TO BYPASS THE INDEX, which is the whole reason it exists beside
-/// `components_the_blocks_still_state`: `drop_live_entries` removes the index ENTRY and leaves the
+/// `element_names_the_blocks_still_state`: `drop_live_entries` removes the index ENTRY and leaves the
 /// block, so a block it un-names cannot be reached through `block_index` at all. Reading addresses
 /// captured beforehand is what lets an arm say the bytes outlived the name.
 fn element_names_at(
@@ -340,7 +340,7 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
         stated.len()
     );
     let listed = listed_members(&engine, "listing/whole");
-    // ORDER AND NOT JUST CONTENT. The walk is sorted by component, a set's component is its member
+    // ORDER AND NOT JUST CONTENT. The walk is sorted by element name, a set's element name is its member
     // in hex, and hex preserves byte order -- so this is the order the listing always returned.
     assert_eq!(
         all_members(),
@@ -383,7 +383,7 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
 
     // THE TWO SOURCES MUST DISAGREE, OR THIS ARM PROVES NOTHING.
     let stated = element_names_the_blocks_still_state(&engine, "listing/removed");
-    // BY THE ENGINE'S OWN FUNCTION: a hand-written `hex::encode` names a component no set write
+    // BY THE ENGINE'S OWN FUNCTION: a hand-written `hex::encode` names an element name no set write
     // site files any more, so the removal below would be recorded against nothing.
     let victim_element_name = crate::engine::execute_on_shard::set_element_name(&victim);
     assert!(

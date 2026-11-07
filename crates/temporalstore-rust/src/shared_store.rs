@@ -4405,7 +4405,7 @@ const WAL_BATCH_FORMAT_HOISTED: u32 = 1;
 /// A log frame is `[4-byte big-endian body length][body]`, and the walk over a log reads that
 /// prefix to find the next record. A container has to be distinguishable from a frame at exactly
 /// that position, by its first byte, with no second guess -- the same rule a container member
-/// component follows, where one reserved leading byte makes the first byte a total discriminator.
+/// element name follows, where one reserved leading byte makes the first byte a total discriminator.
 ///
 /// So a container is `[0xff][3-byte big-endian body length][body]`. The first byte of a frame
 /// prefix is the HIGH byte of its body length, so it is `0xff` only for a frame body of at least

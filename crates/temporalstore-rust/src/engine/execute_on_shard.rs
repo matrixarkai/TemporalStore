@@ -21,7 +21,7 @@ struct HashTimestamp {
 /// an object whose container lacks three of its fields counts three.
 ///
 /// WHY ONLY THAT DIRECTION. It is the direction that loses a read once the index stops being
-/// consulted -- which is the whole point of measuring it, because taking `component` off the block
+/// consulted -- which is the whole point of measuring it, because taking `element_name` off the block
 /// entry is what makes the container load-bearing. The other direction, a field the container
 /// holds that the index does not name, is not a loss: the union in `Command::HashGetAll` already
 /// answers it from the container, and counting it would mix a rescued read in with a threatened
@@ -111,7 +111,7 @@ pub(super) mod hash_read_divergence {
 /// The block path stages its outcome inside `upsert_bucket_index_block`, because that is where a
 /// block outcome is produced. These have no such moment, so they say it here.
 #[allow(clippy::too_many_arguments)]
-/// Record a block or a value that belongs to one COMPONENT of an object.
+/// Record a block or a value that belongs to one ELEMENT NAME of an object.
 ///
 /// `stage_meta_outcome` states something about the object as a whole -- it is gone, its deadline
 /// is this. This states what one part of it became: which block backs it, or the bytes for state no
@@ -129,9 +129,9 @@ fn stage_element_name_outcome(
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),
-        // MOVED, NOT CLONED. `component` is taken BY VALUE -- it is already the caller's
+        // MOVED, NOT CLONED. `element_name` is taken BY VALUE -- it is already the caller's
         // allocation handed over -- and this function ends here, so nothing reads it after.
-        // Cloning it allocated a second copy of the same characters on every staged component
+        // Cloning it allocated a second copy of the same characters on every staged element name
         // outcome: every hash field, set member, zset member, list element and context entity
         // write. `stage_meta_outcome` next door already moves its owned arguments.
         element_name,
@@ -249,7 +249,7 @@ fn write_context_node(
     // FRAMED AS A HASH BLOCK, because that is what it is. The outcome below records it under
     // `context_node` for a reason of its own -- it is never filed in the block index -- but the block
     // itself lands in `shard.hashes` under `CONTEXT_NODE_FIELD` and is read back through the hash
-    // door with that field as its component. Leaving this one site unframed would leave the node
+    // door with that field as its element name. Leaving this one site unframed would leave the node
     // the single hash element a later load could not recover from its block, which is the element
     // #2016 already recorded as the one whose absence reads as the node not existing at all.
     let block = crate::engine::container_blocks::single_element_block(
@@ -342,14 +342,14 @@ fn drop_if_expired(
 /// drops the index entry and stages the outcome. That left the BLOCKS saying nothing: #2028 drove
 /// what it costs -- a folded block holding twelve members the index named eleven of -- and the reason
 /// is that the block is never rewritten by a removal. So a removal now APPENDS a block that states it,
-/// and the seven sites differ in their kind and their component and in nothing else. Spelling the
+/// and the seven sites differ in their kind and their element name and in nothing else. Spelling the
 /// append at each of them is how the fourth site gets the ordinal wrong.
 ///
 /// Two of the seven are not obviously removals and are the ones this must not miss: a `ZSetAdd` or
 /// `ZSetIncrement` that changes a member's score REMOVES the old `(score, member)` element key and
 /// writes a new one. Leave the old key untombstoned and a block-derived membership holds the member
-/// TWICE, at both scores. `a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score`
-/// drives that -- and, since the component the removal tombstones and the component the new write
+/// TWICE, at both scores. `a_rescore_sweeps_its_own_tombstone_because_the_element_name_no_longer_spells_the_score`
+/// drives that -- and, since the element name the removal tombstones and the element name the new write
 /// files under are now the same string, also drives the sweep that cleans the tombstone up again
 /// in the same write.
 ///
@@ -1390,7 +1390,7 @@ pub(crate) fn execute_on_shard(
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD, inside the function.
             // `container_block_ordinal` used to find an existing field's position by looking for an
-            // entry filed under that field's component; a block-named entry carries none, so the
+            // entry filed under that field's element name; a block-named entry carries none, so the
             // walk fell through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
             // address, a fresh block, for a write that should land on the same one. Hash is the one
             // container kind that overwrites a field IN PLACE this way.
@@ -1423,7 +1423,7 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
+                // ONE HANDLE FROM THE POOL, for the name this map keeps. The element name
                 // argument below still carries its own owned copy; that position is the
                 // bucket index's and is converted separately.
                 let field_handle =
@@ -1572,14 +1572,14 @@ pub(crate) fn execute_on_shard(
                 Some(stable_block_object_id(shard_id, "hash", &key)),
                 // The element this block holds -- the same expression that derived the ordinal
                 // above, and now also the key INSIDE the block. The object id beside it no longer
-                // names the element: #2019 made it the object's, so the ordinal, the component and
+                // names the element: #2019 made it the object's, so the ordinal, the element name and
                 // the frame are the three things that say which element this is.
                 Some(field.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
             ) {
-                // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
+                // ONE HANDLE FROM THE POOL, for the name this map keeps. The element name
                 // argument below still carries its own owned copy; that position is the
                 // bucket index's and is converted separately.
                 let field_handle =
@@ -1664,7 +1664,7 @@ pub(crate) fn execute_on_shard(
             let mut named_by_index: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(indexed.len());
             for (element_name, address) in indexed {
-                // A `None` COMPONENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
+                // A `None` ELEMENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
                 //
                 // THIS USED TO DEFAULT IT TO `""` AND SERVE IT. The paragraph here said a nameless
                 // entry "is the whole-object door's answer for a block that belongs to the object
@@ -1817,7 +1817,7 @@ pub(crate) fn execute_on_shard(
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER, inside the function.
             // `container_block_ordinal` used to pick an element's existing position out of the INDEX
-            // by component, which a block-named entry does not carry -- so every rewrite fell
+            // by element name, which a block-named entry does not carry -- so every rewrite fell
             // through to `highest + 1` and a member written five times left five blocks instead of
             // overwriting one (measured: two blocks and ordinals [0, 1] where one and [0] are
             // right). This arm therefore carried its own `shard.sets` lookup under the gate, with
@@ -1933,8 +1933,8 @@ pub(crate) fn execute_on_shard(
             ) {
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT -- the same
                 // correction `ZSetIncrBy` and `ListPush` already carry (see their own notes). It
-                // stood here filing the SAME block under the SAME component a second time, which
-                // staged a second WAL outcome for one write: harmless while the component carried
+                // stood here filing the SAME block under the SAME element name a second time, which
+                // staged a second WAL outcome for one write: harmless while the element name carried
                 // the score twice over identically, and no longer harmless now that only
                 // `install_element`'s own filing carries the score (through
                 // `RecordedKind::outcome_value`) -- a replay of the OTHER, standalone-filed
@@ -1978,7 +1978,7 @@ pub(crate) fn execute_on_shard(
             // one ordering this conversion had to change rather than preserve.
             //
             // This arm used to drop the member from the resident map FIRST, because the removal's
-            // own return value carried the biased score that the component is rendered from -- so
+            // own return value carried the biased score that the element name is rendered from -- so
             // the resident mutation preceded the durable record, which is the order a recorded
             // container exists to make unrepresentable. Reading the score with `get` costs one
             // lookup and lets the record go first.
@@ -2413,7 +2413,7 @@ pub(crate) fn execute_on_shard(
                 }
                 None => 0,
             };
-            // Two's-complement bias makes the hex component sort lexically in list order,
+            // Two's-complement bias makes the hex element name sort lexically in list order,
             // which is what lets recovery and range reads walk the bucket index directly.
             let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
             let object_id = stable_block_object_id(shard_id, "list", &key);
@@ -2660,7 +2660,7 @@ pub(crate) fn execute_on_shard(
                 //
                 // This was the gated arm of an `if`, and the ungated arm walked the entries and
                 // answered each from the block it named. That walk's own `None` arm said why it
-                // cannot work once an entry names no element -- "an entry naming no component can
+                // cannot work once an entry names no element -- "an entry naming no element name can
                 // only be answered by a block that names no element either" -- so with every entry
                 // nameless it dropped every member and the listing returned EMPTY, measured as
                 // `listed=0` against 40. It is deleted rather than left unreachable: an entry
@@ -3129,7 +3129,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::FeatureDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            // A removal with no component: the whole series went, not one point.
+            // A removal with no element name: the whole series went, not one point.
             stage_meta_outcome(
                 shard_id,
                 "feature",
@@ -3511,7 +3511,7 @@ pub(crate) fn execute_on_shard(
                 // AFTER the block, not before. Replay installs a deadline only onto a key that
                 // already exists, and outcomes install in the order they were staged; staged
                 // first, this deadline meets a shard that has not seen the key yet and is
-                // dropped in silence. Both correct siblings here stage their component first.
+                // dropped in silence. Both correct siblings here stage their element name first.
                 stage_meta_outcome(
                     shard_id,
                     "object",
@@ -5729,29 +5729,29 @@ pub(super) fn zset_score_string(biased: u64) -> String {
     }
 }
 
-/// The persisted component: the member alone, spelled ONCE.
+/// The persisted element name: the member alone, spelled ONCE.
 ///
 /// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
 /// it bought was never built on: every zset serving arm that returns members in score order
 /// reads the score out of `shard.zsets` and sorts explicitly (`zset_members_in_score_range`,
 /// `zset_ordered_members`), so dropping the score from this string costs that ordering nothing.
-/// What it buys is the thing this change is for: `BlockIndex.component` for a zset entry is now
+/// What it buys is the thing this change is for: `BlockIndex.element_name` for a zset entry is now
 /// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
 /// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
 /// WAL outcome's `value` field -- it is simply no longer spelled into this string.
-/// WAS `hex::encode(member)`, WHICH CHARGED TWO BYTES PER MEMBER BYTE. The component is the term
+/// WAS `hex::encode(member)`, WHICH CHARGED TWO BYTES PER MEMBER BYTE. The element name is the term
 /// that scales with member width, so that doubling was the member-width RATE of a zset write and
-/// not a fixed overhead on it. [`super::container_blocks::member_component`] charges one byte plus
+/// not a fixed overhead on it. [`super::container_blocks::member_element_name`] charges one byte plus
 /// the member, and the tag it puts in front is what keeps the two spellings tellable apart on a
 /// string that carries no spelling byte of its own.
 pub(super) fn zset_element_name(member: &[u8]) -> String {
     super::container_blocks::member_element_name(member)
 }
 
-/// The persisted component for a SET member: the member alone, spelled ONCE.
+/// The persisted element name for a SET member: the member alone, spelled ONCE.
 ///
-/// Sibling of [`zset_component`], and the same rendering as it -- a set component and a zset
-/// component have been the same shape since the score came off the zset string. They stay two
+/// Sibling of [`zset_element_name`], and the same rendering as it -- a set element name and a zset
+/// element name have been the same shape since the score came off the zset string. They stay two
 /// names because the two kinds reach this from different arms, so a per-kind divergence has
 /// somewhere to land, and because what this replaces was `hex::encode` spelled INLINE at five
 /// separate set write sites. A spelling decided at each site is a spelling that can be flipped at

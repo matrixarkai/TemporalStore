@@ -9,12 +9,12 @@
 //! element must reuse that position rather than take a new one --
 //! `container_block_ordinal::an_overwrite_keeps_the_members_ordinal_rather_than_climbing` pins that
 //! for the ungated path. The mechanism is an identity branch: the walk looks for a block already
-//! filed under this element's component and, finding one, returns the ordinal that block holds.
+//! filed under this element's element name and, finding one, returns the ordinal that block holds.
 //!
 //! # WHY THE GATE BREAKS IT, AND WHY NO EXISTING TEST SEES THAT
 //!
-//! Under one entry per block the entry carries NO component, so
-//! `block.component.as_deref() == Some(component)` never matches and the walk falls through to
+//! Under one entry per block the entry carries NO element name, so
+//! `block.element_name.as_deref() == Some(element_name)` never matches and the walk falls through to
 //! `highest + 1`. Every rewrite of one member then takes a fresh ordinal, which is a fresh
 //! `block_id`, which is a fresh ADDRESS -- so a member rewritten five times leaves five blocks
 //! instead of overwriting one.
@@ -92,7 +92,7 @@ fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec
     (blocks.len(), ordinals.into_iter().collect())
 }
 
-/// Every live set entry of this object, as (component, slab, offset, length, block_id), so a
+/// Every live set entry of this object, as (element name, slab, offset, length, block_id), so a
 /// surprising entry count can be read rather than guessed at.
 fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -112,7 +112,7 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
                 continue;
             }
             rows.push(format!(
-                "deleted={} component=None slab={} off={} len={} block_id={:?}",
+                "deleted={} element name=None slab={} off={} len={} block_id={:?}",
                 block.deleted(),
                 block.address.block_slab_id(),
                 block.address.offset(),
@@ -192,7 +192,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     // THE ORDINAL DOES NOT CLIMB, ON EITHER ARM, AND THAT IS WHAT THIS STEP FIXES.
     //
     // An overwrite is the same element in the same position. Under the gate the entry carries no
-    // component, so `container_block_ordinal`'s identity branch cannot find the member's own
+    // element name, so `container_block_ordinal`'s identity branch cannot find the member's own
     // previous block and falls through to `highest + 1` -- measured before the fix as ordinals
     // [0, 1]. The position now comes from `shard.sets[key][member].block_id()`: the map that is
     // keyed by the member, holding the address it currently occupies, which IS its position.
@@ -384,7 +384,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         after.len()
     );
     assert!(
-        after[0].contains("component=None"),
+        after[0].contains("element name=None"),
         "the surviving entry is {:?}, which still names an element. Under the gate the derivation \
          files one entry per block and a block needs no element name",
         after[0]
@@ -407,16 +407,16 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 // # WHY THESE TESTS PLANT RATHER THAN JUST SETTING THE ENV VAR AND WRITING
 //
 // `index_entry_names_a_block` is the single authority deciding whether an entry is filed with NO
-// component, and today it answers `true` only for `set` and `list` (`storage_bucket_internals.rs`)
+// element name, and today it answers `true` only for `set` and `list` (`storage_bucket_internals.rs`)
 // -- hash is deliberately NOT in that list yet; widening it is a later, separate step. So setting
-// `TS_CONTAINER_ONE_ENTRY_A_PAGE` alone does NOT make a `HashSet` write a component-less entry:
+// `TS_CONTAINER_ONE_ENTRY_A_PAGE` alone does NOT make a `HashSet` write an element-name-less entry:
 // the filing path still writes `Some(field)` for hash regardless of the env var, and a test that
 // only sets the var and writes would pass or fail IDENTICALLY whether or not the gated branches
 // below exist -- which would make it a placebo, not a guard.
 //
 // So these tests plant the state hash's own entries will be in once that later step lands, the
 // same technique `hash_read_union_divergence.rs` already uses to drive `HashGetAll`'s union: strip
-// `component` off the field's own live entry directly, then exercise the gated branches (which key
+// `element_name` off the field's own live entry directly, then exercise the gated branches (which key
 // on the RAW gate, `container_index_files_one_entry_a_page`, not on the kind allow-list) against
 // that planted state. That is also why the ordinal test re-plants before every round: each write
 // still files a fresh `Some(field)`-named entry regardless of the env var, because the filing path
@@ -459,7 +459,7 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 
 
 /// THE DISCRIMINATING TEST FOR THE HASH ORDINAL FIX: writes a field, overwrites it, and checks the
-/// ordinal did not advance -- against an entry planted component-less, which is the one state
+/// ordinal did not advance -- against an entry planted element-name-less, which is the one state
 /// `container_block_ordinal`'s identity branch cannot match.
 ///
 /// # WHAT ACTUALLY CLIMBS, CORRECTED AGAINST A FIRST WRONG READING
@@ -467,9 +467,9 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 /// A first reading of this expected stale blocks to PILE UP under the gate, the way `SetAdd`'s own
 /// gated arm documents them doing. Driven, that is not what happens here: hash retires a field's
 /// previous block by the ADDRESS the resident map held for it before the overwrite, which has
-/// nothing to do with `component`, so there is still only ONE live block after every round, planted
+/// nothing to do with `element_name`, so there is still only ONE live block after every round, planted
 /// or not -- measured while writing this test as `ordinals=[0]`, never `[0, 1]`. What climbs is
-/// that ONE block's own position: with the component stripped, `container_block_ordinal`'s identity
+/// that ONE block's own position: with the element name stripped, `container_block_ordinal`'s identity
 /// branch cannot match the single live block it is itself looking at, so `highest` is read off it
 /// anyway and the next write is handed `highest + 1` instead of reusing it -- `[0]`, then `[1]`,
 /// then `[2]`, climbing round over round rather than piling up. With the gated branch, every round
@@ -502,7 +502,7 @@ fn an_overwrite_of_an_element_name_less_hash_entry_reuses_its_ordinal() {
          overwrite of a known starting position"
     );
 
-    println!("\n=== one hash field, planted component=None, overwritten {REWRITES} times ===");
+    println!("\n=== one hash field, planted element name=None, overwritten {REWRITES} times ===");
     println!("  round=seed  ordinals={after_seed:?}");
 
     for round in 0..REWRITES {
@@ -534,7 +534,7 @@ fn an_overwrite_of_an_element_name_less_hash_entry_reuses_its_ordinal() {
         assert_eq!(
             vec![0u64],
             ordinals,
-            "round {round}: after planting component=None on the field's own live entry and \
+            "round {round}: after planting element name=None on the field's own live entry and \
              overwriting the field, the live ordinal(s) are {ordinals:?}. An overwrite must reuse \
              the field's position; a climbing ordinal is a fresh block id, a fresh address, and \
              therefore a fresh block"
@@ -542,27 +542,27 @@ fn an_overwrite_of_an_element_name_less_hash_entry_reuses_its_ordinal() {
     }
 }
 
-/// THE READ-SIDE COMPANION: a component-less entry must not hide a present field from `HashGet`,
+/// THE READ-SIDE COMPANION: an element-name-less entry must not hide a present field from `HashGet`,
 /// must not make `HashLen` disagree with the resident map, and must not make `HashIncrBy` read a
 /// miss and silently restart the counter at zero.
 ///
 /// # WHY TWO FIELDS, AND WHY NEITHER IS THE ONE REWRITTEN
 ///
-/// A FIRST DRAFT of this test wrote ONE field, stripped its only entry's component, and read it
+/// A FIRST DRAFT of this test wrote ONE field, stripped its only entry's element name, and read it
 /// straight back -- and `HashGet` answered correctly even against the UNFIXED code. That was not
 /// the fix working: a SECOND draft then rewrote that one field across several rounds, expecting
 /// stale blocks to accumulate the way the ordinal test's own history does. They do not -- driven
 /// and checked directly: hash retires the field's PREVIOUS block by the address the resident map
-/// held before the overwrite, which has nothing to do with `component`, so there is never more
+/// held before the overwrite, which has nothing to do with `element_name`, so there is never more
 /// than one live block per field regardless of what this test plants onto it. (That is also the
 /// corrected reading behind the ordinal test above: its climbing block id is ONE live block's
 /// position advancing round over round, not an accumulating pile the way `SetAdd`'s gated arm
 /// leaves one.)
 ///
-/// So a single field, rewritten or not, can never be the thing that makes `component` matter here
+/// So a single field, rewritten or not, can never be the thing that makes `element_name` matter here
 /// -- there is only ever one candidate block, and nothing needs to be disambiguated FROM. What the
-/// brief's mechanism (`bucket_index_block_address` matching `block.component.as_deref() ==
-/// component` on every branch) can only get wrong is choosing AMONG SEVERAL live blocks of one
+/// brief's mechanism (`bucket_index_block_address` matching `block.element_name.as_deref() ==
+/// element name` on every branch) can only get wrong is choosing AMONG SEVERAL live blocks of one
 /// object -- which needs several FIELDS, not several rewrites of one. So this plants on one field
 /// of a two-field object and leaves the other untouched, as the thing the stripped field's lookup
 /// could be confused with (or lost beside).
@@ -588,13 +588,13 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
         assert!(response.status.ok, "seeding `{field}` failed: {response:?}");
     }
 
-    // Strip ONLY `FIELD`'s entry. `SIBLING` is left exactly as written, component intact, so the
+    // Strip ONLY `FIELD`'s entry. `SIBLING` is left exactly as written, element name intact, so the
     // object is unambiguously a two-block object and the lookup below has something real to
     // disambiguate FROM rather than answering by elimination over an object with nothing else on
     // it.
     // NO PLANT IS NEEDED ANY MORE, AND THAT IS WHAT IS ASSERTED INSTEAD.
     //
-    // This stripped the component off `FIELD`'s entry to manufacture the nameless entry the test is
+    // This stripped the element name off `FIELD`'s entry to manufacture the nameless entry the test is
     // about. Hash is in the block-named set, so the entry is nameless BY CONSTRUCTION and the strip
     // removes nothing -- measured as "stripped 0 entries, not one". A plant that plants nothing is
     // the shape that makes a guard read as a tree fact while asserting only its own fixture, so it
@@ -635,7 +635,7 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
     assert_eq!(
         2, live_blocks,
         "{live_blocks} live block(s) for a two-field object -- the floor below assumes exactly one \
-         planted (component=None) block and one intact (component=Some(\"{SIBLING}\")) sibling"
+         planted (element name=None) block and one intact (element name=Some(\"{SIBLING}\")) sibling"
     );
 
     let get = engine.execute(ExecuteRequest {
@@ -650,7 +650,7 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
         CommandResponse::Bytes { value } => assert_eq!(
             Some(b"41".to_vec()),
             value,
-            "HashGet answered {value:?} for `{FIELD}`, whose only entry is component-less, beside \
+            "HashGet answered {value:?} for `{FIELD}`, whose only entry is element-name-less, beside \
              an intact sibling entry for `{SIBLING}`; the gated branch did not reach the resident \
              map"
         ),
@@ -684,7 +684,7 @@ fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_in
     match incr.response {
         CommandResponse::Integer { value } => assert_eq!(
             42, value,
-            "HashIncrBy answered {value}, not 42; a miss through the component-less entry \
+            "HashIncrBy answered {value}, not 42; a miss through the element-name-less entry \
              restarts the counter at zero instead of reading the present value `41`"
         ),
         other => panic!("expected Integer, got {other:?}"),
@@ -711,7 +711,7 @@ fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
                 .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
         })
         .filter(|(routing_bucket, handle, block)| {
-            // THE `component.is_some()` TERM IS GONE and this counter is structurally zero. An
+            // THE `element_name.is_some()` TERM IS GONE and this counter is structurally zero. An
             // entry has no element name, so "how many hash entries name a field" has one answer
             // for every fixture. It is left as a counter rather than deleted because the arms
             // below PRINT it as a denominator beside the ordinal they are really about; each of

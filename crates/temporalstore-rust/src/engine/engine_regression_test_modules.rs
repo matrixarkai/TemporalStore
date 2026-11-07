@@ -240,13 +240,13 @@ mod hash_read_union_divergence;
 // cost that goes; arm B is the cost that stays."
 //
 // ARM A IS GONE, so the trade it measured is settled rather than open. `ObjectBlockRefs`,
-// `ComponentList` and `ComponentBlocks` are deleted and an object maps straight to its
+// `ElementNameList` and `ElementNameBlocks` are deleted and an object maps straight to its
 // `BlockRefs`; there is no per-element level left to price and no `position` to call.
 //
 // IT COULD NOT BE REPAIRED MECHANICALLY, AND ITS OWN DOC SAID NOT TO TRY. The fixture built the
 // per-element level BY HAND -- `occupancy` distinct `Some(name)` entries under one object, a state
 // the producer could not reach even before the collapse, since `insert_object_block_lookup` wrote
-// `component: None` as a literal. And on keeping arm B alone it is explicit: "A measurement that
+// `element_name: None` as a literal. And on keeping arm B alone it is explicit: "A measurement that
 // priced B alone would be pricing the status quo." Arm B is the shipped selector and both read
 // doors already call it unconditionally, so nothing it measured about the scan has changed.
 //
@@ -262,7 +262,7 @@ mod hash_read_union_divergence;
 // `resident_bytes_per_object` -- `size_of::<BlockIndex>()` from 56 to 40, with a note that the
 // arithmetic MULTIPLIES it so a stale width scales the whole column. That pin's subject survives;
 // the arithmetic it fed does not, because the column priced the chain `ObjectBlockRefs ->
-// ComponentList -> ComponentBlocks -> BlockRefs` per object and three of those four are deleted.
+// ElementNameList -> ElementNameBlocks -> BlockRefs` per object and three of those four are deleted.
 // The 40 is not lost with the file: it is a `const _` beside `BlockIndex` in `engine_storage_state.rs` and is
 // re-asserted in `block_entry_handles`, `blocks_per_bucket`, `per_item_byte_budget`,
 // `block_entry_element_naming` and `the_entry_cannot_name_its_object_by_slot`.

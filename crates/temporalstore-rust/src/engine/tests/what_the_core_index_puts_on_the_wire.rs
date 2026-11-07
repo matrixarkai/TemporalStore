@@ -275,14 +275,14 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 //      somewhere else.
 //
 //   2. THE MAP KEY IS NOT SELF-DELIMITING, so the decoder cannot be handed the job instead. The
-//      stored key is `kind:object:component:slab:offset:length:block_id:generation` joined with
+//      stored key is `kind:object:element_name:slab:offset:length:block_id:generation` joined with
 //      bare colons, and an object key MAY CONTAIN A COLON -- a context entity is filed under
 //      `{collection_key}:{entity_hash}`, stated twice in `storage_bucket_internals.rs` at `:2754`
-//      and `:3195`. The second test constructs two DIFFERENT (object key, component) pairs that
+//      and `:3195`. The second test constructs two DIFFERENT (object key, element name) pairs that
 //      produce the IDENTICAL key, which is the proof that no parser can invert it in general.
 //      The lookup's own flat key is length-prefixed for exactly this reason; this one is not.
 //
-// WHAT THAT LEAVES, STATED SO THE NEXT READER DOES NOT RE-DERIVE IT. With `component` fixed at
+// WHAT THAT LEAVES, STATED SO THE NEXT READER DOES NOT RE-DERIVE IT. With `element_name` fixed at
 // `None` -- which every entry's is today -- the trailing five terms are numeric and a RIGHT-ANCHORED
 // parse would work. That is a property held at a distance rather than one the format enforces, and
 // the collision below is what it is being held against. So "recover the identity from the key" is
@@ -307,14 +307,14 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 // the RIGHT and the kind from the LEFT, so an object key keeps every colon it arrived with --
 // `{collection_key}:{entity_hash}` included -- and
 // `the_key_a_block_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus`
-// asserts the component slot EMPTY and the parse exact on all 8,000 blocks of two key shapes, rather
+// asserts the element name slot EMPTY and the parse exact on all 8,000 blocks of two key shapes, rather
 // than relying on it.
 //
 // THE COLLISION BELOW IS STILL REAL AND IS STILL THE LIMIT, which is why that test keeps its name
-// and its claim. A non-empty component containing a colon makes the component/object-key boundary
+// and its claim. A non-empty element name containing a colon makes the element name/object-key boundary
 // unrecoverable, and a positional parse resolves it one way: the key the test builds reads back as
-// the object `a:b` with no component, which is one of its two identities and not the other. No
-// writer in this tree composes a block key with a component -- `block_index_written_key` passes a
+// the object `a:b` with no element name, which is one of its two identities and not the other. No
+// writer in this tree composes a block key with an element name -- `block_index_written_key` passes a
 // literal `None` -- so no index this binary writes can contain the ambiguous shape; an index that
 // DOES carry one predates the stamp and is refused by `persistence`'s `<` comparison on every one
 // of `decode_index_bytes`'s six production callers before anything acts on it. That is the
@@ -405,11 +405,11 @@ fn the_stored_block_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
     use crate::index_log::block_ref_key_from_parts;
 
     // TWO DIFFERENT IDENTITIES, ONE KEY. The separator is a bare colon and both the object key and
-    // the component may contain one, so the boundary between them is not recoverable.
+    // the element name may contain one, so the boundary between them is not recoverable.
     let colon_in_the_object = block_ref_key_from_parts("string", "a:b", None, 0, 0, 0, 0, 0);
     let colon_in_the_element_name = block_ref_key_from_parts("string", "a", Some("b:"), 0, 0, 0, 0, 0);
-    println!("object `a:b`, no component -> {colon_in_the_object}");
-    println!("object `a`, component `b:` -> {colon_in_the_element_name}");
+    println!("object `a:b`, no element_name -> {colon_in_the_object}");
+    println!("object `a`, element_name `b:` -> {colon_in_the_element_name}");
     assert_eq!(
         colon_in_the_object, colon_in_the_element_name,
         "two different identities must collide for the format to be shown ambiguous"
@@ -425,7 +425,7 @@ fn the_stored_block_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
     );
 
     // AND THE NUMERIC TAIL IS DELIMITED, which is why a right-anchored parse works TODAY while
-    // every component is absent. Asserted so that the narrow availability of that parse is
+    // every element name is absent. Asserted so that the narrow availability of that parse is
     // recorded as a property being relied on rather than a guarantee.
     let later_generation = block_ref_key_from_parts("string", "a:b", None, 0, 0, 0, 0, 1);
     assert_ne!(
@@ -469,7 +469,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // THE `object` PARAMETER IS GONE, NOT RENAMED `_object`. The entry has no field for it, and a
     // caller that still tries to name an object through this builder should stop compiling rather
     // than be ignored -- the treatment `entry_count_versus_block_count::block_at` took for its own
-    // dead `component` argument. The object each block belongs to is named where it is filed.
+    // dead `element_name` argument. The object each block belongs to is named where it is filed.
     fn block(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
         BlockIndex::new(
             stored_model_kind(KIND),

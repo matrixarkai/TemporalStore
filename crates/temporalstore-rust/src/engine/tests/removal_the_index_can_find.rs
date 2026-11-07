@@ -8,7 +8,7 @@
 //! Under `TS_CONTAINER_ONE_ENTRY_A_PAGE` a removal still appends a tombstone page, and that page
 //! still names the element in its payload -- step six established both. Then
 //! `mark_bucket_index_block_deleted_recording` goes looking for the entry to tombstone **by
-//! component**, and a block-named entry has none. Nothing is selected, nothing is filed, and the
+//! element name**, and a block-named entry has none. Nothing is selected, nothing is filed, and the
 //! tombstone block ends up **unreachable from the index**.
 //!
 //! Step six measured exactly that and recorded it as harmless: `1 live entry, 0 tombstoned`, with
@@ -123,7 +123,7 @@ fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usi
     (addresses, live, tombstoned)
 }
 
-/// The live components the BLOCKS THE INDEX NAMES state, read off the bytes directly.
+/// The live element names the BLOCKS THE INDEX NAMES state, read off the bytes directly.
 ///
 /// This is the middle step of the arm: it establishes that the two sources disagree BEFORE any
 /// reader is consulted. Without it this would be an agreement test, and a presence-only guard
@@ -211,7 +211,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     println!("  entries after:  {live_after} live, {tombstoned_after} tombstoned");
     println!("  addresses the index names: {}", addresses.len());
     println!(
-        "  blocks those addresses state {} live component(s); victim still stated: {}",
+        "  blocks those addresses state {} live element_name(s); victim still stated: {}",
         stated.len(),
         stated.contains(&victim_element_name)
     );
@@ -258,7 +258,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
         !derived.live.contains_key(&victim_element_name),
         "A MEMBERSHIP FOLDED FROM THE BLOCKS THE INDEX NAMES STILL HOLDS THE REMOVED MEMBER.\n\
          The removal appended a tombstone block that names the element, but \
-         `mark_bucket_index_block_deleted_recording` selects the entry to tombstone BY COMPONENT \
+         `mark_bucket_index_block_deleted_recording` selects the entry to tombstone BY ELEMENT NAME \
          and a block-named entry has none -- so nothing was filed and the tombstone block is \
          UNREACHABLE from the index ({live_after} live / {tombstoned_after} tombstoned entries, \
          {} address(es) named). The fold calls itself COMPLETE because an unreachable block is \

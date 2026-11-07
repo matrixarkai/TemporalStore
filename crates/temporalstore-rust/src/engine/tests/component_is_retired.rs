@@ -46,14 +46,21 @@
 //! split would have counted them as production. Here a hit is a hit wherever it sits, and the
 //! roster row says what it is.
 //!
-//! # WHAT THIS FILE DOES NOT COUNT, AND WHY
+//! # PROSE IS COUNTED TOO, ON ROWS OF ITS OWN
 //!
-//! COMMENTS. Prose that says "component names" becomes "element names" in a separate slice, and a
-//! prose count that rose whenever a neighbouring branch wrote a sentence would turn this guard
-//! into the thing that refused a correct change. Strings that are not in a `serde` attribute are
-//! messages and test fixtures, not the contract. THIS FILE: it names the word in its own
-//! identifiers, so it is the one file the walk skips, and the skip is asserted to point at a file
-//! that exists.
+//! The word in a comment, and the word in a message or a test fixture, are tallied per file under
+//! the tokens `//` and `<strings>`. They are never swept into a file's identifier wildcard: a
+//! sentence must not be able to hide a use in code, and a use in code must not be able to hide
+//! behind a sentence. A prose row that falls is lowered, and one that rises fails, exactly like the
+//! rest.
+//!
+//! What stays on the roster at the end is prose that is ABOUT the old word and cannot say anything
+//! else: the comment that says an alias keeps a record written under the long key readable, the
+//! fixture that spells the key a published report still carries, the sentence about a filesystem
+//! path component. Each says why.
+//!
+//! NOT COUNTED: THIS FILE. It names the word in its own identifiers and sentences, so it is the one
+//! file the walk skips, and the skip is asserted to point at a file that exists.
 //!
 //! # HOW TO READ A MISMATCH
 //!
@@ -94,11 +101,25 @@ type Row = (&'static str, &'static str, usize, Class, &'static str);
 /// zero is deleted rather than kept, because a roster that keeps its zeroes is a list nobody can
 /// tell is finished.
 const ROSTER: &[Row] = &[
+    ("crates/temporalstore-rust/src/engine/engine_compaction.rs", "<strings>", 2, Class::PublishedKey, "the layout-policy label `component_block_object` is a stored and published value (the compaction report names the policy), and a value that is published does not move with a rename"),
+    ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "<strings>", 1, Class::OtherSense, "the #[path] of this guard own file, which is named for the word it counts down"),
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "component_is_retired", 1, Class::OtherSense, "this guard, registered under the name of the word it counts down"),
     ("crates/temporalstore-rust/src/engine/engine_reports.rs", "\"component\"", 1, Class::PublishedKey, "the key the published block-index report writes; consumers read it, so the Rust field is renamed and the key is kept by an explicit rename"),
+    ("crates/temporalstore-rust/src/engine/engine_reports.rs", "//", 1, Class::PublishedKey, "the comment on the renamed field that says the published key is still spelled as it was"),
     ("crates/temporalstore-rust/src/engine/engine_storage_state.rs", "\"component\"", 1, Class::PublishedKey, "the key a tombstone row is stored under in the index dump; a dump an earlier build wrote must still read, so the key is kept by an explicit rename"),
+    ("crates/temporalstore-rust/src/engine/engine_storage_state.rs", "//", 1, Class::PublishedKey, "the comment on the renamed field that says the stored key is still spelled as it was"),
+    ("crates/temporalstore-rust/src/engine/tests/address_footprint.rs", "<strings>", 1, Class::OtherSense, "a literal field name the fixture writes; its byte length is part of what the assertions measure"),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_element_naming.rs", "<strings>", 1, Class::LegacyAlias, "asserts that the stored text no longer carries the old key"),
+    ("crates/temporalstore-rust/src/engine/tests/block_entry_names.rs", "<strings>", 12, Class::LegacyAlias, "fixtures: the index text an earlier build stored, which spells the key as it was, and the assertions that it is still read"),
+    ("crates/temporalstore-rust/src/engine/tests/element_ordinal_reuse.rs", "<strings>", 1, Class::OtherSense, "a literal member name the fixture writes; its byte length is part of what the assertion measures"),
     ("crates/temporalstore-rust/src/engine/tests/index_write_amplification.rs", "components", 1, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
     ("crates/temporalstore-rust/src/engine/tests/no_signature_names_the_series.rs", "components", 1, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
+    ("crates/temporalstore-rust/src/engine/tests/storage_maintenance_and_compaction.rs", "<strings>", 1, Class::OtherSense, "a literal member name the fixture writes; its byte length is part of what the assertions measure"),
+    ("crates/temporalstore-rust/src/engine/tests/stream_reads_and_shard_controls.rs", "<strings>", 1, Class::LegacyAlias, "asserts that a stored block carries neither the old key nor the short one"),
+    ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "//", 1, Class::OtherSense, "names the guard this file is read beside"),
+    ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "<strings>", 7, Class::LegacyAlias, "the long key an older record carries and the keys a published row keeps, spelled as the data"),
+    ("crates/temporalstore-rust/src/engine/tests/what_the_slot_index_is_made_of.rs", "<strings>", 5, Class::OtherSense, "a tally label for the slot the entry no longer has; the label is a table key"),
+    ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "<strings>", 3, Class::OtherSense, "the guard table of FOREIGN type names, which quotes foreign words on purpose, and the stored layout label it leaves alone"),
     ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "components", 2, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
     ("crates/temporalstore-rust/src/matrixark_rust_proxy_impl.rs", "sanitize_path_component", 3, Class::OtherSense, "a filesystem path component: the directory name a namespace or table is stored under"),
     ("crates/temporalstore-rust/src/wal.rs", "\"component\"", 2, Class::LegacyAlias, "alias on the two renamed WAL record fields: a record written under the long key still decodes (an alias is deserialize-only, the written key is the short rename)"),
@@ -129,6 +150,11 @@ struct Lexed {
     code: String,
     /// The content of every string literal that sits inside an attribute whose body names `serde`.
     serde_strings: Vec<String>,
+    /// The text of every comment, doc comments and block comments included.
+    comments: Vec<String>,
+    /// The content of every other string literal: messages, fixtures, and the strings of attributes
+    /// that are not `serde` ones (a `#[path = ".."]`, a `cfg` feature name).
+    other_strings: Vec<String>,
 }
 
 fn is_ident_char(ch: char) -> bool {
@@ -185,14 +211,17 @@ fn lex(source: &str) -> Lexed {
 
         // Line comment, doc comments included. The newline is left for the next turn to emit.
         if ch == '/' && i + 1 < n && c[i + 1] == '/' {
+            let start = i;
             while i < n && c[i] != '\n' {
                 i += 1;
             }
+            out.comments.push(c[start..i].iter().collect());
             continue;
         }
 
         // Block comment. They nest in Rust, and an unbalanced `/*` inside one is not a close.
         if ch == '/' && i + 1 < n && c[i + 1] == '*' {
+            let start = i;
             let mut depth = 1usize;
             i += 2;
             while i < n && depth > 0 {
@@ -209,6 +238,7 @@ fn lex(source: &str) -> Lexed {
                     i += 1;
                 }
             }
+            out.comments.push(c[start..i.min(n)].iter().collect());
             out.code.push(' ');
             continue;
         }
@@ -248,6 +278,8 @@ fn lex(source: &str) -> Lexed {
                 if attr_depth > 0 {
                     attr_strings.push(text);
                     attr_code.push(' ');
+                } else {
+                    out.other_strings.push(text);
                 }
                 out.code.push(' ');
                 i = j;
@@ -301,6 +333,8 @@ fn lex(source: &str) -> Lexed {
                         .any(|word| word == "serde");
                     if is_serde {
                         out.serde_strings.append(&mut attr_strings);
+                    } else {
+                        out.other_strings.append(&mut attr_strings);
                     }
                     attr_strings.clear();
                 }
@@ -336,6 +370,43 @@ fn tally_text(file: &str, text: &str, into: &mut BTreeMap<(String, String), usiz
                 .or_default() += 1;
         }
     }
+    // PROSE, counted apart from code and under tokens that cannot be an identifier. The same word
+    // in a comment or in a message is not the same problem as the word in the program, and it is
+    // rostered on its own row so that a sentence cannot hide a use in code or the other way round.
+    let in_comments: usize = lexed.comments.iter().map(|text| occurrences(text)).sum();
+    if in_comments > 0 {
+        *into
+            .entry((file.to_string(), COMMENT_TOKEN.to_string()))
+            .or_default() += in_comments;
+    }
+    let in_strings: usize = lexed
+        .other_strings
+        .iter()
+        .map(|text| occurrences(text))
+        .sum();
+    if in_strings > 0 {
+        *into
+            .entry((file.to_string(), STRING_TOKEN.to_string()))
+            .or_default() += in_strings;
+    }
+}
+
+/// The token a file's comments are rostered under, and the one its non-serde strings are.
+const COMMENT_TOKEN: &str = "//";
+const STRING_TOKEN: &str = "<strings>";
+
+/// How many times the word occurs in `text`, in any case, not overlapping.
+fn occurrences(text: &str) -> usize {
+    text.to_ascii_lowercase().matches("component").count()
+}
+
+/// An identifier starts with a letter or an underscore. Everything else a row can name -- a serde
+/// string, a comment tally, a string tally -- is explicit and is never swept into a wildcard.
+fn is_identifier_token(token: &str) -> bool {
+    token
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_alphabetic() || first == '_')
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -425,10 +496,11 @@ fn compare(
     for ((file, token), count) in actual {
         if claimed.contains_key(&(file.clone(), token.clone())) {
             seen_explicit.insert((file.clone(), token.clone()), *count);
-        } else if token.starts_with('"') {
+        } else if !is_identifier_token(token) {
             // A serde string is never swept into a wildcard: it is the contract, so it is named.
+            // The prose tallies are named too, so that a sentence cannot hide a use in code.
             problems.push(format!(
-                "{file}: the serde string {token} appears {count} time(s) and no row names it"
+                "{file}: {token} appears {count} time(s) and no row names it"
             ));
         } else {
             *residual.entry(file.clone()).or_default() += count;
@@ -475,7 +547,7 @@ fn render_actual(actual: &BTreeMap<(String, String), usize>) -> String {
     let mut by_file: BTreeMap<&str, (Vec<(&str, usize)>, usize)> = BTreeMap::new();
     for ((file, token), count) in actual {
         let slot = by_file.entry(file.as_str()).or_default();
-        if token.starts_with('"') || token == "sanitize_path_component" {
+        if !is_identifier_token(token) || token == "sanitize_path_component" {
             slot.0.push((token.as_str(), *count));
         } else {
             slot.1 += count;
@@ -588,8 +660,23 @@ fn the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone() {
     assert_eq!(bracket.serde_strings, vec!["a]b", "component"]);
     assert!(bracket.code.contains("let z = 1;"));
 
-    // A string outside any attribute is never collected.
+    // A string outside any attribute is never a serde string.
     assert!(lex("let m = \"component\";").serde_strings.is_empty());
+
+    // Comments and strings are collected for the prose tally, each under its own head.
+    let prose = lex(
+        "// one component\nlet m = \"two component\"; /* three component */ let component = 1;",
+    );
+    assert_eq!(prose.comments, vec!["// one component", "/* three component */"]);
+    assert_eq!(prose.other_strings, vec!["two component"]);
+    assert_eq!(identifiers_with_the_word(&prose.code), vec!["component"]);
+    // The strings of an attribute that is not a serde one are strings, and not the contract.
+    let path = lex("#[path = \"tests/x_component.rs\"]\nmod x;");
+    assert_eq!(path.other_strings, vec!["tests/x_component.rs"]);
+    assert!(path.serde_strings.is_empty());
+    // A nested block comment is one comment.
+    let nested = lex("/* a /* b component */ c */ let z = 1;");
+    assert_eq!(nested.comments.len(), 1);
 }
 
 /// The no-op control. A change that must not move the count does not, and a change that must move
@@ -600,10 +687,14 @@ fn the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone() {
 #[test]
 fn a_comment_or_string_edit_moves_nothing_and_a_code_edit_moves_exactly_one() {
     let base = "fn walk(path: &str) -> usize {\n    let n = path.len();\n    n\n}\n";
+    // CODE tokens only: identifiers and serde strings. Prose has its own tally, below.
     let count = |text: &str| {
         let mut t = BTreeMap::new();
         tally_text("x.rs", text, &mut t);
-        t.values().sum::<usize>()
+        t.iter()
+            .filter(|((_, token), _)| token != COMMENT_TOKEN && token != STRING_TOKEN)
+            .map(|(_, n)| *n)
+            .sum::<usize>()
     };
     assert_eq!(count(base), 0);
 
@@ -731,4 +822,45 @@ fn the_files_named_for_the_word_are_the_roster() {
             "{file}: a permanent class says why"
         );
     }
+}
+
+/// Prose is tallied apart from code: a sentence moves its own row and nothing else.
+#[test]
+fn a_sentence_moves_only_its_own_row() {
+    let tally = |text: &str| {
+        let mut t = BTreeMap::new();
+        tally_text("x.rs", text, &mut t);
+        t
+    };
+    let base = "fn f() {}\n";
+    assert!(tally(base).is_empty());
+
+    // One comment sentence naming the word twice is two on the comment row and nothing else.
+    let commented = tally(&format!("// a component and another Component\n{base}"));
+    assert_eq!(commented.len(), 1);
+    assert_eq!(commented[&("x.rs".to_string(), COMMENT_TOKEN.to_string())], 2);
+
+    // A block comment, a doc comment: the same row.
+    let docs = tally(&format!("/// the COMPONENT\n/* and a component */{base}"));
+    assert_eq!(docs[&("x.rs".to_string(), COMMENT_TOKEN.to_string())], 2);
+
+    // A message is on the string row and nowhere else.
+    let message = tally(&format!("{base}const M: &str = \"no component here\";\n"));
+    assert_eq!(message.len(), 1);
+    assert_eq!(message[&("x.rs".to_string(), STRING_TOKEN.to_string())], 1);
+
+    // An identifier is on its own row and moves neither prose row.
+    let ident = tally(&format!("{base}fn component() {{}}\n"));
+    assert_eq!(ident.len(), 1);
+    assert_eq!(ident[&("x.rs".to_string(), "component".to_string())], 1);
+
+    // A serde string is the contract: on its own row, and not also a message.
+    let serde = tally(&format!("{base}#[serde(alias = \"component\")]\nfn g() {{}}\n"));
+    assert_eq!(serde.len(), 1);
+    assert_eq!(serde[&("x.rs".to_string(), "\"component\"".to_string())], 1);
+
+    // The word inside a longer word is still the word, which is what a roster of prose wants:
+    // `components` is two syllables of the same problem.
+    let plural = tally(&format!("// many components\n{base}"));
+    assert_eq!(plural[&("x.rs".to_string(), COMMENT_TOKEN.to_string())], 1);
 }

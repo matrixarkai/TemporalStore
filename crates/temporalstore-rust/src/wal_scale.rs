@@ -3,7 +3,7 @@
 
 //! What an append costs per record, and what a replay costs per log.
 //!
-//! The write-ahead log's CORRECTNESS is the best covered of any component here -- it killed 17 of
+//! The write-ahead log's CORRECTNESS is the best covered of any element name here -- it killed 17 of
 //! 18 mutants. What nobody had measured is what it COSTS, and the two questions a log has to
 //! answer at scale are separate: does one append get more expensive as the log grows, and does a
 //! replay cost the number of records or the number of bytes.

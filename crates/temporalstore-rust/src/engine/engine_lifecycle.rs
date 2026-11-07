@@ -446,16 +446,16 @@ impl OutcomeBlockElements {
     ///
     /// # AND A DISAGREEMENT IS LOUD, WHICH IS THE CLAUSE THAT EARNS ITS KEEP
     ///
-    /// If the block names elements and the outcome's component is not among them, then the block in
+    /// If the block names elements and the outcome's element name is not among them, then the block in
     /// hand is not the block this outcome is about -- which is the `object_id` pairing defect
-    /// recorded in `the_shared_install_pairs_carried_blocks_by_object_and_component`
+    /// recorded in `the_shared_install_pairs_carried_blocks_by_object_and_element_name`
     /// arriving with evidence. Installing the block's names would file this element's address under
-    /// another element's name; installing the component's would file another block's bytes under
+    /// another element's name; installing the element name's would file another block's bytes under
     /// this one. Both are corruption, so neither is chosen and the load is refused.
     ///
     /// `want_removed` selects the half the caller is about: an insert installs the LIVE items, a
     /// removal drops the ones the frame marks gone. The disagreement check looks at ALL of them,
-    /// because the component names its element whichever state the block records it in.
+    /// because the element names its element whichever state the block records it in.
     fn element_names(
         &self,
         item: &crate::wal::WalOutcomeItem,
@@ -729,16 +729,16 @@ impl TemporalEngine {
         // A NAMED ELEMENT'S ADDRESS COMES FROM THE RESIDENT MAP.
         //
         // This asked `bucket_index_block_address`, which requires
-        // `block.component.as_deref() == component` on every branch. An entry carries no element
+        // `block.element_name.as_deref() == element_name` on every branch. An entry carries no element
         // name, so for a container element that resolved NOTHING and this door answered `None` for
         // elements that were present and served:
         // `container_block_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
-        // framed_page` failed at "no stored block for hash hash-key component field-0000".
+        // framed_page` failed at "no stored block for hash hash-key element_name field-0000".
         //
         // The resident map is keyed BY the element and is where the production readers that used to
         // resolve this way now go, so this door follows them rather than keeping a resolution the
         // engine no longer has. The index is still asked as a FALLBACK, because it is the door for
-        // a kind that has no resident element map -- and because a caller naming a component for
+        // a kind that has no resident element map -- and because a caller naming an element name for
         // such a kind should get the same answer it always did.
         let address = match element_name {
             Some(element_name) => {
@@ -797,7 +797,7 @@ impl TemporalEngine {
         };
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         // The OBJECT's id, not the element's -- #2019 made that the only shape. The element is
-        // named by the component argument below, as it is on the real write path.
+        // named by the element name argument below, as it is on the real write path.
         let object_id = super::stable_block_object_id(shard_id, "hash", object_key);
         let routing_bucket = super::hashing::block_routing_bucket(
             object_key,
@@ -1149,7 +1149,7 @@ impl TemporalEngine {
                             //
                             // `hashes` is the map this re-derives. `context_events` and
                             // `context_indexes` are keyed by timestamp and their index entries
-                            // carry `component: None`, so their keys are not recoverable from the
+                            // carry `element_name: None`, so their keys are not recoverable from the
                             // index and they stay dropped here -- the same hole the install path
                             // carries, recorded at
                             // `rebuild_unserialized_model_maps_from_bucket_index`.
@@ -1739,7 +1739,7 @@ impl TemporalEngine {
     /// refused LOAD -- so a reachable path where the block cannot answer and the OUTCOME CAN became
     /// a store that would not open. `--bins`' `matrixark_publish_visibility_can_target_only_written_keys`
     /// found exactly that, and the message it printed is the shape of the defect: "address
-    /// resolved, block UNREADABLE or names nothing, component present, 27 chars". The information
+    /// resolved, block UNREADABLE or names nothing, element name present, 27 chars". The information
     /// was sitting right there and the refusal threw it away. So this answers with a REASON, and
     /// the arms fall back to the outcome's own copy rather than refusing.
     ///
@@ -1752,7 +1752,7 @@ impl TemporalEngine {
     /// 24 fallbacks reported:
     ///
     /// ```text
-    ///     kind=hash  component=Some(27)
+    ///     kind=hash  element name=Some(27)
     ///     why=the record carries several blocks of this object, so the carried block cannot be
     ///         told apart, and the address is not in the block store
     /// ```
@@ -1761,7 +1761,7 @@ impl TemporalEngine {
     ///
     ///   * the record is a `HashMultiSet` of several fields of ONE key, so it carries several blocks
     ///     under one `object_id` and the carried block cannot be matched to this outcome -- the
-    ///     pairing defect `the_shared_install_pairs_carried_blocks_by_object_and_component`
+    ///     pairing defect `the_shared_install_pairs_carried_blocks_by_object_and_element_name`
     ///     records, arriving in the wild rather than in a fixture;
     ///   * and that test runs with ASYNC STORAGE on, so the block the address names was still
     ///     buffered and the store did not have it.
@@ -1781,7 +1781,7 @@ impl TemporalEngine {
     /// NOT A SUBSTRING, A DECODE. The bytes were already known to CONTAIN the name -- a probe found
     /// it in 3 of 3 payloads by searching for it -- and that is a weaker claim than it looks:
     /// present is not the same as recoverable. What makes this sound is that the block carries a
-    /// one-byte KEY SPELLING and `component_from_element_key` is a defined inverse of the rendering
+    /// one-byte KEY SPELLING and `element_name_from_element_key` is a defined inverse of the rendering
     /// the write path used, driven both ways by `container_block_element_key`.
     ///
     /// # WHERE THE BYTES COME FROM, AND WHY THE ORDER IS THIS ONE
@@ -1855,7 +1855,7 @@ impl TemporalEngine {
                         Some(element_name) => named.push((element_name, element.deleted)),
                         None => {
                             return OutcomeBlockElements::Unreadable(
-                                "a block key does not render back as a component",
+                                "a block key does not render back as an element name",
                             )
                         }
                     }
@@ -1950,7 +1950,7 @@ impl TemporalEngine {
             // `meta` is what says this is not a block upsert. It is written on every such outcome
             // and it round-trips as `meta_log`; nothing read it until now.
             //
-            // Each removal mirrors the write path it undoes: the same component decoding as the
+            // Each removal mirrors the write path it undoes: the same element name decoding as the
             // insert arm below, and the bucket index cleared through the same helper, asked not
             // to stage -- replay installs a removal that was already recorded, and staging another
             // would record the recovery as a write of its own.
@@ -1959,7 +1959,7 @@ impl TemporalEngine {
                 // same way an insert does.
                 //
                 // `remove_container_element` appends `container_blocks::tombstone_block(kind,
-                // component)` before it records anything, and the outcome carries THAT block's
+                // element name)` before it records anything, and the outcome carries THAT block's
                 // address -- the comment on the re-filing below already says the address travels
                 // for the entry's sake. The block it names is a frame whose item for the removed
                 // element has `deleted` set, which is the whole reason the v2 block shape exists.
@@ -1973,7 +1973,7 @@ impl TemporalEngine {
                 // BLOCKS -- so a derivation after the replay would resurrect the element whatever
                 // this arm did with it. Refusing the load says so; installing from a name the
                 // outcome happened to carry would hide it. `"string"` is untouched: its block is its
-                // whole object, it has no element, and it never had a component.
+                // whole object, it has no element, and it never had an element name.
                 // ONE REMOVAL AT A TIME, by taking the SINGLE removed element and refusing a
                 // block that names several. A tombstone block is written per removal and holds
                 // exactly one removed item; a frame naming two would mean one outcome stood for two
@@ -2028,7 +2028,7 @@ impl TemporalEngine {
                             .zsets
                             .replay_remove_element(&item.object_key, &member);
                     }
-                    // A component-keyed kind with no component names nothing to remove.
+                    // An element-name-keyed kind with no element names nothing to remove.
                     _ => return false,
                 }
                 if item.kind != "string" {
@@ -2130,12 +2130,12 @@ impl TemporalEngine {
                 shard.set_string_address(stored_key, &address);
                 true
             }
-            // The component is what the map is keyed by, encoded. Each of these mirrors the
+            // The element name is what the map is keyed by, encoded. Each of these mirrors the
             // encoder that produced it; a wrong decode shows up as an equivalence failure, not
             // as a silently different shard.
             // THE BLOCK SAYS WHICH FIELD IT HOLDS, AND THE OUTCOME NO LONGER HAS TO.
             //
-            // This arm read `item.component` -- the recorded outcome's own copy of the field name
+            // This arm read `item.element_name` -- the recorded outcome's own copy of the field name
             // -- and refused when it was absent. It reads the block the outcome's address names
             // instead, through `elements_the_outcome_block_holds`, which decodes the container frame
             // and renders each element key back through the spelling the write path used.
@@ -2179,10 +2179,10 @@ impl TemporalEngine {
             //
             // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For
             // `ElementKeySpelling::Name`, and for `Hex` before it on blocks written earlier, the
-            // element key stored in the block is the member's own bytes and the component is a
+            // element key stored in the block is the member's own bytes and the element name is a
             // rendering of them -- so the round trip below is undoing a rendering that only
             // ever existed to put the member in a `String`. It is kept rather than short-circuited
-            // because `elements_the_outcome_block_holds` answers in components for every kind, which
+            // because `elements_the_outcome_block_holds` answers in element names for every kind, which
             // is what lets all four arms share one resolver instead of each decoding the frame its
             // own way.
             "set" => {
@@ -2231,7 +2231,7 @@ impl TemporalEngine {
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
                 // filed the record twice, which a replay would then install twice -- the mirror
                 // image of the defect the container exists to stop, and the compiler caught it as
-                // a moved `component` rather than as a double write.
+                // a moved `element_name` rather than as a double write.
                     super::recorded_map::install_element::<super::recorded_map::ListKind>(
                         shard,
                         shard_id,
@@ -2245,9 +2245,9 @@ impl TemporalEngine {
                 }
                 true
             }
-            // zset: the member in hex. THE SCORE NO LONGER RIDES THE COMPONENT -- it rides
+            // zset: the member in hex. THE SCORE NO LONGER RIDES THE ELEMENT NAME -- it rides
             // `item.value`, eight big-endian bytes, which `RecordedKind::outcome_value` is the
-            // only producer of. There is no fallback to a score-shaped component: a record this
+            // only producer of. There is no fallback to a score-shaped element name: a record this
             // old does not exist, because this replay arm and the writer that feeds it moved in
             // the same change, and a value-less zset insert outcome is therefore always a replay
             // this arm cannot recover -- refuse rather than install a wrong score.
@@ -2255,8 +2255,8 @@ impl TemporalEngine {
             // is deliberate rather than an oversight.
             //
             // The page's key for this spelling is eight bytes of biased score followed by the
-            // member, so the score IS in the block -- but `component_from_element_key` drops those
-            // eight bytes, because the component stopped spelling a score when zset collapsed to
+            // member, so the score IS in the block -- but `element_name_from_element_key` drops those
+            // eight bytes, because the element name stopped spelling a score when zset collapsed to
             // one entry a block. Reading the score back out of the key would mean this arm decoding
             // the frame itself instead of going through the shared resolver, for a value the
             // outcome already carries in `value`. The member is what was duplicated; the score was
@@ -2283,7 +2283,7 @@ impl TemporalEngine {
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
                 // filed the record twice, which a replay would then install twice -- the mirror
                 // image of the defect the container exists to stop, and the compiler caught it as
-                // a moved `component` rather than as a double write.
+                // a moved `element_name` rather than as a double write.
                     super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
                         shard,
                         shard_id,
@@ -2298,7 +2298,7 @@ impl TemporalEngine {
                 true
             }
             // Every timestamped series is the same shape: stored key -> block, with the key in
-            // the component. One arm covers all of them, so a new kind is a line in the map
+            // the element name. One arm covers all of them, so a new kind is a line in the map
             // below rather than another branch that can be forgotten here.
             //
             // For a feature the key is the point's timestamp, and a trim or a replace arrives
@@ -2310,7 +2310,7 @@ impl TemporalEngine {
             | "context_child"
             | "context_summary"
             | "context_compression" => {
-                // No component on a removal means the whole series went, not one point of it.
+                // No element name on a removal means the whole series went, not one point of it.
                 if item.deleted && item.element_name.is_none() {
                     // The kind is one of the six matched above, so a `false` here can only mean
                     // the key held no series -- which a removal has nothing to do about.
@@ -2371,8 +2371,8 @@ impl TemporalEngine {
                 }
                 // Mutate the series, then hand the SURVIVING blocks to the same index sync the
                 // write path uses. Registering the block directly here instead looked equivalent
-                // and was not: the write path registers a timestamped block with no component,
-                // one entry per address, so imitating it with a component produced a bucket
+                // and was not: the write path registers a timestamped block with no element name,
+                // one entry per address, so imitating it with an element name produced a bucket
                 // index that disagreed about every block while the typed maps matched exactly.
                 let point = match item.resolved_address() {
                     Some(address) if !item.deleted => Some(address),
@@ -2394,7 +2394,7 @@ impl TemporalEngine {
                 true
             }
             // context_event: the block is timestamp-keyed but the index entry is keyed by the
-            // event id, so the component carries both -- sixteen hex digits of the timeline key,
+            // event id, so the element name carries both -- sixteen hex digits of the timeline key,
             // then sixteen of the id. Two maps have to move together: the primary, and the time
             // index that every windowed read goes through. Installing only the primary leaves a
             // shard whose events exist and whose time queries return nothing.
@@ -2516,7 +2516,7 @@ impl TemporalEngine {
                 //
                 // CORRECTED, AND THE OLD WORDING SAID SOMETHING FALSE. This read "a context node is
                 // never registered in the bucket index". It IS registered -- `append_value` files
-                // the block from its own object-id, component and routing-bucket arguments, and
+                // the block from its own object-id, element name and routing-bucket arguments, and
                 // `context_node_survives_reload` reads `("hash", Some("meta"), deleted=false)` back
                 // out of `bucket_index` for a node written through the command path. What is not
                 // filed is the OUTCOME record under kind `hash`, which is deliberate: recording it
@@ -2633,7 +2633,7 @@ impl TemporalEngine {
             return 0;
         }
         // The element term is dropped here on purpose, and it costs nothing today: the only blocks
-        // this stage can materialise are `shard.strings`, whose component is `None`, so a block key
+        // this stage can materialise are `shard.strings`, whose element name is `None`, so a block key
         // and its object id are the same number for every block that reaches
         // `materialize_resident_blocks_where` below. A container element still has no path out of
         // the log through this stage -- that was true before this change and is unchanged by it.
@@ -2819,7 +2819,7 @@ impl TemporalEngine {
     /// FROM THERE BEFORE THE FIELD WENT.
     ///
     /// This read "the element has to be read back from the place that has always held it:
-    /// `BlockIndex::component`, sitting on the same block entry as the address whose object id this
+    /// `BlockIndex::element_name`, sitting on the same block entry as the address whose object id this
     /// is." That field is gone, and the paragraph was already describing a value that was `None`
     /// for every entry of every kind: one entry a block files no element name, so this walk has
     /// folded on `wal_resident_key(object_id, None)` -- which the function returns as `object_id`
@@ -2827,7 +2827,7 @@ impl TemporalEngine {
     ///
     /// WHAT THAT MEANS, STATED RATHER THAN LEFT TO BE REDISCOVERED. The two WRITERS of this map
     /// (`TemporalEngine`'s append path and `lifecycle`'s replay) key each entry on the STAGED
-    /// BLOCK's component, which IS the element's own name -- a record is a full account of the
+    /// BLOCK's element name, which IS the element's own name -- a record is a full account of the
     /// write. So an entry filed for a container element has a folded key no walk over the index can
     /// reconstruct, and it is skipped here. Only registrations for the kinds that carry no element
     /// name -- one block per object -- rehydrate.
@@ -3143,9 +3143,9 @@ impl TemporalEngine {
                             // an outcome would not install and never which part of it was missing --
                             // and this refusal FAILS THE LOAD, so it is the last thing anyone sees.
                             // Nearly every arm needs a resolved address and, for the keyed kinds, a
-                            // component; those two are what the caller can check for itself.
+                            // element name; those two are what the caller can check for itself.
                             //
-                            // The component VALUE is deliberately not printed: for a zset it is the
+                            // The element name VALUE is deliberately not printed: for a zset it is the
                             // member, which is caller data. Present-or-missing and its length localise
                             // the failure without putting a record key into an error string.
                             let element_name = match item.element_name.as_deref() {
@@ -3154,7 +3154,7 @@ impl TemporalEngine {
                             };
                             // AND WHETHER THE BLOCK NAMES ITS OWN ELEMENTS, which is the term that
                             // was missing from this message and is now the one the hash arm
-                            // actually fails on. A message naming only the component sent the next
+                            // actually fails on. A message naming only the element name sent the next
                             // reader to look at a field the arm no longer asks for -- the shape
                             // this file documents elsewhere as a gate whose output is not the thing
                             // it measured.
@@ -3169,7 +3169,7 @@ impl TemporalEngine {
                             return Err(Status::error(
                                 "wal_replay_outcome_refused",
                                 format!(
-                                    "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it (address {}, block {}, component {})",
+                                    "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it (address {}, block {}, element name {})",
                                     item.kind,
                                     record.sequence,
                                     if item.resolved_address().is_some() { "resolved" } else { "UNRESOLVED" },

@@ -4,7 +4,7 @@
 //! Four expiry decisions on the command layer that nothing was watching.
 //!
 //! A mutation audit of this layer scored 7 killed out of 18 attempted -- the lowest of the nine
-//! components it covered. Four of the survivors are guarded here. They are four separate
+//! element names it covered. Four of the survivors are guarded here. They are four separate
 //! claims, in four tests, because a single test that fires for any of them says nothing about
 //! which one it was watching.
 //!

@@ -3331,7 +3331,7 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
     let provider = ContextModelProviderConfig::default();
     let query = "how do we deploy the ingest service";
     let query_vector = query::context_query_embedding(&provider, query).unwrap();
-    // An orthogonal-ish vector: shift every component's mass to a different slot so the cosine
+    // An orthogonal-ish vector: shift every element name's mass to a different slot so the cosine
     // against the query is far from 1.
     let mut away = query_vector.clone();
     away.rotate_left(1);
@@ -4161,7 +4161,7 @@ fn what_a_retrieve_allocates() {
         }
         let counts = probe.stop();
 
-        // Split out the one component big enough to be worth suspecting on its own: the node fetch
+        // Split out the one element name big enough to be worth suspecting on its own: the node fetch
         // the scoring pass makes over EVERY candidate. If that is most of the per-candidate cost,
         // a narrower fetch is the fix; if it is a small share, the cost is elsewhere and a narrower
         // fetch would be six files of change for nothing.

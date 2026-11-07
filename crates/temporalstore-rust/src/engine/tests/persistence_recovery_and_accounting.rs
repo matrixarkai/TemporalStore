@@ -4697,31 +4697,31 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     }
 }
 
-// `components_of_one_object_stay_separate` WAS HERE, AND IT WAS ALREADY RED BEFORE THIS COMMIT.
+// `element_names_of_one_object_stay_separate` WAS HERE, AND IT WAS ALREADY RED BEFORE THIS COMMIT.
 //
-// It asserted that a six-field hash yields six separately-addressable, ordered component entries,
-// that an unwritten field is absent rather than empty, that a hash object has no componentless
+// It asserted that a six-field hash yields six separately-addressable, ordered element name entries,
+// that an unwritten field is absent rather than empty, that a hash object has no nameless
 // entry, and that a string object's one entry is reachable through `refs_for(None)`.
 //
 // TWO OF THOSE WERE FALSE ON THE BASE COMMIT, 75a25910e, and in OPPOSITE directions -- which is
 // why it is recorded here rather than quietly rewritten. `refs_for(Some("field-0")).is_some()`
 // could not hold: the element name came off the block entry one commit earlier, so every block of
 // every object filed under one nameless slot and a named query had nothing to find. And
-// `grouped.refs_for(None).is_none()` -- "a hash object has no componentless entry" -- was wrong
+// `grouped.refs_for(None).is_none()` -- "a hash object has no nameless entry" -- was wrong
 // the other way, because the nameless slot is now exactly where a hash object's blocks live.
 //
 // WHY IT IS NOT REWRITTEN. The only claim that survives is "six written fields produce six block
-// refs", and that is a claim about `BlockRefs` accumulating, not about per-component grouping --
+// refs", and that is a claim about `BlockRefs` accumulating, not about per-element-name grouping --
 // `the_insert_accumulates_an_objects_blocks_into_the_one_slot` in `engine_storage_state.rs` holds it directly,
 // against the producer. The `Some`-misses half would restate `names_the_only_slot`, which
-// `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` already asserts
+// `a_named_element_name_resolves_nothing_while_the_unnamed_one_resolves_everything` already asserts
 // in both directions in one arm so that it cannot pass one-sided.
 //
 // ONE CLAIM FROM THE ELEMENT-NAME BRANCH'S REWRITE IS CARRIED RATHER THAN DROPPED. That branch kept
 // this arm alive as `one_objects_pages_are_one_lookup_row_holding_every_ref` and moved the order
 // claim -- "removal binary-searches this vector, so its order is load-bearing" -- down from
-// `by_component` onto the refs. The rewrite as a whole cannot come across, because it reads
-// `grouped.by_component` and `refs_for(..)` and neither exists. The claim it moved IS live:
+// `by_element_name` onto the refs. The rewrite as a whole cannot come across, because it reads
+// `grouped.by_element_name` and `refs_for(..)` and neither exists. The claim it moved IS live:
 // `BlockRefs::insert` keeps the refs sorted and `BlockRefs::remove` binary-searches them, so an
 // `insert` rewritten to append would make `remove` miss a ref that is present. Nothing else in the
 // tree asserted it. It is restated against the producer, beside
@@ -4736,7 +4736,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 
 /// The common case takes the inline arm, and the spilled arm still behaves.
 ///
-/// Measuring that 100% of components hold one ref only justifies the shape; it does not show the
+/// Measuring that 100% of element names hold one ref only justifies the shape; it does not show the
 /// shape is being used. A structure that silently spilled every time would measure identically
 /// from the outside and cost an allocation each, so the arm is asserted directly.
 #[test]
@@ -4767,7 +4767,7 @@ fn single_block_element_names_are_held_inline() {
     let mut spilled = 0usize;
     for entry in shard.bucket_index.object_block_lookup.values() {
         // ONE SLOT PER OBJECT NOW, so this is a census of the object's own ref list rather than of
-        // each component's. `BlockRefs` is unchanged and the question is the same one: does a
+        // each element name's. `BlockRefs` is unchanged and the question is the same one: does a
         // single-block object spill its refs to a vector, or stay inline.
         match entry {
             BlockRefs::One(_) => inline += 1,
@@ -5932,10 +5932,10 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
     // THE LOOKUP TAKES NO ELEMENT NAME NOW, AND THE ADDRESS IS STILL WHAT IS CHECKED.
     //
     // This passed `Some(field.as_str())`. `contains_object_block_address` ends with
-    // `&& component.is_none()` -- the old `block.component.as_deref() == component` with the
+    // `&& element_name.is_none()` -- the old `block.element_name.as_deref() == element_name` with the
     // entry's own constant folded in -- so a `Some` can never match and every field read as
     // UNFILED: "field f000 holds an address the bucket index does not have filed", for a field
-    // that was filed. The object's blocks are all under its single componentless row, and what is
+    // that was filed. The object's blocks are all under its single nameless row, and what is
     // asserted is unchanged: each field's address is among them, including the overwritten ones
     // whose old filing is stale.
     for (field, address) in fields.iter() {
@@ -5947,7 +5947,7 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
         );
         // AND THE ELEMENT-NAME AXIS IS ASSERTED GONE, so the line above cannot quietly become
         // redundant. If the lookup starts answering by field name again, the name is back on the
-        // stored entry and this arm says so rather than passing on the componentless row alone.
+        // stored entry and this arm says so rather than passing on the nameless row alone.
         assert!(
             !shard.bucket_index.contains_object_block_address(
                 "hash",
@@ -6585,7 +6585,7 @@ fn the_index_wire_keys_are_what_they_were() {
             // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
             // value is read and ignored.
-            // "component" is GONE, and it is the key this change removes. `BlockIndex` has no
+            // "element name" is GONE, and it is the key this change removes. `BlockIndex` has no
             // element-name field: all four container kinds file one entry a block, so an entry
             // names a block and has nothing to say about which element is on it. The entry went 56
             // bytes of field to 40 with it.
@@ -6663,7 +6663,7 @@ fn the_index_wire_keys_are_what_they_were() {
 /// A bucket holding one object id holds it inline, and goes back to inline when it can.
 ///
 /// Keys route one to a bucket, so a bucket holds a single object unless its key is a COLLECTION:
-/// the object id is hashed over `shard:kind:key:component` and the routing bucket over the key
+/// the object id is hashed over `shard:kind:key:element_name` and the routing bucket over the key
 /// alone, so a hash with eight fields files eight ids into one bucket. Measured, that is 86.98%
 /// of buckets holding exactly one on a store of strings and series and 46.57% on a store with
 /// collections in it -- this test drives the first case, and the inline arm is what makes it
@@ -6948,7 +6948,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         );
     }
 
-    // Several components of one object: a map, which is what a map is for.
+    // Several element names of one object: a map, which is what a map is for.
     for field in ["a", "b", "c"] {
         engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -7024,7 +7024,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         //
         // The paragraph above said "the map holds ONE LIVE entry and TWO TOMBSTONES, three
         // entries". It holds FIVE. A removal reaches the index through a door whose `retain`
-        // matches `component.is_none()`, which a block-named entry cannot satisfy, so it keeps the
+        // matches `element_name.is_none()`, which a block-named entry cannot satisfy, so it keeps the
         // live entry over the block its element vacated AND appends a tombstone beside it. Two
         // removals therefore leave THREE live entries and two tombstones.
         //
@@ -7116,7 +7116,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         assert_eq!(
             0, tombstoned,
             "writing a field back did not clear its tombstone: {tombstoned} remain. The upsert's \
-             `retain` matches on the component, so a re-add takes the tombstone with it -- which is \
+             `retain` matches on the element name, so a re-add takes the tombstone with it -- which is \
              what bounds the cost of this change at one entry per DISTINCT element removed rather \
              than one per removal."
         );
@@ -7239,20 +7239,20 @@ fn an_object_index_costs_a_word_and_a_pointer() {
     );
 }
 
-// `one_component_is_held_without_a_vector` WAS HERE.
+// `one_element_name_is_held_without_a_vector` WAS HERE.
 //
-// It drove `ComponentList`'s promotion and demotion ladder -- `Empty` to `One` to `Many` and back
+// It drove `ElementNameList`'s promotion and demotion ladder -- `Empty` to `One` to `Many` and back
 // down -- and its doc was right that the DEMOTION was the half worth a test: an object that
-// briefly held two components would otherwise keep the vector for the rest of its life, and that
+// briefly held two element names would otherwise keep the vector for the rest of its life, and that
 // would not have shown up as a failure anywhere else.
 //
 // There is no ladder left. One slot per object is an `Option`, so promotion is assignment and
 // demotion is `Option::take`; a rewrite of this arm onto the new shape asserts that an `Option` is
 // `None` before you assign to it, which is `Option`'s definition and not a property of this
 // crate. Its third claim -- that `binary_search_by` places `None` at position 0 and a named
-// component after it -- has no analogue either, because there are no positions.
+// element name after it -- has no analogue either, because there are no positions.
 //
-// The measurement in its doc, "the measured average is 1.0 components per object", is what paid
+// The measurement in its doc, "the measured average is 1.0 element names per object", is what paid
 // for the deletion. It is recorded beside `ObjectBlockRefs` in `engine_storage_state.rs`, where the shape it
 // justifies now lives.
 
@@ -7578,7 +7578,7 @@ fn what_an_index_log_record_costs() {
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
 /// is unique per object, so sharing it saves copies but never collapses them -- established
 /// already, and not what this measures. The question here is the other two: `model_id` should be
-/// drawn from a small fixed set of model types, and `component` from a per-object field name.
+/// drawn from a small fixed set of model types, and `element_name` from a per-object field name.
 ///
 /// Reported per field rather than as one identity-strings total, because the answer differs by
 /// field and a combined number would hide that.
@@ -7652,7 +7652,7 @@ fn block_index_identity_string_cardinality() {
             // holds one byte and reads the registry's `&'static str` through it.
             model_allocations.insert(block.model_id().as_str().as_ptr());
             model_bytes += block.model_id().as_str().len();
-            // THE COMPONENT HALF OF THIS CENSUS HAS NO SUBJECT LEFT.
+            // THE ELEMENT NAME HALF OF THIS CENSUS HAS NO SUBJECT LEFT.
             //
             // It measured whether an entry's element name was a SHARED allocation -- distinct
             // names against distinct `Arc` pointers -- which only means anything while an entry
@@ -7660,8 +7660,8 @@ fn block_index_identity_string_cardinality() {
             // and no bytes to attribute.
             //
             // AND ITS ANTI-VACUITY FLOOR IS WHAT FORCED THIS TO BE REMOVED RATHER THAN RELAXED.
-            // The assertion below read `components_present > 0`, with the stated reason that a
-            // corpus with no components "would decide the component question by construction".
+            // The assertion below read `element_names_present > 0`, with the stated reason that a
+            // corpus with no element names "would decide the element name question by construction".
             // That is now true of EVERY corpus: the floor cannot be satisfied by any fixture, so
             // keeping it and lowering it would have been the exact move its own comment forbids.
             // The two halves that still have a subject -- `model_id` sharing and `object_key`
@@ -7671,8 +7671,8 @@ fn block_index_identity_string_cardinality() {
 
     // Anti-vacuity first: an empty index would make every ratio below true for free.
     //
-    // THE SECOND FLOOR IS DELETED, NOT LOWERED. It read `components_present > 0` because "a corpus
-    // with no components would decide the component question by construction" -- and that is now
+    // THE SECOND FLOOR IS DELETED, NOT LOWERED. It read `element_names_present > 0` because "a corpus
+    // with no element names would decide the element name question by construction" -- and that is now
     // true of every possible corpus, since an entry has no element name. A floor no fixture can
     // satisfy is not a floor; lowering it to zero would have been the move its own comment forbids.
     assert!(blocks > 0, "the block index is empty; nothing was measured");
@@ -7707,12 +7707,12 @@ fn block_index_identity_string_cardinality() {
 ///
 /// # WHAT THIS USED TO ASK, AND WHY THE QUESTION MOVED
 ///
-/// It was `object_block_lookup_occupancy_census`, and it asked how many COMPONENTS an object has,
-/// to decide whether an inline single-component shape was worth having. That question is answered
+/// It was `object_block_lookup_occupancy_census`, and it asked how many ELEMENT NAMES an object has,
+/// to decide whether an inline single-element-name shape was worth having. That question is answered
 /// and gone: an object has exactly one slot, the two-level shape it was sizing up is deleted, and
-/// its own anti-vacuity guard had already said so. The guard asserted `single_component > 0 &&
-/// multi_component > 0`, and once the element name came off the block entry every object had one
-/// component -- so `multi_component` was 0 and this arm was RED on 75a25910e, before the collapse
+/// its own anti-vacuity guard had already said so. The guard asserted `single_element_name > 0 &&
+/// multi_element_name > 0`, and once the element name came off the block entry every object had one
+/// element name -- so `multi_element_name` was 0 and this arm was RED on 75a25910e, before the collapse
 /// touched it. Its failure message named the consequence exactly: the occupancy question "would be
 /// decided by construction, not measurement".
 ///
@@ -7790,23 +7790,23 @@ fn object_block_lookup_refs_per_object_census() {
     // every claim below true for free.
     assert!(objects > 0, "the lookup is empty; nothing was measured");
     assert!(refs_total > 0, "no refs were recorded; nothing was measured");
-    // THE TWO-SIDED GATE MOVED FROM THE COMPONENT AXIS TO THE REFS AXIS, BECAUSE THE COMPONENT
+    // THE TWO-SIDED GATE MOVED FROM THE ELEMENT NAME AXIS TO THE REFS AXIS, BECAUSE THE ELEMENT NAME
     // AXIS COLLAPSED TO ONE SHAPE AND THEN THE AXIS ITSELF CAME OFF.
     //
-    // It read `single_component > 0 && multi_component > 0` and refused with "corpus is one-sided
+    // It read `single_element_name > 0 && multi_element_name > 0` and refused with "corpus is one-sided
     // (2200 single, 0 multi) -- the occupancy question would be decided by construction, not
     // measurement". It was right to refuse: once a block entry carried no element name an object
-    // held exactly ONE componentless lookup row whatever its kind, and a mixed corpus could not
+    // held exactly ONE nameless lookup row whatever its kind, and a mixed corpus could not
     // produce a second shape on that axis.
     //
     // THE REPLACEMENT GATE THE ELEMENT-NAME BRANCH WROTE IS NOT CARRIED, AND THAT IS A MERGE
-    // DECISION RATHER THAN AN OMISSION. It asserted `objects == single_component` -- "every object
-    // must hold exactly one componentless row". That counts ROWS, and there is no row level left
-    // to count: `ObjectBlockRefs`, `ComponentList` and `ComponentBlocks` are deleted and the
+    // DECISION RATHER THAN AN OMISSION. It asserted `objects == single_element_name` -- "every object
+    // must hold exactly one nameless row". That counts ROWS, and there is no row level left
+    // to count: `ObjectBlockRefs`, `ElementNameList` and `ElementNameBlocks` are deleted and the
     // lookup's per-object value IS a `BlockRefs`. Rewritten onto this shape it would read
     // `objects == objects` and pass for every corpus including an empty one. Its claim -- that a
-    // component can no longer be filed under a row of its own -- is kept where it is still
-    // falsifiable: `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything`
+    // element name can no longer be filed under a row of its own -- is kept where it is still
+    // falsifiable: `a_named_element_name_resolves_nothing_while_the_unnamed_one_resolves_everything`
     // in `engine_storage_state.rs` asserts `names_the_only_slot` in both directions in one arm.
     //
     // THE MULTIPLICITY DID NOT GO -- IT MOVED INSIDE THE SLOT. A hash of eight fields is one slot
@@ -7845,7 +7845,7 @@ fn object_block_lookup_refs_per_object_census() {
 ///
 /// Resident memory is ~2.8-3.9 KB per record depending on key length, and a key byte costs 14.1
 /// bytes of it -- the same string is held by `strings`, by the composite keys of
-/// `object_page_lookup` and `object_component_lookup`, and again inside each `BlockIndex`.
+/// `object_page_lookup` and `object_element_name_lookup`, and again inside each `BlockIndex`.
 /// Extrapolating to a zero-length key still leaves ~2581 B per record, so most of the bill is
 /// fixed per-record structure rather than the key.
 ///
@@ -7902,7 +7902,7 @@ fn per_record_structure_census() {
         .values()
         .map(|bucket| bucket.object_index.object_count())
         .sum();
-    // The map is keyed by object now, so its length is the object count and the per-component
+    // The map is keyed by object now, so its length is the object count and the per-element-name
     // map it used to be compared against is gone. Both numbers are still reported, because the
     // interesting quantity is entries PER RECORD and one of them stopped existing.
     let block_lookup_keys = shard.bucket_index.object_block_lookup.len();
@@ -7912,8 +7912,8 @@ fn per_record_structure_census() {
         .values()
         .map(crate::engine::state::BlockRefs::len)
         .sum();
-    // `component_lookup_keys` WAS HERE AND IT WAS A SECOND COPY OF THE ROW ABOVE. It summed
-    // `by_component.len()` per object, which has been exactly 1 per object since the element name
+    // `element_name_lookup_keys` WAS HERE AND IT WAS A SECOND COPY OF THE ROW ABOVE. It summed
+    // `by_element_name.len()` per object, which has been exactly 1 per object since the element name
     // came off the block entry -- so it equalled `block_lookup_keys` by construction and printed
     // 1.00/record beside it. The level it counted is gone; the row goes with it rather than being
     // rewritten into a third spelling of the same number.
@@ -7967,8 +7967,8 @@ fn per_record_structure_census() {
                     .sum::<usize>()
         })
         .sum();
-    // `component_lookup_bytes` WAS HERE AND IT WAS IDENTICALLY ZERO. It summed the length of each
-    // entry's component NAME, and every name had been `None` since the element name came off the
+    // `element_name_lookup_bytes` WAS HERE AND IT WAS IDENTICALLY ZERO. It summed the length of each
+    // entry's element name NAME, and every name had been `None` since the element name came off the
     // block entry -- so the row printed 0.0 into a byte table that ends in "= {:.1}x the key". The
     // name field is now deleted outright, so there is nothing left to sum. Leaving a hard zero in
     // a measurement table is worse than removing the row.
@@ -8107,14 +8107,14 @@ fn dirty_bucket_count_matches_the_unshortened_scan() {
 /// The maintained block-ref total must equal the walk it replaced.
 ///
 /// The stats path reports that number and used to derive it by summing every set in
-/// `object_component_lookup` -- a walk over every object in the shard, run on the heartbeat timer
+/// `object_element_name_lookup` -- a walk over every object in the shard, run on the heartbeat timer
 /// while holding the shard read lock writers need. Measured on a 200k-record ingest in five equal
 /// phases: heartbeat at 1s, the last phase cost 3.0x the first and the datanode's own CPU grew
 /// 3.3-3.7x; heartbeat off, 0.84-0.94x. Turning the timer off removed the growth entirely, which
 /// is what identified the walk rather than the write path.
 ///
 /// It is now kept as a running total, so it can drift instead of merely being slow. This drives
-/// inserts, superseding overwrites that remove block refs, hash fields with components, expiries
+/// inserts, superseding overwrites that remove block refs, hash fields with element names, expiries
 /// and deletes, then compares the maintained value against the sum it is meant to equal.
 #[test]
 fn maintained_element_name_block_ref_total_matches_the_walk() {
@@ -8200,13 +8200,13 @@ fn maintained_element_name_block_ref_total_matches_the_walk() {
         .bucket_index
         .object_element_name_block_refs
         .expect("the total should be established once the lookup has been built");
-    assert!(walked > 0, "workload produced no component block refs to compare");
+    assert!(walked > 0, "workload produced no element name block refs to compare");
     assert_eq!(
         maintained, walked,
-        "maintained component block-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
+        "maintained element name block-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
     );
     println!("
-  component block refs: maintained {maintained} == walked {walked}
+  element name block refs: maintained {maintained} == walked {walked}
 ");
 }
 
@@ -11459,7 +11459,7 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
 
 /// A numeric key must cost what a number costs, and still come back the same.
 ///
-/// Timestamped kinds put their stored key into `component` as a decimal string, and a context
+/// Timestamped kinds put their stored key into `element_name` as a decimal string, and a context
 /// event packed TWO keys as thirty-two hex characters. Both are numbers; a varint says a
 /// millisecond timestamp in seven bytes and that hex pair in about twelve. This asserts the
 /// saving and, more importantly, that the round trip is unchanged -- a smaller encoding that
@@ -11475,7 +11475,7 @@ fn a_numeric_element_name_travels_as_a_number_and_returns_intact() {
     );
     engine.load_shard(1);
 
-    // A feature series (component is a timestamp) and a context event (component is two keys).
+    // A feature series (element name is a timestamp) and a context event (element name is two keys).
     let workload = vec![
         Command::FeatureAppend {
             key: "num-feature".to_string(),
@@ -11517,7 +11517,7 @@ fn a_numeric_element_name_travels_as_a_number_and_returns_intact() {
             first_write_only: false,
             cold_storage: false,
         },
-        // A component that is genuinely TEXT must keep its string.
+        // An element name that is genuinely TEXT must keep its string.
         Command::HashSet {
             key: "num-hash".to_string(),
             field: "a-field-name".to_string(),
@@ -11552,7 +11552,7 @@ fn a_numeric_element_name_travels_as_a_number_and_returns_intact() {
         let back = crate::wal::decode_wal_line(&framed).expect("binary decodes");
         assert_eq!(
             &back, record,
-            "a numeric component did not survive the round trip"
+            "a numeric element name did not survive the round trip"
         );
         for item in &record.outcomes {
             match item.kind.as_str() {
@@ -11562,9 +11562,9 @@ fn a_numeric_element_name_travels_as_a_number_and_returns_intact() {
             }
         }
     }
-    assert!(numeric > 0, "no numeric components in the workload");
-    assert!(textual > 0, "no textual components in the workload");
-    println!("[numeric] {numeric} numeric component(s), {textual} textual, all round-tripped");
+    assert!(numeric > 0, "no numeric element names in the workload");
+    assert!(textual > 0, "no textual element names in the workload");
+    println!("[numeric] {numeric} numeric element_name(s), {textual} textual, all round-tripped");
 }
 
 /// A NEW NODE catching up from the shared log must INSTALL what the origin recorded.
@@ -13314,7 +13314,7 @@ fn which_records_still_carry_an_operation() {
 /// Did nesting actually save what it was measured to save?
 ///
 /// Two probes stood here before the change: one establishing that the per-object map was exactly a
-/// prefix range scan of the per-component one (113 objects, 226 refs, 0 disagreements), and one
+/// prefix range scan of the per-element-name one (113 objects, 226 refs, 0 disagreements), and one
 /// measuring what merging them would save (223588 B of keys held against 110780 nested, 50.5%).
 /// Both described a layout that no longer exists, and neither would fail if the saving had been
 /// lost -- they measured a hypothetical.
@@ -13347,7 +13347,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
             .status
             .ok
     );
-    // Mixed, because the saving depends on whether an object carries a component at all: a plain
+    // Mixed, because the saving depends on whether an object carries an element name at all: a plain
     // value has none and a hash field has one. Measuring only one kind would generalise from
     // whichever half is easier.
     for index in 0..RECORDS {
@@ -13375,13 +13375,13 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let lookup = &shard.bucket_index.object_block_lookup;
 
-    // Held now: the (model, object) key once, and nothing else. The component that used to sit on
+    // Held now: the (model, object) key once, and nothing else. The element name that used to sit on
     // each nested entry is gone with the level that held it.
     let mut nested_keys = 0usize;
     let mut nested_map_entries = 0usize;
     // What two flat maps WOULD have held: the (model, object) key as a whole key in one map, AND
-    // again as the head of every (model, object, component) key in the other. The tail of that
-    // longer key is "0|" -- the no-component spelling, which is the only one the engine ever wrote
+    // again as the head of every (model, object, element name) key in the other. The tail of that
+    // longer key is "0|" -- the no-element-name spelling, which is the only one the engine ever wrote
     // once an entry stopped naming its element. It used to be computed from the entry's own name
     // and is now the constant it had already become.
     const FLAT_TAIL: usize = 2;
@@ -13393,7 +13393,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
         // The flat layout kept a whole B-tree entry per object in the second map...
         flat_keys += object_key.len();
         flat_map_entries += 1;
-        // ...and another per (object, component) in the first. One object had one component, so
+        // ...and another per (object, element name) in the first. One object had one element name, so
         // this is one more entry per object and not a loop over a list.
         flat_keys += object_key.len() + FLAT_TAIL;
         flat_map_entries += 1;
@@ -13430,7 +13430,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
     //
     // Two assertions stood here and BOTH were unfalsifiable. One was
     // `nested_map_entries < flat_map_entries` and the other
-    // `nested_map_entries + nested_vec_elements == flat_map_entries`. With one component per
+    // `nested_map_entries + nested_vec_elements == flat_map_entries`. With one element name per
     // object -- the state since the element name came off the block entry -- `nested_map_entries`,
     // `nested_vec_elements` and `objects` were all the same number and `flat_map_entries` was
     // twice it, so the pair read `n < 2n` and `n + n == 2n`. Both held for every corpus including
@@ -13450,7 +13450,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
         flat_map_entries,
         2 * objects,
         "the flat layout it replaced held two b-tree entries per object -- one per (model, \
-         object) and one per (model, object, component) -- and that is the count this saving is \
+         object) and one per (model, object, element name) -- and that is the count this saving is \
          measured against"
     );
 }
@@ -14131,7 +14131,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
 /// bytes, no heap, no strings, and the delete flag is a value the size field already had room for.
 ///
 /// Here the same entry holds owned strings for the object key and model, an optional string
-/// component, a u64 id, an address struct with nine fields of its own, and three separate bools.
+/// element name, a u64 id, an address struct with nine fields of its own, and three separate bools.
 /// This reports the inline size and the heap each entry pulls behind it, because `size_of` alone
 /// undercounts a struct whose fields are `String`.
 #[test]
@@ -14183,7 +14183,7 @@ fn what_one_block_costs_to_index() {
             // zero here and the bytes are attributed once per object where they live, in
             // `the_key_text_lives_in_four_structures`'s lookup row.
             object_key_bytes += 0;
-            // One allocation across every block of that component, not one per block. The kind
+            // One allocation across every block of that element name, not one per block. The kind
             // contributes nothing at all now: one byte inline, spelled by a `&'static str`.
             // An entry carries no element name, so it contributes no shared name bytes.
                     shared_bytes += 0;
@@ -14209,7 +14209,7 @@ fn what_one_block_costs_to_index() {
 
       of which the map key      {map_key_b:>6.1} B   <- kind, key and five numbers as text
       of which the object key   {object_key_b:>6.1} B   (shared with the lookup)
-      shared across blocks       {shared_b:>6.1} B   (kind and component, one allocation each)
+      shared across blocks       {shared_b:>6.1} B   (kind and element name, one allocation each)
 
     the design being followed     17 B, packed, static_assert(sizeof == 17)
     ratio                        {:>7.1}x
@@ -14272,7 +14272,7 @@ fn which_parts_of_a_block_address_are_populated() {
     );
     engine.load_shard(1);
     // A mix, because a field that only one command populates would look dead in a single-shape
-    // workload: plain values, hash fields with components, and deletes leaving tombstones.
+    // workload: plain values, hash fields with element names, and deletes leaving tombstones.
     for index in 0..1_200 {
         engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -15610,9 +15610,9 @@ fn what_the_hash_family_costs_as_a_hash_grows() {
 
 /// What a zset must still answer after a restart.
 ///
-/// Pinned before changing how zset writes are indexed: declaring the written component flips the
+/// Pinned before changing how zset writes are indexed: declaring the written element name flips the
 /// index-log record's `upsert` flag, and that flag decides whether replay wipes-then-restores each
-/// covered object or replaces one component in place. A wrong component would file a block under the
+/// covered object or replaces one element name in place. A wrong element name would file a block under the
 /// wrong identity, and the damage would only appear after a reload.
 ///
 /// Verified by SERVING READS after the restart, not by comparing internal maps.
@@ -15736,7 +15736,7 @@ fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
         );
     }
 
-    // Score ORDER survives -- a block filed under a wrong component would show up here.
+    // Score ORDER survives -- a block filed under a wrong element name would show up here.
     let response = restarted.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ZSetRangeByScore {
@@ -15768,15 +15768,15 @@ fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
 }
 
 
-/// Does the per-entry write cost track how many COMPONENTS an object has?
+/// Does the per-entry write cost track how many ELEMENT NAMES an object has?
 ///
-/// Every entry of a list or zset is filed under its own component, and both cost ~4.0 allocations per
+/// Every entry of a list or zset is filed under its own element name, and both cost ~4.0 allocations per
 /// existing entry from a cause eight eliminated hypotheses have not found. `SetAdd` is a third
-/// component-per-entry collection; `StringSet` is a single value with no components, measured against
+/// element-name-per-entry collection; `StringSet` is a single value with no element names, measured against
 /// a store that already holds many other keys. A rising SetAdd beside a flat StringSet says the axis
-/// is the object's own component count, not the store's size and not collections as a category.
+/// is the object's own element name count, not the store's size and not collections as a category.
 ///
-///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_write_cost_track_an_objects_component_count -- --ignored --nocapture --test-threads=1
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_write_cost_track_an_objects_element_name_count -- --ignored --nocapture --test-threads=1
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
@@ -15806,7 +15806,7 @@ fn does_a_write_cost_track_an_objects_element_name_count() {
         engine.load_shard(1);
 
         // One set of `size` members, and `size` separate string keys -- so both arms face a store of
-        // the same magnitude, but only the set is ONE object with many components.
+        // the same magnitude, but only the set is ONE object with many element names.
         for index in 0..size {
             let out = engine.execute(ExecuteRequest {
                 shard_id: 1,
@@ -15902,7 +15902,7 @@ fn does_a_write_cost_track_an_objects_element_name_count() {
 
     println!(
         "
-  set_add rising while string_set flat => the axis is the OBJECT's component count, not the store.
+  set_add rising while string_set flat => the axis is the OBJECT's element name count, not the store.
   both rising                          => it is the store's size after all, and the arm-B result
                                           from the push probe needs revisiting.
   both flat                            => sets escape it, like whatever hashes do.
@@ -15918,7 +15918,7 @@ fn does_a_write_cost_track_an_objects_element_name_count() {
 ///
 /// Attributed with the engine's own per-site block-visit counters rather than by reading: a column
 /// tracking the store's block count names the site. StringSet is the control -- it writes a block and
-/// declares its component, so it should leave the counters alone.
+/// declares its element name, so it should leave the counters alone.
 ///
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib why_a_membership_test_costs_more_than_a_write -- --ignored --nocapture --test-threads=1
 #[test]
@@ -15976,7 +15976,7 @@ fn why_a_membership_test_costs_more_than_a_write() {
             crate::engine::bucket_visit_sites::snapshot();
         assert!(out.status.ok, "{:?}", out.status);
 
-        // Control: a write that DOES produce a block and declare a component.
+        // Control: a write that DOES produce a block and declare an element name.
         let warm = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
@@ -17203,12 +17203,12 @@ fn which_write_paths_cost_their_collection() {
 /// removed. Nothing in the suite covered plain-set membership across a restart -- the nearby
 /// restart test covers zsets -- so this is the missing guard, not a demonstration.
 ///
-/// What it does NOT prove: disabling the new ("set", Some(component)) index-item arm leaves this
+/// What it does NOT prove: disabling the new ("set", Some(element name)) index-item arm leaves this
 /// test GREEN. That is not a weakness in the assertions, it is what the write path says --
 /// "a write that only ADDED leaves nothing to resurrect: replay rebuilds the same membership
 /// from the same blocks" -- and `unload_shard` writes a full base snapshot that a reload recovers
 /// from wholesale. So a missing index item for an add-only command costs work, not correctness,
-/// and any claim that this test discriminates the component mapping would be false.
+/// and any claim that this test discriminates the element name mapping would be false.
 #[test]
 fn a_set_survives_a_restart_with_its_members_and_removals() {
     let dir = tempfile::tempdir().unwrap();
@@ -17310,13 +17310,13 @@ fn a_set_survives_a_restart_with_its_members_and_removals() {
 
 /// A list must come back from a restart with its ORDER intact, pushes from both ends included.
 ///
-/// `ListPush` now declares its index component, and that component is its sequence number --
+/// `ListPush` now declares its index element name, and that element name is its sequence number --
 /// read from the list AFTER the write lands, because a push's position is not knowable from the
 /// command alone.
 ///
-/// This is a GUARD on the restart path, not a check of the component: a clean `unload_shard`
-/// writes a full base snapshot that recovery reads wholesale, so inverting the end the component
-/// is taken from leaves this test green. The component itself is asserted directly by
+/// This is a GUARD on the restart path, not a check of the element name: a clean `unload_shard`
+/// writes a full base snapshot that recovery reads wholesale, so inverting the end the element name
+/// is taken from leaves this test green. The element name itself is asserted directly by
 /// `a_list_push_files_its_index_item_under_the_pushed_entry`, which reads the delta record.
 #[test]
 fn a_list_survives_a_restart_with_its_order_across_both_ends() {
@@ -17410,7 +17410,7 @@ fn a_list_survives_a_restart_with_its_order_across_both_ends() {
 ///
 /// The restart tests cannot see this: a clean unload writes a full base snapshot, so recovery
 /// never consults the incremental item. This reads the delta record itself, which is the only
-/// place the component appears, and so is the only test that fails if the component is computed
+/// place the element name appears, and so is the only test that fails if the element name is computed
 /// from the wrong end of the list.
 #[test]
 fn a_list_push_files_its_index_item_under_the_pushed_entry() {
@@ -17435,7 +17435,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
         assert!(out.status.ok, "right push: {:?}", out.status);
     }
     // The last write is a LEFT push, so the entry it created is the list's FIRST key. If the
-    // component were taken from the other end it would name the last right push instead.
+    // element name were taken from the other end it would name the last right push instead.
     let out = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ListPush {
@@ -17463,7 +17463,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
         .expect("delta records readable");
     // RE-ATTRIBUTED OFF THE ROW AND ONTO THE RECORD'S OWN CARRY, WITH THE SOURCE NAMED.
     //
-    // This read the pushed sequence out of `IndexItem::component` -- the sequence as sixteen hex
+    // This read the pushed sequence out of `IndexItem::element_name` -- the sequence as sixteen hex
     // digits, biased -- and the row has no such field any more. The sequence is carried instead in
     // the record's `key_states` blobs, under `CARRIED_CONTAINER_FIELDS[2]` (`list_elements`), as
     // the (sequence, address) pair read back out of `shard.lists` after the write. That is the
@@ -17497,7 +17497,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
     assert_eq!(
         seq, head_seq,
         "a LEFT push must file its item under the list's head ({head_seq}), not its tail \
-         ({tail_seq}); the component named {seq}"
+         ({tail_seq}); the element name named {seq}"
     );
 }
 
@@ -17508,7 +17508,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
 /// `which_write_paths_cost_their_collection`; this is the other axis.
 ///
 /// Two-sided control: ControlStateIncrement is known to amplify (7.57x) and SetAdd is known flat
-/// (1.03x since the component declaration). A probe that cannot show BOTH states is not
+/// (1.03x since the element name declaration). A probe that cannot show BOTH states is not
 /// measuring anything, so both are asserted.
 #[test]
 #[cfg(feature = "alloc-probe")]
@@ -18141,7 +18141,7 @@ fn does_a_narrow_read_pay_for_the_whole_collection() {
 /// Bytes are a different axis: four defects this sweep moved megabytes while barely moving a
 /// count, because one big serialisation is one allocation. This asks the byte question.
 ///
-/// SetAdd and FeatureAppend both declare their changed component and must stay flat.
+/// SetAdd and FeatureAppend both declare their changed element name and must stay flat.
 #[test]
 #[cfg(feature = "alloc-probe")]
 fn what_a_message_write_costs_in_bytes_as_history_grows() {
@@ -18335,12 +18335,12 @@ fn what_a_bigger_read_cache_buys() {
 
 /// What does the String family cost as the store grows?
 ///
-/// `StringSet` declares its index component; `StringGet`, `StringDelete` and `StringSetEx` do
+/// `StringSet` declares its index element name; `StringGet`, `StringDelete` and `StringSetEx` do
 /// not. On every other family, a write that declares nothing restated every block of its object
 /// and cost megabytes -- so `StringDelete` sits on the shape that was worth 16x elsewhere.
 ///
 /// The prediction is that it does NOT matter here, because a string is one block per key
-/// (`component: None`), so "every block of the object" is one block. This checks that, because the
+/// (`element_name: None`), so "every block of the object" is one block. This checks that, because the
 /// same reasoning applied to sets and lists would have been wrong.
 ///
 /// Two-sided control, both asserted.

@@ -159,17 +159,17 @@ pub(super) fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u
 
 /// THE IDENTITY OF AN OBJECT, WHICH IS ITS KIND AND ITS KEY AND NOTHING ELSE.
 ///
-/// The component USED to be folded in here, and the consequence was that an object held exactly
+/// The element name USED to be folded in here, and the consequence was that an object held exactly
 /// one block: a hash of twenty-five fields was twenty-five objects that happened to share a key.
 /// #1986 recorded the result as "the object id names a block's triple, not an object" -- a
 /// description of this defect, not a property to preserve.
 ///
-/// THE PARAMETER IS REMOVED RATHER THAN IGNORED. Keeping `component: Option<&str>` and dropping
+/// THE PARAMETER IS REMOVED RATHER THAN IGNORED. Keeping `element_name: Option<&str>` and dropping
 /// its value on the floor would leave all twenty-six call sites compiling while the meaning
-/// changed underneath them, and the fifteen that pass a real component are exactly the sites
+/// changed underneath them, and the fifteen that pass a real element name are exactly the sites
 /// whose identity MOVES. Removing it makes the compiler name every one.
 ///
-/// The element has not gone anywhere: `BlockIndex::component` is its own serialized field, the
+/// The element has not gone anywhere: `BlockIndex::element_name` is its own serialized field, the
 /// registry key is `(u64, Option<Arc<str>>)` since #2013, and `StagedBlock` carries it. What
 /// changes is only what the ID means -- the object, not the block.
 pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -> u64 {
@@ -203,13 +203,13 @@ pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -
 ///
 /// THE ELEMENT IS PART OF THE IDENTITY, NOT AN OPTION BESIDE IT. `None` means the block IS its whole
 /// object -- a string, a control state -- and `Some` names the element within it, exactly as
-/// `BlockIndex::component` beside the address does. One WAL record carries many blocks and picks one
+/// `BlockIndex::element_name` beside the address does. One WAL record carries many blocks and picks one
 /// out of itself by identity, so a read handed only the object answers with the FIRST block of that
 /// object: another element's bytes rather than a miss. Keeping the two halves in one value is what
 /// stops a site passing the object and forgetting the element.
 ///
-/// AND THE COMPONENT IS NOT A TERM OF THE HASH, which is the part that moved under #2019. The
-/// object id is `(shard, kind, key)` and names the OBJECT; the component names the element and is
+/// AND THE ELEMENT NAME IS NOT A TERM OF THE HASH, which is the part that moved under #2019. The
+/// object id is `(shard, kind, key)` and names the OBJECT; the element names the element and is
 /// carried beside the id rather than folded into it. Both fields are here for that reason: they
 /// answer two different questions and a single number cannot answer both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

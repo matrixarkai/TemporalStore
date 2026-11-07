@@ -21,7 +21,7 @@
 //! surface do not hold the same set and a table built from either alone is wrong:
 //!
 //!   * HASH -- `Command::HashLen` and `Command::HashGetAll`. THE PAIR WITH TWO PATHS. The count is
-//!     `bucket_index_component_block_addresses(shard, "hash", &key).len()`, which counts BLOCK-INDEX
+//!     `bucket_index_element_name_block_addresses(shard, "hash", &key).len()`, which counts BLOCK-INDEX
 //!     ENTRIES and reads no block. The listing walks the same entries and then reads a block per
 //!     entry through `read_block_bytes`, collecting through a `filter_map` -- so an entry whose
 //!     block does not read is counted by the length and ABSENT from the listing. The two agree today
@@ -715,7 +715,7 @@ fn the_equality_check_refuses_a_row_whose_floor_is_zero() {
 ///
 /// # WHY COMPARING THE TWO COMMANDS WOULD BE VACUOUS HERE, WHICH IS THE WHOLE DESIGN
 ///
-/// `HashLen` and `HashGetAll` BOTH resolve through `bucket_index_component_block_addresses` today.
+/// `HashLen` and `HashGetAll` BOTH resolve through `bucket_index_element_name_block_addresses` today.
 /// Counted over all eight `Command::Hash*` arms: four read the bucket index (`HashGet`,
 /// `HashIncrBy`, `HashGetAll`, `HashLen`), one reads the container (`HashMultiGet`), one reads BOTH
 /// (`HashDelete`) and two are writes. So leaving the container short cannot make the two commands
@@ -871,7 +871,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     //     the two and this change does not touch it ...")
     //
     // This change DOES touch it. `HashGetAll` was the fourth consumer that had to move before the
-    // element name could come off the entry: its index half read a nameless entry's component
+    // element name could come off the entry: its index half read a nameless entry's element name
     // through `unwrap_or_default()` and served every block as a field called `""` whose value was
     // the raw block FRAME. It skips a nameless entry now, and every hash entry is nameless, so the
     // index contributes NO names and the listing follows the CONTAINER.

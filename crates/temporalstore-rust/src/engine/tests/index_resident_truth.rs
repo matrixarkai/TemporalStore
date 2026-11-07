@@ -28,7 +28,7 @@
 //!   2. CAPACITY, NOT LENGTH. `reserve_one_more` steps the block list by `BLOCK_LIST_GROWTH_STEP`
 //!      with `reserve_exact`, so a list of five entries owns a buffer of eight. The report counts
 //!      `len()`.
-//!   3. NOTHING OUT OF LINE IS COUNTED. `object_key: Arc<str>` and `component: Option<Arc<str>>`
+//!   3. NOTHING OUT OF LINE IS COUNTED. `object_key: Arc<str>` and `element_name: Option<Arc<str>>`
 //!      are fat pointers; the bytes behind them are not in `size_of::<BlockIndex>()`. The LENGTH
 //!      rides in the fat pointer, so charging them costs no heap access -- but an `Arc` is SHARED,
 //!      and a walk that charges one per entry charges a shared name once per holder. The census
@@ -112,7 +112,7 @@ pub(super) struct IndexWalk {
     /// Distinct key allocations whose strong count exceeds the number of index entries holding
     /// them -- that is, which something OUTSIDE this index also owns.
     pub(super) keys_held_outside: u64,
-    /// The same census for component names.
+    /// The same census for element names.
     pub(super) element_names_held_outside: u64,
     /// Block-list length histogram over the `Many` arms: length -> how many buckets.
     pub(super) list_lengths: BTreeMap<usize, u64>,
@@ -218,8 +218,8 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
             // a column of the per-entry request table, beside the block-list and entry strides
             // that still have a subject.
             //
-            // NO COMPONENT REQUEST PER ENTRY: the entry carries no element name, so it asks the
-            // allocator for nothing on that account. The counter and the `seen_components` census
+            // NO ELEMENT NAME REQUEST PER ENTRY: the entry carries no element name, so it asks the
+            // allocator for nothing on that account. The counter and the `seen_element_names` census
             // therefore stay at zero by construction rather than by measurement.
         }
     }
@@ -471,7 +471,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 println!(
                     "  names: {} distinct key allocations for {} entries ({} B once per \
                      allocation, {} B once per entry), {} also held outside this index; \
-                     components {} ({} B once per allocation, {} B once per entry), {} held \
+                     element names {} ({} B once per allocation, {} B once per entry), {} held \
                      outside",
                     seen.key_allocs,
                     seen.blocks,
@@ -594,10 +594,10 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
 #[cfg(feature = "alloc-probe")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
-    /// One block per routed string key, and no component on any of them.
+    /// One block per routed string key, and no element name on any of them.
     Routed,
-    /// One block per hash FIELD. Routing never sees the component, so a container's blocks all share
-    /// one bucket at any range -- and every block carries a component name out of line, which is
+    /// One block per hash FIELD. Routing never sees the element name, so a container's blocks all share
+    /// one bucket at any range -- and every block carries a element name out of line, which is
     /// the half of the out-of-line question the routed arm cannot ask.
     Container,
 }

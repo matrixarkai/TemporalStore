@@ -1200,7 +1200,7 @@ impl IndexItem {
     /// Drop the composite key when the record already carries every part of it.
     ///
     /// `page_ref_key` is `block_ref_key_from_parts` of this item's own model, object key,
-    /// component and address -- measured at 43 bytes of a 176-byte record, the largest single
+    /// element name and address -- measured at 43 bytes of a 176-byte record, the largest single
     /// field in the index log, and every byte of it is spelled out again in the fields beside it.
     /// A reader rebuilds it with the same function, so the log carries the parts and not the
     /// concatenation.
@@ -1230,27 +1230,27 @@ impl IndexItem {
     /// Driven: a record whose handle was OMITTED, and a record carrying a handle that is no derivation
     /// of anything, BOTH load and serve -- filed, WAL-resident, slab, offset and length intact.
     ///
-    /// SO THE CLAIM THIS COMMENT USED TO MAKE IS FALSE: that removing `component` would make every
+    /// SO THE CLAIM THIS COMMENT USED TO MAKE IS FALSE: that removing `element_name` would make every
     /// already-stripped record rebuild a different key and resolve a durably acknowledged write to
     /// MISSING, needing a migration no stamp could buy. It reasoned from "the field is an input to a
     /// derivation whose output is stored" to "changing it corrupts stored data", and never asked
     /// whether anything reads the output. Every step was true; the conclusion was not.
     ///
-    /// `component` WAS BLOCKED FOR A SECOND AND STRONGER REASON, AND THE BLOCK IS DISCHARGED --
+    /// `element_name` WAS BLOCKED FOR A SECOND AND STRONGER REASON, AND THE BLOCK IS DISCHARGED --
     /// recorded rather than deleted, because the condition it named is exactly what lifted it. The
     /// paragraph read: unlike `block_ref_key` the element name is carried into memory and
     /// participates in MATCHING, because `fold_delta_block_items` set it on the `BlockIndex` and the
-    /// upsert `retain` compared `block.component.as_deref() == item.component.as_deref()`; it was the
+    /// upsert `retain` compared `block.element_name.as_deref() == item.element_name.as_deref()`; it was the
     /// only discriminator between two elements of ONE folded block, which share model id, object key
     /// AND address; and it "cannot go until the entry stops being per-element".
     ///
-    /// THE ENTRY HAS STOPPED BEING PER-ELEMENT. `BlockIndex::component` came off when the block entry
+    /// THE ENTRY HAS STOPPED BEING PER-ELEMENT. `BlockIndex::element_name` came off when the block entry
     /// went 56 bytes to 40, so the fold has no field to set, and that comparison is deleted as a
     /// tautology with the reason at its own site -- both sides were already `None` for every kind.
     /// What discriminates two elements of one block now is the block's own payload, which names every
     /// element on it, and the four durable maps, which are keyed by the element.
     ///
-    /// So `IndexItem::component` is gone too and slot 5 carries a constant nil. The rule below is
+    /// So `IndexItem::element_name` is gone too and slot 5 carries a constant nil. The rule below is
     /// what settled it, asked in the right order: nothing reads the reconstruction. The compiler
     /// enumerated the readers -- 39 diagnostics across 10 files -- and the only ones were this
     /// function, its inverse, and the positional encoder.
@@ -1337,7 +1337,7 @@ impl IndexItem {
     /// carries the last two, with the record carrying the shard. So the nine bytes it takes are
     /// nine bytes restating a hash of fields sitting beside it.
     ///
-    /// The component used to be a term of that hash and is not one now. It does not matter here:
+    /// The element name used to be a term of that hash and is not one now. It does not matter here:
     /// the row still carries it as its own field, and what this strips is a REPEAT of the
     /// derivation, which is recomputed from the same terms on the way back in.
     ///
@@ -1971,7 +1971,7 @@ pub struct IndexDeltaRecord {
     #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact blocks the write produced: replay replaces
-    /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
+    /// each item's (kind, object, element name) predecessor and inserts, WITHOUT the covered-key
     /// wipe -- mirroring the write path's upsert_bucket_index_block. When false (the default,
     /// and every record written before this field existed), the record snapshots each covered
     /// object's whole block set and replay wipes-then-restores. The snapshot shape is what made
@@ -1991,7 +1991,7 @@ pub struct IndexDeltaRecord {
     /// The one object key every item carries, when at least two items carry the same one.
     ///
     /// A timestamped write stages ONE ITEM PER REF -- all for the same object, differing only in
-    /// their component -- so a feature append of thirty-two points wrote that key thirty-two
+    /// their element name -- so a feature append of thirty-two points wrote that key thirty-two
     /// times. Measured on a record of that shape: 21 bytes per item, 24-31% of the record.
     ///
     /// Set only when every item agrees, and then each item's own `object_key` is written empty
@@ -2140,20 +2140,20 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 ///
 /// # WHERE IT IS NOT EXACT, AND WHY NOTHING THIS TREE WRITES CAN REACH THERE
 ///
-/// A NON-EMPTY COMPONENT CONTAINING A COLON MAKES THE COMPONENT/OBJECT-KEY BOUNDARY
+/// A NON-EMPTY ELEMENT NAME CONTAINING A COLON MAKES THE ELEMENT NAME/OBJECT-KEY BOUNDARY
 /// UNRECOVERABLE, and that is a property of the format rather than of this parse:
 /// `block_ref_key_from_parts("string", "a:b", None, ..)` and
 /// `block_ref_key_from_parts("string", "a", Some("b:"), ..)` compose the IDENTICAL key.
 /// `what_the_core_index_puts_on_the_wire::the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it`
 /// is the proof and it still stands. This parse resolves the ambiguity one way -- positionally,
-/// reading that key as the object `a:b` with no component.
+/// reading that key as the object `a:b` with no element name.
 ///
 /// NO BLOCK KEY THIS TREE WRITES CAN BE AMBIGUOUS, and that is structural rather than measured:
-/// [`crate::engine::state::block_index_written_key`] takes no component parameter and passes a
+/// [`crate::engine::state::block_index_written_key`] takes no element name parameter and passes a
 /// literal `None`, so the slot is always empty. It is also MEASURED, on 8,000 blocks of two key
 /// shapes, by
 /// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus`,
-/// which asserts the component slot empty block by block. An index carrying the ambiguous shape
+/// which asserts the element name slot empty block by block. An index carrying the ambiguous shape
 /// predates `SHARD_INDEX_FORMAT_VERSION` 27 and is refused by `persistence`'s `<` comparison at
 /// every one of `decode_index_bytes`'s production callers before anything acts on it.
 ///
@@ -2169,7 +2169,7 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 /// `a_key_that_does_not_round_trip_is_refused_rather_than_guessed` drives the refusals.
 pub fn block_ref_key_parts(key: &str) -> Result<BlockRefKeyParts<'_>, BlockRefKeyUnparsable> {
     let refuse = |because: &'static str| BlockRefKeyUnparsable { key: key.to_string(), because };
-    // Six fields from the right -- the five numbers and the component slot -- so six separators.
+    // Six fields from the right -- the five numbers and the element name slot -- so six separators.
     let mut cut = key.len();
     let mut at = [0usize; 6];
     for slot in 0..6 {
@@ -5212,7 +5212,7 @@ mod tests {
     /// last two while the record carries the shard. Nine bytes restating a hash of fields sitting
     /// beside it.
     ///
-    /// The COMPONENT was a term of that hash until #2019 and is not one now. The row still carries
+    /// The ELEMENT NAME was a term of that hash until #2019 and is not one now. The row still carries
     /// it as its own field; what it no longer does is contribute to this id.
     #[test]
     fn a_row_does_not_write_the_object_id_it_can_derive() {
@@ -6621,7 +6621,7 @@ mod tests {
         // restored the key too late would still pass -- which is what the first version of this
         // test did.
         // THE PARAMETER THAT VARIED THE FIXTURE IS NOW AN OFFSET, NOT AN ELEMENT NAME. These
-        // items were distinguished only by their component, and nothing can carry one: with the
+        // items were distinguished only by their element name, and nothing can carry one: with the
         // name gone the four cases below would have built runs of IDENTICAL rows, and a fixture
         // parameter that varies nothing is how a case list stops testing what it names. The
         // offset is in the handle derivation, so it varies the thing the round trip is about.
@@ -6750,7 +6750,7 @@ mod tests {
                 object_key: "ctx:event:41:tenant-7".into(),
                 model_id: "feature".to_string(),
                 // THE ROWS ARE IDENTICAL NOW, AND THAT IS HONEST FOR THIS FIXTURE. They were
-                // distinguished only by a component, which no row can carry. This arm measures a
+                // distinguished only by an element name, which no row can carry. This arm measures a
                 // per-row FLOOR -- address-less, handle-less, by design -- so a run of identical
                 // rows is the floor it is about rather than a weakened case.
                 object_id: 0,
@@ -9293,7 +9293,7 @@ flag exists to say",
         );
     }
 
-    /// THE HOISTED COMPONENTLESS ROW IS THIRTY BYTES, AND THE KIND SPELLING IS NOT A CONFOUND.
+    /// THE HOISTED ELEMENT_NAMELESS ROW IS THIRTY BYTES, AND THE KIND SPELLING IS NOT A CONFOUND.
     ///
     /// # WHAT THIS ARM MEASURED, AND WHY THAT HALF IS DELETED RATHER THAN LEFT RED
     ///
@@ -9306,7 +9306,7 @@ flag exists to say",
     /// reviewer nothing to read. What the three verdicts claimed was: a name is not free on any
     /// arm; it is paid PER ROW at its own length plus a header, so between `length` and
     /// `length + 2`; and at 64 characters the name alone outweighed the entire 30-byte
-    /// componentless row. The post-change measurement is that a 1-character name left the row at
+    /// nameless row. The post-change measurement is that a 1-character name left the row at
     /// 30 B against a 30 B control -- a delta of ZERO, which is what reddened the first verdict.
     ///
     /// AND THE 30 IS 29 NOW, WHICH IS A SECOND STEP AND NOT A RE-GOLDENING. The slot that held the
@@ -9332,19 +9332,19 @@ flag exists to say",
     /// # WHAT SURVIVES, AND IT IS THE TWO CONTROLS
     ///
     /// The 30-byte pin and the kind-spelling control are unaffected by the removal -- both rows
-    /// were already componentless -- and both catch a real failure: a fixture that stopped
+    /// were already nameless -- and both catch a real failure: a fixture that stopped
     /// hoisting, or a strip that stopped firing, moves them. They are kept and the arm is renamed
     /// to what it now does.
     ///
-    /// EVERY ROW FIGURE THIS CAMPAIGN PUBLISHED WAS MEASURED ON A ROW WITH `component: None`.
+    /// EVERY ROW FIGURE THIS CAMPAIGN PUBLISHED WAS MEASURED ON A ROW WITH `element_name: None`.
     /// 119 B unstripped and 55 B stripped come from `what_every_byte_of_an_index_item_is_spent_on`;
     /// the hoisted common row comes from `what_the_remaining_index_item_mechanisms_are_worth`
     /// directly above. All three fixtures build a `string` record, and a string record's block
     /// names no element inside its object because there is no element -- those rows are
-    /// COMPONENTLESS.
+    /// ELEMENT_NAMELESS.
     ///
     /// A CONTAINER ROW IS NOT. A hash field, a set member and a zset member each carry the
-    /// element's own name in the `component` slot, at the length of that name, ONCE PER ROW. So
+    /// element's own name in the `element_name` slot, at the length of that name, ONCE PER ROW. So
     /// the conclusion that was drawn from those figures -- that the identity still on a row is
     /// down to a couple of bytes, so sharing it would buy nothing -- is a true statement about
     /// the rows that were measured and says nothing at all about the rows that carry an element
@@ -9352,13 +9352,13 @@ flag exists to say",
     ///
     /// WHY THE CONTROL IS ASSERTED AND NOT MERELY PRINTED. A fixture that quietly stopped
     /// hoisting, or a strip that stopped firing, moves every arm here in the same direction, and
-    /// three deltas against a moved baseline still read as plausible. So the componentless row is
+    /// three deltas against a moved baseline still read as plausible. So the nameless row is
     /// built on this same fixture and asserted equal to the figure the campaign's own rows were
     /// taken against, and the three arms are reported as deltas FROM it.
     ///
     /// AND THE KIND NAME IS ELIMINATED AS A CONFOUND IN THE SAME BREATH. The campaign's rows say
     /// `string` in the model slot and a container row says `hash`, which is a different number of
-    /// characters -- so a second control re-measures the componentless row under `hash` and
+    /// characters -- so a second control re-measures the nameless row under `hash` and
     /// asserts the two agree. They do, because both spellings go through
     /// `model_id_as_number_when_it_is_known` and both are known; without this arm the element
     /// deltas below would silently carry the model slot's difference as well.
@@ -9369,7 +9369,7 @@ flag exists to say",
 
         // The eight-blocks-of-one-object fixture of the mechanism pricing above, verbatim apart
         // from the two things being varied: the model spelling and the element name.
-        // THE ELEMENT-NAME PARAMETER IS GONE, NOT RENAMED TO `_component`. It could no longer
+        // THE ELEMENT-NAME PARAMETER IS GONE, NOT RENAMED TO `_element_name`. It could no longer
         // reach the row, so keeping it would have made the three arms below encode the SAME row
         // three times and compare it with itself -- a fixture parameter that varies nothing, which
         // is how an arm reads as a tree fact while asserting only its own setup. A caller that
@@ -9414,8 +9414,8 @@ flag exists to say",
                         deleted: false,
                     };
                     // The writer's order. The handle strip DERIVES from `object_key` AND from
-                    // `component`, so it fires for an element row exactly as it does for a
-                    // componentless one -- which is the only reason these arms are comparable.
+                    // `element_name`, so it fires for an element row exactly as it does for a
+                    // nameless one -- which is the only reason these arms are comparable.
                     item.strip_block_ref_key_repeat();
                     item.strip_size_repeat();
                     item.strip_address_repeats();
@@ -9454,14 +9454,14 @@ flag exists to say",
             rmp_serde::to_vec(&items[0]).expect("encode a row").len()
         };
 
-        // THE CONTROL: the componentless hoisted row every published figure in this campaign was
+        // THE CONTROL: the nameless hoisted row every published figure in this campaign was
         // measured against. 29, NOT 30, SINCE THE ELEMENT-NAME SLOT CAME OFF -- one byte of
         // msgpack nil, written on every row of every kind, and now not written at all.
         const CONTROL_ROW_BYTES: usize = 29;
         let control = row_of("string");
         assert_eq!(
             CONTROL_ROW_BYTES, control,
-            "the componentless hoisted row measured {control} B, not the {CONTROL_ROW_BYTES} B \
+            "the nameless hoisted row measured {control} B, not the {CONTROL_ROW_BYTES} B \
              the campaign's row figures were taken against. The fixture, the strips or the \
              encoding has moved, and every delta below would be against the wrong baseline",
         );
@@ -9470,12 +9470,12 @@ flag exists to say",
         let control_hash = row_of("hash");
         assert_eq!(
             control, control_hash,
-            "a componentless row costs {control} B under `string` and {control_hash} B under \
+            "a nameless row costs {control} B under `string` and {control_hash} B under \
              `hash`, so the model slot differs between the campaign's fixture and a container's \
              and the element deltas below would carry that difference too",
         );
 
-        println!("=== the hoisted componentless row ===");
+        println!("=== the hoisted nameless row ===");
         println!("  string  {control} B");
         println!("  hash    {control_hash} B");
         println!(

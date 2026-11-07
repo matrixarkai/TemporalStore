@@ -9,7 +9,7 @@
 //! (`visit_model_live_blocks`, which a load and a compaction re-derive the whole index from) and
 //! the WRITE PATH (`install_element` -> `upsert_bucket_index_block`, which files one entry as each
 //! element is written). Under the one-entry-a-block gate the projection files one entry per PHYSICAL
-//! BLOCK carrying no component; the write path files one entry per ELEMENT carrying one.
+//! BLOCK carrying no element name; the write path files one entry per ELEMENT carrying one.
 //!
 //! A test that writes, then reloads, cannot see that. A reload re-derives, so it reads the index
 //! back the way the projection wrote it and the write path's filing is simply overwritten --
@@ -25,14 +25,14 @@
 //!      ADDRESSES rather than against a constant, so a fixture that happens to fold differently
 //!      cannot make this vacuous.
 //!
-//!      THIS USED TO READ "and every entry carrying no component", asserted as a `named` counter
-//!      beside each entry count. `BlockIndex` has no component field, so that half is held by the
+//!      THIS USED TO READ "and every entry carrying no element name", asserted as a `named` counter
+//!      beside each entry count. `BlockIndex` has no element name field, so that half is held by the
 //!      TYPE now and the counters are gone -- see `entry_census` for what enforces it instead.
 //!      Each assertion that paired the two has been narrowed to the count, because pairing a live
 //!      number with a structural constant hides which half failed.
 //!   2. EVERY ELEMENT READS BACK, BY MEMBERSHIP AND NOT BY COUNT. This is the arm that catches the
-//!      dangerous repair: filing one entry per element with NO component makes every element of one
-//!      folded block share `(kind, object_key, component, address)`, so they collapse onto one
+//!      dangerous repair: filing one entry per element with NO element name makes every element of one
+//!      folded block share `(kind, object_key, element_name, address)`, so they collapse onto one
 //!      handle and each write displaces the last. A container answering the right NUMBER of the
 //!      wrong elements must fail here, so the members are compared as a set.
 //!   3. THE WRITTEN KEY MATCHES WHAT A DERIVATION PRODUCES for the same block. `block_ref_key` is
@@ -112,8 +112,8 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
     let mut live = 0usize;
     // THE `named` TERM IS GONE FROM THIS CENSUS, AND THE CLAIM IT CARRIED IS NOW STRUCTURAL.
     //
-    // It counted entries whose `component` was `Some`, and the arms below asserted it was zero --
-    // "no live entry of any kind is filed under an element name". `BlockIndex` has no `component`
+    // It counted entries whose `element_name` was `Some`, and the arms below asserted it was zero --
+    // "no live entry of any kind is filed under an element name". `BlockIndex` has no `element_name`
     // field, so the count could only ever be zero and an assertion on it could only ever pass:
     // nothing it observes could disagree, which is the definition of the vacuity this campaign
     // keeps deleting rather than leaving as apparent coverage.
@@ -283,8 +283,8 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
 
     // ---- 2. EVERY ELEMENT READS BACK, BY MEMBERSHIP. ----
     //
-    // THE ARM THAT CATCHES THE DANGEROUS REPAIR. Filing one entry per ELEMENT with no component
-    // makes every element of one folded block share (kind, object_key, component, address), so they
+    // THE ARM THAT CATCHES THE DANGEROUS REPAIR. Filing one entry per ELEMENT with no element name
+    // makes every element of one folded block share (kind, object_key, element name, address), so they
     // collapse onto one handle and each write displaces the last -- the 39-of-40 loss, arriving by
     // the write path. A set answering the right COUNT of the wrong members passes a count check
     // and fails this one.
@@ -328,10 +328,10 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
 /// WHAT SUPERSEDES THE ENTRY NAMING AN ELEMENT'S PREVIOUS BLOCK.
 ///
 /// The repair for the spelling disagreement is to key the upsert's convergence on the ADDRESS
-/// instead of the component, because under this gate the block is the identity. This measures the
+/// instead of the element name, because under this gate the block is the identity. This measures the
 /// case that decides whether that is sufficient on its own: a member REWRITTEN after a fold moves
 /// to a NEW block, so an address-keyed predicate matching only the new address cannot select the
-/// entry naming the OLD one. If the current component-keyed convergence is what removes it, the
+/// entry naming the OLD one. If the current element-name-keyed convergence is what removes it, the
 /// repair has to be handed the superseded address as well -- and the write path already reads it,
 /// to compute the ordinal.
 #[test]
@@ -387,22 +387,22 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
 
     // THE MEASUREMENT THE REPAIR TURNS ON. One entry per distinct block means the entry naming the
     // member's OLD block was superseded. If this holds today, it holds BECAUSE the convergence is
-    // component-keyed, and an address-keyed replacement must be given the old address too.
+    // element-name-keyed, and an address-keyed replacement must be given the old address too.
     assert_eq!(
         blocks.len(),
         live,
         "{live} live entr(ies) for {} distinct block(s) after a rewrite. Recorded as the state an \
          address-keyed convergence has to reproduce: if this is one-to-one today, the superseded \
-         block's entry is being removed by the COMPONENT match, and keying on the new address alone \
+         block's entry is being removed by the ELEMENT NAME match, and keying on the new address alone \
          would leave it behind naming a dead block",
         blocks.len()
     );
 }
 
-/// A COMPONENT-LESS KIND RELOCATING, WHICH IS WHY THE REPAIR CANNOT BE UNCONDITIONAL.
+/// An ELEMENT NAME-LESS KIND RELOCATING, WHICH IS WHY THE REPAIR CANNOT BE UNCONDITIONAL.
 ///
-/// `String`, `ControlState` and `ContextNode` all file `component: None` with ONE block per object.
-/// For them the component-keyed convergence is exactly what supersedes a relocated block -- so a
+/// `String`, `ControlState` and `ContextNode` all file `element_name: None` with ONE block per object.
+/// For them the element-name-keyed convergence is exactly what supersedes a relocated block -- so a
 /// predicate keyed on the address for EVERY kind would leave a live entry naming the dead block on
 /// every one of these writes. Measured here so the repair's condition is derived from behaviour
 /// rather than from a list of kind names someone remembers.
@@ -470,7 +470,7 @@ fn an_element_name_less_kind_rewritten_still_resolves_to_one_block() {
     assert_eq!(
         1, live,
         "{live} live entries for a string rewritten three times, resolving to {} block(s). ONE is \
-         the state a component-keyed convergence produces, and it is why the address-keyed repair \
+         the state an element-name-keyed convergence produces, and it is why the address-keyed repair \
          must apply to the gated container arm ONLY: applied here it would leave two stale entries \
          naming dead blocks",
         blocks.len()
@@ -521,11 +521,11 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
 /// # THE QUESTION THE GATE ACTIVATES
 ///
 /// A re-add clears the tombstone its element left -- that is what bounds the retained tombstone at
-/// one entry per distinct element removed. The sweep that does it matches on the component of the
+/// one entry per distinct element removed. The sweep that does it matches on the element name of the
 /// entry being filed.
 ///
-/// Under one entry a block, a gated removal files its tombstone with NO component (`engine.rs`'s
-/// gated removal arm passes `None`). So if the entry being filed also carries no component, the
+/// Under one entry a block, a gated removal files its tombstone with NO element name (`engine.rs`'s
+/// gated removal arm passes `None`). So if the entry being filed also carries no element name, the
 /// sweep's predicate matches EVERY tombstone of the object rather than one -- and a re-add of
 /// member Y would clear member X's tombstone. X's tombstone block is what makes X's removal win in
 /// `derive_membership`'s fold by append position, so clearing it can bring X BACK.

@@ -84,7 +84,7 @@ fn dirty_key_set_arm(set: &crate::engine::state::DirtyKeySet) -> &'static str {
     }
 }
 
-// The `component: Option<&str>` parameter this took was DEAD and is gone: it was accepted and
+// The `element_name: Option<&str>` parameter this took was DEAD and is gone: it was accepted and
 // never mentioned in the `BlockIndex` below, because the field it used to fill came off the entry.
 // Two call sites were passing a value that decided nothing.
 fn probe_block(object: &str, slot: u64) -> (Arc<str>, BlockIndex) {
@@ -202,7 +202,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         }
     }
 
-    // TWO `ComponentList` DRAIN PATHS STOOD HERE AND THE TYPE IS GONE. They filled the list past
+    // TWO `ElementNameList` DRAIN PATHS STOOD HERE AND THE TYPE IS GONE. They filled the list past
     // its inline arm and drained it one entry at a time -- once from the tail, once from the FRONT,
     // "which a tail-only collapse gets wrong" -- checking at every step that the arm matched
     // `expected_arm(len)`, and that the survivor of a front-drain was the right entry rather than
@@ -249,7 +249,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
 
     // Denominator. Four paths drain `FILL` entries one at a time and the `clear()` path
     // contributes one state, so a complete run visits exactly 4 * FILL + 1 of them. It was SIX
-    // until the two `ComponentList` paths went with their type. A rewrite that stopped filling
+    // until the two `ElementNameList` paths went with their type. A rewrite that stopped filling
     // would satisfy every assertion above by never making one.
     const DRAIN_STATES: usize = 4 * FILL as usize + 1;
     assert_eq!(
@@ -283,7 +283,7 @@ fn expected_arm(len: usize) -> &'static str {
 /// # THE OLD SAFETY ARGUMENT WAS RETIRED BY THE COLLAPSE, AND SAYING SO IS THE POINT
 ///
 /// This used to read: "Nothing anywhere removes a SINGLE ref: a ref leaves only when its whole
-/// `ComponentBlocks` leaves, through `ComponentList::remove`, which drops the `BlockRefs` entire.
+/// `ElementNameBlocks` leaves, through `ElementNameList::remove`, which drops the `BlockRefs` entire.
 /// So a `Many` that could collapse never arises", and it promised "This fails if a per-ref removal
 /// appears". A per-ref removal does appear -- `CoreIndex::remove_object_block_lookup_ref` calls
 /// `BlockRefs::remove` -- and this test would not have caught it, because what it asserts is the
@@ -568,7 +568,7 @@ fn walk_bucket_index_strings(
             // does, and is still counted -- once, which is the point of the walk.
             // The ENTRY holds no element name either, and neither does the LOOKUP any more: the
             // level that held one is deleted, so there is no third shared allocation anywhere on
-            // this path. The loop that used to sum component names was identically zero before it
+            // this path. The loop that used to sum element names was identically zero before it
             // was removed, because every name was already `None`.
         }
     }
@@ -888,10 +888,10 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             block_arms[arm_slot(block_index_map_arm(&bucket.block_index))] += 1;
             object_arms[arm_slot(object_index_arm(&bucket.object_index))] += 1;
         }
-        // THE `by_component` ARM CENSUS IS GONE AND ITS ONLY REACHABLE BUCKET SAYS WHY. It counted
-        // `ComponentList`'s Empty/One/Many across the shard, and `Empty` was unreachable through
+        // THE `by_element_name` ARM CENSUS IS GONE AND ITS ONLY REACHABLE BUCKET SAYS WHY. It counted
+        // `ElementNameList`'s Empty/One/Many across the shard, and `Empty` was unreachable through
         // the producer -- every remover drops an object from the lookup the moment it holds
-        // nothing -- while `Many` needed a second component. So it read `[0, n, 0]` by
+        // nothing -- while `Many` needed a second element name. So it read `[0, n, 0]` by
         // construction for every corpus. The `ref_arms` census beside it is the one with content,
         // and it now reads the object's own slot.
         let mut ref_arms = [0usize; 2];
@@ -5204,8 +5204,8 @@ fn what_the_composed_entity_key_costs_the_walk() {
 /// WHICH ARM THE LAST ALLOCATION PER ENTRY BELONGS TO, MEASURED PER ARM INSTEAD OF GUESSED.
 ///
 /// The whole-shard walk sits at 1.00 allocations per entry and I have now been wrong TWICE about
-/// what that one is. I said it was the component's intermediate `String` -- it is not, because
-/// every container kind converges on the block and no live arm emits a component at all. I ruled out
+/// what that one is. I said it was the element name's intermediate `String` -- it is not, because
+/// every container kind converges on the block and no live arm emits an element name at all. I ruled out
 /// the `ElementEntry` clone by reading, which is right as far as it goes: that type is all inline
 /// fields.
 ///
@@ -5215,7 +5215,7 @@ fn what_the_composed_entity_key_costs_the_walk() {
 ///
 /// What the arms do differently, and therefore what the comparison can separate:
 ///
-///   strings    one entry per object, key lent, no component, no inner collection
+///   strings    one entry per object, key lent, no element name, no inner collection
 ///   features   goes through `visit_timestamped_series`, which builds a collection of unique
 ///              addresses per series before emitting
 ///   hashes     goes through `emit_one_entry_a_block`, which builds a `BTreeSet` of blocks per key
@@ -5322,7 +5322,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
     println!();
     println!("  MEASURED: strings 0.01, hashes 1.01, features 2.01. The mixed walk's 1.00 is the");
     println!("  average of those three and nothing else -- (0.01 + 2.01 + 1.01) / 3 = 1.01.");
-    println!("  strings pays NOTHING: its key is lent, it has no component and nothing nested.");
+    println!("  strings pays NOTHING: its key is lent, it has no element name and nothing nested.");
     println!("  hashes pays once, for `emit_one_entry_a_block`'s dedup set per key.");
     println!("  features pays TWICE, and `unique_timestamped_kv_block_addresses` is why:");
     println!("      .collect::<HashSet<_>>().into_iter().collect::<Vec<_>>()");
@@ -5535,8 +5535,8 @@ fn what_interning_the_composed_entity_key_would_trade() {
 /// `Vec<(String, ElementEntry)>`, so each object owns a `String` per field. A `status` field across
 /// ten thousand objects is ten thousand copies of one short name.
 ///
-/// The index side already shares them. `intern_shared` draws component names from `kind_pool`, and
-/// its own doc explains why the pool is CAPPED at 64: "a component name is not [bounded] -- it
+/// The index side already shares them. `intern_shared` draws element names from `kind_pool`, and
+/// its own doc explains why the pool is CAPPED at 64: "a element name is not [bounded] -- it
 /// comes from the caller -- and the cap is what makes sharing it safe anyway: past the cap a name
 /// still works, it just allocates as it did before." So the mechanism and the safety argument both
 /// exist; only the model side does not use them.
@@ -5579,7 +5579,7 @@ fn what_repeated_field_names_cost_the_model_maps() {
         probe.stop()
     };
 
-    // SHARED, the way the index already shares a component: one handle per distinct name, taken
+    // SHARED, the way the index already shares an element name: one handle per distinct name, taken
     // from a pool, and every object holding a clone of it.
     let shared = {
         let probe = Probe::start();
@@ -5701,9 +5701,9 @@ fn what_repeated_field_names_cost_the_model_maps() {
 ///
 /// The four sites that install a hash element were read rather than assumed, and the wide arm is
 /// worse than this probe's own `owned` column says. All three Redis-surface sites pass
-/// `Some(field.clone())` as the bucket-index COMPONENT and `field.clone()` again as the map's
+/// `Some(field.clone())` as the bucket-index ELEMENT NAME and `field.clone()` again as the map's
 /// element -- the same characters allocated twice per write, one of which this probe does not
-/// even count. The context-node site borrows the constant for the component and allocates it
+/// even count. The context-node site borrows the constant for the element name and allocates it
 /// once for the element. A single interned handle serves both positions at every site.
 ///
 /// rust-internal: measures this crates own resident structures, no product behaviour
@@ -5740,7 +5740,7 @@ fn what_the_one_constant_field_name_costs_at_the_shape_the_product_writes() {
         probe.stop()
     };
 
-    // POOLED, the way `bucket_index.kind_pool` already shares a component name: one handle per
+    // POOLED, the way `bucket_index.kind_pool` already shares a element name: one handle per
     // distinct name for the whole shard, every entry holding a clone of it. The pool itself is
     // measured INSIDE the probe, so its cost is charged here and not hidden.
     let pooled = |names: &[&str]| {
@@ -5814,16 +5814,16 @@ fn what_the_one_constant_field_name_costs_at_the_shape_the_product_writes() {
 
     println!();
     println!("  THE MECHANISM IS ALREADY IN THE CRATE, which is what makes this a conversion");
-    println!("  rather than a design: `bucket_index.kind_pool` interns COMPONENT names through");
+    println!("  rather than a design: `bucket_index.kind_pool` interns ELEMENT NAMES through");
     println!("  `intern_shared`, and `install_element` takes `&mut ShardState`, so the pool is");
     println!("  reachable from the write site without a new lock, a static, or a pool per");
     println!("  object -- which were the three routes a per-map pool was refused for.");
     println!();
-    println!("  AND THE FIELD NAME IS THE COMPONENT, READ AT ALL FOUR WRITE SITES RATHER THAN");
+    println!("  AND THE FIELD NAME IS THE ELEMENT NAME, READ AT ALL FOUR WRITE SITES RATHER THAN");
     println!("  ASSUMED. The three Redis-surface sites in `execute_on_shard` pass");
-    println!("  `Some(field.clone())` as the component AND `field.clone()` as the element: the");
+    println!("  `Some(field.clone())` as the element name AND `field.clone()` as the element: the");
     println!("  same characters, allocated TWICE per write. The context-node site passes");
-    println!("  `CONTEXT_NODE_FIELD` borrowed for the component and its `.to_string()` for the");
+    println!("  `CONTEXT_NODE_FIELD` borrowed for the element name and its `.to_string()` for the");
     println!("  element -- one allocation per write of a four-byte constant. So the narrow arm");
     println!("  pays once per object and the wide arm twice per field, and one interned handle");
     println!("  serves both positions at every site.");
@@ -5835,7 +5835,7 @@ fn what_the_one_constant_field_name_costs_at_the_shape_the_product_writes() {
 ///
 /// The per-structure probes in this file build a container and measure it. That answers what a
 /// shape costs; it cannot answer whether a saving reaches a caller. A field name is now a shared
-/// handle, the element position takes it from `kind_pool`, and the bucket index's COMPONENT
+/// handle, the element position takes it from `kind_pool`, and the bucket index's ELEMENT NAME
 /// position was being cloned from an owned parameter that nothing read afterwards -- three changes
 /// whose combined effect on a real write is not the sum of three synthetic probes.
 ///
@@ -5900,11 +5900,11 @@ fn what_one_hash_field_write_allocates() {
     }
     let counts = probe.stop();
 
-    // AND A SECOND ARM, ON THE PATH THAT ACTUALLY ROUTES THROUGH `stage_component_outcome`.
+    // AND A SECOND ARM, ON THE PATH THAT ACTUALLY ROUTES THROUGH `stage_element_name_outcome`.
     //
-    // The hash write does not: `install_element` moves its owned component into the bucket-index
+    // The hash write does not: `install_element` moves its owned element name into the bucket-index
     // filing and `install_element_staged_only` stages through `stage_outcome_attested`. The four
-    // callers of `stage_component_outcome` are `ControlStateIncrement`, `ControlStateChangeAdd`,
+    // callers of `stage_element_name_outcome` are `ControlStateIncrement`, `ControlStateChangeAdd`,
     // `ControlStateSelectionSet` and `ContextUpsertEntity`. That is worth measuring separately,
     // because a figure taken on the wrong path reads as a refutation of a change that is simply
     // somewhere else -- which is exactly what the first run of this probe did.
@@ -6153,7 +6153,7 @@ fn what_one_append_costs_at_two_series_lengths() {
 /// # WHY THIS IS ASKED SEPARATELY FROM THE FEATURE APPEND
 ///
 /// `what_one_append_costs_at_two_series_lengths` found a feature append restating the whole series
-/// per append, because `command_upsert_components` answered `None` for features and the caller
+/// per append, because `command_upsert_element_names` answered `None` for features and the caller
 /// then wrote a whole-object snapshot record. `ContextWriteEvent` sits in that same `None` bucket,
 /// and a context node's event series is the structure most likely to be LONG in use -- a node
 /// accumulates events for as long as it is alive.
@@ -6162,7 +6162,7 @@ fn what_one_append_costs_at_two_series_lengths() {
 /// writes TWO resident structures per append (the event series keyed by event id, and
 /// `context_event_timeline` keyed by timeline key), it can fire auto compression, and its index
 /// entry is keyed by the event id while its block is keyed by the timeline key -- which is why
-/// `timestamped_component` takes an identity at all. So this measures the arm rather than
+/// `timestamped_element_name` takes an identity at all. So this measures the arm rather than
 /// inferring it from the feature result.
 ///
 /// # THE ARMS
@@ -6180,17 +6180,17 @@ fn what_one_append_costs_at_two_series_lengths() {
 ///
 /// The allocation count does not move. So `ContextWriteEvent` is NOT carrying the defect the
 /// feature append had, even though it sits in the same `None` bucket of
-/// `command_upsert_components` and `command_object_keys` does name its key, which is what sends
+/// `command_upsert_element_names` and `command_object_keys` does name its key, which is what sends
 /// it down the whole-object-record path. Whatever that record costs here, it is not one
 /// allocation per event already held: at 3,200 events the feature append was spending 9,830
 /// allocations and 3.27 MB per append, and this spends 122 and 62 KB.
 ///
-/// GOING AHEAD AND DECLARING ITS COMPONENTS WOULD HAVE BEEN A CHANGE WITH NO MEASURED PAYOFF,
+/// GOING AHEAD AND DECLARING ITS ELEMENT NAMES WOULD HAVE BEEN A CHANGE WITH NO MEASURED PAYOFF,
 /// and it is not a safe one. The arm normalises the event before writing:
 /// `normalize_context_event_storage_keys` fills `event_time_ms` from `resolve_now_ms()` and
-/// `event_id_hash` from a hash of the text when either arrives as 0. The component for a context
-/// event is `timestamped_component(timeline_key, Some(event_id_hash))`, and the timeline key is
-/// derived from the time -- so for any caller that omits either field, a component derived from
+/// `event_id_hash` from a hash of the text when either arrives as 0. The element name for a context
+/// event is `timestamped_element_name(timeline_key, Some(event_id_hash))`, and the timeline key is
+/// derived from the time -- so for any caller that omits either field, an element name derived from
 /// the command names an entry that does not exist, while the entry that does exist goes unnamed.
 /// That is a correctness hazard, not a slow path, and it was worth finding before the change
 /// rather than after.
@@ -6314,7 +6314,7 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
         println!("    THE APPEND TRACKS THE SERIES: writing one event to a node costs the entries");
         println!("    already on it, one allocation at a time, so a long-lived node gets steadily");
         println!("    more expensive to append to -- the shape the feature append had before it");
-        println!("    declared its upsert components.");
+        println!("    declared its upsert element names.");
     } else if byte_ratio > 2.0 {
         println!("    NOT THE SERIES TERM. The allocation count is FLAT in the node's length, so");
         println!("    this arm is not restating one entry per event held. The bytes still climb,");
@@ -6546,7 +6546,7 @@ fn what_choosing_the_next_block_ordinal_costs() {
 /// # WHAT IT FOUND
 ///
 /// Run after #2232 (the append stopped snapshotting its series), #2234 (the ordinal allocator
-/// stopped asking the whole shard) and #2238 (its declared component actually builds an item).
+/// stopped asking the whole shard) and #2238 (its declared element name actually builds an item).
 /// The figures the run prints are the attribution of the ~134 KB those three left behind; read
 /// them rather than this sentence, because the point of the arm is that the split is measured.
 ///
@@ -6696,7 +6696,7 @@ fn is_the_appends_cost_the_series_or_the_shard() {
 ///     key_states        2,976 B/add
 ///     items_and_dirty     992
 ///     append_delta        318
-///     components          176
+///     element names          176
 ///     push_dirty            0      <- 51,952 on the feature path before #2239
 ///
 /// The dirty mark is free now for a 3,200-block object whatever kind it is, so that fix was on the
@@ -9603,12 +9603,12 @@ fn what_merging_the_key_sharing_maps_would_cost_as_a_record() {
     // stops being more expensive, this arm is measuring something other than what it claims.
     // THE SAVING IS PER-KEY, which is what the doubling check established after being written
     // to show the opposite. The per-key figure must therefore be STABLE across key counts; if it
-    // drifts, the saving has a fixed component and must stop being quoted per key.
+    // drifts, the saving has a fixed element name and must stop being quoted per key.
     assert!(
         (x_delta_per_key - full_delta).abs() < full_delta.abs() * 0.25,
         "the full-overlap saving is quoted PER KEY, so it must hold across key counts -- \
          {full_delta} B/key at {KEYS} keys against {x_delta_per_key} B/key at {KEYS_DOUBLED}. \
-         If these diverge the saving has a fixed component, and a per-key figure overstates it \
+         If these diverge the saving has a fixed element name, and a per-key figure overstates it \
          at small key counts and understates it at large ones."
     );
     assert!(

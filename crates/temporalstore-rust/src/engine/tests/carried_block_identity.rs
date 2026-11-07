@@ -21,8 +21,8 @@
 //! Measured on `ddecb8e10`, driven through the product's own read, before any line of this change:
 //!
 //! ```text
-//!     today (kind:key:component)      2 / 2 correct, 0 wrong bytes, 0 missing
-//!     component-free id               1 / 2 correct, 1 WRONG BYTES, 0 missing
+//!     today (kind:key:element name)      2 / 2 correct, 0 wrong bytes, 0 missing
+//!     element-name-free id               1 / 2 correct, 1 WRONG BYTES, 0 missing
 //!     at batch scale                  96.00% of hash blocks unreachable (200 blocks, 8 groups)
 //!     string control                  0.00%, 200 blocks exercised
 //! ```
@@ -34,25 +34,25 @@
 //!
 //! # WHAT CHANGED
 //!
-//! `StagedBlock` gained `component: Option<Arc<str>>` -- which element of the object this block
+//! `StagedBlock` gained `element_name: Option<Arc<str>>` -- which element of the object this block
 //! holds -- and both in-record `find` sites now test it. The registry key gained it too. The
 //! numbers above are the BEFORE; the tests here are the AFTER, on the same read path.
 //!
-//! # WHY THE COMPONENT AND NOT `BlockAddress::block_id`
+//! # WHY THE ELEMENT NAME AND NOT `BlockAddress::block_id`
 //!
 //! The ordinal was the other candidate, and #2008 threaded a real one onto container blocks. FOUR
 //! of the five reasons it loses are already measured elsewhere in this tree and are CITED rather
 //! than re-derived here:
 //!
-//!   1. `container_block_ordinal` takes `component: &str` and resolves the ordinal BY looking the
-//!      component up. The ordinal is a projection of the component, so it cannot carry more.
+//!   1. `container_block_ordinal` takes `element_name: &str` and resolves the ordinal BY looking the
+//!      element name up. The ordinal is a projection of the element name, so it cannot carry more.
 //!   2. #2008: "`max` FALLS after a delete and the next insert is handed the ordinal just freed...
 //!      a reader that treated the ordinal as naming a particular element would be silently corrupt
 //!      the moment it happened." Driven there by `the_ordinal_names_a_position_and_a_delete_frees_it`.
 //!   3. #2008 again: past an object's 65,535th element the ordinal is left at 0, so those blocks
 //!      share it. Driven by `past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking`.
 //!   4. #1996: the delta fold delivers elements whose durable-map entry was never written, and for
-//!      those the component is the ONLY copy of the member.
+//!      those the element name is the ONLY copy of the member.
 //!
 //! THE FIFTH IS NEW AND IS DRIVEN BELOW, because it is the one that decides the question for THIS
 //! path rather than in general. The mandate asked whether an ordinal is available at STAGE time.
@@ -67,7 +67,7 @@
 //! # WHAT THIS DOES NOT BUY
 //!
 //! On its own, NOTHING. It makes records LARGER. It is worth landing only because it removes the
-//! single obstacle to making `stable_block_object_id` component-free, and that change's own worth
+//! single obstacle to making `stable_block_object_id` element-name-free, and that change's own worth
 //! is measured elsewhere. The growth is measured here so the trade is stated in both directions.
 
 #![allow(clippy::all)]
@@ -82,7 +82,7 @@ const OPERATOR_END: u32 = 1023;
 /// rows below are comparable to them line for line rather than merely similar.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
-/// The CONTROL population. A string block's component is already `None`, so every transformation
+/// The CONTROL population. A string block's element name is already `None`, so every transformation
 /// this module measures is the IDENTITY on it and the mechanism predicts no effect whatever.
 const ROUTED_KEYS: usize = 200;
 
@@ -163,7 +163,7 @@ fn seed_routed_strings(engine: &TemporalEngine) {
     );
 }
 
-/// Every live block of one kind, as `(object_key, component)`, read off the block entries themselves.
+/// Every live block of one kind, as `(object_key, element_name)`, read off the block entries themselves.
 /// EVERY LIVE BLOCK OF A KIND, WITH THE ELEMENT IT HOLDS -- READ FROM THE AUTHORITY FOR THAT.
 ///
 /// RE-ATTRIBUTED, AND THE OLD BODY IS WHY THIS COMMENT IS LONG. It returned the entry's own
@@ -242,7 +242,7 @@ fn carrier(label: &str) -> Command {
 }
 
 // =================================================================================================
-// 1. THE DELIVERABLE: THE SAME READ PATH, A COMPONENT-FREE ID, AND BOTH BLOCKS BACK.
+// 1. THE DELIVERABLE: THE SAME READ PATH, An ELEMENT NAME-FREE ID, AND BOTH BLOCKS BACK.
 // =================================================================================================
 
 /// TWO CARRIED BLOCKS OF ONE KEY, SHARING AN OBJECT ID, EACH SERVE THEIR OWN BYTES.
@@ -251,7 +251,7 @@ fn carrier(label: &str) -> Command {
 ///
 /// A record is appended carrying two blocks with different bytes -- the shape a batch writing two
 /// fields of one hash produces -- and registered exactly as `register_record` registers a real
-/// append. **Both blocks carry the SAME object id**, the one a component-free
+/// append. **Both blocks carry the SAME object id**, the one an element-name-free
 /// `stable_block_object_id` would hand them. Before this change that arm read 1 of 2 correctly and
 /// served the first block's bytes for the second. It now reads 2 of 2, because the record says
 /// which element each block is and `read_block` asks for one.
@@ -260,8 +260,8 @@ fn carrier(label: &str) -> Command {
 ///
 ///   * TODAY'S IDENTITY, the control. Two distinct ids, both blocks back. If this arm ever fails,
 ///     nothing below is attributable to anything.
-///   * THE COMPONENT-FREE IDENTITY, the deliverable. One id, two components, both blocks back.
-///   * ONE ID AND ONE COMPONENT, the NEGATIVE control. Two blocks that really are indistinguishable
+///   * THE ELEMENT NAME-FREE IDENTITY, the deliverable. One id, two element names, both blocks back.
+///   * ONE ID AND ONE ELEMENT NAME, the NEGATIVE control. Two blocks that really are indistinguishable
 ///     still collapse to 1 of 2. Without it, a `read_block` that had simply started returning
 ///     both blocks for any question would pass the second arm exactly as a correct one does.
 ///
@@ -287,7 +287,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_nam
     println!("\n=== read_block over one record carrying two blocks of one key ===");
     println!("  identity                          blocks  correct  wrong bytes  missing");
 
-    // THE PRODUCT'S OWN IDENTITY, since the component left `stable_block_object_id`. It was
+    // THE PRODUCT'S OWN IDENTITY, since the element name left `stable_block_object_id`. It was
     // reachable only as a simulation when this module was written; it is now simply the id.
     let free = stable_block_object_id(1, "hash", "hk");
     // THE CONTROL'S TWO IDS. The folded identity used to produce a distinct id per element, and
@@ -313,7 +313,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_nam
             (distinct_b, Some("f1")),
         ),
         (
-            "component-free id + element",
+            "element-name-free id + element",
             (free, Some("f0")),
             (free, Some("f1")),
         ),
@@ -385,8 +385,8 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_nam
     assert_eq!(
         (results[1].1, results[1].2, results[1].3),
         (2, 0, 0),
-        "THE DELIVERABLE FAILED: a component-free id served {} of 2 blocks correctly ({} wrong \
-         bytes, {} missing). The record carries `component` on each block and `read_block` takes \
+        "THE DELIVERABLE FAILED: an element-name-free id served {} of 2 blocks correctly ({} wrong \
+         bytes, {} missing). The record carries `element_name` on each block and `read_block` takes \
          one, so both blocks must be reachable",
         results[1].1,
         results[1].2,
@@ -403,7 +403,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_nam
         results[2].3
     );
     println!(
-        "  VERDICT: 2/2 under a component-free id (was 1/2 with the first block's bytes served for \
+        "  VERDICT: 2/2 under an element-name-free id (was 1/2 with the first block's bytes served for \
          the second), while two genuinely identical blocks still collapse to 1/2."
     );
 }
@@ -414,7 +414,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_nam
 
 /// AT BATCH SCALE: 96.00% UNREACHABLE ON THE ID ALONE, 0.00% ONCE THE ELEMENT IS BESIDE IT.
 ///
-/// Every live block is grouped twice: by the identity a component-free `stable_block_object_id`
+/// Every live block is grouped twice: by the identity an element-name-free `stable_block_object_id`
 /// would give it, and by the BLOCK KEY this change made the record and the registry use, which is
 /// that identity plus the element. A group of size N > 1 is N blocks the lookup cannot tell apart,
 /// of which at most one is reachable.
@@ -425,7 +425,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_nam
 /// touch the index: it changes what the RECORD can say about its own blocks.
 ///
 /// THE CONTROL IS THE STRING ARM and it is why the hash arm means anything. A string block's
-/// component is already `None`, so adding the element to the key is the IDENTITY on it: the
+/// element name is already `None`, so adding the element to the key is the IDENTITY on it: the
 /// mechanism predicts every group is size one under BOTH groupings and no block is ever lost. Its
 /// exercised block count is asserted first, because a control that read nothing reports 0.00% lost
 /// and "not exercised" wears the face of "did not move".
@@ -522,8 +522,8 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
         (string_id_only, string_with_element),
         (0, 0),
         "the control lost ({string_id_only}, {string_with_element}) of {string_blocks} blocks under \
-         the two groupings. A kind whose component is already `None` cannot be moved by putting \
-         the component into the key, so both must be zero"
+         the two groupings. A kind whose element name is already `None` cannot be moved by putting \
+         the element name into the key, so both must be zero"
     );
     println!(
         "  CONTROL: string, {string_blocks} blocks exercised, 0 unreachable under BOTH groupings, \
@@ -647,7 +647,7 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
 /// request of 104 landing in 128), so the chunk is reported beside the request and never instead
 /// of it.
 ///
-/// THE CONTROL IS THE COMPONENT-LESS BLOCK. A whole-object block's component is `None`, the writer
+/// THE CONTROL IS THE ELEMENT NAME-LESS BLOCK. A whole-object block's element name is `None`, the writer
 /// skips the field entirely, and the record is byte-identical to one written before the field
 /// existed. It must report +0.00% on BOTH figures -- and its exercised bytes are asserted non-zero
 /// first, because a control that encoded nothing reports +0.00% for the wrong reason.
@@ -721,13 +721,13 @@ fn what_an_element_named_block_adds_to_the_record() {
         }
     }
 
-    // THE CONTROL, on both figures. A component-less block cannot be moved by adding a component
+    // THE CONTROL, on both figures. An element-name-less block cannot be moved by adding an element name
     // field to the block, because the writer never emits the field for it.
     for (label, wire) in &wire_rows {
         if label.starts_with("CONTROL") {
             assert_eq!(
                 *wire, 0,
-                "the control's WIRE cost moved by {wire} B/block. A block whose component is `None` \
+                "the control's WIRE cost moved by {wire} B/block. A block whose element name is `None` \
                  skips the field entirely"
             );
         }
@@ -737,7 +737,7 @@ fn what_an_element_named_block_adds_to_the_record() {
             assert_eq!(
                 *per_block, 0.0,
                 "the control's DISK cost moved by {per_block:.2} B/block at {blocks} blocks. A record \
-                 carrying no components must be byte-identical to one written before this field"
+                 carrying no element names must be byte-identical to one written before this field"
             );
         }
     }
@@ -800,11 +800,11 @@ fn what_an_element_named_block_adds_to_the_record() {
 
 /// THE ALLOCATIONS, which a byte count cannot see. The log is on the write path.
 ///
-/// `stage` is charged to `CarriedBlock`, and this change adds the component's own copy to that same
+/// `stage` is charged to `CarriedBlock`, and this change adds the element name's own copy to that same
 /// class deliberately -- it is a cost of carrying the block, and charging it elsewhere would let it
 /// disappear from the class that exists to measure exactly this.
 ///
-/// The control is the same staging with no component: it must add no allocation at all, because
+/// The control is the same staging with no element name: it must add no allocation at all, because
 /// `None.map(Arc::from)` allocates nothing.
 ///
 /// rust-internal: stages blocks into the thread-local buffer, no store and no external surface
@@ -1044,7 +1044,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 // =================================================================================================
 //
 // #2011 -- the refutation this PR answers -- established that a hash block's FIELD NAME is
-// independently recoverable, which is what made a component-free identity worth pursuing at all.
+// independently recoverable, which is what made an element-name-free identity worth pursuing at all.
 // Nothing here changes that, so the measurement is carried over verbatim rather than rewritten: it
 // asks a different question from every test above, and re-deriving a figure that still holds would
 // only risk changing what it measures.
@@ -1052,7 +1052,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 // Its three companions in that module are superseded above and are NOT carried over, each for a
 // reason the module itself gave:
 //
-//   * `a_component_free_identity_collapses_every_page_of_one_key_onto_one_number` measured one
+//   * `an_element_name_free_identity_collapses_every_page_of_one_key_onto_one_number` measured one
 //     grouping; `the_element_beside_the_id_makes_every_block_of_a_batch_reachable` measures that
 //     grouping AND the one this change introduces, off ONE population, and keeps its 96.00% row.
 //   * `two_carried_pages_sharing_an_object_id_serve_one_anothers_bytes` asserted 1/2. That is now
@@ -1067,9 +1067,9 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 /// A HASH BLOCK'S FIELD NAME IS HELD BESIDE THE ID, NOT INSIDE IT, AND SURVIVES A RELOAD.
 ///
 /// THE SOURCE MOVED AND THE CLAIM DID NOT. This read the name off the block entry:
-/// "`BlockIndex::component: Option<Arc<str>>` is its own `#[serde]` field, written to the index and
-/// read back from it. `bucket_index_component_block_addresses(shard, model_id, object_key)` ... takes
-/// NO component and returns `(block.component.clone(), block.address.clone())` off the entry." That
+/// "`BlockIndex::element_name: Option<Arc<str>>` is its own `#[serde]` field, written to the index and
+/// read back from it. `bucket_index_element_name_block_addresses(shard, model_id, object_key)` ... takes
+/// NO element name and returns `(block.element_name.clone(), block.address.clone())` off the entry." That
 /// field is gone and the walk recovered 0 of 25 names.
 ///
 /// The name is recovered from `shard.hashes` instead, and the claim is the same one: it is held

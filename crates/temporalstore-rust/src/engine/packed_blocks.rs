@@ -85,7 +85,7 @@ fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
 /// Emitted from the producer rather than from its callers: eleven handlers append timestamped
 /// blocks -- feature series, sequences, control state, context events -- and each one having to
 /// remember to record the outcome is exactly how a kind ends up silently missing. The series is
-/// keyed by timestamp, so that is the component.
+/// keyed by timestamp, so that is the element name.
 /// How a recorded item names the entry a write created.
 ///
 /// Most timestamped series are keyed by the stored timestamp, so the timestamp alone names the
@@ -153,7 +153,7 @@ fn stage_timestamped_removal(
     });
 }
 
-/// The component spelling for a removal that states a BOUNDARY: every instant up to and
+/// The element name spelling for a removal that states a BOUNDARY: every instant up to and
 /// including this one is gone.
 ///
 /// Shared by the writer and the apply path on purpose. The spelling IS the contract between them,
@@ -164,7 +164,7 @@ pub(super) fn timestamped_boundary_element_name(through: u64) -> String {
     format!("{TRIM_BOUNDARY_MARK}{through}")
 }
 
-/// The boundary a component states, or `None` when it states a single instant instead.
+/// The boundary an element name states, or `None` when it states a single instant instead.
 pub(super) fn timestamped_boundary_through(element_name: Option<&str>) -> Option<u64> {
     element_name?.strip_prefix(TRIM_BOUNDARY_MARK)?.parse::<u64>().ok()
 }

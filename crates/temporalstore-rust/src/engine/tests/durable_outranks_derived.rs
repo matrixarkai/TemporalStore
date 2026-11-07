@@ -6,7 +6,7 @@
 //! # THE DEFECT, AND WHY IT IS NOW UNREACHABLE RATHER THAN FIXED
 //!
 //! `reconcile_secondary_views_from_bucket_index` rebuilt the model maps from the bucket index, and
-//! for three kinds it recovered an element's identity by PARSING the component name the write path
+//! for three kinds it recovered an element's identity by PARSING the element name the write path
 //! had spelled it into -- then assigned the result over the top:
 //!
 //! ```text
@@ -30,7 +30,7 @@
 //! UNREPRESENTABLE, and each is restated to say so rather than relaxed to pass. The four that moved,
 //! and what each says now:
 //!
-//!   * `a_durable_zset_score_has_no_name_left_to_disagree_with_it` -- no component text of any
+//!   * `a_durable_zset_score_has_no_name_left_to_disagree_with_it` -- no element name text of any
 //!     shape reaches a served index, counted over the real files with the object key as the control
 //!     that makes the zero mean "absent".
 //!   * `an_element_name_cannot_be_made_unreadable_because_the_index_holds_none` -- the corruption
@@ -39,8 +39,8 @@
 //!   * `an_element_the_durable_map_does_not_hold_does_not_come_back` -- the repair case is gone BY
 //!     DESIGN, and that arm carries the three mechanisms that make the state unreachable in
 //!     production rather than merely absent in this fixture.
-//!   * `an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape` -- its length
-//!     boundary is re-attributed to the BLOCK, which is where a component still exists.
+//!   * `an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape` -- its length
+//!     boundary is re-attributed to the BLOCK, which is where an element name still exists.
 //!
 //! A TEST PROVING A DEFECT UNREACHABLE IS WORTH MORE THAN ONE PROVING IT CURRENTLY ABSENT, which is
 //! why these are restatements and not deletions: each one now fails if an element name returns to
@@ -53,8 +53,8 @@
 //!     set     set_index_serde      (member bytes, address)                 the member's identity
 //!     zset    zset_index_serde     (member bytes, (score, address))        identity AND score
 //!     list    plain serde          (i64 sequence, address)                 the sequence
-//!     string  #[serde(skip)]       nothing                 no component at all; the key IS identity
-//!     hash    serde(default)       the field name          the component IS the caller's field name
+//!     string  #[serde(skip)]       nothing                 no element name at all; the key IS identity
+//!     hash    serde(default)       the field name          the element name IS the caller's field name
 //! ```
 //!
 //! HASH HAS CHANGED GROUPS, AND THE RULE BELOW HAD TO BE RE-DERIVED RATHER THAN ITS ROW CORRECTED.
@@ -64,14 +64,14 @@
 //! a durable copy of its field names and the count is FOUR and one. Correcting the row alone would
 //! have left a rule that no longer followed from its own table.
 //!
-//! What the re-derivation changes, and what it does not: a STRING still has no component, so for it
+//! What the re-derivation changes, and what it does not: a STRING still has no element name, so for it
 //! deriving is not a second copy of anything and it is still left alone. A HASH now has a durable
 //! copy -- which is why `an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field` below
 //! can pass at all, and that test already says so, naming the six-fields-served-as-zero shape as
 //! what the durability fixed. So the hash arm is in the same position as the three spelled kinds:
 //! the derived view decides which elements exist, and the durable map keeps what a name cannot
 //! supply. It is left alone for a DIFFERENT reason than a string is -- not "there is nothing to
-//! outrank it with", but "the component is the caller's own text rather than something this engine
+//! outrank it with", but "the element name is the caller's own text rather than something this engine
 //! rendered, so there is no parse to get wrong."
 //!
 //! # WHY THE RULE IS NOT THE ONE `control_state` USES
@@ -123,7 +123,7 @@
 //!
 //! # WHY THIS IS NOT THEORETICAL
 //!
-//! A list component is a single `u64` spelled in hexadecimal, and #1985 measured that 100% of list
+//! A list element name is a single `u64` spelled in hexadecimal, and #1985 measured that 100% of list
 //! names are also well-formed values of a different meaning. A view built by parsing names is one
 //! ambiguity away from a wrong value, and the test below shows the wrong value winning over the
 //! durable one.
@@ -177,19 +177,19 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
     response.response
 }
 
-/// The component name a zset member is filed under, as the write path spells it.
+/// The element name a zset member is filed under, as the write path spells it.
 /// BY THE ENGINE'S OWN FUNCTION, not a second implementation of the encoding. This was
 /// `hex::encode(member)` and it went stale the moment the set and zset writers flipped off hex:
 /// a needle spelled by hand searches a served index for text no write site files any more, and
 /// an absence-asserting test like `member_hits` below would then pass for the wrong reason --
-/// finding nothing because it asked for the wrong string, not because no component text is
+/// finding nothing because it asked for the wrong string, not because no element name text is
 /// stored.
 fn zset_name(member: &[u8]) -> String {
     crate::engine::execute_on_shard::zset_element_name(member)
 }
 
-/// The component name a zset member USED TO be filed under, before the score left it. Kept only
-/// for `a_durable_zset_score_outranks_a_component_name_that_disagrees`, to prove a needle shaped
+/// The element name a zset member USED TO be filed under, before the score left it. Kept only
+/// for `a_durable_zset_score_outranks_an_element_name_name_that_disagrees`, to prove a needle shaped
 /// like the retired encoding no longer appears anywhere in a served index.
 fn zset_name_with_retired_score_prefix(score: f64, member: &[u8]) -> String {
     format!(
@@ -203,7 +203,7 @@ fn zset_name_with_retired_score_prefix(score: f64, member: &[u8]) -> String {
 ///
 /// `None` when the file holds no such text. Both codecs are handled and the JSON one is compressed,
 /// so a byte search over the frame would find nothing and silently report success. EVERY occurrence,
-/// because `block_index_written_key` renders the component into the map key the index is serialized
+/// because `block_index_written_key` renders the element name into the map key the index is serialized
 /// under as well as into the entry -- replacing one would leave the two naming different elements,
 /// which is a corrupt index rather than a controlled experiment.
 fn swap_in_index(bytes: &[u8], from: &str, to: &str) -> Option<(Vec<u8>, usize)> {
@@ -297,14 +297,14 @@ pub(super) fn count_across_index_files(indexes: &std::path::Path, needle: &str) 
 ///
 /// RESTATED A SECOND TIME, AND THIS TIME THE DIVERGENCE CANNOT BE REPRESENTED AT ALL. The original
 /// experiment -- the one that found the defect -- wrote a zset at 7.5, changed its served-index
-/// component to spell 99.25, and required the reload to answer 7.5 from the durable `zsets` map.
-/// The first restatement observed that a zset component is `hex::encode(member)` with no score term
+/// element name to spell 99.25, and required the reload to answer 7.5 from the durable `zsets` map.
+/// The first restatement observed that a zset element name is `hex::encode(member)` with no score term
 /// in it, asserted a score-shaped needle swaps ZERO times, and used a MEMBER-shaped needle as the
 /// control proving that zero meant "absent" rather than "the scan found nothing in anything".
 ///
 /// THAT CONTROL IS WHAT FAILED, and it was right to: "the member-shaped needle was not found in any
 /// index file, so the zero above proves nothing". `BlockIndex` has no element-name field, so a
-/// served index carries NO component text of any shape -- not the score prefix, and not the member
+/// served index carries NO element name text of any shape -- not the score prefix, and not the member
 /// hex the first restatement assumed was still there. There is nothing in the stored form for a
 /// corrupted name to disagree with the durable map about, and nothing for this experiment to
 /// corrupt.
@@ -355,7 +355,7 @@ fn a_durable_zset_score_has_no_name_left_to_disagree_with_it() {
     );
     println!("[outrank] control: the object key appears {object_key_hits} time(s)");
 
-    // SUBJECT 1: the score-shaped name, as a component used to be spelled. Gone with the score.
+    // SUBJECT 1: the score-shaped name, as an element name used to be spelled. Gone with the score.
     let retired_from = zset_name_with_retired_score_prefix(durable_score, &member);
     let retired_to = zset_name_with_retired_score_prefix(name_score, &member);
     assert_ne!(
@@ -366,7 +366,7 @@ fn a_durable_zset_score_has_no_name_left_to_disagree_with_it() {
     assert_eq!(
         0, retired_hits,
         "a score-shaped name appears {retired_hits} time(s) in a served index -- the score is \
-         supposed to have left the component entirely"
+         supposed to have left the element name entirely"
     );
 
     // SUBJECT 2: the member-shaped name, which the first restatement used as its control. Gone with
@@ -375,7 +375,7 @@ fn a_durable_zset_score_has_no_name_left_to_disagree_with_it() {
     assert_eq!(
         0, member_hits,
         "a member-shaped name appears {member_hits} time(s) in a served index. An entry has no \
-         element-name field, so no component text of any shape should reach the stored form -- if \
+         element-name field, so no element name text of any shape should reach the stored form -- if \
          this is nonzero the name is back on the entry and the whole of this arm's reasoning has \
          to be re-driven, not relaxed"
     );
@@ -491,7 +491,7 @@ fn the_durable_score_outranks_the_name_through_the_reconstruct_door_as_well() {
 ///
 /// `set`, `zset` and `list` all have a durable map and all three used to be assigned over. `string`
 /// and `hash` have none, and for them deriving is not a second copy of anything -- a string has no
-/// component and a hash's component IS the caller's field name. Both are included so the fix is shown
+/// element name and a hash's element name IS the caller's field name. Both are included so the fix is shown
 /// not to have moved them.
 ///
 /// rust-internal: drives a reload, no external surface
@@ -634,8 +634,8 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
     }
 
     // hash: a durable map NOW, like the other three. This used to read "no durable map, and none
-    // needed -- the component IS the caller's field name", and the second half is still true: the
-    // component spells the field name exactly, so a readable name needs no help. What was wrong was
+    // needed -- the element name IS the caller's field name", and the second half is still true: the
+    // element name spells the field name exactly, so a readable name needs no help. What was wrong was
     // the inference that no help was ever needed, because a hash block can name NO field at all, and
     // then the name spells nothing and the durable map is the only record. That case is driven by
     // `an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field` below.
@@ -656,7 +656,7 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
         );
     }
 
-    // string: no component at all.
+    // string: no element name at all.
     assert!(
         matches!(
             read(&engine, Command::StringGet { key: "ak-string".to_string() }),
@@ -825,7 +825,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
 ///
 /// THE EXPERIMENT IS UNRUNNABLE, AND THE ARM'S OWN FLOOR IS WHAT SAID SO: "the name was not found
 /// in any index file, so nothing was corrupted and this test would pass without testing anything".
-/// `BlockIndex` has no element-name field, so a served index carries no component text to corrupt.
+/// `BlockIndex` has no element-name field, so a served index carries no element name text to corrupt.
 /// A name cannot be made unreadable when there is no name.
 ///
 /// SO THE DEFECT IS UNREACHABLE RATHER THAN ABSENT, which is the stronger of the two things this
@@ -837,7 +837,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
 ///
 ///   * THE CONTROL, FIRST: the object key IS in these files, counted through the same matcher the
 ///     subject uses. A zero from a scan that reads nothing would pass for the finding.
-///   * THE SUBJECT: no component text for this object's members appears in any index file. This
+///   * THE SUBJECT: no element name text for this object's members appears in any index file. This
 ///     fails if an element name returns to the stored form -- which is the thing that would make
 ///     the old defect reachable again.
 ///   * AND THE PROPERTIES THE CORRUPTION USED TO PROTECT, still driven end to end: both members
@@ -993,12 +993,12 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
 /// THE ARM THAT CHANGED IS THE ARM THAT HAD NO DRIVEN CASE. The merge was extended to `hashes` on
 /// the claim that its mechanism is now byte-for-byte the other three's, and "closed by construction"
 /// is exactly the kind of statement a test has repeatedly found to be false in this tree. So this is
-/// the hash twin of `an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element`,
+/// the hash twin of `an_unreadable_element_name_name_is_skipped_and_the_durable_map_keeps_the_element`,
 /// and it is the one test here that fails if `shard.hashes = hashes` comes back.
 ///
 /// # RESTATED: THE SHAPE IS NO LONGER PLANTED, BECAUSE IT IS THE ONLY SHAPE THERE IS
 ///
-/// This test used to BLANK the component on one field's block entry and keep a second field's name as
+/// This test used to BLANK the element name on one field's block entry and keep a second field's name as
 /// a control -- a named block and a nameless one, side by side. Under one entry a block NO live entry
 /// of any container kind carries an element name, so there is nothing left to blank: the blanking
 /// loop matched zero entries and the fixture's own floor refused it with `blanked 0, not one`. That
@@ -1082,7 +1082,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
         // THE `named == 0` FLOOR IS GONE, AND THE CLAIM IS STRONGER WITHOUT IT.
         //
         // It read "Under one entry a block none can: if this reddens the collapse has been
-        // reverted". `BlockIndex` has no component field, so an entry naming a field is not a
+        // reverted". `BlockIndex` has no element name field, so an entry naming a field is not a
         // reversion this test could observe -- it is UNREPRESENTABLE, and `engine_storage_state.rs`'s width pin
         // refuses it at const-evaluation. That is what this whole module is for: a divergence
         // proved unreachable is worth more than one measured absent, and this arm's subject has
@@ -1139,32 +1139,32 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
 }
 
 // =================================================================================================
-// THE FOLD CARRIES ELEMENT IDENTITY, AND AN EMPTY ZSET MEMBER IS A WHOLE COMPONENT TOO
+// THE FOLD CARRIES ELEMENT IDENTITY, AND AN EMPTY ZSET MEMBER IS A WHOLE ELEMENT NAME TOO
 // =================================================================================================
 
 /// AN EMPTY ZSET MEMBER SPELLS EXACTLY ZERO CHARACTERS, AND THE RECONCILE ONCE REFUSED TO READ IT.
 ///
-/// RESTATED: `zset_component` used to be `{biased:016x}` followed by `hex::encode(member)`, so a
+/// RESTATED: `zset_element_name` used to be `{biased:016x}` followed by `hex::encode(member)`, so a
 /// member of zero bytes spelled exactly sixteen characters -- a complete score with an empty
-/// member after it -- and the reconcile's zset arm opened `if component.len() <= 16 { return None
+/// member after it -- and the reconcile's zset arm opened `if element_name.len() <= 16 { return None
 /// }`, refusing the one length a real, empty-member write could produce. That sixteen-character
-/// boundary is gone along with the score: `zset_component` is `hex::encode(member)` alone now, so
+/// boundary is gone along with the score: `zset_element_name` is `hex::encode(member)` alone now, so
 /// an empty member spells the empty string, and there is no length left to special-case at all --
 /// `hex::decode("")` was always `Ok(vec![])`, and the reconcile's arm no longer asks about length
 /// before decoding. This test keeps its ORIGINAL subject, not the boundary that caused it: an
 /// empty zset member must stay reachable and durable through the fold shape that strands an
 /// element with a block in the index but no durable-map entry behind it.
 ///
-/// Historically, `zset_component` is `{biased:016x}` followed by `hex::encode(member)`. A member
+/// Historically, `zset_element_name` is `{biased:016x}` followed by `hex::encode(member)`. A member
 /// of zero bytes -- which nothing on the write path rejects -- therefore spelled EXACTLY sixteen
-/// characters, and the reconcile's zset arm opened `if component.len() <= 16 { return None }`. So
-/// that component decoded to nothing, the element was counted in `unreadable_names` and skipped,
+/// characters, and the reconcile's zset arm opened `if element_name.len() <= 16 { return None }`. So
+/// that element name decoded to nothing, the element was counted in `unreadable_names` and skipped,
 /// and on the one door where
 /// the durable map does not already hold the element -- the delta fold, whose records carry the
 /// elements written after the base snapshot -- the member was silently gone on reload.
 ///
 /// THE ENGINE ALREADY SPELLS THE SAME BOUNDARY THE OTHER WAY. Both the insert arm and the removal
-/// arm of `apply_outcome_item` ask `component.len() < 16`, so WAL replay accepted the very component
+/// arm of `apply_outcome_item` ask `element_name.len() < 16`, so WAL replay accepted the very element name
 /// the reconcile refused. Two readers of one encoding disagreeing about its shortest legal form is
 /// the defect, and this was the side that was wrong: sixteen characters is a complete score with an
 /// empty member after it, and `hex::decode("")` is `Ok(vec![])`.
@@ -1188,13 +1188,13 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
 /// `an_element_the_durable_map_does_not_hold_does_not_come_back` does, and that arm carries the
 /// argument for why the state is unreachable in production.
 ///
-/// AND THE BOUNDARY THIS ARM EXISTS FOR SURVIVES, RE-ATTRIBUTED TO WHERE COMPONENTS STILL LIVE.
+/// AND THE BOUNDARY THIS ARM EXISTS FOR SURVIVES, RE-ATTRIBUTED TO WHERE ELEMENT NAMES STILL LIVE.
 /// The finding was never about the durable map: it was that an empty member spells a WHOLE
-/// component, so no reader may treat a short component as an absent one. Two readers of one
+/// element name, so no reader may treat a short element name as an absent one. Two readers of one
 /// encoding once disagreed about its shortest legal form -- the reconcile refused
-/// `component.len() <= 16` while WAL replay accepted `< 16` -- and that is the class of defect
+/// `element_name.len() <= 16` while WAL replay accepted `< 16` -- and that is the class of defect
 /// being guarded. A page still spells its elements, so the boundary is asked of the PAGE: the
-/// object's blocks must derive the empty member as a zero-length component, through the engine's own
+/// object's blocks must derive the empty member as a zero-length element name, through the engine's own
 /// `container_membership::derive_membership`, which is the door `SetMembers` and `ZSetScore`'s
 /// fold both read. If a length boundary comes back anywhere in that path, the empty member
 /// disappears from the derivation and this fails.
@@ -1238,20 +1238,20 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
         );
         zset_name(&empty).len()
     };
-    // ADJUSTED THIS TIME, AND THE FINDING IS STRONGER FOR IT. The component used to be
-    // `hex::encode(b"")`, which is the EMPTY STRING -- and a zero-length component was exactly the
-    // boundary two readers could disagree about, one treating "" as "no component" and the other
-    // as "the component of the empty member". `member_component` puts an unconditional tag in
-    // front, so the empty member now has a ONE-character component and no component is ever empty.
+    // ADJUSTED THIS TIME, AND THE FINDING IS STRONGER FOR IT. The element name used to be
+    // `hex::encode(b"")`, which is the EMPTY STRING -- and a zero-length element name was exactly the
+    // boundary two readers could disagree about, one treating "" as "no element name" and the other
+    // as "the element name of the empty member". `member_element_name` puts an unconditional tag in
+    // front, so the empty member now has a ONE-character element name and no element name is ever empty.
     // The ambiguity is not guarded against any more; it is gone.
     assert_eq!(
         empty_element_name_len, 1,
-        "an empty member's component is {empty_element_name_len} characters, not the one tag byte \
+        "an empty member's element name is {empty_element_name_len} characters, not the one tag byte \
          `member_element_name` always writes -- re-read `zset_element_name` before trusting the \
          boundary below"
     );
 
-    // THE BOUNDARY, RE-ATTRIBUTED TO THE BLOCKS. The blocks are where a component still exists, and
+    // THE BOUNDARY, RE-ATTRIBUTED TO THE BLOCKS. The blocks are where an element name still exists, and
     // the empty member must appear in their derivation as a zero-length key.
     {
         let addresses = {
@@ -1292,30 +1292,30 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
             derived.unrenderable_items
         );
         // THE BOUNDARY MOVED OFF ZERO, AND THAT IS THE RESOLUTION RATHER THAN A RELAXATION. The
-        // empty member derived a ZERO-LENGTH component while the spelling was hex, and a
-        // zero-length component is exactly what a reader can mistake for "no component". The
+        // empty member derived a ZERO-LENGTH element name while the spelling was hex, and a
+        // zero-length element name is exactly what a reader can mistake for "no element name". The
         // tagged spelling writes one tag byte unconditionally, so the empty member derives a
-        // ONE-character component and no component in the store is ever empty. The defect this
-        // arm exists for cannot be reintroduced by a short-component reader, because there is no
+        // ONE-character element name and no element name in the store is ever empty. The defect this
+        // arm exists for cannot be reintroduced by a short-element-name reader, because there is no
         // longer a shortest case for one to trip on.
         let empty_element_name = crate::engine::container_blocks::member_element_name(b"");
         assert_eq!(
             empty_element_name.len(),
             1,
-            "the empty member's component is {} characters, not the single tag byte -- if this is \
+            "the empty member's element name is {} characters, not the single tag byte -- if this is \
              zero the spelling has gone back to hex and the ambiguity is back with it",
             empty_element_name.len()
         );
         assert!(
             derived.live.contains_key(empty_element_name.as_str()),
             "the blocks do not derive the empty member at all: {:?}. A reader that treats a short \
-             component as an absent one has come back -- which is the defect this arm exists for, \
+             element name as an absent one has come back -- which is the defect this arm exists for, \
              now one layer down",
             derived.live.keys().collect::<Vec<_>>()
         );
         println!(
             "[empty-member] the blocks derive {} live element(s) and the empty member is among \
-             them as a one-character component, the tag alone",
+             them as a one-character element name, the tag alone",
             derived.live.len()
         );
     }
@@ -1376,13 +1376,13 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
     );
 }
 
-/// THE DELTA RECORD CARRIES THE MEMBER BYTES ITS COMPONENT MERELY SPELLS.
+/// THE DELTA RECORD CARRIES THE MEMBER BYTES ITS ELEMENT NAME MERELY SPELLS.
 ///
 /// `apply_key_states` folded thirteen maps and `sets`, `zsets`, `lists` and `hashes` were not among
 /// them, while `fold_delta_block_items` DID restore the block items -- so after a fold the bucket
-/// index held blocks for elements whose durable-map entry was never written, and the component its
+/// index held blocks for elements whose durable-map entry was never written, and the element name its
 /// block was filed under was the only copy of the member on that path. It is a DECODABLE copy on this
-/// revision, so nothing was lost by it; #1996 had to rewrite a component into an ordinal shape
+/// revision, so nothing was lost by it; #1996 had to rewrite an element name into an ordinal shape
 /// deliberately to lose one. This is the prerequisite that stops identity depending on that.
 ///
 /// ASSERTED ON THE RECORD ON DISK, not on the function that builds it, because the question is what
@@ -1475,7 +1475,7 @@ fn a_delta_record_carries_the_container_element_a_write_touched() {
     );
     println!(
         "[carry] the record carries the member BYTES and the score the durable map holds, so a fold \
-         does not have to decode the component to know either"
+         does not have to decode the element name to know either"
     );
 }
 
@@ -1585,12 +1585,12 @@ fn a_key_state_blob_that_carries_no_elements_leaves_the_container_maps_untouched
     );
 }
 
-/// THE FOLD RESTORES AN ELEMENT WHOSE COMPONENT COULD NOT NAME IT.
+/// THE FOLD RESTORES AN ELEMENT WHOSE ELEMENT NAME COULD NOT NAME IT.
 ///
 /// This is the finding, driven at the seam. A blob carrying one zset element and one set element is
-/// folded onto a shard that holds neither, and there is NO component anywhere in the input -- so the
+/// folded onto a shard that holds neither, and there is NO element name anywhere in the input -- so the
 /// identity that arrives cannot have been decoded from one. That is the property the two blocked
-/// changes need: a 2-byte element ordinal replacing `component: Option<Arc<str>>`, and batched blocks
+/// changes need: a 2-byte element ordinal replacing `element_name: Option<Arc<str>>`, and batched blocks
 /// where element identity lives only in the block payload.
 ///
 /// THE MUTANT THIS KILLS is the removal of the four `merge_container_elements` calls from
@@ -1626,7 +1626,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
         .cloned()
         .expect("the seed member has an address");
 
-    // Bytes no component on this revision would spell: a component is hex, and these are not.
+    // Bytes no element name on this revision would spell: an element name is hex, and these are not.
     let member = b"identity-not-in-a-name".to_vec();
     let score_bits = crate::engine::execute_on_shard::zset_score_bits(9.25);
     let blob = vec![serde_json::json!({
@@ -1672,7 +1672,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
         .and_then(|members| members.get(member.as_slice()))
         .cloned();
     println!(
-        "[carried] set={} zset={} for a member of {} bytes that no component in the input spells",
+        "[carried] set={} zset={} for a member of {} bytes that no element name in the input spells",
         folded_set.is_some(),
         folded_zset.is_some(),
         member.len()
@@ -1680,7 +1680,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
 
     assert!(
         folded_set.is_some(),
-        "the fold did not restore the set element. There is no component in this input, so if this \
+        "the fold did not restore the set element. There is no element name in this input, so if this \
          is red the carry is not being applied and a folded element is once again known only by the \
          name its block was filed under."
     );
@@ -1978,7 +1978,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
 ///      the field name as a SUBSTRING and found it in 3 of 3 blocks. That is not the same claim: a
 ///      substring says the information is there, not that there is a defined way to recover it.
 ///      This decodes the block through `container_blocks::decode_container_block` and renders the
-///      component back through `component_from_element_key`, which is the only recovery that
+///      element name back through `element_name_from_element_key`, which is the only recovery that
 ///      counts.
 ///   2. HOW MANY ELEMENTS DOES ONE STAGED BLOCK HOLD? If one, the block names the outcome's element
 ///      unambiguously. If many, the payload says which elements the BLOCK holds and not which one
@@ -2068,7 +2068,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
          spellings={spellings:?}"
     );
     println!(
-        "[pay] items per staged block: min={:?} max={:?}; {} distinct components recovered of {} \
+        "[pay] items per staged block: min={:?} max={:?}; {} distinct element names recovered of {} \
          fields written",
         items_per_block.iter().min(),
         items_per_block.iter().max(),
@@ -2151,7 +2151,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
 ///      which is per key and not per element), so those resolve by ADDRESS and pay a read each.
 ///      Driven through `install_shared_outcomes_with_blocks` with no carried blocks, which is
 ///      exactly that arm.
-///   3. AND WHAT IS SAVED, PER RECORD, WITH BOTH ARMS NAMED. A hash field's component is the
+///   3. AND WHAT IS SAVED, PER RECORD, WITH BOTH ARMS NAMED. A hash field's element name is the
 ///      field name as text; a set member's is HEX, two characters a byte. So the two kinds save
 ///      different amounts and quoting one as the figure would be a mean for a distribution.
 ///      Measured by encoding the real record through the real framer twice, once with the name and
@@ -2176,8 +2176,8 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
             },
         );
     }
-    // A SET MEMBER TOO, so the saving can be priced on the kind whose component is hex rather than
-    // quoted from the kind whose component is the caller's own text.
+    // A SET MEMBER TOO, so the saving can be priced on the kind whose element name is hex rather than
+    // quoted from the kind whose element name is the caller's own text.
     let member = vec![0xA7u8; 20];
     write(
         &engine,
@@ -2346,7 +2346,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
 ///
 /// It was introduced asserting the OPPOSITE, and that assertion was right about the code it was
 /// written against: `apply_outcome_item`'s hash arm asked the OUTCOME for the field name, so
-/// clearing it refused the load -- `wal_replay_outcome_refused`, "component missing". The same arm
+/// clearing it refused the load -- `wal_replay_outcome_refused`, "element name missing". The same arm
 /// recorded the fact that made this change possible: every carried block payload DOES name its
 /// elements, so the field was dead weight behind a replay path that did not ask the block.
 ///
@@ -2356,7 +2356,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
 ///
 /// The first version of this arm drove `install_shared_outcomes_with_blocks`, and it FAILED -- for
 /// a reason that turned out to be a defect in that path rather than in this change, which
-/// `the_shared_install_pairs_carried_blocks_by_object_and_component`
+/// `the_shared_install_pairs_carried_blocks_by_object_and_element_name`
 /// below records in full. The short form: that path pairs a carried block to an outcome by
 /// `object_id`, which is per (kind, key) and NOT per element, so for a record carrying several
 /// blocks of one key it attaches the FIRST block's bytes to every outcome. While the outcome carried
@@ -2545,7 +2545,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
 ///     carried.iter().find(|block| block.object_id == item.object_id)
 /// ```
 ///
-/// and an object id is derived from (kind, key) -- it is NOT per element. `StagedBlock::component`'s
+/// and an object id is derived from (kind, key) -- it is NOT per element. `StagedBlock::element_name`'s
 /// own doc says what that costs, in a measurement predating this arm: "two blocks of one key sharing
 /// an id serve 1 of 2 correctly, and the block that loses is handed the FIRST block's BYTES rather
 /// than answering missing." The pairing has never used the outcome's element name, so this is not
@@ -2560,7 +2560,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
 /// the wrong NAMES, which is louder but no more wrong. Both are corruption and the pairing is the
 /// cause.
 ///
-/// THE FIX IS NOT "PAIR BY THE COMPONENT", which is the obvious move and is the wrong one: it
+/// THE FIX IS NOT "PAIR BY THE ELEMENT NAME", which is the obvious move and is the wrong one: it
 /// re-introduces the per-block element name as an addressing key on the very path this campaign is
 /// taking it off. The shape that works is to iterate the CARRIED BLOCKS rather than the outcomes --
 /// each block names its own elements and, once localised, has its own address -- so no per-block key
@@ -2655,11 +2655,11 @@ fn the_shared_install_pairs_carried_blocks_by_object_and_element_name() {
 /// "0 block reads, structurally zero, because `block_in_wal::stage` is unconditional". That claim
 /// was measured on records carrying ONE block each, and it is true of them. The proxy binary's
 /// `matrixark_publish_visibility_can_target_only_written_keys` then refused a shard load, and the
-/// refusal message named the cause: "address resolved, block UNREADABLE or names nothing, component
+/// refusal message named the cause: "address resolved, block UNREADABLE or names nothing, element name
 /// present, 27 chars".
 ///
 /// DRIVEN FROM THE PROXY SUITE RATHER THAN GUESSED, with a temporary print on the fallback arm: 24
-/// of 24 fallbacks were `kind=hash`, `component=Some(27)`, and
+/// of 24 fallbacks were `kind=hash`, `element_name=Some(27)`, and
 ///
 /// ```text
 ///     the record carries several blocks of this object, so the carried block cannot be told apart,
@@ -2679,7 +2679,7 @@ fn the_shared_install_pairs_carried_blocks_by_object_and_element_name() {
 /// exactly as they did in the wild, and the load must SUCCEED on the outcome's own copy.
 ///
 /// THE COUNTERS ARE WHAT MAKE IT A MEASUREMENT RATHER THAN A PASS. `outcome_element_name_sources`
-/// reports (from the block, from the component, refused for disagreeing), and this asserts the
+/// reports (from the block, from the element name, refused for disagreeing), and this asserts the
 /// fallback actually FIRED -- a green arm that silently resolved from the block would be covering
 /// nothing. Reset first, because a count read off a process-global without one is a reading.
 ///
@@ -2788,7 +2788,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     };
     println!(
         "[unreachable] load ok={} fields={held:?}; names from block={from_block} from \
-         component={from_element_name} disagreed={disagreed}",
+         element name={from_element_name} disagreed={disagreed}",
         response.status.ok
     );
     assert!(
@@ -2825,11 +2825,11 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
 /// danger that creates is the opposite case: a block that IS readable and names something else. That
 /// happens when the block in hand is not the block this outcome is about, which is the `object_id`
 /// pairing defect -- and there, installing the block's name files this element's address under
-/// another element's name, while installing the component's files another block's bytes under this
+/// another element's name, while installing the element name's files another block's bytes under this
 /// one. Both are corruption, so neither is chosen.
 ///
 /// DRIVEN BY PLANTING THE DISAGREEMENT, because no fixture produces it on purpose: a real record is
-/// taken and its outcome's component is renamed to an element the page does not hold. The page
+/// taken and its outcome's element name is renamed to an element the page does not hold. The page
 /// stays readable, which is what separates this from the arm above.
 ///
 /// THE CONTROL IS THE SAME RECORD UNRENAMED. Without it a refusal here could be the fixture failing
@@ -2944,7 +2944,7 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
 ///
 /// # WHY THIS ARM EXISTS
 ///
-/// `WalOutcomeItem::component` was refused for the timestamped kinds on the ground that their blocks
+/// `WalOutcomeItem::element_name` was refused for the timestamped kinds on the ground that their blocks
 /// "carry no element-key frame at all" -- `ElementKeySpelling::for_kind` answers `None` for every
 /// one of them -- so the refusal named a BLOCK-FORMAT change as the thing that would buy the
 /// removal. Before building one, three things have to be measured, and two of them can refuse it:
@@ -2952,15 +2952,15 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
 ///   1. WHETHER THE BLOCK ALREADY NAMES ITS ELEMENTS. `encode_feature_block` writes an eight-byte
 ///      `timestamp_ms` in front of every point, and its own doc says why: "it is what picks one
 ///      point out of a block holding several." If that is the element key, no format change is
-///      needed for the kinds whose component is the timestamp alone, and the frame this arm was
+///      needed for the kinds whose element name is the timestamp alone, and the frame this arm was
 ///      asked to price does not have to exist.
-///   2. WHAT THE COMPONENT ACTUALLY COSTS ON DISK, which is NOT its string length. `wal_proto`'s
-///      `numeric_component` stores it as NUMBERS for all eight timestamped kinds -- a `timestamp_ms`
+///   2. WHAT THE ELEMENT NAME ACTUALLY COSTS ON DISK, which is NOT its string length. `wal_proto`'s
+///      `numeric_element_name` stores it as NUMBERS for all eight timestamped kinds -- a `timestamp_ms`
 ///      field, plus an `entry_id` for `context_event` -- so pricing the text would be pricing a
 ///      form that is never written. This encodes real records through the real framer with and
 ///      without the field.
 ///   3. WHAT IT WOULD COST A REPLAY TO ASK THE BLOCK. A timestamped block is staged with
-///      `component: None`, and a multi-point append chunks into SEVERAL blocks under one object id
+///      `element_name: None`, and a multi-point append chunks into SEVERAL blocks under one object id
 ///      -- so the carried block cannot be matched to an outcome and the resolver falls back to
 ///      reading the address. That is one block read per replayed record, which is recovery time,
 ///      and recovery time is a product property.
@@ -3126,7 +3126,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         (f_with - f_without) as f64 / feature_outcomes_here.max(1) as f64
     );
 
-    // AND THE KIND WITH AN IDENTITY, which is the one the block cannot answer for: its component
+    // AND THE KIND WITH AN IDENTITY, which is the one the block cannot answer for: its element name
     // packs the timeline key AND the event id, and the block carries only the timeline key.
     let events = tempfile::tempdir().unwrap();
     let event_engine = engine_on(events.path());
@@ -3181,14 +3181,14 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
             let event_blocks: usize = record.staged_blocks.len();
             println!(
                 "[tsf] a context_event record: {e_with} B -> {e_without} B, saving {} B; its \
-                 component is {} chars ({element_name}); it carries {event_blocks} block(s)",
+                 element_name is {} chars ({element_name}); it carries {event_blocks} block(s)",
                 e_with - e_without,
                 element_name.len()
             );
             println!(
                 "[tsf] and the id is NOT in the frame: a feature block writes timestamp + length + \
                  value per point, so adding the event id to it costs 8 B per point against the {} B \
-                 the component costs per record",
+                 the element name costs per record",
                 e_with - e_without
             );
         }
@@ -3197,7 +3197,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
 
     assert!(
         f_with > f_without,
-        "stripping the component did not make a feature record smaller, so there is nothing to \
+        "stripping the element name did not make a feature record smaller, so there is nothing to \
          save and the whole trade is off"
     );
 }

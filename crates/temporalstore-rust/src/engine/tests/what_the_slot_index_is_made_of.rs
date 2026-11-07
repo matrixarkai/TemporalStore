@@ -102,7 +102,7 @@
 //!
 //! EVERY PER-BLOCK FACT IS WRITTEN TWICE, AND THE TWO COPIES ARE NOT THE SAME PRICE. A block's
 //! object, kind and address are written once inside its composite map key --
-//! `{kind}:{object_key}:{component}:{slab}:{offset}:{length}:{block_id}:{generation}` -- and once
+//! `{kind}:{object_key}:{element_name}:{slab}:{offset}:{length}:{block_id}:{generation}` -- and once
 //! as the `object_key`, `model_id` and `address` fields of the entry filed under it:
 //!
 //! ```text
@@ -139,7 +139,7 @@
 //! test build that other arms read and reset: a probe calling it 8,000 times would move a counter
 //! it is not measuring.
 //!
-//! AND TWO SLOTS ARE WRITTEN FOR NOTHING ON EVERY BLOCK. The composite's component slot is empty on
+//! AND TWO SLOTS ARE WRITTEN FOR NOTHING ON EVERY BLOCK. The composite's element name slot is empty on
 //! all 8,000 blocks -- `block_index_written_key` passes a literal `None` -- so one of its seven
 //! separators delimits a hole. And a stored address writes `oi` as null on all 8,000, because
 //! `impl From<ElementEntry> for BlockAddressWire` fills it from a literal `None` too -- the type it
@@ -821,7 +821,7 @@ fn split_written_key(key: &str) -> KeySlots {
     let mut from_left = head.splitn(2, ':');
     let kind = from_left.next().unwrap_or_default().to_string();
     let rest = from_left.next().unwrap_or_default();
-    // The component slot is the LAST colon-separated run of the head's tail, and the object key is
+    // The element name slot is the LAST colon-separated run of the head's tail, and the object key is
     // everything before it -- so an object key holding a colon stays in one slot.
     let (object_key, element_name) = match rest.rfind(':') {
         Some(at) => (rest[..at].to_string(), rest[at + 1..].to_string()),
@@ -1399,7 +1399,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                         let slots = split_written_key(block_key);
                         assert!(
                             slots.element_name.is_empty(),
-                            "[CLAUSE empty-slot-is-empty] the component slot of `{block_key}` holds \
+                            "[CLAUSE empty-slot-is-empty] the element name slot of `{block_key}` holds \
                              `{}`, so dropping it would drop a term rather than a hole",
                             slots.element_name
                         );
@@ -1626,7 +1626,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
             assert_eq!(
                 row.bytes, 0,
                 "[CLAUSE structurally-empty] `{label}` holds {} B; it is the always-absent \
-                 component the key composer passes as a literal `None`, and content there means \
+                 element name the key composer passes as a literal `None`, and content there means \
                  the composite now names something",
                 row.bytes
             );
