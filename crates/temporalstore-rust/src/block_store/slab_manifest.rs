@@ -5,9 +5,8 @@
 
 use super::*;
 use super::slab_ids::*;
-use super::slab_manifest_wire::{decode_slab_manifest, is_wire_manifest};
+use super::slab_manifest_wire::{decode_slab_manifest, encode_slab_manifest, is_wire_manifest};
 use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,13 +15,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// COUNTED RATHER THAN TIMED, for the reason `directory_fsyncs` is: how many syscalls one persist
 /// costs is the shape itself, and it reads the same number on a loaded box as on an idle one.
 ///
-/// THE COUNTER SITS UNDER THE BUFFER, ON THE FILE. `serde_json` writes a JSON document in
-/// fragments -- a key, a colon, a number, a comma -- and hands each one to the writer separately.
-/// Against a bare `File` that is one syscall per fragment: measured at 8,000 slabs, two persists
-/// of a 2,813,816-byte manifest cost 1,600,144 `write` calls, about 3.5 bytes each, and 97.8% of
-/// the process's syscall time. A counter placed ABOVE the buffer would still read those 800,000
-/// fragments per persist and so could never tell the two arrangements apart, which is the one
-/// thing it exists to do.
+/// THE COUNTER SITS ON THE FILE, UNDER THE ONE `write_all`. The manifest used to be a JSON
+/// document that `serde_json` hands to its writer in fragments -- a key, a colon, a number, a
+/// comma -- and against a bare `File` that was one syscall per fragment: measured at 8,000 slabs,
+/// two persists of a 2,813,816-byte manifest cost 1,600,144 `write` calls and 97.8% of the
+/// process's syscall time, which is why a buffer and this counter went in. The manifest is one
+/// encoded frame now and goes out in a single `write_all`, so the count is one per persist. The
+/// counter stays on the file rather than above anything, so a regression back to a writer that
+/// emits the document in pieces would still read as what it is.
 static MANIFEST_FILE_WRITES: AtomicU64 = AtomicU64::new(0);
 
 /// `write(2)` calls the manifest file has taken so far.
@@ -453,13 +453,6 @@ pub(super) fn reconcile_slab_manifest_with_disk(
     })
 }
 
-/// How much of the manifest is held in memory on the way to the file.
-///
-/// One `write(2)` per full buffer, so this trades a fixed 256 KiB of resident memory against the
-/// syscall count. MEASURED over the 21 MB manifest of a shard holding 80,000 slabs: 81 syscalls,
-/// against 8,000,021 for the same document written straight at the file.
-const MANIFEST_WRITE_BUFFER_BYTES: usize = 256 * 1024;
-
 /// Write the whole slab manifest out, and COUNT that it happened.
 ///
 /// THE COUNTER IS A PARAMETER, NOT THE CALLER'S RESPONSIBILITY. `slab_manifest_writes` used to be
@@ -483,48 +476,18 @@ pub(super) fn persist_slab_manifest(
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     ));
-    let manifest = BlockStoreSlabManifest {
-        version: 1,
-        slabs: slabs.values().cloned().collect(),
-    };
+    // ENCODED STRAIGHT FROM THE DESCRIPTORS, in one buffer, and written once. The document is a
+    // single checksummed frame, so its length and crc have to be known before the first byte goes
+    // out; holding the encoded bytes is what that costs, and cloning every descriptor into a
+    // `BlockStoreSlabManifest` first would hold them all a second time.
+    let bytes = encode_slab_manifest(1, slabs.values());
     {
-        // BUFFERED, AND COMPACT. Both halves of this line were paying per slab.
-        //
-        // `serde_json` emits a document in fragments and hands each to the writer on its own, so
-        // writing straight at a `File` spent one `write(2)` per fragment: 800,021 syscalls for one
-        // 2,813,816-byte manifest at 8,000 slabs, 3.5 bytes apiece. A buffer turns that into one
-        // syscall per full buffer, and the count is what says so rather than a wall time taken on
-        // a shared box.
-        //
-        // Pretty-printing was the other half: the indentation is itself fragments, and a manifest
-        // is not read by a person -- `load_slab_manifest_at` parses it with `from_slice`, which
-        // does not care about whitespace, and the one tool outside this crate that opens the file
-        // (`tools/matrixark_merge_rust_hook_stores.py`) parses it with `json.loads`. Nothing reads
-        // or diffs it as TEXT, so the indentation bought nothing and cost bytes on every roll.
-        //
-        // The buffer is bounded, not the whole document: a 28 MB manifest serialised into a `Vec`
-        // first would add 28 MB to the peak of a store that already watches its resident size.
-        let mut temp = BufWriter::with_capacity(
-            MANIFEST_WRITE_BUFFER_BYTES,
-            CountedFileWrites(std::fs::File::create(&temp_path)?),
-        );
-        serde_json::to_writer(&mut temp, &manifest).map_err(|err| {
-            BlockStoreError::CorruptBlockEnvelope {
-                block_slab_id: 0,
-                offset: 0,
-                reason: format!("serialize slab manifest: {err}"),
-            }
-        })?;
-        temp.write_all(b"\n")?;
+        let mut temp = CountedFileWrites(std::fs::File::create(&temp_path)?);
+        temp.write_all(&bytes)?;
         temp.flush()?;
-        // Unwrap the buffer before the barrier. `sync_all` on a `File` still holding buffered
-        // bytes above it makes a manifest durable that is not the manifest that was serialised,
-        // so the flush above and this unwrap are both load-bearing.
-        let temp = temp
-            .into_inner()
-            .map_err(|err| std::io::Error::other(err.to_string()))?
-            .0;
-        temp.sync_all()?;
+        // `sync_all` on the `File` itself. Nothing is buffered above it, so what is made durable
+        // is exactly the frame that was encoded.
+        temp.0.sync_all()?;
     }
     std::fs::rename(&temp_path, &path)?;
     sync_parent_dir(&path)?;
