@@ -634,6 +634,7 @@ fn write_packed_hash_entries(
     end_routing_bucket: u32,
     shard: &mut ShardState,
     key: &str,
+    async_storage: bool,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (bool, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = deduplicate_hash_entries(entries);
@@ -659,15 +660,17 @@ fn write_packed_hash_entries(
         .and_then(|ordinal| u32::try_from(ordinal).ok())
         .unwrap_or(0);
     let block = crate::engine::container_blocks::encode_utf8_container_block(&packed_entries);
-    block_in_wal::stage(object_id, None, &block);
-    let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
-        block_store.append_block_of_object(
-            &block,
-            Some(object_id),
-            Some(routing_bucket),
-            block_ordinal,
-        )
-    });
+    let address = append_value_of_object(
+        cache,
+        block_store,
+        shard_id,
+        &block,
+        Some(object_id),
+        None,
+        Some(routing_bucket),
+        async_storage,
+        block_ordinal,
+    );
     let mutated = match address {
         Ok(address) => {
             for (field, _) in &packed_entries {
@@ -701,6 +704,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     end_routing_bucket: u32,
     shard: &mut ShardState,
     async_storage: bool,
+    pack_projection: bool,
     key: String,
     mut entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
@@ -709,9 +713,11 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
 
-    // A large feature and its small scalar fields stay readable as one object under cache
-    // pressure. Generic small hash writes retain their per-field representation.
-    let mutated = if contains_large_value {
+    // Durable shared feature-row batches carry one projection and read it back together, so one
+    // packed block avoids repeating the block header and physical append for every field. Async
+    // batches retain their per-field hot-cache representation; a large value still selects the
+    // packed layout on every path so its scalar siblings stay with it under pressure.
+    let mutated = if pack_projection || contains_large_value {
         let (mutated, returned_entries) = write_packed_hash_entries(
             cache,
             block_store,
@@ -720,6 +726,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
             end_routing_bucket,
             shard,
             &key,
+            async_storage,
             entries,
         );
         entries = returned_entries;
@@ -782,6 +789,7 @@ pub(super) fn execute_packed_conditional_hash_write(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     shard: &mut ShardState,
+    async_storage: bool,
     key: String,
     timestamp_field: String,
     timestamp_seconds: i64,
@@ -840,6 +848,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         end_routing_bucket,
         shard,
         &key,
+        async_storage,
         entries,
     );
     mutated |= packed_mutated;
@@ -936,6 +945,7 @@ pub(crate) fn execute_on_shard(
             start_routing_bucket,
             end_routing_bucket,
             shard,
+            async_storage,
             key,
             timestamp_field,
             timestamp_seconds,
@@ -1503,6 +1513,7 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 shard,
                 async_storage,
+                false,
                 key,
                 entries,
             )
