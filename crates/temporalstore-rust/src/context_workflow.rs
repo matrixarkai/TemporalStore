@@ -1480,6 +1480,12 @@ pub struct ContextWorkflowPolicyReport {
     pub sanitized_text: String,
 }
 
+pub(crate) type ContextEmbeddingOutcome = (
+    EmbeddingBatch,
+    ContextEmbeddingGenerationReport,
+    bool,
+);
+
 /// Single-source extraction (codex-hook path). Gates L1 by source richness so
 /// thin events do not pay for the richer L1 tier.
 pub fn extract_context(
@@ -1499,6 +1505,16 @@ pub(crate) fn extract_context_gated(
     request: ContextExtractRequest,
     gate_l1: bool,
 ) -> ContextExtractReport {
+    let summaries = match context_extract_summaries_with_fallback(&request) {
+        Ok(summaries) => summaries,
+        Err(report) => return report,
+    };
+    extract_context_gated_prepared(engine, request, gate_l1, summaries, None)
+}
+
+pub(crate) fn context_extract_summaries_with_fallback(
+    request: &ContextExtractRequest,
+) -> Result<ContextExtractSummaries, ContextExtractReport> {
     let provider = normalize_provider(request.provider.clone());
     let summaries = match context_summaries_for_extract(&provider, &request) {
         Ok(summaries) => summaries,
@@ -1515,24 +1531,68 @@ pub(crate) fn extract_context_gated(
                         summaries
                     }
                     Err(fallback_status) => {
-                        return empty_extract_report(
+                        return Err(empty_extract_report(
                             fallback_status,
                             provider,
                             request.tenant_hash,
                             request.timestamp_ms,
-                        );
+                        ));
                     }
                 }
             } else {
-                return empty_extract_report(
+                return Err(empty_extract_report(
                     status,
                     provider,
                     request.tenant_hash,
                     request.timestamp_ms,
-                );
+                ));
             }
         }
     };
+    Ok(summaries)
+}
+
+pub(crate) fn context_embeddings_with_fallback(
+    provider: &ContextModelProviderConfig,
+    embedding_inputs: &[(&str, u64, u32, &str)],
+) -> ContextEmbeddingOutcome {
+    let embed_outcome = match context_embeddings_for_extract(provider, embedding_inputs) {
+        Ok(value) => Ok(value),
+        Err(status) => {
+            if let Some(fallback) = provider.fallback_provider.as_deref() {
+                let fallback = normalize_provider(fallback.clone());
+                context_embeddings_for_extract(&fallback, embedding_inputs).map(
+                    |(vectors, mut report)| {
+                        report.fallback_used = true;
+                        report.provider_name = format!(
+                            "{}+fallback:{}",
+                            provider.provider_name, report.provider_name
+                        );
+                        (vectors, report)
+                    },
+                )
+            } else {
+                Err(status)
+            }
+        }
+    };
+    match embed_outcome {
+        Ok((vectors, report)) => (vectors, report, false),
+        Err(_) => (
+            EmbeddingBatch::default(),
+            ContextEmbeddingGenerationReport::default(),
+            true,
+        ),
+    }
+}
+
+pub(crate) fn extract_context_gated_prepared(
+    engine: &TemporalEngine,
+    request: ContextExtractRequest,
+    gate_l1: bool,
+    summaries: ContextExtractSummaries,
+    embedding_outcome: Option<ContextEmbeddingOutcome>,
+) -> ContextExtractReport {
     let provider = summaries.provider;
     if !summaries.status.ok {
         return ContextExtractReport {
@@ -1694,40 +1754,8 @@ pub(crate) fn extract_context_gated(
     // DEFER (persist the node/event/summaries without vectors and mark the node
     // embedding-dirty so the async drainer attaches vectors later, keeping it
     // lexically rankable meanwhile); the fail-closed path aborts the extract.
-    let embed_outcome = match context_embeddings_for_extract(&provider, &embedding_inputs) {
-        Ok(value) => Ok(value),
-        Err(status) => {
-            if let Some(fallback) = provider.fallback_provider.as_deref() {
-                let fallback = normalize_provider(fallback.clone());
-                context_embeddings_for_extract(&fallback, &embedding_inputs).map(
-                    |(vectors, mut report)| {
-                        report.fallback_used = true;
-                        report.provider_name = format!(
-                            "{}+fallback:{}",
-                            provider.provider_name, report.provider_name
-                        );
-                        (vectors, report)
-                    },
-                )
-            } else {
-                Err(status)
-            }
-        }
-    };
-    let (embedding_vectors, embedding_generation, embedding_deferred) = match embed_outcome {
-        Ok((vectors, report)) => (vectors, report, false),
-        Err(status) => {
-            // `MATRIXARK_EMBED_DEFER_ON_FAILURE=0` used to abort the whole extract here and
-            // persist nothing. It defaulted on and nothing set it, so the extraction has always
-            // been kept: the node, event and summaries persist, the node is marked
-            // embedding-dirty for the drainer, and lexical scoring keeps it rankable meanwhile.
-            (
-                EmbeddingBatch::default(),
-                ContextEmbeddingGenerationReport::default(),
-                true,
-            )
-        }
-    };
+    let (embedding_vectors, embedding_generation, embedding_deferred) = embedding_outcome
+        .unwrap_or_else(|| context_embeddings_with_fallback(&provider, &embedding_inputs));
 
     // The vectors live on their owners and nowhere else: the summaries, the event and the node
     // each carry their own. The separate ContextEmbedding rows this used to also write were
