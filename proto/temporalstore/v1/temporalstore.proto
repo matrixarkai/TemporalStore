@@ -1739,3 +1739,20 @@ message DurableDataNodeLifecycleSnapshot {
   repeated DurableShardLifecycleState transitions = 2;
   repeated DurableSchedulerLifecycleToken tokens = 3;
 }
+
+// ===========================================================================================
+// DURABLE CONTROL STATE COUNTER SERIES BLOCK, PACKED SHAPE.
+//
+// The block a Control State counter writes: the whole series, `timestamp_ms -> value`. Two PARALLEL
+// PACKED arrays rather than a repeated pair message, so a point costs its two varints and no tag or
+// length. The arrays are the same length and the timestamps are strictly ascending (the writer
+// iterates a `BTreeMap`); a reader refuses anything else rather than keep one of two values for a
+// repeated timestamp. The container byte in front of this message is 0x01; 0x02 is reserved for a
+// delta-coded shape and is refused by this build, see `engine/control_state_block.rs`.
+// ===========================================================================================
+
+message DurableControlStateSeries {
+  repeated uint64 timestamps_ms = 1;
+  // `sint64`: zigzag, so a small negative amount is one byte and not ten.
+  repeated sint64 values = 2;
+}

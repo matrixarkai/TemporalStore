@@ -53,6 +53,8 @@ mod recovery_sweep_compact;
 #[path = "engine/engine_persistence.rs"]
 mod persistence;
 pub(crate) mod bucket_dump_codec;
+mod control_state_block;
+pub use self::control_state_block::control_state_blocks_unreadable;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
@@ -137,6 +139,7 @@ use self::hashing::*;
 use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
 use self::bucket_dump_io::*;
+use self::control_state_block::*;
 use self::bucket_dump_codec::*;
 use self::bucket_store::{read_bucket_index_value, bucket_index_element_name_block_addresses};
 use self::state::*;
@@ -7214,13 +7217,40 @@ fn persist_control_state_block(
     let Ok(bytes) = serde_json::to_vec(series) else {
         return false;
     };
+    append_control_state_block(
+        cache,
+        block_store,
+        shard_id,
+        shard,
+        key,
+        &bytes,
+        start_routing_bucket,
+        end_routing_bucket,
+        async_storage,
+    )
+}
+
+/// Store one series block's bytes and register it in the index. The tail of
+/// `persist_control_state_block`, split out so the writer and the tests that put a block of another
+/// shape into the store reach the index the same way.
+fn append_control_state_block(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    bytes: &[u8],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+) -> bool {
     let object_id = stable_block_object_id(shard_id, "control_state", key);
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     if let Ok(address) = append_value(
         cache,
         block_store,
         shard_id,
-        &bytes,
+        bytes,
         Some(object_id),
         // The same `None` the object id was derived with, one line up: a control state IS
         // its whole object.
