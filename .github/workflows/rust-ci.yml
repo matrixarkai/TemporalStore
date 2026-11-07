@@ -275,6 +275,10 @@ jobs:
             engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_answers_to_the_feature_ceiling_on_the_same_series \
             engine::tests::one_series_two_commands_one_ceiling::a_sequence_add_inside_the_ceiling_is_still_accepted \
             engine::tests::part2::feature_append_rejects_hard_size_limit_before_mutation \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_policy_append_past_the_ceiling_is_refused_before_it_writes \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_policy_append_at_the_ceiling_is_accepted \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_replace_past_the_ceiling_is_refused_before_it_writes \
+            engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_replace_at_the_ceiling_is_accepted \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
