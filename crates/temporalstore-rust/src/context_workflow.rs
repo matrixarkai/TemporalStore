@@ -2222,11 +2222,6 @@ pub fn retrieve_context(
     } else {
         request.node_hashes.clone()
     };
-    // Candidate builders can reach the same node through more than one index. Preserve the
-    // first occurrence, but never fetch, quantize, score, or expand that node twice.
-    let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
-    node_hashes.retain(|node_hash| seen_node_hashes.insert(*node_hash));
-    drop(seen_node_hashes);
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
         Ok(vector) => vector,
@@ -2249,6 +2244,10 @@ pub fn retrieve_context(
     // encoder is unknown, and unknown never conflicts.
     let active_embedding_model_hash =
         context_embedding_model_hash(request.provider.embedding_model.trim());
+    // Candidate builders can reach the same node through more than one index. Preserve the
+    // first occurrence, but never fetch, quantize, score, or expand that node twice.
+    let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
+    node_hashes.retain(|node_hash| seen_node_hashes.insert(*node_hash));
     // The durable recency index bounds cold storage reads. The compact hot index may know older
     // nodes that are stronger semantic matches, so let a small number re-enter as candidates.
     // Their cached scores are not final: the normal node fetch and rerank below still apply.
@@ -2267,14 +2266,14 @@ pub fn retrieve_context(
             &query_embedding,
             hot_candidate_limit,
         ) {
-            let mut seen = node_hashes.iter().copied().collect::<HashSet<_>>();
             node_hashes.extend(
                 hits.into_iter()
                     .map(|hit| hit.key.item_id)
-                    .filter(|node_hash| seen.insert(*node_hash)),
+                    .filter(|node_hash| seen_node_hashes.insert(*node_hash)),
             );
         }
     }
+    drop(seen_node_hashes);
     fanout_plan.namespace_node_candidates = node_hashes.len();
     let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
@@ -2314,7 +2313,6 @@ pub fn retrieve_context(
                 .into_iter()
                 .map(|hit| (hit.key.item_id, hit.score))
                 .collect::<HashMap<_, _>>();
-            let mut complete = HashSet::with_capacity(summary_hits.len());
             if let Ok(node_hits) = engine.score_context_embedding_candidates(
                 EmbeddingChannel::Node,
                 request.tenant_hash,
@@ -2331,14 +2329,17 @@ pub fn retrieve_context(
                         .or_default();
                     scores.0 = ((node_hit.score.max(*summary_score)) * 1_000_000.0) as i64;
                     scores.1 = 2;
-                    complete.insert(node_hit.key.item_id);
                 }
             }
             cold.extend(
                 candidate_chunk
                     .iter()
                     .copied()
-                    .filter(|node_hash| !complete.contains(node_hash)),
+                    .filter(|node_hash| {
+                        summary_scores_by_node
+                            .get(node_hash)
+                            .is_none_or(|(_, score_count)| *score_count < 2)
+                    }),
             );
         }
         Some(cold)
