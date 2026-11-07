@@ -1988,7 +1988,7 @@ pub struct IndexDeltaRecord {
     /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
     #[serde(rename = "ks", alias = "key_states", default)]
     pub key_states: Vec<serde_json::Value>,
-    /// The one object key every item carries, when they all carry the same one.
+    /// The one object key every item carries, when at least two items carry the same one.
     ///
     /// A timestamped write stages ONE ITEM PER REF -- all for the same object, differing only in
     /// their component -- so a feature append of thirty-two points wrote that key thirty-two
@@ -3168,13 +3168,18 @@ impl LocalIndexLogStore {
             item.strip_address_repeats();
             item.strip_object_id_repeat(shard_id);
         }
-        // Hoist the object key when every item names the same one, and blank the copies.
+        // Hoist the object key when at least two items name the same one, and blank the copies.
+        // A one-item record has no repeated key to remove: moving its key to the record writes the
+        // same number of bytes while allocating a String here and rebuilding an Arc on replay.
         //
         // LAST, after the strips above. `strip_block_ref_key_repeat` DERIVES the block handle from
         // the item's own fields and `object_key` is one of them, so blanking the key first would
         // derive a different handle and the strip would decline -- costing more than this saves.
         let shared_object_key = match items.split_first() {
-            Some((first, rest)) if rest.iter().all(|item| item.object_key == first.object_key) => {
+            Some((first, rest))
+                if !rest.is_empty()
+                    && rest.iter().all(|item| item.object_key == first.object_key) =>
+            {
                 Some(first.object_key.to_string())
             }
             _ => None,
@@ -6683,10 +6688,53 @@ mod tests {
             let hoisted = read[0].shared_object_key.is_some();
             assert_eq!(
                 hoisted,
-                distinct == 1,
-                "{label}: hoisted={hoisted} with {distinct} distinct key(s)"
+                items.len() > 1 && distinct == 1,
+                "{label}: hoisted={hoisted} with {} item(s) and {distinct} distinct key(s)",
+                items.len(),
             );
         }
+    }
+
+    #[test]
+    fn a_single_item_keeps_its_key_without_growing_the_record() {
+        let item = block_item(1, "ctx:event:41", false);
+        let mut blanked = item.clone();
+        blanked.object_key = empty_object_key();
+
+        let record = |item, shared_object_key| IndexDeltaRecord {
+            shard_id: 11,
+            sequence: 1,
+            items: vec![item],
+            meta: None,
+            applied_wal_sequence: Some(1),
+            upsert: true,
+            key_states: Vec::new(),
+            shared_object_key,
+        };
+        let inline = encode_index_payload(&record(item.clone(), None), INDEX_LOG_SHAPE_DELTA).unwrap();
+        let moved = encode_index_payload(
+            &record(blanked, Some(item.object_key.to_string())),
+            INDEX_LOG_SHAPE_DELTA,
+        )
+        .unwrap();
+        assert_eq!(
+            inline.len(),
+            moved.len(),
+            "moving a lone key must not be described as byte compression",
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(11, vec![item], Vec::new(), Some(1), None, false, true)
+            .unwrap();
+        let records = store.read_delta_records(11, 0).unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0].shared_object_key.is_none(),
+            "a lone item must keep its existing shared key allocation",
+        );
+        assert_eq!(records[0].items[0].object_key.as_ref(), "ctx:event:41");
     }
 
     /// What hoisting the key is worth, on a record shaped like a timestamped write.
