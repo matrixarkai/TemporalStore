@@ -3,8 +3,8 @@
 
 //! A CONTROL STATE SERIES BLOCK IS READ IN EITHER SHAPE, AND AN UNREADABLE ONE IS COUNTED.
 //!
-//! The reader half: the writer still stores JSON, so the packed blocks below are built by the
-//! test-only encoder and put into the block store through the same append the real writer uses.
+//! The writer stores packed blocks and has no JSON encode path, so every JSON block below is the
+//! installed base and is PLANTED, put into the block store through the same append the real writer uses.
 //! `append_control_state_block` is that shared tail, split out of `persist_control_state_block` so
 //! this test and the writer cannot disagree about how a block reaches the index.
 #![allow(clippy::all)]
@@ -157,5 +157,146 @@ fn the_load_path_reads_a_json_block_and_a_packed_one_and_counts_the_unreadable()
         control_state_blocks_unreadable() - before,
         3,
         "the three unreadable blocks were not each counted exactly once"
+    );
+}
+
+/// A REAL COUNTER WRITE STORES A PACKED BLOCK, A FRACTION OF THE SIZE, AND A RESTART READS IT.
+///
+/// Through the real counter path in the default (synchronous) mode, which rewrites the whole series
+/// into a block on every write. After 1,000 points at one-second spacing from a current-era
+/// millisecond timestamp, with small signed amounts, the newest block is read back out of the block
+/// store: it starts with the container byte, decodes to exactly the in-memory series, and is
+/// compared with what the JSON object for the same series would have been.
+///
+/// The size comparison is asserted loosely (under half) and PRINTED exactly, because the claim is a
+/// measurement and the exact figure belongs in the record, not in an assertion that would then pin
+/// a coincidence of the fixture.
+#[test]
+fn a_counter_write_stores_a_packed_block_a_fraction_of_the_size_and_a_restart_reads_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &blocks, &indexes);
+    engine.load_shard(SHARD);
+    let first_ms = 1_700_000_000_000u64;
+    let points = 1_000u64;
+    let mut expected_total = 0i64;
+    for i in 0..points {
+        let amount = (i % 7) as i64 - 3;
+        expected_total += amount;
+        let response = engine.execute(crate::types::ExecuteRequest {
+            shard_id: SHARD,
+            command: crate::types::Command::ControlStateIncrement {
+                key: "ctr".to_string(),
+                timestamp_ms: first_ms + i * 1_000,
+                amount,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+
+    let (in_memory, stored) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&SHARD).expect("the shard is loaded");
+        let in_memory = shard.control_state().get("ctr").expect("the series").clone();
+        let slot = shard.control_state_blocks().get("ctr").expect("the block");
+        let stored = engine.block_store.read(&slot.address()).expect("the block reads");
+        (in_memory, stored)
+    };
+    assert_eq!(in_memory.len() as u64, points);
+    assert_eq!(
+        stored[0], CONTROL_STATE_BLOCK_PACKED,
+        "the counter writer did not store the packed shape"
+    );
+    assert!(serde_json::from_slice::<serde_json::Value>(&stored).is_err());
+    assert_eq!(
+        crate::engine::control_state_block::decode_control_state_block(&stored).unwrap(),
+        in_memory,
+        "the stored block is not the in-memory series"
+    );
+    let json_len = serde_json::to_vec(&in_memory).unwrap().len();
+    println!(
+        "CONTROL STATE BLOCK at {points} points: JSON {json_len} B ({:.2} B/point), packed {} B \
+         ({:.2} B/point), packed is {:.1}% of JSON",
+        json_len as f64 / points as f64,
+        stored.len(),
+        stored.len() as f64 / points as f64,
+        100.0 * stored.len() as f64 / json_len as f64,
+    );
+    assert!(
+        stored.len() * 2 < json_len,
+        "the packed block ({} B) is not under half the JSON one ({json_len} B)",
+        stored.len()
+    );
+
+    // ---- a restart reads it. The index's own series is authoritative on load, so this proves the
+    // ---- stored block does not break the load; the block-only read is the reader test above.
+    engine.flush_shard_index(SHARD);
+    drop(engine);
+    let restarted = TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &blocks, &indexes);
+    restarted.load_shard(SHARD);
+    assert_eq!(
+        count(&restarted, "ctr"),
+        CommandResponse::Integer { value: expected_total },
+        "the series did not survive a restart"
+    );
+}
+
+/// NO JSON ENCODE PATH IS LEFT IN THE CONTROL STATE WRITER.
+///
+/// The test above reads the first byte of what the real writer stored; this sees an encoder nobody
+/// calls YET. It reads `persist_control_state_block` with comment lines removed and asserts it names
+/// no `serde_json` and calls the packed encoder. The POSITIVE CONTROL is the decoder, which still
+/// calls `serde_json::from_slice` (the permanent JSON arm): a scan that could not see that call
+/// would pass over any writer.
+#[test]
+fn no_json_encode_path_is_left_in_the_control_state_writer() {
+    fn body(source: &str, from: &str, to: &str) -> String {
+        let start = source
+            .find(from)
+            .unwrap_or_else(|| panic!("no declaration {from}"));
+        let rest = &source[start..];
+        let end = rest[from.len()..]
+            .find(to)
+            .unwrap_or_else(|| panic!("no declaration {to} after {from}"))
+            + from.len();
+        rest[..end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let engine_source = include_str!("../../engine.rs");
+    let codec_source = include_str!("../control_state_block.rs");
+
+    let writer = body(
+        engine_source,
+        "fn persist_control_state_block(",
+        "fn append_control_state_block(",
+    );
+    assert!(writer.len() > 300, "the scan found almost nothing");
+    assert!(
+        writer.contains("encode_control_state_block("),
+        "the writer does not call the packed encoder"
+    );
+    assert!(
+        !writer.contains("serde_json"),
+        "the control-state writer still reaches for serde_json: a JSON encode path survives. Delete \
+         it; the decoder keeps its JSON arm for the blocks already on disk."
+    );
+    let encoder = body(
+        codec_source,
+        "pub(crate) fn encode_control_state_block(",
+        "\n}\n",
+    );
+    assert!(!encoder.contains("serde_json"), "the packed encoder names serde_json");
+    let decoder = body(
+        codec_source,
+        "pub(super) fn decode_control_state_block(",
+        "pub(crate) fn encode_control_state_block(",
+    );
+    assert!(
+        decoder.contains("serde_json::from_slice"),
+        "the control no longer sees the permanent JSON arm, so this scan could pass over a writer it cannot see"
     );
 }
