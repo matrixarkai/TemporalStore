@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde::de::DeserializeOwned;
@@ -427,9 +427,12 @@ impl OllamaProvider {
     }
 
     fn extract(&self, messages: &[ContextMessage]) -> Result<Vec<ExtractedContext>, OllamaError> {
-        let mut message_ids = HashSet::with_capacity(messages.len());
-        for message in messages {
-            if !message_ids.insert(message.message_id) {
+        let mut messages_by_id = HashMap::with_capacity(messages.len());
+        for (message_index, message) in messages.iter().enumerate() {
+            if messages_by_id
+                .insert(message.message_id, (message_index, message))
+                .is_some()
+            {
                 return Err(OllamaError::DuplicateMessageId(message.message_id));
             }
         }
@@ -444,10 +447,13 @@ impl OllamaProvider {
                 extraction_schema(),
             )?;
             for item in output.items {
-                let source = messages[start..end]
-                    .iter()
-                    .find(|message| message.message_id == item.source_message_id)
+                let (source_index, source) = messages_by_id
+                    .get(&item.source_message_id)
+                    .copied()
                     .ok_or(OllamaError::UnknownSourceMessage(item.source_message_id))?;
+                if !(start..end).contains(&source_index) {
+                    return Err(OllamaError::UnknownSourceMessage(item.source_message_id));
+                }
                 let text = item.text.trim();
                 if text.is_empty() {
                     return Err(OllamaError::EmptyContext);
