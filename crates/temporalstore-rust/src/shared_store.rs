@@ -1692,7 +1692,9 @@ where
             self.object_store
                 .put(
                     &self.bucket_dump_manifest_key(shard_id, &manifest.manifest_id),
-                    Bytes::from(serde_json::to_vec_pretty(manifest)?),
+                    Bytes::from(crate::engine::bucket_dump_codec::encode_bucket_dump_manifest(
+                        manifest,
+                    )),
                 )
                 .await?;
             published += 1;
@@ -9543,20 +9545,18 @@ mod tests {
         assert_eq!(inherited[0].manifest_id, dumped.manifest_id);
     }
 
-    /// A RESTORE READS A MANIFEST WHOSE BODY IS BINARY, BESIDE ONE WHOSE BODY IS JSON.
+    /// THE PUBLISHED MANIFEST IS BINARY, AND A PLANTED JSON ONE IS STILL RESTORED BESIDE IT.
     ///
-    /// The JSON one is a REAL published manifest (the writer still produces that shape); the binary
-    /// one is planted into the store, because no writer produces it yet. Each carries a checksum
-    /// from its own derivation, and the successor's local listing re-verifies both, so a restore
-    /// that accepted a binary body but mis-derived its digest would land a manifest the listing then
-    /// drops -- and the count of the successor's LISTING, not the restore's return value, is the
-    /// assertion that sees that.
+    /// The binary one is published by the REAL writer from a real engine. The JSON one is the
+    /// installed base -- every manifest published before the flip -- and is PLANTED into the store
+    /// because the writer that used to produce it has been deleted. Each carries a checksum from its
+    /// own derivation, and the successor's local listing re-verifies both, so a restore that
+    /// accepted a body but mis-derived its digest would land a manifest the listing then drops --
+    /// and the count of the successor's LISTING, not the restore's return value, is the assertion
+    /// that sees that.
     #[tokio::test]
-    async fn restore_reads_a_binary_dump_manifest_beside_a_json_one() {
-        use crate::engine::bucket_dump_codec::{
-            bucket_dump_protobuf_digest, encode_bucket_dump_manifest,
-            BUCKET_DUMP_CHECKSUM_PROTOBUF, BUCKET_DUMP_CONTAINER_PROTOBUF,
-        };
+    async fn restore_reads_a_published_binary_dump_manifest_beside_a_planted_json_one() {
+        use crate::engine::bucket_dump_codec::BUCKET_DUMP_CONTAINER_PROTOBUF;
         let dir = tempfile::tempdir().unwrap();
         let (store, replicator) = test_shared_store(dir.path());
 
@@ -9569,27 +9569,38 @@ mod tests {
                 value: b"v".to_vec(),
             },
         });
-        let legacy = primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+        let written = primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
         replicator
             .publish_bucket_dump_manifests(1, &primary.list_bucket_dump_manifests(1))
             .await
             .unwrap();
+        let written_key = replicator.bucket_dump_manifest_key(1, &written.manifest_id);
+        let published = store.get(&written_key).await.unwrap();
+        assert_eq!(
+            published[0], BUCKET_DUMP_CONTAINER_PROTOBUF,
+            "the shared-store publisher did not write the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&published).is_err(),
+            "the published manifest parses as JSON"
+        );
 
-        let mut binary = legacy.clone();
-        binary.manifest_id = format!("{}-binary", legacy.manifest_id);
-        binary.index_log_sequence = legacy.index_log_sequence + 1;
-        binary.wal_sequence = legacy.wal_sequence + 5;
-        binary.checksum_version = BUCKET_DUMP_CHECKSUM_PROTOBUF;
-        binary.checksum = bucket_dump_protobuf_digest(&binary).0;
-        let planted = encode_bucket_dump_manifest(&binary);
-        assert_eq!(planted[0], BUCKET_DUMP_CONTAINER_PROTOBUF);
-        let key = replicator.bucket_dump_manifest_key(1, &binary.manifest_id);
-        store.put(&key, Bytes::from(planted)).await.unwrap();
+        // The installed base: a version-0 manifest whose checksum is over its canonical JSON.
+        let mut legacy = written.clone();
+        legacy.manifest_id = format!("{}-legacy", written.manifest_id);
+        legacy.index_log_sequence = written.index_log_sequence + 1;
+        legacy.wal_sequence = written.wal_sequence + 5;
+        let legacy = crate::engine::bucket_dump_codec::into_legacy_json_manifest_for_test(legacy);
+        assert_eq!(legacy.checksum_version, 0);
+        assert_ne!(legacy.checksum, written.checksum);
+        let planted = serde_json::to_vec_pretty(&legacy).unwrap();
+        assert_eq!(planted[0], b'{', "the planted manifest is not the JSON shape");
         let legacy_key = replicator.bucket_dump_manifest_key(1, &legacy.manifest_id);
+        store.put(&legacy_key, Bytes::from(planted)).await.unwrap();
         assert_eq!(
             store.get(&legacy_key).await.unwrap()[0],
             b'{',
-            "the published legacy manifest is not JSON, so the JSON arm is not what is read"
+            "the plant did not take, so nothing below reads a JSON manifest"
         );
 
         let successor = test_engine(dir.path(), "successor");
@@ -9607,11 +9618,16 @@ mod tests {
             2,
             "a restored manifest failed the successor's own checksum verification: {inherited:?}"
         );
-        let got = inherited
+        let got_written = inherited
             .iter()
-            .find(|m| m.manifest_id == binary.manifest_id)
+            .find(|m| m.manifest_id == written.manifest_id)
             .expect("the binary manifest was not inherited");
-        assert_eq!(got, &binary, "the restore changed the binary manifest");
+        assert_eq!(got_written, &written, "the restore changed the binary manifest");
+        let got_legacy = inherited
+            .iter()
+            .find(|m| m.manifest_id == legacy.manifest_id)
+            .expect("the JSON manifest was not inherited");
+        assert_eq!(got_legacy, &legacy, "the restore changed the JSON manifest");
     }
 
     /// The same, for the checkpoint manifest, where the skip produces an EMPTY LIST.

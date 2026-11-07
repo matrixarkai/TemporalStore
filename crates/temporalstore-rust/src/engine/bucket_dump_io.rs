@@ -179,8 +179,7 @@ pub(super) fn write_bucket_dump_install_marker(
     marker: &BucketDumpInstallMarker,
 ) -> Result<(), std::io::Error> {
     let path = bucket_dump_install_marker_path(index_dir, marker);
-    let bytes = serde_json::to_vec_pretty(marker)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    let bytes = encode_bucket_dump_install_marker(marker);
     // Install roll-forward recovery keys off these markers; write durably + atomically
     // so a crash cannot leave a torn/lost commit-phase marker (was a bare fs::write).
     atomic_write_bytes(&path, &bytes)
