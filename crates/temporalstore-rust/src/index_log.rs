@@ -531,30 +531,37 @@ pub(crate) fn encode_index_payload_into<T: serde::Serialize>(
     out.clear();
     out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
     let mut serializer = rmp_serde::Serializer::new(&mut *out);
-    if serde::Serialize::serialize(record, &mut serializer).is_ok() {
-        // `out` is the container byte plus the packed record, so the packed length -- the number
-        // the two conditions below are written in terms of -- is one less than it.
-        let packed_len = out.len() - 1;
-        if index_log_compression_enabled() && packed_len >= index_log_compression_min_bytes() {
-            if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], 3) {
-                // Only when it actually helps, and the comparison is between the PACKED forms,
-                // exactly as it was: both shapes carry one container byte, so comparing
-                // `squeezed` against `packed_len` and comparing the two whole payloads are the
-                // same test.
-                if squeezed.len() < packed_len {
-                    out.clear();
-                    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
-                    out.extend_from_slice(&squeezed);
-                }
+    if let Err(error) = serde::Serialize::serialize(record, &mut serializer) {
+        // REFUSED, NOT WRITTEN AS JSON. This used to fall through to `serde_json::to_writer`, on
+        // the stated ground that "an encode failure must not cost the record ... the reader still
+        // takes it". The reader does NOT: `decode_index_payload` reads the first byte as a
+        // container byte, a JSON record starts with `{` (0x7B), which is codec 7, and codec 7 is
+        // refused by name. So the fallback wrote a record this build cannot read back, framed
+        // and checksummed like a good one, and the loss surfaced at the next load rather than at
+        // the append that caused it. An error here is the append failing where it happened.
+        //
+        // The buffer comes back EMPTY, never half a record, so a caller that ignores the error
+        // and reuses the buffer cannot frame a torn payload.
+        out.clear();
+        return Err(IndexLogError::Encoding(format!(
+            "index-log record could not be packed: {error}"
+        )));
+    }
+    // `out` is the container byte plus the packed record, so the packed length -- the number the
+    // two conditions below are written in terms of -- is one less than it.
+    let packed_len = out.len() - 1;
+    if index_log_compression_enabled() && packed_len >= index_log_compression_min_bytes() {
+        if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], 3) {
+            // Only when it actually helps, and the comparison is between the PACKED forms,
+            // exactly as it was: both shapes carry one container byte, so comparing `squeezed`
+            // against `packed_len` and comparing the two whole payloads are the same test.
+            if squeezed.len() < packed_len {
+                out.clear();
+                out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
+                out.extend_from_slice(&squeezed);
             }
         }
-        return Ok(());
     }
-    // An encode failure must not cost the record: fall through to the bytes that always work,
-    // which the reader still takes. This is the only path that now produces JSON, and it carries
-    // NO container byte -- so the partial msgpack above has to come off first.
-    out.clear();
-    serde_json::to_writer(&mut *out, record)?;
     Ok(())
 }
 
@@ -583,27 +590,29 @@ pub(crate) fn encode_index_payload<T: serde::Serialize>(
     // Values in field order, for the record as well as for the rows inside it: nothing written
     // here spells a field name.
     let mut serializer = rmp_serde::Serializer::new(&mut packed);
-    if serde::Serialize::serialize(record, &mut serializer).is_ok() {
-        if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
-            if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
-                // Only when it actually helps: a record that does not compress would
-                // otherwise pay the frame overhead for nothing.
-                if squeezed.len() < packed.len() {
-                    let mut out = Vec::with_capacity(squeezed.len() + 1);
-                    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
-                    out.extend_from_slice(&squeezed);
-                    return Ok(out);
-                }
+    if let Err(error) = serde::Serialize::serialize(record, &mut serializer) {
+        // REFUSED, NOT WRITTEN AS JSON. See `encode_index_payload_into`: the JSON this used to
+        // return carries no container byte, and `decode_index_payload` refuses it as codec 7.
+        return Err(IndexLogError::Encoding(format!(
+            "index-log record could not be packed: {error}"
+        )));
+    }
+    if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
+        if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
+            // Only when it actually helps: a record that does not compress would otherwise pay
+            // the frame overhead for nothing.
+            if squeezed.len() < packed.len() {
+                let mut out = Vec::with_capacity(squeezed.len() + 1);
+                out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
+                out.extend_from_slice(&squeezed);
+                return Ok(out);
             }
         }
-        let mut out = Vec::with_capacity(packed.len() + 1);
-        out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
-        out.extend_from_slice(&packed);
-        return Ok(out);
     }
-    // An encode failure must not cost the record: fall through to the bytes that always work,
-    // which the reader still takes. This is the only path that now produces JSON.
-    Ok(serde_json::to_vec(record)?)
+    let mut out = Vec::with_capacity(packed.len() + 1);
+    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
+    out.extend_from_slice(&packed);
+    Ok(out)
 }
 
 /// The single place index-log payload bytes become a record, whatever wrote them.
@@ -7628,6 +7637,135 @@ mod tests {
         // An empty payload has no container byte at all, and is refused the same way.
         let result: Result<IndexDeltaRecord, _> = decode_index_payload(&[]);
         assert!(matches!(result, Err(IndexLogError::Encoding(_))));
+    }
+
+    /// A RECORD THE BINARY ENCODER CANNOT PACK IS AN ERROR, NOT A JSON RECORD NO READER TAKES.
+    ///
+    /// Both encoders used to fall through to JSON when msgpack refused a record, on the stated
+    /// ground that the reader still takes it. This pins that it does not: a bare JSON record
+    /// starts with `{`, which `decode_index_payload` reads as codec 7, and refuses by name. A
+    /// record written that way was framed and checksummed like any other and only failed at the
+    /// next load.
+    ///
+    /// No record type in this tree fails to pack (they all derive `Serialize`), so the failure is
+    /// MADE: `Refuses` serialises fine to a human-readable format and errors on a binary one, which
+    /// is exactly the shape of failure the fallback existed for. It is the only way to drive the
+    /// arm, and the control is the same value through a human-readable serializer succeeding.
+    #[test]
+    fn a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json() {
+        struct Refuses;
+        impl serde::Serialize for Refuses {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if serializer.is_human_readable() {
+                    serializer.serialize_str("fine as text")
+                } else {
+                    Err(serde::ser::Error::custom("refused by a binary serializer"))
+                }
+            }
+        }
+
+        // CONTROL: the value is serialisable, so the refusals below are the BINARY encoder's.
+        assert!(serde_json::to_vec(&Refuses).is_ok());
+
+        // ---- the buffer-reusing encoder: an error, and the buffer left EMPTY.
+        let mut out = vec![0xAA; 16];
+        let err = encode_index_payload_into(&Refuses, INDEX_LOG_SHAPE_DELTA, &mut out)
+            .expect_err("a record msgpack refuses was written anyway");
+        assert!(matches!(err, IndexLogError::Encoding(_)), "{err:?}");
+        assert!(out.is_empty(), "a half-written payload was left in the buffer: {out:?}");
+
+        // ---- the allocating encoder.
+        let err = encode_index_payload(&Refuses, INDEX_LOG_SHAPE_DELTA)
+            .expect_err("a record msgpack refuses was written anyway");
+        assert!(matches!(err, IndexLogError::Encoding(_)), "{err:?}");
+
+        // ---- WHY an error beats the fallback: JSON of a record is not readable by this build.
+        let a_record = IndexLogRecord {
+            shard_id: 1,
+            sequence: 2,
+            index: serde_json::Value::Null,
+        };
+        let bare_record = serde_json::to_vec(&a_record).unwrap();
+        assert_eq!(
+            bare_record[0], b'{',
+            "a JSON record starts with the byte the container reads as codec 7"
+        );
+        let refused: Result<IndexLogRecord, _> = decode_index_payload(&bare_record);
+        match refused {
+            Err(IndexLogError::Encoding(message)) => assert!(
+                message.contains('7'),
+                "the reader should refuse a bare JSON record as codec 7: {message}"
+            ),
+            other => panic!("a bare JSON record was read back, so the fallback was safe: {other:?}"),
+        }
+
+        // ---- CONTROL: a record that packs still encodes, in both encoders, with a container byte.
+        let ok = a_record;
+        let mut buffer = Vec::new();
+        encode_index_payload_into(&ok, INDEX_LOG_SHAPE_DELTA, &mut buffer).unwrap();
+        assert_eq!(index_container_parts(buffer[0]), (INDEX_LOG_CODEC_MSGPACK, INDEX_LOG_SHAPE_DELTA));
+        let allocated = encode_index_payload(&ok, INDEX_LOG_SHAPE_DELTA).unwrap();
+        assert_eq!(buffer, allocated);
+    }
+
+    /// NO JSON ENCODE ARM IS LEFT IN THE TWO INDEX-LOG PAYLOAD ENCODERS.
+    ///
+    /// The test above drives the failure; this sees an arm nobody reaches YET. It reads each
+    /// function's own code with comment lines removed, anchored on its declaration up to the next
+    /// function, and its POSITIVE CONTROL is the log's own record reader of legacy lines in this
+    /// file, which calls `serde_json`: a scan that could not see a `serde_json` call at all would
+    /// pass over any encoder.
+    #[test]
+    fn no_json_encode_arm_is_left_in_the_index_log_payload_encoders() {
+        let source = include_str!("index_log.rs");
+        fn body(source: &'static str, from: &str, to: &str) -> String {
+            let start = source
+                .find(from)
+                .unwrap_or_else(|| panic!("no declaration {from}"));
+            let rest = &source[start..];
+            let end = rest[from.len()..]
+                .find(to)
+                .unwrap_or_else(|| panic!("no declaration {to} after {from}"))
+                + from.len();
+            rest[..end]
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let into = body(
+            source,
+            "pub(crate) fn encode_index_payload_into<",
+            "pub(crate) fn encode_index_payload<",
+        );
+        let alloc = body(
+            source,
+            "pub(crate) fn encode_index_payload<",
+            "pub(crate) fn decode_index_payload<",
+        );
+        for (name, code) in [("encode_index_payload_into", &into), ("encode_index_payload", &alloc)] {
+            assert!(code.len() > 300, "{name}: the scan found almost nothing");
+            assert!(
+                code.contains("rmp_serde::Serializer"),
+                "{name} is not the msgpack encoder this scan thinks it is"
+            );
+            assert!(
+                !code.contains("serde_json"),
+                "{name} still reaches for serde_json: a JSON encode arm survives, and the reader \
+                 refuses what it writes"
+            );
+        }
+        // The control: this file's struct definitions name `serde_json::Value`, so the scan's
+        // notion of "contains serde_json" is demonstrably able to fire on code in this file.
+        let record_def = body(
+            source,
+            "pub struct IndexLogRecord {",
+            "pub enum IndexItemKind {",
+        );
+        assert!(
+            record_def.contains("serde_json::Value"),
+            "the control no longer sees a serde_json use, so this scan could pass over an encoder"
+        );
     }
 
     /// An item that omits its default-valued fields still decodes, with those defaults.
