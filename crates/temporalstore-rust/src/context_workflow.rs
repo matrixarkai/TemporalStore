@@ -2242,7 +2242,7 @@ pub fn retrieve_context(
         request.node_hashes.clone()
     };
     let retrieval_provider = normalize_provider(request.provider.clone());
-    let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
+    let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query) {
         Ok(vector) => vector,
         Err(status) => {
             return ContextRetrieveReport {
