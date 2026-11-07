@@ -980,12 +980,12 @@ impl TemporalEngine {
             let object_keys = command_object_keys(&command);
             // What the touched keys held before this command, so the capture below can be
             // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(String, usize, Option<u64>)> = object_keys
+            let membership_before: Vec<(usize, Option<u64>)> = object_keys
                 .iter()
                 .map(|key| {
-                    let size = key_membership_size(shard, &key);
+                    let size = key_membership_size(shard, key);
                     let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                    (key.clone(), size, deadline)
+                    (size, deadline)
                 })
                 .collect();
             let feature_trimmed_membership = command_will_trim_feature_membership(
@@ -1076,22 +1076,32 @@ impl TemporalEngine {
             {
                 let now = now_ms();
                 crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                    for_each_touched_key(command_for_post_write_ref, |key| {
-                        let recency_bucket =
-                            block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                        shard.bucket_recency.insert(recency_bucket, now);
-                    });
+                    for_each_precomputed_touched_key(
+                        command_for_post_write_ref,
+                        &object_keys,
+                        |key| {
+                            let recency_bucket = block_routing_bucket(
+                                key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            );
+                            shard.bucket_recency.insert(recency_bucket, now);
+                        },
+                    );
                 });
             }
             if outcome.mutated {
                 mutated_any = true;
-                delta_command_keys.extend(object_keys.iter().cloned());
                 // Same question as the single-command path, through the SAME function: a
                 // membership shrink OR a deadline change. Two spellings of this test is how
                 // one of them keeps a bug the other fixed, so there is only one.
                 if !batch_membership_shrank {
                     batch_membership_shrank = feature_trimmed_membership
-                        || delta_key_state_change(shard, &membership_before);
+                        || delta_key_state_change(
+                            shard,
+                            &object_keys,
+                            &membership_before,
+                        );
                 }
                 let written_components =
                     command_upsert_components(command_for_post_write_ref, shard);
@@ -1099,9 +1109,6 @@ impl TemporalEngine {
                     command_for_post_write_ref,
                     shard,
                 ));
-                // The keys this write touched, for the maintenance below. `object_keys` is
-                // consumed by the loop, so they are kept as they go past.
-                let mut object_keys_for_maintenance: Vec<String> = Vec::new();
                 if object_keys.is_empty() {
                     rebuild_bucket_block_ownership(
                         shard_id,
@@ -1110,15 +1117,14 @@ impl TemporalEngine {
                         end_routing_bucket,
                     );
                 } else {
-                    for object_key in object_keys {
-                        object_keys_for_maintenance.push(object_key.clone());
+                    for object_key in &object_keys {
                         // `mark_object_dirty` records the key together with the
                         // routing bucket it computes on the next line. Inserting it here as well
                         // was redundant when the set was flat and is wrong now: this site does
                         // not know the bucket, and a key filed without one belongs to no bucket.
                         mark_object_dirty(
                             shard,
-                            &object_key,
+                            object_key,
                             start_routing_bucket,
                             end_routing_bucket,
                         );
@@ -1150,8 +1156,8 @@ impl TemporalEngine {
                         None => false,
                     };
                     narrow
-                        || (!object_keys_for_maintenance.is_empty()
-                            && object_keys_for_maintenance.iter().all(|object_key| {
+                        || (!object_keys.is_empty()
+                            && object_keys.iter().all(|object_key| {
                                 crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
                                     shard,
                                     shard_id,
@@ -1163,6 +1169,9 @@ impl TemporalEngine {
                     (Some(collected), Some(components)) => collected.extend(components),
                     (state, _) => *state = None,
                 }
+                // Every per-command consumer above borrows these keys. The batch delta keeps
+                // them beyond this iteration, so transfer ownership only after maintenance.
+                delta_command_keys.extend(object_keys);
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
                     // A command that writes no block cannot have changed the block index, so a

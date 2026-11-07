@@ -32,27 +32,24 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
     }
 }
 
-/// Hand each key a command touched, read or write, to `visit` -- for the per-bucket LRU
-/// recency stamp, which is the only thing that wants them.
+/// Hand each key a command touched, read or write, to `visit` for the per-bucket LRU stamp.
 ///
-/// VISITED RATHER THAN COLLECTED. The two call sites are the same four-line loop: derive a
-/// routing bucket from the key and insert a `u32 -> u64`. Neither keeps a key, so the
-/// `Vec<String>` this replaces was allocated and cloned into purely to be walked once and
-/// dropped -- TWO allocations per warm serving read, measured, of the ten #1952 found.
-///
-/// A WRITE command's keys are still built and still owned: `command_object_keys` synthesises
-/// several of them (a control-state family key, a context node key) and there is nothing to
-/// borrow from. Only the borrowing half of the fork got cheaper, which is the half a serving
-/// read takes.
-pub(super) fn for_each_touched_key(command: &Command, mut visit: impl FnMut(&str)) {
-    let object_keys = command_object_keys(command);
+/// VISITED RATHER THAN COLLECTED. Execution already derives owned write keys for durability and
+/// index maintenance, while a read can borrow its key from the command. Recency retains neither,
+/// so deriving another vector solely for this walk creates a second vector and a second copy of
+/// each ordinary feature key.
+pub(super) fn for_each_precomputed_touched_key(
+    command: &Command,
+    object_keys: &[String],
+    mut visit: impl FnMut(&str),
+) {
     if object_keys.is_empty() {
         if let Some(key) = command_read_key(command) {
             visit(key);
         }
     } else {
         for key in object_keys {
-            visit(&key);
+            visit(key);
         }
     }
 }
