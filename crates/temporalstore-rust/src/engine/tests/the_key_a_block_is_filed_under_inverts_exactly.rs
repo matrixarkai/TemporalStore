@@ -485,11 +485,11 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
                 block.model_id().as_str()
             );
             assert_eq!(
-                "", parts.component,
+                "", parts.element_name,
                 "[CLAUSE every-block-inverts] the component slot of {key:?} holds {:?}; the \
                  renderer passes a literal `None`, so a non-empty slot means the key was composed \
                  by something else",
-                parts.component
+                parts.element_name
             );
             assert_eq!(
                 block.address.block_slab_id(),
@@ -591,7 +591,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
             parts.object_key
         );
         assert_eq!("string", parts.kind, "[CLAUSE awkward-keys-survive] the kind moved");
-        assert_eq!("", parts.component, "[CLAUSE awkward-keys-survive] the component slot moved");
+        assert_eq!("", parts.element_name, "[CLAUSE awkward-keys-survive] the component slot moved");
         assert_eq!(
             (7, 9, 126, 4, 4),
             (
@@ -610,7 +610,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
             "{}:{}:{}:{}:{}:{}:{}:{}",
             parts.kind,
             parts.object_key,
-            parts.component,
+            parts.element_name,
             parts.block_slab_id,
             parts.offset,
             parts.length,
@@ -630,7 +630,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
     let parts = block_ref_key_parts(&named).expect("an element-named key parses");
     assert_eq!(
         ("hash", "a:b", "f0"),
-        (parts.kind, parts.object_key, parts.component),
+        (parts.kind, parts.object_key, parts.element_name),
         "[CLAUSE awkward-keys-survive] an element-named key splits in the wrong place: {named:?}"
     );
 
@@ -812,7 +812,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
         .expect("an element-named key from a real pre-change store must parse");
     assert_eq!(
         ("hash", "ungated/hash", "f0"),
-        (named.kind, named.object_key, named.component),
+        (named.kind, named.object_key, named.element_name),
         "[CLAUSE old-bytes-rebuild-exactly] an element-named key splits in the wrong place, so a \
          pre-change store's object keys would come back short"
     );

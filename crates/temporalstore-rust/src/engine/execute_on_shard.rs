@@ -117,11 +117,11 @@ pub(super) mod hash_read_divergence {
 /// is this. This states what one part of it became: which block backs it, or the bytes for state no
 /// block backs at all.
 #[allow(clippy::too_many_arguments)]
-fn stage_component_outcome(
+fn stage_element_name_outcome(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     routing_bucket: u32,
     address: Option<crate::block_store::ElementEntry>,
     value: Option<Vec<u8>>,
@@ -134,7 +134,7 @@ fn stage_component_outcome(
         // Cloning it allocated a second copy of the same characters on every staged component
         // outcome: every hash field, set member, zset member, list element and context entity
         // write. `stage_meta_outcome` next door already moves its owned arguments.
-        component,
+        element_name,
         object_id: stable_block_object_id(shard_id, kind, object_key),
         routing_bucket,
         address,
@@ -158,7 +158,7 @@ fn stage_meta_outcome(
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),
-        component: None,
+        element_name: None,
         object_id: stable_block_object_id(shard_id, kind, object_key),
         routing_bucket: block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
         address: None,
@@ -369,13 +369,13 @@ pub(super) fn remove_container_element(
     shard_id: ShardId,
     model_id: &str,
     key: &str,
-    component: &str,
+    element_name: &str,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     async_storage: bool,
 ) -> bool {
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-    let tombstone = crate::engine::container_blocks::tombstone_block(model_id, component).and_then(
+    let tombstone = crate::engine::container_blocks::tombstone_block(model_id, element_name).and_then(
         |block| {
             // THE ORDINAL IS THE ELEMENT'S OWN, exactly as it is on the write path: the element
             // already has a position in this object and the tombstone is another block AT that
@@ -386,7 +386,7 @@ pub(super) fn remove_container_element(
                 shard,
                 model_id,
                 key,
-                component,
+                element_name,
             );
             append_value_of_object(
                 cache,
@@ -394,7 +394,7 @@ pub(super) fn remove_container_element(
                 shard_id,
                 &block,
                 Some(stable_block_object_id(shard_id, model_id, key)),
-                Some(component),
+                Some(element_name),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -410,7 +410,7 @@ pub(super) fn remove_container_element(
         shard_id,
         model_id,
         key,
-        Some(component),
+        Some(element_name),
         true,
         tombstone,
     )
@@ -1635,7 +1635,7 @@ pub(crate) fn execute_on_shard(
             // SERVING THE UNION IS WHAT MAKES THAT SAFE. A field only one source names is still
             // answered, so a divergence is OBSERVED rather than SUFFERED and no read is lost
             // while the measurement is being taken.
-            let indexed = bucket_index_component_block_addresses(shard, "hash", &key);
+            let indexed = bucket_index_element_name_block_addresses(shard, "hash", &key);
             // Copied out before the block reads: those borrow the cache and the block store while
             // this borrows the shard, and the addresses are what both halves of the union need.
             let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
@@ -1663,7 +1663,7 @@ pub(crate) fn execute_on_shard(
             )> = Vec::with_capacity(indexed.len() + contained.len());
             let mut named_by_index: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(indexed.len());
-            for (component, address) in indexed {
+            for (element_name, address) in indexed {
                 // A `None` COMPONENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
                 //
                 // THIS USED TO DEFAULT IT TO `""` AND SERVE IT. The paragraph here said a nameless
@@ -1686,11 +1686,11 @@ pub(crate) fn execute_on_shard(
                 // carry, arriving on the READ path. The field a nameless block holds is named inside
                 // the block's own frame and in `shard.hashes`, and the union below serves it from
                 // there -- so nothing is lost by skipping, only a name that was never written.
-                let Some(name) = component.as_deref().map(str::to_string) else {
+                let Some(name) = element_name.as_deref().map(str::to_string) else {
                     continue;
                 };
                 named_by_index.insert(name.clone());
-                resolved.push((name, component, address));
+                resolved.push((name, element_name, address));
             }
 
             // THE MEASUREMENT. See `hash_read_divergence` for what a zero from it does and does
@@ -1710,21 +1710,21 @@ pub(crate) fn execute_on_shard(
             // part that makes observing a divergence safe rather than merely informative.
             for (name, address) in contained {
                 if !named_by_index.contains(&name) {
-                    let component: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
-                    resolved.push((name, Some(component), address));
+                    let element_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
+                    resolved.push((name, Some(element_name), address));
                 }
             }
 
             let entries = resolved
                 .into_iter()
-                .filter_map(|(name, component, address)| {
+                .filter_map(|(name, element_name, address)| {
                     read_block_bytes(
                         cache,
                         block_store,
                         shard_id,
                         &address,
                         // The element the whole-object door handed back beside this address.
-                        BlockIdentity::of(shard_id, "hash", &key, component.as_deref()),
+                        BlockIdentity::of(shard_id, "hash", &key, element_name.as_deref()),
                         Some(block_routing_bucket(
                             &key,
                             start_routing_bucket,
@@ -1807,7 +1807,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetAdd { key, member } => {
             remove_if_expired(shard, &key);
-            let member_component = set_component(&member);
+            let member_element_name = set_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1831,14 +1831,14 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "set",
                 &key,
-                &member_component,
+                &member_element_name,
             );
             // The block STATES which member it is -- see `container_blocks`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
             let block = crate::engine::container_blocks::single_element_block(
                 "set",
-                &member_component,
+                &member_element_name,
                 &member,
             );
             if let Ok(address) = append_value_of_object(
@@ -1849,7 +1849,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(member_component.as_str()),
+                Some(member_element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -1858,7 +1858,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(member_component.clone()),
+                    Some(member_element_name.clone()),
                     member.clone(),
                     address.clone(),
                     true,
@@ -1885,7 +1885,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             if let Some(old_biased) = existed {
-                let old_component = zset_component(&member);
+                let old_element_name = zset_element_name(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -1893,13 +1893,13 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "zset",
                     &key,
-                    &old_component,
+                    &old_element_name,
                     start_routing_bucket,
                     end_routing_bucket,
                     async_storage,
                 );
             }
-            let component = zset_component(&member);
+            let element_name = zset_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1911,13 +1911,13 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "zset",
                 &key,
-                &component,
+                &element_name,
             );
             // The block STATES which element it is -- see `container_blocks`. A zset's element key is
             // its biased score followed by its member, and the value IS that member, so the frame
             // stores the member once and says where inside the key it starts.
             let block =
-                crate::engine::container_blocks::single_element_block("zset", &component, &member);
+                crate::engine::container_blocks::single_element_block("zset", &element_name, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -1926,7 +1926,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(component.as_str()),
+                Some(element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -1944,7 +1944,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     member.clone(),
                     (biased, address.clone()),
                     true,
@@ -1990,14 +1990,14 @@ pub(crate) fn execute_on_shard(
             match biased {
                 None => CommandResponse::Integer { value: 0 },
                 Some(biased) => {
-                    let component = zset_component(&member);
+                    let element_name = zset_element_name(&member);
                     mutated |= super::recorded_map::remove_element::<super::recorded_map::ZSetKind>(
                         cache,
                         block_store,
                         shard,
                         shard_id,
                         &key,
-                        &component,
+                        &element_name,
                         member.clone(),
                         start_routing_bucket,
                         end_routing_bucket,
@@ -2253,7 +2253,7 @@ pub(crate) fn execute_on_shard(
             let score = old.map_or(0.0, zset_score_from_bits) + increment;
             let biased = zset_score_bits(score);
             if let Some(old_biased) = old {
-                let old_component = zset_component(&member);
+                let old_element_name = zset_element_name(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -2261,13 +2261,13 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "zset",
                     &key,
-                    &old_component,
+                    &old_element_name,
                     start_routing_bucket,
                     end_routing_bucket,
                     async_storage,
                 );
             }
-            let component = zset_component(&member);
+            let element_name = zset_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -2279,11 +2279,11 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "zset",
                 &key,
-                &component,
+                &element_name,
             );
             // The block STATES which element it is -- see `container_blocks`.
             let block =
-                crate::engine::container_blocks::single_element_block("zset", &component, &member);
+                crate::engine::container_blocks::single_element_block("zset", &element_name, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -2292,7 +2292,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(component.as_str()),
+                Some(element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -2305,7 +2305,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     member.clone(),
                     (biased, address.clone()),
                     true,
@@ -2334,7 +2334,7 @@ pub(crate) fn execute_on_shard(
             ordered.truncate(count as usize);
             let mut members = Vec::new();
             for (member, biased) in ordered {
-                let component = zset_component(&member);
+                let element_name = zset_element_name(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -2342,7 +2342,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "zset",
                     &key,
-                    &component,
+                    &element_name,
                     start_routing_bucket,
                     end_routing_bucket,
                     async_storage,
@@ -2415,7 +2415,7 @@ pub(crate) fn execute_on_shard(
             };
             // Two's-complement bias makes the hex component sort lexically in list order,
             // which is what lets recovery and range reads walk the bucket index directly.
-            let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+            let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
             let object_id = stable_block_object_id(shard_id, "list", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -2427,13 +2427,13 @@ pub(crate) fn execute_on_shard(
                 shard,
                 "list",
                 &key,
-                &component,
+                &element_name,
             );
             // The block STATES which element it is -- see `container_blocks`. A list's element key is
             // its biased sequence word, which is eight bytes and is NOT the value beside it, so
             // this is the one container kind whose frame carries both in full.
             let block =
-                crate::engine::container_blocks::single_element_block("list", &component, &member);
+                crate::engine::container_blocks::single_element_block("list", &element_name, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -2442,7 +2442,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
-                Some(component.as_str()),
+                Some(element_name.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -2452,7 +2452,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "list",
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     address.clone(),
                     true,
                 );
@@ -2460,7 +2460,7 @@ pub(crate) fn execute_on_shard(
                     shard,
                     shard_id,
                     &key,
-                    Some(component.clone()),
+                    Some(element_name.clone()),
                     seq,
                     address.clone(),
                     true,
@@ -2493,7 +2493,7 @@ pub(crate) fn execute_on_shard(
             match popped {
                 None => CommandResponse::Bytes { value: None },
                 Some((seq, address)) => {
-                    let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    let element_name = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
                     mutated = true;
                     super::recorded_map::remove_element::<super::recorded_map::ListKind>(
                         cache,
@@ -2501,7 +2501,7 @@ pub(crate) fn execute_on_shard(
                         shard,
                         shard_id,
                         &key,
-                        &component,
+                        &element_name,
                         seq,
                         start_routing_bucket,
                         end_routing_bucket,
@@ -2514,7 +2514,7 @@ pub(crate) fn execute_on_shard(
                             shard_id,
                             &address,
                             // The element rendered two lines up, which is the one the index removal names.
-                            BlockIdentity::of(shard_id, "list", &key, Some(component.as_str())),
+                            BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
                             Some(block_routing_bucket(
                                 &key,
                                 start_routing_bucket,
@@ -2570,7 +2570,7 @@ pub(crate) fn execute_on_shard(
                         .filter_map(|(seq, address)| {
                             // The same rendering ListPop uses, which is what the index rows
                             // for this list were filed under.
-                            let component =
+                            let element_name =
                                 format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
                             read_block_bytes(
                                 cache,
@@ -2579,7 +2579,7 @@ pub(crate) fn execute_on_shard(
                                 address,
                                 // Re-derived from the sequence the same way ListPop renders it. `.values()` used to
                                 // drop that sequence, which is why the iteration above is now `.iter()`.
-                                BlockIdentity::of(shard_id, "list", &key, Some(component.as_str())),
+                                BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -2723,7 +2723,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let member_component = set_component(&member);
+            let member_element_name = set_element_name(&member);
             // REMOVING THE LAST MEMBER REMOVES THE KEY, as it does for the other three container
             // kinds. `record_exists_exact` ORs `shard.sets.contains_key(key)` in beside its
             // bucket-index answer, so an empty member map left under a live key is a key that
@@ -2742,7 +2742,7 @@ pub(crate) fn execute_on_shard(
                 shard,
                 shard_id,
                 &key,
-                &member_component,
+                &member_element_name,
                 member.clone(),
                 start_routing_bucket,
                 end_routing_bucket,
@@ -3441,7 +3441,7 @@ pub(crate) fn execute_on_shard(
             };
             // The RESULT, not the increment. An increment replayed twice counts twice; a count
             // installed twice is the same count, which is what makes a record idempotent.
-            stage_component_outcome(
+            stage_element_name_outcome(
                 shard_id,
                 "control_counter",
                 &key,
@@ -3541,7 +3541,7 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            stage_component_outcome(
+            stage_element_name_outcome(
                 shard_id,
                 "control_change",
                 &key,
@@ -3890,7 +3890,7 @@ pub(crate) fn execute_on_shard(
             if should_store {
                 // The value that WON the comparison, so a replay installs the winner instead of
                 // re-running a comparison against whatever it happens to hold.
-                stage_component_outcome(
+                stage_element_name_outcome(
                     shard_id,
                     "control_selection",
                     &key,
@@ -5068,7 +5068,7 @@ pub(crate) fn execute_on_shard(
                 // insert() on the entity hash OVERWRITES: an entity has one current value, and
                 // its history is the separate context_entity_update_audit series. Keying this
                 // map by time instead would silently turn every upsert into an append.
-                stage_component_outcome(
+                stage_element_name_outcome(
                     shard_id,
                     "context_entity",
                     &collection_key,
@@ -5744,8 +5744,8 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 /// not a fixed overhead on it. [`super::container_blocks::member_component`] charges one byte plus
 /// the member, and the tag it puts in front is what keeps the two spellings tellable apart on a
 /// string that carries no spelling byte of its own.
-pub(super) fn zset_component(member: &[u8]) -> String {
-    super::container_blocks::member_component(member)
+pub(super) fn zset_element_name(member: &[u8]) -> String {
+    super::container_blocks::member_element_name(member)
 }
 
 /// The persisted component for a SET member: the member alone, spelled ONCE.
@@ -5756,8 +5756,8 @@ pub(super) fn zset_component(member: &[u8]) -> String {
 /// somewhere to land, and because what this replaces was `hex::encode` spelled INLINE at five
 /// separate set write sites. A spelling decided at each site is a spelling that can be flipped at
 /// four of them and missed at the fifth.
-pub(super) fn set_component(member: &[u8]) -> String {
-    super::container_blocks::member_component(member)
+pub(super) fn set_element_name(member: &[u8]) -> String {
+    super::container_blocks::member_element_name(member)
 }
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.

@@ -569,7 +569,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
 ///
 /// rust-internal: drives HashSet and HashLen, no external surface
 #[test]
-fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
+fn hash_len_and_its_listing_are_unmoved_by_an_element_name_free_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

@@ -226,7 +226,7 @@ fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize
 }
 
 /// The components the tombstone entries of one object name.
-fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTreeSet<String> {
+fn tombstoned_element_names(engine: &TemporalEngine, kind: &str, key: &str) -> BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
@@ -269,7 +269,7 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
         );
     }
     let victim = members[1].clone();
-    let victim_component = hex::encode(&victim);
+    let victim_element_name = hex::encode(&victim);
     write(
         &engine,
         Command::SetRemove {
@@ -311,7 +311,7 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
 
     // READER 1: the block index reader every serving path resolves through.
     let named: BTreeSet<Vec<u8>> =
-        crate::engine::bucket_store::bucket_index_component_block_addresses(
+        crate::engine::bucket_store::bucket_index_element_name_block_addresses(
             &engine
                 .shards
                 .read()
@@ -322,9 +322,9 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
             key,
         )
         .iter()
-        .filter_map(|(component, _)| component.as_deref().and_then(|c| hex::decode(c).ok()))
+        .filter_map(|(element_name, _)| element_name.as_deref().and_then(|c| hex::decode(c).ok()))
         .collect();
-    let returned = crate::engine::bucket_store::bucket_index_component_block_addresses(
+    let returned = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
         &engine
             .shards
             .read()
@@ -1188,17 +1188,17 @@ fn run_cycles(
 ///
 /// rust-internal: drives ZSetAdd twice at different scores
 #[test]
-fn a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score() {
+fn a_rescore_sweeps_its_own_tombstone_because_the_element_name_no_longer_spells_the_score() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-score");
 
     let key = "cte-score-zset";
     let member = b"the-member".to_vec();
-    let old_component = crate::engine::execute_on_shard::zset_component(&member);
-    let new_component = crate::engine::execute_on_shard::zset_component(&member);
+    let old_element_name = crate::engine::execute_on_shard::zset_element_name(&member);
+    let new_element_name = crate::engine::execute_on_shard::zset_element_name(&member);
     assert_eq!(
-        old_component, new_component,
+        old_element_name, new_element_name,
         "DENOMINATOR: the two scores no longer spell different components -- if they did, the \
          sweep below would not fire and this test would be driving the old behaviour by accident"
     );
@@ -1228,10 +1228,10 @@ fn a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the
     );
 
     let (live, tombstoned) = entry_counts(&engine, "zset", key);
-    let tombstoned_names = tombstoned_components(&engine, "zset", key);
+    let tombstoned_names = tombstoned_element_names(&engine, "zset", key);
     println!("=== a zset score change ===");
     println!("  {live} live, {tombstoned} tombstone entries");
-    println!("  the element key it left and took (now the same name): {old_component}");
+    println!("  the element key it left and took (now the same name): {old_element_name}");
     println!("  tombstoned components:     {tombstoned_names:?}");
 
     assert_eq!(
@@ -1245,8 +1245,8 @@ fn a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the
          files under must be the same string now, which is the whole premise of this test."
     );
     assert!(
-        !tombstoned_names.contains(&old_component),
-        "a tombstone named {old_component} survived the rescore that should have swept it: \
+        !tombstoned_names.contains(&old_element_name),
+        "a tombstone named {old_element_name} survived the rescore that should have swept it: \
          {tombstoned_names:?}"
     );
 

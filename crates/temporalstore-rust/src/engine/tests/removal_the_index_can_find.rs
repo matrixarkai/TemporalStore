@@ -129,7 +129,7 @@ fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usi
 /// reader is consulted. Without it this would be an agreement test, and a presence-only guard
 /// cannot see a resurrection -- a listing with a working source-proof and a working negative
 /// control still served a removed member earlier in this campaign.
-fn components_the_named_blocks_state(engine: &TemporalEngine) -> BTreeSet<String> {
+fn element_names_the_named_blocks_state(engine: &TemporalEngine) -> BTreeSet<String> {
     let (addresses, _, _) = addresses_the_index_names(engine);
     let mut stated = BTreeSet::new();
     for address in &addresses {
@@ -144,10 +144,10 @@ fn components_the_named_blocks_state(engine: &TemporalEngine) -> BTreeSet<String
                 if item.deleted {
                     continue;
                 }
-                if let Some(component) =
-                    crate::engine::container_blocks::component_from_element_key(spelling, &item.key)
+                if let Some(element_name) =
+                    crate::engine::container_blocks::element_name_from_element_key(spelling, &item.key)
                 {
-                    stated.insert(component);
+                    stated.insert(element_name);
                 }
             }
         }
@@ -181,7 +181,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
 
     let (_, live_before, tombstoned_before) = addresses_the_index_names(&engine);
     let victim = member_bytes(7);
-    let victim_component = hex::encode(&victim);
+    let victim_element_name = hex::encode(&victim);
 
     // 1. REMOVE THROUGH THE REAL SURFACE, not by reaching into the index.
     write(
@@ -195,7 +195,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     let (addresses, live_after, tombstoned_after) = addresses_the_index_names(&engine);
 
     // 2. THE BLOCKS THE INDEX NAMES STILL STATE THE MEMBER -- the disagreement, observed.
-    let stated = components_the_named_blocks_state(&engine);
+    let stated = element_names_the_named_blocks_state(&engine);
 
     // 3. WHAT A FOLD OF THOSE BLOCKS CONCLUDES. `derive_membership` owns the ordering and the
     //    precedence; it is handed exactly the blocks the index names, which is the whole question.
@@ -213,7 +213,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     println!(
         "  blocks those addresses state {} live component(s); victim still stated: {}",
         stated.len(),
-        stated.contains(&victim_component)
+        stated.contains(&victim_element_name)
     );
     println!(
         "  derived from them: {} live, {} removed, blocks_read={}, complete={}",
@@ -255,7 +255,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
 
     // ---- THE PROPERTY UNDER TEST ----
     assert!(
-        !derived.live.contains_key(&victim_component),
+        !derived.live.contains_key(&victim_element_name),
         "A MEMBERSHIP FOLDED FROM THE BLOCKS THE INDEX NAMES STILL HOLDS THE REMOVED MEMBER.\n\
          The removal appended a tombstone block that names the element, but \
          `mark_bucket_index_block_deleted_recording` selects the entry to tombstone BY COMPONENT \
@@ -266,7 +266,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
         addresses.len()
     );
     assert!(
-        derived.removed.contains(&victim_component),
+        derived.removed.contains(&victim_element_name),
         "the fold does not name the victim as removed either, so the blocks the index reaches say \
          nothing about it at all -- which is the silence a reader cannot tell from 'no removal'"
     );

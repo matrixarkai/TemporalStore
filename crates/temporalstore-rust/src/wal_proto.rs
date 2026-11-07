@@ -407,14 +407,14 @@ fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>)
 /// Returns the stored key and, for a context event, the entry id packed beside it. Anything whose
 /// component is genuinely text -- a hash field, a hex-encoded set member, a packed zset score --
 /// returns None and keeps its string.
-fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option<u64>)> {
-    let component = component?;
+fn numeric_element_name(kind: &str, element_name: Option<&str>) -> Option<(u64, Option<u64>)> {
+    let element_name = element_name?;
     match kind {
         "context_event" => {
-            if component.len() != 32 {
+            if element_name.len() != 32 {
                 return None;
             }
-            let (stored, entry) = component.split_at(16);
+            let (stored, entry) = element_name.split_at(16);
             Some((
                 u64::from_str_radix(stored, 16).ok()?,
                 Some(u64::from_str_radix(entry, 16).ok()?),
@@ -422,7 +422,7 @@ fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option
         }
         "feature" | "context_index" | "context_audit" | "context_child" | "context_summary"
         | "context_compression" | "control_counter" | "control_change" => {
-            Some((component.parse::<u64>().ok()?, None))
+            Some((element_name.parse::<u64>().ok()?, None))
         }
         _ => None,
     }
@@ -436,7 +436,7 @@ fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option
 /// component does not round trip character for character, since `007` is written as the number
 /// seven and read back as `7`. Deriving against the pre-trip form would drop an id that then
 /// comes back different.
-fn numeric_component_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> Option<String> {
+fn numeric_element_name_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> Option<String> {
     match (timestamp_ms, entry_id) {
         (Some(stored), Some(entry)) => Some(format!("{stored:016x}{entry:016x}")),
         (Some(stored), None) => Some(stored.to_string()),
@@ -544,14 +544,14 @@ pub(crate) fn item_to_proto(
         block_log: false,
         // A component that IS a number travels as one. What stays in `component` is what the
         // field is actually for: a hash field, a set member, a packed score.
-        component: match numeric_component(&item.kind, item.component.as_deref()) {
+        element_name: match numeric_element_name(&item.kind, item.element_name.as_deref()) {
             Some(_) => None,
-            None => item.component.clone(),
+            None => item.element_name.clone(),
         },
-        timestamp_ms: numeric_component(&item.kind, item.component.as_deref()).map(|(key, _)| key),
-        entry_id: numeric_component(&item.kind, item.component.as_deref()).and_then(|(_, id)| id),
+        timestamp_ms: numeric_element_name(&item.kind, item.element_name.as_deref()).map(|(key, _)| key),
+        entry_id: numeric_element_name(&item.kind, item.element_name.as_deref()).and_then(|(_, id)| id),
         // A removal with no component is the whole object, which is now said rather than implied.
-        object_deleted: item.deleted && item.component.is_none(),
+        object_deleted: item.deleted && item.element_name.is_none(),
         block,
         value: item.value.clone(),
         // The engine names more kinds than the enum does, and the name is what the apply path
@@ -583,7 +583,7 @@ fn wal_item_body_len(item: &WalOutcomeItem, derived: &DerivedItem<'_>) -> usize 
         + optional_varint_len(7, item.ttl)
         + plain_bool_len(8, item.deleted)
         + plain_bool_len(9, item.meta)
-        + optional_bytes_len(11, derived.component.map(str::len));
+        + optional_bytes_len(11, derived.element_name.map(str::len));
     if let Some(block) = derived.block.as_ref() {
         len += crate::raft::wal_proto::len_delimited_len(12, block.encoded_len());
     }
@@ -609,7 +609,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
     put_optional_varint(7, item.ttl, out);
     put_plain_bool(8, item.deleted, out);
     put_plain_bool(9, item.meta, out);
-    put_optional_bytes(11, derived.component.map(str::as_bytes), out);
+    put_optional_bytes(11, derived.element_name.map(str::as_bytes), out);
     if let Some(block) = derived.block.as_ref() {
         prost::encoding::encode_key(12, prost::encoding::WireType::LengthDelimited, out);
         prost::encoding::encode_varint(block.encoded_len() as u64, out);
@@ -628,7 +628,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
 struct DerivedItem<'a> {
     object_key: Option<&'a str>,
     object_id: Option<u64>,
-    component: Option<&'a str>,
+    element_name: Option<&'a str>,
     kind_name: Option<&'a str>,
     kind_code: Option<u32>,
     timestamp_ms: Option<u64>,
@@ -644,14 +644,14 @@ fn derive_item<'a>(
     command_key: Option<&str>,
 ) -> DerivedItem<'a> {
     // `item_to_proto` calls this three times for three fields; it is one answer.
-    let numeric = numeric_component(&item.kind, item.component.as_deref());
+    let numeric = numeric_element_name(&item.kind, item.element_name.as_deref());
     let code = kind_code(&item.kind);
     DerivedItem {
         object_key: item_object_key_to_write(item, command_key),
         object_id: item_object_id_to_write(item, shard_id),
-        component: match numeric {
+        element_name: match numeric {
             Some(_) => None,
-            None => item.component.as_deref(),
+            None => item.element_name.as_deref(),
         },
         kind_name: match code {
             Some(_) => None,
@@ -660,7 +660,7 @@ fn derive_item<'a>(
         kind_code: code,
         timestamp_ms: numeric.map(|(key, _)| key),
         entry_id: numeric.and_then(|(_, id)| id),
-        object_deleted: item.deleted && item.component.is_none(),
+        object_deleted: item.deleted && item.element_name.is_none(),
         block: item.address.as_ref().map(|address| {
             let mut encoded = address_to_proto(address, implied_length);
             if encoded.object_id == Some(item.object_id) {
@@ -754,7 +754,7 @@ pub(crate) fn item_from_proto(
         .or_else(|| command_key.map(str::to_string))
         .unwrap_or_default();
     // Prefer the numeric fields; fall back to the string a record written before this carries.
-    let component = numeric_component_text(item.timestamp_ms, item.entry_id).or(item.component);
+    let element_name = numeric_element_name_text(item.timestamp_ms, item.entry_id).or(item.element_name);
     // Absent means the item's own fields say it, which is the only thing it can mean: the writer
     // omits it exactly when the derivation agrees. This goes FIRST because the address is
     // restored from it below.
@@ -768,7 +768,7 @@ pub(crate) fn item_from_proto(
     WalOutcomeItem {
         kind,
         object_key,
-        component,
+        element_name,
         object_id,
         routing_bucket: item.routing_bucket.unwrap_or_default(),
         // The address carries no object id to restore: the item's own `object_id` above is the
@@ -838,7 +838,7 @@ fn metadata_to_proto(
             deleted: false,
             meta_log: false,
             block_log: false,
-            component: None,
+            element_name: None,
             block: None,
             value: Some(serde_json::to_vec(&metadata.items).map_err(|err| err.to_string())?),
             kind_name: Some(String::from("__verbatim_items")),
@@ -1205,7 +1205,7 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
                 // its whole object, and inventing one would make a string block claim to be an
                 // element; an absent one on a record written before this field existed means the
                 // same thing that record has always meant.
-                component: block.component.map(std::sync::Arc::from),
+                element_name: block.element_name.map(std::sync::Arc::from),
                 bytes: block.block,
             })
             .collect(),
@@ -1220,11 +1220,11 @@ mod command_key_tests {
     use crate::types::Command;
     use crate::wal::{WalOutcomeItem, WriteAheadLogRecord};
 
-    fn outcome(key: &str, component: Option<&str>) -> WalOutcomeItem {
+    fn outcome(key: &str, element_name: Option<&str>) -> WalOutcomeItem {
         WalOutcomeItem {
             kind: "string".to_string(),
             object_key: key.to_string(),
-            component: component.map(str::to_string),
+            element_name: element_name.map(str::to_string),
             object_id: crate::engine::hashing::stable_block_object_id(
                 7,
                 "string",
@@ -1424,7 +1424,7 @@ mod tests {
                     ),
                     block: block.bytes.clone(),
                     routing_bucket: None,
-                    component: block.component.as_deref().map(str::to_string),
+                    element_name: block.element_name.as_deref().map(str::to_string),
                 })
                 .collect(),
         };
@@ -1445,7 +1445,7 @@ mod tests {
         record.outcomes = vec![crate::wal::WalOutcomeItem {
             kind: "page".to_string(),
             object_key: "tenant/1/object/9".to_string(),
-            component: Some("body".to_string()),
+            element_name: Some("body".to_string()),
             object_id: 9,
             routing_bucket: 8539,
             address: None,
@@ -1593,7 +1593,7 @@ mod tests {
             record.outcomes = vec![crate::wal::WalOutcomeItem {
                 kind: "page".to_string(),
                 object_key: "tenant/1/object/9".to_string(),
-                component: Some("body".to_string()),
+                element_name: Some("body".to_string()),
                 object_id: 9,
                 routing_bucket: 8539,
                 address: None,
@@ -1670,7 +1670,7 @@ mod tests {
                 for object_id in [0u64, 9] {
                     // The last is the shape a list outcome actually carries: sixteen hex
                     // digits of the biased sequence.
-                    for component in [
+                    for element_name in [
                         None, Some(""), Some("body"), Some("1788748713578"),
                         Some("8000000000000005"),
                     ] {
@@ -1684,7 +1684,7 @@ mod tests {
                                             let item = crate::wal::WalOutcomeItem {
                                                 kind: kind.to_string(),
                                                 object_key: object_key.to_string(),
-                                                component: component.map(str::to_string),
+                                                element_name: element_name.map(str::to_string),
                                                 object_id,
                                                 routing_bucket,
                                                 address: address.clone(),
@@ -1924,7 +1924,7 @@ mod tests {
         }));
         with_blocks.staged_blocks = vec![StagedBlock {
             object_id: 900,
-            component: None,
+            element_name: None,
             bytes: vec![7; 4096],
         }];
         let mut with_outcomes = record_with(Some(Command::StringSet {
@@ -1934,7 +1934,7 @@ mod tests {
         with_outcomes.outcomes = vec![crate::wal::WalOutcomeItem {
             kind: "page".to_string(),
             object_key: "tenant/1/object/9".to_string(),
-            component: Some("body".to_string()),
+            element_name: Some("body".to_string()),
             object_id: 9,
             routing_bucket: 8539,
             address: None,
@@ -1960,7 +1960,7 @@ mod tests {
         everything.outcomes = vec![crate::wal::WalOutcomeItem {
             kind: "page".to_string(),
             object_key: "tenant/1/object/10".to_string(),
-            component: None,
+            element_name: None,
             object_id: 10,
             routing_bucket: 1,
             address: None,
@@ -1972,12 +1972,12 @@ mod tests {
         everything.staged_blocks = vec![
             StagedBlock {
                 object_id: 10,
-                component: None,
+                element_name: None,
                 bytes: vec![1; 4096],
             },
             StagedBlock {
                 object_id: 11,
-                component: None,
+                element_name: None,
                 bytes: Vec::new(),
             },
         ];
@@ -2085,7 +2085,7 @@ mod tests {
         crate::wal::WalOutcomeItem {
             kind: "page".to_string(),
             object_key: "tenant/1/object/9".to_string(),
-            component: None,
+            element_name: None,
             object_id,
             routing_bucket: 8539,
             address: None,
@@ -2121,7 +2121,7 @@ mod tests {
         }];
         record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
-            component: None,
+            element_name: None,
             bytes,
         }];
 
@@ -2215,7 +2215,7 @@ mod tests {
         record.outcomes = vec![outcome_with_object_id(derivable)];
         record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: derivable,
-            component: None,
+            element_name: None,
             bytes: vec![3; 64],
         }];
 
@@ -2262,7 +2262,7 @@ mod tests {
         record.outcomes = vec![outcome_with_object_id(0x1234_5678_9ABC_DEF0)];
         record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
-            component: None,
+            element_name: None,
             bytes: vec![3; 64],
         }];
 
@@ -2297,12 +2297,12 @@ mod tests {
         record.staged_blocks = vec![
             crate::wal::StagedBlock {
                 object_id: 11,
-                component: None,
+                element_name: None,
                 bytes: vec![1; 8],
             },
             crate::wal::StagedBlock {
                 object_id: 22,
-                component: None,
+                element_name: None,
                 bytes: vec![2; 8],
             },
         ];

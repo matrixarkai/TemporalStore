@@ -62,7 +62,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::container_blocks::{
-    component_from_element_key, decode_container_block, ContainerBlockDecode, ContainerBlockShape,
+    element_name_from_element_key, decode_container_block, ContainerBlockDecode, ContainerBlockShape,
 };
 use crate::block_store::ElementEntry;
 
@@ -177,7 +177,7 @@ where
                     derived.live_only_blocks += 1;
                 }
                 for item in items {
-                    let Some(component) = component_from_element_key(spelling, &item.key) else {
+                    let Some(element_name) = element_name_from_element_key(spelling, &item.key) else {
                         // A key its own page's spelling cannot render is a corrupt page, not an
                         // absent element -- the same reading `component_from_element_key`'s own
                         // doc comment gives it.
@@ -185,7 +185,7 @@ where
                         continue;
                     };
                     latest.insert(
-                        component,
+                        element_name,
                         if item.deleted {
                             None
                         } else {
@@ -203,13 +203,13 @@ where
         }
     }
 
-    for (component, value) in latest {
+    for (element_name, value) in latest {
         match value {
             Some(value) => {
-                derived.live.insert(component, value);
+                derived.live.insert(element_name, value);
             }
             None => {
-                derived.removed.insert(component);
+                derived.removed.insert(element_name);
             }
         }
     }

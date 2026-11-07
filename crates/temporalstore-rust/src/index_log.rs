@@ -2040,7 +2040,7 @@ pub struct IndexDeltaRecord {
 pub fn block_ref_key_from_parts(
     kind: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     block_slab_id: u64,
     offset: u64,
     length: u64,
@@ -2051,14 +2051,14 @@ pub fn block_ref_key_from_parts(
     // allocates again to hand back a String. This runs once per block on every dump of the index,
     // where it was the largest single source of allocations.
     use std::fmt::Write as _;
-    let component = component.unwrap_or("");
+    let element_name = element_name.unwrap_or("");
     // Five u64 at their widest, plus the seven separators.
-    let mut key = String::with_capacity(kind.len() + object_key.len() + component.len() + 7 + 100);
+    let mut key = String::with_capacity(kind.len() + object_key.len() + element_name.len() + 7 + 100);
     key.push_str(kind);
     key.push(':');
     key.push_str(object_key);
     key.push(':');
-    key.push_str(component);
+    key.push_str(element_name);
     // `write!` into a String appends in place; it does not allocate.
     let _ = write!(
         key,
@@ -2077,7 +2077,7 @@ pub fn block_ref_key_from_parts(
 pub struct BlockRefKeyParts<'a> {
     pub kind: &'a str,
     pub object_key: &'a str,
-    pub component: &'a str,
+    pub element_name: &'a str,
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -2199,7 +2199,7 @@ pub fn block_ref_key_parts(key: &str) -> Result<BlockRefKeyParts<'_>, BlockRefKe
     Ok(BlockRefKeyParts {
         kind,
         object_key,
-        component: &key[at[5] + 1..at[4]],
+        element_name: &key[at[5] + 1..at[4]],
         block_slab_id: numeric(
             &key[at[4] + 1..at[3]],
             "its slab id slot is not a decimal in the spelling the renderer writes",
@@ -8365,14 +8365,14 @@ mod tests {
             #[serde(rename = "mi")]
             model_id: String,
             #[serde(rename = "c", skip_serializing_if = "Option::is_none")]
-            component: Option<std::sync::Arc<str>>,
+            element_name: Option<std::sync::Arc<str>>,
         }
         let plant = |named: Option<&str>| {
             encode_as_map(
                 &PlantedRow {
                     object_key: "tenant/1/object/9".into(),
                     model_id: "feature".to_string(),
-                    component: named.map(std::sync::Arc::from),
+                    element_name: named.map(std::sync::Arc::from),
                 },
                 INDEX_LOG_SHAPE_DELTA,
             )

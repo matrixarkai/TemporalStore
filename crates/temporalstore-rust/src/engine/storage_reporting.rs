@@ -183,7 +183,7 @@ pub(super) fn bucket_dump_entries_by_key(
             selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket)
         })
         .map(|entry| {
-            let component = entry.component.unwrap_or_default();
+            let element_name = entry.element_name.unwrap_or_default();
             let block_id = entry.address.block_id().unwrap_or_else(|| {
                 stable_block_object_id(
                     shard_id,
@@ -194,7 +194,7 @@ pub(super) fn bucket_dump_entries_by_key(
             (
                 format!(
                     "{}:{}:{}:{}",
-                    entry.kind, entry.object_key, component, block_id
+                    entry.kind, entry.object_key, element_name, block_id
                 ),
                 entry.address,
             )
@@ -515,7 +515,7 @@ pub(super) fn storage_physical_index_report(
         let mut block_index = StoragePhysicalBlockIndex {
             object_key: entry.object_key.clone().to_string(),
             model_id: entry.kind.clone().to_string(),
-            component: entry.component.clone().map(|value| value.to_string()),
+            element_name: entry.element_name.clone().map(|value| value.to_string()),
             routing_bucket,
             block_slab_id: entry.address.block_slab_id(),
             offset: entry.address.offset(),
@@ -594,7 +594,7 @@ pub(super) fn storage_physical_index_report(
                 // part of a width step; it is filled from an index entry, and an index entry names
                 // a block rather than an element, so the value it carried was already `None` for
                 // every row this arm produced.
-                component: None,
+                element_name: None,
                 routing_bucket: *routing_bucket,
                 block_slab_id: block.address.block_slab_id(),
                 offset: block.address.offset(),
@@ -619,7 +619,7 @@ pub(super) fn storage_physical_index_report(
             left.object_key
                 .cmp(&right.object_key)
                 .then(left.model_id.cmp(&right.model_id))
-                .then(left.component.cmp(&right.component))
+                .then(left.element_name.cmp(&right.element_name))
                 .then(left.block_slab_id.cmp(&right.block_slab_id))
                 .then(left.offset.cmp(&right.offset))
         });
@@ -992,7 +992,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             entry.kind,
             entry.object_key,
-            entry.component.unwrap_or_default(),
+            entry.element_name.unwrap_or_default(),
             entry.address.block_slab_id(),
             entry.address.offset(),
             entry.address.length(),

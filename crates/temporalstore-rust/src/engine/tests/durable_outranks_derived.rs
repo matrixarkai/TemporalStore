@@ -185,7 +185,7 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 /// finding nothing because it asked for the wrong string, not because no component text is
 /// stored.
 fn zset_name(member: &[u8]) -> String {
-    crate::engine::execute_on_shard::zset_component(member)
+    crate::engine::execute_on_shard::zset_element_name(member)
 }
 
 /// The component name a zset member USED TO be filed under, before the score left it. Kept only
@@ -1201,7 +1201,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
 ///
 /// rust-internal: mutates the engine's own in-memory index, no external surface
 #[test]
-fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
+fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -1221,7 +1221,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
 
     // THE DENOMINATOR, and the reachability claim. An empty member has to be accepted and durable,
     // or everything below is about a state no caller can reach.
-    let empty_component_len = {
+    let empty_element_name_len = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let members = shard.zsets.get("mt-zset").expect("the zset is present");
@@ -1245,9 +1245,9 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
     // front, so the empty member now has a ONE-character component and no component is ever empty.
     // The ambiguity is not guarded against any more; it is gone.
     assert_eq!(
-        empty_component_len, 1,
-        "an empty member's component is {empty_component_len} characters, not the one tag byte \
-         `member_component` always writes -- re-read `zset_component` before trusting the \
+        empty_element_name_len, 1,
+        "an empty member's component is {empty_element_name_len} characters, not the one tag byte \
+         `member_element_name` always writes -- re-read `zset_element_name` before trusting the \
          boundary below"
     );
 
@@ -1298,16 +1298,16 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         // ONE-character component and no component in the store is ever empty. The defect this
         // arm exists for cannot be reintroduced by a short-component reader, because there is no
         // longer a shortest case for one to trip on.
-        let empty_component = crate::engine::container_blocks::member_component(b"");
+        let empty_element_name = crate::engine::container_blocks::member_element_name(b"");
         assert_eq!(
-            empty_component.len(),
+            empty_element_name.len(),
             1,
             "the empty member's component is {} characters, not the single tag byte -- if this is \
              zero the spelling has gone back to hex and the ambiguity is back with it",
-            empty_component.len()
+            empty_element_name.len()
         );
         assert!(
-            derived.live.contains_key(empty_component.as_str()),
+            derived.live.contains_key(empty_element_name.as_str()),
             "the blocks do not derive the empty member at all: {:?}. A reader that treats a short \
              component as an absent one has come back -- which is the defect this arm exists for, \
              now one layer down",
@@ -1604,7 +1604,7 @@ fn a_key_state_blob_that_carries_no_elements_leaves_the_container_maps_untouched
 ///
 /// rust-internal: calls the engine's own fold directly, no external surface
 #[test]
-fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_component() {
+fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_element_name() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -1989,7 +1989,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
 #[test]
 fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     use crate::engine::container_blocks::{
-        component_from_element_key, decode_container_block, ContainerBlockDecode, ElementKeySpelling,
+        element_name_from_element_key, decode_container_block, ContainerBlockDecode, ElementKeySpelling,
     };
 
     const KEY: &str = "pay-hash";
@@ -2044,8 +2044,8 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
                     spellings.insert(format!("{spelling:?}"));
                     items_per_block.push(items.len());
                     for item in &items {
-                        if let Some(component) = component_from_element_key(spelling, &item.key) {
-                            recovered.insert(component);
+                        if let Some(element_name) = element_name_from_element_key(spelling, &item.key) {
+                            recovered.insert(element_name);
                         }
                     }
                     assert_eq!(
@@ -2295,10 +2295,10 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
             .len();
         let mut stripped = record.clone();
         for item in stripped.outcomes.iter_mut() {
-            item.component = None;
+            item.element_name = None;
         }
         for block in stripped.staged_blocks.iter_mut() {
-            block.component = None;
+            block.element_name = None;
         }
         let without = crate::wal::encode_wal_line_for_test(&stripped)
             .expect("the stripped record frames")
@@ -2440,10 +2440,10 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
             let mut record = record.clone();
             if strip {
                 for item in record.outcomes.iter_mut() {
-                    item.component = None;
+                    item.element_name = None;
                 }
                 for block in record.staged_blocks.iter_mut() {
-                    block.component = None;
+                    block.element_name = None;
                 }
             }
             if break_the_frame {
@@ -2575,7 +2575,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
 ///
 /// rust-internal: records a known defect in the shared-install path, no product behaviour
 #[test]
-fn the_shared_install_pairs_carried_blocks_by_object_and_component() {
+fn the_shared_install_pairs_carried_blocks_by_object_and_element_name() {
     const KEY: &str = "pair-hash";
     let fields = ["one", "two"];
 
@@ -2744,7 +2744,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         .iter()
         .flat_map(|record| record.outcomes.iter())
         .filter(|item| item.kind == "hash")
-        .filter(|item| item.component.is_some())
+        .filter(|item| item.element_name.is_some())
         .count();
     assert_eq!(
         fields.len(),
@@ -2774,7 +2774,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         load_version: 1,
         local_node_id: Some(1),
     });
-    let (from_block, from_component, disagreed) =
+    let (from_block, from_element_name, disagreed) =
         crate::engine::lifecycle::outcome_element_name_sources();
     let held: std::collections::BTreeSet<String> = if response.status.ok {
         let shards = fresh.shards.read().expect("engine lock poisoned");
@@ -2788,7 +2788,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     };
     println!(
         "[unreachable] load ok={} fields={held:?}; names from block={from_block} from \
-         component={from_component} disagreed={disagreed}",
+         component={from_element_name} disagreed={disagreed}",
         response.status.ok
     );
     assert!(
@@ -2803,8 +2803,8 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         "the replay restored {held:?} and the write touched {expected:?}"
     );
     assert!(
-        from_component >= fields.len() as u64,
-        "the fallback reports {from_component} resolutions from the outcome's own name for {} \
+        from_element_name >= fields.len() as u64,
+        "the fallback reports {from_element_name} resolutions from the outcome's own name for {} \
          fields. Below that, these fields came back some other way and this arm is not covering \
          the path it exists for",
         fields.len()
@@ -2877,8 +2877,8 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
             let mut record = record.clone();
             if rename {
                 for item in record.outcomes.iter_mut() {
-                    if item.kind == "hash" && item.component.is_some() {
-                        item.component = Some("a-field-the-block-does-not-hold".to_string());
+                    if item.kind == "hash" && item.element_name.is_some() {
+                        item.element_name = Some("a-field-the-block-does-not-hold".to_string());
                     }
                 }
             }
@@ -3101,7 +3101,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
             .len();
         let mut stripped = record.clone();
         for item in stripped.outcomes.iter_mut() {
-            item.component = None;
+            item.element_name = None;
         }
         let without = crate::wal::encode_wal_line_for_test(&stripped)
             .expect("the stripped record frames")
@@ -3172,18 +3172,18 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
     match event_record {
         Some(record) => {
             let (e_with, e_without) = price(record);
-            let component = record
+            let element_name = record
                 .outcomes
                 .iter()
                 .find(|item| item.kind == "context_event")
-                .and_then(|item| item.component.clone())
+                .and_then(|item| item.element_name.clone())
                 .unwrap_or_default();
             let event_blocks: usize = record.staged_blocks.len();
             println!(
                 "[tsf] a context_event record: {e_with} B -> {e_without} B, saving {} B; its \
-                 component is {} chars ({component}); it carries {event_blocks} block(s)",
+                 component is {} chars ({element_name}); it carries {event_blocks} block(s)",
                 e_with - e_without,
-                component.len()
+                element_name.len()
             );
             println!(
                 "[tsf] and the id is NOT in the frame: a feature block writes timestamp + length + \

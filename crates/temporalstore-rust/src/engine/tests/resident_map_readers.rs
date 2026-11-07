@@ -900,8 +900,8 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             },
         ] {
             assert!(
-                crate::engine::command_upsert_components(&removal, shard).is_none(),
-                "`command_upsert_components` now names a component for a REMOVAL. \
+                crate::engine::command_upsert_element_names(&removal, shard).is_none(),
+                "`command_upsert_element_names` now names a component for a REMOVAL. \
                  `collect_upsert_index_items` resolves that component's address out of the resident \
                  map, so a removal reaching it would build a WAL index item pinning a block the \
                  removal dropped -- and a replay would re-install it"
@@ -909,17 +909,17 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         }
         // Asked outright, it does resolve one: the mechanism is live, only unreached. Driven with
         // the ADD command's own component spelling, so this is the item a reachable caller would get.
-        let ghost_component = hex::encode(&ghost.removed[0]);
+        let ghost_element_name = hex::encode(&ghost.removed[0]);
         let items_for_a_ghost = crate::engine::collect_upsert_index_items(
             shard,
             1,
-            &[("set", "ghost".to_string(), Some(ghost_component.clone()))],
+            &[("set", "ghost".to_string(), Some(ghost_element_name.clone()))],
             0,
             1023,
         );
         println!(
             "  reader collect_upsert_index_items LATENT: no removal reaches it (4 removal commands \
-             answer None from `command_upsert_components`); asked outright with the ghost's \
+             answer None from `command_upsert_element_names`); asked outright with the ghost's \
              component it builds {} item(s)",
             items_for_a_ghost.len()
         );

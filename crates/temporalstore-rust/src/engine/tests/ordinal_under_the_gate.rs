@@ -476,7 +476,7 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 /// reads `[0]`: the position comes from `shard.hashes[key][field].block_id()` instead, which is
 /// authoritative and needs no block read.
 #[test]
-fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
+fn an_overwrite_of_an_element_name_less_hash_entry_reuses_its_ordinal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -567,7 +567,7 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
 /// of a two-field object and leaves the other untouched, as the thing the stripped field's lookup
 /// could be confused with (or lost beside).
 #[test]
-fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby() {
+fn an_element_name_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

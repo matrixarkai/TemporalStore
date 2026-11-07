@@ -295,7 +295,7 @@ impl StorageManagerPhaseExecutor {
 pub(super) struct LiveBlockEntry {
     pub(super) object_key: Arc<str>,
     pub(super) kind: StoredModelKind,
-    pub(super) component: Option<Arc<str>>,
+    pub(super) element_name: Option<Arc<str>>,
     pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
@@ -402,13 +402,13 @@ impl<'a> KeyRef<'a> {
 pub(super) fn live_block_entry(
     object_key: ModelKey,
     kind: impl AsRef<str>,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
 ) -> LiveBlockEntry {
     LiveBlockEntry {
         object_key,
         kind: stored_model_kind(kind.as_ref()),
-        component: component.map(Arc::from),
+        element_name: element_name.map(Arc::from),
         // A block materialized in the block store carries a real page_id; a block
         // backed only by the hot/append-log buffer does not. Evaluate before the
         // `address` field moves it.
@@ -433,11 +433,11 @@ pub(super) fn live_block_entry(
 pub(super) fn live_block_entry_filed(
     object_key: ModelKey,
     kind: impl AsRef<str>,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     routing_bucket: u32,
 ) -> LiveBlockEntry {
-    let mut entry = live_block_entry(object_key, kind, component, address);
+    let mut entry = live_block_entry(object_key, kind, element_name, address);
     entry.filed_routing_bucket = routing_bucket;
     entry.filing_is_known = true;
     entry
@@ -509,14 +509,14 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
         (
             left.kind.as_str(),
             left.object_key.as_ref(),
-            left.component.as_deref().unwrap_or(""),
+            left.element_name.as_deref().unwrap_or(""),
             left.address.block_slab_id(),
             left.address.offset(),
         )
             .cmp(&(
                 right.kind.as_str(),
                 right.object_key.as_ref(),
-                right.component.as_deref().unwrap_or(""),
+                right.element_name.as_deref().unwrap_or(""),
                 right.address.block_slab_id(),
                 right.address.offset(),
             ))
@@ -594,9 +594,9 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
 }
 
 pub(super) fn storage_gc_ref(entry: &LiveBlockEntry) -> String {
-    match entry.component.as_deref() {
-        Some(component) if !component.is_empty() => {
-            format!("{}:{}:{}", entry.kind, entry.object_key, component)
+    match entry.element_name.as_deref() {
+        Some(element_name) if !element_name.is_empty() => {
+            format!("{}:{}:{}", entry.kind, entry.object_key, element_name)
         }
         _ => format!("{}:{}", entry.kind, entry.object_key),
     }
@@ -706,7 +706,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
             left.deleted,
             left.kind.as_str(),
             left.object_key.as_ref(),
-            left.component.as_deref().unwrap_or(""),
+            left.element_name.as_deref().unwrap_or(""),
             left.address.block_slab_id(),
             left.address.offset(),
         )
@@ -714,7 +714,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
                 right.deleted,
                 right.kind.as_str(),
                 right.object_key.as_ref(),
-                right.component.as_deref().unwrap_or(""),
+                right.element_name.as_deref().unwrap_or(""),
                 right.address.block_slab_id(),
                 right.address.offset(),
             ))
@@ -1521,7 +1521,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // the same reason: `insert_object_block_lookup` counts up from it, and a total carried over
     // from the emptied map would count blocks twice.
     shard.bucket_index.clear_object_blocks();
-    shard.bucket_index.object_component_block_refs = Some(0);
+    shard.bucket_index.object_element_name_block_refs = Some(0);
     // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
     // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
     // change exists to remove and which a compaction round would pay twice.
@@ -1637,11 +1637,11 @@ pub(super) fn rebuild_bucket_block_ownership(
         // A tombstone with NO element row cannot be asked at all. It is refiled, which is the safe
         // direction: a refiled tombstone over a live element is still outranked by the live block's
         // later append position, where a DROPPED tombstone over a removed element resurrects it.
-        let live_again = resident_holds_component(
+        let live_again = resident_holds_element_name(
             shard,
             tombstone.model_id(),
             &element.object_key,
-            &element.component,
+            &element.element_name,
         );
         if live_again {
             continue;
@@ -1678,7 +1678,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         bucket.record_tombstone_element(
             &element.object_key,
             model_id,
-            &element.component,
+            &element.element_name,
             &address,
         );
         tombstones_refiled += 1;
@@ -1831,7 +1831,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
             shard,
             ModelWalkTally::PromotionCheckBlocks,
             |_, _| true,
-            |kind, object_key, component, address| {
+            |kind, object_key, element_name, address| {
                 saw_model_entry = true;
                 // The early return below bypasses the LOOKUP, not the count. `visit_model_live_blocks`
                 // charges every block it emits before this body runs at all, so a walk over a large
@@ -1855,7 +1855,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                     && !shard.bucket_index.contains_object_block_address(
                         kind.as_str(),
                         object_key.as_str(),
-                        component,
+                        element_name,
                         address,
                     )
                 {
@@ -2024,7 +2024,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 // `None`. So a `LiveBlockEntry` produced from the INDEX carries no element name,
                 // which is what makes the two derived-view rebuilds below unable to recover a
                 // container element from it: see `rebuild_unserialized_model_maps_from_bucket_index`.
-                component: None,
+                element_name: None,
                 address: block.address.clone(),
                 dirty: block.dirty(),
                 deleted: block.deleted(),
@@ -2083,13 +2083,13 @@ type ReleasedBlockIdentity = (String, String, Option<String>, u64, u64, u64, Opt
 fn released_block_identity(
     model_id: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     address: &ElementEntry,
 ) -> ReleasedBlockIdentity {
     released_block_identity_owned(
         model_id.to_string(),
         object_key.to_string(),
-        component.map(str::to_string),
+        element_name.map(str::to_string),
         address,
     )
 }
@@ -2102,13 +2102,13 @@ fn released_block_identity(
 fn released_block_identity_owned(
     model_id: String,
     object_key: String,
-    component: Option<String>,
+    element_name: Option<String>,
     address: &ElementEntry,
 ) -> ReleasedBlockIdentity {
     (
         model_id,
         object_key,
-        component,
+        element_name,
         address.block_slab_id(),
         address.offset(),
         address.length(),
@@ -2170,22 +2170,22 @@ fn released_model_kind_is_addressable(kind: &str) -> bool {
 /// this cannot parse answers FALSE rather than defaulting to element zero or to the empty member:
 /// an unreadable name names nothing, which is the rule every arm of the derived view already
 /// follows, and the direction that errs towards keeping a tombstone rather than dropping one.
-pub(super) fn resident_holds_component(
+pub(super) fn resident_holds_element_name(
     shard: &ShardState,
     model_id: StoredModelKind,
     object_key: &str,
-    component: &str,
+    element_name: &str,
 ) -> bool {
     // THROUGH THE ONE SPELLING TABLE. This had its own four-arm decode; `container_block_ordinal`
     // needed the same four arms for a different question, and two copies of a decode is how two
     // readers come to disagree about what a component means. `state::resident_component_address`
     // is the single table, and the value it finds -- an address -- is what the other callers want
     // anyway.
-    crate::engine::state::resident_component_address(
+    crate::engine::state::resident_element_name_address(
         shard,
         model_id.as_str(),
         object_key,
-        component,
+        element_name,
     )
     .is_some()
 }
@@ -2194,9 +2194,9 @@ pub(super) fn model_map_block_address(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) -> Option<ElementEntry> {
-    match (model_id, component) {
+    match (model_id, element_name) {
         ("string", None) => shard.string_address(object_key),
         ("context_node", None) => shard.context_nodes().get(object_key).cloned(),
         _ => None,
@@ -2212,12 +2212,12 @@ pub(super) fn released_bucket_block_address(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
 ) -> Option<ElementEntry> {
     if shard.bucket_index.released_buckets.is_empty() {
         return None;
     }
-    let address = model_map_block_address(shard, model_id, object_key, component)?;
+    let address = model_map_block_address(shard, model_id, object_key, element_name)?;
     // THE CONTAINER'S ABSENCE IS THE CONDITION; THE BUCKET ID IS STILL KNOWN. This asks whether a
     // SPECIFIC bucket is released, and which bucket that is comes from the key, not from the block:
     // `released_buckets` is keyed by bucket id and the key's bucket is what a release recorded.
@@ -2905,18 +2905,18 @@ pub mod uncovered_maintenance {
 /// Returns false if any component's address is not in the shard maps; the caller then runs the
 /// whole-object sync exactly as before, so a shape this does not model costs a fallback rather
 /// than a stale index.
-pub(super) fn sync_blocks_for_written_components(
+pub(super) fn sync_blocks_for_written_element_names(
     shard: &mut ShardState,
     shard_id: ShardId,
-    components: &[(&'static str, String, Option<String>)],
+    element_names: &[(&'static str, String, Option<String>)],
 ) -> bool {
-    if components.is_empty() {
+    if element_names.is_empty() {
         return false;
     }
-    for (kind, object_key, component) in components {
+    for (kind, object_key, element_name) in element_names {
         // Read the address back from the map the write just updated, exactly as
         // `collect_upsert_index_items` does, so the block filed here is the block a reload serves.
-        let address = match (*kind, component.as_deref()) {
+        let address = match (*kind, element_name.as_deref()) {
             ("hash", Some(field)) => shard
                 .hashes
                 .get(object_key)
@@ -2936,7 +2936,7 @@ pub(super) fn sync_blocks_for_written_components(
             shard_id,
             kind,
             object_key,
-            component.clone(),
+            element_name.clone(),
             address,
             true,
             false,
@@ -3760,9 +3760,9 @@ fn visit_model_live_blocks(
                         // single member at a time). `_biased` stays bound and unused rather than
                         // dropped from the pattern, so a future reader finds the score sitting
                         // right beside the render that no longer spells it.
-                        let component =
-                            crate::engine::execute_on_shard::zset_component(member);
-                        emit(ModelKind::Zset, KeyRef::Shared(key), Some(component.as_str()), address);
+                        let element_name =
+                            crate::engine::execute_on_shard::zset_element_name(member);
+                        emit(ModelKind::Zset, KeyRef::Shared(key), Some(element_name.as_str()), address);
                     }
                 }
             }
@@ -3777,8 +3777,8 @@ fn visit_model_live_blocks(
             } else {
                 for (seq, address) in elements.iter() {
                     if accept(key, address) {
-                        let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
-                        emit(ModelKind::List, KeyRef::Shared(key), Some(component.as_str()), address);
+                        let element_name = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                        emit(ModelKind::List, KeyRef::Shared(key), Some(element_name.as_str()), address);
                     }
                 }
             }
@@ -3820,9 +3820,9 @@ fn visit_model_live_blocks(
             } else {
                 for (member, address) in members.iter() {
                     if accept(key, address) {
-                        let component =
-                            crate::engine::execute_on_shard::set_component(member);
-                        emit(ModelKind::Set, KeyRef::Shared(key), Some(component.as_str()), address);
+                        let element_name =
+                            crate::engine::execute_on_shard::set_element_name(member);
+                        emit(ModelKind::Set, KeyRef::Shared(key), Some(element_name.as_str()), address);
                     }
                 }
             }
@@ -3926,9 +3926,9 @@ fn visit_model_live_blocks(
     arms(
         shard,
         counting_accept,
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             emitted += 1;
-            emit(kind, object_key, component, address);
+            emit(kind, object_key, element_name, address);
         },
     );
     MODEL_MAP_ADDRESSES_VISITED.fetch_add(visited.get(), std::sync::atomic::Ordering::Relaxed);
@@ -3992,14 +3992,14 @@ pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBl
         shard,
         ModelWalkTally::WholeShardEntries,
         |_, _| true,
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             entries.push(live_block_entry(
                 // THE HANDLE, LENT RATHER THAN REBUILT. This was `object_key.to_string()`, which
                 // the constructor then turned into an `Arc` -- two allocations of characters the
                 // map already held.
                 object_key.to_handle(),
                 kind.as_str(),
-                component.map(str::to_string),
+                element_name.map(str::to_string),
                 address.clone(),
             ));
         },
@@ -4031,12 +4031,12 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
                 == routing_bucket
         },
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             entries.push(live_block_entry_filed(
                 // Lent, not rebuilt -- see `collect_model_live_block_entries`.
                 object_key.to_handle(),
                 kind.as_str(),
-                component.map(str::to_string),
+                element_name.map(str::to_string),
                 address.clone(),
                 routing_bucket,
             ));
@@ -4078,7 +4078,7 @@ fn derive_released_block_identities(
                 end_routing_bucket,
             ))
         },
-        |kind, object_key, component, address| {
+        |kind, object_key, element_name, address| {
             let routing_bucket = block_routing_bucket(
                 object_key.as_str(),
                 start_routing_bucket,
@@ -4092,7 +4092,7 @@ fn derive_released_block_identities(
                     // An OWNED identity by construction -- this one wants characters, and saying
                     // so is the point of the enum: an arm that keeps a String asks for one.
                     object_key.as_str().to_string(),
-                    component.map(str::to_string),
+                    element_name.map(str::to_string),
                     address,
                 ));
         },
@@ -4562,14 +4562,14 @@ pub(super) fn upsert_bucket_index_block_filed(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     value: Option<Vec<u8>>,
     replaces: ReplacedBlock,
 ) -> BlockFiled {
     upsert_bucket_index_block_with_value(
-        shard, shard_id, kind, object_key, component, address, dirty, true, value, replaces,
+        shard, shard_id, kind, object_key, element_name, address, dirty, true, value, replaces,
     );
     BlockFiled(())
 }
@@ -4588,11 +4588,11 @@ pub(super) fn upsert_bucket_index_block(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
 ) {
-    upsert_bucket_index_block_with(shard, shard_id, kind, object_key, component, address, dirty, true)
+    upsert_bucket_index_block_with(shard, shard_id, kind, object_key, element_name, address, dirty, true)
 }
 
 /// File the entry that keeps a removal's TOMBSTONE BLOCK reachable.
@@ -4757,7 +4757,7 @@ pub(super) fn insert_container_tombstone_entry(
     shard: &mut ShardState,
     kind: &str,
     object_key: &str,
-    component: Option<&str>,
+    element_name: Option<&str>,
     address: ElementEntry,
     routing_bucket: u32,
 ) {
@@ -4796,11 +4796,11 @@ pub(super) fn insert_container_tombstone_entry(
     // `container_tombstone` when it asked for the opposite. So the refusal costs nothing anyone is
     // doing, and anything it catches is a defect.
     debug_assert!(
-        component.is_some(),
+        element_name.is_some(),
         "a tombstone entry with no element to name leaves a deleted block nothing beside it can \
          identify, so no rebuild can refile it and no dump can compose a key for it"
     );
-    let Some(named_element) = component else {
+    let Some(named_element) = element_name else {
         return;
     };
     let block = BlockIndex::new(
@@ -4920,7 +4920,7 @@ pub(super) fn upsert_bucket_index_block_with(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     stage: bool,
@@ -4930,7 +4930,7 @@ pub(super) fn upsert_bucket_index_block_with(
         shard_id,
         kind,
         object_key,
-        component,
+        element_name,
         address,
         dirty,
         stage,
@@ -4955,7 +4955,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     stage: bool,
@@ -4971,7 +4971,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
             shard_id,
             kind,
             object_key,
-            component,
+            element_name,
             address,
             dirty,
             stage,
@@ -4987,7 +4987,7 @@ fn upsert_bucket_index_block_inner(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    component: Option<String>,
+    element_name: Option<String>,
     address: ElementEntry,
     dirty: bool,
     stage: bool,
@@ -5011,7 +5011,7 @@ fn upsert_bucket_index_block_inner(
     // two replay paths and the six test sites were each read with their arguments.
     let names_a_block = index_entry_names_a_block(kind);
     debug_assert!(
-        names_a_block || component.is_none(),
+        names_a_block || element_name.is_none(),
         "{kind} files an entry under its object, so a name for one of its elements has nowhere to go"
     );
     // Filing a block into a RELEASED bucket would leave the node holding one block and claiming to
@@ -5043,7 +5043,7 @@ fn upsert_bucket_index_block_inner(
                 // The fold applies `index_entry_names_a_block` itself when it files the ENTRY, so
                 // the two routes still agree on the entry while the outcome stays a full record of
                 // the write.
-                component: component.as_deref().map(str::to_string),
+                element_name: element_name.as_deref().map(str::to_string),
                 object_id,
                 routing_bucket,
                 address: Some(address.clone()),
@@ -5086,7 +5086,7 @@ fn upsert_bucket_index_block_inner(
         object_key: shared_object_key,
         kind: stored_model_kind(kind),
         // An entry is filed under its block, so it carries no element name.
-        component: None,
+        element_name: None,
         log_backed: address.block_id().is_none(),
         address,
         dirty,
@@ -5318,7 +5318,7 @@ fn upsert_bucket_index_block_inner(
     // tombstone that is almost never there would be a new cost on the hot path. A find over the
     // rows is bounded by the removals this bucket has seen, against the two whole-bucket block scans
     // the branches above already do, so the common case is cheaper than the scan it replaces.
-    let sweep: Option<(u64, u64, u64)> = component.as_deref().and_then(|element| {
+    let sweep: Option<(u64, u64, u64)> = element_name.as_deref().and_then(|element| {
         shard
             .bucket_index
             .bucket_map
@@ -5516,7 +5516,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // kept in the expression because the claim belongs where the condition is read, not because
     // it can still be true.
     let lookup_can_target = !(shard.bucket_index.names_no_object_blocks()
-        || shard.bucket_index.object_component_block_refs.is_none());
+        || shard.bucket_index.object_element_name_block_refs.is_none());
     // WHETHER this call dropped any block of this object, so the lookup can be corrected for it
     // instead of being rebuilt from every block in the shard.
     //
@@ -5671,7 +5671,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         let entry = LiveBlockEntry {
             object_key: Arc::clone(&object_key_arc),
             kind: entry_kind,
-            component: None,
+            element_name: None,
             log_backed: address.block_id().is_none(),
             address,
             dirty,
@@ -6901,11 +6901,11 @@ pub(super) fn rebuild_bucket_first_index(
         // longer names its element, so comparing names against the entries made this test dead.
         // `shard` is still borrowed immutably here -- the rebuild is being assembled into the local
         // `bucket_index` -- which is exactly the map the live entries above were derived from.
-        let live_again = resident_holds_component(
+        let live_again = resident_holds_element_name(
             shard,
             tombstone.model_id(),
             &element.object_key,
-            &element.component,
+            &element.element_name,
         );
         if live_again {
             continue;
@@ -6929,7 +6929,7 @@ pub(super) fn rebuild_bucket_first_index(
         bucket.record_tombstone_element(
             &element.object_key,
             model_id,
-            &element.component,
+            &element.element_name,
             &address,
         );
         refiled += 1;
@@ -8349,7 +8349,7 @@ mod release_refusal_guards {
         );
     }
 
-    fn block(key: &str, model_id: &str, component: Option<&str>, address: ElementEntry) -> BlockIndex {
+    fn block(key: &str, model_id: &str, element_name: Option<&str>, address: ElementEntry) -> BlockIndex {
         BlockIndex::new(
             super::stored_model_kind(model_id),
             address,

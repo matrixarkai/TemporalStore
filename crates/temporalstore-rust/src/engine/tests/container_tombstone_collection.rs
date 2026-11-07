@@ -127,16 +127,16 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     // framed as eight leading bytes of the MEMBER. A fixture whose premise has gone stale can keep
     // passing for the wrong reason, and only the round-trip added below would have caught it.
     crate::engine::container_blocks::reset_unframed_container_removal_count();
-    let components = [
+    let element_names = [
         ("hash", "some-field".to_string()),
         ("set", hex::encode(b"a-member")),
         // The CURRENT spelling: the member alone. The score is not in a component any more.
         ("zset", hex::encode(b"a-member")),
         ("list", format!("{:016x}", 7u64)),
     ];
-    for (kind, component) in &components {
-        let block = crate::engine::container_blocks::tombstone_block(kind, component);
-        assert!(block.is_some(), "{kind} could not frame a removal of {component}");
+    for (kind, element_name) in &element_names {
+        let block = crate::engine::container_blocks::tombstone_block(kind, element_name);
+        assert!(block.is_some(), "{kind} could not frame a removal of {element_name}");
         match decode_container_block(block.as_ref().expect("framed")) {
             ContainerBlockDecode::Framed { items, shape, .. } => {
                 assert_eq!(ContainerBlockShape::WithRemovals, shape, "{kind}: wrong shape");
@@ -157,14 +157,14 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                 let spelling = crate::engine::container_blocks::ElementKeySpelling::for_kind(kind)
                     .unwrap_or_else(|| panic!("{kind} has no element-key spelling"));
                 let recovered =
-                    crate::engine::container_blocks::component_from_element_key(spelling, &items[0].key)
+                    crate::engine::container_blocks::element_name_from_element_key(spelling, &items[0].key)
                         .unwrap_or_else(|| {
                             panic!("{kind}: the tombstone block's own key did not read back as a component")
                         });
                 assert_eq!(
-                    component, &recovered,
+                    element_name, &recovered,
                     "{kind}: the element is NOT recoverable from the tombstone block. The block item's \
-                     key went in as {component} and came back as {recovered}, so the block cannot \
+                     key went in as {element_name} and came back as {recovered}, so the block cannot \
                      stand in for a stored element name and a removal's identity would have to live \
                      somewhere else."
                 );
@@ -174,7 +174,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     }
     assert_eq!(
         4,
-        components.len(),
+        element_names.len(),
         "DENOMINATOR: all four container kinds must be covered"
     );
     assert_eq!(
@@ -203,7 +203,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
     // this wrong in the permissive direction and every fold silently empties the containers it did
     // not touch; get it wrong in the strict direction and no removal ever takes effect.
     let member = b"m".to_vec();
-    let component = hex::encode(&member);
+    let element_name = hex::encode(&member);
     let unrelated = b"other".to_vec();
 
     let older = encode_container_block_items(
@@ -250,7 +250,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
     assert_eq!(2, with_silence.blocks_read, "DENOMINATOR: two blocks must be read");
     assert!(with_silence.is_complete());
     assert!(
-        with_silence.live.contains_key(&component),
+        with_silence.live.contains_key(&element_name),
         "A LATER BLOCK THAT DOES NOT MENTION THE ELEMENT REMOVED IT. Silence is not a removal: a fold \
          writes blocks that hold only the elements it batched, so treating an unmentioned element as \
          gone would empty every container a round did not fully rewrite."
@@ -271,15 +271,15 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
     assert_eq!(3, with_removal.blocks_read, "DENOMINATOR: three blocks must be read");
     assert!(with_removal.is_complete());
     assert!(
-        with_removal.removed.contains(&component),
+        with_removal.removed.contains(&element_name),
         "a block that states the removal did not remove the element"
     );
-    assert!(!with_removal.live.contains_key(&component));
+    assert!(!with_removal.live.contains_key(&element_name));
     // The unrelated element is untouched by either -- a control, so that "removed" above is not the
     // fold simply losing everything.
-    let unrelated_component = hex::encode(&unrelated);
+    let unrelated_element_name = hex::encode(&unrelated);
     assert!(
-        with_removal.live.contains_key(&unrelated_component),
+        with_removal.live.contains_key(&unrelated_element_name),
         "CONTROL: the element nothing removed is gone too, so the fold is losing items rather than \
          applying a tombstone"
     );
@@ -444,7 +444,7 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
     let reversed = derive_membership("set", vec![later.clone(), earlier.clone()], read());
     let forwards = derive_membership("set", vec![earlier, later], read());
 
-    let component = hex::encode(&member);
+    let element_name = hex::encode(&member);
     println!(
         "reversed input: {} live, {} removed; forwards: {} live, {} removed",
         reversed.live.len(),
@@ -455,11 +455,11 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
     assert_eq!(2, reversed.blocks_read, "DENOMINATOR: both blocks must be read");
     assert!(reversed.is_complete() && forwards.is_complete());
     assert!(
-        reversed.removed.contains(&component),
+        reversed.removed.contains(&element_name),
         "handed the tombstone FIRST, the fold kept the member -- so it applies items in the order it \
          receives them rather than in append order"
     );
-    assert!(!reversed.live.contains_key(&component));
+    assert!(!reversed.live.contains_key(&element_name));
     assert_eq!(
         forwards.removed, reversed.removed,
         "the two input orders disagree, which is the only thing the sort exists to prevent"
@@ -470,7 +470,7 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
 #[test]
 fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     let member = b"m".to_vec();
-    let component = hex::encode(&member);
+    let element_name = hex::encode(&member);
     let other = b"n".to_vec();
 
     let older = encode_container_block_items(
@@ -520,7 +520,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     assert_eq!(2, before.blocks_read, "DENOMINATOR: two blocks must be read");
     assert!(before.is_complete());
     assert!(
-        before.removed.contains(&component),
+        before.removed.contains(&element_name),
         "the member is not removed even with its tombstone present, so the fixture is wrong"
     );
 
@@ -536,12 +536,12 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         after.live.len(),
         after.removed.len(),
         after.blocks_read,
-        after.live.contains_key(&component)
+        after.live.contains_key(&element_name)
     );
     assert_eq!(2, after.blocks_read, "DENOMINATOR: two blocks must be read");
     assert!(after.is_complete());
     assert!(
-        after.live.contains_key(&component),
+        after.live.contains_key(&element_name),
         "the resurrection did not happen, so this guard is not demonstrating the defect it exists \
          for -- and a rule that forbids a harmless thing is not evidence of anything"
     );

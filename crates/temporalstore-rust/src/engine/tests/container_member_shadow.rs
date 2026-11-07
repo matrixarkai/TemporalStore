@@ -64,7 +64,7 @@
 //! a heavier representation.
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::execute_on_shard::zset_component;
+use crate::engine::execute_on_shard::zset_element_name;
 use crate::engine::hashing::{block_routing_bucket, stable_block_object_id};
 use crate::engine::state::BlockIndex;
 use std::collections::{BTreeMap, BTreeSet};
@@ -170,7 +170,7 @@ fn seed_zsets(engine: &TemporalEngine) -> Vec<String> {
 struct ZsetBlock {
     routing_bucket: u32,
     object_key: String,
-    component: String,
+    element_name: String,
     address: crate::block_store::ElementEntry,
     dirty: bool,
     deleted: bool,
@@ -198,7 +198,7 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
                 // between a component and the block payload is what the collapse DELETED, so the
                 // field is carried as the empty string and the arms that priced that redundancy
                 // are restated where they are read.
-                component: String::new(),
+                element_name: String::new(),
                 address: block.address.clone(),
                 dirty: block.dirty(),
                 deleted: block.deleted(),
@@ -537,8 +537,8 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 ///
 /// rust-internal: reads this crate's own component-name producers, no product behaviour
 #[test]
-fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
-    let set_name = crate::engine::execute_on_shard::set_component;
+fn an_element_name_name_charges_one_byte_more_than_its_member_not_twice_it() {
+    let set_name = crate::engine::execute_on_shard::set_element_name;
     // SET AND ZSET BOTH, because the flip moved two kinds and a test over one of them would pass
     // on a tree where the other was missed. They render identically today and that is asserted,
     // not assumed.
@@ -551,7 +551,7 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
     for width in widths {
         // TEXT: the common case, and the one the cost-per-op instrument exercises.
         let text: Vec<u8> = std::iter::repeat(b'a').take(width).collect();
-        let text_name = zset_component(&text);
+        let text_name = zset_element_name(&text);
         assert_eq!(
             text_name.len(),
             1 + width,
@@ -566,12 +566,12 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
 
         // BINARY: 0xAB repeated is not valid UTF-8, so this is the base64 arm.
         let binary = vec![0xABu8; width];
-        let binary_name = zset_component(&binary);
+        let binary_name = zset_element_name(&binary);
         assert_eq!(
             binary_name.len(),
             2 + 4 * width.div_ceil(3),
             "a binary member of {width} bytes should cost two tag bytes plus base64, not {} \
-             -- `member_component` writes one tag and `encode_name` writes another before the \
+             -- `member_element_name` writes one tag and `encode_name` writes another before the \
              base64",
             binary_name.len()
         );
@@ -603,15 +603,15 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
     // THE SLOPE, WHICH IS THE WHOLE POINT: a fixed term cannot be mistaken for a rate here,
     // because this divides a difference by a difference and the tag cancels out.
     let (lo, hi) = (16usize, 256usize);
-    let text_slope = (zset_component(&vec![b'a'; hi]).len() as f64
-        - zset_component(&vec![b'a'; lo]).len() as f64)
+    let text_slope = (zset_element_name(&vec![b'a'; hi]).len() as f64
+        - zset_element_name(&vec![b'a'; lo]).len() as f64)
         / (hi - lo) as f64;
     assert!(
         (text_slope - 1.0).abs() < 1e-12,
         "the text component slope is {text_slope}, not the 1.0 that replaced hex's 2.0"
     );
-    let binary_slope = (zset_component(&vec![0xABu8; hi]).len() as f64
-        - zset_component(&vec![0xABu8; lo]).len() as f64)
+    let binary_slope = (zset_element_name(&vec![0xABu8; hi]).len() as f64
+        - zset_element_name(&vec![0xABu8; lo]).len() as f64)
         / (hi - lo) as f64;
     assert!(
         (binary_slope - 4.0 / 3.0).abs() < 0.01,
@@ -620,7 +620,7 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
     println!("  slope: text {text_slope:.4}  binary {binary_slope:.4}  hex was 2.0000");
     assert_eq!(MEMBER_WIDTH, 20, "the quoted width is part of the measurement");
     assert_eq!(
-        zset_component(&vec![b'a'; MEMBER_WIDTH]).len(),
+        zset_element_name(&vec![b'a'; MEMBER_WIDTH]).len(),
         21,
         "a 20-byte TEXT member's name is 21 bytes, where hex charged 40"
     );
@@ -629,18 +629,18 @@ fn a_component_name_charges_one_byte_more_than_its_member_not_twice_it() {
     // the binary one. It did not matter under hex, which doubles any input regardless; it decides
     // which branch is taken now. The byte has to be one that cannot appear in UTF-8.
     assert_eq!(
-        zset_component(&vec![0u8; MEMBER_WIDTH]).len(),
+        zset_element_name(&vec![0u8; MEMBER_WIDTH]).len(),
         21,
         "twenty NUL bytes are valid UTF-8, so they take the text arm at one byte more"
     );
     assert_eq!(
-        zset_component(&vec![0xABu8; MEMBER_WIDTH]).len(),
+        zset_element_name(&vec![0xABu8; MEMBER_WIDTH]).len(),
         30,
         "a 20-byte BINARY member's name is 30 bytes, where hex charged 40"
     );
 
     // THE NEGATIVE CONTROL: the decimal producer is not a doubling and must not read as one.
-    let decimal = crate::engine::packed_blocks::timestamped_component(u64::MAX, None);
+    let decimal = crate::engine::packed_blocks::timestamped_element_name(u64::MAX, None);
     assert_eq!(decimal.len(), 20, "u64::MAX in decimal is twenty characters");
     let decimal_fraction = (decimal.len() - 8) as f64 / decimal.len() as f64;
     assert!(
@@ -781,12 +781,12 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
         // THE ROUND TRIP, PER MEMBER, over the members the model map actually holds -- so this
         // covers the real population rather than whatever the codec happens to accept.
         for member in model.keys() {
-            let component = hex::encode(member);
-            let block_key = crate::engine::container_blocks::element_key_from_component(
+            let element_name = hex::encode(member);
+            let block_key = crate::engine::container_blocks::element_key_from_element_name(
                 crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
-                &component,
+                &element_name,
             )
-            .unwrap_or_else(|| panic!("{key}: no block key for member {component}"));
+            .unwrap_or_else(|| panic!("{key}: no block key for member {element_name}"));
             assert_eq!(
                 MEMBER_WIDTH + 8,
                 block_key.len(),
@@ -794,13 +794,13 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
                  behind an eight-byte score slot",
                 block_key.len()
             );
-            let back = crate::engine::container_blocks::component_from_element_key(
+            let back = crate::engine::container_blocks::element_name_from_element_key(
                 crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
                 &block_key,
             )
-            .unwrap_or_else(|| panic!("{key}: the block key for {component} renders no component"));
+            .unwrap_or_else(|| panic!("{key}: the block key for {element_name} renders no component"));
             assert_eq!(
-                component, back,
+                element_name, back,
                 "{key}: the member does not survive the block key it is written into. That key is \
                  the ONLY copy of the member outside `shard.zsets` now -- the entry carries none -- \
                  so a codec that does not round-trip loses the element rather than mislabelling it"
@@ -1091,10 +1091,10 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         );
 
         // The component NAME bytes, measured off the real names rather than computed.
-        let name_bytes: usize = blocks.iter().map(|block| block.component.len()).sum();
+        let name_bytes: usize = blocks.iter().map(|block| block.element_name.len()).sum();
         let spelling_bytes: usize = blocks
             .iter()
-            .map(|block| block.component.len() - (8 + MEMBER_WIDTH))
+            .map(|block| block.element_name.len() - (8 + MEMBER_WIDTH))
             .sum();
 
         let hist = zset_blocks_per_bucket(&blocks);

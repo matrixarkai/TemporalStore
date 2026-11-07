@@ -844,7 +844,7 @@ impl TemporalEngine {
         let mut batch_membership_shrank = false;
         // Some(components) while every mutating command in the batch is a pure block-upsert;
         // one non-upsert write downgrades the whole record to snapshot semantics.
-        let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
+        let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
         // Every container element any command in this batch added or replaced. Unlike the
         // components above this is never downgraded to `None`: it is a list of elements, not a
@@ -1078,8 +1078,8 @@ impl TemporalEngine {
                             &membership_before,
                         );
                 }
-                let written_components =
-                    command_upsert_components(command_for_post_write_ref, shard);
+                let written_element_names =
+                    command_upsert_element_names(command_for_post_write_ref, shard);
                 batch_touched_container_elements.extend(command_touched_container_elements(
                     command_for_post_write_ref,
                     shard,
@@ -1120,12 +1120,12 @@ impl TemporalEngine {
                     // below re-upserts every field the object holds, which is quadratic in that
                     // count; this is one upsert per written component. It reports false when it
                     // cannot model the write, and the whole-object sync then runs.
-                    let narrow = match written_components.as_deref() {
-                        Some(components) => {
-                            crate::engine::storage_bucket_internals::sync_blocks_for_written_components(
+                    let narrow = match written_element_names.as_deref() {
+                        Some(element_names) => {
+                            crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
                                 shard,
                                 shard_id,
-                                components,
+                                element_names,
                             )
                         }
                         None => false,
@@ -1140,8 +1140,8 @@ impl TemporalEngine {
                                 )
                             }))
                 };
-                match (&mut batch_upsert_components, written_components) {
-                    (Some(collected), Some(components)) => collected.extend(components),
+                match (&mut batch_upsert_element_names, written_element_names) {
+                    (Some(collected), Some(element_names)) => collected.extend(element_names),
                     (state, _) => *state = None,
                 }
                 // Every per-command consumer above borrows these keys. The batch delta keeps
@@ -1318,12 +1318,12 @@ impl TemporalEngine {
                 // Append the blocks this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let (items, upsert_record) = match batch_upsert_components.as_ref() {
-                    Some(components) => (
+                let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
+                    Some(element_names) => (
                         collect_upsert_index_items(
                             shard,
                             shard_id,
-                            components,
+                            element_names,
                             start_routing_bucket,
                             end_routing_bucket,
                         ),
@@ -1495,7 +1495,7 @@ impl TemporalEngine {
             /// The ELEMENT of that object, which the comment above already calls the block's
             /// component. It was named there and then thrown away; a read that resolves
             /// through a log record needs it to pick the right block out of the record.
-            fn component(&self) -> Option<&str> {
+            fn element_name(&self) -> Option<&str> {
                 match self {
                     PublishTarget::String { .. } => None,
                     PublishTarget::Hash { field, .. } => Some(field),
@@ -1599,7 +1599,7 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
-                BlockIdentity::of(shard_id, target.kind(), target.object_key(), target.component()),
+                BlockIdentity::of(shard_id, target.kind(), target.object_key(), target.element_name()),
                 Some(routing_bucket),
             ) {
                 // Derived BEFORE `target` moves into the tuple: the terms are borrowed from it.

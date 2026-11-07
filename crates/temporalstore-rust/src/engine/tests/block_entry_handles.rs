@@ -226,14 +226,14 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) {
 struct BlocksPerObject {
     histogram: BTreeMap<usize, usize>,
     /// Distinct component names per object, same shape. The term that decides `component`.
-    components_per_object: BTreeMap<usize, usize>,
+    element_names_per_object: BTreeMap<usize, usize>,
     /// Distinct component names per BUCKET: a candidate table scoped to a bucket pays per entry.
-    components_per_bucket: BTreeMap<usize, usize>,
+    element_names_per_bucket: BTreeMap<usize, usize>,
     object_key_bytes: usize,
-    component_name_bytes: usize,
+    element_name_name_bytes: usize,
     /// Component-name bytes that are HEX SPELLINGS OF NUMBERS, so half of them carry nothing.
-    hex_component_name_bytes: usize,
-    hex_components: usize,
+    hex_element_name_name_bytes: usize,
+    hex_element_names: usize,
     blocks: usize,
 }
 
@@ -273,8 +273,8 @@ impl BlocksPerObject {
         );
         for (name, map) in [
             ("blocks per OBJECT", &self.histogram),
-            ("components per OBJECT", &self.components_per_object),
-            ("components per BUCKET", &self.components_per_bucket),
+            ("components per OBJECT", &self.element_names_per_object),
+            ("components per BUCKET", &self.element_names_per_bucket),
         ] {
             let n: usize = map.values().copied().sum();
             println!(
@@ -297,13 +297,13 @@ impl BlocksPerObject {
              spellings of numbers ({:.1}% of component text)",
             self.object_key_bytes,
             self.objects(),
-            self.component_name_bytes,
-            self.hex_component_name_bytes,
-            self.hex_components,
-            if self.component_name_bytes == 0 {
+            self.element_name_name_bytes,
+            self.hex_element_name_name_bytes,
+            self.hex_element_names,
+            if self.element_name_name_bytes == 0 {
                 0.0
             } else {
-                100.0 * self.hex_component_name_bytes as f64 / self.component_name_bytes as f64
+                100.0 * self.hex_element_name_name_bytes as f64 / self.element_name_name_bytes as f64
             }
         );
     }
@@ -329,11 +329,11 @@ fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut measured = BlocksPerObject::default();
     for bucket in shard.bucket_index.bucket_map.values() {
-        let mut bucket_components: BTreeSet<Option<&str>> = BTreeSet::new();
+        let mut bucket_element_names: BTreeSet<Option<&str>> = BTreeSet::new();
         for (handle, block) in bucket.block_index.iter() {
             measured.blocks += 1;
             // One member for any non-empty bucket: every entry carries the same absence.
-            bucket_components.insert(None::<&str>);
+            bucket_element_names.insert(None::<&str>);
             let slot = per_object
                 .entry((
                     block.model_id(),
@@ -348,15 +348,15 @@ fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
             // read.
         }
         *measured
-            .components_per_bucket
-            .entry(bucket_components.len())
+            .element_names_per_bucket
+            .entry(bucket_element_names.len())
             .or_default() += 1;
     }
-    for ((_, object_key), (blocks, components)) in per_object.iter() {
+    for ((_, object_key), (blocks, element_names)) in per_object.iter() {
         *measured.histogram.entry(*blocks).or_default() += 1;
         *measured
-            .components_per_object
-            .entry(components.len())
+            .element_names_per_object
+            .entry(element_names.len())
             .or_default() += 1;
         measured.object_key_bytes += object_key.len();
     }
@@ -623,7 +623,7 @@ fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
 }
 
 #[cfg(feature = "alloc-probe")]
-fn measure_component_table(engine: &TemporalEngine) -> TableCost {
+fn measure_element_name_table(engine: &TemporalEngine) -> TableCost {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut blocks = 0usize;
@@ -843,7 +843,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
 #[test]
 #[ignore = "alloc-probe only, seeds four stores; run by name with --features alloc-probe"]
 #[cfg(feature = "alloc-probe")]
-fn a_handle_for_the_component_costs_a_table_entry_per_block() {
+fn a_handle_for_the_element_name_costs_a_table_entry_per_block() {
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut rows: Vec<(String, TableCost, BlocksPerObject)> = Vec::new();
 
@@ -859,7 +859,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
             seed_container_keys(&engine, keys, members);
             let distribution = blocks_per_object(&engine);
             distribution.report(&format!("{shape}, {range_label}"));
-            let cost = measure_component_table(&engine);
+            let cost = measure_element_name_table(&engine);
             rows.push((format!("{shape}, {range_label}"), cost, distribution));
         }
     }
@@ -968,7 +968,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
 /// saving on names that have none.
 #[test]
 #[ignore = "seeds two stores; run by name"]
-fn the_component_name_is_hex_text_for_numbers_and_that_half_is_measured() {
+fn the_element_name_name_is_hex_text_for_numbers_and_that_half_is_measured() {
     let mut rows: Vec<(String, BlocksPerObject)> = Vec::new();
     let mut path_lengths: Vec<usize> = Vec::new();
     for (range_label, end) in [
@@ -993,29 +993,29 @@ fn the_component_name_is_hex_text_for_numbers_and_that_half_is_measured() {
 
     for (label, measured) in &rows {
         assert!(
-            measured.component_name_bytes > 0,
+            measured.element_name_name_bytes > 0,
             "{label}: no component text at all, so the ratio below is free"
         );
         // BOTH directions of the predicate must be reached, or it is not discriminating.
         assert!(
-            measured.hex_components > 0,
+            measured.hex_element_names > 0,
             "{label}: the predicate classified NO component as a hex spelling, and this fixture \
              seeds zsets and lists which produce them"
         );
         assert!(
-            measured.hex_component_name_bytes < measured.component_name_bytes,
+            measured.hex_element_name_name_bytes < measured.element_name_name_bytes,
             "{label}: the predicate classified EVERY component byte as hex, and this fixture also \
              seeds hash fields, which are the caller's own text. A predicate that matches \
              everything is not measuring anything"
         );
         let hex_share =
-            measured.hex_component_name_bytes as f64 / measured.component_name_bytes as f64;
+            measured.hex_element_name_name_bytes as f64 / measured.element_name_name_bytes as f64;
         println!(
             "  {label}: {:.1}% of component text is a hex spelling of numbers; storing those as \
              bytes would halve {} B to {} B",
             100.0 * hex_share,
-            measured.hex_component_name_bytes,
-            measured.hex_component_name_bytes / 2
+            measured.hex_element_name_name_bytes,
+            measured.hex_element_name_name_bytes / 2
         );
     }
 }
@@ -1065,7 +1065,7 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // `component` IS NO LONGER A FIELD OF THE ENTRY. The local is kept as the WIDTH THE NAME USED
     // TO COST, because the verdicts below are stated against that arithmetic -- what each of the
     // three names would be worth -- and it is now a counterfactual rather than a measurement.
-    let component_when_it_was_a_field = size_of::<Option<Arc<str>>>();
+    let element_name_when_it_was_a_field = size_of::<Option<Arc<str>>>();
     // TWO FLAG BYTES, NOT THREE, AND THE ROUNDING HID THE THIRD.
     //
     // This read `3usize`. The entry holds `dirty` and `deleted` and nothing else -- `log_backed`
@@ -1097,7 +1097,7 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     println!(
         "  address {address} + model_id {model} + flags {flags} = {} bytes of field in {} B \
          (the key would have added {object_key_when_it_was_a_field} more and a name \
-          {component_when_it_was_a_field} on top of that)",
+          {element_name_when_it_was_a_field} on top of that)",
         address + model + flags,
         size_of::<BlockIndex>()
     );
@@ -1943,7 +1943,7 @@ mod tail_layout {
     /// Today.
     pub(super) struct A0 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
+        pub(super) element_name: Option<Arc<str>>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -1954,7 +1954,7 @@ mod tail_layout {
     /// Today, flags packed.
     pub(super) struct A1 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
+        pub(super) element_name: Option<Arc<str>>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
         pub(super) flags: BlockFlags,
@@ -1963,7 +1963,7 @@ mod tail_layout {
     /// Component as an ordinal.
     pub(super) struct B0 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<NonZeroU16>,
+        pub(super) element_name: Option<NonZeroU16>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -1972,7 +1972,7 @@ mod tail_layout {
     }
     pub(super) struct B1 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<NonZeroU16>,
+        pub(super) element_name: Option<NonZeroU16>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
         pub(super) flags: BlockFlags,
@@ -1981,7 +1981,7 @@ mod tail_layout {
     /// Both names as ordinals.
     pub(super) struct C0 {
         pub(super) object_key: Option<NonZeroU32>,
-        pub(super) component: Option<NonZeroU16>,
+        pub(super) element_name: Option<NonZeroU16>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -1990,7 +1990,7 @@ mod tail_layout {
     }
     pub(super) struct C1 {
         pub(super) object_key: Option<NonZeroU32>,
-        pub(super) component: Option<NonZeroU16>,
+        pub(super) element_name: Option<NonZeroU16>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
         pub(super) flags: BlockFlags,
@@ -2002,7 +2002,7 @@ mod tail_layout {
     /// deleted cannot be priced.
     pub(super) struct E0 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
+        pub(super) element_name: Option<Arc<str>>,
         pub(super) address: [u64; 3],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -2011,7 +2011,7 @@ mod tail_layout {
     }
     pub(super) struct E1 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
+        pub(super) element_name: Option<Arc<str>>,
         pub(super) address: [u64; 3],
         pub(super) model: u8,
         pub(super) flags: BlockFlags,
@@ -2056,7 +2056,7 @@ mod tail_layout {
     /// Both names as ordinals AND the address at 24, which a sibling thread owns.
     pub(super) struct D0 {
         pub(super) object_key: Option<NonZeroU32>,
-        pub(super) component: Option<NonZeroU16>,
+        pub(super) element_name: Option<NonZeroU16>,
         pub(super) address: [u64; 3],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -2065,7 +2065,7 @@ mod tail_layout {
     }
     pub(super) struct D1 {
         pub(super) object_key: Option<NonZeroU32>,
-        pub(super) component: Option<NonZeroU16>,
+        pub(super) element_name: Option<NonZeroU16>,
         pub(super) address: [u64; 3],
         pub(super) model: u8,
         pub(super) flags: BlockFlags,

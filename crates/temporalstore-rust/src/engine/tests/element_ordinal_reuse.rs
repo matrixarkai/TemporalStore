@@ -468,7 +468,7 @@ fn next_element_ordinal_would_be(engine: &TemporalEngine, kind: &str, key: &str)
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     assert!(
-        crate::engine::state::resident_component_address(shard, kind, key, &probe).is_none(),
+        crate::engine::state::resident_element_name_address(shard, kind, key, &probe).is_none(),
         "the probe component IS held by an element of {kind}/{key}, so the allocator would answer \
          its overwrite arm and this helper would be reporting that element's position as the next \
          free ordinal"
@@ -484,11 +484,11 @@ fn ordinal_of_element(
     engine: &TemporalEngine,
     kind: &str,
     key: &str,
-    component: &str,
+    element_name: &str,
 ) -> Option<u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    crate::engine::state::resident_component_address(shard, kind, key, component)
+    crate::engine::state::resident_element_name_address(shard, kind, key, element_name)
         .and_then(crate::block_store::ElementEntry::block_id)
 }
 
@@ -517,7 +517,7 @@ fn durable_element_count(engine: &TemporalEngine, kind: &str, key: &str) -> usiz
 }
 
 fn zset_name(member: &[u8]) -> String {
-    crate::engine::execute_on_shard::zset_component(member)
+    crate::engine::execute_on_shard::zset_element_name(member)
 }
 
 // =================================================================================================
@@ -921,7 +921,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     load_on(&engine, OPERATOR_END);
 
     let member = b"tombstone-member".to_vec();
-    let component = zset_name(&member);
+    let element_name = zset_name(&member);
     let object_id = crate::engine::hashing::stable_block_object_id(
         1,
         "zset",
@@ -1306,7 +1306,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     // live element. An incomplete derivation that happened to yield one key would yield it by luck,
     // and a derivation holding two would make `keys().next()` an arbitrary choice dressed as a
     // measurement.
-    let one_component = |kind: &str, key: &str| -> String {
+    let one_element_name = |kind: &str, key: &str| -> String {
         let (addresses, live_entries) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -1363,28 +1363,28 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 
     // list: ALREADY an ordinal. Sixteen hexadecimal characters, and the value is the biased
     // sequence the durable map is keyed by.
-    let list_component = one_component("list", "eo-k-list");
+    let list_element_name = one_element_name("list", "eo-k-list");
     assert_eq!(
-        list_component.len(),
+        list_element_name.len(),
         16,
         "a list component is {} characters, not the sixteen an ordinal spelling would need",
-        list_component.len()
+        list_element_name.len()
     );
     assert_eq!(
-        list_component,
+        list_element_name,
         format!("{:016x}", (0i64 as u64).wrapping_sub(i64::MIN as u64)),
         "a list component is not the biased sequence this arm claims it is"
     );
     assert!(
-        !list_component.contains(&member_hex),
+        !list_element_name.contains(&member_hex),
         "a list component holds the member's bytes, so it is not a pure ordinal after all"
     );
 
     // hash: the CALLER'S text. An ordinal would not respell this, it would destroy it.
-    let hash_component = one_component("hash", "eo-k-hash");
+    let hash_element_name = one_element_name("hash", "eo-k-hash");
     assert_eq!(
-        hash_component, "a-callers-own-field",
-        "a hash component is not the caller's field name; it reads {hash_component}"
+        hash_element_name, "a-callers-own-field",
+        "a hash component is not the caller's field name; it reads {hash_element_name}"
     );
 
     // set and zset: the member's content, twice over -- once in the name, once in a persisted map.
@@ -1394,24 +1394,24 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     // are `member_component(member)`, one tag byte and the member, so the content is still
     // restated once in the name and once in the persisted map and that is still the finding. What
     // changed is the PRICE of the restatement, from two bytes a member byte to one.
-    let set_component = one_component("set", "eo-k-set");
-    let zset_component = one_component("zset", "eo-k-zset");
+    let set_element_name = one_element_name("set", "eo-k-set");
+    let zset_element_name = one_element_name("zset", "eo-k-zset");
     assert_eq!(
-        set_component, zset_component,
+        set_element_name, zset_element_name,
         "set and zset must spell one member the same way"
     );
     assert_ne!(
-        set_component, member_hex,
+        set_element_name, member_hex,
         "a set component is STILL the member's hex -- the writer flip did not reach this path"
     );
     assert!(
-        set_component.len() < member_hex.len(),
+        set_element_name.len() < member_hex.len(),
         "a component of {} characters is not shorter than the {} hex charged",
-        set_component.len(),
+        set_element_name.len(),
         member_hex.len()
     );
     assert_eq!(
-        crate::engine::container_blocks::member_from_component(&set_component),
+        crate::engine::container_blocks::member_from_element_name(&set_element_name),
         hex::decode(&member_hex).ok(),
         "the component no longer names the member it is filed for"
     );
@@ -1428,11 +1428,11 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     );
 
     println!(
-        "\n  list  {list_component}  ALREADY an ordinal ({} chars)\n  hash  {hash_component}  the \
-         CALLER's field name -- an ordinal destroys it\n  set   {set_component}  the member once, \
-         and the durable map holds the member too\n  zset  {zset_component}  the member once as \
+        "\n  list  {list_element_name}  ALREADY an ordinal ({} chars)\n  hash  {hash_element_name}  the \
+         CALLER's field name -- an ordinal destroys it\n  set   {set_element_name}  the member once, \
+         and the durable map holds the member too\n  zset  {zset_element_name}  the member once as \
          well, and the durable map holds the member AND the score",
-        list_component.len()
+        list_element_name.len()
     );
 }
 
@@ -1520,15 +1520,15 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
     // `HashGetAll`'s divergence-observing half, which reads the index beside `shard.hashes` so a
     // disagreement is OBSERVED rather than suffered. That it is down to one is the same movement
     // as the two point reads above, counted at a different door.
-    let blind_sites = execute.matches("bucket_index_component_block_addresses(").count();
+    let blind_sites = execute.matches("bucket_index_element_name_block_addresses(").count();
     assert_eq!(
         blind_sites, 1,
-        "bucket_index_component_block_addresses has {blind_sites} callers in execute_on_shard.rs, \
+        "bucket_index_element_name_block_addresses has {blind_sites} callers in execute_on_shard.rs, \
          not one"
     );
     assert!(
-        store.contains("pub(super) fn bucket_index_component_block_addresses(\n    shard: &ShardState,\n    model_id: &str,\n    object_key: &str,\n) -> Vec<(Option<Arc<str>>, ElementEntry)>"),
-        "bucket_index_component_block_addresses no longer takes exactly (shard, model_id, \
+        store.contains("pub(super) fn bucket_index_element_name_block_addresses(\n    shard: &ShardState,\n    model_id: &str,\n    object_key: &str,\n) -> Vec<(Option<Arc<str>>, ElementEntry)>"),
+        "bucket_index_element_name_block_addresses no longer takes exactly (shard, model_id, \
          object_key) -- if it has gained a component argument, the reason it is NOT the obstacle \
          here has changed"
     );
@@ -1536,7 +1536,7 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
     println!(
         "\n  [read path] bucket_index_block_address: 1 caller (read_bucket_index_value)\n  \
          read_bucket_index_value: {read_sites} call site, kinds {kinds:?}\n  \
-         bucket_index_component_block_addresses: {blind_sites} caller, component-blind by \
+         bucket_index_element_name_block_addresses: {blind_sites} caller, component-blind by \
          signature\n  source read: {} + {} bytes",
         execute.len(),
         store.len()
@@ -1631,7 +1631,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
         } else {
             format!("member-{element}").into_bytes()
         };
-        let name = crate::engine::execute_on_shard::set_component(&member);
+        let name = crate::engine::execute_on_shard::set_element_name(&member);
         set_total += 1;
         if parses_as_ordinal(&name).is_some() {
             set_hits += 1;
@@ -1733,7 +1733,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     }
 
     let name: Option<std::sync::Arc<str>> = Some(std::sync::Arc::from("a-component-name"));
-    let component_width = field_width(&name);
+    let element_name_width = field_width(&name);
     let u16_ordinal = field_width(&Some(0u16));
     let u32_ordinal = field_width(&Some(0u32));
 
@@ -1742,8 +1742,8 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // the type the field used to have rather than dropped, and the paragraph below prices the
     // ordinal against the entry as it is now.
     assert_eq!(
-        component_width, 16,
-        "`Option<Arc<str>>` reads {component_width} bytes, not the sixteen this whole proposal was \
+        element_name_width, 16,
+        "`Option<Arc<str>>` reads {element_name_width} bytes, not the sixteen this whole proposal was \
          stated in"
     );
 
@@ -1773,7 +1773,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 
     println!(
         "\n  [width] the name this proposal would have traded: Option<Arc<str>> = \
-         {component_width} B, ALREADY REMOVED; Option<u16> = {u16_ordinal} B, Option<u32> = \
+         {element_name_width} B, ALREADY REMOVED; Option<u16> = {u16_ordinal} B, Option<u32> = \
          {u32_ordinal} B\n  entry now {entry_now} B holding {field_bytes_now} of field, zero \
          slack; ADDING a u16 ordinal gives {field_bytes_with_u16} of field in {width_with_u16}, a \
          u32 {field_bytes_with_u32} in {width_with_u32}"
@@ -1914,7 +1914,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 // =================================================================================================
 
 /// Every block of this shard, as `(kind, key, component length)`.
-fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usize>)> {
+fn element_name_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usize>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut rows = Vec::new();
@@ -2002,7 +2002,7 @@ fn seed_routed_strings(engine: &TemporalEngine, keys: usize) {
 fn what_an_element_ordinal_would_have_saved_a_block() {
     use crate::alloc_probe::Probe;
 
-    let component_field_bytes = std::mem::size_of::<Option<std::sync::Arc<str>>>();
+    let element_name_field_bytes = std::mem::size_of::<Option<std::sync::Arc<str>>>();
     let ordinal_field_bytes = std::mem::size_of::<Option<u16>>();
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut rows_reported = 0usize;
@@ -2020,7 +2020,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             load_on(&engine, end);
             seed_containers(&engine, keys, 100);
 
-            let census = component_census(&engine);
+            let census = element_name_census(&engine);
             let named: Vec<usize> = census.iter().filter_map(|row| row.2).collect();
             assert!(
                 !named.is_empty(),
@@ -2069,7 +2069,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
                 named.len(),
                 counts.alloc_bytes as f64 / blocks,
                 counts.chunk_bytes as f64 / blocks,
-                component_field_bytes,
+                element_name_field_bytes,
                 ordinal_field_bytes
             );
             rows_reported += 1;
@@ -2080,7 +2080,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             let routed = engine_on(routed_dir.path());
             load_on(&routed, end);
             seed_routed_strings(&routed, keys * 100);
-            let routed_census = component_census(&routed);
+            let routed_census = element_name_census(&routed);
             assert!(
                 !routed_census.is_empty(),
                 "DENOMINATOR: the routed control seeded no block at all"
@@ -2209,7 +2209,7 @@ fn at_the_ceiling_the_address_refuses_rather_than_truncating() {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "counting allocator; run by name under --features alloc-probe"]
-fn what_a_component_costs_an_element_at_five_member_widths() {
+fn what_an_element_name_costs_an_element_at_five_member_widths() {
     use crate::alloc_probe::Probe;
 
     const WIDTHS: [usize; 5] = [8, 16, 32, 64, 256];
@@ -2274,7 +2274,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
             }
 
             // The component lengths the store ACTUALLY holds, as a histogram.
-            let census = component_census(&engine);
+            let census = element_name_census(&engine);
             let held: Vec<&(String, String, Option<usize>)> =
                 census.iter().filter(|row| row.0 == kind).collect();
             assert_eq!(
@@ -2456,7 +2456,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 ///
 /// rust-internal: reads the crate's own source and drives one reload
 #[test]
-fn the_component_ordering_property_is_consumed_by_the_set_listing() {
+fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
     // THE WALK THIS COMPARES AGAINST WAS BUILT BY DECODING EACH ENTRY'S COMPONENT, through an
     // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same defaulting
     // the production readers were fixed to stop doing. With no element name on an entry it yielded
@@ -2520,7 +2520,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // COMMENT whose wording the ban matched. A fourth absence check would be defeated by a rename.
     // The literal below names every field of `BlockIndex` with no `..`, so a component field
     // returning to the entry is a COMPILE ERROR here rather than a silently passing grep.
-    let _no_component_field_exists = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Set, crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)), false, false);
+    let _no_element_name_field_exists = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Set, crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)), false, false);
 
     // AND THE WEAK HALF, KEPT AND LABELLED AS SUCH. A rename defeats it, which is exactly why it
     // is not carrying the claim on its own. What it adds to the literal above is the direction: the
@@ -2624,13 +2624,13 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
                     member.clone(),
                 );
             }
-            crate::engine::bucket_store::bucket_index_component_block_addresses(
+            crate::engine::bucket_store::bucket_index_element_name_block_addresses(
                 shard,
                 "set",
                 "eo-set-order",
             )
             .into_iter()
-            .filter_map(|(_component, address)| {
+            .filter_map(|(_element_name, address)| {
                 member_at
                     .get(&(
                         address.block_slab_id(),
@@ -2679,13 +2679,13 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // replacing another: the write order is [07, 01, 09, 03, 05, 00, 08, 02, 06, 04], the walk
         // is address order, and the listing is component order. The assertion below can be failed
         // by the listing matching either of the other two.
-        let by_component: Vec<Vec<u8>> = {
+        let by_element_name: Vec<Vec<u8>> = {
             let mut sorted = members.clone();
             sorted.sort_by_key(|member| hex::encode(member));
             sorted
         };
         assert_eq!(
-            listed, by_component,
+            listed, by_element_name,
             "the set listing is not in component order. It is built by folding the object's blocks \
              in `derive_membership`, whose map is keyed by the component spelling, so this is the \
              order it must come back in -- if it has stopped being, find out what imposed the new \

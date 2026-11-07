@@ -233,8 +233,8 @@ struct Population {
     /// Blocks grouped by (kind, key) -- component OUT. What an object list would key on.
     by_kind_key: BTreeMap<String, usize>,
     /// Blocks grouped by (kind, key) for COMPONENT-FREE blocks only: the null control's population.
-    component_free_by_kind_key: BTreeMap<String, usize>,
-    component_free_by_object_id: BTreeMap<u64, usize>,
+    element_name_free_by_kind_key: BTreeMap<String, usize>,
+    element_name_free_by_object_id: BTreeMap<u64, usize>,
     total_buckets: usize,
     total_blocks: usize,
     blocks_without_object_id: usize,
@@ -274,10 +274,10 @@ fn population(engine: &TemporalEngine) -> Population {
             // group is the whole population rather than a subset of it. Kept because the CONTROL
             // it feeds still has a subject: it compares grouping by the engine's object id against
             // grouping by (kind, key), and those two can still disagree.
-            *out.component_free_by_object_id.entry(id).or_default() += 1;
+            *out.element_name_free_by_object_id.entry(id).or_default() += 1;
             let kind_key = format!("{:?}\u{1}{}", entry.model_id(), object_key);
             *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
-            *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
+            *out.element_name_free_by_kind_key.entry(kind_key).or_default() += 1;
         }
     }
     out.blocks_per_bucket.sort_unstable();
@@ -486,10 +486,10 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
 
             // --- THE NULL CONTROL, AT 0.00%. ---
             let (cf_id_groups, cf_id_max) =
-                report_group("CONTROL component-free by id", &pop.component_free_by_object_id);
+                report_group("CONTROL component-free by id", &pop.element_name_free_by_object_id);
             let (cf_key_groups, cf_key_max) = report_group(
                 "CONTROL component-free by (kind,key)",
-                &pop.component_free_by_kind_key,
+                &pop.element_name_free_by_kind_key,
             );
             assert!(
                 cf_id_groups > 0,

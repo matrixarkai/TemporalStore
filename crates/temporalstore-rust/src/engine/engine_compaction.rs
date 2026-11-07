@@ -872,11 +872,11 @@ pub(super) fn compact_container_blocks_batched<'a>(
         if !rewrite_stats.should_relocate(element.address) {
             continue;
         }
-        let component = match super::container_blocks::component_from_element_key(
+        let element_name = match super::container_blocks::element_name_from_element_key(
             spelling,
             &element.key,
         ) {
-            Some(component) => component,
+            Some(element_name) => element_name,
             // A key this spelling cannot render names no component, so no page can be found for it.
             // Counted by being skipped; the address is left alone.
             None => continue,
@@ -890,7 +890,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
             // element from the component just rendered, so the identity is derived here from both
             // halves rather than recovered from the address -- which is what #2024 made the only
             // way to name a block, precisely so a relocation cannot read a block it cannot name.
-            BlockIdentity::of(shard_id, model_id, object_key, Some(component.as_str())),
+            BlockIdentity::of(shard_id, model_id, object_key, Some(element_name.as_str())),
             routing_bucket,
         )
         .ok_or_else(|| {

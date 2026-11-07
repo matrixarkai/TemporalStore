@@ -38,7 +38,7 @@ use crate::engine::state::{
 use crate::engine::storage_bucket_internals::stored_model_kind;
 use std::sync::Arc;
 
-fn block(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
+fn block(object: &str, element_name: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
     BlockIndex::new(
         stored_model_kind("hash"),
         ElementEntry::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),

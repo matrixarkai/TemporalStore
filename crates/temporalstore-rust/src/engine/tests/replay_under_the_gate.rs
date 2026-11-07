@@ -313,7 +313,7 @@ fn a_gated_write_reaches_the_log_and_every_member_comes_back_through_replay() {
 /// would be a fact with no stated consequence. With it, the pair says the thing worth saying --
 /// the drop is real, and what prevents it is that the component is taken from the COMMAND.
 #[test]
-fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
+fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_with_cache(dir.path(), "cache-direct");
     // THIS TEST PREVIOUSLY LEAKED THE GATE: it set the variable and never removed it, so every
@@ -339,64 +339,64 @@ fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
         key: KEY.to_string(),
         member: member_bytes(0),
     };
-    let named = crate::engine::command_upsert_components(&command, shard)
+    let named = crate::engine::command_upsert_element_names(&command, shard)
         .expect("a set add must name an upsert component");
     println!("\n=== asked directly, under the gate ===");
-    println!("  command_upsert_components -> {named:?}");
+    println!("  command_upsert_element_names -> {named:?}");
     assert_eq!(
         1,
         named.len(),
         "a single set add named {} components",
         named.len()
     );
-    let (kind, object_key, component) = named[0].clone();
+    let (kind, object_key, element_name) = named[0].clone();
     assert_eq!("set", kind, "the component is filed under {kind}");
     assert_eq!(KEY, object_key.as_str(), "it names object {object_key}");
-    let component = component.expect(
-        "THE GATE REACHED THE RECORD. `command_upsert_components` no longer names a component for \
+    let element_name = element_name.expect(
+        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names a component for \
          a set add, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
          item, and the write would never reach the index log",
     );
     assert_eq!(
         hex::encode(member_bytes(0)),
-        component,
-        "the component is spelled {component}, not as the set arm decodes it"
+        element_name,
+        "the component is spelled {element_name}, not as the set arm decodes it"
     );
 
     // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
-    let with_component = crate::engine::collect_upsert_index_items(
+    let with_element_name = crate::engine::collect_upsert_index_items(
         shard,
         1,
-        &[("set", KEY.to_string(), Some(component.clone()))],
+        &[("set", KEY.to_string(), Some(element_name.clone()))],
         0,
         1023,
     );
-    println!("  with the command's component -> {} item(s)", with_component.len());
+    println!("  with the command's component -> {} item(s)", with_element_name.len());
 
     // (3) THE NEGATIVE CONTROL: the same call with no component builds NOTHING. This is the
     //     failure 7b names, demonstrated rather than asserted about.
-    let without_component = crate::engine::collect_upsert_index_items(
+    let without_element_name = crate::engine::collect_upsert_index_items(
         shard,
         1,
         &[("set", KEY.to_string(), None)],
         0,
         1023,
     );
-    println!("  with no component    -> {} item(s)", without_component.len());
+    println!("  with no component    -> {} item(s)", without_element_name.len());
 
     assert_eq!(
         1,
-        with_component.len(),
+        with_element_name.len(),
         "the builder made {} items for one component, so the counts below are not comparable",
-        with_component.len()
+        with_element_name.len()
     );
     assert!(
-        without_component.is_empty(),
+        without_element_name.is_empty(),
         "THE NEGATIVE CONTROL DID NOT HOLD: a `(\"set\", None)` component built {} item(s), so the \
          `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
          longer what protects the index log. If a later step gave the builder a block-named arm, \
          THIS is the assertion to change -- deliberately, saying so",
-        without_component.len()
+        without_element_name.len()
     );
 }
 
@@ -586,7 +586,7 @@ fn a_gated_hash_write_reaches_the_log_and_every_field_comes_back_through_replay(
 
 /// rust-internal: asks the hash index-log item builder directly, mirroring the set version exactly
 #[test]
-fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from() {
+fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_from() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_with_cache(dir.path(), "cache-direct-hash");
     assert!(load_on(&engine).ok, "the fixture's load failed");
@@ -612,64 +612,64 @@ fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from()
         field: field_name(0),
         value: field_value(0),
     };
-    let named = crate::engine::command_upsert_components(&command, shard)
+    let named = crate::engine::command_upsert_element_names(&command, shard)
         .expect("a hash set must name an upsert component");
     println!("\n=== asked directly, under the gate (hash) ===");
-    println!("  command_upsert_components -> {named:?}");
+    println!("  command_upsert_element_names -> {named:?}");
     assert_eq!(
         1,
         named.len(),
         "a single hash set named {} components",
         named.len()
     );
-    let (kind, object_key, component) = named[0].clone();
+    let (kind, object_key, element_name) = named[0].clone();
     assert_eq!("hash", kind, "the component is filed under {kind}");
     assert_eq!(HASH_KEY, object_key.as_str(), "it names object {object_key}");
-    let component = component.expect(
-        "THE GATE REACHED THE RECORD. `command_upsert_components` no longer names a component for \
+    let element_name = element_name.expect(
+        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names a component for \
          a hash set, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
          item, and the write would never reach the index log",
     );
     assert_eq!(
         field_name(0),
-        component,
-        "the component is spelled {component}, not the field name `command_upsert_components` \
+        element_name,
+        "the component is spelled {element_name}, not the field name `command_upsert_element_names` \
          should have taken straight off the command"
     );
 
     // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
-    let with_component = crate::engine::collect_upsert_index_items(
+    let with_element_name = crate::engine::collect_upsert_index_items(
         shard,
         1,
-        &[("hash", HASH_KEY.to_string(), Some(component.clone()))],
+        &[("hash", HASH_KEY.to_string(), Some(element_name.clone()))],
         0,
         1023,
     );
-    println!("  with the command's component -> {} item(s)", with_component.len());
+    println!("  with the command's component -> {} item(s)", with_element_name.len());
 
     // (3) THE NEGATIVE CONTROL: the same call with no component builds NOTHING.
-    let without_component = crate::engine::collect_upsert_index_items(
+    let without_element_name = crate::engine::collect_upsert_index_items(
         shard,
         1,
         &[("hash", HASH_KEY.to_string(), None)],
         0,
         1023,
     );
-    println!("  with no component    -> {} item(s)", without_component.len());
+    println!("  with no component    -> {} item(s)", without_element_name.len());
 
     assert_eq!(
         1,
-        with_component.len(),
+        with_element_name.len(),
         "the builder made {} items for one component, so the counts below are not comparable",
-        with_component.len()
+        with_element_name.len()
     );
     assert!(
-        without_component.is_empty(),
+        without_element_name.is_empty(),
         "THE NEGATIVE CONTROL DID NOT HOLD: a (\"hash\", None) component built {} item(s), so the \
          `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
          longer what protects the index log. If a later step gave the builder a block-named arm, \
          THIS is the assertion to change -- deliberately, saying so",
-        without_component.len()
+        without_element_name.len()
     );
 }
 
@@ -708,7 +708,7 @@ fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from()
 ///
 ///   cargo test -p temporalstore-rust --lib every_declared_component_builds_an_index_item -- --nocapture
 #[test]
-fn every_declared_component_builds_an_index_item() {
+fn every_declared_element_name_builds_an_index_item() {
     use crate::types::{Command, ExecuteRequest, FeaturePoint};
 
     const T0: u64 = 1_787_270_070_000;
@@ -796,9 +796,9 @@ fn every_declared_component_builds_an_index_item() {
     for (label, command) in &commands {
         // POST-WRITE, which is when the real caller asks: a list push files under a sequence only
         // knowable after the write, and a feature append under the timestamp it stored.
-        let named = crate::engine::command_upsert_components(command, shard).unwrap_or_else(|| {
+        let named = crate::engine::command_upsert_element_names(command, shard).unwrap_or_else(|| {
             panic!(
-                "`command_upsert_components` names nothing for a {label} write. If that is now \
+                "`command_upsert_element_names` names nothing for a {label} write. If that is now \
                  deliberate -- the kind went back to the whole-object snapshot path -- remove it \
                  from this test's list and say why; a silent `None` here is a cost regression, \
                  not a loss."
@@ -851,7 +851,7 @@ fn every_declared_component_builds_an_index_item() {
     );
     assert_eq!(
         6, checked,
-        "this guard covers six kinds; a kind added to `command_upsert_components` belongs in this \
+        "this guard covers six kinds; a kind added to `command_upsert_element_names` belongs in this \
          list too, and the number here is what makes leaving it out visible"
     );
 

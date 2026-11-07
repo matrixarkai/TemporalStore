@@ -215,7 +215,7 @@ pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BlockIdentity<'a> {
     object_id: u64,
-    component: Option<&'a str>,
+    element_name: Option<&'a str>,
 }
 
 impl<'a> BlockIdentity<'a> {
@@ -227,10 +227,10 @@ impl<'a> BlockIdentity<'a> {
     /// [`BlockAddress::from_parts`] has no `generation` parameter -- a constructor that accepted a
     /// precomputed value would invite a caller to pass one that disagrees with the terms, which is
     /// the single thing a derivation cannot honour.
-    pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, component: Option<&'a str>) -> Self {
+    pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, element_name: Option<&'a str>) -> Self {
         Self {
             object_id: stable_block_object_id(shard_id, kind, key),
-            component,
+            element_name,
         }
     }
 
@@ -240,8 +240,8 @@ impl<'a> BlockIdentity<'a> {
     }
 
     /// Which element of that object, or `None` when the block is the whole of it.
-    pub(super) fn component(self) -> Option<&'a str> {
-        self.component
+    pub(super) fn element_name(self) -> Option<&'a str> {
+        self.element_name
     }
 }
 

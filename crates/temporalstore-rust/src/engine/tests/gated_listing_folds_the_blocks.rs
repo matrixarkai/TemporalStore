@@ -278,7 +278,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     }
 
     let member = b"member-000".to_vec();
-    let component = hex::encode(&member);
+    let element_name = hex::encode(&member);
 
     // A real framed block for that member, through the codec rather than hand-assembled.
     let framed = crate::engine::container_blocks::encode_container_block(
@@ -331,7 +331,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
         only_framed.live.len()
     );
     assert!(
-        only_framed.live.contains_key(&component),
+        only_framed.live.contains_key(&element_name),
         "the framed-only fold does not name the member, so the codec and the fold disagree about \
          the spelling and nothing here is about unframed blocks"
     );

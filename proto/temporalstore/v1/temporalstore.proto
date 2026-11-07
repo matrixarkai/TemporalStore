@@ -651,7 +651,7 @@ message EngineWalItem {
 
   // Which component of the object this is: a hash field, a set member, a timestamp, a score and
   // member packed together. Absent for an object with exactly one value.
-  optional string component = 11;
+  optional string element_name = 11;
   // Where the block for this component went. Absent for state no block backs -- a seen-set
   // member, a token bucket -- which carries its bytes in `value` instead.
   WalBlockAddress block = 12;
@@ -699,7 +699,7 @@ message WalStagedBlock {
   //
   // Absent for a page that IS its whole object (a string, a control state), which is what `None`
   // has always meant for `BlockIndex::component`. Never absent for a container element.
-  optional string component = 4;
+  optional string element_name = 4;
 }
 
 message EngineWalMetadata {

@@ -2591,7 +2591,7 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
 #[ignore = "seeds two stores of 40,000 records; run by name"]
 fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
     const RECORDS: usize = 40_000;
-    const COMPONENTS: usize = 8;
+    const ELEMENT_NAMES: usize = 8;
 
     for (label, end_routing_bucket) in [("the operator's 1023", 1023u32), ("whole keyspace", u32::MAX)] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2610,12 +2610,12 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
 
         // MANY COMPONENTS UNDER ONE KEY, which is what puts many OBJECTS in one bucket: routing takes
         // the object key and never the component, while the object id folds the component in.
-        let keys = RECORDS / COMPONENTS;
+        let keys = RECORDS / ELEMENT_NAMES;
         for key_index in 0..keys {
-            let commands = (0..COMPONENTS)
-                .map(|component| Command::HashSet {
+            let commands = (0..ELEMENT_NAMES)
+                .map(|element_name| Command::HashSet {
                     key: format!("obj-{key_index:06}"),
-                    field: format!("f{component}"),
+                    field: format!("f{element_name}"),
                     value: vec![b'h'; 32],
                 })
                 .collect::<Vec<_>>();
@@ -2902,7 +2902,7 @@ struct DerivationCensus {
     /// Entries carrying a component. The component is no longer a term of the id, but it is
     /// still a field of the entry, and a census whose entries all carry `None` would not
     /// exercise the container population this change acts on at all.
-    with_component: usize,
+    with_element_name: usize,
     /// Distinct derived ids, so a fixture that gave every block the same identity cannot report
     /// agreement as a property of the derivation.
     distinct_derived: std::collections::HashSet<u64>,
@@ -2919,7 +2919,7 @@ impl DerivationCensus {
         };
         println!(
             "[{label}] entries={} agree={} ({:.2}%) differ={} ({:.2}%) absent={} ({:.2}%) \
-             with_component={} distinct_derived_ids={}",
+             with_element_name={} distinct_derived_ids={}",
             self.entries,
             self.agree,
             pct(self.agree),
@@ -2927,7 +2927,7 @@ impl DerivationCensus {
             pct(self.differ),
             self.absent,
             pct(self.absent),
-            self.with_component,
+            self.with_element_name,
             self.distinct_derived.len(),
         );
     }
@@ -3151,8 +3151,8 @@ fn the_block_identity_has_no_constructor_that_takes_an_id() {
          an identity, and this test can only vouch for the one that takes the terms"
     );
     assert!(
-        block.contains("pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, component: Option<&'a str>) -> Self"),
-        "the one constructor is no longer `of(shard, kind, key, component)`. If it now takes an id, \
+        block.contains("pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, element_name: Option<&'a str>) -> Self"),
+        "the one constructor is no longer `of(shard, kind, key, element_name)`. If it now takes an id, \
          a caller can pass a stale one and the compiler cannot say so -- which is the entire reason \
          this type exists rather than a bare `u64`"
     );

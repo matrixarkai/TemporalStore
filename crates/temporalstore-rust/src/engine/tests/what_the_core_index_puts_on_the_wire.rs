@@ -86,7 +86,7 @@ fn an_index_with_every_field_populated() -> CoreIndex {
         },
     );
     index.kind_pool.insert(Arc::clone(&model));
-    index.object_component_block_refs = Some(3);
+    index.object_element_name_block_refs = Some(3);
     index.released_buckets.insert(11);
     // THE CONSOLIDATED MAP, WHICH IS ON THE WIRE TOO NOW. One row under one kind is enough for
     // the key-set assertion below; what matters is that the field is not empty, so the control
@@ -132,7 +132,7 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
         // SKIPPED, `#[serde(skip)]`. An interning pool for the model spellings.
         kind_pool,
         // SKIPPED, `#[serde(skip)]`. A derived total, `None` meaning not established.
-        object_component_block_refs,
+        object_element_name_block_refs,
         // SKIPPED, `#[serde(skip)]`. Which buckets have had their resident blocks released.
         released_buckets,
     } = &index;
@@ -148,7 +148,7 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     );
     assert!(!kind_pool.is_empty(), "skipped field must be populated");
     assert_eq!(
-        *object_component_block_refs,
+        *object_element_name_block_refs,
         Some(3),
         "skipped field must be populated"
     );
@@ -243,7 +243,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
     // `Some` and as the number of refs actually filed, so a decoder that forgot to establish it
     // fails and so does one that invents a count.
     assert_eq!(
-        after.object_component_block_refs,
+        after.object_element_name_block_refs,
         Some(0),
         "the decode must establish the derived total, at the number of refs it filed"
     );
@@ -407,11 +407,11 @@ fn the_stored_block_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
     // TWO DIFFERENT IDENTITIES, ONE KEY. The separator is a bare colon and both the object key and
     // the component may contain one, so the boundary between them is not recoverable.
     let colon_in_the_object = block_ref_key_from_parts("string", "a:b", None, 0, 0, 0, 0, 0);
-    let colon_in_the_component = block_ref_key_from_parts("string", "a", Some("b:"), 0, 0, 0, 0, 0);
+    let colon_in_the_element_name = block_ref_key_from_parts("string", "a", Some("b:"), 0, 0, 0, 0, 0);
     println!("object `a:b`, no component -> {colon_in_the_object}");
-    println!("object `a`, component `b:` -> {colon_in_the_component}");
+    println!("object `a`, component `b:` -> {colon_in_the_element_name}");
     assert_eq!(
-        colon_in_the_object, colon_in_the_component,
+        colon_in_the_object, colon_in_the_element_name,
         "two different identities must collide for the format to be shown ambiguous"
     );
 
@@ -586,7 +586,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // CLAIM TWO: the derived total is established, at the count of refs filed.
     assert_eq!(
         Some(2),
-        decoded.object_component_block_refs,
+        decoded.object_element_name_block_refs,
         "the decode must establish the ref total at what it filed"
     );
 

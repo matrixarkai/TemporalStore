@@ -538,7 +538,7 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 /// This arm is named for reconstructing the live entry and its stride, so it keeps the live
 /// reading. The historical three-bool tail is modelled by the mirrors in `blocks_per_bucket`,
 /// which compare against each other rather than against the live type.
-struct MirrorEntryNoComponent {
+struct MirrorEntryNoElementName {
     address: ElementEntry,
 }
 
@@ -586,10 +586,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // Sixteen bytes, a fat optional pointer. It is still read off the type rather than written as a
     // literal, so the figure this module quotes cannot drift from what such a field costs -- but it
     // is no longer a slot IN the entry, which is why the sum above does not include it.
-    let component_width = size_of::<Option<Arc<str>>>();
+    let element_name_width = size_of::<Option<Arc<str>>>();
     assert_eq!(
-        16, component_width,
-        "the component slot was {component_width} B, not the sixteen this module is about"
+        16, element_name_width,
+        "the component slot was {element_name_width} B, not the sixteen this module is about"
     );
     // THE BASELINE MOVED BECAUSE THE KEY LEFT TOO, AND BOTH ENDS ARE PINNED SO NEITHER DRIFTS.
     //
@@ -603,10 +603,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // Derived from the types either way; this literal is the part that moves.
     assert_eq!(
         32,
-        round_up_to_eight(live_fields + component_width),
+        round_up_to_eight(live_fields + element_name_width),
         "the entry with a name slot added back is {} B, not the forty today's field set plus a \
          name slot comes to",
-        round_up_to_eight(live_fields + component_width)
+        round_up_to_eight(live_fields + element_name_width)
     );
     // FORTY-EIGHT, NOT FIFTY-SIX: the baseline this module measures its step DOWN from moved with
     // the entry. The saving it reports is a DIFFERENCE, so quoting the old base makes the
@@ -614,10 +614,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // names. Derived two assertions above; this literal is what has to follow it.
     assert_eq!(
         48,
-        round_up_to_eight(live_fields + component_width + size_of::<Arc<str>>()),
+        round_up_to_eight(live_fields + element_name_width + size_of::<Arc<str>>()),
         "the entry this module measured the step DOWN from is {} B, not the 56 it quotes -- so \
          the saving it reports is against the wrong baseline",
-        round_up_to_eight(live_fields + component_width + size_of::<Arc<str>>())
+        round_up_to_eight(live_fields + element_name_width + size_of::<Arc<str>>())
     );
 
     // --- THE MIRROR, WHICH IS NOW THE SAME SHAPE AS THE LIVE ENTRY. ---
@@ -642,34 +642,34 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     let mirror_fields = size_of::<ElementEntry>();
     assert_eq!(
         round_up_to_eight(mirror_fields),
-        size_of::<MirrorEntryNoComponent>(),
+        size_of::<MirrorEntryNoElementName>(),
         "the component-less entry reconstructs to {} B from {mirror_fields} B of field, but \
          `size_of` says {}",
         round_up_to_eight(mirror_fields),
-        size_of::<MirrorEntryNoComponent>()
+        size_of::<MirrorEntryNoElementName>()
     );
     assert_eq!(
         size_of::<BlockIndex>(),
-        size_of::<MirrorEntryNoComponent>(),
+        size_of::<MirrorEntryNoElementName>(),
         "the live entry is {} B and the mirror of a nameless entry is {} B. They must be the SAME \
          shape now that the entry carries no name: a difference means the mirror has drifted and \
          every figure below is about a structure the engine does not have",
         size_of::<BlockIndex>(),
-        size_of::<MirrorEntryNoComponent>()
+        size_of::<MirrorEntryNoElementName>()
     );
 
     // --- THE STRIDE, WHICH IS THE NUMBER THAT ACTUALLY MOVES, because `BlockIndexMap` IS its list
     //     and a tuple re-aligns to eight. #1997 states this distinction and it has been conflated
     //     before, so both are asserted and both are printed. ---
     let live_stride = size_of::<(u64, BlockIndex)>();
-    let mirror_stride = size_of::<(u64, MirrorEntryNoComponent)>();
+    let mirror_stride = size_of::<(u64, MirrorEntryNoElementName)>();
     assert_eq!(
         round_up_to_eight(size_of::<u64>() + size_of::<BlockIndex>()),
         live_stride,
         "the live stride does not reconstruct from its parts"
     );
     assert_eq!(
-        round_up_to_eight(size_of::<u64>() + size_of::<MirrorEntryNoComponent>()),
+        round_up_to_eight(size_of::<u64>() + size_of::<MirrorEntryNoElementName>()),
         mirror_stride,
         "the mirror stride does not reconstruct from its parts"
     );
@@ -698,7 +698,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     assert_eq!(24, live_stride, "the stride pin moved");
     assert_eq!(
         16,
-        size_of::<MirrorEntryNoComponent>(),
+        size_of::<MirrorEntryNoElementName>(),
         "the component-less entry is not 24"
     );
     // TWENTY-FOUR, AND THIS IS THE THIRD PIN IN THIS ARM THAT THE ENTRY DRAGGED WITH IT. The
@@ -736,10 +736,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // this literal is the only part that has had to be edited each time.
     assert_eq!(
         40,
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width)),
         "the stride of an entry with a name slot added back is {} B, not the 48 the per-block \
          saving was quoted against",
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width))
     );
 
     println!(
@@ -747,10 +747,10 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
          back it would be {} B of field in {} B at a {} B stride -- the {} B a block this step \
          banked",
         size_of::<BlockIndex>(),
-        live_fields + component_width,
-        round_up_to_eight(live_fields + component_width),
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
-        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
+        live_fields + element_name_width,
+        round_up_to_eight(live_fields + element_name_width),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width)),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + element_name_width))
             - live_stride
     );
 }
@@ -1378,7 +1378,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
     // ONLY A HANDLE TERM NOW. The row itself cannot carry an element name, so this varies the one
     // place a name can still appear -- the third term of the handle derivation -- which is exactly
     // the term under test.
-    let component = "f0";
+    let element_name = "f0";
     let address = ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
     let routing_bucket = block_routing_bucket(object_key, 0, OPERATOR_END);
     let object_id = stable_block_object_id(1, kind, object_key);
@@ -1395,7 +1395,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
             address.generation().unwrap_or_default(),
         )
     };
-    let named = authority(Some(component));
+    let named = authority(Some(element_name));
     let unnamed = authority(None);
     let nonsense = "not-a-derivation-of-anything".to_string();
 
@@ -1409,11 +1409,11 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
     assert_ne!(named, nonsense, "the nonsense arm is the authority's own output");
     assert_ne!(unnamed, nonsense, "the nonsense arm is the authority's own output");
     assert!(
-        named.contains(&format!(":{component}:")),
+        named.contains(&format!(":{element_name}:")),
         "the named spelling must actually carry the element name, got {named:?}"
     );
     assert!(
-        !unnamed.contains(&format!(":{component}:")),
+        !unnamed.contains(&format!(":{element_name}:")),
         "the unnamed spelling must not carry the element name, got {unnamed:?}"
     );
 
