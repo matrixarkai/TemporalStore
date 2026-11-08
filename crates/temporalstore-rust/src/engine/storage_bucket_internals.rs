@@ -4632,6 +4632,42 @@ pub(super) fn insert_container_tombstone_entry(
 /// would then install the same block twice under two kinds. `stage: false` says "file this block in
 /// the index; the record already knows about it".
 #[allow(clippy::too_many_arguments)]
+thread_local! {
+    /// Blocks THIS THREAD filed into a bucket index through `upsert_bucket_index_block_with`. Per
+    /// thread, so a probe counts its own writes and not a neighbouring test's.
+    static BLOCK_UPSERTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Test switch: take the whole-object sync for a hash delete, as it did before the narrow one.
+    #[cfg(test)]
+    pub(super) static WHOLE_OBJECT_HASH_DELETE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// How many blocks this thread has filed through `upsert_bucket_index_block_with`.
+pub fn bucket_block_upserts() -> u64 {
+    BLOCK_UPSERTS.with(std::cell::Cell::get)
+}
+
+/// A HASH DELETE FILES NOTHING, and maintenance is whether the hash still holds a field.
+///
+/// The delete has already marked its field's block deleted in the index. What the whole-object
+/// sync did afterwards was walk every field the hash still holds, ask whether each was filed --
+/// through a lookup that resolves no named element, so the answer was always no -- and file every
+/// one again, each filing shifting the object's block vector: 534 KB per delete at 200 fields and
+/// 47 MB at 3,200, 88x between the two. It returned whether the hash still HELD any field, which is
+/// the only answer the caller reads, and that is read off the map in one lookup here. A delete that
+/// takes the last field answers false, so the caller still takes the rebuild it took before.
+pub(super) fn hash_delete_maintained(shard: &ShardState, object_key: &str) -> bool {
+    #[cfg(test)]
+    if WHOLE_OBJECT_HASH_DELETE.with(std::cell::Cell::get) {
+        return false;
+    }
+    shard
+        .bucket_index
+        .hashes
+        .get(object_key)
+        .is_some_and(|fields| !fields.is_empty())
+}
+
 pub(super) fn upsert_bucket_index_block_with(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -4642,6 +4678,7 @@ pub(super) fn upsert_bucket_index_block_with(
     dirty: bool,
     stage: bool,
 ) {
+    BLOCK_UPSERTS.with(|cell| cell.set(cell.get().saturating_add(1)));
     upsert_bucket_index_block_with_value(
         shard,
         shard_id,

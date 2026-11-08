@@ -129,6 +129,8 @@ mod a_write_names_only_the_blocks_of_the_objects_it_touched;
 mod a_plan_learns_a_log_tail_from_its_appenders;
 #[path = "tests/a_removal_states_no_block_rows.rs"]
 mod a_removal_states_no_block_rows;
+#[path = "tests/a_hash_delete_files_nothing.rs"]
+mod a_hash_delete_files_nothing;
 #[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
 mod a_manifest_is_fingerprinted_once_not_once_per_plan;
 #[path = "tests/a_hash_get_all_shares_its_page_keys.rs"]
