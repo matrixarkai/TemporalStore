@@ -297,6 +297,7 @@ jobs:
             engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
             index_log::tests::an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item \
             wal::tests::a_record_with_a_long_field_name_is_not_read_as_the_same_record \
+            engine::tests::block_entry_names::the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones \
             index_log::tests::a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record \
             engine::tests::page_and_block_name_one_tier::the_stored_object_layout_emits_the_block_spelling_and_does_not_read_the_page_spelling \
             engine::tests::page_and_block_name_one_tier::the_index_log_item_kind_reads_the_block_token_and_refuses_the_page_token \
