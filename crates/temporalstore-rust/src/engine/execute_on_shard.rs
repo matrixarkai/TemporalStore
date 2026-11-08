@@ -798,12 +798,16 @@ pub(super) fn execute_packed_conditional_hash_write(
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let stored_timestamp = shard
         .bucket_index.hashes
         .get(&key)
         .and_then(|fields| fields.get(&timestamp_field))
         .and_then(|address| {
-            read_block_bytes(
+            // Keep the cached packed row shared while selecting its tiny timestamp. Copying the
+            // whole frame here makes every stale embedding write pay for its payload a second
+            // time before it can be rejected.
+            read_block_frame_shared(
                 cache,
                 block_store,
                 shard_id,
@@ -814,14 +818,13 @@ pub(super) fn execute_packed_conditional_hash_write(
                     &key,
                     Some(timestamp_field.as_str()),
                 ),
-                Some(block_routing_bucket(
-                    &key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                )),
+                Some(routing_bucket),
             )
         })
-        .and_then(|bytes| <HashTimestamp as prost::Message>::decode(bytes.as_slice()).ok())
+        .and_then(|frame| select_container_value(&frame, &timestamp_field))
+        .and_then(|timestamp| {
+            <HashTimestamp as prost::Message>::decode(timestamp.as_slice()).ok()
+        })
         .map(|timestamp| (timestamp.seconds, timestamp.nanos));
     if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
         let mut metadata_entries = entries;
