@@ -488,8 +488,8 @@ mod bucket_dump_binary_shape;
 mod what_an_element_name_writes_to_disk_and_the_wire;
 #[path = "tests/routing_range_stamp_binary.rs"]
 mod routing_range_stamp_binary;
-#[path = "tests/the_config_log_in_either_shape.rs"]
-mod the_config_log_in_either_shape;
+#[path = "tests/the_config_log_is_framed_only.rs"]
+mod the_config_log_is_framed_only;
 #[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
 mod the_served_index_encoder_has_no_json_fallback;
 #[path = "tests/the_control_state_block_is_protobuf_only.rs"]

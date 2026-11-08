@@ -1996,18 +1996,18 @@ impl TemporalEngine {
     /// Durable, WAL-sequence-ordered config-log path for a shard (single-barrier mode).
     pub(super) fn config_log_path(&self, shard_id: ShardId) -> PathBuf {
         self.index_dir
-            .join(format!("shard-{shard_id}.configlog.jsonl"))
+            .join(format!("shard-{shard_id}.configlog"))
     }
 
     /// Append one config-log entry `{after_seq, config}` and fsync it. `after_seq` is the WAL
     /// sequence the config became effective AFTER (it applies to writes with sequence >
     /// after_seq). Append-only + fsync'd so a crash cannot lose an acked config change.
     ///
-    /// WRITTEN AS ONE BINARY FRAME: a length, a CRC32C and a protobuf entry. There is no JSON
-    /// encode path here; `config_log_entries` keeps its JSON arm for the lines already on disk.
+    /// WRITTEN AS ONE BINARY FRAME: a length, a CRC32C and a protobuf entry. There is no JSON path
+    /// in this log at all.
     ///
-    /// A TORN TAIL IS CUT OFF BEFORE APPENDING. A line could be glued onto a partial line and cost
-    /// only that line. A frame appended behind a partial frame is swallowed by it: the partial
+    /// A TORN TAIL IS CUT OFF BEFORE APPENDING. A frame appended behind a partial frame is
+    /// swallowed by it: the partial
     /// frame declares more bytes than it has, so the reader would take the new entry as the rest of
     /// the old one, fail its checksum, and stop -- and the entry it lost is the NEWEST config. So
     /// the tail is walked first and anything after the last whole entry is truncated, which is safe
@@ -2034,12 +2034,7 @@ impl TemporalEngine {
             file.set_len(walk.good_end as u64)?;
             file.sync_all()?;
         }
-        let mut bytes = Vec::new();
-        // A complete JSON line with no terminator would have the frame glued onto it.
-        if walk.unterminated_json_tail {
-            bytes.push(b'\n');
-        }
-        bytes.extend(encode_config_log_frame(&entry));
+        let bytes = encode_config_log_frame(&entry);
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -5780,40 +5775,40 @@ pub(super) struct ConfigLogEntry {
     pub config: Config,
 }
 
-/// One config-log payload, in EITHER shape: a protobuf entry behind `BINARY_PAYLOAD_MAGIC`, or the
-/// JSON line every entry written so far is. `None` when it parses as neither.
+/// One config-log payload: a protobuf entry behind `BINARY_PAYLOAD_MAGIC`. `None` for anything else.
 ///
-/// The JSON arm is PERMANENT. Every config log on disk is JSON lines, and a reader that dropped
-/// them would reload every shard with a defaulted config, which silently resets the flags that
-/// change how already-written data is read.
+/// There is no JSON arm. The first release carries no installed base, so a payload that is not a
+/// protobuf entry (a JSON line included) is not an entry; the walk skips it and says so. A config
+/// whose entry is skipped reloads defaulted, which silently resets the flags that change how
+/// already-written data is read, and that is why the skip is logged rather than quiet.
 fn decode_config_log_payload(payload: &[u8]) -> Option<ConfigLogEntry> {
     use prost::Message as _;
-    if payload.first() == Some(&crate::log_framing::BINARY_PAYLOAD_MAGIC) {
-        let proto = crate::sdk::v1::DurableConfigLogEntry::decode(&payload[1..]).ok()?;
-        let config = proto.config?;
-        return Some(ConfigLogEntry {
-            after_seq: proto.after_seq,
-            config: Config {
-                version: config.version,
-                maxmemory_bytes: config.maxmemory_bytes,
-                tenant_name: config.tenant_name,
-                read_qps: config.read_qps,
-                write_qps: config.write_qps,
-                table_read_qps: config.table_read_qps,
-                table_write_qps: config.table_write_qps,
-                tenant_read_qps: config.tenant_read_qps,
-                tenant_write_qps: config.tenant_write_qps,
-                extend_config: config
-                    .extend_config
-                    .into_iter()
-                    .map(|pair| (pair.key, pair.value))
-                    .collect(),
-                feature_max_size: usize::try_from(config.feature_max_size).ok()?,
-                async_storage: config.async_storage,
-            },
-        });
+    if payload.first() != Some(&crate::log_framing::BINARY_PAYLOAD_MAGIC) {
+        return None;
     }
-    serde_json::from_slice::<ConfigLogEntry>(payload).ok()
+    let proto = crate::sdk::v1::DurableConfigLogEntry::decode(&payload[1..]).ok()?;
+    let config = proto.config?;
+    Some(ConfigLogEntry {
+        after_seq: proto.after_seq,
+        config: Config {
+            version: config.version,
+            maxmemory_bytes: config.maxmemory_bytes,
+            tenant_name: config.tenant_name,
+            read_qps: config.read_qps,
+            write_qps: config.write_qps,
+            table_read_qps: config.table_read_qps,
+            table_write_qps: config.table_write_qps,
+            tenant_read_qps: config.tenant_read_qps,
+            tenant_write_qps: config.tenant_write_qps,
+            extend_config: config
+                .extend_config
+                .into_iter()
+                .map(|pair| (pair.key, pair.value))
+                .collect(),
+            feature_max_size: usize::try_from(config.feature_max_size).ok()?,
+            async_storage: config.async_storage,
+        },
+    })
 }
 
 /// What one pass over a config-log file found.
@@ -5823,15 +5818,12 @@ struct ConfigLogWalk {
     good_end: usize,
     /// The file ends in a record shorter than it declares: a write that did not finish.
     torn_tail: bool,
-    /// The file ends in a complete JSON line with no newline after it.
-    unterminated_json_tail: bool,
 }
 
-/// Walk a config log once: unframed JSON lines and length-prefixed checksummed frames, from one
-/// file, by the same reader the metadata log uses.
+/// Walk a config log once: length-prefixed checksummed frames, read by the same reader the metadata
+/// log uses.
 ///
-/// An entry that does not parse is SKIPPED and the next is read, as an unparsable JSON line always
-/// was. A COMPLETE frame whose checksum fails stops the walk and says so: its declared length
+/// An entry that does not parse is SKIPPED and the next is read. A COMPLETE frame whose checksum fails stops the walk and says so: its declared length
 /// cannot be trusted to step over it, so nothing after it can be found, and resynchronising on a
 /// byte could land inside a payload.
 fn walk_config_log(data: &[u8], shard_id: ShardId) -> ConfigLogWalk {
@@ -5839,16 +5831,9 @@ fn walk_config_log(data: &[u8], shard_id: ShardId) -> ConfigLogWalk {
         entries: Vec::new(),
         good_end: 0,
         torn_tail: false,
-        unterminated_json_tail: false,
     };
     let mut offset = 0usize;
     while offset < data.len() {
-        // A blank separator is not an entry: the line format leaves bare newlines between them.
-        if data[offset] == b'\n' || data[offset] == b'\r' {
-            offset += 1;
-            walk.good_end = offset;
-            continue;
-        }
         match crate::log_framing::next_frame(&data[offset..]) {
             Ok(Some((consumed, payload))) => {
                 offset += consumed;
@@ -5861,24 +5846,9 @@ fn walk_config_log(data: &[u8], shard_id: ShardId) -> ConfigLogWalk {
                     ),
                 }
             }
-            // What remains is shorter than the entry it declares. A final JSON line with no
-            // terminator that is nonetheless complete is still an entry, which reading it line by
-            // line always allowed; anything else is a torn write.
+            // What remains is shorter than the entry it declares: a write that did not finish.
             Ok(None) => {
-                let rest = &data[offset..];
-                let complete_line = if rest.first() == Some(&b'{') {
-                    decode_config_log_payload(rest.trim_ascii_end())
-                } else {
-                    None
-                };
-                match complete_line {
-                    Some(entry) => {
-                        walk.entries.push(entry);
-                        walk.good_end = data.len();
-                        walk.unterminated_json_tail = true;
-                    }
-                    None => walk.torn_tail = true,
-                }
+                walk.torn_tail = true;
                 break;
             }
             Err(error) => {
@@ -5895,9 +5865,7 @@ fn walk_config_log(data: &[u8], shard_id: ShardId) -> ConfigLogWalk {
     walk
 }
 
-/// One config-log entry as a binary frame. THE ONLY ENCODER: `append_config_log_entry` calls it and
-/// nothing writes the JSON line any more. An encoder nobody calls is how a retired format comes back;
-/// `decode_config_log_payload` keeps its JSON arm because the lines already on disk are JSON.
+/// One config-log entry as a binary frame. THE ONLY ENCODER: `append_config_log_entry` calls it.
 pub(super) fn encode_config_log_frame(entry: &ConfigLogEntry) -> Vec<u8> {
     use prost::Message as _;
     let config = &entry.config;
