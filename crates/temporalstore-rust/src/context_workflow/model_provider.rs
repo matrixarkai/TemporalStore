@@ -449,6 +449,9 @@ fn context_embeddings_for_unique_inputs(
     if inputs.is_empty() {
         return context_embeddings_for_extract_one_batch(provider, inputs);
     }
+    if context_embedding_batch_end(provider, inputs, 0) == inputs.len() {
+        return context_embeddings_for_extract_one_batch(provider, inputs);
+    }
 
     let mut start = 0usize;
     let mut combined = EmbeddingBatch::default();
