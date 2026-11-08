@@ -3290,13 +3290,13 @@ pub(crate) fn execute_on_shard(
                 &key,
             );
             let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
+            // PROTOBUF ONLY: the same wire form `FeatureAppend` rows hold, so both read paths decode
+            // it. There is no JSON encode path here; see `sequence_row_value`.
             let points = rows
                 .into_iter()
-                .filter_map(|row| {
-                    serde_json::to_vec(&row).ok().map(|value| FeaturePoint {
-                        timestamp_ms: row.timestamp_ms,
-                        value,
-                    })
+                .map(|row| FeaturePoint {
+                    timestamp_ms: row.timestamp_ms,
+                    value: row.encode_feature_proto_value(),
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);

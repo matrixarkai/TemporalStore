@@ -3,34 +3,30 @@
 
 //! The stored form of one Sequence row, and the one place that reads it.
 //!
-//! A row is the value of one point in a feature series. Two shapes are in use, decided from the
-//! FIRST BYTE of the value and never from a setting:
-//!
-//!   * `{` (or JSON whitespace) -- the JSON object `SequenceAdd` has always written, carrying its
-//!     own `timestamp_ms`. PERMANENT: the hold is on what is on disk, and a store written by any
-//!     shipped build holds these.
-//!   * anything else -- the protobuf wire form `SequenceFeatureRow::encode_feature_proto_value`
-//!     produces (fields 1-4: `gid`, `action_type`, `duration`, `author_id`), with the row's
-//!     timestamp taken from the point it is stored under. This is what `FeatureAppend` rows hold
-//!     today and what the feature range filter already decodes.
-//!
-//! The two were not interchangeable before this reader: a row stored by `SequenceAdd` was invisible
-//! to the feature range filter (a `{` is not a valid protobuf tag), and a row stored by
-//! `FeatureAppend` was invisible to `SequenceQuery` (it is not JSON). Both read paths now go through
+//! A row is the value of one point in a feature series, and it is ONE shape: the protobuf wire form
+//! `SequenceFeatureRow::encode_feature_proto_value` produces (fields 1-4: `gid`, `action_type`,
+//! `duration`, `author_id`). The row's instant is the timestamp of the point it is stored under, so
+//! the value does not repeat it. `SequenceAdd` and `FeatureAppend` both store this shape and both
+//! read paths (`SequenceQuery` and the filtered feature range) read it through
 //! [`decode_sequence_row_value`].
+//!
+//! There is no JSON arm and no first-byte sniff. `SequenceAdd` used to store a JSON object, which
+//! the filtered feature range could not read, while `FeatureAppend` rows could not be read by
+//! `SequenceQuery`; the first release carries no installed base, so the second shape is deleted
+//! rather than kept readable.
 //!
 //! # A ROW THAT CANNOT BE READ IS COUNTED, NEVER SILENTLY DROPPED
 //!
-//! The reader used to be `serde_json::from_slice(..).ok()`, so a value that was not a row vanished
-//! from a query result and said nothing. [`note_unreadable_sequence_row`] counts it. The row is still
-//! left out of the result: inventing one would be a plausible wrong answer.
+//! The reader used to be `.ok()`, so a value that was not a row vanished from a query result and said
+//! nothing. [`note_unreadable_sequence_row`] counts it. The row is still left out of the result:
+//! inventing one would be a plausible wrong answer.
 use crate::types::SequenceFeatureRow;
 
 static SEQUENCE_ROWS_UNREADABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How many stored values a Sequence read has skipped since this process started because they
-/// were neither shape. A feature key that holds values which are not rows counts every time it is
-/// read as a sequence.
+/// were not a row. A feature key that holds values which are not rows counts every time it is read
+/// as a sequence.
 pub fn sequence_rows_unreadable() -> u64 {
     SEQUENCE_ROWS_UNREADABLE.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -49,22 +45,18 @@ pub(super) fn note_unreadable_sequence_row(timestamp_ms: u64, reason: &str) {
     }
 }
 
-/// A stored value in whichever shape it holds. THE ONLY READER of one.
+/// A stored value as a row. THE ONLY READER of one.
 ///
-/// `timestamp_ms` is the instant the value is stored under: the protobuf shape does not carry it.
+/// `timestamp_ms` is the instant the value is stored under: the value does not carry it.
 pub(super) fn decode_sequence_row_value(
     timestamp_ms: u64,
     bytes: &[u8],
 ) -> Result<SequenceFeatureRow, String> {
-    let Some(&first) = bytes.first() else {
+    if bytes.is_empty() {
         return Err("the value is empty".to_string());
-    };
-    if first == b'{' || first.is_ascii_whitespace() {
-        return serde_json::from_slice(bytes)
-            .map_err(|error| format!("the JSON value is not a row: {error}"));
     }
     SequenceFeatureRow::decode_feature_proto_value(timestamp_ms, bytes)
-        .ok_or_else(|| "the value is not a row in either shape".to_string())
+        .ok_or_else(|| "the value is not a protobuf sequence row".to_string())
 }
 
 /// [`decode_sequence_row_value`] for a read path: an unreadable value is counted and left out.
