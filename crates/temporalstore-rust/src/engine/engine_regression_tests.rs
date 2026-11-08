@@ -270,3 +270,5 @@ fn bucket_take_arithmetic_with_explicit_clocks() {
 }
 #[path = "tests/a_row_append_publishes_only_what_it_added.rs"]
 mod a_row_append_publishes_only_what_it_added;
+#[path = "tests/the_holders_of_a_key_allocation.rs"]
+mod the_holders_of_a_key_allocation;

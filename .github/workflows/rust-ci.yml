@@ -444,6 +444,7 @@ jobs:
             engine::tests::per_item_byte_budget::the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list \
             engine::tests::blocks_per_bucket::the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth \
             engine::tests::index_bytes_per_key::the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency \
+            engine::tests::the_holders_of_a_key_allocation::an_order_bound_ledger_adopts_the_key_allocation_a_span_cannot_order \
             engine::tests::index_bytes_per_key::what_the_one_word_handle_costs_in_the_allocation \
             engine::tests::index_bytes_per_key::what_keying_the_block_list_by_address_would_cost \
             engine::tests::flat_block_list::what_a_retain_leaves_in_the_block_lists_capacity \
@@ -509,10 +510,18 @@ jobs:
           # published amplification ratio can be re-derived from the counters published beside it.
           # It was running in CI NEVER: it is #[ignore]d, and this workflow runs no unfiltered
           # suite, so an ignored guard runs only if its name is pinned AND --ignored is passed.
+          #
+          # the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key counts the holders of
+          # one key allocation on a walk that reaches the slot row in `bucket_index.objects`, and
+          # reports TWO where the arm above it reported one. That count is the premise under two
+          # levers on the 32.0 B/key key-character row, and it decides them in opposite directions:
+          # at one holder the refcount header is waste, at two it is exactly paid for. It runs both
+          # walks on one corpus so the correction cannot be read as a different fixture.
           for t in \
             engine::tests::every_published_ratio_is_rederivable::every_published_ratio_is_rederivable_from_published_counters \
             engine::tests::index_bytes_per_key::every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for \
-            engine::tests::index_bytes_per_key::how_many_holders_a_key_allocation_has_by_kind ; do
+            engine::tests::index_bytes_per_key::how_many_holders_a_key_allocation_has_by_kind \
+            engine::tests::the_holders_of_a_key_allocation::the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key ; do
             echo "--- $t (ignored) ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
