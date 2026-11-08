@@ -374,6 +374,8 @@ jobs:
             engine::tests::a_removal_states_no_block_rows::a_named_removal_builds_no_identity_inversion \
             engine::tests::a_hash_delete_files_nothing::a_hash_delete_leaves_the_index_as_the_whole_object_sync_left_it \
             engine::tests::a_hash_delete_files_nothing::a_hash_delete_files_no_block \
+            engine::tests::a_sequence_write_states_the_rows_it_wrote::a_sequence_write_states_only_the_rows_it_wrote \
+            engine::tests::a_sequence_write_states_the_rows_it_wrote::a_sequence_write_that_evicts_as_many_as_it_adds_pins_the_membership \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans ; do
             echo "--- $t ---"
