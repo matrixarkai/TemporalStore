@@ -429,6 +429,19 @@ pub(crate) fn context_embeddings_for_extract_compact(
     Ok((unique_batch, input_rows, report))
 }
 
+/// Encode an already deduplicated input plan while reporting its logical row count.
+pub(crate) fn context_embeddings_for_prepared_unique(
+    provider: &ContextModelProviderConfig,
+    unique_inputs: &[(&str, u64, u32, &str)],
+    logical_input_count: usize,
+) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    let provider = normalize_provider(provider.clone());
+    let (batch, mut report) = context_embeddings_for_unique_inputs(&provider, unique_inputs)?;
+    report.requested_vector_count = logical_input_count;
+    report.generated_vector_count = logical_input_count;
+    Ok((batch, report))
+}
+
 fn context_embeddings_for_unique_inputs(
     provider: &ContextModelProviderConfig,
     inputs: &[(&str, u64, u32, &str)],
