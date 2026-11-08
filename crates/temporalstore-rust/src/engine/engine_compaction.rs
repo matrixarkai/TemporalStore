@@ -234,7 +234,7 @@ pub(super) fn compaction_layout_policy_for_model(model_id: &str) -> &'static str
         "string" | "control_state" | "context_node" | "context_entity" | "context_embedding" => {
             "single_block_object"
         }
-        "hash" | "set" => "component_block_object",
+        "hash" | "set" => "element_block_object",
         "feature" | "sequence" => "timestamped_chunked_blocks",
         model if model.starts_with("context_") => "context_timeline_or_sidecar_blocks",
         _ => "generic_block_object",
@@ -244,7 +244,7 @@ pub(super) fn compaction_layout_policy_for_model(model_id: &str) -> &'static str
 pub(super) fn compaction_object_block_packing_enabled(model_id: &str) -> bool {
     matches!(
         compaction_layout_policy_for_model(model_id),
-        "single_block_object" | "component_block_object"
+        "single_block_object" | "element_block_object"
     )
 }
 

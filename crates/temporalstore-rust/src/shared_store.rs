@@ -168,7 +168,6 @@ pub struct SharedStoreWalIndexedRead {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreBlockSlab {
-    #[serde(alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub key: String,
     pub byte_size: u64,
@@ -180,9 +179,9 @@ pub struct SharedStoreBlockSlab {
     // `byte_size` above is the slab's physical byte size.
     #[serde(default)]
     pub logical_bytes: u64,
-    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_unix_ms: Option<u64>,

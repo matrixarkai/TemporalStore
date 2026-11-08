@@ -6425,9 +6425,6 @@ pub(super) struct BucketNode {
 pub(super) struct TombstoneElement {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    /// Stored under the key `component`: this row is written into the index dump, and a dump an
-    /// earlier build wrote must still read. The Rust field is the element name; the key stays.
-    #[serde(rename = "component")]
     pub(super) element_name: Arc<str>,
     #[serde(rename = "block")]
     pub(super) block: (u64, u64, u64),

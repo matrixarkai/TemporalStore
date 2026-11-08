@@ -755,9 +755,8 @@ pub struct WalOutcomeItem {
     /// encoder, not the type.
     #[serde(
         rename = "c",
-        alias = "component",
         default,
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
     )]
     pub element_name: Option<String>,
     #[serde(rename = "i")]
@@ -867,9 +866,8 @@ pub struct StagedBlock {
     /// whole-object block is byte-identical to one written before this field existed.
     #[serde(
         rename = "k",
-        alias = "component",
         default,
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
     )]
     pub element_name: Option<std::sync::Arc<str>>,
     /// The block contents.

@@ -315,7 +315,6 @@ pub struct ServerHeartbeatRequest {
     #[serde(default)]
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
-    #[serde(alias = "partition_loads")]
     pub shard_stat_loads: Vec<ShardStatLoad>,
     #[serde(default)]
     pub runtime_load: ServerRuntimeLoad,
@@ -343,7 +342,6 @@ pub struct ShardLoad {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardStatLoad {
     pub shard_id: ShardId,
-    #[serde(alias = "partition_info")]
     pub shard_stat_info: ShardStatInfo,
 }
 
@@ -473,7 +471,6 @@ pub struct ServerMetaInfo {
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
-    #[serde(alias = "partition_loads")]
     pub shard_stat_loads: Vec<ShardStatLoad>,
     #[serde(default)]
     pub runtime_load: ServerRuntimeLoad,
@@ -1025,7 +1022,6 @@ pub struct ServerEndpoint {
 pub struct TableTopologyResponse {
     pub status: Status,
     pub table: Option<TableMetaInfo>,
-    #[serde(alias = "partitions")]
     pub shards: Vec<TableShard>,
     pub unchanged: bool,
 }

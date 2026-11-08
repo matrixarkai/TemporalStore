@@ -735,7 +735,7 @@ pub struct IndexItem {
         rename = "pk",
         default,
         deserialize_with = "block_ref_key_either_shape",
-        serialize_with = "block_ref_key_as_number_when_it_is_one"
+        serialize_with = "block_ref_key_as_number_when_it_is_one",
     )]
     pub block_ref_key: String,
     /// SHARED WITH THE RESIDENT ENTRY, which holds this same text as an `Arc<str>`. A
@@ -857,7 +857,7 @@ struct IndexItemWire {
     #[serde(
         rename = "pk",
         default,
-        deserialize_with = "block_ref_key_either_shape"
+        deserialize_with = "block_ref_key_either_shape",
     )]
     block_ref_key: String,
     #[serde(rename = "ok", default)]
@@ -8359,13 +8359,7 @@ mod tests {
         // `serialize_seq(Some(INDEX_ITEM_SLOTS))`, so it ignores `with_struct_map()` -- an item encoded
         // "as a map" still comes out a sequence. The row is therefore only ever WRITTEN
         // positionally, and the named shape exists only on the READ side, for rows an older
-        // binary wrote through a derived `Serialize`.
-        //
-        // That read side is covered by name elsewhere in this module:
-        // `an_index_item_written_with_the_old_field_names_still_loads` and
-        // `the_old_page_id_key_still_loads_into_the_renamed_block_id_field` address the slots by
-        // their STORED NAMES, so a rename breaks them. Which is the division of labour: a
-        // rename is caught there, and order and arity -- which no named test can see -- here.
+        // binary wrote through a derived `Serialize`. Order and arity are what this test holds.
         let as_map = encode_as_map(&item, INDEX_LOG_SHAPE_DELTA);
         let still_a_sequence: Result<std::collections::BTreeMap<String, serde_json::Value>, _> =
             decode_index_payload(&as_map);
