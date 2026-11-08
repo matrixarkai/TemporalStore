@@ -4033,10 +4033,7 @@ mod tests {
         "active_storage_zones",
         "block_segment_id",
         "block_segment_target_bytes",
-        "block_store_segment_api_ready",
         "compact_pages",
-        "delayed_destroy_page_segment_ids",
-        "delayed_destroy_purged_segments",
         "delayed_destroy_segment_count",
         "dirty_slot_count",
         "dirty_slot_pressure",
@@ -4066,24 +4063,19 @@ mod tests {
         "sealed_storage_zones",
         "segment",
         "segment_count",
-        "segment_fields",
         "segment_id",
-        "segment_integrity",
         "segment_open_count",
-        "segment_samples",
         "segment_sealed_count",
         "segments",
         "selected_slots",
         "slot",
         "slot_dump_manifest",
         "slot_dump_manifest_id",
-        "slot_fields",
         "slot_id",
         "slot_index",
         "slot_index_entry_count",
         "slot_object_ref_count",
         "slot_page_ref_count",
-        "slot_samples",
         "slots",
         "staged_pages",
         "stale_page_segment_count",
@@ -4097,7 +4089,7 @@ mod tests {
         "zone_id",
         "zone_version",
         "zones",
-    ];
+        ];
 
         // Retired: these spellings were removed rather than aliased, or were aliases and have
         // been deleted. The guard proves they stay gone, so coverage does not shrink by deleting
@@ -4116,6 +4108,7 @@ const RETIRED_NAMES: &[&str] = &[
         "band_manifest_reconciled_on_open",
         "band_manifest_writes",
         "band_state_transition_count",
+        "block_store_segment_api_ready",
         "block_store_zones",
         "blocked_page_segment_ids",
         "blocked_page_slab_ids",
@@ -4138,7 +4131,9 @@ const RETIRED_NAMES: &[&str] = &[
         "corrupt_page_slab_ids",
         "covered_slot_count",
         "delayed_destroy_bands",
+        "delayed_destroy_page_segment_ids",
         "delayed_destroy_page_slab_ids",
+        "delayed_destroy_purged_segments",
         "delayed_destroy_zones",
         "deleted_slot_count",
         "dirty_slots_committed_before_truncate",
@@ -4292,6 +4287,9 @@ const RETIRED_NAMES: &[&str] = &[
         "sealed_bands",
         "sealed_zones",
         "secondary_views_reconciled_from_slot_index",
+        "segment_fields",
+        "segment_integrity",
+        "segment_samples",
         "selected_dirty_slot_count",
         "selected_dump_slots",
         "selected_page_segment_ids",
@@ -4303,6 +4301,7 @@ const RETIRED_NAMES: &[&str] = &[
         "slot_dump_manifest_block_count",
         "slot_dump_manifest_count",
         "slot_entries",
+        "slot_fields",
         "slot_first",
         "slot_ids",
         "slot_index_authority",
@@ -4311,6 +4310,7 @@ const RETIRED_NAMES: &[&str] = &[
         "slot_map",
         "slot_nodes",
         "slot_object_page_authority_ready",
+        "slot_samples",
         "slot_store_layout_api_ready",
         "slot_store_runtime_module",
         "slot_summaries",
@@ -4336,7 +4336,7 @@ const RETIRED_NAMES: &[&str] = &[
         "zone_stats_ready",
         "zone_summary",
         "zone_usage",
-    ];
+        ];
 
         // The list above lives inside the tree this walk reads, so every entry would match its
         // own literal and the check would verify nothing. Excise the declaration from the text

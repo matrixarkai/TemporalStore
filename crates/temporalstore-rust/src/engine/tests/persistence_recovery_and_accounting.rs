@@ -18948,7 +18948,7 @@ fn a_compaction_round_stops_at_the_block_ref_budget() {
 }
 
 #[test]
-fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() {
+fn the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one() {
     // `zone` was the older name for a slab, and `zones` is keyed by `band_id`
     // (storage_bucket_internals.rs) -- so the aggregate is the SLAB level reported under an old
     // name, not a separate level. The Rust identifiers moved to slab; the WIRE must not.
@@ -19001,11 +19001,15 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
         "and not under the retired one as well: {encoded}"
     );
 
-    // Reading back what the old name produced must still work, which is what a stored corpus is.
-    let decoded: crate::engine::reports::StorageSlabUsageSample =
-        serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
-            .expect("an old-name payload must still decode");
-    assert_eq!(decoded.stored_slab_id, 9);
+    // The retired names are NOT read. A payload spelling the slab id `zone_id` has no
+    // `stored_slab_id`, which is required, so it is refused rather than read as slab 9.
+    let decoded = serde_json::from_str::<crate::engine::reports::StorageSlabUsageSample>(
+        r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#,
+    );
+    assert!(
+        decoded.as_ref().map_or(true, |sample| sample.stored_slab_id != 9),
+        "a payload spelling the slab id `zone_id` was read as slab 9: the retired name is accepted"
+    );
 
     // AND THE CANONICAL NAME MUST DECODE TOO, which is the whole point of widening the readers
     // and was the one thing here that nothing asserted. Found by PLANTING: dropping one
@@ -19028,11 +19032,13 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
     // of those. This report type never did -- it takes `zone_id`/`stored_slab_id` for the id and
     // `slabs`/`segments` for the collection, and nothing else. Two types in one rename chain do
     // not share an accepted set, so each one's is asserted against ITS OWN declaration.
-    let retired_collection: crate::engine::reports::StorageSlabUsageSample = serde_json::from_str(
-        r#"{"zone_id":5,"total_bytes":0,"used_bytes":0,"stale_bytes":0,"segments":[7]}"#,
-    )
-    .expect("the collection's retired `segments` spelling must still decode");
-    assert_eq!(retired_collection.slabs, vec![7]);
+    let retired_collection = serde_json::from_str::<crate::engine::reports::StorageSlabUsageSample>(
+        r#"{"stored_slab_id":5,"total_bytes":0,"used_bytes":0,"stale_bytes":0,"segments":[7]}"#,
+    );
+    assert!(
+        retired_collection.as_ref().map_or(true, |sample| sample.slabs != vec![7]),
+        "the collection's retired `segments` spelling was read as the slabs: the retired name is accepted"
+    );
 
     // THE PREMISE, EXECUTED -- AND IT IS NOW THE OPPOSITE PREMISE.
     //
