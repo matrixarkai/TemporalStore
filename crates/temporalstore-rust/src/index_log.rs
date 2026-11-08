@@ -664,9 +664,9 @@ impl From<crate::log_framing::FramingError> for IndexLogError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexLogRecord {
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     // Default so a delta-record line (which carries `items`/`meta` but no `index`) still
     // parses as an IndexLogRecord for the sequence-tail scan (`last_sequence_at`), which
@@ -707,13 +707,12 @@ impl Default for IndexItemKind {
 pub struct IndexItem {
     #[serde(
         rename = "k",
-        alias = "kind",
         default,
         serialize_with = "item_kind_as_number",
         deserialize_with = "item_kind_either_shape"
     )]
     pub kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", default)]
+    #[serde(rename = "rb", default)]
     pub routing_bucket: u32,
     /// The block handle. A `String` in this struct, a NUMBER on the wire whenever it holds one.
     ///
@@ -741,17 +740,16 @@ pub struct IndexItem {
     pub block_ref_key: String,
     /// SHARED WITH THE RESIDENT ENTRY, which holds this same text as an `Arc<str>`. A
     /// `String` spends a capacity word on a value that is never grown in place.
-    #[serde(rename = "ok", alias = "object_key", default)]
+    #[serde(rename = "ok", default)]
     pub object_key: std::sync::Arc<str>,
     #[serde(
         rename = "mi",
-        alias = "model_id",
         default,
         serialize_with = "model_id_as_number_when_it_is_known",
         deserialize_with = "model_id_either_shape"
     )]
     pub model_id: String,
-    #[serde(rename = "oi", alias = "object_id", default)]
+    #[serde(rename = "oi", default)]
     pub object_id: u64,
     /// WHERE THE ELEMENT LIVES -- the SHARED payload, the same struct the resident model map
     /// holds as its level-2 value.
@@ -814,7 +812,7 @@ pub struct IndexItem {
     /// correction's own conclusion is restated above rather than deleted, for the same reason.
     #[serde(skip)]
     pub entry: Option<ElementEntry>,
-    #[serde(rename = "d", alias = "deleted", default)]
+    #[serde(rename = "d", default)]
     pub deleted: bool,
 }
 
@@ -850,12 +848,11 @@ pub struct IndexItem {
 struct IndexItemWire {
     #[serde(
         rename = "k",
-        alias = "kind",
         default,
         deserialize_with = "item_kind_either_shape"
     )]
     kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", default)]
+    #[serde(rename = "rb", default)]
     routing_bucket: u32,
     #[serde(
         rename = "pk",
@@ -863,26 +860,25 @@ struct IndexItemWire {
         deserialize_with = "block_ref_key_either_shape"
     )]
     block_ref_key: String,
-    #[serde(rename = "ok", alias = "object_key", default)]
+    #[serde(rename = "ok", default)]
     object_key: std::sync::Arc<str>,
     #[serde(
         rename = "mi",
-        alias = "model_id",
         default,
         deserialize_with = "model_id_either_shape"
     )]
     model_id: String,
-    #[serde(rename = "oi", alias = "object_id", default)]
+    #[serde(rename = "oi", default)]
     object_id: u64,
     #[serde(rename = "pi", default)]
     block_id: u64,
-    #[serde(rename = "a", alias = "address", default)]
+    #[serde(rename = "a", default)]
     address: Option<ElementEntry>,
-    #[serde(rename = "sz", alias = "size", default)]
+    #[serde(rename = "sz", default)]
     size: u64,
-    #[serde(rename = "il", alias = "in_log", default)]
+    #[serde(rename = "il", default)]
     in_log: bool,
-    #[serde(rename = "d", alias = "deleted", default)]
+    #[serde(rename = "d", default)]
     deleted: bool,
 }
 
@@ -1904,7 +1900,6 @@ pub enum SlabCatalogState {
 pub struct SlabCatalogEntry {
     pub block_slab_id: u64,
     pub state: SlabCatalogState,
-    #[serde(alias = "total_bytes")]
     pub physical_bytes: u64,
     #[serde(default)]
     pub logical_bytes: u64,
@@ -1944,7 +1939,7 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(rename = "zones", alias = "slabs", default)]
+    #[serde(rename = "zones", default)]
     pub slabs: Vec<SlabCatalogEntry>,
     #[serde(default)]
     pub slab_version: u64,
@@ -1956,9 +1951,9 @@ pub struct MetaItem {
 /// `items`/`meta` fields, so legacy whole-index records replay untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexDeltaRecord {
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     #[serde(default)]
     pub items: Vec<IndexItem>,
@@ -1969,7 +1964,7 @@ pub struct IndexDeltaRecord {
     /// folded into the base and are skipped; folding the rest advances the reconstructed
     /// anchor so WAL replay re-executes only the uncaptured tail (never relocating the
     /// blocks the deltas already pin at their original addresses).
-    #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+    #[serde(rename = "aw", default)]
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact blocks the write produced: replay replaces
     /// each item's (kind, object, element name) predecessor and inserts, WITHOUT the covered-key
@@ -1978,7 +1973,7 @@ pub struct IndexDeltaRecord {
     /// object's whole block set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
     /// every block of each of them, every time.
-    #[serde(rename = "u", alias = "upsert", default)]
+    #[serde(rename = "u", default)]
     pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
@@ -1987,7 +1982,7 @@ pub struct IndexDeltaRecord {
     /// nodes). Opaque here so the index-log layer stays decoupled from `ShardState`; the
     /// engine builds and applies them. Replaying these on load pins the exact membership a
     /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
-    #[serde(rename = "ks", alias = "key_states", default)]
+    #[serde(rename = "ks", default)]
     pub key_states: Vec<serde_json::Value>,
     /// The one object key every item carries, when at least two items carry the same one.
     ///
@@ -2030,7 +2025,7 @@ pub struct IndexDeltaRecord {
     /// here. So the rule is a property of the field, not of the version: HOIST ONLY WHEN THE
     /// SENTINEL IS OUTSIDE THE FIELD'S LEGAL DOMAIN, and when it is not, the field stays on the
     /// item however much it repeats.
-    #[serde(rename = "sk", alias = "shared_object_key", default)]
+    #[serde(rename = "sk", default)]
     pub shared_object_key: Option<String>,
 }
 
@@ -5297,26 +5292,47 @@ mod tests {
         );
     }
 
+    /// A delta record written with a long field name is not read as the same record.
+    ///
+    /// The record-level names are short, and the long spellings (`shard_id`, `sequence`,
+    /// `applied_wal_sequence`, `upsert`, `key_states`) are not accepted: the first release carries
+    /// no installed base. `items` and `meta` are NOT short names; whole-index and delta records are
+    /// told apart on read by the presence of those two keys. Each long name is swapped in alone for
+    /// its short name against the control that the unmodified document loads, so one alias coming
+    /// back is caught and not only all of them.
     #[test]
-    fn a_delta_record_written_with_the_old_field_names_still_loads() {
-        // The record-level names are short now. `items` and `meta` are NOT among them: whole-index
-        // and delta records are told apart on read by the PRESENCE of those two keys, so renaming
-        // them breaks record-type detection rather than just the labels.
-        let legacy = serde_json::json!({
-            "shard_id": 7,
-            "sequence": 3,
-            "items": [],
-            "applied_wal_sequence": 11,
-            "upsert": true,
-            "key_states": [{"key": "m:0"}]
-        });
-        let record: IndexDeltaRecord =
-            serde_json::from_value(legacy).expect("a legacy delta record must load");
-        assert_eq!(record.shard_id, 7);
-        assert_eq!(record.sequence, 3);
-        assert_eq!(record.applied_wal_sequence, Some(11));
-        assert!(record.upsert);
-        assert_eq!(record.key_states.len(), 1);
+    fn a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record() {
+        let current = r#"{"s":7,"q":3,"items":[],"aw":11,"u":true,"ks":[{"key":"m:0"}]}"#;
+        let original: IndexDeltaRecord =
+            serde_json::from_str(current).expect("the control, in the written names, must load");
+        assert_eq!(original.shard_id, 7);
+        assert_eq!(original.sequence, 3);
+        assert_eq!(original.applied_wal_sequence, Some(11));
+        assert!(original.upsert);
+        assert_eq!(original.key_states.len(), 1);
+        for (short, long) in [
+            ("s", "shard_id"),
+            ("q", "sequence"),
+            ("aw", "applied_wal_sequence"),
+            ("u", "upsert"),
+            ("ks", "key_states"),
+        ] {
+            let swapped = current.replacen(&format!("\"{short}\":"), &format!("\"{long}\":"), 1);
+            assert_ne!(swapped, current, "the swap of `{short}` did not take");
+            let loaded = serde_json::from_str::<IndexDeltaRecord>(&swapped);
+            assert!(
+                loaded.as_ref().map_or(true, |record| {
+                    (
+                        record.shard_id,
+                        record.sequence,
+                        record.applied_wal_sequence,
+                        record.upsert,
+                        record.key_states.len(),
+                    ) != (7, 3, Some(11), true, 1)
+                }),
+                "a delta record with `{short}` spelled `{long}` loaded as the same record: the alias is back"
+            );
+        }
     }
 
     #[test]
@@ -7514,9 +7530,9 @@ mod tests {
         // because GC retains raw payloads and never re-encodes them.
         #[derive(serde::Deserialize)]
         struct AnchorProbe {
-            #[serde(rename = "q", alias = "sequence")]
+            #[serde(rename = "q")]
             sequence: u64,
-            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            #[serde(rename = "aw", default)]
             applied_wal_sequence: Option<u64>,
         }
         let probe: AnchorProbe = rmp_serde::from_slice(&packed).unwrap();
@@ -7589,9 +7605,9 @@ mod tests {
     fn the_anchor_probe_reads_a_binary_record_without_decoding_the_rest() {
         #[derive(serde::Deserialize)]
         struct AnchorProbe {
-            #[serde(rename = "q", alias = "sequence")]
+            #[serde(rename = "q")]
             sequence: u64,
-            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            #[serde(rename = "aw", default)]
             applied_wal_sequence: Option<u64>,
         }
 
