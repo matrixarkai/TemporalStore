@@ -177,7 +177,9 @@ use crate::types::{
 };
 use crate::wal::{LocalWriteAheadLogStore, WriteAheadLogRecord};
 use context::{context_index_ref_identity, validate_context_index_lookup};
-use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
+use matrixcache::{
+    CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache, PageCacheKeyPrefix,
+};
 // FOR THE SLOT'S SERIES SURFACE: `ObjectSlot` implements these, and the names it keeps
 // (`len`, `get`, `is_empty`) already matched the call sites -- only the trait was out of
 // scope here. Anonymous, because only the methods are wanted.
@@ -8223,16 +8225,19 @@ fn read_blocks_shared(
     shard_id: ShardId,
     reads: &[SharedBlockRead<'_>],
 ) -> Vec<Option<std::sync::Arc<[u8]>>> {
+    let mut page_prefixes = HashMap::with_capacity(reads.len().min(64));
     let cache_keys = reads
         .iter()
         .map(|read| {
-            CacheKey::page_with_slot(
-                shard_id,
-                read.address.block_slab_id(),
-                read.address.offset(),
-                read.address.length(),
-                read.routing_bucket,
-            )
+            let block_slab_id = read.address.block_slab_id();
+            page_prefixes
+                .entry(block_slab_id)
+                .or_insert_with(|| PageCacheKeyPrefix::new(shard_id, block_slab_id))
+                .key_with_slot(
+                    read.address.offset(),
+                    read.address.length(),
+                    read.routing_bucket,
+                )
         })
         .collect::<Vec<_>>();
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
