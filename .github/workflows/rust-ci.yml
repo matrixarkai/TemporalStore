@@ -332,7 +332,10 @@ jobs:
             engine::tests::gated_listing_folds_the_blocks::a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone \
             engine::tests::gated_listing_folds_the_blocks::an_unframed_block_makes_the_fold_decline_rather_than_answer_short \
             engine::tests::what_a_cold_set_listing_reads::what_a_cold_set_listing_reads_from_the_durable_map \
-            data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
+            data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file \
+            engine::window_aggregate::tests::the_shared_doors_answer_what_the_bodies_they_replaced_answered \
+            engine::window_aggregate::tests::a_name_is_known_or_refused_and_the_table_is_case_insensitive \
+            engine::window_aggregate::tests::edge_answers_are_the_documented_ones ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
