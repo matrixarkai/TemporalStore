@@ -1175,6 +1175,53 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(document["timestamp_field"], "_ts:stats")
         self.assertEqual(len(document["rows"]), 1)
 
+    def test_default_write_prepares_each_feature_field_once_per_batch(self):
+        from unittest import mock
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        import feast_temporalstore_command.online_store as online_store_module
+
+        class ConditionalRowsClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self.rows = None
+                self.fields = None
+
+            def batch_hash_timestamp_set(  # type: ignore[override]
+                self, fields, timestamp_field, rows
+            ):
+                self.fields = list(fields)
+                self.rows = list(rows)
+                return len(rows), 0
+
+        client = self._install(client=ConditionalRowsClient())
+        self.config.online_store.skip_dedup = False
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [
+            (
+                self._entity_key(index),
+                {
+                    "trips": ValueProto(int64_val=index),
+                    "fares": ValueProto(int64_val=index * 2),
+                },
+                now,
+                None,
+            )
+            for index in range(64)
+        ]
+
+        with mock.patch.object(
+            online_store_module,
+            "_feature_field",
+            wraps=online_store_module._feature_field,
+        ) as feature_field:
+            self.store.online_write_batch(self.config, self.view, rows, None)
+
+        self.assertEqual(feature_field.call_count, 2)
+        self.assertEqual(client.fields, ["_ts:stats", "stats:trips", "stats:fares"])
+        self.assertEqual(len(client.rows), len(rows))
+        self.assertTrue(all(len(row[3]) == 3 for row in client.rows))
+
     def test_repeated_entity_writes_share_one_timestamp_read(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
