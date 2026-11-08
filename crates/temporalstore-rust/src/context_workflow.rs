@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -2677,28 +2677,38 @@ pub fn retrieve_context(
             }
         }
     }
-    let mut ranked_embedding_nodes = summary_scores_by_node
-        .iter()
-        .map(|(node_hash, (score, _))| (*node_hash, *score))
-        .collect::<Vec<_>>();
-    ranked_embedding_nodes
-        .sort_unstable_by_key(|(node_hash, score)| (Reverse(*score), *node_hash));
+    let ranked_embedding_node_count = summary_scores_by_node.len();
     let rerank_limit = request
         .max_summary_nodes
         .max(1)
         .saturating_mul(4)
         .min(64)
-        .min(ranked_embedding_nodes.len());
+        .min(ranked_embedding_node_count);
     let metadata_prefetch_limit = request
         .max_summary_nodes
         .max(1)
         .saturating_mul(4)
         .max(rerank_limit)
-        .min(ranked_embedding_nodes.len());
+        .min(ranked_embedding_node_count);
+    let mut ranked_embedding_node_heap = BinaryHeap::with_capacity(metadata_prefetch_limit);
+    for (&node_hash, &(score, _)) in &summary_scores_by_node {
+        let candidate = (Reverse(score), node_hash);
+        if ranked_embedding_node_heap.len() < metadata_prefetch_limit {
+            ranked_embedding_node_heap.push(candidate);
+        } else if ranked_embedding_node_heap
+            .peek()
+            .is_some_and(|worst| candidate < *worst)
+        {
+            ranked_embedding_node_heap.pop();
+            ranked_embedding_node_heap.push(candidate);
+        }
+    }
+    let mut ranked_embedding_nodes = ranked_embedding_node_heap.into_vec();
+    ranked_embedding_nodes.sort_unstable();
     let missing_prefetch_nodes = ranked_embedding_nodes
         .iter()
         .take(metadata_prefetch_limit)
-        .filter_map(|(node_hash, _)| {
+        .filter_map(|(_, node_hash)| {
             (!prefetched_nodes.contains_key(node_hash)).then_some(*node_hash)
         })
         .collect::<Vec<_>>();
@@ -2720,7 +2730,7 @@ pub fn retrieve_context(
     let rerank_nodes = ranked_embedding_nodes
         .iter()
         .take(rerank_limit)
-        .map(|(node_hash, _)| *node_hash)
+        .map(|(_, node_hash)| *node_hash)
         .collect::<Vec<_>>();
     let mut exact_node_rows = Vec::with_capacity(rerank_nodes.len());
     let mut exact_summary_rows = Vec::with_capacity(rerank_nodes.len());
