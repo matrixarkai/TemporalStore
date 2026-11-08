@@ -23,29 +23,27 @@ pub(super) fn lifecycle_persistence_report_for_path(
     }
 }
 
-/// First byte of a binary lifecycle snapshot. JSON starts with `{` or whitespace, and 0x01 is neither
-/// and not valid JSON in any position, so the first byte settles the shape with no chance of reading
-/// either as the other. Decided per file and never from a setting.
-pub(crate) const LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF: u8 = 0x01;
-
-/// A lifecycle snapshot file in EITHER shape. THE ONLY READER of one.
+/// A lifecycle snapshot file. THE ONLY READER of one.
 ///
-/// The JSON arm is PERMANENT: every snapshot a data node has written so far is JSON, and a node
-/// that came back unable to read its own snapshot would restart with no record of which shard
-/// operations were in flight and no scheduler tokens to fence them. The hold is on what is on disk,
-/// not on which writer runs today.
+/// The file is ONE shape, a bare protobuf `DurableDataNodeLifecycleSnapshot`: no container byte, no
+/// JSON arm and no first-byte sniff. The first release carries no installed base, so there is no
+/// older shape to tell apart from this one.
 ///
-/// Errors are strings because both callers turn them straight into a `Status` message; a binary
-/// snapshot whose body does not decode, or that carries no recognisable list shape, is refused by
-/// name and never defaulted to an empty snapshot (which would restore as "nothing in flight").
+/// Errors are strings because both callers turn them straight into a `Status` message. A file that
+/// does not decode is refused by name and never defaulted to an empty snapshot (which would restore
+/// as "nothing in flight"). For the same reason a file with no format version is refused: the
+/// writer always stamps one, and an empty protobuf message is also what damage that decodes to
+/// nothing looks like.
 pub fn decode_lifecycle_snapshot_file(bytes: &[u8]) -> Result<DataNodeLifecycleSnapshot, String> {
     use prost::Message as _;
-    let Some((&LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF, body)) = bytes.split_first() else {
-        return serde_json::from_slice::<DataNodeLifecycleSnapshot>(bytes)
-            .map_err(|err| err.to_string());
-    };
-    let proto = crate::sdk::v1::DurableDataNodeLifecycleSnapshot::decode(body)
-        .map_err(|err| format!("binary lifecycle snapshot did not decode: {err}"))?;
+    if bytes.is_empty() {
+        return Err("the lifecycle snapshot file is empty".to_string());
+    }
+    let proto = crate::sdk::v1::DurableDataNodeLifecycleSnapshot::decode(bytes)
+        .map_err(|err| format!("lifecycle snapshot did not decode: {err}"))?;
+    if proto.format_version == 0 {
+        return Err("the lifecycle snapshot carries no format version".to_string());
+    }
     Ok(DataNodeLifecycleSnapshot {
         format_version: proto.format_version,
         transitions: proto
@@ -80,11 +78,8 @@ pub fn decode_lifecycle_snapshot_file(bytes: &[u8]) -> Result<DataNodeLifecycleS
     })
 }
 
-/// A lifecycle snapshot as the binary file. THE ONLY ENCODER: the runtime's persist and the data
-/// server's save-to-path both call it, and nothing writes the JSON snapshot any more. An encoder
-/// nobody calls is how a retired format comes back; `decode_lifecycle_snapshot_file` keeps its JSON
-/// arm because the snapshots already on disk are JSON. Opposite reasons, so one is deleted and the
-/// other held.
+/// A lifecycle snapshot as the file. THE ONLY ENCODER: the runtime's persist and the data server's
+/// save-to-path both call it.
 pub fn encode_lifecycle_snapshot_file(snapshot: &DataNodeLifecycleSnapshot) -> Vec<u8> {
     use prost::Message as _;
     let proto = crate::sdk::v1::DurableDataNodeLifecycleSnapshot {
@@ -121,9 +116,7 @@ pub fn encode_lifecycle_snapshot_file(snapshot: &DataNodeLifecycleSnapshot) -> V
             })
             .collect(),
     };
-    let mut out = vec![LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF];
-    out.extend(proto.encode_to_vec());
-    out
+    proto.encode_to_vec()
 }
 
 pub(super) fn lifecycle_snapshot_inner(inner: &DataNodeRuntimeInner) -> DataNodeLifecycleSnapshot {
@@ -222,8 +215,7 @@ pub(super) fn persist_lifecycle_snapshot_inner(inner: &DataNodeRuntimeInner) {
     } else {
         Ok(())
     }
-    // BINARY: the container byte and a protobuf snapshot. There is no JSON encode path left;
-    // `decode_lifecycle_snapshot_file` keeps its JSON arm for the snapshots already on disk.
+    // Protobuf only: there is no JSON path in the snapshot codec at all.
     .map(|_| encode_lifecycle_snapshot_file(&lifecycle_snapshot_inner(inner)))
     .and_then(|bytes| {
         let tmp_path = path.with_extension("tmp");
@@ -375,11 +367,12 @@ pub(super) fn final_loaded_lifecycle_state(readonly: bool, status: &Status) -> &
 
 #[cfg(test)]
 mod tests {
-    //! THE LIFECYCLE SNAPSHOT IS READ IN EITHER SHAPE.
+    //! THE LIFECYCLE SNAPSHOT IS PROTOBUF ONLY.
     //!
-    //! Reader half: the writers (the runtime's persist and the data server's save-to-path) still
-    //! write JSON, so the binary files below are built by the test-only encoder and PLANTED where
-    //! the real reader looks.
+    //! The file is a bare `DurableDataNodeLifecycleSnapshot`: no container byte, no JSON arm, no
+    //! first-byte sniff. The first release carries no installed base, so no test here plants an
+    //! older shape to prove it still loads; the JSON snapshot the writers used to produce is the
+    //! thing that must now be REFUSED.
     use super::*;
     use crate::rebalance::SchedulerLifecycleToken;
     use crate::engine::TemporalEngine;
@@ -434,28 +427,30 @@ mod tests {
     }
 
     #[test]
-    fn a_lifecycle_snapshot_codec_reads_both_shapes_with_every_field() {
+    fn a_lifecycle_snapshot_codec_reads_protobuf_with_every_field_and_refuses_everything_else() {
         let original = a_snapshot_with_every_field(40);
-        let json = serde_json::to_vec_pretty(&original).unwrap();
-        assert_eq!(json[0], b'{');
-        assert_eq!(
-            decode_lifecycle_snapshot_file(&json).unwrap(),
-            original,
-            "the JSON arm changed the snapshot"
-        );
         let binary = encode_lifecycle_snapshot_file(&original);
-        assert_eq!(binary[0], LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF);
         assert!(serde_json::from_slice::<serde_json::Value>(&binary).is_err());
         assert_eq!(
             decode_lifecycle_snapshot_file(&binary).unwrap(),
             original,
-            "the binary arm dropped or changed a field"
+            "the codec dropped or changed a field"
         );
-        // A body that does not decode is an error, never an empty snapshot ("nothing in flight").
-        let mut broken = vec![LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF];
-        broken.extend_from_slice(&[0x0A, 0xFF, 0x01]);
-        assert!(decode_lifecycle_snapshot_file(&broken).is_err());
-        assert!(decode_lifecycle_snapshot_file(b"not a snapshot").is_err());
+        // ---- everything below is a REFUSAL, never an empty snapshot ("nothing in flight").
+        let refused = |bytes: &[u8], what: &str| {
+            assert!(
+                decode_lifecycle_snapshot_file(bytes).is_err(),
+                "{what} was read instead of refused"
+            );
+        };
+        // THE JSON SNAPSHOT THE WRITERS USED TO PRODUCE IS NOT A SNAPSHOT ANY MORE.
+        refused(&serde_json::to_vec_pretty(&original).unwrap(), "the old JSON snapshot");
+        refused(b"", "an empty file");
+        refused(b"not a snapshot", "plain text");
+        refused(&[0x0A, 0xFF, 0x01], "a body whose length runs past the end");
+        refused(&binary[..binary.len() - 3], "a truncated snapshot");
+        // A message that decodes to nothing (one unknown field) carries no format version: damage.
+        refused(&[0x78, 0x01], "a snapshot of only an unknown field");
     }
 
     fn a_runtime_on(
@@ -479,40 +474,36 @@ mod tests {
         )
     }
 
-    /// THE RUNTIME RESTORES A SNAPSHOT IN EITHER SHAPE, AND A BAD ONE IS A COUNTED FAILURE.
+    /// THE RUNTIME RESTORES A SNAPSHOT, AND A BAD ONE IS A COUNTED FAILURE.
     ///
-    /// Driven through the real constructor, which restores from the path. The two plants share no
-    /// shard id, so a restored value can only have come from its own arm; the refusals have the
-    /// restored cases as their control.
+    /// Driven through the real constructor, which restores from the path. The restored case has the
+    /// refusals as its contrast: a shard id only that file holds can only have come from it.
     #[test]
-    fn a_runtime_restores_a_lifecycle_snapshot_in_either_shape_and_refuses_a_bad_one() {
+    fn a_runtime_restores_a_lifecycle_snapshot_and_refuses_a_bad_one() {
         let dir = tempfile::tempdir().unwrap();
 
-        // ---- the installed base: a JSON file, planted.
-        let json_snapshot = a_snapshot_with_every_field(100);
+        let snapshot = a_snapshot_with_every_field(200);
+        let path = dir.path().join("lifecycle.snapshot");
+        std::fs::write(&path, encode_lifecycle_snapshot_file(&snapshot)).unwrap();
+        let runtime = a_runtime_on(&dir.path().join("a"), &path);
+        assert_eq!(runtime.lifecycle_snapshot(), snapshot, "the file was not restored");
+        let report = runtime.lifecycle_persistence_report();
+        assert_eq!((report.restore_success_total, report.restore_failure_total), (1, 0));
+
+        // ---- the JSON snapshot the writers used to produce: a counted failure, not a restore.
         let json_path = dir.path().join("lifecycle-json.snapshot");
-        std::fs::write(&json_path, serde_json::to_vec_pretty(&json_snapshot).unwrap()).unwrap();
-        assert_eq!(std::fs::read(&json_path).unwrap()[0], b'{');
-        let runtime = a_runtime_on(&dir.path().join("a"), &json_path);
-        assert_eq!(runtime.lifecycle_snapshot(), json_snapshot, "the JSON file was not restored");
+        std::fs::write(
+            &json_path,
+            serde_json::to_vec_pretty(&a_snapshot_with_every_field(100)).unwrap(),
+        )
+        .unwrap();
+        let runtime = a_runtime_on(&dir.path().join("b"), &json_path);
         let report = runtime.lifecycle_persistence_report();
-        assert_eq!((report.restore_success_total, report.restore_failure_total), (1, 0));
+        assert_eq!((report.restore_success_total, report.restore_failure_total), (0, 1));
+        assert!(runtime.lifecycle_snapshot().transitions.is_empty());
 
-        // ---- a binary file, planted.
-        let binary_snapshot = a_snapshot_with_every_field(200);
-        let binary_path = dir.path().join("lifecycle-binary.snapshot");
-        std::fs::write(&binary_path, encode_lifecycle_snapshot_file(&binary_snapshot)).unwrap();
-        let runtime = a_runtime_on(&dir.path().join("b"), &binary_path);
-        assert_eq!(
-            runtime.lifecycle_snapshot(),
-            binary_snapshot,
-            "the binary file was not restored"
-        );
-        let report = runtime.lifecycle_persistence_report();
-        assert_eq!((report.restore_success_total, report.restore_failure_total), (1, 0));
-
-        // ---- a binary file at a format version this build does not restore: refused by the
-        // ---- restore, not by the decoder, and counted.
+        // ---- a file at a format version this build does not restore: refused by the restore, not
+        // ---- by the decoder, and counted.
         let mut wrong_version = a_snapshot_with_every_field(300);
         wrong_version.format_version = 2;
         let wrong_path = dir.path().join("lifecycle-wrong-version.snapshot");
@@ -522,27 +513,22 @@ mod tests {
         assert_eq!((report.restore_success_total, report.restore_failure_total), (0, 1));
         assert!(runtime.lifecycle_snapshot().transitions.is_empty());
 
-        // ---- a binary file that does not decode: a counted failure, and NOT an empty restore that
-        // ---- reads as "nothing in flight".
+        // ---- a file that does not decode: a counted failure, and NOT an empty restore that reads
+        // ---- as "nothing in flight".
         let broken_path = dir.path().join("lifecycle-broken.snapshot");
-        std::fs::write(
-            &broken_path,
-            [LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF, 0x0A, 0xFF, 0x01],
-        )
-        .unwrap();
+        std::fs::write(&broken_path, [0x0A, 0xFF, 0x01]).unwrap();
         let runtime = a_runtime_on(&dir.path().join("d"), &broken_path);
         let report = runtime.lifecycle_persistence_report();
         assert_eq!((report.restore_success_total, report.restore_failure_total), (0, 1));
         assert!(runtime.lifecycle_snapshot().transitions.is_empty());
     }
 
-    /// THE RUNTIME PERSISTS A BINARY SNAPSHOT, AND A RESTART READS IT.
+    /// THE RUNTIME PERSISTS A PROTOBUF SNAPSHOT, AND A RESTART READS IT.
     ///
     /// Through the real paths: `require_lifecycle_token` persists, and a second runtime built on the
-    /// same path restores. The JSON arm is not exercised here -- no writer produces it any more --
-    /// and is driven by the planted file in the reader test above.
+    /// same path restores.
     #[test]
-    fn the_runtime_persists_a_binary_lifecycle_snapshot_and_a_restart_reads_it() {
+    fn the_runtime_persists_a_protobuf_lifecycle_snapshot_and_a_restart_reads_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("persisted.snapshot");
         let runtime = a_runtime_on(&dir.path().join("first"), &path);
@@ -555,12 +541,13 @@ mod tests {
         });
         let written = std::fs::read(&path).unwrap();
         assert_eq!(
-            written[0], LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF,
-            "the runtime did not persist the binary shape"
+            written,
+            encode_lifecycle_snapshot_file(&runtime.lifecycle_snapshot()),
+            "the runtime did not persist the snapshot encoding"
         );
         assert!(
             serde_json::from_slice::<serde_json::Value>(&written).is_err(),
-            "the persisted snapshot parses as JSON, so the container byte proves nothing"
+            "the persisted snapshot parses as JSON"
         );
 
         let restarted = a_runtime_on(&dir.path().join("second"), &path);
@@ -571,15 +558,15 @@ mod tests {
         assert_eq!((report.restore_success_total, report.restore_failure_total), (1, 0));
     }
 
-    /// NO JSON ENCODE PATH IS LEFT FOR A LIFECYCLE SNAPSHOT.
+    /// NO JSON PATH IS LEFT FOR A LIFECYCLE SNAPSHOT.
     ///
-    /// The test above reads the first byte of what the runtime wrote; this sees an encoder nobody
-    /// calls YET, and covers the data server's save-to-path route, which has no test of its own.
-    /// It reads each writer with comment lines removed and asserts none names `serde_json`. The
-    /// POSITIVE CONTROL is the decoder, which still calls `serde_json::from_slice` (the permanent
-    /// JSON arm): a scan that could not see that call would pass over any writer.
+    /// The test above reads the bytes the runtime wrote; this sees an encoder nobody calls YET, and
+    /// covers the data server's save-to-path and load-from-path routes, which have no test of their
+    /// own. It reads each with comment lines removed and asserts none names `serde_json`, and that
+    /// the writers call the encoder. The CONTROL runs the same scan over a string that does name it,
+    /// so a scan that could not see the token would fail here instead of passing over a writer.
     #[test]
-    fn no_json_encode_path_is_left_for_a_lifecycle_snapshot() {
+    fn no_json_path_is_left_for_a_lifecycle_snapshot() {
         fn body(source: &str, from: &str, to: &str) -> String {
             let start = source
                 .find(from)
@@ -595,6 +582,12 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         }
+        // control
+        assert!(
+            body("fn a() {\n// serde_json in a comment\nlet v = serde_json::to_vec(&x);\n}\nfn b", "fn a(", "fn b")
+                .contains("serde_json"),
+            "the scan cannot see a serde_json call"
+        );
         let lifecycle = include_str!("data_node_lifecycle.rs");
         let server = include_str!("../bin/temporalstore_data_server.rs");
 
@@ -608,26 +601,32 @@ mod tests {
             "fn save_lifecycle_snapshot_file(",
             "fn load_lifecycle_snapshot_file(",
         );
+        let load = body(server, "fn load_lifecycle_snapshot_file(", "fn ingest_batch_route(");
         for (name, code) in [("persist_lifecycle_snapshot_inner", &persist), ("save_lifecycle_snapshot_file", &save)] {
             assert!(code.len() > 200, "{name}: the scan found almost nothing");
             assert!(
                 code.contains("encode_lifecycle_snapshot_file("),
-                "{name} does not call the binary encoder"
+                "{name} does not call the snapshot encoder"
             );
             assert!(
                 !code.contains("serde_json"),
-                "{name} still reaches for serde_json: a JSON encode path survives. Delete it; \
-                 the decoder keeps its JSON arm for the snapshots already on disk."
+                "{name} still reaches for serde_json: a JSON encode path survives"
             );
         }
-        let decoder = body(
+        assert!(load.len() > 200, "load_lifecycle_snapshot_file: the scan found almost nothing");
+        assert!(
+            !load.contains("serde_json"),
+            "load_lifecycle_snapshot_file still reaches for serde_json"
+        );
+        let codec = body(
             lifecycle,
             "pub fn decode_lifecycle_snapshot_file(",
-            "pub fn encode_lifecycle_snapshot_file(",
+            "pub(super) fn lifecycle_snapshot_inner(",
         );
+        assert!(codec.contains("DurableDataNodeLifecycleSnapshot::decode"), "the decoder does not decode the file");
         assert!(
-            decoder.contains("serde_json::from_slice"),
-            "the control no longer sees the permanent JSON arm, so this scan could pass over a writer it cannot see"
+            !codec.contains("serde_json"),
+            "the lifecycle snapshot codec still names serde_json: a JSON arm survives"
         );
     }
 }
