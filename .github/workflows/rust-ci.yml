@@ -517,11 +517,16 @@ jobs:
           # levers on the 32.0 B/key key-character row, and it decides them in opposite directions:
           # at one holder the refcount header is waste, at two it is exactly paid for. It runs both
           # walks on one corpus so the correction cannot be read as a different fixture.
+          #
+          # a_key_with_a_deadline_is_held_by_two_ordered_maps is the same census on keys that carry a
+          # deadline, where the published corpus has none: one allocation, four holders, two of them
+          # key-ordered maps a span cannot replace. It asserts the ordered maps are populated first.
           for t in \
             engine::tests::every_published_ratio_is_rederivable::every_published_ratio_is_rederivable_from_published_counters \
             engine::tests::index_bytes_per_key::every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for \
             engine::tests::index_bytes_per_key::how_many_holders_a_key_allocation_has_by_kind \
-            engine::tests::the_holders_of_a_key_allocation::the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key ; do
+            engine::tests::the_holders_of_a_key_allocation::the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key \
+            engine::tests::the_holders_of_a_key_allocation::a_key_with_a_deadline_is_held_by_two_ordered_maps ; do
             echo "--- $t (ignored) ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
