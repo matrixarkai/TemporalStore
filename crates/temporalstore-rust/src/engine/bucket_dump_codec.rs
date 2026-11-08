@@ -4,29 +4,19 @@
 //! The binary shape of the bucket-dump manifest and the install marker, and the checksum
 //! derivation that goes with it.
 //!
-//! # TWO SHAPES, DECIDED PER FILE FROM THE FIRST BYTE
+//! # ONE SHAPE
 //!
-//! A manifest or marker on disk is either the JSON document older builds wrote or a protobuf body
-//! behind one container byte. `BUCKET_DUMP_CONTAINER_PROTOBUF` is 0x01, which is not whitespace
-//! and not valid JSON in any position, so the first byte settles it with no chance of reading
-//! either shape as the other. The decision is never taken from a setting: a node that has never
-//! written a JSON manifest must still read one, because the hold is on the installed base.
+//! A manifest or marker file is a bare protobuf message: no container byte, no JSON arm and no
+//! first-byte sniff. The first release carries no installed base, so there is no older shape to tell
+//! apart from this one. A body that does not decode, or that decodes to a message naming no manifest
+//! (which is also what damage that decodes to nothing looks like), is an error and never a default.
 //!
-//! # THE CHECKSUM IS DEFINED OVER BYTES, SO IT HAS A VERSION
+//! # THE CHECKSUM IS A SHA-256 OVER THE ENCODING
 //!
-//! `BucketDumpManifest::checksum` is a SHA-256 over a byte string, and which byte string it is
-//! depends on when the manifest was written:
-//!
-//!   * version 0 -- the manifest's canonical JSON with `checksum` emptied. Every manifest written
-//!     before this module existed. It is kept as the VERIFIER for those manifests, and nothing
-//!     else: a derivation that is part of the verification of a stored file cannot be removed
-//!     while that file can exist, and it cannot be re-derived from the protobuf shape.
-//!   * version 1 -- the manifest's deterministic protobuf encoding with `checksum` empty.
-//!
-//! The version travels IN the manifest (`checksum_version`), and for version 1 it is inside the
-//! digested bytes, so flipping it on a stored manifest changes which derivation runs AND what it
-//! is run over; neither can land on the stored checksum. A version this build does not know is an
-//! error, never a default.
+//! `BucketDumpManifest::checksum` is a SHA-256 over the manifest's deterministic protobuf encoding
+//! with `checksum` empty. There is one derivation, so there is no version to carry: the digest is
+//! taken over the DECODED value re-encoded, which is what makes a byte that decodes to a different
+//! value change the digest.
 //!
 //! # WHY A PROTOBUF DIGEST IS DETERMINISTIC HERE
 //!
@@ -48,14 +38,6 @@ use super::*;
 use crate::sdk::v1;
 use prost::Message;
 
-/// First byte of a binary manifest or marker file. See the module note.
-pub(crate) const BUCKET_DUMP_CONTAINER_PROTOBUF: u8 = 0x01;
-
-/// `checksum_version` of a manifest whose checksum is a SHA-256 over its canonical JSON.
-pub(crate) const BUCKET_DUMP_CHECKSUM_LEGACY_JSON: u32 = 0;
-/// `checksum_version` of a manifest whose checksum is a SHA-256 over its protobuf encoding.
-pub(crate) const BUCKET_DUMP_CHECKSUM_PROTOBUF: u32 = 1;
-
 /// Field numbers the digest streams by hand. Declared in `temporalstore.proto`, where the note on
 /// `DurableBucketDumpManifest` says why they must stay the two highest.
 const INDEX_BYTES_FIELD: u32 = 22;
@@ -63,16 +45,6 @@ const CHECKSUM_FIELD: u32 = 23;
 
 fn invalid_data(err: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string())
-}
-
-/// The protobuf body of a binary file, or `None` for the JSON shape.
-///
-/// THE ONLY PLACE THAT DECIDES, so the two shapes cannot be told apart two different ways.
-fn bucket_dump_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
-    match bytes.split_first() {
-        Some((&BUCKET_DUMP_CONTAINER_PROTOBUF, body)) => Some(body),
-        _ => None,
-    }
 }
 
 fn summary_to_proto(summary: &BucketStorageSummary) -> v1::DurableBucketStorageSummary {
@@ -178,7 +150,6 @@ fn manifest_head_to_proto(manifest: &BucketDumpManifest) -> v1::DurableBucketDum
         object_lifecycle: (manifest.object_lifecycle != StorageObjectLifecycleReport::default())
             .then(|| lifecycle_to_proto(&manifest.object_lifecycle)),
         index_sha256: manifest.index_sha256.clone(),
-        checksum_version: manifest.checksum_version,
         index_bytes: Vec::new(),
         checksum: String::new(),
     }
@@ -227,7 +198,6 @@ fn manifest_from_proto(manifest: v1::DurableBucketDumpManifest) -> BucketDumpMan
             .unwrap_or_default(),
         index_bytes: manifest.index_bytes,
         index_sha256: manifest.index_sha256,
-        checksum_version: manifest.checksum_version,
         checksum: manifest.checksum,
     }
 }
@@ -244,42 +214,47 @@ fn index_bytes_field_header(len: usize) -> Vec<u8> {
     header
 }
 
-/// A manifest in EITHER shape.
+/// A manifest file or object. THE ONLY READER of one.
 ///
-/// Every reader of a manifest file or object goes through this. The JSON arm is permanent: it is
-/// the shape of every manifest written before the binary one existed, and "which writer runs
-/// today" is the wrong question for a reader -- the hold is on what is on disk.
+/// Every reader of a manifest goes through this. An empty body is an error, and so is a message that
+/// names no manifest: with no container byte, a body that decodes to nothing is indistinguishable
+/// from damage, and a default manifest would read as a real one with an unmatched checksum.
 pub(crate) fn decode_bucket_dump_manifest(
     bytes: &[u8],
 ) -> Result<BucketDumpManifest, std::io::Error> {
-    match bucket_dump_protobuf_body(bytes) {
-        Some(body) => v1::DurableBucketDumpManifest::decode(body)
-            .map(manifest_from_proto)
-            .map_err(invalid_data),
-        None => serde_json::from_slice(bytes).map_err(invalid_data),
+    if bytes.is_empty() {
+        return Err(invalid_data("the manifest body is empty"));
     }
+    let manifest = v1::DurableBucketDumpManifest::decode(bytes).map_err(invalid_data)?;
+    if manifest.manifest_id.is_empty() {
+        return Err(invalid_data("the manifest body names no manifest"));
+    }
+    Ok(manifest_from_proto(manifest))
 }
 
-/// A marker in EITHER shape. See `decode_bucket_dump_manifest` for why the JSON arm stays.
+/// A marker file. THE ONLY READER of one; refuses an empty body and a message naming no manifest
+/// for the reasons on `decode_bucket_dump_manifest`.
 pub(crate) fn decode_bucket_dump_install_marker(
     bytes: &[u8],
 ) -> Result<BucketDumpInstallMarker, std::io::Error> {
-    match bucket_dump_protobuf_body(bytes) {
-        Some(body) => v1::DurableBucketDumpInstallMarker::decode(body)
-            .map(|marker| BucketDumpInstallMarker {
-                shard_id: marker.shard_id,
-                manifest_id: marker.manifest_id,
-                phase: marker.phase,
-                wal_sequence: marker.wal_sequence,
-                index_log_sequence: marker.index_log_sequence,
-                created_unix_ms: marker.created_unix_ms,
-            })
-            .map_err(invalid_data),
-        None => serde_json::from_slice(bytes).map_err(invalid_data),
+    if bytes.is_empty() {
+        return Err(invalid_data("the marker body is empty"));
     }
+    let marker = v1::DurableBucketDumpInstallMarker::decode(bytes).map_err(invalid_data)?;
+    if marker.manifest_id.is_empty() {
+        return Err(invalid_data("the marker body names no manifest"));
+    }
+    Ok(BucketDumpInstallMarker {
+        shard_id: marker.shard_id,
+        manifest_id: marker.manifest_id,
+        phase: marker.phase,
+        wal_sequence: marker.wal_sequence,
+        index_log_sequence: marker.index_log_sequence,
+        created_unix_ms: marker.created_unix_ms,
+    })
 }
 
-/// The version-1 checksum: SHA-256 over the manifest's protobuf encoding with `checksum` empty,
+/// The manifest checksum: SHA-256 over the manifest's protobuf encoding with `checksum` empty,
 /// and how many bytes were hashed.
 ///
 /// Streamed in the order prost writes the message: the head (every field below the index image),
@@ -316,18 +291,12 @@ pub(crate) fn bucket_dump_protobuf_digest_payload(manifest: &BucketDumpManifest)
     payload
 }
 
-/// A manifest as the binary file: the container byte, the head, the index image, the checksum.
+/// A manifest as the file: the head, the index image, the checksum.
 ///
-/// THE ONLY ENCODER. Every writer of a manifest -- the local index dir and the shared object
-/// store -- calls this, and no JSON encode path is left for either. `BucketDumpManifest` still
-/// derives `Serialize`, so a test can build the legacy shape to plant it; what is gone is any
-/// path a running node can take to write it. An encoder nobody reaches is how a retired format
-/// comes back (a later branch finds the function and calls it); a decoder nobody in this tree
-/// calls is still reached by every manifest already on disk. Opposite reasons, so the encoder is
-/// deleted and `decode_bucket_dump_manifest` keeps its JSON arm.
+/// THE ONLY ENCODER. Every writer of a manifest -- the local index dir and the shared object store --
+/// calls this.
 pub(crate) fn encode_bucket_dump_manifest(manifest: &BucketDumpManifest) -> Vec<u8> {
-    let mut out = vec![BUCKET_DUMP_CONTAINER_PROTOBUF];
-    out.extend(manifest_head_to_proto(manifest).encode_to_vec());
+    let mut out = manifest_head_to_proto(manifest).encode_to_vec();
     if !manifest.index_bytes.is_empty() {
         out.extend(index_bytes_field_header(manifest.index_bytes.len()));
         out.extend_from_slice(&manifest.index_bytes);
@@ -344,33 +313,15 @@ pub(crate) fn encode_bucket_dump_manifest(manifest: &BucketDumpManifest) -> Vec<
     out
 }
 
-/// A marker as the binary file. The only encoder, for the reasons on `encode_bucket_dump_manifest`.
+/// A marker as the file. The only encoder.
 pub(crate) fn encode_bucket_dump_install_marker(marker: &BucketDumpInstallMarker) -> Vec<u8> {
-    let mut out = vec![BUCKET_DUMP_CONTAINER_PROTOBUF];
-    out.extend(
-        v1::DurableBucketDumpInstallMarker {
-            shard_id: marker.shard_id,
-            manifest_id: marker.manifest_id.clone(),
-            phase: marker.phase.clone(),
-            wal_sequence: marker.wal_sequence,
-            index_log_sequence: marker.index_log_sequence,
-            created_unix_ms: marker.created_unix_ms,
-        }
-        .encode_to_vec(),
-    );
-    out
-}
-
-/// A manifest re-derived as a LEGACY one: version-0 checksum over its canonical JSON, with the
-/// generation id refreshed first because it hashes the sequences and the checksum covers it.
-///
-/// For tests that plant the installed base. No writer produces this shape any more, which is why
-/// there is a test-only way to build it at all.
-#[cfg(test)]
-pub(crate) fn into_legacy_json_manifest_for_test(mut manifest: BucketDumpManifest) -> BucketDumpManifest {
-    manifest.checksum_version = BUCKET_DUMP_CHECKSUM_LEGACY_JSON;
-    manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
-    manifest.checksum =
-        bucket_dump_manifest_checksum(&manifest).expect("the JSON derivation runs");
-    manifest
+    v1::DurableBucketDumpInstallMarker {
+        shard_id: marker.shard_id,
+        manifest_id: marker.manifest_id.clone(),
+        phase: marker.phase.clone(),
+        wal_sequence: marker.wal_sequence,
+        index_log_sequence: marker.index_log_sequence,
+        created_unix_ms: marker.created_unix_ms,
+    }
+    .encode_to_vec()
 }

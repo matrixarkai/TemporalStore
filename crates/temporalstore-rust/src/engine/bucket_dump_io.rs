@@ -148,7 +148,7 @@ pub(super) fn bucket_dump_manifest_path(
     shard_id: ShardId,
     manifest_id: &str,
 ) -> PathBuf {
-    bucket_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.json"))
+    bucket_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.manifest"))
 }
 
 pub(super) fn bucket_dump_manifest_at(
@@ -160,7 +160,6 @@ pub(super) fn bucket_dump_manifest_at(
     if !path.exists() {
         return Ok(None);
     }
-    // Either shape: see `decode_bucket_dump_manifest`. The JSON arm is permanent.
     decode_bucket_dump_manifest(&fs::read(path)?).map(Some)
 }
 
@@ -206,7 +205,6 @@ pub(super) fn bucket_dump_install_marker_files_at(
             continue;
         }
         let path = entry.path();
-        // Either shape: see `decode_bucket_dump_install_marker`. The JSON arm is permanent.
         let marker = decode_bucket_dump_install_marker(&fs::read(&path)?)?;
         markers.push((marker, path));
     }
@@ -752,7 +750,7 @@ pub(super) fn list_bucket_dump_manifests_shared_at(
         if !path
             .extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| ext == "json")
+            .map(|ext| ext == "manifest")
             .unwrap_or(false)
         {
             continue;
@@ -933,7 +931,7 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
         })
 }
 
-/// The manifest's checksum, over its own JSON with the checksum field emptied.
+/// The manifest's checksum, over its own protobuf encoding with the checksum field emptied.
 ///
 /// THE PAYLOAD IS THE SAME BYTES either way; what differs is whether producing them copies the
 /// manifest first. A manifest carries the whole-shard index image and one summary per bucket, so
@@ -972,35 +970,10 @@ pub(super) fn bucket_dump_manifest_checksum_in_place(
 fn finish_bucket_dump_manifest_checksum(
     payload: &BucketDumpManifest,
 ) -> Result<String, Status> {
-    // THE VERSION PICKS THE DERIVATION, and an unknown one is an error rather than a default:
-    // verifying a manifest against bytes its writer did not hash would either reject a good file
-    // or, worse, accept a bad one that happens to agree.
-    match payload.checksum_version {
-        BUCKET_DUMP_CHECKSUM_LEGACY_JSON => {
-            MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
-            // THE LEGACY VERIFIER. This is the only `serde_json` call left on a manifest's
-            // checksum path, and it is for manifests written before `checksum_version` existed:
-            // their stored checksum was taken over exactly these bytes, so it cannot be
-            // retired while such a file can be on disk.
-            serde_json::to_vec(payload)
-                .map(|bytes| {
-                    MANIFEST_CHECKSUM_BYTES
-                        .with(|cell| cell.set(cell.get().saturating_add(bytes.len() as u64)));
-                    sha256_hex_bytes(&bytes)
-                })
-                .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
-        }
-        BUCKET_DUMP_CHECKSUM_PROTOBUF => {
-            MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
-            let (digest, hashed) = bucket_dump_protobuf_digest(payload);
-            MANIFEST_CHECKSUM_BYTES.with(|cell| cell.set(cell.get().saturating_add(hashed)));
-            Ok(digest)
-        }
-        unknown => Err(Status::error(
-            "slot_dump_checksum_failed",
-            format!("unknown manifest checksum version {unknown}"),
-        )),
-    }
+    MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    let (digest, hashed) = bucket_dump_protobuf_digest(payload);
+    MANIFEST_CHECKSUM_BYTES.with(|cell| cell.set(cell.get().saturating_add(hashed)));
+    Ok(digest)
 }
 
 pub(super) fn bucket_dump_fault_scenario(
