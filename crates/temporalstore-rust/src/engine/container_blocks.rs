@@ -324,6 +324,18 @@ pub(super) enum Utf8ContainerProjection {
     Corrupt(String),
 }
 
+/// Byte ranges for requested UTF-8 fields in one retained packed frame.
+pub(super) enum Utf8ContainerRangeProjection {
+    /// No container magic; the caller retains legacy bare-value behavior.
+    NotFramed,
+    /// The frame uses another container spelling; the caller retains the generic selector.
+    OtherSpelling,
+    /// One positional value range per requested element name.
+    Values(Vec<Option<std::ops::Range<usize>>>),
+    /// The frame could not be walked.
+    Corrupt(String),
+}
+
 /// The requested-name index shared by every row in one hash projection batch.
 pub(super) struct Utf8ProjectionPlan<'a> {
     element_names: &'a [String],
@@ -799,15 +811,33 @@ pub(super) fn project_utf8_container_elements_with_plan(
     plan: &Utf8ProjectionPlan<'_>,
     scratch: &mut Utf8ProjectionScratch,
 ) -> Utf8ContainerProjection {
+    match project_utf8_container_element_ranges_with_plan(bytes, plan, scratch) {
+        Utf8ContainerRangeProjection::NotFramed => Utf8ContainerProjection::NotFramed,
+        Utf8ContainerRangeProjection::OtherSpelling => Utf8ContainerProjection::OtherSpelling,
+        Utf8ContainerRangeProjection::Corrupt(error) => Utf8ContainerProjection::Corrupt(error),
+        Utf8ContainerRangeProjection::Values(ranges) => Utf8ContainerProjection::Values(
+            ranges
+                .into_iter()
+                .map(|range| range.map(|range| bytes[range].to_vec()))
+                .collect(),
+        ),
+    }
+}
+
+pub(super) fn project_utf8_container_element_ranges_with_plan(
+    bytes: &[u8],
+    plan: &Utf8ProjectionPlan<'_>,
+    scratch: &mut Utf8ProjectionScratch,
+) -> Utf8ContainerRangeProjection {
     let Some(header) = frame_header(bytes) else {
-        return Utf8ContainerProjection::NotFramed;
+        return Utf8ContainerRangeProjection::NotFramed;
     };
     let (shape, spelling) = match header {
         Ok(header) => header,
-        Err(error) => return Utf8ContainerProjection::Corrupt(error),
+        Err(error) => return Utf8ContainerRangeProjection::Corrupt(error),
     };
     if spelling != ElementKeySpelling::Utf8 {
-        return Utf8ContainerProjection::OtherSpelling;
+        return Utf8ContainerRangeProjection::OtherSpelling;
     }
 
     scratch.reset(plan.element_names.len());
@@ -815,10 +845,10 @@ pub(super) fn project_utf8_container_elements_with_plan(
     let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
         Ok(count) => count,
-        Err(error) => return Utf8ContainerProjection::Corrupt(error),
+        Err(error) => return Utf8ContainerRangeProjection::Corrupt(error),
     };
     if count > bytes.len() as u64 {
-        return Utf8ContainerProjection::Corrupt(format!(
+        return Utf8ContainerRangeProjection::Corrupt(format!(
             "container block claims {count} items in {} bytes",
             bytes.len()
         ));
@@ -826,7 +856,7 @@ pub(super) fn project_utf8_container_elements_with_plan(
     for index in 0..count {
         let (key, value, deleted) = match take_item_bytes(bytes, &mut cursor, index, shape) {
             Ok(item) => item,
-            Err(error) => return Utf8ContainerProjection::Corrupt(error),
+            Err(error) => return Utf8ContainerRangeProjection::Corrupt(error),
         };
         let Some(&position) = plan.first_position.get(key) else {
             continue;
@@ -834,7 +864,8 @@ pub(super) fn project_utf8_container_elements_with_plan(
         if !scratch.found[position] {
             scratch.found[position] = true;
             if !deleted {
-                values[position] = Some(value.to_vec());
+                let start = value.as_ptr() as usize - bytes.as_ptr() as usize;
+                values[position] = Some(start..start + value.len());
             }
         }
     }
@@ -844,7 +875,7 @@ pub(super) fn project_utf8_container_elements_with_plan(
             values[index] = values[first].clone();
         }
     }
-    Utf8ContainerProjection::Values(values)
+    Utf8ContainerRangeProjection::Values(values)
 }
 
 /// Spell a container member as an index element name, without doubling it.

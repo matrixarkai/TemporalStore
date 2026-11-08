@@ -3,6 +3,72 @@
 
 //! Stream read/scan + batch execute + index snapshot publish methods for TemporalEngine, split from engine.rs.
 use super::*;
+use serde::ser::SerializeSeq;
+
+struct ProjectedBatchHashMultiGetRow(execute_on_shard::ProjectedHashValues);
+
+struct BinarySlice<'a>(&'a [u8]);
+
+impl serde::Serialize for BinarySlice<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+impl ProjectedBatchHashMultiGetRow {
+    fn encoded_capacity(&self) -> usize {
+        (0..self.0.len()).fold(5usize, |capacity, index| {
+            capacity.saturating_add(
+                self.0
+                    .value_at(index)
+                    .map_or(1, |value| value.len().saturating_add(5)),
+            )
+        })
+    }
+}
+
+impl serde::Serialize for ProjectedBatchHashMultiGetRow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for index in 0..self.0.len() {
+            match self.0.value_at(index) {
+                Some(value) => seq.serialize_element(&Some(BinarySlice(value)))?,
+                None => seq.serialize_element(&Option::<BinarySlice<'_>>::None)?,
+            }
+        }
+        seq.end()
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ProjectedBatchHashMultiGetResponse {
+    status: Status,
+    rows: Vec<ProjectedBatchHashMultiGetRow>,
+    errors: Vec<BatchHashMultiGetError>,
+}
+
+fn encode_projected_hash_multi_get_response(
+    response: ProjectedBatchHashMultiGetResponse,
+) -> Vec<u8> {
+    let capacity = response
+        .rows
+        .iter()
+        .map(ProjectedBatchHashMultiGetRow::encoded_capacity)
+        .sum::<usize>()
+        .saturating_add(response.errors.len().saturating_mul(128))
+        .saturating_add(128);
+    let mut body = Vec::with_capacity(capacity);
+    let mut serializer = rmp_serde::Serializer::new(&mut body).with_struct_map();
+    if serde::Serialize::serialize(&response, &mut serializer).is_ok() {
+        return body;
+    }
+    rmp_serde::to_vec_named(&BatchHashMultiGetResponse {
+        status: Status::error("response_encoding_failed", "could not encode compact hash rows"),
+        rows: Vec::new(),
+        errors: Vec::new(),
+    })
+    .unwrap_or_default()
+}
 
 enum BatchCommandSource<'a> {
     Commands(std::vec::IntoIter<Command>),
@@ -425,7 +491,10 @@ impl TemporalEngine {
     fn visit_batch_hash_multi_get(
         &self,
         request: BatchHashMultiGetRequest,
-        mut visit: impl FnMut(usize, Result<Vec<Option<Vec<u8>>>, Status>),
+        mut visit: impl FnMut(
+            usize,
+            Result<execute_on_shard::ProjectedHashValues, Status>,
+        ),
     ) -> Result<(), Status> {
         let BatchHashMultiGetRequest {
             shard_id,
@@ -483,7 +552,10 @@ impl TemporalEngine {
                     continue;
                 }
                 match item.response {
-                    CommandResponse::Values { values } => visit(index, Ok(values)),
+                    CommandResponse::Values { values } => visit(
+                        index,
+                        Ok(execute_on_shard::ProjectedHashValues::Owned(values)),
+                    ),
                     _ => visit(
                         index,
                         Err(Status::error(
@@ -548,7 +620,7 @@ impl TemporalEngine {
                 continue;
             }
 
-            let outcome = execute_on_shard::execute_hash_multi_get(
+            let values = execute_on_shard::execute_hash_multi_get_projected(
                 &self.cache,
                 &self.block_store,
                 shard_id,
@@ -560,23 +632,13 @@ impl TemporalEngine {
                 &projection_plan,
                 &mut projection_scratch,
             );
-            debug_assert!(!outcome.mutated, "TTL state must use the generic batch path");
             let now = now_ms();
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                 let routing_bucket =
                     block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
                 shard.bucket_recency.insert(routing_bucket, now);
             });
-            match outcome.response {
-                CommandResponse::Values { values } => visit(index, Ok(values)),
-                _ => visit(
-                    index,
-                    Err(Status::error(
-                        "unexpected_read_response",
-                        "hash multi-get returned a non-values response",
-                    )),
-                ),
-            }
+            visit(index, Ok(values));
         }
         Ok(())
     }
@@ -590,7 +652,7 @@ impl TemporalEngine {
             responses.push(match result {
                 Ok(values) => ExecuteResponse {
                     status: Status::ok(),
-                    response: CommandResponse::Values { values },
+                    response: CommandResponse::Values { values: values.into_owned() },
                 },
                 Err(status) => ExecuteResponse {
                     status,
@@ -613,7 +675,9 @@ impl TemporalEngine {
         let mut rows = Vec::with_capacity(request.keys.len());
         let mut errors = Vec::new();
         let status = match self.visit_batch_hash_multi_get(request, |index, result| match result {
-            Ok(values) => rows.push(BatchHashMultiGetRow(values)),
+            Ok(values) => {
+                rows.push(BatchHashMultiGetRow(values.into_owned()));
+            }
             Err(status) => {
                 errors.push(BatchHashMultiGetError { index, status });
                 rows.push(BatchHashMultiGetRow(vec![None; field_count]));
@@ -627,6 +691,33 @@ impl TemporalEngine {
             rows,
             errors,
         }
+    }
+
+    /// Encode compact shared-field rows directly from retained packed frames.
+    pub fn batch_hash_multi_get_compact_msgpack(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> Vec<u8> {
+        let field_count = request.fields.len();
+        let mut rows = Vec::with_capacity(request.keys.len());
+        let mut errors = Vec::new();
+        let status = match self.visit_batch_hash_multi_get(request, |index, result| match result {
+            Ok(values) => rows.push(ProjectedBatchHashMultiGetRow(values)),
+            Err(status) => {
+                errors.push(BatchHashMultiGetError { index, status });
+                rows.push(ProjectedBatchHashMultiGetRow(
+                    execute_on_shard::ProjectedHashValues::Owned(vec![None; field_count]),
+                ));
+            }
+        }) {
+            Ok(()) => Status::ok(),
+            Err(status) => status,
+        };
+        encode_projected_hash_multi_get_response(ProjectedBatchHashMultiGetResponse {
+            status,
+            rows,
+            errors,
+        })
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {

@@ -166,6 +166,15 @@ fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
         vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
     );
     assert_eq!(compact.rows[1].0, vec![None, None]);
+
+    let direct = runtime.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["present".to_string(), "missing".to_string()],
+        fields: vec!["b".to_string(), "a".to_string()],
+    });
+    let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct)
+        .expect("direct compact response must retain the established wire shape");
+    assert_eq!(decoded, compact);
 }
 
 #[test]
@@ -309,6 +318,65 @@ fn warm_packed_projection_does_not_copy_the_frame_from_cache() {
         cache_read.alloc_bytes,
         READS * EMBEDDING_BYTES,
     );
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn direct_compact_encoding_does_not_copy_each_feature_value_first() {
+    const ROWS: usize = 32;
+    const VALUE_BYTES: usize = 8 * 1024;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let value = vec![b'x'; VALUE_BYTES];
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["embedding".to_string()],
+        rows: (0..ROWS)
+            .map(|index| {
+                BatchHashMultiSetRow(
+                    format!("entity-{index:02}"),
+                    vec![BatchHashMultiSetValue(value.clone())],
+                )
+            })
+            .collect(),
+    });
+    assert!(written.status.ok, "{written:?}");
+
+    let request = BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: (0..ROWS).map(|index| format!("entity-{index:02}")).collect(),
+        fields: vec!["embedding".to_string()],
+    };
+    let warm = runtime.batch_hash_multi_get_compact_msgpack(request.clone());
+    assert_eq!(
+        rmp_serde::from_slice::<BatchHashMultiGetResponse>(&warm)
+            .expect("warm direct response")
+            .rows
+            .len(),
+        ROWS
+    );
+
+    let control_probe = crate::alloc_probe::Probe::start();
+    let control_response = runtime.batch_hash_multi_get_compact(request.clone());
+    let control_body = rmp_serde::to_vec_named(&control_response).expect("encode owned response");
+    let control = control_probe.stop();
+
+    let direct_probe = crate::alloc_probe::Probe::start();
+    let direct_body = runtime.batch_hash_multi_get_compact_msgpack(request);
+    let direct = direct_probe.stop();
+
+    assert_eq!(direct_body, control_body);
+    assert!(
+        direct.allocs + ((ROWS / 2) as u64) < control.allocs,
+        "direct={direct:?} control={control:?}"
+    );
+    assert!(
+        direct.alloc_bytes + ((ROWS * VALUE_BYTES / 2) as u64) < control.alloc_bytes,
+        "direct={direct:?} control={control:?}"
+    );
+    std::hint::black_box((direct_body, control_body));
 }
 
 #[test]
