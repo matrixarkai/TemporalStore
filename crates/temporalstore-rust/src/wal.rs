@@ -976,7 +976,6 @@ pub struct WriteAheadLogItemMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "slot_id")]
     pub bucket_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,

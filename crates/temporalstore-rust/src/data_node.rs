@@ -1604,7 +1604,6 @@ pub struct StorageManagerPressureSnapshot {
     #[serde(default)]
     pub expired_bucket_object_scan_debt: usize,
     #[serde(default)]
-    #[serde(alias = "delayed_destroy_segment_count")]
     pub delayed_destroy_slab_count: usize,
     #[serde(default)]
     pub delayed_destroy_bytes: u64,

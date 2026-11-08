@@ -682,7 +682,7 @@ pub struct IndexLogRecord {
 /// TTL-only or whole-object tombstone), and a META item carries the compaction anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexItemKind {
-    #[serde(rename = "block", alias = "page")]
+    #[serde(rename = "block")]
     Block,
     #[serde(rename = "object")]
     Object,
@@ -713,7 +713,7 @@ pub struct IndexItem {
         deserialize_with = "item_kind_either_shape"
     )]
     pub kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
+    #[serde(rename = "rb", alias = "routing_bucket", default)]
     pub routing_bucket: u32,
     /// The block handle. A `String` in this struct, a NUMBER on the wire whenever it holds one.
     ///
@@ -734,7 +734,6 @@ pub struct IndexItem {
     /// file's encoder comment claimed struct-as-map while calling the array form.)
     #[serde(
         rename = "pk",
-        alias = "page_ref_key",
         default,
         deserialize_with = "block_ref_key_either_shape",
         serialize_with = "block_ref_key_as_number_when_it_is_one"
@@ -856,11 +855,10 @@ struct IndexItemWire {
         deserialize_with = "item_kind_either_shape"
     )]
     kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
+    #[serde(rename = "rb", alias = "routing_bucket", default)]
     routing_bucket: u32,
     #[serde(
         rename = "pk",
-        alias = "page_ref_key",
         default,
         deserialize_with = "block_ref_key_either_shape"
     )]
@@ -876,7 +874,7 @@ struct IndexItemWire {
     model_id: String,
     #[serde(rename = "oi", alias = "object_id", default)]
     object_id: u64,
-    #[serde(rename = "pi", alias = "page_id", default)]
+    #[serde(rename = "pi", default)]
     block_id: u64,
     #[serde(rename = "a", alias = "address", default)]
     address: Option<ElementEntry>,
@@ -1451,14 +1449,10 @@ where
 
         fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<IndexItemKind, E> {
             match value {
-                // BOTH SPELLINGS, AND THIS IS A SECOND DECODER FOR THE SAME TOKEN. The enum's own
-                // serde `rename`/`alias` does not reach this visitor: the row writes the kind
-                // through `item_kind_as_number` and reads it back here, so widening the enum left
-                // this arm single-form. A log written before the number encoding spells the kind
-                // `page`, and anything that serializes the enum directly now spells it `block`;
-                // both have to land on the same variant or an index-log replay refuses a row it
-                // wrote itself.
-                "block" | "page" => Ok(IndexItemKind::Block),
+                // THE ONLY SPELLING of the block kind. The enum's own serde `rename` does not reach
+                // this visitor: the row writes the kind through `item_kind_as_number` and reads it
+                // back here. The retired `page` spelling is not accepted by either decoder.
+                "block" => Ok(IndexItemKind::Block),
                 "object" => Ok(IndexItemKind::Object),
                 "meta" => Ok(IndexItemKind::Meta),
                 other => Err(E::custom(format!("unknown item kind {other}"))),
@@ -1908,8 +1902,6 @@ pub enum SlabCatalogState {
 /// are not persisted. So this is the lossless durable projection of a slab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabCatalogEntry {
-    #[serde(alias = "zone_id")]
-    #[serde(alias = "page_slab_id")]
     pub block_slab_id: u64,
     pub state: SlabCatalogState,
     #[serde(alias = "total_bytes")]
@@ -1920,9 +1912,9 @@ pub struct SlabCatalogEntry {
     pub created_unix_ms: Option<u64>,
     #[serde(default)]
     pub updated_unix_ms: Option<u64>,
-    #[serde(rename = "first_block_id", alias = "first_page_id", default)]
+    #[serde(rename = "first_block_id", default)]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_block_id", alias = "last_page_id", default)]
+    #[serde(rename = "last_block_id", default)]
     pub last_block_id: Option<u64>,
     #[serde(default)]
     pub version: u64,
@@ -1952,9 +1944,9 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(rename = "zones", alias = "slabs", alias = "extents", alias = "bands", default)]
+    #[serde(rename = "zones", alias = "slabs", default)]
     pub slabs: Vec<SlabCatalogEntry>,
-    #[serde(alias = "zone_version", default)]
+    #[serde(default)]
     pub slab_version: u64,
 }
 
@@ -6386,81 +6378,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_index_item_written_with_the_old_field_names_still_loads() {
-        // The names are short now because they repeat once per ITEM for the life of the log.
-        // Every record already on disk spells them out, so each short name keeps its old
-        // spelling as an alias -- including `routing_slot`, which was itself a rename.
-        let legacy = serde_json::json!({
-            "kind": "page",
-            "routing_slot": 545210715_u32,
-            "page_ref_key": "string:m:0::0:0:126:0:0",
-            "object_key": "m:0",
-            "model_id": "string",
-            "object_id": 122110326161599232_u64,
-            "page_id": 0,
-            "size": 126,
-            "in_log": false,
-            "deleted": false
-        });
-        // THE SLOT, read where it now lives. `size` is not a field any more -- it is derived
-        // from the address -- so the alias this test exists for is asserted on the wire struct
-        // the conversion reads. That observes the stored value directly, where the old form
-        // could have been satisfied by a derivation that happened to agree.
-        let wire: IndexItemWire =
-            serde_json::from_value(legacy.clone()).expect("a legacy item must load as a wire row");
-        assert_eq!(wire.size, 126, "the legacy `size` key must still reach the wire row");
-
-        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
-        assert_eq!(item.routing_bucket, 545210715);
-        assert_eq!(item.object_key.as_ref(), "m:0");
-        assert_eq!(item.object_id, 122110326161599232);
-        // The row carries no address, so there is no payload to derive a size from -- which is
-        // the state this legacy row describes rather than a loss.
-        assert!(item.entry.is_none(), "a legacy row with no address has no payload");
-        assert!(!item.deleted);
-    }
-
-    /// The old `page_id` key must still land in the renamed `block_id` field.
+    /// AN INDEX ITEM SPELLED WITH A RETIRED NAME IS NOT READ AS THE SAME ITEM.
     ///
-    /// The guard above spells `page_id` in its fixture, but it writes 0 there and never reads
-    /// the field back -- and every field here carries `serde(default)`, so it fills in the same
-    /// 0 whether the alias survives or not. Dropping `alias = "page_id"` leaves that guard
-    /// passing. This one asserts a value that is NOT the default, so the alias is what makes it
-    /// pass, which is the property the rename to `block_id` now rests on.
+    /// The first release carries no installed base, so the long names an older log used
+    /// (`routing_slot`, `page_ref_key`) and the retired kind token `page` are not accepted. Each
+    /// is swapped in alone for the short name the writer produces, against a control that the
+    /// unmodified item loads with those values populated.
     #[test]
-    fn the_old_page_id_key_still_loads_into_the_renamed_block_id_field() {
-        let legacy = serde_json::json!({
-            "kind": "page",
-            "routing_slot": 545210715_u32,
-            "page_ref_key": "string:m:0::0:0:126:0:0",
-            "object_key": "m:0",
-            "model_id": "string",
-            "object_id": 122110326161599232_u64,
-            "page_id": 4242,
-            "size": 126,
-            "in_log": false,
-            "deleted": false
-        });
-        assert_ne!(
-            4242, u64::default(),
-            "the fixture value must not be the serde default, or this cannot fail"
-        );
-        // READ AT THE WIRE, because the renamed field is no longer a field: `block_id` is
-        // derived from the address now. The subject of this test is the KEY MAPPING, and the
-        // wire row is where that mapping lands, so this asserts it without a conversion in
-        // between.
-        let wire: IndexItemWire =
-            serde_json::from_value(legacy.clone()).expect("a legacy item must load as a wire row");
-        assert_eq!(
-            wire.block_id, 4242,
-            "the old `page_id` key must still reach the renamed `block_id` slot"
-        );
-        // And the conversion still accepts the row.
-        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
+    fn an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item() {
+        const CURRENT: &str = r#"{"k":"block","rb":545210715,"pk":"string:m:0::0:0:126:0:0","ok":"m:0","mi":"string","oi":122110326161599232,"pi":4242,"sz":126,"il":false,"d":false}"#;
+        let original: IndexItem = serde_json::from_str(CURRENT).expect("the control loads");
+        assert_eq!(original.routing_bucket, 545210715);
+        assert_eq!(original.block_ref_key, "string:m:0::0:0:126:0:0");
+        assert_eq!(original.kind, IndexItemKind::Block);
+
+        let by_slot = CURRENT.replace("\"rb\":", "\"routing_slot\":");
+        assert_ne!(by_slot, CURRENT, "the swap of `rb` did not take");
+        let loaded = serde_json::from_str::<IndexItem>(&by_slot);
         assert!(
-            item.entry.is_none(),
-            "this legacy row carries no address, so it has no payload"
+            loaded.as_ref().map_or(true, |item| item.routing_bucket != 545210715),
+            "`routing_slot` was read as the routing bucket: the retired name is accepted"
+        );
+
+        let by_page_key = CURRENT.replace("\"pk\":", "\"page_ref_key\":");
+        assert_ne!(by_page_key, CURRENT, "the swap of `pk` did not take");
+        let loaded = serde_json::from_str::<IndexItem>(&by_page_key);
+        assert!(
+            loaded.as_ref().map_or(true, |item| item.block_ref_key != original.block_ref_key),
+            "`page_ref_key` was read as the block ref key: the retired name is accepted"
+        );
+
+        let by_page_kind = CURRENT.replace("\"k\":\"block\"", "\"k\":\"page\"");
+        assert_ne!(by_page_kind, CURRENT, "the swap of the kind token did not take");
+        assert!(
+            serde_json::from_str::<IndexItem>(&by_page_kind).is_err(),
+            "the retired kind token `page` was read: the retired name is accepted"
         );
     }
 
@@ -7517,7 +7469,7 @@ mod tests {
     #[test]
     fn what_is_left_to_gain_from_a_binary_index_record() {
         // One block item plus a key-state blob: the common delta the ingest path appends.
-        let line = r#"{"s":1,"q":1,"items":[{"k":"page","rb":545210715,
+        let line = r#"{"s":1,"q":1,"items":[{"k":"block","rb":545210715,
             "pk":"string:m:0::0:0:126:0:0","ok":"m:0","mi":"string",
             "oi":122110326161599232,"pi":0,
             "a":{"a":0,"l":126,"pi":0,"oi":122110326161599232,
@@ -10891,7 +10843,7 @@ flag exists to say",
         // THE TOLERANT PATH, UNTOUCHED. The NAMED shape is deliberately missing-key tolerant and
         // the compatibility arms in this file depend on it. A map has no tail to be short at.
         let named = serde_json::json!({
-            "k": "page",
+            "k": "block",
             "rb": 8539,
             "ok": "ungated/hash",
             "mi": "hash",

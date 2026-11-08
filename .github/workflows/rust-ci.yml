@@ -294,6 +294,9 @@ jobs:
             block_store::tests::a_slab_descriptor_spelled_with_a_retired_name_is_not_read_as_the_same_descriptor \
             engine::tests::part4::the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one \
             engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
+            index_log::tests::an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item \
+            engine::tests::page_and_block_name_one_tier::the_stored_object_layout_emits_the_block_spelling_and_does_not_read_the_page_spelling \
+            engine::tests::page_and_block_name_one_tier::the_index_log_item_kind_reads_the_block_token_and_refuses_the_page_token \
             data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_protobuf_with_every_field_and_refuses_everything_else \
             data_node::lifecycle::tests::a_runtime_restores_a_lifecycle_snapshot_and_refuses_a_bad_one \
             data_node::lifecycle::tests::the_runtime_persists_a_protobuf_lifecycle_snapshot_and_a_restart_reads_it \

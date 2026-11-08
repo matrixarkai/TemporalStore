@@ -655,7 +655,7 @@ impl ObjectRecord {
 /// The blocks of a multi-block object, named by a record whose address word is a handle.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct BlockLayout {
-    #[serde(rename = "blocks", alias = "pages")]
+    #[serde(rename = "blocks")]
     blocks: Vec<StoredBlock>,
 }
 
