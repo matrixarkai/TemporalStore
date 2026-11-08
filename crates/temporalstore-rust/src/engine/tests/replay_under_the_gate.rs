@@ -116,7 +116,7 @@ fn resident_members(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .sets
+        .bucket_index.sets
         .get(KEY)
         .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
         .unwrap_or_default()
@@ -414,7 +414,7 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
 // Neither fires, for the SAME reason the set case does not: both element names are derived from the
 // COMMAND, not from the index entry. `command_upsert_element_names`'s `HashSet`/`HashMultiSet`/
 // `HashIncrBy` arms (`engine.rs`) take the field straight off the `Command`, and
-// `collect_upsert_index_items`'s `"hash"` arm resolves the address from `shard.hashes` -- the
+// `collect_upsert_index_items`'s `"hash"` arm resolves the address from `shard.bucket_index.hashes` -- the
 // resident map, not the bucket index. So the struct field and the record field are, again, two
 // different things that share a name, and collapsing the index entry's element name does not reach
 // either record.
@@ -447,7 +447,7 @@ fn resident_hash_fields(engine: &TemporalEngine) -> BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .hashes
+        .bucket_index.hashes
         .get(HASH_KEY)
         .map(|fields| fields.iter().map(|(name, _)| name.to_string()).collect())
         .unwrap_or_default()

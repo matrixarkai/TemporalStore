@@ -134,8 +134,7 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// answer about this constant, because the files were renamed wholesale underneath it.
 const WALKS_PER_ROUND: u64 = 12;
 
-/// The same, once the dirty set has drained. HIGHER, not lower: a shard that has taken a dump has
-/// a manifest, and validating it walks the live set again.
+/// The same, once the dirty set has drained.
 ///
 /// 14 -> 13 FOR THE SAME REASON AS `WALKS_PER_ROUND` ABOVE, AND IT WAS MEASURED, NOT INFERRED.
 /// The idle round could have been unaffected -- the redundant lifecycle apply might not have been
@@ -143,9 +142,13 @@ const WALKS_PER_ROUND: u64 = 12;
 /// been a fresh error. Measured on this tree, the idle round materialises 26,000 live-block
 /// entries over 2,000 records, which is 13x. So the apply #2504 removed was on this path too.
 ///
-/// It stays ONE HIGHER than the steady round for the reason above, which the removed apply does
-/// not touch: the manifest a dumped shard has is validated against the live set either way.
-const WALKS_PER_IDLE_ROUND: u64 = 13;
+/// 13 -> 12 WHEN THE PLAN STOPPED DECODING A MANIFEST ON EVERY CALL. The extra pass was the
+/// fingerprinting of the manifest a dumped shard has, which the reclaim plan walked afresh each time
+/// it was built. A manifest's digests are now kept with the manifest (`manifest_digests_memoised`)
+/// and the drain round that wrote the manifest is the one that computes them. Measured on this
+/// tree, the idle round materialises 24,000 live-block entries over 2,000 records, which is 12x --
+/// the same as the steady round, so the manifest no longer makes an idle shard dearer.
+const WALKS_PER_IDLE_ROUND: u64 = 12;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(

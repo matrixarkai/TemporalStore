@@ -233,6 +233,7 @@ jobs:
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
+            data_node::tests::loop_report::the_loop_report_prices_every_stage_it_reaches \
             data_node::tests::evict_live::a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted \
             data_node::tests::evict_live::an_acknowledged_row_keeps_its_fields_across_the_cache_budget \
             data_node::tests::evict_live::the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_clock \
@@ -264,12 +265,12 @@ jobs:
             engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read \
             engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
-            shared_store::tests::restore_reads_a_published_binary_dump_manifest_beside_a_planted_json_one \
-            engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_both_shapes_and_the_digest_payload_is_the_encoding \
-            engine::tests::bucket_dump_binary_shape::each_checksum_version_verifies_its_own_manifests_and_never_the_others \
-            engine::tests::bucket_dump_binary_shape::a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trusted \
-            engine::tests::bucket_dump_binary_shape::an_install_marker_is_read_in_either_shape \
-            engine::tests::bucket_dump_binary_shape::no_json_encode_path_is_left_for_a_manifest_or_a_marker \
+            shared_store::tests::restore_reads_a_published_dump_manifest_and_refuses_a_planted_json_one \
+            engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_protobuf_refuses_everything_else_and_the_digest_payload_is_the_encoding \
+            engine::tests::bucket_dump_binary_shape::a_manifest_verifies_under_the_one_digest_and_a_changed_field_does_not \
+            engine::tests::bucket_dump_binary_shape::a_manifest_is_listed_a_json_one_is_not_and_a_changed_field_is_not_trusted \
+            engine::tests::bucket_dump_binary_shape::an_install_marker_is_protobuf_only \
+            engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
             shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
@@ -282,10 +283,21 @@ jobs:
             shared_store::tests::no_json_encode_path_is_left_in_the_per_key_wal_publish \
             index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
             index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
-            data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_both_shapes_with_every_field \
-            data_node::lifecycle::tests::a_runtime_restores_a_lifecycle_snapshot_in_either_shape_and_refuses_a_bad_one \
-            data_node::lifecycle::tests::the_runtime_persists_a_binary_lifecycle_snapshot_and_a_restart_reads_it \
-            data_node::lifecycle::tests::no_json_encode_path_is_left_for_a_lifecycle_snapshot \
+            engine::tests::the_control_state_block_is_protobuf_only::a_series_block_codec_reads_protobuf_and_refuses_everything_else \
+            engine::tests::the_control_state_block_is_protobuf_only::the_load_path_reads_a_protobuf_block_and_counts_the_unreadable \
+            engine::tests::the_control_state_block_is_protobuf_only::a_counter_write_stores_a_block_a_fraction_of_the_json_size_and_a_restart_reads_it \
+            engine::tests::the_control_state_block_is_protobuf_only::no_json_path_is_left_in_the_control_state_block_code \
+            engine::tests::the_sequence_row_is_protobuf_only::a_sequence_row_codec_reads_protobuf_and_refuses_everything_else \
+            engine::tests::the_sequence_row_is_protobuf_only::a_sequence_add_row_is_stored_as_protobuf_and_both_read_paths_read_it_across_a_restart \
+            engine::tests::the_sequence_row_is_protobuf_only::no_json_path_is_left_in_the_sequence_row_code \
+            block_store::tests::an_address_written_with_an_older_field_name_is_not_read_as_the_same_address \
+            block_store::tests::a_slab_descriptor_spelled_with_a_retired_name_is_not_read_as_the_same_descriptor \
+            engine::tests::part4::the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one \
+            engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
+            data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_protobuf_with_every_field_and_refuses_everything_else \
+            data_node::lifecycle::tests::a_runtime_restores_a_lifecycle_snapshot_and_refuses_a_bad_one \
+            data_node::lifecycle::tests::the_runtime_persists_a_protobuf_lifecycle_snapshot_and_a_restart_reads_it \
+            data_node::lifecycle::tests::no_json_path_is_left_for_a_lifecycle_snapshot \
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_served_index_encoder_does_not_fall_through_to_json \
             engine::tests::the_config_log_in_either_shape::the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_misread \
             engine::tests::the_config_log_in_either_shape::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
@@ -346,7 +358,14 @@ jobs:
             engine::tests::round_scale::a_round_walks_the_live_block_set_a_constant_number_of_times \
             engine::tests::round_scale::an_idle_round_still_walks_the_live_block_set \
             engine::tests::model_map_container_cost::no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container \
-            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container ; do
+            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container \
+            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::a_restricted_inversion_names_what_the_whole_shard_one_names_for_its_keys \
+            engine::tests::a_plan_learns_a_log_tail_from_its_appenders::the_cached_tail_equals_the_scanned_tail_through_a_history \
+            engine::tests::a_plan_learns_a_log_tail_from_its_appenders::a_maintenance_plan_reads_neither_log_tail_back \
+            engine::tests::a_removal_states_no_block_rows::a_removal_states_no_block_rows \
+            engine::tests::a_removal_states_no_block_rows::a_removed_member_stays_removed_and_the_rest_stay_across_a_cold_reload \
+            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
+            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log
@@ -436,6 +455,7 @@ jobs:
             engine::tests::per_item_byte_budget::the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list \
             engine::tests::blocks_per_bucket::the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth \
             engine::tests::index_bytes_per_key::the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency \
+            engine::tests::the_holders_of_a_key_allocation::an_order_bound_ledger_adopts_the_key_allocation_a_span_cannot_order \
             engine::tests::index_bytes_per_key::what_the_one_word_handle_costs_in_the_allocation \
             engine::tests::index_bytes_per_key::what_keying_the_block_list_by_address_would_cost \
             engine::tests::flat_block_list::what_a_retain_leaves_in_the_block_lists_capacity \
@@ -464,10 +484,6 @@ jobs:
             engine::tests::what_the_core_index_puts_on_the_wire::an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one \
             block_store::slab_manifest_wire::tests::every_descriptor_field_survives_the_wire_round_trip \
             block_store::slab_manifest_wire::tests::a_wire_manifest_loads_with_values_only_those_bytes_can_carry \
-            block_store::slab_manifest_wire::tests::a_json_manifest_still_loads_through_the_same_reader \
-            block_store::slab_manifest_wire::tests::the_two_spellings_load_to_the_same_descriptors \
-            block_store::slab_manifest_wire::tests::a_frame_of_123_bytes_starts_with_an_open_brace \
-            block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
             block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
             block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
             block_store::slab_manifest_wire::tests::the_stored_field_numbers_do_not_move \
@@ -505,10 +521,18 @@ jobs:
           # published amplification ratio can be re-derived from the counters published beside it.
           # It was running in CI NEVER: it is #[ignore]d, and this workflow runs no unfiltered
           # suite, so an ignored guard runs only if its name is pinned AND --ignored is passed.
+          #
+          # the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key counts the holders of
+          # one key allocation on a walk that reaches the slot row in `bucket_index.objects`, and
+          # reports TWO where the arm above it reported one. That count is the premise under two
+          # levers on the 32.0 B/key key-character row, and it decides them in opposite directions:
+          # at one holder the refcount header is waste, at two it is exactly paid for. It runs both
+          # walks on one corpus so the correction cannot be read as a different fixture.
           for t in \
             engine::tests::every_published_ratio_is_rederivable::every_published_ratio_is_rederivable_from_published_counters \
             engine::tests::index_bytes_per_key::every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for \
-            engine::tests::index_bytes_per_key::how_many_holders_a_key_allocation_has_by_kind ; do
+            engine::tests::index_bytes_per_key::how_many_holders_a_key_allocation_has_by_kind \
+            engine::tests::the_holders_of_a_key_allocation::the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key ; do
             echo "--- $t (ignored) ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
@@ -541,9 +565,16 @@ jobs:
           # 400 (571 at 100, 5,080 at 1,000), because its filter against re-filing asks a lookup
           # that resolves no named element. The guard varies the FIELD COUNT and carries a control:
           # a read of the whole hash must grow with it, or the probe cannot see that dimension.
+          #
+          # a_write_does_not_pay_for_the_objects_it_did_not_touch pins that the walk which builds a
+          # write's index-log rows names the blocks of the objects the write touched and not the
+          # blocks of the whole shard. The whole-shard inversion costs 19 KB at 20 objects and 1.2 MB
+          # at 1,000; the walk is flat. The guard varies the OBJECT COUNT and carries a control: the
+          # whole-shard inversion must grow with it, or the probe cannot see that dimension.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
-            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has ; do
+            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
+            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log

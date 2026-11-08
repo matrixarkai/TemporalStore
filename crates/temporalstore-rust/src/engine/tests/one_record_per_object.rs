@@ -1590,7 +1590,7 @@ fn a_context_node_write_lands_in_the_hash_field_not_in_context_nodes() {
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let in_hashes = shard.hashes.len();
+    let in_hashes = shard.bucket_index.hashes.len();
     let in_context_nodes = shard.context_nodes().len();
     println!(
         "after one context-node write through the real command: `hashes` holds {in_hashes} \
@@ -1672,7 +1672,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
             ("expires_at_ms", deep_heap_bytes(shard.expires_at_ms())),
             ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
             ("strings", deep_heap_bytes(shard.strings())),
-            ("hashes", deep_heap_bytes(&shard.hashes)),
+            ("hashes", deep_heap_bytes(&shard.bucket_index.hashes)),
             ("features", deep_heap_bytes(shard.features())),
         ]
     };

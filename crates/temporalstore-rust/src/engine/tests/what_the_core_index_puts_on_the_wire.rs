@@ -38,16 +38,22 @@
 //! control: without it, "the skipped fields come back empty" would pass on an index where they
 //! were empty all along, which is a test that cannot fail.
 //!
-//! SIX FIELDS, AND EXACTLY ONE REACHES THE WIRE. That measurement is the reason the hand-written
-//! impl is a small change rather than a thirty-field transcription: the omission hazard applies to
-//! one field, and the context it needs -- the object lookup -- is a sibling field of the same
-//! struct, so there is nothing to plumb through.
+//! ELEVEN FIELDS, AND SIX REACH THE WIRE. That measurement was SIX AND ONE when this file landed,
+//! and the change it was landed ahead of is what moved it: `objects` came in so the encoder could
+//! compose each block's written key from the object slots, and `hashes`, `sets`, `zsets` and
+//! `lists` followed because a map holding any block's refs has to be reachable from the index.
+//!
+//! SO THE OMISSION HAZARD NOW APPLIES TO SIX FIELDS RATHER THAN ONE, which is the whole reason
+//! this guard was landed FIRST. Four durable maps moved into a HAND-WRITTEN encoder where
+//! serialization is opt-in per field, and the move compiled clean with all four absent -- every
+//! index write would have dropped every container object on the floor, silently. The key-set
+//! assertion below is what refuses that, and it refuses it BY NAME.
 
 use std::sync::Arc;
 
 use crate::engine::state::{BucketNode, BucketTtl, CoreIndex};
 
-/// A `CoreIndex` with EVERY ONE of its six fields non-default.
+/// A `CoreIndex` with EVERY ONE of its eleven fields non-default.
 ///
 /// The on-wire field is given two buckets with distinguishable contents so the round trip has
 /// something to compare field by field. The five skipped fields are populated for the reason in
@@ -100,6 +106,34 @@ fn an_index_with_every_field_populated() -> CoreIndex {
             crate::engine::object_record::ObjectSlot::default(),
         );
 
+    // THE FOUR CONTAINER MAPS, ON THE WIRE SINCE STAMP 31 AND POPULATED FOR THE SAME REASON AS
+    // EVERYTHING ABOVE: a key-set assertion over an index whose container maps were empty all
+    // along cannot tell an encoder that writes them from one that leaves them out. One row each,
+    // with one element, which is enough for both -- the key set, and the value comparison in the
+    // round trip below.
+    //
+    // EACH KIND'S ELEMENTS ARE ITS OWN TYPE and the shapes differ -- `hash` and `list` encode as
+    // maps, `set` and `zset` as sequences of pairs, because their element key is `Vec<u8>` and has
+    // no object-key form. `the_four_kind_encodings_are_byte_for_byte_what_they_were` is where that
+    // is pinned; here it only matters that all four are non-empty going in.
+    let element = || crate::ElementEntry::from_parts(3, 128, 64, Some(11), Some(22));
+
+    let mut hash_elements = crate::engine::hash_field_map::HashFieldMap::default();
+    hash_elements.insert(Arc::from("field-a"), element());
+    index.hashes.insert_elements_for_test("a-hash", hash_elements);
+
+    let mut set_elements = std::collections::BTreeMap::new();
+    set_elements.insert(vec![0u8, 1, 2, 255], element());
+    index.sets.insert_elements_for_test("a-set", set_elements);
+
+    let mut zset_elements = std::collections::BTreeMap::new();
+    zset_elements.insert(vec![0u8, 254, 255], (9u64, element()));
+    index.zsets.insert_elements_for_test("a-zset", zset_elements);
+
+    let mut list_elements = std::collections::BTreeMap::new();
+    list_elements.insert(-5i64, element());
+    index.lists.insert_elements_for_test("a-list", list_elements);
+
     index
 }
 
@@ -122,6 +156,16 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
         // `bucket_index` is not reachable from it. `SHARD_INDEX_FORMAT_VERSION` 30 is what that
         // move cost.
         objects,
+        // ON THE WIRE, ALL FOUR, SINCE `SHARD_INDEX_FORMAT_VERSION` 31. They were top-level
+        // `ShardState` fields written by a DERIVE, which is why nothing had to declare them
+        // before. Inside this hand-written encoder each one is opt-in, and the four
+        // `serialize_field` calls that write them are the only reason they appear in the key set
+        // asserted below. Same key spellings and same per-kind codecs as at the top level; only
+        // the parent map moved, and the stamp step is what that cost.
+        hashes,
+        sets,
+        zsets,
+        lists,
         // SKIPPED, `#[serde(skip)]`. Derived per-slab live tallies, seeded wherever the index is
         // rebuilt wholesale.
         block_slab_live,
@@ -137,10 +181,14 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
         released_buckets,
     } = &index;
 
-    // The populated-ness of all seven is asserted, so a future edit that empties the fixture
+    // The populated-ness of all eleven is asserted, so a future edit that empties the fixture
     // turns the controls below vacuous LOUDLY rather than quietly.
     assert_eq!(bucket_map.len(), 2, "an on-wire field must be populated");
     assert_eq!(objects.len(), 1, "the other on-wire field must be populated");
+    assert_eq!(hashes.len(), 1, "an on-wire container map must be populated");
+    assert_eq!(sets.len(), 1, "an on-wire container map must be populated");
+    assert_eq!(zsets.len(), 1, "an on-wire container map must be populated");
+    assert_eq!(lists.len(), 1, "an on-wire container map must be populated");
     assert!(block_slab_live.is_ready(), "skipped field must be populated");
     assert!(
         object_block_lookup.get("string", "an-object").is_some(),
@@ -155,7 +203,8 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     assert!(!released_buckets.is_empty(), "skipped field must be populated");
 
     // ===========================================================================================
-    // THE WIRE, OBSERVED. Two keys: the blocks, and the objects whose slots name them.
+    // THE WIRE, OBSERVED. Six keys: the blocks, the objects whose slots name them, and the four
+    // container maps that moved in at stamp 31.
     // ===========================================================================================
     let encoded = serde_json::to_value(&index).expect("a core index serializes");
     let object = encoded.as_object().expect("a core index encodes as a map");
@@ -164,9 +213,11 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     println!("the core index puts these keys on the wire: {keys:?}");
     assert_eq!(
         keys,
-        vec!["bucket_map", "objects"],
-        "exactly two of the seven fields reach the wire; a change here is a change to the \
-         stored shape and owes the format stamp question"
+        vec!["bucket_map", "hashes", "lists", "objects", "sets", "zsets"],
+        "exactly six of the eleven fields reach the wire; a change here is a change to the \
+         stored shape and owes the format stamp question. A MISSING KEY HERE IS SILENT DATA \
+         LOSS and not a cosmetic drift: this encoder is hand-written and opt-in per field, so a \
+         durable map that is not written is a durable map that is gone"
     );
 }
 
@@ -206,6 +257,37 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
             original.object_index.object_count()
         );
     }
+
+    // THE FOUR CONTAINER MAPS, COMPARED BY VALUE AND NOT BY KEY PRESENCE. The key-set assertion
+    // above catches a field left out of the encoder; it cannot catch one written under the wrong
+    // codec or into the wrong parent, which would put the key on the wire and lose the elements
+    // behind it. `RecordedMap`'s `PartialEq` compares the element maps, and the non-vacuity of
+    // the `before` side is asserted first so neither comparison can pass by matching emptiness
+    // with emptiness.
+    for (kind, len) in [
+        ("hashes", before.hashes.len()),
+        ("sets", before.sets.len()),
+        ("zsets", before.zsets.len()),
+        ("lists", before.lists.len()),
+    ] {
+        assert_eq!(len, 1, "the {kind} fixture must hold a row to compare");
+    }
+    assert_eq!(
+        after.hashes, before.hashes,
+        "every hash row must survive the round trip with its fields"
+    );
+    assert_eq!(
+        after.sets, before.sets,
+        "every set row must survive the round trip with its members"
+    );
+    assert_eq!(
+        after.zsets, before.zsets,
+        "every zset row must survive the round trip with its members and scores"
+    );
+    assert_eq!(
+        after.lists, before.lists,
+        "every list row must survive the round trip with its ordinals"
+    );
 
     // THE SKIPPED FIELDS, AND THIS IS THE HALF THE POPULATION ABOVE EXISTS FOR. Each went in
     // non-default and must come back at its default, which is what "skipped" means on the wire.

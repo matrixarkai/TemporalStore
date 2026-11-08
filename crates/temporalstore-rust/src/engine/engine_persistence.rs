@@ -180,10 +180,9 @@ impl TemporalEngine {
     ) -> Result<(), std::io::Error> {
         let path =
             bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
-        // Binary: one container byte and a protobuf body. This document carries one summary per
-        // bucket -- thousands of them -- and the whole-shard index image, and it is machine-read on
-        // load and on install preflight. Readers decide the shape per file from the first byte
-        // (`decode_bucket_dump_manifest`), so a directory holding both shapes loads end to end.
+        // A bare protobuf body. This document carries one summary per bucket -- thousands of
+        // them -- and the whole-shard index image, and it is machine-read on load and on install
+        // preflight (`decode_bucket_dump_manifest`).
         let bytes = encode_bucket_dump_manifest(manifest);
         note_manifest_file_write(bytes.len());
         // The manifest is the durable reclaim watermark (wal_sequence) + recovery
@@ -1034,11 +1033,11 @@ impl TemporalEngine {
             let block_store = self.block_store.stats();
             let block_store_slabs = self.block_store.slab_summary();
             let string_records = state.strings().len();
-            let hash_records = state.hashes.len();
-            let set_records = state.sets.len();
-            let list_records = state.lists.len();
+            let hash_records = state.bucket_index.hashes.len();
+            let set_records = state.bucket_index.sets.len();
+            let list_records = state.bucket_index.lists.len();
             let _ = list_records;
-            let zset_records = state.zsets.len();
+            let zset_records = state.bucket_index.zsets.len();
             let _ = zset_records;
             let feature_records = state.features().len();
             // ZERO BY CONSTRUCTION, AND THAT IS WHAT IT ALWAYS MEASURED. This read the length

@@ -234,14 +234,14 @@ fn live_block_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
 
 /// THE FIELD NAMES THIS OBJECT HOLDS, from the authority for them.
 ///
-/// `shard.hashes` is durable (`#[serde(default)]`) and is what `HashLen` and `HashGetAll` answer
+/// `shard.bucket_index.hashes` is durable (`#[serde(default)]`) and is what `HashLen` and `HashGetAll` answer
 /// from. It is where element identity went when it came off the entry, so it is where the questions
 /// about element identity in this module are now asked.
 fn resident_fields(engine: &TemporalEngine, key: &str) -> std::collections::BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     shard
-        .hashes
+        .bucket_index.hashes
         .get(key)
         .map(|fields| fields.keys().map(|name| name.to_string()).collect())
         .unwrap_or_default()
@@ -458,7 +458,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     // cost -- an entry per removal that nothing collects -- and NOT a membership error:
     // `container_membership` folds by append position and the tombstone is the later block.
     //
-    // So the membership claim is asked of `shard.hashes`, which is the authority and is what
+    // So the membership claim is asked of `shard.bucket_index.hashes`, which is the authority and is what
     // `HashLen` and `HashGetAll` answer from, and the retained entry is asserted as the cost rather
     // than left to look like a bug nobody noticed. The arm that owns the retained entry as its own
     // subject is `container_block_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it`.
@@ -632,7 +632,7 @@ fn hash_len_and_its_listing_are_unmoved_by_an_element_name_free_id() {
     // vacuous, it was simply measuring nothing that exists.
     //
     // The question it asked is still a real one: did the rewrite of `f0` above leave TWO live
-    // entries for one field? It is asked of the two artefacts that can answer it. `shard.hashes` is
+    // entries for one field? It is asked of the two artefacts that can answer it. `shard.bucket_index.hashes` is
     // the authority for which fields exist, and the live block count is what a rewrite would inflate
     // if it filed beside rather than superseding. Seven distinct names over seven live blocks is the
     // shape; six names over seven blocks is the accumulation this exists to catch.

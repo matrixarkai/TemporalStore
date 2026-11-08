@@ -534,7 +534,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     // THE HARD PART, AND IT WAS A REFUTATION BEFORE IT WAS A FIX. `compact_shard_blocks` calls
     // `rebuild_bucket_block_ownership` directly, twice; that function does `bucket_map.clear()` and
     // rebuilds from `collect_model_live_block_entries`, which walks the RESIDENT MODEL MAPS. Those hold
-    // only live elements -- a removed member is gone from `shard.sets` by construction -- so a rebuild
+    // only live elements -- a removed member is gone from `shard.bucket_index.sets` by construction -- so a rebuild
     // produced one entry per live element and NONE for a removal, and every round erased the entries
     // that kept the removals readable from the blocks. A removal was durable in the blocks only until the
     // next round.
@@ -563,7 +563,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     let (resident_live, resident_holds_removed) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let set = shard.sets.get(key);
+        let set = shard.bucket_index.sets.get(key);
         (
             set.map_or(0, |members| members.len()),
             set.map_or(false, |members| {

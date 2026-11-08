@@ -408,8 +408,10 @@ impl TemporalEngine {
     /// Taken from the same `stats()` calls as the full report, so the two cannot drift about what
     /// the log holds.
     pub fn storage_log_pressure_report(&self, shard_id: ShardId) -> StorageLogPressureReport {
-        let wal_stats = self.wal_store.stats(shard_id);
-        let index_log_stats = self.index_log_store.stats(shard_id);
+        // Not `stats`: that reads the active piece of each log back, record by record, to learn a
+        // sequence the appenders already keep. This report is taken at the top of every round.
+        let wal_stats = self.wal_store.stats_without_rescan(shard_id);
+        let index_log_stats = self.index_log_store.stats_without_rescan(shard_id);
         StorageLogPressureReport {
             shard_id,
             wal_last_sequence: wal_stats.last_sequence,

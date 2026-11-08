@@ -123,6 +123,14 @@ mod cache_invalidation_cost;
 mod cache_read_cost;
 #[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
 mod a_hash_write_files_only_what_it_wrote;
+#[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
+mod a_write_names_only_the_blocks_of_the_objects_it_touched;
+#[path = "tests/a_plan_learns_a_log_tail_from_its_appenders.rs"]
+mod a_plan_learns_a_log_tail_from_its_appenders;
+#[path = "tests/a_removal_states_no_block_rows.rs"]
+mod a_removal_states_no_block_rows;
+#[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
+mod a_manifest_is_fingerprinted_once_not_once_per_plan;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]
@@ -476,3 +484,7 @@ mod routing_range_stamp_binary;
 mod the_config_log_in_either_shape;
 #[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
 mod the_served_index_encoder_has_no_json_fallback;
+#[path = "tests/the_control_state_block_is_protobuf_only.rs"]
+mod the_control_state_block_is_protobuf_only;
+#[path = "tests/the_sequence_row_is_protobuf_only.rs"]
+mod the_sequence_row_is_protobuf_only;

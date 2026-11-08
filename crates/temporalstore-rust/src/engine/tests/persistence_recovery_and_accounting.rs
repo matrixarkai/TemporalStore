@@ -1810,7 +1810,7 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
 
 #[test]
 fn torn_manifest_does_not_hide_valid_manifests() {
-    // Crash-consistency: a torn/corrupt manifest .json (from a crash mid-write, now
+    // Crash-consistency: a torn/corrupt manifest file (from a crash mid-write, now
     // prevented by the atomic write) must not fail the whole manifest listing and
     // silently drop all dumped state on load. list_bucket_dump_manifests skips the bad
     // file and keeps the valid one.
@@ -1834,7 +1834,7 @@ fn torn_manifest_does_not_hide_valid_manifests() {
         .create_bucket_dump_manifest(1, Vec::<u32>::new())
         .unwrap();
     let manifest_dir = index_dir.join("slot-dumps").join("shard-1");
-    std::fs::write(manifest_dir.join("torn-9999.json"), b"{ not valid json").unwrap();
+    std::fs::write(manifest_dir.join("torn-9999.manifest"), b"{ not valid json").unwrap();
     let listed = engine.list_bucket_dump_manifests(1);
     assert!(
         listed
@@ -5926,7 +5926,7 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let fields = shard.hashes.get("wide").expect("the hash exists");
+    let fields = shard.bucket_index.hashes.get("wide").expect("the hash exists");
     assert_eq!(fields.len(), 64, "all fields written");
 
     // THE LOOKUP TAKES NO ELEMENT NAME NOW, AND THE ADDRESS IS STILL WHAT IS CHECKED.
@@ -7019,7 +7019,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // per-key ceiling above, which is the assertion that would eventually fail for it.
         let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
         let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
-        let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
+        let resident = shard.bucket_index.hashes.get("wide").map_or(0, |fields| fields.len());
         // RESTATED: THE LIVE ENTRY IS RETAINED TOO, NOT ONLY A TOMBSTONE ADDED.
         //
         // The paragraph above said "the map holds ONE LIVE entry and TWO TOMBSTONES, three
@@ -7108,7 +7108,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .expect("the object must still be filed");
         let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
         let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
-        let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
+        let resident = shard.bucket_index.hashes.get("wide").map_or(0, |fields| fields.len());
         // THE TOMBSTONE CLAIM HELD AND WAS CHECKED RATHER THAN ADJUSTED. The message below is the
         // one this arm shipped with, and the measurement still agrees with it: writing a field back
         // clears its tombstone through the upsert's retain, so the tombstone cost is bounded at one
@@ -8807,7 +8807,7 @@ fn large_async_hash_values_remain_readable_after_cache_eviction() {
         let fields = shards
             .get(&1)
             .unwrap()
-            .hashes
+            .bucket_index.hashes
             .get("sequence/0")
             .unwrap();
         assert!(fields
@@ -14029,7 +14029,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
 /// This decides how the per-record rebuild can be removed, and the code says two things that pull
 /// opposite ways. The executor for `ContextUpsertNode` stages its outcome under its own kind with
 /// the comment "this writes a hash block and -- unlike HashSet -- never registers it in the bucket
-/// index". But the block IS put into `shard.hashes`, and `rebuild_bucket_first_index` derives the
+/// index". But the block IS put into `shard.bucket_index.hashes`, and `rebuild_bucket_first_index` derives the
 /// index from `collect_model_live_block_entries`, which reads the model maps.
 ///
 /// If context blocks ARE in the index, the rebuild is load-bearing and removing it needs the write
@@ -14093,7 +14093,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     }
     // And the context keys the model map holds, so the two can be compared.
     let context_keys_in_model = shard
-        .hashes
+        .bucket_index.hashes
         .keys()
         .filter(|key| key.contains("ctx") || key.contains("context"))
         .count();
@@ -17449,7 +17449,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
     let (head_seq, tail_seq) = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let list = shard.lists.get("queue").expect("the list exists");
+        let list = shard.bucket_index.lists.get("queue").expect("the list exists");
         (
             *list.keys().next().expect("a head"),
             *list.keys().next_back().expect("a tail"),
@@ -17466,7 +17466,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
     // This read the pushed sequence out of `IndexItem::element_name` -- the sequence as sixteen hex
     // digits, biased -- and the row has no such field any more. The sequence is carried instead in
     // the record's `key_states` blobs, under `CARRIED_CONTAINER_FIELDS[2]` (`list_elements`), as
-    // the (sequence, address) pair read back out of `shard.lists` after the write. That is the
+    // the (sequence, address) pair read back out of `shard.bucket_index.lists` after the write. That is the
     // source `fold_carried_container_elements` reads on a reload, so it is the source this arm
     // should have been asking: the question "which entry did the push file its item under" still
     // has an answer, and this is where the answer lives.
@@ -17975,10 +17975,10 @@ fn what_one_entry_costs_in_each_structure() {
             let shards = engine.shards.read().expect("shards lock poisoned");
             let shard = shards.get(&1).expect("shard 1 loaded");
             match kind {
-                "hash" => shard.hashes.values().map(|m| m.len()).sum::<usize>(),
-                "zset" => shard.zsets.values().map(|m| m.len()).sum::<usize>(),
-                "set" => shard.sets.values().map(|m| m.len()).sum::<usize>(),
-                "list" => shard.lists.values().map(|m| m.len()).sum::<usize>(),
+                "hash" => shard.bucket_index.hashes.values().map(|m| m.len()).sum::<usize>(),
+                "zset" => shard.bucket_index.zsets.values().map(|m| m.len()).sum::<usize>(),
+                "set" => shard.bucket_index.sets.values().map(|m| m.len()).sum::<usize>(),
+                "list" => shard.bucket_index.lists.values().map(|m| m.len()).sum::<usize>(),
                 _ => 0,
             }
         };
@@ -18948,7 +18948,7 @@ fn a_compaction_round_stops_at_the_block_ref_budget() {
 }
 
 #[test]
-fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() {
+fn the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one() {
     // `zone` was the older name for a slab, and `zones` is keyed by `band_id`
     // (storage_bucket_internals.rs) -- so the aggregate is the SLAB level reported under an old
     // name, not a separate level. The Rust identifiers moved to slab; the WIRE must not.
@@ -19001,11 +19001,15 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
         "and not under the retired one as well: {encoded}"
     );
 
-    // Reading back what the old name produced must still work, which is what a stored corpus is.
-    let decoded: crate::engine::reports::StorageSlabUsageSample =
-        serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
-            .expect("an old-name payload must still decode");
-    assert_eq!(decoded.stored_slab_id, 9);
+    // The retired names are NOT read. A payload spelling the slab id `zone_id` has no
+    // `stored_slab_id`, which is required, so it is refused rather than read as slab 9.
+    let decoded = serde_json::from_str::<crate::engine::reports::StorageSlabUsageSample>(
+        r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#,
+    );
+    assert!(
+        decoded.as_ref().map_or(true, |sample| sample.stored_slab_id != 9),
+        "a payload spelling the slab id `zone_id` was read as slab 9: the retired name is accepted"
+    );
 
     // AND THE CANONICAL NAME MUST DECODE TOO, which is the whole point of widening the readers
     // and was the one thing here that nothing asserted. Found by PLANTING: dropping one
@@ -19028,11 +19032,13 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
     // of those. This report type never did -- it takes `zone_id`/`stored_slab_id` for the id and
     // `slabs`/`segments` for the collection, and nothing else. Two types in one rename chain do
     // not share an accepted set, so each one's is asserted against ITS OWN declaration.
-    let retired_collection: crate::engine::reports::StorageSlabUsageSample = serde_json::from_str(
-        r#"{"zone_id":5,"total_bytes":0,"used_bytes":0,"stale_bytes":0,"segments":[7]}"#,
-    )
-    .expect("the collection's retired `segments` spelling must still decode");
-    assert_eq!(retired_collection.slabs, vec![7]);
+    let retired_collection = serde_json::from_str::<crate::engine::reports::StorageSlabUsageSample>(
+        r#"{"stored_slab_id":5,"total_bytes":0,"used_bytes":0,"stale_bytes":0,"segments":[7]}"#,
+    );
+    assert!(
+        retired_collection.as_ref().map_or(true, |sample| sample.slabs != vec![7]),
+        "the collection's retired `segments` spelling was read as the slabs: the retired name is accepted"
+    );
 
     // THE PREMISE, EXECUTED -- AND IT IS NOW THE OPPOSITE PREMISE.
     //
@@ -19078,6 +19084,42 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
          the emitted name could not break a stored-bytes comparison. Decide the emitted name \
          deliberately rather than inheriting this assertion."
     );
+}
+
+/// THE SHORT NAMES A BUCKET SUMMARY WRITES ARE THE ONES ITS READER ACCEPTS.
+///
+/// `BucketStorageSummary` has a hand-written `Serialize` that emits `rs`, `oc`, `prc`, `lb`, `pb`,
+/// `doc`, `dg`, `lds`, `psi` and `lcz`, and a derived `Deserialize` that reads them back through
+/// `alias` items. Those aliases are NOT retired spellings: they are the names the writer produces,
+/// so deleting them would make a summary unreadable by the build that wrote it. This is the test
+/// that holds them, written once with the short names and once with the long ones, and asserting
+/// each reads back equal.
+#[test]
+fn a_bucket_summary_reads_back_the_names_it_writes() {
+    use crate::engine::reports::{BucketStorageSummary, SummaryNamed};
+    let summary = BucketStorageSummary {
+        routing_bucket: 9,
+        object_count: 8,
+        block_ref_count: 7,
+        logical_bytes: 6,
+        physical_bytes: 5,
+        dirty_object_count: 4,
+        dirty_generation: 3,
+        last_dump_sequence: 2,
+        block_slab_ids: vec![1],
+        last_compacted_slab: Some(0),
+    };
+    let short = serde_json::to_value(SummaryNamed(&summary, true)).expect("serialize short");
+    for key in ["rs", "oc", "prc", "lb", "pb", "doc", "dg", "lds", "psi", "lcz"] {
+        assert!(short.get(key).is_some(), "the short spelling does not write `{key}`: {short}");
+    }
+    let long = serde_json::to_value(SummaryNamed(&summary, false)).expect("serialize long");
+    assert!(long.get("rs").is_none() && long.get("routing_slot").is_some(), "{long}");
+    for (what, document) in [("short", short), ("long", long)] {
+        let back: BucketStorageSummary = serde_json::from_value(document)
+            .unwrap_or_else(|error| panic!("the {what} spelling does not read back: {error}"));
+        assert_eq!(back, summary, "the {what} spelling read back as a different summary");
+    }
 }
 
 #[test]

@@ -438,7 +438,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         "installing one HASH element staged {} records, not 1",
         staged() - before
     );
-    assert_eq!(shard.hashes.get("rec-hash").map(|e| e.len()), Some(1));
+    assert_eq!(shard.bucket_index.hashes.get("rec-hash").map(|e| e.len()), Some(1));
 
     // SET: element is the member BYTES, and its element name is those bytes in hex -- a different
     // rendering of one identity, which is why both are passed rather than one derived here.
@@ -460,7 +460,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         "installing one SET element staged {} records, not 1",
         staged() - before
     );
-    assert_eq!(shard.sets.get("rec-set").map(|e| e.len()), Some(1));
+    assert_eq!(shard.bucket_index.sets.get("rec-set").map(|e| e.len()), Some(1));
 
     // ZSET: the element is the member bytes and the VALUE carries the score, which is why this
     // kind needed no composite key and no widened trait.
@@ -482,7 +482,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         "installing one ZSET element staged {} records, not 1",
         staged() - before
     );
-    assert_eq!(shard.zsets.get("rec-zset").map(|e| e.len()), Some(1));
+    assert_eq!(shard.bucket_index.zsets.get("rec-zset").map(|e| e.len()), Some(1));
 
     // LIST: the element is an `i64` sequence, so this kind pays no name at all -- which is why its
     // row cost does not move with an element name the way a hash field's does.
@@ -503,7 +503,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         "installing one LIST element staged {} records, not 1",
         staged() - before
     );
-    assert_eq!(shard.lists.get("rec-list").map(|e| e.len()), Some(1));
+    assert_eq!(shard.bucket_index.lists.get("rec-list").map(|e| e.len()), Some(1));
 
     // THE STAGED-ONLY RECORD, which is a context node: never filed in the bucket index, so its
     // record is the staged outcome alone. One record, counted the same way.
@@ -562,7 +562,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         marked | dropped_hash | dropped_set,
         "the recorded object deletion reported no change at all"
     );
-    assert!(!shard.hashes.contains_key("rec-hash"));
+    assert!(!shard.bucket_index.hashes.contains_key("rec-hash"));
 
     drain_records();
 }
@@ -599,12 +599,12 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
 
     // Compile-time: an owned return would fail to coerce to these.
     let hash_point: &crate::engine::hash_field_map::HashFieldMap =
-        shard.hashes.get("borrowed").expect("installed");
+        shard.bucket_index.hashes.get("borrowed").expect("installed");
     let hash_walk: &crate::engine::hash_field_map::HashFieldMap =
-        shard.hashes.values().next().expect("one key");
+        shard.bucket_index.hashes.values().next().expect("one key");
     let set_point: &std::collections::BTreeMap<Vec<u8>, crate::ElementEntry> =
-        shard.sets.get("borrowed").expect("installed");
-    let set_walk = shard.sets.values().next().expect("one key");
+        shard.bucket_index.sets.get("borrowed").expect("installed");
+    let set_walk = shard.bucket_index.sets.values().next().expect("one key");
 
     // Runtime: same resident entry, so nothing copied.
     assert!(
@@ -615,8 +615,8 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
         std::ptr::eq(set_point, set_walk),
         "the set point lookup and walk returned different addresses, so one copied the entry"
     );
-    assert_eq!(shard.hashes.len(), 1);
-    assert_eq!(shard.sets.len(), 1);
+    assert_eq!(shard.bucket_index.hashes.len(), 1);
+    assert_eq!(shard.bucket_index.sets.len(), 1);
     drain_records();
 }
 
@@ -743,7 +743,7 @@ fn every_kind_round_trip_uses_the_codec_its_field_always_used() {
 /// # THE DEFECT
 ///
 /// `ListPush` was the only container command that created its map entry BEFORE the append that
-/// justifies it: it called `shard.lists.entry(key).or_default()` purely to read the next sequence
+/// justifies it: it called `shard.bucket_index.lists.entry(key).or_default()` purely to read the next sequence
 /// number. A failed append therefore left an empty `BTreeMap` under the key, and
 /// `record_exists_exact` ORs each model map's `contains_key` into its answer -- so the key reported
 /// EXISTS=1 and TYPE=list with no block behind it, and `CommonExpire`, which gates on the same
@@ -759,7 +759,7 @@ fn every_kind_round_trip_uses_the_codec_its_field_always_used() {
 ///      unused but absent.
 ///
 /// THE TREE-LEVEL DRIVE IS A COMPILE ERROR, WHICH IS THE STRONGEST FORM THIS COULD TAKE. Planting
-/// the literal old shape -- `shard.lists.entry(key.clone()).or_default()` -- does not fail this
+/// the literal old shape -- `shard.bucket_index.lists.entry(key.clone()).or_default()` -- does not fail this
 /// test, it fails the BUILD:
 ///
 /// ```text
@@ -783,19 +783,19 @@ fn reading_a_lists_next_sequence_cannot_create_the_list() {
     let mut shard = shard_for_records();
 
     // 1. THE READ DOES NOT CREATE. This is the exact shape `ListPush` now uses.
-    assert!(shard.lists.get("never-pushed").is_none());
-    let seq = match shard.lists.get("never-pushed") {
+    assert!(shard.bucket_index.lists.get("never-pushed").is_none());
+    let seq = match shard.bucket_index.lists.get("never-pushed") {
         Some(list) => list.keys().next().copied().map_or(0, |first| first - 1),
         None => 0,
     };
     assert_eq!(seq, 0, "the empty-list sequence is still 0");
     assert!(
-        !shard.lists.contains_key("never-pushed"),
+        !shard.bucket_index.lists.contains_key("never-pushed"),
         "reading the next sequence CREATED the key. `record_exists_exact` ORs this very \
          `contains_key` into its answer, so that is an EXISTS=1 for a list with no block behind it \
          -- which is #2087."
     );
-    assert_eq!(shard.lists.len(), 0, "the map gained an entry from a read");
+    assert_eq!(shard.bucket_index.lists.len(), 0, "the map gained an entry from a read");
 
     // 2. AND THE OLD SHAPE IS ABSENT FROM THE ARM, not merely unused. The matcher is scoped to the
     //    `ListPush` arm rather than the file, because `entry(` against other maps is legitimate.
@@ -833,7 +833,7 @@ fn reading_a_lists_next_sequence_cannot_create_the_list() {
     // defect any more, so the matcher has nothing real to find and its silence would otherwise be
     // unearned. These are the two shapes it exists to catch if an `entry`-like accessor ever
     // returns to the container.
-    let planted = "let list = shard.lists.entry(key.clone()).or_default();";
+    let planted = "let list = shard.bucket_index.lists.entry(key.clone()).or_default();";
     assert!(
         planted.contains(".lists.entry(") && planted.contains("or_default()"),
         "the needles this test asserts the ABSENCE of do not match the shape they were written          for, so their absence from the arm proves nothing"
@@ -847,7 +847,7 @@ fn reading_a_lists_next_sequence_cannot_create_the_list() {
     );
     assert!(
         !arm_code.contains(".lists.entry("),
-        "`ListPush` reaches `shard.lists` with `entry(` again. That is how #2087 arose: the entry \
+        "`ListPush` reaches `shard.bucket_index.lists` with `entry(` again. That is how #2087 arose: the entry \
          is created before the append that justifies it, and a failed append leaves a phantom list."
     );
     assert!(

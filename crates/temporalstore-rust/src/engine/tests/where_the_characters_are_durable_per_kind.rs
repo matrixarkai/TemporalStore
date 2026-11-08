@@ -161,22 +161,22 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     shard
         .set_string_address(key_for("string", &suffix).as_str().into(), &address());
     shard
-        .hashes
+        .bucket_index.hashes
         .insert_element_for_test(
             &key_for("hash", suffix),
             std::sync::Arc::from("field-a"),
             address(),
         );
     shard
-        .sets
+        .bucket_index.sets
         .insert_element_for_test(&key_for("set", suffix), b"member-a".to_vec(), address());
-    shard.zsets.insert_element_for_test(
+    shard.bucket_index.zsets.insert_element_for_test(
         &key_for("zset", suffix),
         b"member-a".to_vec(),
         (7, address()),
     );
     shard
-        .lists
+        .bucket_index.lists
         .insert_element_for_test(&key_for("list", suffix), 1i64, address());
 
     let mut series = BTreeMap::new();
@@ -290,10 +290,10 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
     let key = key_for(kind, suffix);
     match kind {
         "string" => shard.strings().contains_key(key.as_str()),
-        "hash" => shard.hashes.contains_key(&key),
-        "set" => shard.sets.contains_key(&key),
-        "zset" => shard.zsets.contains_key(&key),
-        "list" => shard.lists.contains_key(&key),
+        "hash" => shard.bucket_index.hashes.contains_key(&key),
+        "set" => shard.bucket_index.sets.contains_key(&key),
+        "zset" => shard.bucket_index.zsets.contains_key(&key),
+        "list" => shard.bucket_index.lists.contains_key(&key),
         "feature" => shard.features().contains_key(&key[..]),
         "control_state" => shard.control_state_blocks().contains_key(key.as_str()),
         "context_node" => shard.context_nodes().contains_key(key.as_str()),
@@ -552,16 +552,16 @@ fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     if shard.strings().contains_key(key) {
         found.push("strings");
     }
-    if shard.hashes.contains_key(key) {
+    if shard.bucket_index.hashes.contains_key(key) {
         found.push("hashes");
     }
-    if shard.sets.contains_key(key) {
+    if shard.bucket_index.sets.contains_key(key) {
         found.push("sets");
     }
-    if shard.zsets.contains_key(key) {
+    if shard.bucket_index.zsets.contains_key(key) {
         found.push("zsets");
     }
-    if shard.lists.contains_key(key) {
+    if shard.bucket_index.lists.contains_key(key) {
         found.push("lists");
     }
     if shard.features().contains_key(key) {

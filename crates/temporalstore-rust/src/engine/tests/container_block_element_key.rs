@@ -1057,7 +1057,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
         other => panic!("expected Members, got {other:?}"),
     };
     // A ZSET LISTING ANSWERS INTERLEAVED MEMBER AND SCORE, so four members are eight entries. And
-    // it reads NO BLOCK AT ALL -- it is served out of `shard.zsets`, which #2017 measured and used
+    // it reads NO BLOCK AT ALL -- it is served out of `shard.bucket_index.zsets`, which #2017 measured and used
     // as its control. So this arm proves the zset WRITE path did not break the resident map; the
     // zset BLOCK is exercised by the reload test below, which is the only door that reads it.
     assert_eq!(
@@ -1197,7 +1197,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
 /// A FRAMED BLOCK SURVIVES A RELOAD, WHICH IS THE ONLY DOOR THAT READS SOME OF THEM AT ALL.
 ///
 /// The end-to-end test above cannot exercise a zset block, because a zset listing is served out of
-/// `shard.zsets` and reads nothing -- #2017's own control. A reload is what reads the blocks: it
+/// `shard.bucket_index.zsets` and reads nothing -- #2017's own control. A reload is what reads the blocks: it
 /// rebuilds the resident maps out of the block index and then every subsequent read resolves an
 /// address and goes to storage.
 ///

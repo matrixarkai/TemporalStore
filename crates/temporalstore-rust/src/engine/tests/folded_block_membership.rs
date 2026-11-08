@@ -33,7 +33,7 @@
 //!      different and much weaker fact;
 //!   2. the membership DERIVED from the blocks equals what the RESIDENT MAP holds, element for
 //!      element. That side was the block index's element names until the width step took the
-//!      element-name field off the entry; `shard.sets` is the durable authority and the served
+//!      element-name field off the entry; `shard.bucket_index.sets` is the durable authority and the served
 //!      answer now, and the pair is stronger for it -- the entry name and the block payload were
 //!      both written by one append, while the map and the blocks are maintained by different paths;
 //!   3. and the derivation is COMPLETE -- no block failed to read, none failed to walk, none was
@@ -163,14 +163,14 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     // one removal, so the removal did not do what this fixture assumes". The removal was fine; the
     // SOURCE moved.
     //
-    // `shard.sets` is where it moved to. It is durable (`#[serde(default)]`) and it is what
+    // `shard.bucket_index.sets` is where it moved to. It is durable (`#[serde(default)]`) and it is what
     // `SetMembers` and `SetLen` answer from, so it is the served membership in the same sense the
     // index walk used to be. THE PAIR IS STRONGER THAN IT WAS, not weaker: the entry's element name
     // and the block's payload were both written by the same append, so agreeing told you little
     // about either, whereas the resident map is maintained by the command path and the blocks by the
     // append path. Two artefacts that can disagree.
     let served: BTreeSet<Vec<u8>> = shard
-        .sets
+        .bucket_index.sets
         .get("folded")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();

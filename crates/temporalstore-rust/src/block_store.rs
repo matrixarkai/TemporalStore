@@ -52,7 +52,7 @@ pub(crate) use record::block_index_checksums_enabled;
 
 use paths::{
     delayed_destroy_dir, delayed_destroy_path, slab_manifest_path, file_created_unix_ms,
-    file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, slab_path, sync_dir,
+    file_modified_unix_ms, now_unix_ms, slab_path, sync_dir,
     sync_parent_dir, system_time_unix_ms,
 };
 use record::{
@@ -159,10 +159,10 @@ const _: () = assert!(HOLDER_BITS_MASK >> HOLDER_BITS_SHIFT == 0xFF);
 ///
 /// The names are SHORT. An address is written once per index item, and an index-log record was
 /// measured at 65.3% field names -- these were the largest remaining group of them, and
-/// `page_segment_id` alone cost more than the offset it labels. Every short name carries every
-/// spelling this field has ever had as an alias, so anything already written still loads:
-/// `block_slab_id` and its `page_segment_id` rename, `stored_slab_id` with its older
-/// `extent_id`/`zone_id`.
+/// `page_segment_id` alone cost more than the offset it labels. The short names are the only
+/// ones read: the longer spellings an earlier build used (`page_segment_id`, `extent_id`,
+/// `zone_id`, `length`, `page_id`) are not accepted, so an entry carrying them does not load as
+/// the same address.
 ///
 /// This does change the shape a NEW record is written in, so a binary older than this cannot
 /// read one -- the same trade the WAL and the index item made before it. Old to new is safe;
@@ -383,19 +383,17 @@ struct BlockAddressWire {
     /// So the cost of retiring a slot is not "the stored shape moves and something reads it
     /// wrong"; it is exactly whether the slot carried a MEANING the named path would drop in
     /// silence. See `shorter_struct_against_an_existing_row` at the end of this file.
-    #[serde(rename = "a", alias = "address_word", default)]
+    #[serde(rename = "a", default)]
     address: Option<u64>,
-    #[serde(rename = "l", alias = "length")]
+    #[serde(rename = "l")]
     length: u64,
     #[serde(
         rename = "pi",
-        alias = "page_id",
         default
     )]
     block_id: Option<u64>,
     #[serde(
         rename = "oi",
-        alias = "object_id",
         default
     )]
     object_id: Option<u64>,
@@ -415,7 +413,6 @@ struct BlockAddressWire {
     /// which is a separate change; retiring the other two did not.
     #[serde(
         rename = "g",
-        alias = "generation",
         default
     )]
     generation: Option<u64>,
@@ -1058,7 +1055,6 @@ pub struct BlockStoreStats {
     /// field is `pub` on a crate other people build on, so the wrong number was theirs too, not
     /// only our own guards'.
     #[serde(default)]
-    #[serde(alias = "band_manifest_writes")]
     pub slab_manifest_writes: u64,
     /// Slabs fetched on-demand from a shared-storage read-through source (conformance
     /// lazy recovery). Each shared slab is fetched at most once, only when a read
@@ -1138,34 +1134,22 @@ impl Default for BlockStoreOptions {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcReport {
-    #[serde(alias = "retain_from_page_segment_id")]
-    #[serde(alias = "retain_from_page_slab_id")]
     pub retain_from_block_slab_id: u64,
-    #[serde(alias = "removed_page_segment_ids")]
-    #[serde(alias = "removed_page_slab_ids")]
     pub removed_block_slab_ids: Vec<u64>,
-    #[serde(alias = "retained_page_segment_ids")]
-    #[serde(alias = "retained_page_slab_ids")]
     pub retained_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub removed_physical_bytes: u64,
     #[serde(default)]
     pub retained_physical_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "delayed_destroy_page_segment_ids")]
-    #[serde(alias = "delayed_destroy_page_slab_ids")]
     pub delayed_destroy_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub delayed_destroy_physical_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "retained_live_page_segment_ids")]
-    #[serde(alias = "retained_live_page_slab_ids")]
     pub retained_live_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_live_physical_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "retained_current_page_segment_ids")]
-    #[serde(alias = "retained_current_page_slab_ids")]
     pub retained_current_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_current_physical_bytes: u64,
@@ -1178,7 +1162,6 @@ pub struct BlockStoreGcReport {
     /// each other about the same slab. Non-empty is an alarm, and the point of the check is that
     /// the disagreement costs a round of reclaim instead of the bytes.
     #[serde(default)]
-    #[serde(alias = "retained_live_bytes_page_slab_ids")]
     pub retained_live_bytes_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub retained_live_bytes_physical_bytes: u64,
@@ -1191,7 +1174,6 @@ pub struct BlockStoreGcReport {
 /// outside, through [`BlockStore::publish_live_block_bytes`], and the store only reads it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabLive {
-    #[serde(alias = "live_page_refs")]
     pub live_block_refs: u64,
     /// Sum of the lengths of the live blocks on the slab. LOGICAL bytes -- the same quantity the
     /// slab descriptor's `logical_bytes` totals over every block ever appended to it, which is why
@@ -1206,13 +1188,12 @@ pub struct BlockStoreSlabLive {
 /// points at. Across the whole store it is not, and this is where that shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabLiveFraction {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     /// Total logical bytes ever appended to this slab. Only ever grows, which is correct FOR A
     /// DENOMINATOR and was the bug when the same field was read as a live figure.
     pub logical_bytes: u64,
-    #[serde(alias = "live_page_refs")]
     pub live_block_refs: u64,
     pub live_bytes: u64,
     /// `live_bytes * 10_000 / logical_bytes`, or 0 when the slab has no logical bytes.
@@ -1223,7 +1204,7 @@ pub struct BlockStoreSlabLiveFraction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcUtilityCandidate {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub bytes: u64,
     #[serde(default)]
@@ -1246,7 +1227,6 @@ pub struct BlockStoreGcUtilityCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcPolicy {
     #[serde(default)]
-    #[serde(alias = "max_destroy_segments")]
     pub max_destroy_slabs: usize,
     #[serde(default)]
     pub max_destroy_physical_bytes: u64,
@@ -1259,7 +1239,6 @@ pub struct BlockStoreGcPolicy {
     /// behavior). The garbage-ratio gate (reclaim the most-garbage zones),
     /// expressed against Rust slabs.
     #[serde(default)]
-    #[serde(alias = "min_band_garbage_basis_points")]
     pub min_slab_garbage_basis_points: Option<u64>,
 }
 
@@ -1331,11 +1310,7 @@ impl BlockStoreGcPolicy {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcPolicyPlan {
-    #[serde(alias = "retain_from_page_segment_id")]
-    #[serde(alias = "retain_from_page_slab_id")]
     pub retain_from_block_slab_id: u64,
-    #[serde(alias = "selected_page_segment_ids")]
-    #[serde(alias = "selected_page_slab_ids")]
     pub selected_block_slab_ids: Vec<u64>,
     pub selected_physical_bytes: u64,
     #[serde(default)]
@@ -1357,7 +1332,7 @@ pub struct BlockStoreGcPolicyPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreDelayedDestroySlabReport {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1402,8 +1377,6 @@ pub(crate) const DELAYED_DESTROY_MAX_SLABS_PER_ROUND: usize = 1_000;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStorePurgeDelayedDestroyReport {
-    #[serde(alias = "purged_page_segment_ids")]
-    #[serde(alias = "purged_page_slab_ids")]
     pub purged_block_slab_ids: Vec<u64>,
     pub purged_physical_bytes: u64,
     /// Slabs left in quarantine because they had not been there long enough yet.
@@ -1522,16 +1495,14 @@ pub struct BlockStoreSlabDescriptor {
     /// nothing ever configured the two sizes differently and the grouping was never exercised,
     /// which is why the map is keyed by slab id with one descriptor per slab.
     ///
-    /// It stays because it SERIALIZES -- as of #2487 under its own canonical name, with the
-    /// earlier spellings the aliases below record (`zone_id` -> `extent_id` -> `band_id`)
-    /// accepted on read only -- so dropping the field is a wire break rather than a cleanup.
+    /// It stays because it SERIALIZES, under its own canonical name; the earlier spellings
+    /// (`zone_id`, `extent_id`, `band_id`) are not read any more.
     /// Read `block_slab_id` in new code; the
     /// two cannot diverge, `reconcile_slab_manifest_with_disk` normalises this one from the map
     /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
     /// ever do.
-    #[serde(alias = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub state: BlockStoreSlabState,
     pub physical_bytes: u64,
@@ -1540,9 +1511,9 @@ pub struct BlockStoreSlabDescriptor {
     pub created_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_unix_ms: Option<u64>,
-    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
@@ -1571,17 +1542,9 @@ const _: () = assert!(std::mem::size_of::<BlockStoreSlabDescriptor>() == 168);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabSummary {
-    #[serde(alias = "active_zones")]
-    #[serde(alias = "active_bands")]
     pub active_slabs: u64,
-    #[serde(alias = "sealed_zones")]
-    #[serde(alias = "sealed_bands")]
     pub sealed_slabs: u64,
-    #[serde(alias = "delayed_destroy_zones")]
-    #[serde(alias = "delayed_destroy_bands")]
     pub delayed_destroy_slabs: u64,
-    #[serde(alias = "purged_zones")]
-    #[serde(alias = "purged_bands")]
     pub purged_slabs: u64,
     pub active_physical_bytes: u64,
     pub sealed_physical_bytes: u64,
@@ -1592,58 +1555,44 @@ pub struct BlockStoreSlabSummary {
     pub total_known_physical_bytes: u64,
     #[serde(
         default,
-        alias = "oldest_known_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(alias = "oldest_known_band_unix_ms")]
     pub oldest_known_slab_unix_ms: Option<u64>,
     #[serde(
         default,
-        alias = "oldest_known_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(alias = "oldest_known_band_age_ms")]
     pub oldest_known_slab_age_ms: Option<u64>,
     #[serde(
         default,
-        alias = "oldest_live_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(alias = "oldest_live_band_unix_ms")]
     pub oldest_live_slab_unix_ms: Option<u64>,
     #[serde(
         default,
-        alias = "oldest_live_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(alias = "oldest_live_band_age_ms")]
     pub oldest_live_slab_age_ms: Option<u64>,
     #[serde(
         default,
-        alias = "oldest_reclaimable_zone_unix_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(alias = "oldest_reclaimable_band_unix_ms")]
     pub oldest_reclaimable_slab_unix_ms: Option<u64>,
     #[serde(
         default,
-        alias = "oldest_reclaimable_zone_age_ms",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(alias = "oldest_reclaimable_band_age_ms")]
     pub oldest_reclaimable_slab_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabUsage {
-    #[serde(alias = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
-    #[serde(alias = "storage_zone_id", default)]
+    #[serde(default)]
     pub storage_slab_id: u64,
     #[serde(default)]
-    #[serde(alias = "stream_segment_id")]
     pub stream_slab_id: u64,
     pub state: BlockStoreSlabState,
     #[serde(default)]
@@ -1654,17 +1603,13 @@ pub struct BlockStoreSlabUsage {
     pub reclaimable_bytes: u64,
     #[serde(default)]
     pub purged_bytes: u64,
-    #[serde(alias = "page_store_used_bytes")]
     pub block_store_used_bytes: u64,
-    #[serde(alias = "live_page_store_used_bytes")]
     pub live_block_store_used_bytes: u64,
-    #[serde(alias = "reclaimable_page_store_used_bytes")]
     pub reclaimable_block_store_used_bytes: u64,
-    #[serde(alias = "purged_page_store_used_bytes")]
     pub purged_block_store_used_bytes: u64,
-    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
 }
 
@@ -1672,73 +1617,51 @@ pub struct BlockStoreSlabUsage {
 pub struct StreamBackedSlabRuntimeReport {
     pub runtime_ready: bool,
     #[serde(default)]
-    #[serde(alias = "band_lifecycle_states")]
     pub slab_lifecycle_states: Vec<String>,
-    #[serde(alias = "band_count", alias = "extent_count", alias = "zone_count")]
     pub slab_count: u64,
-    #[serde(alias = "active_zones")]
-    #[serde(alias = "active_bands")]
     pub active_slabs: u64,
-    #[serde(alias = "sealed_zones")]
-    #[serde(alias = "sealed_bands")]
     pub sealed_slabs: u64,
-    #[serde(alias = "delayed_destroy_zones")]
-    #[serde(alias = "delayed_destroy_bands")]
     pub delayed_destroy_slabs: u64,
-    #[serde(alias = "purged_zones")]
-    #[serde(alias = "purged_bands")]
     pub purged_slabs: u64,
-    #[serde(alias = "zone_stats_ready", default)]
+    #[serde(default)]
     pub slab_stats_ready: bool,
-    #[serde(alias = "zone_usage", default)]
+    #[serde(default)]
     pub slab_usage: Vec<BlockStoreSlabUsage>,
-    #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     #[serde(default)]
     pub stream_record_count: u64,
-    #[serde(rename = "first_block_id", alias = "first_page_id", default)]
+    #[serde(rename = "first_block_id", default)]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_block_id", alias = "last_page_id", default)]
+    #[serde(rename = "last_block_id", default)]
     pub last_block_id: Option<u64>,
-    #[serde(alias = "page_id_continuity_ready", default)]
+    #[serde(default)]
     pub block_id_continuity_ready: bool,
     #[serde(default)]
     pub logical_stream_bytes_read: u64,
     #[serde(default)]
-    #[serde(alias = "band_state_transition_count")]
     pub slab_state_transition_count: u64,
     pub logical_stream_read_ready: bool,
     pub append_roll_ready: bool,
-    #[serde(alias = "extent_manifest_ready", alias = "zone_manifest_ready")]
-    #[serde(alias = "band_manifest_ready")]
     pub slab_manifest_ready: bool,
     #[serde(default)]
-    #[serde(alias = "band_manifest_rebuild_ready")]
     pub slab_manifest_rebuild_ready: bool,
     #[serde(default)]
-    #[serde(alias = "band_manifest_reconciled_on_open")]
     pub slab_manifest_reconciled_on_open: bool,
     #[serde(default)]
-    #[serde(alias = "band_manifest_disk_consistent")]
     pub slab_manifest_disk_consistent: bool,
     #[serde(default)]
-    #[serde(alias = "manifest_missing_stream_bands")]
     pub manifest_missing_stream_slabs: u64,
     #[serde(default)]
-    #[serde(alias = "manifest_extra_stream_bands")]
     pub manifest_extra_stream_slabs: u64,
     #[serde(default)]
-    #[serde(alias = "corrupt_band_count")]
     pub corrupt_slab_count: u64,
     #[serde(default)]
-    #[serde(alias = "partial_band_count")]
     pub partial_slab_count: u64,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "partial_band_recovery_ready")]
     pub partial_slab_recovery_ready: bool,
     pub envelope_checksum_ready: bool,
     pub compression_stream_ready: bool,
@@ -1751,7 +1674,7 @@ pub struct StreamBackedSlabRuntimeReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabReport {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -1773,26 +1696,23 @@ pub struct BlockStoreSlabReport {
     /// ALWAYS 0 TODAY, for the same reason as `object_count`: `header.routing_bucket` is
     /// hardcoded to `None` by the header parser.
     #[serde(default)]
-    #[serde(alias = "routing_slot_count")]
     pub routing_bucket_count: u64,
     pub compressed_records: u64,
-    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     /// ALWAYS `None` TODAY -- see `routing_bucket_count`. With
     /// `skip_serializing_if = "Option::is_none"` this means the field is absent from the
     /// serialised report entirely, rather than present and empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "first_routing_slot")]
     pub first_routing_bucket: Option<u32>,
     /// ALWAYS `None` TODAY -- see `first_routing_bucket`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "last_routing_slot")]
     pub last_routing_bucket: Option<u32>,
-    #[serde(default, alias = "page_index_count")]
+    #[serde(default)]
     pub block_index_count: u64,
-    #[serde(default, alias = "page_index_entries")]
+    #[serde(default)]
     pub block_index_entries: Vec<BlockStoreBlockIndexReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
@@ -1800,28 +1720,19 @@ pub struct BlockStoreSlabReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreBlockIndexReport {
-    #[serde(alias = "page_segment_id")]
-    #[serde(alias = "block_segment_id")]
-    #[serde(alias = "page_slab_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "compact_segment_address")]
     pub compact_slab_address: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "compact_segment_id")]
     pub compact_slab_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "compact_segment_offset")]
     pub compact_slab_offset: Option<u32>,
     #[serde(
         default,
-        alias = "extent_id",
-        alias = "zone_id",
         skip_serializing_if = "Option::is_none"
     )]
-    #[serde(alias = "storage_segment_id")]
     pub storage_slab_id: Option<u64>,
     /// ALWAYS `None` TODAY. `inspect_slab` copies this straight from `header.object_id`,
     /// which `parse_block_record_header` hardcodes to `None`: the record envelope carries no
@@ -1833,14 +1744,12 @@ pub struct BlockStoreBlockIndexReport {
     /// record envelope names a model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<u8>,
-    #[serde(default, alias = "page_id", skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_id: Option<u64>,
-    #[serde(alias = "page_size")]
     pub block_size: u64,
     pub stored_size: u64,
     pub dirty: bool,
     pub deleted: bool,
-    #[serde(alias = "page_in_log")]
     pub block_in_log: bool,
     /// ALWAYS `None` TODAY, for the same reason as `object_id`: `header.routing_bucket` is
     /// hardcoded to `None` by the header parser.
@@ -1851,34 +1760,19 @@ pub struct BlockStoreBlockIndexReport {
     pub checksum: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The slab manifest as a value: a version and every slab descriptor.
+///
+/// Its stored shape is the protobuf in `slab_manifest_wire`, so this type carries no serde derive:
+/// there is no JSON form of it to keep in step.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockStoreSlabManifest {
     version: u32,
-    /// EMITS `slabs`. `bands`, `extents` and `zones` are RETIRED spellings, accepted on read
-    /// and never written -- a serde `alias` widens the reader only.
-    ///
-    /// This flipped in #2487 and the decision is recorded in
-    /// `docs/temporalstore_page_block_address_contract.md`: it was available because the three
-    /// `compat/*.json` corpora anything actually reads carry the retired slab names ZERO times,
-    /// where counting all nine files made them look pinned. The readers were widened and shipped
-    /// before the writer moved, which is the only order in which such a flip exists at all.
-    ///
-    /// What the old comment here said -- that the file still says `bands` -- has been WRONG since
-    /// that change, and it is why two tests that reach in by literal string key were read as a
-    /// writer defect rather than as casualties of the flip.
-    /// `a_folded_manifest_still_writes_the_keys_on_disk` is the guard that pins which spelling
-    /// reaches the file, in both directions.
-    #[serde(alias = "bands", alias = "extents", alias = "zones")]
     slabs: Vec<BlockStoreSlabDescriptor>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreRollReport {
-    #[serde(alias = "previous_page_segment_id")]
-    #[serde(alias = "previous_page_slab_id")]
     pub previous_block_slab_id: u64,
-    #[serde(alias = "new_page_segment_id")]
-    #[serde(alias = "new_page_slab_id")]
     pub new_block_slab_id: u64,
 }
 
@@ -2045,8 +1939,7 @@ impl BlockStore {
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        let manifest_exists =
-            slab_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
+        let manifest_exists = slab_manifest_path(&root).exists();
         // WHAT THE OPEN READS, TAKEN ON THE OPEN'S OWN TALLY. Every byte below also lands on the
         // process counter when these tallies drop; this is the per-store figure beside it, and
         // the store keeps it because the process counter cannot answer "what did THIS open read"
@@ -3730,37 +3623,24 @@ mod address_size_tests {
         for long in ["page_segment_id", "offset", "routing_slot", "band_id", "object_id", "generation"] {
             assert!(
                 json.get(long).is_none(),
-                "{long} is a read alias now, not something to write"
+                "{long} is a retired spelling, not something to write"
             );
         }
         assert!(json.get("present").is_none(), "presence bits must not reach the wire");
 
-        // What is still read: the same address spelled the old way, which is what an index already
-        // on disk looks like.
-        let round_tripped: ElementEntry = serde_json::from_value(json).unwrap();
-        assert_eq!(round_tripped, address, "an address written now must read back identical");
+        // The old long names are NOT read. An address spelled with them has no `l`, which is
+        // required, so it is refused rather than loaded as some other address.
         let long_form = serde_json::json!({
-            // The long names that are RENAMES still read; the split address does not,
-            // and there is no long spelling of the merged word -- it is new.
             "a": (5_u64 << 32) | 64_u64,
             "length": 128_u64,
             "page_id": 1_u64,
             "object_id": 2_u64,
-            // `routing_slot` names a field that no longer exists, and it is kept in this fixture
-            // deliberately: an index already on disk carries it, and this line is the assertion
-            // that a key no field claims is TOLERATED rather than refused. It stopped being a
-            // read alias when the slot was retired; it did not stop being present on disk.
-            "routing_slot": 3_u32,
-            // The generation an index on disk carries: `page_id.or(object_id)`, which is what
-            // every write path in this engine has always stored here. It was spelled `4` in this
-            // fixture -- a value no writer produces -- until the field became derived.
             "generation": 1_u64,
             "band_id": 0_u64,
         });
-        let from_long: ElementEntry = serde_json::from_value(long_form).unwrap();
-        assert_eq!(
-            from_long, address,
-            "an index written with the long names must still load as the same address"
+        assert!(
+            serde_json::from_value::<ElementEntry>(long_form).is_err(),
+            "an address spelled with the retired long names was read"
         );
     }
 
@@ -3866,16 +3746,10 @@ mod tests {
     /// That is what PR #1333 did to two tests for six days. The builders are pinned to
     /// literal spellings here, and the quarantine parser is round-tripped against the
     /// builder, so moving one without the other fails.
-    ///
-    /// `page_zone_manifest.json` is deliberately NOT renamed and is asserted to keep its
-    /// old spelling. It is how the tree notices a store written before the slab manifest
-    /// existed; pointed at a new name it would look for a file that has never existed, and
-    /// the caller falls through to a rebuild and succeeds, so the miss would be silent.
     #[test]
     fn the_on_disk_names_are_the_ones_the_readers_parse() {
         use crate::block_store::paths::{
-            delayed_destroy_dir, delayed_destroy_path, legacy_zone_manifest_path,
-            slab_manifest_path, slab_path,
+            delayed_destroy_dir, delayed_destroy_path, slab_manifest_path, slab_path,
         };
         use crate::block_store::slab_ids::{delayed_destroy_slab_id_from_name, slab_ids_at};
 
@@ -3888,16 +3762,11 @@ mod tests {
         );
         assert_eq!(
             slab_manifest_path(root).file_name().unwrap(),
-            "block_extent_manifest.json"
+            "slab_manifest.pb"
         );
         assert_eq!(
             delayed_destroy_dir(root).file_name().unwrap(),
             ".block_segment_trash"
-        );
-        assert_eq!(
-            legacy_zone_manifest_path(root).file_name().unwrap(),
-            "page_zone_manifest.json",
-            "the legacy detector must keep naming the legacy file, or it detects nothing"
         );
 
         // The quarantine parser must read what the quarantine builder writes. Move one
@@ -4146,29 +4015,91 @@ mod tests {
         );
     }
 
-    /// A rename may not quietly drop a durable name.
+    /// A retired name stays retired, and a durable name is still written somewhere.
     ///
-    /// The vocabulary migration -- page to block, zone to slab, slot to bucket -- is deliberate and
-    /// only half done, and what keeps it safe is that every historical spelling survives as a serde
-    /// alias, so a store written by an older build still loads. `BlockAddressWire` states the rule
-    /// directly: every short name carries every spelling the field has ever had.
+    /// The vocabulary migration -- page to block, zone to slab, slot to bucket -- used to keep every
+    /// historical spelling as a serde alias so a store written by an older build still loaded. The
+    /// first release carries no installed base, so those aliases are deleted, and the roster below
+    /// changes meaning with them. `RETIRED_NAMES` is every spelling that was an alias and is now
+    /// gone from the source: none may be quoted anywhere, so a retired spelling that comes back
+    /// fails here. `DURABLE_NAMES` is the names that are still quoted by some site and must stay so.
     ///
-    /// Nothing checked it. A rename that changed a field AND its alias would compile, pass every
-    /// other test, and make existing data unreadable -- with the symptom appearing at load, on
-    /// someone else's machine, later.
-    ///
-    /// The check runs one way. ADDING a durable name is free, which is what keeps this quiet while
-    /// the migration proceeds; removing or respelling one fails here with the name in the message.
-    /// If a removal is genuinely intended -- a field that no store in the world still carries --
-    /// delete it from the list below in the same change, so the decision is written down.
+    /// A name leaves `DURABLE_NAMES` only by moving to `RETIRED_NAMES` in the same change, so the
+    /// decision is written down and the guard keeps looking.
     #[test]
     fn a_durable_name_is_never_quietly_dropped() {
-        // Every serde `rename`/`alias` in the crate that carries the old vocabulary, as of the
-        // change that added this test.
+        // Every spelling with the old vocabulary that some site still quotes.
         const DURABLE_NAMES: &[&str] = &[
-        "active_bands",
         "active_storage_zones",
+        "block_segment_id",
+        "block_segment_target_bytes",
+        "compact_pages",
+        "delayed_destroy_segment_count",
+        "dirty_slot_count",
+        "dirty_slot_pressure",
+        "dirty_slots",
+        "dumped_slot_count",
+        "expired_slot_object_scan_debt",
+        "extent_id",
+        "extents",
+        "fanout_segment_count",
+        "interrupted_slot_dump_installs",
+        "page",
+        "page_address_count",
+        "page_addresses",
+        "page_chain",
+        "page_id",
+        "page_index_count",
+        "page_index_entries",
+        "page_ref_key",
+        "page_refs",
+        "page_segment_id",
+        "page_segment_stale_density_basis_points",
+        "page_segments_reclaimed",
+        "page_slab_id",
+        "page_store",
+        "routing_slot",
+        "sealed_segment_count",
+        "sealed_storage_zones",
+        "segment",
+        "segment_count",
+        "segment_id",
+        "segment_open_count",
+        "segment_sealed_count",
+        "segments",
+        "selected_slots",
+        "slot",
+        "slot_dump_manifest",
+        "slot_dump_manifest_id",
+        "slot_id",
+        "slot_index",
+        "slot_index_entry_count",
+        "slot_object_ref_count",
+        "slot_page_ref_count",
+        "slots",
+        "staged_pages",
+        "stale_page_segment_count",
+        "stale_page_segment_pressure",
+        "storage_zone_count",
+        "storage_zone_stale_bytes",
+        "storage_zone_total_bytes",
+        "storage_zone_used_bytes",
+        "stream_segment_count",
+        "unreadable_page_refs",
+        "zone_id",
+        "zone_version",
+        "zones",
+        ];
+
+        // Retired: these spellings were removed rather than aliased, or were aliases and have
+        // been deleted. The guard proves they stay gone, so coverage does not shrink by deleting
+        // them from the list above -- a retired name that quietly comes back fails here.
+const RETIRED_NAMES: &[&str] = &[
+        "active_bands",
+        "active_page_segment_ids",
+        "active_page_slab_ids",
         "active_zones",
+        "actual_routing_slot",
         "band_count",
         "band_lifecycle_states",
         "band_manifest_disk_consistent",
@@ -4177,39 +4108,99 @@ mod tests {
         "band_manifest_reconciled_on_open",
         "band_manifest_writes",
         "band_state_transition_count",
-        "block_segment_id",
-        "block_segment_target_bytes",
         "block_store_segment_api_ready",
-        "compact_pages",
+        "block_store_zones",
+        "blocked_page_segment_ids",
+        "blocked_page_slab_ids",
+        "bounded_max_dump_slots_per_round",
+        "cache_slot_entry_count",
+        "candidate_page_segment_ids",
+        "candidate_page_slab_ids",
+        "cold_slots_scanned",
         "compact_segment_address",
         "compact_segment_id",
         "compact_segment_offset",
+        "compacted_page_segment_id",
+        "compacted_page_slab_id",
+        "configured_page_gc_raft_install_floor_segment_id",
         "corrupt_band_count",
+        "corrupt_page_index_wal_snapshot_evidence_ready",
+        "corrupt_page_segment_count",
+        "corrupt_page_segment_ids",
+        "corrupt_page_slab_count",
+        "corrupt_page_slab_ids",
+        "covered_slot_count",
         "delayed_destroy_bands",
         "delayed_destroy_page_segment_ids",
         "delayed_destroy_page_slab_ids",
         "delayed_destroy_purged_segments",
-        "delayed_destroy_segment_count",
         "delayed_destroy_zones",
-        "dirty_slot_count",
-        "dirty_slot_pressure",
-        "dirty_slots",
-        "dumped_slot_count",
-        "expired_slot_object_scan_debt",
+        "deleted_slot_count",
+        "dirty_slots_committed_before_truncate",
+        "discovered_page_segment_count",
+        "discovered_page_slab_count",
+        "durable_slot_generation_frontier_index_log_sequence",
+        "durable_slot_generation_frontier_wal_sequence",
+        "empty_slots",
+        "end_routing_slot",
+        "end_slot",
+        "expected_routing_slot",
         "extent_count",
-        "extent_id",
         "extent_manifest_ready",
-        "extents",
-        "fanout_segment_count",
+        "first_class_slot_object_page_index_evidence",
+        "first_class_slot_object_page_index_ready",
         "first_routing_slot",
-        "interrupted_slot_dump_installs",
+        "hot_slots_scanned",
+        "in_memory_slot_count",
+        "index_gc_commit_dirty_slots_before_truncation",
+        "indexed_page_segment_count",
+        "indexed_page_slab_count",
+        "installed_slot_dump_install_count",
+        "interrupted_slot_dump_install_count",
+        "last_compacted_zone",
         "last_routing_slot",
+        "last_selected_slots",
+        "legacy_page_zone_aliases_ready",
         "live_page_refs",
+        "live_page_segment_count",
+        "live_page_segment_ids",
+        "live_page_slab_count",
+        "live_page_slab_ids",
         "live_page_store_used_bytes",
+        "live_routing_slot_count",
+        "load_cold_slots",
+        "load_cold_slots_for_expire",
+        "loading_slot_count",
         "manifest_extra_stream_bands",
         "manifest_missing_stream_bands",
+        "manifest_page_segment_ids",
+        "manifest_page_slab_ids",
+        "manifest_slot_ids",
+        "max_cold_slots_per_round",
         "max_destroy_segments",
+        "max_dirty_slots",
+        "max_dump_slots_per_round",
+        "max_expire_cold_slots_per_round",
+        "max_expire_hot_slots_per_round",
+        "max_hot_slots_per_round",
+        "max_orphan_page_segments",
+        "max_orphan_page_slabs",
+        "max_stale_page_segments",
+        "max_stale_page_slabs",
+        "metrics_slot_count",
         "min_band_garbage_basis_points",
+        "missing_dump_slot_ids",
+        "missing_page_segment_ids",
+        "missing_page_slab_ids",
+        "missing_routing_slot_count",
+        "missing_slot_generations",
+        "multi_object_slots",
+        "multi_page_object_slots",
+        "native_packed_slot_node_hex",
+        "native_packed_slot_node_len",
+        "native_packed_slot_node_size",
+        "native_slot_store_layout_transition_evidence",
+        "native_slot_store_layout_transition_ready",
         "new_page_segment_id",
         "new_page_slab_id",
         "oldest_known_band_age_ms",
@@ -4224,176 +4215,6 @@ mod tests {
         "oldest_reclaimable_band_unix_ms",
         "oldest_reclaimable_zone_age_ms",
         "oldest_reclaimable_zone_unix_ms",
-        "page",
-        "page_address_count",
-        "page_addresses",
-        "page_chain",
-        "page_id",
-        "page_id_continuity_ready",
-        "page_in_log",
-        "page_index_count",
-        "page_index_entries",
-        "page_ref_key",
-        "page_refs",
-        "page_segment_id",
-        "page_segment_stale_density_basis_points",
-        "page_segments_reclaimed",
-        "page_size",
-        "page_slab_id",
-        "page_store",
-        "page_store_used_bytes",
-        "partial_band_count",
-        "partial_band_recovery_ready",
-        "previous_page_segment_id",
-        "previous_page_slab_id",
-        "purged_bands",
-        "purged_page_segment_ids",
-        "purged_page_slab_ids",
-        "purged_page_store_used_bytes",
-        "purged_zones",
-        "reclaimable_page_store_used_bytes",
-        "removed_page_segment_ids",
-        "removed_page_slab_ids",
-        "retain_from_page_segment_id",
-        "retain_from_page_slab_id",
-        "retained_current_page_segment_ids",
-        "retained_current_page_slab_ids",
-        "retained_live_bytes_page_slab_ids",
-        "retained_live_page_segment_ids",
-        "retained_live_page_slab_ids",
-        "retained_page_segment_ids",
-        "retained_page_slab_ids",
-        "routing_slot",
-        "routing_slot_count",
-        "sealed_bands",
-        "sealed_segment_count",
-        "sealed_storage_zones",
-        "sealed_zones",
-        "segment",
-        "segment_count",
-        "segment_fields",
-        "segment_id",
-        "segment_integrity",
-        "segment_open_count",
-        "segment_samples",
-        "segment_sealed_count",
-        "segments",
-        "selected_page_segment_ids",
-        "selected_page_slab_ids",
-        "selected_slots",
-        "slot",
-        "slot_dump_manifest",
-        "slot_dump_manifest_id",
-        "slot_fields",
-        "slot_id",
-        "slot_index",
-        "slot_index_entry_count",
-        "slot_object_ref_count",
-        "slot_page_ref_count",
-        "slot_samples",
-        "slots",
-        "staged_pages",
-        "stale_page_segment_count",
-        "stale_page_segment_pressure",
-        "storage_segment_id",
-        "storage_zone_count",
-        "storage_zone_id",
-        "storage_zone_stale_bytes",
-        "storage_zone_total_bytes",
-        "storage_zone_used_bytes",
-        "stream_segment_count",
-        "stream_segment_id",
-        "unreadable_page_refs",
-        "zone_count",
-        "zone_id",
-        "zone_manifest_ready",
-        "zone_stats_ready",
-        "zone_usage",
-        "zone_version",
-        "zones",
-        ];
-
-        // Retired by the first milestone: the vocabulary reached the wire and
-        // these spellings were removed rather than aliased. The guard proves they
-        // stay gone, so coverage does not shrink by deleting them from the list
-        // above -- a retired name that quietly comes back fails here.
-const RETIRED_NAMES: &[&str] = &[
-        "active_page_segment_ids",
-        "active_page_slab_ids",
-        "actual_routing_slot",
-        "block_store_zones",
-        "blocked_page_segment_ids",
-        "blocked_page_slab_ids",
-        "bounded_max_dump_slots_per_round",
-        "cache_slot_entry_count",
-        "candidate_page_segment_ids",
-        "candidate_page_slab_ids",
-        "cold_slots_scanned",
-        "compacted_page_segment_id",
-        "compacted_page_slab_id",
-        "configured_page_gc_raft_install_floor_segment_id",
-        "corrupt_page_index_wal_snapshot_evidence_ready",
-        "corrupt_page_segment_count",
-        "corrupt_page_segment_ids",
-        "corrupt_page_slab_count",
-        "corrupt_page_slab_ids",
-        "covered_slot_count",
-        "deleted_slot_count",
-        "dirty_slots_committed_before_truncate",
-        "discovered_page_segment_count",
-        "discovered_page_slab_count",
-        "durable_slot_generation_frontier_index_log_sequence",
-        "durable_slot_generation_frontier_wal_sequence",
-        "empty_slots",
-        "end_routing_slot",
-        "end_slot",
-        "expected_routing_slot",
-        "first_class_slot_object_page_index_evidence",
-        "first_class_slot_object_page_index_ready",
-        "hot_slots_scanned",
-        "in_memory_slot_count",
-        "index_gc_commit_dirty_slots_before_truncation",
-        "indexed_page_segment_count",
-        "indexed_page_slab_count",
-        "installed_slot_dump_install_count",
-        "interrupted_slot_dump_install_count",
-        "last_compacted_zone",
-        "last_selected_slots",
-        "legacy_page_zone_aliases_ready",
-        "live_page_segment_count",
-        "live_page_segment_ids",
-        "live_page_slab_count",
-        "live_page_slab_ids",
-        "live_routing_slot_count",
-        "load_cold_slots",
-        "load_cold_slots_for_expire",
-        "loading_slot_count",
-        "manifest_page_segment_ids",
-        "manifest_page_slab_ids",
-        "manifest_slot_ids",
-        "max_cold_slots_per_round",
-        "max_dirty_slots",
-        "max_dump_slots_per_round",
-        "max_expire_cold_slots_per_round",
-        "max_expire_hot_slots_per_round",
-        "max_hot_slots_per_round",
-        "max_orphan_page_segments",
-        "max_orphan_page_slabs",
-        "max_stale_page_segments",
-        "max_stale_page_slabs",
-        "metrics_slot_count",
-        "missing_dump_slot_ids",
-        "missing_page_segment_ids",
-        "missing_page_slab_ids",
-        "missing_routing_slot_count",
-        "missing_slot_generations",
-        "multi_object_slots",
-        "multi_page_object_slots",
-        "native_packed_slot_node_hex",
-        "native_packed_slot_node_len",
-        "native_packed_slot_node_size",
-        "native_slot_store_layout_transition_evidence",
-        "native_slot_store_layout_transition_ready",
         "orphan_page_segment_count",
         "orphan_page_segment_ids",
         "orphan_page_slab_count",
@@ -4402,6 +4223,8 @@ const RETIRED_NAMES: &[&str] = &[
         "page_count",
         "page_gc_checkpoint_floor_segment_id",
         "page_gc_raft_install_floor_segment_id",
+        "page_id_continuity_ready",
+        "page_in_log",
         "page_segment_ids",
         "page_segment_live_reports",
         "page_segment_manifest_ready",
@@ -4426,21 +4249,51 @@ const RETIRED_NAMES: &[&str] = &[
         "page_slabs_retained_live_physical_bytes",
         "page_slabs_retained_physical_bytes",
         "page_store_bytes_written",
+        "page_store_used_bytes",
         "page_store_writes",
+        "partial_band_count",
+        "partial_band_recovery_ready",
         "prepared_slot_dump_install_count",
+        "previous_page_segment_id",
+        "previous_page_slab_id",
         "prune_slot_dump_manifests",
+        "purged_bands",
+        "purged_page_segment_ids",
+        "purged_page_slab_ids",
+        "purged_page_store_used_bytes",
+        "purged_zones",
         "reclaimable_page_segment_ids",
         "reclaimable_page_slab_ids",
+        "reclaimable_page_store_used_bytes",
         "reclaimable_stale_page_segment_count",
         "reclaimable_stale_page_slab_count",
+        "removed_page_segment_ids",
+        "removed_page_slab_ids",
         "require_slot_dump_manifest",
+        "retain_from_page_segment_id",
+        "retain_from_page_slab_id",
         "retain_page_segments_from_id",
         "retain_page_slabs_from_id",
+        "retained_current_page_segment_ids",
+        "retained_current_page_slab_ids",
+        "retained_live_bytes_page_slab_ids",
+        "retained_live_page_segment_ids",
+        "retained_live_page_slab_ids",
+        "retained_page_segment_ids",
+        "retained_page_slab_ids",
         "roll_forward_slot_dump_installs",
+        "routing_slot_count",
         "routing_slots_embedded",
+        "sealed_bands",
+        "sealed_zones",
         "secondary_views_reconciled_from_slot_index",
+        "segment_fields",
+        "segment_integrity",
+        "segment_samples",
         "selected_dirty_slot_count",
         "selected_dump_slots",
+        "selected_page_segment_ids",
+        "selected_page_slab_ids",
         "selected_routing_slots",
         "single_object_slots",
         "single_page_object_slots",
@@ -4448,6 +4301,7 @@ const RETIRED_NAMES: &[&str] = &[
         "slot_dump_manifest_block_count",
         "slot_dump_manifest_count",
         "slot_entries",
+        "slot_fields",
         "slot_first",
         "slot_ids",
         "slot_index_authority",
@@ -4456,6 +4310,7 @@ const RETIRED_NAMES: &[&str] = &[
         "slot_map",
         "slot_nodes",
         "slot_object_page_authority_ready",
+        "slot_samples",
         "slot_store_layout_api_ready",
         "slot_store_runtime_module",
         "slot_summaries",
@@ -4468,12 +4323,19 @@ const RETIRED_NAMES: &[&str] = &[
         "stale_page_slab_pressure",
         "start_routing_slot",
         "start_slot",
+        "storage_segment_id",
+        "storage_zone_id",
+        "stream_segment_id",
         "total_segment_pages",
         "ttl_slot_count",
         "uncovered_slot_count",
         "unknown_slot_dump_install_count",
+        "zone_count",
         "zone_descriptors",
+        "zone_manifest_ready",
+        "zone_stats_ready",
         "zone_summary",
+        "zone_usage",
         ];
 
         // The list above lives inside the tree this walk reads, so every entry would match its
@@ -4585,9 +4447,8 @@ const RETIRED_NAMES: &[&str] = &[
             missing.is_empty(),
             "durable name(s) no longer written anywhere outside the list itself: {missing:?}\n\
              ({found} of {} names still have a real site, across {files_read} files.)\n\
-             A store written by an older build still carries these. If a rename is intended, keep \
-             the old spelling as a `serde(alias = ...)` rather than replacing it; if the name is \
-             genuinely dead, remove it from DURABLE_NAMES in the same change.",
+             If the name is genuinely gone, move it from DURABLE_NAMES to RETIRED_NAMES in the \
+             same change; a retired spelling is not kept readable.",
             DURABLE_NAMES.len()
         );
 
@@ -4607,376 +4468,10 @@ const RETIRED_NAMES: &[&str] = &[
         assert!(
             resurrected.is_empty(),
             "retired name(s) written again outside the list itself: {resurrected:?}\n\
-             The first milestone removed these spellings from the wire. Re-adding one means a\n\
-             client that was told the name was gone now sees it again; decide that on purpose\n\
-             and move the name back into DURABLE_NAMES in the same change."
+             These spellings were removed from the source, aliases included. Re-adding one means a\n\
+             reader accepts a name nothing writes any more; decide that on purpose and move the\n\
+             name back into DURABLE_NAMES in the same change."
         );
-    }
-
-    /// THE SLAB IDENTITY READER TAKES BOTH SPELLINGS, PROVED AGAINST BYTES AND NOT A ROUND TRIP.
-    ///
-    /// `BlockStoreSlabDescriptor` is the on-disk slab manifest. Three of its keys are still
-    /// page-spelled on the wire while the fields they land in are block-spelled: `page_segment_id`,
-    /// `first_page_id` and `last_page_id`. Converging any of them is a STORED-FORMAT change, so the
-    /// reader has to land first -- and "reader first" buys nothing if the reader is single-form,
-    /// which all three WERE. `serde(rename)` REPLACES the accepted name rather than adding to it,
-    /// so a manifest spelling `first_block_id` was dropped by a named map IN SILENCE and the field
-    /// defaulted to `None`. Not an error. A writer flipped to the block spelling would have written
-    /// a manifest this very binary read as a slab with no first or last block.
-    ///
-    /// So the accepted SET is what is asserted, in both directions, against bytes nobody can edit
-    /// into agreement:
-    ///
-    ///   * the frozen page-spelled document below -- the shape every build through
-    ///     `SHARD_INDEX_FORMAT_VERSION` 27 emits -- still loads with all three values POPULATED.
-    ///   * the same document with those three keys rewritten to the block spelling loads to an
-    ///     EQUAL descriptor, which is what would make flipping the writer safe rather than hopeful.
-    ///
-    /// A round trip could establish neither: it writes and reads with the same build, so both
-    /// halves move together and agree. Populated-ness is asserted SEPARATELY from equality,
-    /// because `Option` defaulting is exactly what the silent drop looks like and two `None`s
-    /// compare equal -- an equality check alone is how this bug would pass.
-    ///
-    /// THE READER TAKES BOTH; THE WRITER HAS SINCE MOVED TO THE BLOCK SPELLING. This test is the
-    /// installed-base half and stays exactly as it was: the frozen document below is what earlier
-    /// builds wrote, and it must keep loading. `a_durable_name_is_never_quietly_dropped` above
-    /// still finds all three page spellings because they are now the ALIASES, which is what that
-    /// guard accepts -- it asks that a durable name still be accepted, not that it still be
-    /// emitted.
-    #[test]
-    fn the_slab_descriptor_reader_takes_the_block_spelling_and_the_page_spelling() {
-        // Frozen, page-spelled, and NOT regenerated: this records the shape an older build wrote.
-        // `state` is `rename_all = "snake_case"`, hence the lowercase variant.
-        const SLAB_DESCRIPTOR_AT_STAMP_27: &str = r#"{"band_id":4,"page_segment_id":7,"state":"sealed","physical_bytes":8192,"logical_bytes":4096,"first_page_id":11,"last_page_id":29}"#;
-
-        const STORED_KEYS: [&str; 3] = [
-            r#""page_segment_id":"#,
-            r#""first_page_id":"#,
-            r#""last_page_id":"#,
-        ];
-
-        // The fixture really is the old shape. Without this pair the arms below vary nothing: a
-        // fixture quietly updated to the new spelling would make every assertion that follows
-        // pass while proving the opposite of what it claims.
-        for old in STORED_KEYS {
-            assert!(
-                SLAB_DESCRIPTOR_AT_STAMP_27.contains(old),
-                "the frozen bytes no longer spell {old}, so this guard is not testing the stored \
-                 shape any more"
-            );
-        }
-        for new in ["block_segment_id", "first_block_id", "last_block_id"] {
-            assert!(
-                !SLAB_DESCRIPTOR_AT_STAMP_27.contains(new),
-                "the frozen bytes already carry {new}, so they are not a pre-change document"
-            );
-        }
-
-        let stored: BlockStoreSlabDescriptor = serde_json::from_str(SLAB_DESCRIPTOR_AT_STAMP_27)
-            .expect("the frozen page-spelled slab manifest must still load");
-        assert_eq!(
-            stored.block_slab_id, 7,
-            "[CLAUSE stored-slab-id] the slab identity did not come off the stored key"
-        );
-        assert_eq!(
-            stored.first_block_id,
-            Some(11),
-            "[CLAUSE stored-first] the stored `first_page_id` did not reach `first_block_id`"
-        );
-        assert_eq!(
-            stored.last_block_id,
-            Some(29),
-            "[CLAUSE stored-last] the stored `last_page_id` did not reach `last_block_id`"
-        );
-
-        // The block spelling in a document otherwise identical: built by rewriting the KEYS in the
-        // frozen bytes, so the two arms differ in exactly three tokens and nothing else.
-        let as_block = SLAB_DESCRIPTOR_AT_STAMP_27
-            .replace(r#""page_segment_id":"#, r#""block_segment_id":"#)
-            .replace(r#""first_page_id":"#, r#""first_block_id":"#)
-            .replace(r#""last_page_id":"#, r#""last_block_id":"#);
-        for old in STORED_KEYS {
-            assert!(
-                !as_block.contains(old),
-                "the rewrite left {old} behind, so this arm is still testing the old spelling"
-            );
-        }
-
-        let canonical: BlockStoreSlabDescriptor = serde_json::from_str(&as_block).expect(
-            "a slab manifest spelling the block names must load, or the writer can never converge",
-        );
-
-        // POPULATED, clause by clause, and asserted BEFORE equality. A named map drops an
-        // undeclared key in silence and leaves every other value intact, so "it loaded" is not the
-        // property being established -- "it loaded CARRYING the identity" is.
-        assert_eq!(
-            canonical.block_slab_id, 7,
-            "[CLAUSE block-slab-id] the block-spelled slab identity did not land"
-        );
-        assert!(
-            canonical.first_block_id.is_some(),
-            "[CLAUSE first-block-id] `first_block_id` came back None from a document that spells \
-             it. This is the silent drop, not an error: the key was not in the accepted set"
-        );
-        assert!(
-            canonical.last_block_id.is_some(),
-            "[CLAUSE last-block-id] `last_block_id` came back None from a document that spells \
-             it. This is the silent drop, not an error: the key was not in the accepted set"
-        );
-        assert_eq!(
-            stored, canonical,
-            "[CLAUSE whole-descriptor] the two spellings decoded to different descriptors, so the \
-             reader took one of the forms rather than the set"
-        );
-        println!(
-            "  page-spelled -> slab {} first {:?} last {:?}; block-spelled -> slab {} first {:?} last {:?}",
-            stored.block_slab_id,
-            stored.first_block_id,
-            stored.last_block_id,
-            canonical.block_slab_id,
-            canonical.first_block_id,
-            canonical.last_block_id
-        );
-    }
-
-    /// EVERY SITE, NOT JUST THE ONE WITH A FIXTURE.
-    ///
-    /// The guard above proves the accepted set on `BlockStoreSlabDescriptor`, the one struct
-    /// carrying all three stored keys. Sixteen other fields emit `page_segment_id` and five more
-    /// each emit `first_page_id` and `last_page_id`, and a fixture for every one of them would be
-    /// twenty-nine fixtures proving one property. This pins the property at the SITE instead: a
-    /// field that emits one of these three stored names must also ACCEPT its block spelling, so a
-    /// new site added without the alias fails here rather than shipping a single-form reader.
-    ///
-    /// Counted off the source text and asserted as an EQUALITY, not a floor -- a floor passes when
-    /// a site is added without its alias, which is the whole failure this exists to catch. The
-    /// emitting counts are also asserted non-zero: a walk that found nothing would satisfy an
-    /// equality of two zeroes.
-    ///
-    /// `crates/temporalstore-snapshot` is walked too. It is OUTSIDE
-    /// `a_durable_name_is_never_quietly_dropped`'s walk, which reads only this crate's `src`, and
-    /// `snapshot_manifest_types.rs` emits `page_segment_id` on the snapshot manifest -- a durable
-    /// name no registry in this repository covers.
-    #[test]
-    fn every_field_emitting_a_stored_page_name_also_accepts_the_block_name() {
-        let crates_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("the crate directory has a parent")
-            .to_path_buf();
-        let mut sources = String::new();
-        let mut files_read = 0_usize;
-        let mut pending = vec![crates_root];
-        while let Some(path) = pending.pop() {
-            let Ok(entries) = std::fs::read_dir(&path) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let entry_path = entry.path();
-                if entry_path.is_dir() {
-                    if entry_path.file_name().and_then(|n| n.to_str()) == Some("target") {
-                        continue;
-                    }
-                    pending.push(entry_path);
-                } else if entry_path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    if let Ok(text) = std::fs::read_to_string(&entry_path) {
-                        files_read += 1;
-                        sources.push_str(&text);
-                        sources.push('\n');
-                    }
-                }
-            }
-        }
-        assert!(
-            sources.len() > 100_000,
-            "the source walk found almost nothing ({} bytes over {files_read} files); every count \
-             below would be zero and the equalities would hold vacuously",
-            sources.len()
-        );
-
-        // COUNTED OVER ATTRIBUTE LINES ONLY, WHICH IS NOT A TIDINESS CHOICE.
-        //
-        // `rename = "pages"` also occurs inside a STRING LITERAL, in
-        // `page_and_block_name_one_tier`'s source-text clause that pins that very attribute. A
-        // whole-file substring count sees two sites for `pages` and one paired attribute, and
-        // fails against a file that is entirely correct. Restricting the haystack to lines whose
-        // trimmed form opens with `#[serde(` keeps the real attributes and drops the quotation,
-        // and it is the same discrimination every count in this guard needs.
-        let attribute_lines: Vec<&str> = sources
-            .lines()
-            .map(str::trim)
-            .filter(|line| line.starts_with("#[serde("))
-            .collect();
-        assert!(
-            attribute_lines.len() > 100,
-            "the walk found only {} serde attribute line(s) over {files_read} files; every count \
-             below would be zero and the equalities would hold vacuously",
-            attribute_lines.len()
-        );
-        let count_in_attributes = |needle: &str| -> usize {
-            attribute_lines
-                .iter()
-                .map(|line| line.matches(needle).count())
-                .sum()
-        };
-
-        // THE STORED NAMES WHOSE READER TAKES THE SET. Each now emits the BLOCK spelling and must
-        // still ACCEPT the block one, as an EQUALITY rather than a floor -- a floor passes when a
-        // site is added without its alias, which is the whole failure this exists to catch.
-        //
-        // THE WRITER MOVED, AND THAT IS WHY THE PAIR READS THIS WAY ROUND. It used to be
-        // (block, block): emit the stored block name, accept the block one. The reader was widened
-        // first, so every spelling a store on disk can carry is still accepted, and only then did
-        // the writer flip -- what any earlier build wrote still loads through the alias, and what
-        // this build writes is the canonical spelling. Reversing the pair without reversing the
-        // attributes is what this equality refuses.
-        for (stored, accepted) in [
-            ("block_segment_id", "page_segment_id"),
-            ("first_block_id", "first_page_id"),
-            ("last_block_id", "last_page_id"),
-            ("block", "page"),
-            ("blocks", "pages"),
-            ("object_block_layouts", "object_page_layouts"),
-            // `stale_block_tombstones` is deliberately NOT here: its page spelling is a
-            // SIBLING FIELD on the same struct rather than an alias, so pairing them would
-            // require two fields to claim one wire name. See
-            // `no_two_fields_of_one_struct_claim_one_wire_name` below.
-            (
-                "blocks_named_an_object_the_list_lacked",
-                "pages_named_an_object_the_list_lacked",
-            ),
-            (
-                "list_held_an_object_no_block_names",
-                "list_held_an_object_no_page_names",
-            ),
-        ] {
-            let emits = format!("rename = {:?}", stored);
-            let accepts = format!("rename = {:?}, alias = {:?}", stored, accepted);
-            let emitting = count_in_attributes(&emits);
-            let paired = count_in_attributes(&accepts);
-            assert!(
-                emitting > 0,
-                "no field emits the canonical name `{stored}` any more. The writer flip put it there, so its loss is \
-                 a rename this guard has not been told about, or a removal; either way the list \
-                 below has to move in the same change"
-            );
-            assert_eq!(
-                emitting, paired,
-                "{} of {emitting} field(s) emitting the stored name `{stored}` do not also accept \
-                 `{accepted}`.\n\
-                 `serde(rename)` REPLACES the accepted name, it does not add to it, so such a \
-                 field reads a document spelling `{accepted}` as an ABSENT key -- silently, with \
-                 every other value intact.",
-                emitting - paired
-            );
-            println!("  {stored} -> emitted at {emitting} site(s), all accepting {accepted}");
-        }
-
-        // THE DECLINE THAT USED TO LIVE HERE HAS BEEN LIFTED, AND THIS RECORDS WHY RATHER THAN
-        // JUST DISAPPEARING.
-        //
-        // `pages` on `object_record::BlockLayout` was deliberately single-form, pinned here so
-        // that re-attempting the alias failed, because
-        // `the_stored_object_layout_emits_the_page_spelling_and_reads_one_back` asserted in its
-        // DECODE clause that the block spelling was REFUSED. The stated ground was that an
-        // accepted alias there would make "which spelling is on disk" the open question rather
-        // than "whether to move it".
-        //
-        // That question has now been answered rather than avoided: the writer moved, so the
-        // canonical spelling is what goes to disk and `pages` is the alias an earlier build's
-        // layout is read through. The guard that refused the alias was rewritten in the same
-        // change -- it is now
-        // `the_stored_object_layout_emits_the_block_spelling_and_reads_both_back`, and its decode
-        // clause drives BOTH spellings and asserts they land on the same layout. That assertion is
-        // strictly stronger than the refusal it replaced: a refusal only says the other spelling
-        // is not accepted, while this says the two names mean the same thing.
-        //
-        // What keeps the pair honest is the `("blocks", "pages")` row in the table above, which
-        // holds the same equality as every other stored name. The pin that demanded "change that
-        // guard's DECODE clause in the same commit and move this row into the table above" was
-        // satisfied exactly that way, which is the only reason this block is gone.
-    }
-
-    #[test]
-    fn an_address_written_with_any_older_field_name_still_loads() {
-        // Every spelling this wire form has ever used, in one record: the original names, the
-        // `page_segment_id` / `routing_slot` renames, and the older `extent_id` / `zone_id` /
-        // `checksum` aliases. All of them must still land, or an index already on disk stops
-        // resolving and the blocks it points at become unreachable.
-        let legacy = serde_json::json!({
-            // THE RENAMES STILL LOAD; THE SPLIT ADDRESS DOES NOT, AND THEY ARE DIFFERENT THINGS.
-            // Every other key here is the same number under an older name, which is free to
-            // read. The slab id and the offset were two FIELDS and are now two halves of one
-            // word, which is a shape change with no safe reading -- so this fixture carries the
-            // merged word and `a_split_address_is_refused_and_a_merged_one_round_trips` drives
-            // the refusal of the shape this line used to hold.
-            "a": (3_u64 << 32) | 128_u64,
-            "length": 126_u64,
-            "page_id": 9_u64,
-            "object_id": 122110326161599232_u64,
-            "routing_slot": 545210715_u32,
-            // `page_id.or(object_id)`, which is the only generation any writer in this engine has
-            // ever stored. This fixture is about the NAMES still loading, and it spelled an
-            // independent `2` here until the field became derived; an index carrying that value
-            // is now refused rather than silently re-keyed, which
-            // `an_index_whose_generation_disagrees_is_refused_loudly` drives directly.
-            "generation": 9_u64,
-            "zone_id": 4_u64,
-            "checksum": "c38c2bf3055c516a98ac5d97f30e7c364e827bc0a1b2c3d4e5f60718293a4b5c"
-        });
-        let address: ElementEntry = serde_json::from_value(legacy).expect("a legacy address loads");
-        assert_eq!(address.block_slab_id(), 3);
-        assert_eq!(address.offset(), 128);
-        assert_eq!(address.length, 126);
-        // Every other field the legacy record carried, under whichever name it used: this is the
-        // "all of them must still land" the comment above promises, and asserting one of them was
-        // never enough to keep that promise.
-        assert_eq!(address.block_id(), Some(9));
-        // `object_id` IS STILL READ OFF THE WIRE AND NO LONGER LANDS IN A FIELD, which is the third
-        // slot to reach that state after `routing_slot` and `sha256`. The legacy record carries a
-        // real one; what it now feeds is the generation cross-check in `TryFrom`, not a field. So
-        // the assertion that used to compare it is replaced by the generation it agrees with --
-        // and that this record LOADS at all is the compatibility being tested.
-        assert_eq!(address.generation(), Some(9), "the generation is the block id");
-        // `routing_slot` IS STILL READ AND STILL IGNORED, and the SLOT IS NOW GONE from the
-        // struct rather than written empty. Both halves matter and they are asserted separately.
-        //
-        // That the legacy record still LOADS with the key present is the first: the assertions
-        // above all passed on a record carrying `routing_slot`, which is the compatibility this
-        // change rests on -- a key no field claims is tolerated by a named decoder rather than
-        // refused. There is no accessor left to compare its value through, and the bucket a
-        // reader wants is `block_routing_bucket(object_key, ..)` over the store's stamped range.
-        //
-        // That a CURRENT address no longer writes the key is the second. It used to be written
-        // empty so the index log's positional layout would not shift; the slot is retired now, and
-        // `shorter_struct_against_an_existing_row` measures why that is safe -- a positional row
-        // longer than the struct is refused by LENGTH, so the shift this nil was avoiding cannot
-        // be reached silently.
-        assert_eq!(
-            serde_json::to_value(&address)
-                .expect("an address serializes")
-                .get("rs")
-                .cloned(),
-            None,
-            "the slot is retired: a current address must not write `rs` at all, not even as nil"
-        );
-        // The generation this record stored, which is now the block id it is derived from. The
-        // fixture spelled an independent `2` here until the field became derived; a record that
-        // really carried one is refused rather than loaded, which
-        // `an_index_whose_generation_disagrees_is_refused_loudly` drives.
-        assert_eq!(address.generation(), Some(9));
-        assert_eq!(address.generation(), address.block_id());
-        // A slab is the slab now, so a slab STORED against a different slab is accepted and
-        // ignored rather than believed. This record says slab 3 and zone 4, which could only have
-        // been written under a configuration that sized slabs and slabs differently -- one the
-        // tree never set, and no longer has a knob for.
-        assert_eq!(
-            address.slab_id(),
-            Some(3),
-            "the address answers the slab, whatever an older record stored beside it"
-        );
-        // And the digest is accepted and dropped rather than rejected: an index written before the
-        // address stopped carrying one still loads, which is the whole point of keeping the alias.
-        // The block envelope holds the digest that verifies the bytes.
     }
 
     #[test]
@@ -5161,7 +4656,7 @@ const RETIRED_NAMES: &[&str] = &[
         // MANIFEST-CONFORMANCE FOLD no-O(n) proof: on the default single-barrier path the per-append
         // slab-manifest full re-serialize (the measured O(n) aging driver -- ~961 B rewritten per
         // write, growing with the slab count) is OFF the write path. Appending many records must
-        // NOT rewrite `block_extent_manifest.json` each time; the catalog is deferred and made
+        // NOT rewrite `slab_manifest.pb` each time; the catalog is deferred and made
         // durable in one shot at sync_durable()/seal. Proven by the manifest file bytes staying
         // byte-identical across a burst of appends, then changing exactly once at sync_durable.
         let dir = tempfile::tempdir().unwrap();
@@ -5341,6 +4836,89 @@ const RETIRED_NAMES: &[&str] = &[
         }
     }
 
+    /// AN ADDRESS SPELLED WITH A RETIRED NAME IS NOT READ AS THE SAME ADDRESS.
+    ///
+    /// The first release carries no installed base, so the long names an older index used
+    /// (`address_word`, `length`, `page_id`) are not accepted. Each is tried alone, in place of the
+    /// short name the writer produces, against a CONTROL that the unmodified document loads to the
+    /// original address: a document that still loads equal would mean the alias is back, and one
+    /// that does not load or loads as something else means the old name is not read.
+    #[test]
+    fn an_address_written_with_an_older_field_name_is_not_read_as_the_same_address() {
+        let original = ElementEntry::from_parts(3, 128, 126, Some(9), Some(122110326161599232));
+        let current = serde_json::to_value(&original).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ElementEntry>(current.clone()).unwrap(),
+            original,
+            "the control: an address in the names the writer produces must load"
+        );
+        for (short, long) in [("a", "address_word"), ("l", "length"), ("pi", "page_id")] {
+            let mut doc = current.clone();
+            let object = doc.as_object_mut().unwrap();
+            let value = object
+                .remove(short)
+                .unwrap_or_else(|| panic!("the writer does not write `{short}`"));
+            object.insert(long.to_string(), value);
+            let loaded = serde_json::from_value::<ElementEntry>(doc);
+            assert!(
+                loaded.as_ref().map_or(true, |address| *address != original),
+                "an address with `{short}` spelled `{long}` loaded as the same address: the old name is read"
+            );
+        }
+    }
+
+    /// A SLAB DESCRIPTOR SPELLED WITH A RETIRED NAME IS NOT READ AS THE SAME DESCRIPTOR.
+    ///
+    /// The slab identity and the first and last block ids were page-spelled in the manifests earlier
+    /// builds wrote, and `band_id`, `extent_id` and `zone_id` before that. None is accepted now.
+    /// Each retired spelling is swapped in alone for the canonical key, against a control that the
+    /// canonical document loads with all three values populated.
+    #[test]
+    fn a_slab_descriptor_spelled_with_a_retired_name_is_not_read_as_the_same_descriptor() {
+        const CURRENT: &str = r#"{"stored_slab_id":7,"block_segment_id":7,"state":"sealed","physical_bytes":8192,"logical_bytes":4096,"first_block_id":11,"last_block_id":29}"#;
+        let original: BlockStoreSlabDescriptor = serde_json::from_str(CURRENT).expect("the control loads");
+        assert_eq!(original.block_slab_id, 7);
+        assert_eq!(original.first_block_id, Some(11));
+        assert_eq!(original.last_block_id, Some(29));
+        // WHAT THE WRITER PRODUCES, as literal keys: the alias removal must not move a written key,
+        // and only a `rename` could. Every key below is spelled out, so a renamed field fails here
+        // by name instead of passing because the test reads back what it wrote.
+        let written = serde_json::to_value(&original).unwrap();
+        let mut keys: Vec<&str> = written.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "block_segment_id",
+                "first_block_id",
+                "has_corruption",
+                "last_block_id",
+                "logical_bytes",
+                "physical_bytes",
+                "readable_prefix_physical_bytes",
+                "state",
+                "stored_slab_id",
+            ],
+            "the slab descriptor writes a different set of keys"
+        );
+        for (canonical, retired) in [
+            ("block_segment_id", "page_segment_id"),
+            ("stored_slab_id", "band_id"),
+            ("stored_slab_id", "extent_id"),
+            ("stored_slab_id", "zone_id"),
+            ("first_block_id", "first_page_id"),
+            ("last_block_id", "last_page_id"),
+        ] {
+            let swapped = CURRENT.replace(&format!("\"{canonical}\":"), &format!("\"{retired}\":"));
+            assert_ne!(swapped, CURRENT, "the swap of `{canonical}` did not take");
+            let loaded = serde_json::from_str::<BlockStoreSlabDescriptor>(&swapped);
+            assert!(
+                loaded.as_ref().map_or(true, |d| *d != original),
+                "a descriptor spelling `{retired}` for `{canonical}` loaded as the same descriptor: the old name is read"
+            );
+        }
+    }
+
     #[test]
     fn roll_slab_moves_future_appends_to_fresh_slab() {
         let dir = tempfile::tempdir().unwrap();
@@ -5377,19 +4955,14 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(reopened.read(&third).unwrap(), b"third");
     }
 
-    /// The manifest file as the store wrote it, whichever shape that is.
+    /// The manifest file as the store wrote it.
     ///
     /// A test that edits the manifest used to parse it as a JSON document and set keys by string,
     /// which the compiler could not see. It works on the TYPE now, so a renamed field is a compile
     /// error here instead of a test that quietly stops matching.
     fn read_manifest_for_test(path: &std::path::Path) -> BlockStoreSlabManifest {
         let raw = fs::read(path).expect("the manifest must be on disk");
-        if super::slab_manifest_wire::is_wire_manifest(&raw) {
-            super::slab_manifest_wire::decode_slab_manifest(&raw)
-                .expect("a binary manifest must decode")
-        } else {
-            serde_json::from_slice(&raw).expect("a JSON manifest must parse")
-        }
+        super::slab_manifest_wire::decode_slab_manifest(&raw).expect("the manifest must decode")
     }
 
     /// Put a manifest back on disk in the shape the store itself writes.
@@ -5633,7 +5206,7 @@ const RETIRED_NAMES: &[&str] = &[
 
     // shared-corpus: storage_object_page_bucket_agreement_surfaces;
     #[test]
-    fn block_address_matches_compact_slab_metadata_contract_and_checksum_alias() {
+    fn block_address_matches_compact_slab_metadata_contract() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let address = store
@@ -5663,34 +5236,6 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(from_compact_slab.length, address.length);
         assert_eq!(store.read(&address).unwrap(), b"address-contract");
 
-        let legacy_alias_json = serde_json::json!({
-            // The renames still load; the split address does not. See
-            // `a_split_address_is_refused_and_a_merged_one_round_trips`.
-            "a": address.address_word(),
-            "length": address.length,
-            "page_id": address.block_id(),
-            // A VALUE THE ADDRESS CANNOT PRODUCE, for the same reason `routing_slot` below is one:
-            // an old index carries a real `object_id`, the slot is still read, and loading such a
-            // row must neither fail nor change the address. It feeds the generation cross-check and
-            // lands in no field.
-            "object_id": 4242_u64,
-            // A NUMBER THE ADDRESS CANNOT PRODUCE, which is what makes this row worth keeping: the
-            // key is still on the wire, an older index carries a real bucket in it, and loading one
-            // must neither fail nor change the address. `from_checksum_alias == address` below is
-            // that assertion, and it only means something if the value here is one the address
-            // could not have written.
-            "routing_slot": 545_210_715_u32,
-            // generation is a canonical, always-present field on write (append sets
-            // Some(page_id)) and on read (record decode derives it), so the legacy
-            // alias JSON must carry it or the round-trip deserializes to None.
-            "generation": address.generation(),
-            "band_id": address.slab_id(),
-            // A document written before the digest left the index carries it under this
-            // alias. It must still LOAD -- accepted and ignored -- which is what this asserts.
-            "checksum": sha256_hex(b"address-contract"),
-        });
-        let from_checksum_alias: ElementEntry = serde_json::from_value(legacy_alias_json).unwrap();
-        assert_eq!(from_checksum_alias, address);
         assert_eq!(
             serde_json::to_value(&address).unwrap().get("sha256"),
             None,
@@ -5892,9 +5437,6 @@ const RETIRED_NAMES: &[&str] = &[
     /// disk is a field number, and `the_stored_field_numbers_do_not_move` pins those against a
     /// byte fixture. What is left for this test to say is that the writer really does write the
     /// binary shape and that a store reopens from it.
-    ///
-    /// The JSON arm of the reader is held by `a_json_manifest_still_loads_through_the_same_reader`,
-    /// because this build no longer writes the shape it still reads.
     #[test]
     fn a_written_manifest_is_the_binary_shape_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
@@ -5907,15 +5449,13 @@ const RETIRED_NAMES: &[&str] = &[
 
         let raw = fs::read(slab_manifest_path(dir.path())).expect("the manifest must be on disk");
 
-        // The container byte AND not JSON. Either alone could be an empty or truncated file;
-        // together they say the writer chose the binary shape.
-        assert_eq!(
-            raw.first(),
-            Some(&super::slab_manifest_wire::SLAB_MANIFEST_CONTAINER_PROTOBUF),
-            "the manifest must open with the binary container byte, not JSON: {:?}",
+        // It is not a JSON document: the JSON writer is gone, and a file that parsed as JSON would
+        // mean a second writer had come back. The decode below is the positive half.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&raw).is_err(),
+            "the manifest must not be a JSON document: {:?}",
             &raw[..raw.len().min(16)]
         );
-        assert!(serde_json::from_slice::<serde_json::Value>(&raw).is_err());
 
         // DENOMINATOR: it holds descriptors, so the round trip below is about something.
         let manifest = super::slab_manifest_wire::decode_slab_manifest(&raw)
@@ -8886,16 +8426,9 @@ const RETIRED_NAMES: &[&str] = &[
         let back: ElementEntry = serde_json::from_value(stored).expect("address round-trips");
         assert_eq!(back, address);
 
-        // The split spelling, exactly as an older binary wrote it, in BOTH the short names and
-        // the oldest long ones -- the alias list is where a hole would hide.
+        // The split spelling, exactly as an older binary wrote it.
         for split in [
             serde_json::json!({"ps": 3, "o": 4096, "l": 128, "pi": 1, "oi": 2, "rs": 7}),
-            serde_json::json!({
-                "page_segment_id": 3, "offset": 4096, "length": 128, "page_id": 1
-            }),
-            serde_json::json!({
-                "page_slab_id": 3, "offset": 4096, "length": 128, "page_id": 1
-            }),
         ] {
             let refused = serde_json::from_value::<ElementEntry>(split.clone())
                 .expect_err("a split address must not load: {split}");
@@ -9414,74 +8947,6 @@ const RETIRED_NAMES: &[&str] = &[
             store.delayed_destroy_slab_ids().unwrap().len() as u64,
             blocked,
             "the blocked slabs stay in quarantine: not destroyed, not restored"
-        );
-    }
-
-    /// A store whose manifest still carries the legacy name loads its descriptors.
-    ///
-    /// `page_zone_manifest.json` is how the tree notices a store written before the slab manifest
-    /// was renamed, and `the_on_disk_names_are_the_ones_the_readers_parse` asserts the constant
-    /// still spells it. That guards the NAME and not the WIRING, which is the half that fails
-    /// silently: the fallback in `load_slab_manifest_at` and the existence probe in
-    /// `BlockStore::with_options` can each be removed with all 82 block-store tests still green.
-    /// A store that stops reading the legacy file does not error -- it finds no manifest, falls
-    /// through to `rebuild_slab_manifest_at`, and succeeds, which is exactly the silent miss the
-    /// name assertion was written to prevent.
-    ///
-    /// THE DISCRIMINATOR IS A SLAB WITH NO FILE. `rebuild_slab_manifest_at` walks the slab files
-    /// on disk, so a descriptor for a slab whose file is gone cannot come from a rebuild; it can
-    /// only come from a manifest that was read. `slab_manifest_reconciled_on_open` will NOT do
-    /// the job here -- reconcile re-inspects the freshly written descriptors either way and
-    /// reports `true` whether or not the legacy file was opened, so a test resting on it passes
-    /// on both sides of the wiring it means to pin.
-    #[test]
-    fn a_store_written_under_the_legacy_manifest_name_still_loads_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = BlockStore::new(dir.path());
-        let first = store.append(b"first-slab").unwrap();
-        store.roll_slab().unwrap();
-        let second = store.append(b"second-slab").unwrap();
-        drop(store);
-
-        // The first slab's FILE goes; the manifest still names it. Nothing on disk does.
-        fs::remove_file(slab_path(dir.path(), first.block_slab_id())).unwrap();
-
-        // Age the store back to the spelling a pre-rename deployment wrote.
-        let current = slab_manifest_path(dir.path());
-        let legacy = legacy_zone_manifest_path(dir.path());
-        assert!(current.exists(), "denominator: the store wrote a manifest");
-        fs::rename(&current, &legacy).unwrap();
-        assert!(
-            !current.exists(),
-            "denominator: the new name is gone, so anything found came from the legacy one"
-        );
-        assert!(
-            legacy.exists(),
-            "denominator: the legacy name is what is on disk"
-        );
-
-        let reopened = BlockStore::new(dir.path());
-        let descriptors = reopened.slab_descriptors();
-
-        // THE HALF A REBUILD CANNOT FAKE.
-        assert!(
-            descriptors.iter().any(|slab| slab.block_slab_id == first.block_slab_id()
-                && slab.state == BlockStoreSlabState::Purged),
-            "the legacy manifest must be READ: a slab with no file on disk is knowable only from \
-             a manifest, and a store that missed it rebuilds around the hole and looks perfectly \
-             healthy: {descriptors:?}"
-        );
-        // THE OTHER HALF, asserted separately: the slab that does have a file is still described
-        // and still reads, so the first half is not passing on a store that failed to open.
-        assert!(
-            descriptors.iter().any(|slab| slab.block_slab_id == second.block_slab_id()
-                && slab.state == BlockStoreSlabState::Active),
-            "the surviving slab must still be active: {descriptors:?}"
-        );
-        assert_eq!(
-            reopened.read(&second).unwrap(),
-            b"second-slab".to_vec(),
-            "and its records still read"
         );
     }
 

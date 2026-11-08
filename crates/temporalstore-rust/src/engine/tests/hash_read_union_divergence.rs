@@ -7,7 +7,7 @@
 //
 //! WHY THIS MODULE EXISTS, AND WHAT IT REPLACES.
 //!
-//! #2078 set out to prove that the durable container `shard.hashes` holds every field the fold
+//! #2078 set out to prove that the durable container `shard.bucket_index.hashes` holds every field the fold
 //! installs, by comparing it against the block index after a reload. IT DOES NOT PROVE THAT. The
 //! LOAD PATH BUILDS A HASH FIELD MAP BY WALKING THE BLOCK INDEX AND MERGES IT INTO THE CONTAINER,
 //! from BOTH of the two functions in `storage_bucket_internals` that do it:
@@ -22,18 +22,18 @@
 //!
 //! THE CITATION THIS MODULE WAS FIRST WRITTEN WITH WAS WRONG TWICE, and is recorded here because
 //! the wrong one is the plausible one. It named `reconcile_secondary_views_from_bucket_index`
-//! alone, and it named the merge `shard.hashes = fill_absent_elements(hashes, persisted, ..)`.
-//! There is no such expression: `fill_absent_elements` is assigned to `shard.lists`, `shard.zsets`
-//! and `shard.sets` (`:5195`, `:5204`, `:5213`) and never to `hashes`, which takes the merge
+//! alone, and it named the merge `shard.bucket_index.hashes = fill_absent_elements(hashes, persisted, ..)`.
+//! There is no such expression: `fill_absent_elements` is assigned to `shard.bucket_index.lists`, `shard.bucket_index.zsets`
+//! and `shard.bucket_index.sets` (`:5195`, `:5204`, `:5213`) and never to `hashes`, which takes the merge
 //! through `reconcile_from_durable` instead. The refutation does not depend on either detail --
 //! it is stronger without them, because it holds on BOTH load paths rather than one.
 //!
 //! AND ONE TRAP WORTH NAMING, because grepping for the wrong expression leads straight into it.
 //! `recorded_hash_container_invariant.rs` asserts that
-//! `assignments("    shard.hashes = fill_absent_elements(")` is NOT empty, which reads like
+//! `assignments("    shard.bucket_index.hashes = fill_absent_elements(")` is NOT empty, which reads like
 //! evidence that the tree contains such an assignment. It is not: the argument is a PLANTED
 //! STRING LITERAL and the assertion is a self-test on the matcher, checking it can still see a
-//! multi-line assignment. A sweep of `engine/` for `shard.hashes = ` finds only comments and test
+//! multi-line assignment. A sweep of `engine/` for `shard.bucket_index.hashes = ` finds only comments and test
 //! prose. Read a guard's matcher and its arguments, not the shape of its name.
 //!
 //! WHAT IS HERE INSTEAD. `Command::HashGetAll` resolves field names from the container, still
@@ -178,7 +178,7 @@ fn seed(engine: &TemporalEngine, fields: &[&str]) {
 ///
 /// THE UNION IS ONE-SIDED NOW, AND THAT IS THE FINDING THIS ARM CARRIES. The module header still
 /// describes `HashGetAll` as serving the union of two sources. Its index half answers from
-/// `shard.hashes` -- it was one of the four consumers that had to move before the element name
+/// `shard.bucket_index.hashes` -- it was one of the four consumers that had to move before the element name
 /// could come off the entry -- so the index contributes no NAMES, only the divergence observation
 /// that can no longer observe anything. What protects the single remaining source is
 /// `fold_hash_map_completeness`, which compares the durable map against the blocks' own payloads.
@@ -394,7 +394,7 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let fields_of = shard
-            .hashes
+            .bucket_index.hashes
             .elements_mut_for_test(PLANTED_KEY)
             .expect("the container holds the seeded object");
         assert!(

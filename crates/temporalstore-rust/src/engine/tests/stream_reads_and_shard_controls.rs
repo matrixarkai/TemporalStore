@@ -2339,8 +2339,8 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
             surrendered > 0,
             "denominator: no string row carried refs, so clearing the rows is not the missing              secondary view this test means to simulate"
         );
-        shard.hashes.clear_for_test();
-        shard.sets.clear_for_test();
+        shard.bucket_index.hashes.clear_for_test();
+        shard.bucket_index.sets.clear_for_test();
     }
 
     let exists = engine.execute(ExecuteRequest {
@@ -2594,121 +2594,6 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
         CommandResponse::Bytes {
             value: Some(b"view".to_vec())
         }
-    );
-}
-
-// shared-corpus: storage_dump_load_recovery
-#[test]
-fn core_index_loads_legacy_bucket_page_field_names() {
-    let legacy_json = r#"{
-        "slots": {
-            "7": {
-                "routing_slot": 7,
-                "layout": "SingleBlockObject",
-                "dirty": false,
-                "meta_loaded": true,
-                "loading": false,
-                "in_memory": true,
-                "ttl_ms": null,
-                "dirty_generation": 3,
-                "last_dump_sequence": 11,
-                "object_ids": [42],
-                "page_refs": {
-                    "__BLOCK_REF_KEY__": {
-                        "object_key": "k",
-                        "model_id": "string",
-                        "object_id": 42,
-                        "address": {
-                            "page_segment_id": 1,
-                            "offset": 2,
-                            "length": 3,
-                            "page_id": 4,
-                            "object_id": 42,
-                            "routing_slot": 7
-                        },
-                        "dirty": false,
-                        "deleted": false,
-                        "log_backed": true
-                    }
-                }
-            }
-        }
-    }"#;
-
-    // THE KEY IS DERIVED FROM THE PRODUCTION BUILDER, NOT SPELLED OUT, and that is not tidiness.
-    //
-    // This fixture used to carry `"string:k::1:2"` written by hand. #2359 took the object key and
-    // the model id OFF the entry and made the key the only place they are stored, so the key is now
-    // READ BACK at load (`StoredBlockEntry::into_parts_from_key`) and has to be the whole eight-slot
-    // composite. A five-slot key stopped being loadable the day that landed, and the control below
-    // -- which is the half that can actually go wrong -- has been failing on the KEY ever since,
-    // never reaching the address word it exists to check. The refusal above kept passing, so the
-    // arm reported a red that looked like the thing it was asserting.
-    //
-    // Spelling eight slots by hand would re-arm exactly that trap for the next format change. Built
-    // through `block_ref_key_from_parts`, this fixture moves with the renderer, and the slots carry
-    // the SAME numbers the stored address below names -- slab 1, offset 2, length 3, block id 4 --
-    // so the key and the address cannot disagree about which block this is. The generation slot
-    // follows the block id, which is what `ElementEntry::try_from_parts` derives it from.
-    //
-    // `the_key_a_block_is_filed_under_inverts_exactly` is what holds the format itself; this only
-    // has to stop being a second, stale copy of it.
-    let legacy_json = &legacy_json.replace(
-        "__BLOCK_REF_KEY__",
-        &crate::index_log::block_ref_key_from_parts("string", "k", None, 1, 2, 3, 4, 4),
-    );
-
-    // THE OLD NAMES STILL LOAD; THE OLD ADDRESS SHAPE DOES NOT, AND THAT IS THE WHOLE POINT.
-    //
-    // `routing_slot`, `page_refs` and `page_id` are RENAMES: the same number under a different
-    // key, so reading one is free of risk and this index has always loaded. `page_segment_id`
-    // beside `offset` is not a rename, it is a different SHAPE -- two numbers where this binary
-    // stores one word -- and there is no reading of it that is safe. Taken as a word, a
-    // `page_segment_id` of 1 beside an `offset` of 2 is slab 0 offset 1: a well-formed address
-    // for a block that is not the one that was written, and nothing anywhere would fail.
-    //
-    // So the split spelling is REFUSED, by name, before anything is derived from it. The failure
-    // has to be visible at the load rather than at the read, which is why this asserts on the
-    // message and not merely on an error.
-    let refused = serde_json::from_str::<CoreIndex>(legacy_json)
-        .expect_err("an index storing a split slab id and offset must not load");
-    let message = refused.to_string();
-    assert!(
-        message.contains("no address word") && message.contains("two separate fields"),
-        "the load failed for some other reason than the split address shape: {message}"
-    );
-
-    // The CONTROL, and it is the half that can actually go wrong. Everything above passes just
-    // as well if this index is malformed in some unrelated way, or if `CoreIndex` stopped
-    // deserializing at all. The same document with the address written in the merged spelling --
-    // and every other legacy name left exactly as it is -- must LOAD, and must land on the slab
-    // and offset the split form named.
-    let merged_json = legacy_json
-        // 2^32 + 2: slab 1 in the high half, offset 2 in the low half.
-        .replace("\"page_segment_id\": 1,", "\"a\": 4294967298,")
-        .replace("\"offset\": 2,", "");
-    assert!(
-        !merged_json.contains("page_segment_id") && !merged_json.contains("\"offset\""),
-        "the control still carries the split spelling, so it is not testing the merged one: \
-         {merged_json}"
-    );
-    let index: CoreIndex = serde_json::from_str(&merged_json)
-        .expect("the same index with a merged address word still loads");
-    let bucket = index.bucket_map.get(&7).expect("legacy slot should load");
-    assert!(bucket.object_index.contains(&42));
-    assert_eq!(bucket.block_index.len(), 1);
-    let block = bucket
-        .block_index
-        .values()
-        .next()
-        .expect("legacy block index should load");
-    // The legacy record's `routing_slot` of 7 is READ AND IGNORED: the address has nowhere to put
-    // it, and where the block IS is the key of the bucket map it was loaded into -- asserted by the
-    // `bucket_map.get(&7)` this test already performs above.
-    assert_eq!(
-        (block.address.block_slab_id(), block.address.offset()),
-        (1, 2),
-        "the merged word did not unpack to the slab and offset the split spelling named"
     );
 }
 

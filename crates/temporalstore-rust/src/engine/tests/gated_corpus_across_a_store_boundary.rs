@@ -269,10 +269,10 @@ fn durable(engine: &TemporalEngine) -> PerKind {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     PerKind {
-        hash: shard.hashes.get(HASH_KEY).map(|e| e.len()).unwrap_or(0),
-        set: shard.sets.get(SET_KEY).map(|e| e.len()).unwrap_or(0),
-        zset: shard.zsets.get(ZSET_KEY).map(|e| e.len()).unwrap_or(0),
-        list: shard.lists.get(LIST_KEY).map(|e| e.len()).unwrap_or(0),
+        hash: shard.bucket_index.hashes.get(HASH_KEY).map(|e| e.len()).unwrap_or(0),
+        set: shard.bucket_index.sets.get(SET_KEY).map(|e| e.len()).unwrap_or(0),
+        zset: shard.bucket_index.zsets.get(ZSET_KEY).map(|e| e.len()).unwrap_or(0),
+        list: shard.bucket_index.lists.get(LIST_KEY).map(|e| e.len()).unwrap_or(0),
     }
 }
 
@@ -528,7 +528,7 @@ fn an_ungated_store_comes_back_whole_under_the_gate() {
 /// **It never reaches that branch for the elements, because the index is not a format.** It is a
 /// DERIVED PROJECTION of the durable model maps, re-derived at load. The ungated reader opens a
 /// store whose file holds ONE unnamed entry and comes up with FORTY NAMED ONES, re-filed from
-/// `shard.sets` through the ungated arm of `visit_model_live_blocks`. The block-named entries do
+/// `shard.bucket_index.sets` through the ungated arm of `visit_model_live_blocks`. The block-named entries do
 /// not survive into its view at all, so there is nothing left for it to misread, and it serves
 /// every element.
 ///
@@ -631,7 +631,7 @@ fn occupied_blocks(engine: &TemporalEngine, model_id: &str, object_key: &str) ->
     let shard = shards.get(&1).expect("shard 1 loaded");
     let blocks: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
         "hash" => shard
-            .hashes
+            .bucket_index.hashes
             .get(object_key)
             .map(|fields| {
                 fields

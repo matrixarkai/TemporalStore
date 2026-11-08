@@ -722,7 +722,7 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
         let shard = shards.get(&1).expect("shard is loaded");
         let mut addresses: std::collections::BTreeMap<String, std::collections::HashSet<usize>> =
             std::collections::BTreeMap::new();
-        for (_, fields) in shard.hashes.iter() {
+        for (_, fields) in shard.bucket_index.hashes.iter() {
             for name in fields.keys() {
                 addresses
                     .entry(name.to_string())
@@ -745,7 +745,7 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
     let total_fields: usize = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        shard.hashes.iter().map(|(_, fields)| fields.len()).sum()
+        shard.bucket_index.hashes.iter().map(|(_, fields)| fields.len()).sum()
     };
     assert_eq!(
         NODES as usize, total_fields,
@@ -800,7 +800,7 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
     let total_after: usize = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        shard.hashes.iter().map(|(_, fields)| fields.len()).sum()
+        shard.bucket_index.hashes.iter().map(|(_, fields)| fields.len()).sum()
     };
     assert_eq!(
         NODES as usize, total_after,
@@ -828,7 +828,7 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let unsorted: Vec<String> = shard
-            .hashes
+            .bucket_index.hashes
             .iter()
             .filter(|(_, fields)| !fields.is_sorted_by_field())
             .map(|(key, _)| key.to_string())

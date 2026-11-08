@@ -124,7 +124,7 @@ fn encoded_index(
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&SHARD).expect("shard is loaded");
     let points: usize = shard.features().values().map(|series| series.len()).sum();
-    let list_entries: usize = shard.lists.values().map(|list| list.len()).sum();
+    let list_entries: usize = shard.bucket_index.lists.values().map(|list| list.len()).sum();
     let container = crate::engine::encode_index_bytes(shard);
     let plain = crate::engine::encode_index_bytes_as_plain_json(shard);
     (container, plain, points, list_entries)
@@ -187,7 +187,7 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
     assert_eq!(3, shard.features().len(), "denominator: three series seeded");
     let points: usize = shard.features().values().map(|series| series.len()).sum();
     assert_eq!(1_200, points, "denominator: 400 points in each of three series");
-    let list_entries: usize = shard.lists.values().map(|list| list.len()).sum();
+    let list_entries: usize = shard.bucket_index.lists.values().map(|list| list.len()).sum();
     assert_eq!(64, list_entries, "denominator: 64 list entries seeded");
     assert!(
         !shard.strings().is_empty(),
@@ -208,7 +208,7 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
             "{label}: the feature series must come back entry for entry"
         );
         assert_eq!(
-            shard.lists, decoded.lists,
+            shard.bucket_index.lists, decoded.bucket_index.lists,
             "{label}: the list series must come back entry for entry"
         );
         assert_eq!(
@@ -220,11 +220,11 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
             "{label}: the expiry map must come back entry for entry"
         );
         assert_eq!(
-            shard.sets, decoded.sets,
+            shard.bucket_index.sets, decoded.bucket_index.sets,
             "{label}: the set members must come back entry for entry"
         );
         assert_eq!(
-            shard.zsets, decoded.zsets,
+            shard.bucket_index.zsets, decoded.bucket_index.zsets,
             "{label}: the zset members must come back entry for entry"
         );
         // THE STORED BYTES DO NOT MOVE, as bytes rather than as a sentence. A repack changes

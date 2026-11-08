@@ -1,40 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The slab manifest, binary shape.
+//! The slab manifest, as stored.
 //!
-//! The manifest is the record of which slabs a block store holds and what state each is in. It
-//! was a JSON document; this is the protobuf form of the same content, and this module is its
-//! codec: [`load_slab_manifest_at`](super::slab_manifest::load_slab_manifest_at) reads either
-//! form, chosen by [`is_wire_manifest`], so a store written by an older build still opens.
+//! The manifest is the record of which slabs a block store holds and what state each is in. It is
+//! one checksummed frame -- `varint32(payload_len) | crc32c | payload` -- whose payload is the
+//! protobuf below. There is no other shape: no JSON form, and no byte in front of the frame to say
+//! which of two shapes follows.
 //!
-//! # WHY A CONTAINER BYTE IN FRONT OF THE FRAME
+//! The frame is there for damage, not history. A flipped bit in a raw protobuf body can decode to a
+//! different valid value; the crc turns that into an error, and `BlockStore::open` answers any
+//! manifest that fails to load by rebuilding it from the slabs.
 //!
-//! A framed record starts with `varint32(payload_len)`, and a JSON document starts with `{`, which
-//! is `0x7B` -- a valid length of 123. Deciding the shape from the first byte of the FRAME would
-//! read a manifest whose payload is exactly 123 bytes as JSON and reject it as corrupt, and
-//! nothing about it would look different from any other manifest until the day a store reached
-//! that size. So one byte in front of the frame decides the shape, the same convention the
-//! snapshot manifest uses (`0x01`: not a brace, not whitespace, not valid JSON anywhere), rather
-//! than a second spelling for the same idea. `a_frame_of_123_bytes_starts_with_an_open_brace`
-//! builds that exact manifest.
-//!
-//! The frame behind the byte carries a length and a crc32c, which the JSON form never had: a
-//! flipped bit in a raw protobuf body can decode to a different valid value, where JSON mostly
-//! failed to parse.
-//!
-//! # WHAT AN OLDER BUILD DOES WITH THIS
-//!
-//! `BlockStore::open` treats any manifest that fails to load as "rebuild it from the slabs", so a
-//! build that cannot read this form pays one cold-start rebuild and rewrites the file in its own
-//! shape; it does not fail to open. The cost of a rollback is therefore time, not availability.
-//!
-//! # THE WRITER
-//!
-//! `persist_slab_manifest` encodes with [`encode_slab_manifest`] and writes the result in a single
-//! `write_all`. It landed after the reader, so no build that writes this form ever existed without
-//! one that reads it. The JSON arm of the reader stays for as long as any build that wrote a JSON
-//! manifest could have left one in a live store, which this tree cannot rule out.
+//! [`encode_slab_manifest`] encodes straight from the descriptors, and `persist_slab_manifest`
+//! writes the result with a single `write_all`.
 //!
 //! Field numbers are fixed by what is stored on disk and must not be renumbered or reused.
 
@@ -42,10 +21,6 @@ use prost::Message;
 
 use super::{BlockStoreSlabDescriptor, BlockStoreSlabManifest, BlockStoreSlabState};
 use crate::record_framing::{decode_framed_at, encode_framed};
-
-/// The first byte of a binary manifest. A JSON document opens with `{` or JSON whitespace, and
-/// `0x01` is neither, so one byte decides the shape.
-pub(super) const SLAB_MANIFEST_CONTAINER_PROTOBUF: u8 = 0x01;
 
 /// Slab lifecycle state as stored. `Unspecified` is "a build that did not say" and is refused by
 /// name rather than defaulted: a manifest written by a newer build with a state this one does not
@@ -103,18 +78,10 @@ pub(super) struct WireSlabManifest {
     pub(super) slabs: Vec<WireSlabDescriptor>,
 }
 
-/// Whether these bytes are a binary manifest rather than a JSON one.
-pub(super) fn is_wire_manifest(bytes: &[u8]) -> bool {
-    bytes.first() == Some(&SLAB_MANIFEST_CONTAINER_PROTOBUF)
-}
-
 /// Decode a binary manifest. Every failure is an `Err` naming what was wrong: a manifest that
 /// does not decode is corruption of a committed file, never an empty store.
 pub(super) fn decode_slab_manifest(bytes: &[u8]) -> Result<BlockStoreSlabManifest, String> {
-    if !is_wire_manifest(bytes) {
-        return Err("missing the binary manifest container byte".to_string());
-    }
-    let (wire, next) = decode_framed_at::<WireSlabManifest>(bytes, 1)
+    let (wire, next) = decode_framed_at::<WireSlabManifest>(bytes, 0)
         .map_err(|error| error.to_string())?;
     if next != bytes.len() {
         return Err(format!(
@@ -245,14 +212,12 @@ fn wire_from_slabs<'a>(
     }
 }
 
-/// The bytes of a binary manifest: the container byte, then one checksummed frame.
+/// The bytes of a manifest: one checksummed frame.
 pub(super) fn encode_slab_manifest<'a>(
     version: u32,
     slabs: impl IntoIterator<Item = &'a BlockStoreSlabDescriptor>,
 ) -> Vec<u8> {
-    let mut out = vec![SLAB_MANIFEST_CONTAINER_PROTOBUF];
-    out.extend_from_slice(&encode_framed(&wire_from_slabs(version, slabs)));
-    out
+    encode_framed(&wire_from_slabs(version, slabs))
 }
 
 #[cfg(test)]
@@ -370,90 +335,6 @@ mod tests {
         assert_eq!(three.first_error.as_deref(), Some("sentinel-3"));
         assert_eq!(three.state, BlockStoreSlabState::Sealed);
         assert_eq!(loaded.get(&4).expect("slab 4").state, BlockStoreSlabState::Active);
-    }
-
-    #[test]
-    fn a_json_manifest_still_loads_through_the_same_reader() {
-        let dir = tempfile::tempdir().unwrap();
-        let manifest = manifest_of(vec![
-            full_descriptor(5, BlockStoreSlabState::Sealed),
-            bare_descriptor(6),
-        ]);
-        let json = serde_json::to_vec(&manifest).expect("serialise");
-        assert_eq!(json.first(), Some(&b'{'), "this must be the JSON spelling");
-        write_manifest_file(dir.path(), &json);
-
-        let loaded = load(dir.path()).expect("a JSON manifest must still load");
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded.get(&5).expect("slab 5").first_error.as_deref(), Some("sentinel-5"));
-    }
-
-    #[test]
-    fn the_two_spellings_load_to_the_same_descriptors() {
-        let manifest = manifest_of(vec![
-            full_descriptor(7, BlockStoreSlabState::DelayedDestroy),
-            bare_descriptor(8),
-        ]);
-        let as_json = tempfile::tempdir().unwrap();
-        let as_wire = tempfile::tempdir().unwrap();
-        write_manifest_file(as_json.path(), &serde_json::to_vec(&manifest).unwrap());
-        write_manifest_file(as_wire.path(), &encode_manifest(&manifest));
-        let from_json = load(as_json.path()).expect("json");
-        let from_wire = load(as_wire.path()).expect("wire");
-        assert_eq!(from_json.len(), 2);
-        assert_eq!(from_json, from_wire);
-    }
-
-    #[test]
-    fn a_frame_of_123_bytes_starts_with_an_open_brace() {
-        // Find the padding that makes the PAYLOAD exactly 123 bytes -- the length whose varint
-        // is the byte JSON opens with.
-        let mut found = None;
-        // The payload is 12 bytes plus the padding, so the answer is near 111. The range is wider
-        // than that so the search finds it rather than this comment being trusted.
-        for pad in 0..=120usize {
-            let mut descriptor = bare_descriptor(1);
-            descriptor.first_error = Some("x".repeat(pad));
-            let wire = manifest_to_wire(&manifest_of(vec![descriptor.clone()]));
-            if wire.encoded_len() == 123 {
-                found = Some((pad, descriptor));
-                break;
-            }
-        }
-        let (pad, descriptor) = found.expect("some padding must reach a 123-byte payload");
-        let manifest = manifest_of(vec![descriptor]);
-
-        // THE HAZARD, STATED AS BYTES: the bare frame opens with `{`, so a first-byte sniff
-        // would hand this manifest to the JSON parser.
-        let bare_frame = encode_framed(&manifest_to_wire(&manifest));
-        assert_eq!(bare_frame[0], b'{', "pad {pad}: a 123-byte payload frames as an open brace");
-        assert!(!is_wire_manifest(&bare_frame));
-
-        // THE FIX, STATED AS BYTES: with the container byte in front the same manifest is recognised
-        // and decodes.
-        let bytes = encode_manifest(&manifest);
-        assert!(is_wire_manifest(&bytes));
-        assert_ne!(bytes[0], b'{');
-        assert_eq!(decode_slab_manifest(&bytes).expect("decodes"), manifest);
-
-        let dir = tempfile::tempdir().unwrap();
-        write_manifest_file(dir.path(), &bytes);
-        assert_eq!(load(dir.path()).expect("loads from disk").len(), 1);
-    }
-
-    #[test]
-    fn no_json_document_opens_with_the_container_byte() {
-        // Every byte a JSON document may open with: a brace, or the four JSON whitespace bytes
-        // (pretty-printed output really does start with one in some writers).
-        for opening in [b'{', b' ', b'\t', b'\n', b'\r'] {
-            assert_ne!(opening, SLAB_MANIFEST_CONTAINER_PROTOBUF);
-            assert!(!is_wire_manifest(&[opening, b'"']));
-        }
-        assert!(!is_wire_manifest(b"{\"version\":1,\"slabs\":[]}"));
-        assert!(!is_wire_manifest(b""));
-        // And the positive control: the byte itself IS recognised, so the loop above is not
-        // vacuously true of a predicate that never fires.
-        assert!(is_wire_manifest(&[SLAB_MANIFEST_CONTAINER_PROTOBUF]));
     }
 
     #[test]

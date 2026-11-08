@@ -8372,6 +8372,7 @@ mod tests {
         ("ControlStateManager", std::mem::size_of::<(String, Option<String>, Vec<(String, String)>, String, String, bool)>()),
         ("ControlStateDebug", std::mem::size_of::<(String, u64, u64)>()),
         ("ContextQueryNodeEmbeddings", std::mem::size_of::<(u64, Vec<u64>)>()),
+        ("ContextQueryNodeVectorProjections", std::mem::size_of::<(u64, Vec<u64>)>()),
         ("ContextResourceBlobBegin", std::mem::size_of::<(u64)>()),
         ("ContextResourceBlobAppend", std::mem::size_of::<(u64, String, String)>()),
         ("ContextResourceBlobCommit", std::mem::size_of::<(u64, String)>()),

@@ -991,8 +991,8 @@ pub(super) fn comparable_bucket_dump_summaries(
 pub(super) fn bucket_dump_summary_matches_current_generation(
     manifest_summary: &BucketStorageSummary,
     current_summary: &BucketStorageSummary,
-    manifest_bucket_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
-    current_bucket_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
+    manifest_bucket_fingerprints: &BTreeMap<u32, BucketFingerprintDigest>,
+    current_bucket_fingerprints: &BTreeMap<u32, BucketFingerprintDigest>,
 ) -> bool {
     let mut manifest_slabs = manifest_summary.block_slab_ids.clone();
     manifest_slabs.sort_unstable();
@@ -1030,6 +1030,110 @@ pub(super) fn bucket_dump_summary_matches_current_generation(
 /// recomputed by this binary -- the live shard here, the manifest's decoded state there -- so a
 /// change in what the terms produce moves both sides together and compares equal. Nothing reads a
 /// fingerprint off disk.
+///
+/// WHAT IS COMPARED IS A DIGEST OF EACH BUCKET'S LINES, NOT THE LINES. The plan compares a bucket's
+/// fingerprints in the live shard against the same bucket's in every dump manifest it considers,
+/// and that comparison is the only thing a fingerprint is for. Holding the lines made every plan
+/// call allocate one string per live block per side, and made it impossible to keep a manifest's
+/// fingerprints between calls: a retained manifest is decoded from its whole index image to
+/// produce them, so the plan paid that decode again for every manifest on every call.
+pub(super) fn bucket_generation_digests_by_bucket(
+    shard_id: ShardId,
+    shard: &ShardState,
+) -> BTreeMap<u32, BucketFingerprintDigest> {
+    let mut lines = BTreeMap::<u32, Vec<(u64, u64)>>::new();
+    // One buffer for every line: the digest reads the bytes and keeps none of them.
+    let mut line = String::new();
+    for entry in collect_live_block_entries(shard) {
+        let routing_bucket = entry
+            .filed_bucket()
+            .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
+        line.clear();
+        write_bucket_fingerprint_line(&mut line, shard_id, &entry, routing_bucket);
+        lines
+            .entry(routing_bucket)
+            .or_default()
+            .push(fingerprint_line_hash(&line));
+    }
+    lines
+        .into_iter()
+        .map(|(routing_bucket, mut hashes)| {
+            // A SET, as the strings were: two blocks that state the same line are one line.
+            hashes.sort_unstable();
+            hashes.dedup();
+            (routing_bucket, BucketFingerprintDigest::of_sorted(&hashes))
+        })
+        .collect()
+}
+
+/// The 128-bit digest of one bucket's fingerprint set. Two buckets compare equal exactly when their
+/// sets of lines do, up to a collision in 128 bits of a keyed hash over data nobody chooses against
+/// it: both sides are produced by this binary a moment apart, and an unequal pair is the safe
+/// direction for the reclaim plan (it declines to treat the manifest as covering the bucket).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BucketFingerprintDigest(u64, u64);
+
+impl BucketFingerprintDigest {
+    fn of_sorted(sorted_unique: &[(u64, u64)]) -> Self {
+        use std::hash::Hasher;
+        let mut low = std::collections::hash_map::DefaultHasher::new();
+        let mut high = std::collections::hash_map::DefaultHasher::new();
+        low.write_u8(0x31);
+        high.write_u8(0xc7);
+        low.write_usize(sorted_unique.len());
+        high.write_usize(sorted_unique.len());
+        for (first, second) in sorted_unique {
+            low.write_u64(*first);
+            low.write_u64(*second);
+            high.write_u64(*second);
+            high.write_u64(*first);
+        }
+        Self(low.finish(), high.finish())
+    }
+}
+
+fn fingerprint_line_hash(line: &str) -> (u64, u64) {
+    use std::hash::Hasher;
+    let mut low = std::collections::hash_map::DefaultHasher::new();
+    let mut high = std::collections::hash_map::DefaultHasher::new();
+    low.write_u8(0x5a);
+    high.write_u8(0xa5);
+    low.write(line.as_bytes());
+    high.write(line.as_bytes());
+    (low.finish(), high.finish())
+}
+
+/// The ONE home of what a fingerprint line says. The digest above hashes it and the reference
+/// below keeps it, so neither can drift from the other.
+fn write_bucket_fingerprint_line(
+    out: &mut String,
+    shard_id: ShardId,
+    entry: &LiveBlockEntry,
+    routing_bucket: u32,
+) {
+    use std::fmt::Write as _;
+    // Derived from the entry's own terms; the element name is borrowed, not moved.
+    let object_id = expected_live_block_object_id(shard_id, entry);
+    let _ = write!(
+        out,
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        entry.kind,
+        entry.object_key,
+        entry.element_name.as_deref().unwrap_or_default(),
+        entry.address.block_slab_id(),
+        entry.address.offset(),
+        entry.address.length(),
+        entry.address.block_id().unwrap_or_default(),
+        object_id,
+        routing_bucket,
+        entry.address.generation().unwrap_or_default(),
+        String::new()
+    );
+}
+
+/// The lines themselves, as the plan compared them before it compared digests. Kept for the test
+/// that holds the digest to the same answer, pair by pair.
+#[cfg(test)]
 pub(super) fn bucket_generation_fingerprints_by_bucket(
     shard_id: ShardId,
     shard: &ShardState,
@@ -1039,23 +1143,9 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(
         let routing_bucket = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        // Derived BEFORE the element name moves out of the entry below: the derivation borrows the
-        // entry's own terms, and `unwrap_or_default()` takes the element name by value.
-        let object_id = expected_live_block_object_id(shard_id, &entry);
-        by_bucket.entry(routing_bucket).or_default().insert(format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-            entry.kind,
-            entry.object_key,
-            entry.element_name.unwrap_or_default(),
-            entry.address.block_slab_id(),
-            entry.address.offset(),
-            entry.address.length(),
-            entry.address.block_id().unwrap_or_default(),
-            object_id,
-            routing_bucket,
-            entry.address.generation().unwrap_or_default(),
-            String::new()
-        ));
+        let mut line = String::new();
+        write_bucket_fingerprint_line(&mut line, shard_id, &entry, routing_bucket);
+        by_bucket.entry(routing_bucket).or_default().insert(line);
     }
     by_bucket
 }

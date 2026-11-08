@@ -76,7 +76,7 @@ fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<Stri
     let shard = shards.get(&1).expect("shard is loaded");
     match kind {
         "hash" => shard
-            .hashes
+            .bucket_index.hashes
             .get(key)
             .map(|fields| {
                 let mut names: Vec<String> = fields.keys().map(|k| k.to_string()).collect();
@@ -85,7 +85,7 @@ fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<Stri
             })
             .unwrap_or((0, Vec::new())),
         "set" => shard
-            .sets
+            .bucket_index.sets
             .get(key)
             .map(|members| {
                 let mut names: Vec<String> = members
@@ -97,7 +97,7 @@ fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<Stri
             })
             .unwrap_or((0, Vec::new())),
         "zset" => shard
-            .zsets
+            .bucket_index.zsets
             .get(key)
             .map(|members| {
                 let mut names: Vec<String> = members
@@ -109,7 +109,7 @@ fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<Stri
             })
             .unwrap_or((0, Vec::new())),
         "list" => shard
-            .lists
+            .bucket_index.lists
             .get(key)
             .map(|elements| (elements.len(), Vec::new()))
             .unwrap_or((0, Vec::new())),
@@ -257,7 +257,7 @@ fn a_containers_resident_map_still_holds_its_elements_after_a_reload() {
     assert!(
         holes.is_empty(),
         "A CONTAINER'S RESIDENT MAP DID NOT SURVIVE A RELOAD, which is the property a reroute of \
-         HashLen to `shard.hashes` would depend on:\n  {}",
+         HashLen to `shard.bucket_index.hashes` would depend on:\n  {}",
         holes.join("\n  ")
     );
     assert_eq!(

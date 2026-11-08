@@ -294,7 +294,7 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
 
     // 2. IS IT IN THE RESIDENT MAP before the reconcile?
     let in_map_before = shard
-        .hashes
+        .bucket_index.hashes
         .get(node_key)
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);
@@ -311,12 +311,12 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
     );
 
     let in_map_after = shard
-        .hashes
+        .bucket_index.hashes
         .get(node_key)
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);
     let control_after = shard
-        .hashes
+        .bucket_index.hashes
         .get("control-hash")
         .map(|fields| fields.get("f-0").is_some())
         .unwrap_or(false);
@@ -374,18 +374,18 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     // merely for pointing at a block that does not exist. The ONLY thing that differs between the
     // control and the subject is whether the INDEX names it.
     let live_address = shard
-        .hashes
+        .bucket_index.hashes
         .get("control-hash")
         .and_then(|fields| fields.get("f-0"))
         .cloned()
         .expect("the control field must be in the resident map to lend its address");
 
     shard
-        .hashes
+        .bucket_index.hashes
         .replay_install_element("orphan-object", std::sync::Arc::from("meta"), live_address);
 
     let orphan_before = shard
-        .hashes
+        .bucket_index.hashes
         .get("orphan-object")
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);
@@ -412,12 +412,12 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     );
 
     let orphan_after = shard
-        .hashes
+        .bucket_index.hashes
         .get("orphan-object")
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);
     let control_after = shard
-        .hashes
+        .bucket_index.hashes
         .get("control-hash")
         .map(|fields| fields.get("f-0").is_some())
         .unwrap_or(false);
@@ -435,14 +435,14 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     // THE COMPLEMENTARY CONTROL, and without it the result above is unreadable: if the filter
     // never fires at all, "survives" says nothing about why. A second orphan gets an address for a
     // block NOTHING holds, so the only live-set lookup that can decide it must fail.
-    shard.hashes.replay_install_element(
+    shard.bucket_index.hashes.replay_install_element(
         "orphan-dead-block",
         std::sync::Arc::from("meta"),
         crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None),
     );
     assert!(
         shard
-            .hashes
+            .bucket_index.hashes
             .get("orphan-dead-block")
             .map(|fields| fields.get("meta").is_some())
             .unwrap_or(false),
@@ -452,7 +452,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
         shard,
     );
     let dead_after = shard
-        .hashes
+        .bucket_index.hashes
         .get("orphan-dead-block")
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);

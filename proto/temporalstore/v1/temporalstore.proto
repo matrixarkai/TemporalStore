@@ -1421,7 +1421,7 @@ message ContextWritePackAudit {
 //
 // NOTHING ASSERTS THE FILENAME. `state.json` appears exactly once in the crate, as a
 // `root.join("state.json")` construction with no test or doc pinning it, so the spelling is
-// not a durable contract the way `slab_manifest.json` is. The name stays regardless: the
+// not a durable contract the way `slab_manifest.pb` is. The name stays regardless: the
 // writer retires either way, and renaming a path that is already on disk is a separate,
 // riskier decision.
 // ===========================================================================================
@@ -1557,12 +1557,11 @@ message DurableIngestionState {
 // DURABLE BUCKET-DUMP MANIFEST AND INSTALL MARKER, BINARY SHAPE.
 //
 // A dump manifest is the durable reclaim watermark plus the recovery index for the data it
-// covers; the install marker is the roll-forward record of an install in flight. Both used to be
-// JSON files. A reader decides the shape per file from the first byte (see
-// `BUCKET_DUMP_CONTAINER_PROTOBUF` in `engine/bucket_dump_codec.rs`), never from a setting.
+// covers; the install marker is the roll-forward record of an install in flight. Each file is one
+// bare message of the type below (see `engine/bucket_dump_codec.rs`).
 //
 // NO `map` FIELD, ON PURPOSE. The manifest carries a checksum, and for a binary manifest that
-// checksum is a SHA-256 over THIS message's own encoding (`checksum_version` 1). A protobuf `map`
+// checksum is a SHA-256 over THIS message's own encoding. A protobuf `map`
 // has no defined iteration order, so a digest over one would depend on the encoder. Every
 // collection below is a `repeated` field, which encodes in the order the writer gave it.
 //
@@ -1634,10 +1633,7 @@ message DurableBucketDumpManifest {
   // Absent means the all-zero report, which is what a manifest without one has always meant.
   optional DurableStorageObjectLifecycle object_lifecycle = 19;
   string index_sha256 = 20;
-  // Which derivation `checksum` was computed with. 0 is a manifest written before this field
-  // existed: its checksum is a SHA-256 over the manifest's canonical JSON. 1 is a SHA-256 over
-  // this message's own encoding with `checksum` empty. Any other value is refused, never guessed.
-  uint32 checksum_version = 21;
+  // Field 21 is not used.
   // The whole-shard index image. Second-highest tag: see the note above.
   bytes index_bytes = 22;
   // Highest tag, and EMPTY while the digest is computed.
@@ -1738,4 +1734,21 @@ message DurableDataNodeLifecycleSnapshot {
   // the order given.
   repeated DurableShardLifecycleState transitions = 2;
   repeated DurableSchedulerLifecycleToken tokens = 3;
+}
+
+// ===========================================================================================
+// DURABLE CONTROL STATE COUNTER SERIES BLOCK, PACKED SHAPE.
+//
+// The block a Control State counter writes: the whole series, `timestamp_ms -> value`. Two PARALLEL
+// PACKED arrays rather than a repeated pair message, so a point costs its two varints and no tag or
+// length. The arrays are the same length and the timestamps are strictly ascending (the writer
+// iterates a `BTreeMap`); a reader refuses anything else rather than keep one of two values for a
+// repeated timestamp. The container byte in front of this message is 0x01; 0x02 is reserved for a
+// delta-coded shape and is refused by this build, see `engine/control_state_block.rs`.
+// ===========================================================================================
+
+message DurableControlStateSeries {
+  repeated uint64 timestamps_ms = 1;
+  // `sint64`: zigzag, so a small negative amount is one byte and not ten.
+  repeated sint64 values = 2;
 }

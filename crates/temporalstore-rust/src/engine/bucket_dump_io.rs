@@ -148,7 +148,7 @@ pub(super) fn bucket_dump_manifest_path(
     shard_id: ShardId,
     manifest_id: &str,
 ) -> PathBuf {
-    bucket_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.json"))
+    bucket_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.manifest"))
 }
 
 pub(super) fn bucket_dump_manifest_at(
@@ -160,7 +160,6 @@ pub(super) fn bucket_dump_manifest_at(
     if !path.exists() {
         return Ok(None);
     }
-    // Either shape: see `decode_bucket_dump_manifest`. The JSON arm is permanent.
     decode_bucket_dump_manifest(&fs::read(path)?).map(Some)
 }
 
@@ -206,7 +205,6 @@ pub(super) fn bucket_dump_install_marker_files_at(
             continue;
         }
         let path = entry.path();
-        // Either shape: see `decode_bucket_dump_install_marker`. The JSON arm is permanent.
         let marker = decode_bucket_dump_install_marker(&fs::read(&path)?)?;
         markers.push((marker, path));
     }
@@ -666,6 +664,89 @@ pub fn bucket_dump_manifest_memo_len() -> usize {
 
 pub(super) fn clear_bucket_dump_manifest_parse_memo() {
     MANIFEST_PARSE_MEMO.with(|memo| memo.borrow_mut().clear());
+    MANIFEST_DIGEST_MEMO.with(|memo| memo.borrow_mut().clear());
+}
+
+struct ManifestDigestEntry {
+    shard_id: ShardId,
+    /// Held, not just compared: the address is the key, and an address can only be reused once its
+    /// allocation is freed, which this reference prevents for as long as the entry exists.
+    manifest: std::sync::Arc<BucketDumpManifest>,
+    digests: Option<std::sync::Arc<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>>,
+}
+
+/// THE FINGERPRINT DIGESTS OF MANIFESTS THIS THREAD HAS ALREADY DECODED.
+///
+/// The reclaim plan needs, per bucket, a digest of what a manifest's index image says the bucket
+/// held, and getting it means decoding the image whole. A manifest is never rewritten
+/// (`persist_bucket_dump_manifest` writes temp + rename under an id carrying its creation time), and
+/// the listing above hands out the SAME `Arc` for as long as the file's length, mtime and inode are
+/// unchanged -- so the allocation is an identity for the bytes, and what was computed from it once
+/// is what any later call would compute. The plan used to decode every manifest it consulted, on
+/// every call, and a drained shard consults all of them.
+///
+/// BOUNDED BY THE LISTING MEMO. An entry survives only while something other than this memo holds
+/// its manifest (the parse memo, or a caller mid-plan); the first call after the last of those lets
+/// go drops it, so a pruned manifest's digests do not outlive it.
+///
+/// A digest is 16 bytes per bucket. The lines they stand for were a string per live block.
+thread_local! {
+    static MANIFEST_DIGEST_MEMO: std::cell::RefCell<Vec<ManifestDigestEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static MANIFEST_DIGEST_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_DIGEST_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `compute` runs only for a manifest this thread has not computed for, and its answer -- including
+/// "this manifest cannot be fingerprinted" -- is kept with the manifest.
+pub(super) fn manifest_digests_memoised(
+    shard_id: ShardId,
+    manifest: &std::sync::Arc<BucketDumpManifest>,
+    compute: impl FnOnce() -> Option<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>,
+) -> Option<std::sync::Arc<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>> {
+    let enabled = manifest_parse_memo_enabled();
+    if enabled {
+        let hit = MANIFEST_DIGEST_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            // Only this memo holds it: nothing can ask for it again.
+            memo.retain(|entry| std::sync::Arc::strong_count(&entry.manifest) > 1);
+            memo.iter()
+                .find(|entry| {
+                    entry.shard_id == shard_id && std::sync::Arc::ptr_eq(&entry.manifest, manifest)
+                })
+                .map(|entry| entry.digests.clone())
+        });
+        if let Some(digests) = hit {
+            MANIFEST_DIGEST_HITS.with(|cell| cell.set(cell.get().saturating_add(1)));
+            return digests;
+        }
+    }
+    MANIFEST_DIGEST_MISSES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    let digests = compute().map(std::sync::Arc::new);
+    if enabled {
+        MANIFEST_DIGEST_MEMO.with(|memo| {
+            memo.borrow_mut().push(ManifestDigestEntry {
+                shard_id,
+                manifest: manifest.clone(),
+                digests: digests.clone(),
+            });
+        });
+    }
+    digests
+}
+
+/// How many manifest digest lookups this thread served from memory, and how many computed.
+pub fn manifest_digest_memo_counts() -> (u64, u64) {
+    (
+        MANIFEST_DIGEST_HITS.with(std::cell::Cell::get),
+        MANIFEST_DIGEST_MISSES.with(std::cell::Cell::get),
+    )
+}
+
+/// Zero the two counts, so a probe measures a round rather than a thread's history.
+pub fn reset_manifest_digest_memo_counts() {
+    MANIFEST_DIGEST_HITS.with(|cell| cell.set(0));
+    MANIFEST_DIGEST_MISSES.with(|cell| cell.set(0));
 }
 
 #[cfg(test)]
@@ -752,7 +833,7 @@ pub(super) fn list_bucket_dump_manifests_shared_at(
         if !path
             .extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| ext == "json")
+            .map(|ext| ext == "manifest")
             .unwrap_or(false)
         {
             continue;
@@ -933,7 +1014,7 @@ pub(super) fn durable_recovery_bucket_dump_manifest_at(
         })
 }
 
-/// The manifest's checksum, over its own JSON with the checksum field emptied.
+/// The manifest's checksum, over its own protobuf encoding with the checksum field emptied.
 ///
 /// THE PAYLOAD IS THE SAME BYTES either way; what differs is whether producing them copies the
 /// manifest first. A manifest carries the whole-shard index image and one summary per bucket, so
@@ -972,35 +1053,10 @@ pub(super) fn bucket_dump_manifest_checksum_in_place(
 fn finish_bucket_dump_manifest_checksum(
     payload: &BucketDumpManifest,
 ) -> Result<String, Status> {
-    // THE VERSION PICKS THE DERIVATION, and an unknown one is an error rather than a default:
-    // verifying a manifest against bytes its writer did not hash would either reject a good file
-    // or, worse, accept a bad one that happens to agree.
-    match payload.checksum_version {
-        BUCKET_DUMP_CHECKSUM_LEGACY_JSON => {
-            MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
-            // THE LEGACY VERIFIER. This is the only `serde_json` call left on a manifest's
-            // checksum path, and it is for manifests written before `checksum_version` existed:
-            // their stored checksum was taken over exactly these bytes, so it cannot be
-            // retired while such a file can be on disk.
-            serde_json::to_vec(payload)
-                .map(|bytes| {
-                    MANIFEST_CHECKSUM_BYTES
-                        .with(|cell| cell.set(cell.get().saturating_add(bytes.len() as u64)));
-                    sha256_hex_bytes(&bytes)
-                })
-                .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
-        }
-        BUCKET_DUMP_CHECKSUM_PROTOBUF => {
-            MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
-            let (digest, hashed) = bucket_dump_protobuf_digest(payload);
-            MANIFEST_CHECKSUM_BYTES.with(|cell| cell.set(cell.get().saturating_add(hashed)));
-            Ok(digest)
-        }
-        unknown => Err(Status::error(
-            "slot_dump_checksum_failed",
-            format!("unknown manifest checksum version {unknown}"),
-        )),
-    }
+    MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    let (digest, hashed) = bucket_dump_protobuf_digest(payload);
+    MANIFEST_CHECKSUM_BYTES.with(|cell| cell.set(cell.get().saturating_add(hashed)));
+    Ok(digest)
 }
 
 pub(super) fn bucket_dump_fault_scenario(

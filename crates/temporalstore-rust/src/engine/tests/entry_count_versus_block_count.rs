@@ -828,7 +828,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
          block entry recoverable"
     );
     assert!(
-        shard.hashes.get("fold-h").is_some(),
+        shard.bucket_index.hashes.get("fold-h").is_some(),
         "the HASH must hold a durable model-map entry too. That is the half that changed: a \
          container element's identity used to live on its entry, and with the entry nameless the \
          durable map is the only source -- if this reddens, the collapse has outrun the durability \
@@ -1155,7 +1155,7 @@ fn the_control_assertion_goes_red_when_the_projection_moves_the_row() {
 /// this list, so it cannot tell a field from a block.
 ///
 /// The CONTROL is a zset, which reaches this door for nothing -- `ZSetCard` takes `len()` off
-/// `shard.zsets` -- so its cardinality is asserted to stay right while its entry count is the same
+/// `shard.bucket_index.zsets` -- so its cardinality is asserted to stay right while its entry count is the same
 /// shape as the hash's. An instrument that moved both arms together would be measuring the fixture.
 #[test]
 fn three_readers_take_the_block_index_entry_count_for_the_element_count() {

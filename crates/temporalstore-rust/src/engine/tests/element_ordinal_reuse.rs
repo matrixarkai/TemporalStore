@@ -508,10 +508,10 @@ fn durable_element_count(engine: &TemporalEngine, kind: &str, key: &str) -> usiz
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     match kind {
-        "zset" => shard.zsets.get(key).map_or(0, |members| members.len()),
-        "set" => shard.sets.get(key).map_or(0, |members| members.len()),
-        "list" => shard.lists.get(key).map_or(0, |entries| entries.len()),
-        "hash" => shard.hashes.get(key).map_or(0, |fields| fields.len()),
+        "zset" => shard.bucket_index.zsets.get(key).map_or(0, |members| members.len()),
+        "set" => shard.bucket_index.sets.get(key).map_or(0, |members| members.len()),
+        "list" => shard.bucket_index.lists.get(key).map_or(0, |entries| entries.len()),
+        "hash" => shard.bucket_index.hashes.get(key).map_or(0, |fields| fields.len()),
         other => panic!("no durable map is claimed for kind {other}"),
     }
 }
@@ -1447,7 +1447,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 /// sites with kinds string/hash/hash: #1985 established it and the mandate for that work said to
 /// confirm it from the source text rather than inherit it. Two of the three were the hash point
 /// reads, and they MOVED -- taking the element name off the entry required `HashGet` and
-/// `HashIncrBy` to answer from `shard.hashes`, because a nameless entry made a present field
+/// `HashIncrBy` to answer from `shard.bucket_index.hashes`, because a nameless entry made a present field
 /// unreachable through the index and `HashIncrBy` read that miss as `unwrap_or_default()` and
 /// restarted the counter at zero.
 ///
@@ -1492,7 +1492,7 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
     assert_eq!(
         read_sites, 1,
         "read_bucket_index_value has {read_sites} call sites in execute_on_shard.rs, not one. It \
-         had three -- string/hash/hash -- until the two hash point reads moved to `shard.hashes`; \
+         had three -- string/hash/hash -- until the two hash point reads moved to `shard.bucket_index.hashes`; \
          a count above one here means a reader came back to the index and the kind list below says \
          which"
     );
@@ -1517,7 +1517,7 @@ fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
     // The element-name-blind whole-object reader takes no element name and its caller has none to give.
     //
     // THIS WAS THREE CALLERS -- hash twice, set once -- AND IT IS ONE. The remaining one is
-    // `HashGetAll`'s divergence-observing half, which reads the index beside `shard.hashes` so a
+    // `HashGetAll`'s divergence-observing half, which reads the index beside `shard.bucket_index.hashes` so a
     // disagreement is OBSERVED rather than suffered. That it is down to one is the same movement
     // as the two point reads above, counted at a different door.
     let blind_sites = execute.matches("bucket_index_element_name_block_addresses(").count();
@@ -2461,7 +2461,7 @@ fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
     // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same defaulting
     // the production readers were fixed to stop doing. With no element name on an entry it yielded
     // ten empty members, so the instrument failed and not the read. It is read off the walk's
-    // ADDRESS order joined through `shard.sets` now; see the re-attribution at the walk itself.
+    // ADDRESS order joined through `shard.bucket_index.sets` now; see the re-attribution at the walk itself.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
     let internals = std::fs::read_to_string(root.join("storage_bucket_internals.rs"))
         .expect("storage_bucket_internals.rs is readable");
@@ -2601,7 +2601,7 @@ fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
         // WHAT THE DOOR STILL GIVES IS THE ORDER, which is the only thing this comparison is about.
         // `bucket_index_element_name_block_addresses` returns the object's blocks sorted, and
         // `SetMembers` is built by walking exactly that. So the walk is taken as its ADDRESS
-        // sequence and each address is turned back into its member through `shard.sets` -- the same
+        // sequence and each address is turned back into its member through `shard.bucket_index.sets` -- the same
         // address join the engine makes on the write path. The property is unchanged: the listing
         // INHERITS this order and imposes none of its own.
         let walked: Vec<Vec<u8>> = {
@@ -2610,7 +2610,7 @@ fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
             let mut member_at: std::collections::BTreeMap<(u64, u64, u64), Vec<u8>> =
                 std::collections::BTreeMap::new();
             for (member, address) in shard
-                .sets
+                .bucket_index.sets
                 .get("eo-set-order")
                 .expect("the fixture's set is resident")
                 .iter()
@@ -2845,7 +2845,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // This bounded `apply_key_states` on `"\n/// Set or clear one key's entry"` -- the doc comment
     // of the item that FOLLOWED it. That is not a property of `apply_key_states`, and when items
     // were later added between the two the window silently grew to span them, so
-    // `folded.contains("shard.sets")` started answering about a different function. A window that
+    // `folded.contains("shard.bucket_index.sets")` started answering about a different function. A window that
     // widens on its own is worse than a red test, so it is bounded on itself now.
     let window = |needle: &str| -> String {
         let start = engine_src
@@ -2894,7 +2894,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // because an element may only be restored once the whole fold has finished: a fold replays a
     // suffix of the log and can add an element and then take its block away again, and applying per
     // record would leave it in the durable map for `fill_absent_elements` to serve after a delete.
-    for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
+    for container in ["shard.bucket_index.sets", "shard.bucket_index.zsets", "shard.bucket_index.lists", "shard.bucket_index.hashes"] {
         assert!(
             !folded.contains(container),
             "apply_key_states now writes {container} directly. The carry must be applied AFTER the \
@@ -2911,7 +2911,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // element name its block was filed under. Inverted rather than deleted, because what has to keep
     // holding is that the fold DOES carry them.
     let carried = window("fn fold_carried_container_elements(");
-    for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
+    for container in ["shard.bucket_index.sets", "shard.bucket_index.zsets", "shard.bucket_index.lists", "shard.bucket_index.hashes"] {
         assert!(
             carried.contains(container),
             "the fold no longer restores {container}. The carry that lifted this stop condition has \
@@ -2962,7 +2962,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
         let removed = shard
-            .zsets
+            .bucket_index.zsets
             .elements_mut_for_test("eo-fold")
             .expect("the zset is present")
             .remove(doomed.as_slice());

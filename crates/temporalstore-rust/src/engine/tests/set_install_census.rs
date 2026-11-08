@@ -110,7 +110,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
 
     // ---- WHICH OF THOSE ARMS INSTALLS, read from the arm bodies. ------------------------------
     //
-    // An install is an arm that puts an element INTO `shard.sets`. The two spellings that do that
+    // An install is an arm that puts an element INTO `shard.bucket_index.sets`. The two spellings that do that
     // are an `entry(..)` chain and a direct `insert`, and both are looked for inside the arm's own
     // text rather than anywhere in the file.
     let mut installs: Vec<String> = Vec::new();
@@ -211,7 +211,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
 
     // ---- THE OTHER WRITER, NAMED RATHER THAN LEFT OUT. ----------------------------------------
     //
-    // WAL replay installs into `shard.sets` too, and reports nothing -- correctly, because the item
+    // WAL replay installs into `shard.bucket_index.sets` too, and reports nothing -- correctly, because the item
     // it is replaying IS the record. This is where hash's census found its defect: a writer that
     // installs and files nothing. For sets the replay arm DOES re-file the block, so it is not even
     // the weaker of the two cases.

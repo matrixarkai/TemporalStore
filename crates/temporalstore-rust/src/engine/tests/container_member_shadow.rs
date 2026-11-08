@@ -44,7 +44,7 @@
 //!   3. INDEX-LOG REPLAY REBUILDS THE MEMBER AND THE SCORE FROM THE ELEMENT NAME. The `"zset"`
 //!      arm of `apply_outcome_item` (`lifecycle.rs`) splits the element name at sixteen, parses the
 //!      score with `u64::from_str_radix` and the member with `hex::decode`, and inserts the pair
-//!      into `shard.zsets`. It never reads the block. So the shadow is not dead weight everywhere:
+//!      into `shard.bucket_index.zsets`. It never reads the block. So the shadow is not dead weight everywhere:
 //!      it is the SOURCE OF TRUTH for one of the three recovery routes, and that is the reader
 //!      that pins it.
 //!
@@ -214,7 +214,7 @@ fn model_members(engine: &TemporalEngine, key: &str) -> BTreeMap<Vec<u8>, u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     shard
-        .zsets
+        .bucket_index.zsets
         .get(key)
         .map(|members| {
             members
@@ -802,7 +802,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
             assert_eq!(
                 element_name, back,
                 "{key}: the member does not survive the block key it is written into. That key is \
-                 the ONLY copy of the member outside `shard.zsets` now -- the entry carries none -- \
+                 the ONLY copy of the member outside `shard.bucket_index.zsets` now -- the entry carries none -- \
                  so a codec that does not round-trip loses the element rather than mislabelling it"
             );
         }
@@ -864,7 +864,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 ///
 /// This is the answer to "what would packing cost the read path" for a zset, and it is zero:
 /// nothing on the zset read path resolves a member through the block index, so there is no per-member
-/// addressing to lose. `ZSetScore` reads the score straight out of `shard.zsets`, `ZSetCard` reads
+/// addressing to lose. `ZSetScore` reads the score straight out of `shard.bucket_index.zsets`, `ZSetCard` reads
 /// `len()`, `ZSetRange` orders the same map's keys.
 ///
 /// COUNT, DO NOT TIME. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_block`, the one
@@ -876,7 +876,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 /// This test was named `..._and_a_hash_read_does`, and its control was the hash POINT read: a
 /// `HashGet` resolved a field through `bucket_index_element_name_block_addresses` into the block index,
 /// so it MUST be non-zero and an instrument reading zero on both arms would be measuring nothing.
-/// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.hashes` and hands
+/// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.bucket_index.hashes` and hands
 /// the address it holds to `read_block_bytes`, which consults the cache, the WAL-resident redirect
 /// and the block store -- and none of those enters `find_block`. So the control read ZERO and this
 /// test refused itself, which is the instrument working: the arm that was supposed to prove the

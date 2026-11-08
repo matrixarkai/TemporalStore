@@ -4,7 +4,7 @@
 use super::TemporalEngine;
 use crate::llm_context::{
     EmbeddingChannel, EmbeddingHit, EmbeddingIndexError, EmbeddingKey, EmbeddingVector,
-    EmbeddingWriteReport,
+    EmbeddingWriteReport, PreparedEmbeddingQuery,
 };
 use crate::types::{Command, CONTEXT_SUMMARY_LEVEL_L1};
 
@@ -107,18 +107,38 @@ impl TemporalEngine {
         channel: EmbeddingChannel,
         tenant_hash: u64,
         model_hash: u64,
-        query: &[f32],
+        query: PreparedEmbeddingQuery<'_>,
         candidate_node_hashes: &[u64],
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.score_context_embedding_candidate_ids(
+            channel,
+            tenant_hash,
+            model_hash,
+            query,
+            candidate_node_hashes.iter().copied(),
+            candidate_node_hashes.len(),
+        )
+    }
+
+    pub(crate) fn score_context_embedding_candidate_ids(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_hash: u64,
+        model_hash: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_node_hashes: impl Clone + Iterator<Item = u64>,
+        candidate_count: usize,
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
         self.context_embedding_indexes
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .score_candidates(
+            .score_prepared_candidate_ids(
                 channel,
                 tenant_hash,
                 model_hash,
                 query,
                 candidate_node_hashes,
+                candidate_count,
             )
     }
 
@@ -127,13 +147,13 @@ impl TemporalEngine {
         channel: EmbeddingChannel,
         tenant_hash: u64,
         model_hash: u64,
-        query: &[f32],
+        query: PreparedEmbeddingQuery<'_>,
         limit: usize,
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
         self.context_embedding_indexes
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .search(channel, tenant_hash, model_hash, query, limit)
+            .search_prepared(channel, tenant_hash, model_hash, query, limit)
     }
 
     #[cfg(test)]

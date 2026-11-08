@@ -53,11 +53,16 @@ mod recovery_sweep_compact;
 #[path = "engine/engine_persistence.rs"]
 mod persistence;
 pub(crate) mod bucket_dump_codec;
+mod control_state_block;
+pub use self::control_state_block::control_state_blocks_unreadable;
+mod sequence_row_value;
+pub use self::sequence_row_value::sequence_rows_unreadable;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
-    bucket_dump_manifest_memo_len,
-    reset_bucket_dump_manifest_io_counts, BucketDumpManifestIoCounts,
+    bucket_dump_manifest_memo_len, manifest_digest_memo_counts,
+    reset_bucket_dump_manifest_io_counts, reset_manifest_digest_memo_counts,
+    BucketDumpManifestIoCounts,
 };
 mod command_validation;
 pub mod resource_blobs;
@@ -137,6 +142,8 @@ use self::hashing::*;
 use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
 use self::bucket_dump_io::*;
+use self::control_state_block::*;
+use self::sequence_row_value::*;
 use self::bucket_dump_codec::*;
 use self::bucket_store::{read_bucket_index_value, bucket_index_element_name_block_addresses};
 use self::state::*;
@@ -171,7 +178,9 @@ use crate::types::{
 };
 use crate::wal::{LocalWriteAheadLogStore, WriteAheadLogRecord};
 use context::{context_index_ref_identity, validate_context_index_lookup};
-use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
+use matrixcache::{
+    CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache, PageCacheKeyPrefix,
+};
 // FOR THE SLOT'S SERIES SURFACE: `ObjectSlot` implements these, and the names it keeps
 // (`len`, `get`, `is_empty`) already matched the call sites -- only the trait was out of
 // scope here. Anonymous, because only the methods are wanted.
@@ -612,8 +621,7 @@ impl TemporalEngine {
     /// shard that is not limited settles under a READ lock -- taking the write lock on every
     /// command would serialise the engine on a feature almost nobody has turned on.
     fn charge_quota(&self, shard_id: ShardId, kind: quota::QuotaKind) -> bool {
-        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
-        let default = *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env);
+        let default = Self::default_shard_quota();
         if default.is_unlimited() {
             let table = self.quotas.read().expect("quota lock poisoned");
             if !table.limits(shard_id) {
@@ -624,6 +632,25 @@ impl TemporalEngine {
             .write()
             .expect("quota lock poisoned")
             .try_consume(shard_id, kind, default)
+    }
+
+    /// Whether commands for this shard need token accounting at all.
+    ///
+    /// Batch execution asks once before entering its command loop, avoiding one read lock per
+    /// command on the overwhelmingly common unlimited path.
+    fn shard_quota_checks_enabled(&self, shard_id: ShardId) -> bool {
+        let default = Self::default_shard_quota();
+        !default.is_unlimited()
+            || self
+                .quotas
+                .read()
+                .expect("quota lock poisoned")
+                .limits(shard_id)
+    }
+
+    fn default_shard_quota() -> quota::ShardQuotaConfig {
+        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
+        *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env)
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
@@ -1042,14 +1069,7 @@ impl TemporalEngine {
         // change at all). Keeping the millisecond itself is what lets those two be seen. See
         // `delta_key_state_change` below.
         let object_keys = command_object_keys(&command);
-        let membership_before: Vec<(usize, Option<u64>)> = object_keys
-            .iter()
-            .map(|key| {
-                let size = key_membership_size(shard, key);
-                let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                (size, deadline)
-            })
-            .collect();
+        let membership_before = key_state_before(shard, &object_keys);
         let feature_trimmed_membership = command_will_trim_feature_membership(
             &command,
             shard,
@@ -1200,18 +1220,16 @@ impl TemporalEngine {
                             shard,
                             request.shard_id,
                             key,
-                            &[field.as_str()],
+                            std::iter::once(field.as_str()),
                         )
                     }
                     Command::HashMultiSet { key, entries }
                     | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
-                        let fields: Vec<&str> =
-                            entries.iter().map(|(field, _)| field.as_str()).collect();
                         storage_bucket_internals::sync_written_hash_fields(
                             shard,
                             request.shard_id,
                             key,
-                            &fields,
+                            entries.iter().map(|(field, _)| field.as_str()),
                         )
                     }
                     _ => false,
@@ -1548,7 +1566,7 @@ impl TemporalEngine {
                     || delta_key_state_change(
                         shard,
                         &delta_command_keys,
-                        &membership_before,
+                        membership_before.as_slice(),
                     );
                 let mut key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
@@ -1739,7 +1757,7 @@ impl TemporalEngine {
                     FastPathRead::Hash {
                         key: key.as_str(),
                         fields: shard
-                            .hashes
+                            .bucket_index.hashes
                             .get(key)
                             .map(|fields| {
                                 fields
@@ -1812,7 +1830,7 @@ impl TemporalEngine {
                 // cache cannot answer at all.
                 //
                 // THE SIBLING ARM ALREADY DOES THIS, which is why it is not a new rule. The
-                // `FastPathRead::Hash` arm below takes its fields from `shard.hashes` and
+                // `FastPathRead::Hash` arm below takes its fields from `shard.bucket_index.hashes` and
                 // `filter_map`s over them, so an absent hash makes no cache call whatever. This is
                 // the string arm being brought level with the one beside it.
                 let Some(address) = address else {
@@ -3072,7 +3090,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// which rebuilds the map through the ordinary write path.
 ///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 30;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 31;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3791,7 +3809,7 @@ fn command_upsert_element_names(
         // push and its LAST for a right one. That is why this needs shard state and the other
         // arms do not.
         Command::ListPush { key, left, .. } => {
-            let seq = shard.lists.get(key).and_then(|list| {
+            let seq = shard.bucket_index.lists.get(key).and_then(|list| {
                 if *left {
                     list.keys().next().copied()
                 } else {
@@ -3823,7 +3841,7 @@ fn collect_upsert_index_items(
     for (kind, object_key, element_name) in element_names {
         let address = match (*kind, element_name) {
             ("hash", Some(field)) => shard
-                .hashes
+                .bucket_index.hashes
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
@@ -3861,7 +3879,7 @@ fn collect_upsert_index_items(
             ("zset", Some(element_name)) => container_blocks::member_from_element_name(element_name)
                 .and_then(|member| {
                     shard
-                        .zsets
+                        .bucket_index.zsets
                         .get(object_key)
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
@@ -3875,7 +3893,7 @@ fn collect_upsert_index_items(
                 .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
                 .and_then(|seq| {
                     shard
-                        .lists
+                        .bucket_index.lists
                         .get(object_key)
                         .and_then(|entries| entries.get(&seq))
                         .cloned()
@@ -3883,7 +3901,7 @@ fn collect_upsert_index_items(
             ("set", Some(element_name)) => container_blocks::member_from_element_name(element_name)
                 .and_then(|member| {
                     shard
-                        .sets
+                        .bucket_index.sets
                         .get(object_key)
                         .and_then(|members| members.get(&member))
                         .cloned()
@@ -3939,12 +3957,21 @@ fn collect_upsert_index_items(
 
 /// The (kind, element name) a typed removal deleted, when the command names it outright.
 ///
-/// Only commands whose element name is derivable from their own fields appear here. ZSetRemove's
-/// element name folds in the score it is deleting, and ListPop's is the sequence it just took --
-/// neither survives the operation, so neither can be named from the command afterwards. Those
-/// keep restating the whole object until the element name is carried out of the arm.
+/// A removal that names its element states NO block rows (see `collect_command_index_items_for`:
+/// every row is filtered out when a name is asked for), so what this answers is "does the record
+/// restate the object or not", and the name itself is read for nothing but its presence.
+///
+/// ZSetRemove's element name is the member alone: the score came off the string, so it is derivable
+/// from the command like a set's. ListPop's is the sequence it just took, which does not survive
+/// the operation and cannot be named from the command afterwards -- and need not be, for the reason
+/// above, so it answers with an empty name.
 fn command_removed_element_name(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
+        Command::ZSetRemove { member, .. } => Some((
+            "zset",
+            Some(crate::engine::execute_on_shard::zset_element_name(member)),
+        )),
+        Command::ListPop { .. } => Some(("list", Some(String::new()))),
         Command::SetRemove { member, .. } => Some((
             "set",
             Some(crate::engine::execute_on_shard::set_element_name(member)),
@@ -4002,7 +4029,16 @@ fn collect_command_index_items_for(
     // its own copy, so the source is the object lookup inverted by position -- built ONCE here and
     // queried per block, never built per block. `shard` is held immutably throughout, so there is no
     // borrow to split.
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    //
+    // RESTRICTED TO THE OBJECTS THE COMMAND TOUCHED. Only rows whose identity is one of `keys` are
+    // emitted, so naming every other object's blocks was a whole-shard pass (two maps grown to the
+    // shard's block count) spent to be thrown away. A deleted block is named by its bucket's
+    // tombstone row and never came from this inversion.
+    let identities = crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+        &shard.bucket_index.objects,
+        &shard.bucket_index.object_block_lookup,
+        keys.iter().copied(),
+    );
     let mut items = Vec::new();
     for routing_bucket in buckets {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
@@ -4177,6 +4213,34 @@ fn command_will_trim_feature_membership(
 ///
 /// The comparison is on `Option<u64>`, so a re-arm to the SAME millisecond correctly is not a
 /// change and does not capture.
+enum KeyStateBefore {
+    One([(usize, Option<u64>); 1]),
+    Many(Vec<(usize, Option<u64>)>),
+}
+
+impl KeyStateBefore {
+    fn as_slice(&self) -> &[(usize, Option<u64>)] {
+        match self {
+            Self::One(state) => state,
+            Self::Many(states) => states,
+        }
+    }
+}
+
+/// Capture pre-write membership without allocating for the ordinary one-key command.
+fn key_state_before(shard: &ShardState, keys: &[String]) -> KeyStateBefore {
+    let state = |key: &String| {
+        (
+            key_membership_size(shard, key),
+            shard.expires_at_ms().get(key.as_str()).copied(),
+        )
+    };
+    match keys {
+        [key] => KeyStateBefore::One([state(key)]),
+        keys => KeyStateBefore::Many(keys.iter().map(state).collect()),
+    }
+}
+
 fn delta_key_state_change(
     shard: &ShardState,
     keys: &[String],
@@ -4273,7 +4337,7 @@ fn command_touched_container_elements(
         // landed, so this reads it back exactly as `command_upsert_element_names` does: post-apply the
         // pushed element is the list's FIRST entry for a left push and its LAST for a right one.
         Command::ListPush { key, left, .. } => shard
-            .lists
+            .bucket_index.lists
             .get(key)
             .and_then(|list| {
                 if *left {
@@ -4327,25 +4391,25 @@ fn capture_container_element_states(
     for element in touched {
         let carried = match element {
             TouchedContainerElement::Set { key, member } => shard
-                .sets
+                .bucket_index.sets
                 .get(key)
                 .and_then(|members| members.get(member))
                 .and_then(|address| serde_json::to_value((member, address)).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[0], value)),
             TouchedContainerElement::ZSet { key, member } => shard
-                .zsets
+                .bucket_index.zsets
                 .get(key)
                 .and_then(|members| members.get(member))
                 .and_then(|scored| serde_json::to_value((member, scored)).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[1], value)),
             TouchedContainerElement::List { key, sequence } => shard
-                .lists
+                .bucket_index.lists
                 .get(key)
                 .and_then(|entries| entries.get(sequence))
                 .and_then(|address| serde_json::to_value((sequence, address)).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[2], value)),
             TouchedContainerElement::Hash { key, field } => shard
-                .hashes
+                .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.get(field))
                 .and_then(|address| serde_json::to_value((field, address)).ok())
@@ -4732,7 +4796,7 @@ fn merge_container_elements<M>(
 /// the fold never wrote these maps at all.
 ///
 /// THAT MERGE NOW ASKS THE SAME QUESTION THIS FUNCTION DOES, so a per-record carry would no longer
-/// be handed back: the carry lands in `shard.sets`, which the reconcile then takes as its PERSISTED
+/// be handed back: the carry lands in `shard.bucket_index.sets`, which the reconcile then takes as its PERSISTED
 /// input and filters on whether each element's block is still there. So this is no longer the only
 /// guard against that particular resurrection. It is still the right shape and is not relaxed: the
 /// ordering argument above is about which answer this function computes, not about who catches it
@@ -4773,25 +4837,25 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
             continue;
         };
         let before = skipped;
-        shard.sets.fold_carried_elements(
+        shard.bucket_index.sets.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[0]),
             &live,
             &mut skipped,
         );
-        shard.zsets.fold_carried_elements(
+        shard.bucket_index.zsets.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[1]),
             &live,
             &mut skipped,
         );
-        shard.lists.fold_carried_elements(
+        shard.bucket_index.lists.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[2]),
             &live,
             &mut skipped,
         );
-        shard.hashes.fold_carried_elements(
+        shard.bucket_index.hashes.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[3]),
             &live,
@@ -5051,7 +5115,13 @@ fn fold_delta_block_items(
             // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
             let names = crate::engine::state::block_identities_in(
                 &bucket,
-                &crate::engine::state::BlockKeysByPosition::from_parts(&bucket_index.objects, &bucket_index.object_block_lookup),
+                // ONLY THE OBJECT THIS ITEM IS ABOUT: the closure below drops a block only when its
+                // identity equals `item.object_key`, and keeps a block it cannot name.
+                &crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+                    &bucket_index.objects,
+                    &bucket_index.object_block_lookup,
+                    std::iter::once(&*item.object_key),
+                ),
             );
             let routing_bucket = item.routing_bucket;
             bucket.block_index.retain(
@@ -5099,7 +5169,13 @@ fn fold_delta_block_items(
         } = &mut *bucket_index;
         // NAMED BEFORE THE MUTATION, for the reason at the upsert arm above. Here the destructure
         // is what lets the inversion be read while the bucket map is held mutably.
-        let identities = crate::engine::state::BlockKeysByPosition::from_parts(objects, object_block_lookup);
+        // ONLY THE COVERED OBJECTS: the closure below drops a block only when its identity is one
+        // of `covered_keys`, and keeps a block it cannot name.
+        let identities = crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+            objects,
+            object_block_lookup,
+            covered_keys.iter().map(String::as_str),
+        );
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
             let names = crate::engine::state::block_identities_in(bucket, &identities);
@@ -6864,28 +6940,28 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         &mut visited,
         shard.strings().values().map(|address| address.block_slab_id()),
     );
-    for fields in shard.hashes.values() {
+    for fields in shard.bucket_index.hashes.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
             fields.values().map(|address| address.block_slab_id()),
         );
     }
-    for members in shard.sets.values() {
+    for members in shard.bucket_index.sets.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
             members.values().map(|address| address.block_slab_id()),
         );
     }
-    for elements in shard.lists.values() {
+    for elements in shard.bucket_index.lists.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
             elements.values().map(|address| address.block_slab_id()),
         );
     }
-    for members in shard.zsets.values() {
+    for members in shard.bucket_index.zsets.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
@@ -7190,16 +7266,42 @@ fn persist_control_state_block(
     if async_storage && shard.control_coalesce_persist {
         return true;
     }
-    let Ok(bytes) = serde_json::to_vec(series) else {
-        return false;
-    };
+    // Two parallel packed arrays, protobuf only. There is no JSON path in the block codec at all.
+    let bytes = encode_control_state_block(series);
+    append_control_state_block(
+        cache,
+        block_store,
+        shard_id,
+        shard,
+        key,
+        &bytes,
+        start_routing_bucket,
+        end_routing_bucket,
+        async_storage,
+    )
+}
+
+/// Store one series block's bytes and register it in the index. The tail of
+/// `persist_control_state_block`, split out so the writer and the tests that put a block of another
+/// shape into the store reach the index the same way.
+fn append_control_state_block(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    bytes: &[u8],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+) -> bool {
     let object_id = stable_block_object_id(shard_id, "control_state", key);
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     if let Ok(address) = append_value(
         cache,
         block_store,
         shard_id,
-        &bytes,
+        bytes,
         Some(object_id),
         // The same `None` the object id was derived with, one line up: a control state IS
         // its whole object.
@@ -7273,10 +7375,10 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
     });
     bucket_index_exists
         || shard.strings().contains_key(key)
-        || shard.hashes.contains_key(key)
-        || shard.sets.contains_key(key)
-        || shard.lists.contains_key(key)
-        || shard.zsets.contains_key(key)
+        || shard.bucket_index.hashes.contains_key(key)
+        || shard.bucket_index.sets.contains_key(key)
+        || shard.bucket_index.lists.contains_key(key)
+        || shard.bucket_index.zsets.contains_key(key)
         || shard.buckets.contains_key(key)
         || shard.seen.contains_key(key)
         || shard.features().contains_key(key)
@@ -7878,6 +7980,67 @@ fn read_block_frame_bytes(
     if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
+    read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )
+}
+
+/// Read a whole block frame from the cache without copying its payload.
+///
+/// Packed feature rows are parsed in place and copy only the requested values into the response.
+/// Returning the cache's shared bytes keeps a warm projection from first cloning the entire frame,
+/// which is especially costly when a batch reads several blob-bearing rows. Cold reads retain the
+/// established storage, spill, and log fallbacks and promote the same bytes into the cache.
+#[allow(clippy::too_many_arguments)]
+fn read_block_frame_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    routing_bucket: Option<u32>,
+) -> Option<std::sync::Arc<[u8]>> {
+    let cache_key = CacheKey::page_with_slot(
+        shard_id,
+        address.block_slab_id(),
+        address.offset(),
+        address.length(),
+        routing_bucket,
+    );
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&cache_key)
+    });
+    if let Ok(Some(bytes)) = cached {
+        return Some(bytes);
+    }
+    read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )
+    .map(std::sync::Arc::from)
+}
+
+/// Read a frame from durable storage after its cache key has already missed.
+///
+/// Shared and batched callers perform their own zero-copy lookup. Passing the key they already
+/// built keeps a cold read from constructing and probing the same key a second time.
+fn read_block_frame_bytes_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
     // Past the cache, so this call goes to storage. Counted here rather than at each of the
     // three fallbacks below because every one of them is a trip to the store and they must not
     // drift apart in the tally; a cache HIT returns above and is not I/O.
@@ -7987,6 +8150,28 @@ fn read_block_bytes(
     select_container_value(&bytes, element_name)
 }
 
+fn read_block_bytes_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
+    let bytes = read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )?;
+    let Some(element_name) = identity.element_name() else {
+        return Some(bytes);
+    };
+    select_container_value(&bytes, element_name)
+}
+
 /// Select one element name from bytes already fetched by the caller.
 ///
 /// Keeping this separate from the storage funnel lets a multi-field projection retain one packed
@@ -8063,32 +8248,93 @@ fn read_block_shared(
         cache.get_shared(&cache_key)
     });
     if let Ok(Some(bytes)) = cached {
-        // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
-        // `container_blocks` one address can name a block holding several elements -- so the shared
-        // path has to select out of a cache HIT exactly as `read_block_bytes` selects out of a
-        // store read. Returning the hit unselected is the one way the two doors can disagree, and
-        // it would disagree only when the block is warm: a cold read would answer correctly and a
-        // second read of the same element would answer with framing bytes.
-        let Some(element_name) = identity.element_name() else {
-            return Some(bytes);
-        };
-        return match container_blocks::select_container_element(&bytes, element_name) {
-            container_blocks::ContainerElementRead::NotFramed => Some(bytes),
-            container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
-            // Collapsed for the same reason as the owning funnel above: no value either way.
-            container_blocks::ContainerElementRead::Absent
-            | container_blocks::ContainerElementRead::Removed => None,
-            container_blocks::ContainerElementRead::Corrupt(_) => {
-                note_corrupt_container_block();
-                None
-            }
-        };
+        return select_shared_block_value(bytes, identity);
     }
-    // Every path below writes to the cache and hands back what it wrote, so going through
-    // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
-    // place rather than duplicating three fallbacks that must not drift apart.
-    read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
+    // Every path below writes to the cache and hands back what it wrote. Continue after the miss
+    // already observed above so the storage fallbacks stay in one place without probing this key
+    // again.
+    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
         .map(std::sync::Arc::from)
+}
+
+struct SharedBlockRead<'a> {
+    address: &'a ElementEntry,
+    identity: BlockIdentity<'a>,
+    routing_bucket: Option<u32>,
+}
+
+/// Read several addressed values with one cache operation.
+///
+/// The cache returns frames, so each hit still passes through the same element selector as the
+/// single-value path. Misses retain the ordinary storage funnel, including log reads, spill
+/// redirects and cache promotion.
+fn read_blocks_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    reads: &[SharedBlockRead<'_>],
+) -> Vec<Option<std::sync::Arc<[u8]>>> {
+    let mut page_prefixes = HashMap::with_capacity(reads.len().min(64));
+    let cache_keys = reads
+        .iter()
+        .map(|read| {
+            let block_slab_id = read.address.block_slab_id();
+            page_prefixes
+                .entry(block_slab_id)
+                .or_insert_with(|| PageCacheKeyPrefix::new(shard_id, block_slab_id))
+                .key_with_slot(
+                    read.address.offset(),
+                    read.address.length(),
+                    read.routing_bucket,
+                )
+        })
+        .collect::<Vec<_>>();
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared_batch(&cache_keys)
+    })
+    .unwrap_or_else(|_| vec![None; reads.len()]);
+
+    reads
+        .iter()
+        .zip(cache_keys)
+        .zip(cached)
+        .map(|((read, cache_key), bytes)| {
+            if let Some(bytes) = bytes {
+                return select_shared_block_value(bytes, read.identity);
+            }
+            read_block_bytes_after_cache_miss(
+                cache,
+                block_store,
+                shard_id,
+                read.address,
+                read.identity,
+                cache_key,
+            )
+            .map(std::sync::Arc::from)
+        })
+        .collect()
+}
+
+fn select_shared_block_value(
+    bytes: std::sync::Arc<[u8]>,
+    identity: BlockIdentity<'_>,
+) -> Option<std::sync::Arc<[u8]>> {
+    // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
+    // `container_blocks` one address can name a block holding several elements, a hit must select
+    // the requested element exactly as the owning read path does.
+    let Some(element_name) = identity.element_name() else {
+        return Some(bytes);
+    };
+    match container_blocks::select_container_element(&bytes, element_name) {
+        container_blocks::ContainerElementRead::NotFramed => Some(bytes),
+        container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
+        container_blocks::ContainerElementRead::Absent
+        | container_blocks::ContainerElementRead::Removed => None,
+        container_blocks::ContainerElementRead::Corrupt(_) => {
+            note_corrupt_container_block();
+            None
+        }
+    }
 }
 
 fn read_block_bytes_cold(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {
@@ -8213,10 +8459,10 @@ fn object_manager_stats(
                 (0, live_blocks, 0)
             };
         let secondary_object_count = shard.strings().len()
-            + shard.hashes.len()
-            + shard.sets.len()
-            + shard.lists.len()
-            + shard.zsets.len()
+            + shard.bucket_index.hashes.len()
+            + shard.bucket_index.sets.len()
+            + shard.bucket_index.lists.len()
+            + shard.bucket_index.zsets.len()
             + shard.features().len()
             + shard.control_state().len()
             + shard.control_state_changes.len()
@@ -8234,10 +8480,10 @@ fn object_manager_stats(
         let object_count = bucket_object_count.max(secondary_object_count);
         let dirty_object_count = bucket_dirty_object_count.max(shard.dirty_objects.len());
         let secondary_block_ref_count = shard.strings().len()
-            + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
-            + shard.sets.values().map(BTreeMap::len).sum::<usize>()
-            + shard.lists.values().map(BTreeMap::len).sum::<usize>()
-            + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.bucket_index.hashes.values().map(|fields| fields.len()).sum::<usize>()
+            + shard.bucket_index.sets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.bucket_index.lists.values().map(BTreeMap::len).sum::<usize>()
+            + shard.bucket_index.zsets.values().map(BTreeMap::len).sum::<usize>()
             + shard.features().values().map(|series| series.len()).sum::<usize>()
             + shard.context_nodes().len()
             + shard
@@ -8363,10 +8609,10 @@ fn object_manager_stats(
     }
 
     let object_count = shard.strings().len()
-        + shard.hashes.len()
-        + shard.sets.len()
-        + shard.lists.len()
-        + shard.zsets.len()
+        + shard.bucket_index.hashes.len()
+        + shard.bucket_index.sets.len()
+        + shard.bucket_index.lists.len()
+        + shard.bucket_index.zsets.len()
         + shard.features().len()
         + shard.control_state().len()
         + shard.context_nodes().len()
@@ -8381,10 +8627,10 @@ fn object_manager_stats(
         + shard.context_summaries().len()
         + shard.context_compressions().len();
     let block_ref_count = shard.strings().len()
-        + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
-        + shard.sets.values().map(BTreeMap::len).sum::<usize>()
-        + shard.lists.values().map(BTreeMap::len).sum::<usize>()
-        + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.bucket_index.hashes.values().map(|fields| fields.len()).sum::<usize>()
+        + shard.bucket_index.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.bucket_index.lists.values().map(BTreeMap::len).sum::<usize>()
+        + shard.bucket_index.zsets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features().values().map(|series| series.len()).sum::<usize>()
         + shard.context_nodes().len()
         + shard

@@ -153,7 +153,7 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
     let resident = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        shard.sets.get("ord/set").map(|m| m.len()).unwrap_or(0)
+        shard.bucket_index.sets.get("ord/set").map(|m| m.len()).unwrap_or(0)
     };
     let rows_detail = entry_rows(&engine, "ord/set");
     drop(engine);
@@ -194,7 +194,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     // An overwrite is the same element in the same position. Under the gate the entry carries no
     // element name, so `container_block_ordinal`'s identity branch cannot find the member's own
     // previous block and falls through to `highest + 1` -- measured before the fix as ordinals
-    // [0, 1]. The position now comes from `shard.sets[key][member].block_id()`: the map that is
+    // [0, 1]. The position now comes from `shard.bucket_index.sets[key][member].block_id()`: the map that is
     // keyed by the member, holding the address it currently occupies, which IS its position.
     // Authoritative rather than derived, and no block read.
     for (label, _blocks, ordinals, _resident) in &rows {
@@ -366,7 +366,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     let resident = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        shard.sets.get("heal/set").map(|m| m.len()).unwrap_or(0)
+        shard.bucket_index.sets.get("heal/set").map(|m| m.len()).unwrap_or(0)
     };
 
     assert_eq!(
@@ -400,7 +400,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 // set/list/hash that rewrites an element IN PLACE under its own identity: `HSET` on a field that
 // already exists keeps the field and takes a new address, over and over, for as long as the key
 // lives. The address-keyed lookup the fix relies on
-// (`shard.hashes.get(&key).and_then(|fields| fields.get(&field))`) has to report THIS write's own
+// (`shard.bucket_index.hashes.get(&key).and_then(|fields| fields.get(&field))`) has to report THIS write's own
 // field's CURRENT address, not a stale one left by an earlier write to a different field of the
 // same object.
 //
@@ -473,7 +473,7 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 /// branch cannot match the single live block it is itself looking at, so `highest` is read off it
 /// anyway and the next write is handed `highest + 1` instead of reusing it -- `[0]`, then `[1]`,
 /// then `[2]`, climbing round over round rather than piling up. With the gated branch, every round
-/// reads `[0]`: the position comes from `shard.hashes[key][field].block_id()` instead, which is
+/// reads `[0]`: the position comes from `shard.bucket_index.hashes[key][field].block_id()` instead, which is
 /// authoritative and needs no block read.
 #[test]
 fn an_overwrite_of_an_element_name_less_hash_entry_reuses_its_ordinal() {

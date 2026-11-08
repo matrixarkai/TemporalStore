@@ -1691,6 +1691,32 @@ pub struct StorageManagerLoopReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eviction: Option<crate::engine::reports::StorageEvictionReport>,
     pub status: Status,
+    /// One row per stage the loop reached, in the order it reached them, led by the
+    /// `pressure_snapshot` row for the plan the round computes before any stage. Skipped stages
+    /// get a row too (`executed: false`), so a stage that costs something while declining shows
+    /// up rather than vanishing. Empty on a report built before this field existed.
+    #[serde(default)]
+    pub stage_spans: Vec<StorageManagerLoopStageSpan>,
+    /// The whole call in microseconds. The span rows are intervals of this same clock, so their
+    /// sum never exceeds it; the remainder is the bookkeeping after the last stage.
+    #[serde(default)]
+    pub duration_us: u64,
+}
+
+/// What one stage of the periodic loop cost: how long its work took and how much of the store
+/// that work walked. Same units and the same read-and-clear walk counters as the cycle's stage
+/// rows, so the two reports can be read side by side.
+///
+/// The walk counters are process-wide: a round that shares the process with another round, or
+/// with a test that is walking a shard, is charged for both.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerLoopStageSpan {
+    pub stage: String,
+    pub executed: bool,
+    #[serde(default)]
+    pub duration_us: u64,
+    #[serde(default)]
+    pub walk: crate::engine::reports::StageWalkCharges,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2039,6 +2065,16 @@ struct DataNodeRuntimeInner {
     /// returns `None`, so at the shipped default these stay `None` and cost nothing. Live-path
     /// state, never persisted -- a reload re-derives deadlines and a fresh pass is correct.
     expiry_cursors: Mutex<HashMap<ShardId, (Option<String>, Option<String>)>>,
+    /// What the loop's WAL-reclaim stage saw the last time it found nothing to reclaim, per shard.
+    ///
+    /// A quiet shard asks the same question every round and gets the same answer; this is how the
+    /// next round knows the inputs have not moved. Live-path only and never persisted: a restart
+    /// starts empty, so the first round after one asks the question once.
+    ///
+    /// The flag is whether the shard WAS reclaimable when it was remembered. A reclaimable shard
+    /// that has nothing to free still counts as having run the stage, so the stage list keeps
+    /// saying maintenance is alive; one that is not reclaimable stays skipped, as it always was.
+    quiet_wal_reclaim: Mutex<HashMap<ShardId, (runtime_storage::QuietWalReclaimKey, bool)>>,
     lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
     lifecycle_snapshot_path: Option<PathBuf>,
     lifecycle_persistence: Mutex<DataNodeLifecyclePersistenceReport>,
@@ -2353,6 +2389,7 @@ impl DataNodeRuntime {
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
             expiry_cursors: Mutex::default(),
+            quiet_wal_reclaim: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),
@@ -2510,6 +2547,7 @@ impl DataNodeRuntime {
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
             expiry_cursors: Mutex::default(),
+            quiet_wal_reclaim: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),
