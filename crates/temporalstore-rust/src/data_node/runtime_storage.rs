@@ -1246,7 +1246,46 @@ impl DataNodeRuntime {
         let index_gc_pressure = lifecycle_plan.reasons.iter().any(|reason| {
             reason == "slot_dump_manifest_prune" || reason == "slot_dump_install_roll_forward_check"
         });
-        if options.enable_index_gc {
+        // THE CHEAP QUESTIONS FIRST, answered from what this round already holds.
+        //
+        // This stage dumps the dirty set, prunes manifests, rolls installs forward, purges delayed
+        // destroys, and then asks whether the index log is large enough to collect -- and it asked
+        // that LAST, after two plans that each walk every live block. On a shard where none of those
+        // has any work, every round paid O(keys) to establish that nothing needed doing.
+        //
+        // The shard has no work for this stage exactly when: nothing is dirty and nothing is
+        // undumped (so the dump takes nothing), no manifest-prune or install-roll-forward reason
+        // stands (so the prune does nothing), no slab is waiting to be destroyed, and the index log
+        // is shorter than the byte floor the collector declines below (so the collector declines).
+        // The floor is read from the same default the collector itself uses, so the two cannot drift.
+        //
+        // Counted as a run of the stage, like the WAL stage's answer from memory: the stage list is
+        // how an operator reads whether maintenance is alive.
+        //
+        // The plan this reads was taken at the top of the round. An earlier stage that retires a slab
+        // in this same round is therefore seen one round later, which is a delay of one period and
+        // not a missed purge: the next round's plan lists it.
+        let index_log_floor = StorageManagerCycleRequest::default().index_gc_index_log_bytes_threshold;
+        let index_gc_has_no_work = options.enable_index_gc
+            && index_log_floor != 0
+            && pressure.dirty_bucket_count == 0
+            && pressure.undumped_wal_records == 0
+            && !index_gc_pressure
+            && lifecycle_plan.delayed_destroy_block_slab_ids.is_empty()
+            && self
+                .inner
+                .engine
+                .index_log_store()
+                .log_len_bytes(shard_id)
+                < index_log_floor;
+        if index_gc_has_no_work {
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_index_gc_runs += 1;
+            executed_stages.push("reclaim_index".to_string());
+        } else if options.enable_index_gc {
             let index_gc_request = StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,

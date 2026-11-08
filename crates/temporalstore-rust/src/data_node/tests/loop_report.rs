@@ -380,3 +380,75 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
          does not include what the caller passes"
     );
 }
+
+/// What the index-reclaim stage's walk charge was in one round: nonzero means it did its work.
+fn index_stage_walk(report: &StorageManagerLoopReport) -> u64 {
+    report
+        .stage_spans
+        .iter()
+        .find(|span| span.stage == "reclaim_index")
+        .expect("every round reports the reclaim_index stage")
+        .walk
+        .live_block_entries
+}
+
+/// A SHARD WITH NOTHING FOR THE INDEX STAGE TO DO STOPS PAYING FOR IT, AND A DIRTY ONE DOES NOT.
+///
+/// The stage dumps the dirty set, prunes manifests, purges delayed destroys and only then asks
+/// whether the index log is big enough to collect; on a shard where none of that has work, every
+/// round paid a walk of every live block to find that out. The stage now answers from the round's
+/// own plan, and still counts as having run, so the stage list keeps saying maintenance is alive.
+///
+/// BOTH HALVES ARE ASSERTED, and the second is the one that proves the first is a gate and not a
+/// stage that stopped working: a write makes the shard dirty, and the very next round must do the
+/// stage's real work, which is the dump, which walks. The stage must also stay in the executed
+/// list on every quiet round.
+#[test]
+fn a_shard_with_nothing_for_the_index_stage_stops_paying_for_it_and_a_dirty_one_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let options = StorageManagerOptions::default();
+
+    // Settle: the first round dumps the whole dirty set through this stage. Bound the wait so a
+    // stage that never settles fails here and does not hang the suite.
+    let mut settled = false;
+    for _ in 0..12 {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if index_stage_walk(&report) == 0 {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "the index stage never stopped walking on an idle shard");
+
+    for round in 0..5 {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        assert_eq!(
+            index_stage_walk(&report),
+            0,
+            "quiet round {round}: the index stage walked the shard although it had no work"
+        );
+        assert!(
+            report.executed_stages.iter().any(|stage| stage == "reclaim_index"),
+            "quiet round {round}: the index stage left the stage list, which an operator reads \
+             as maintenance having died: {:?}",
+            report.executed_stages
+        );
+    }
+
+    // A WRITE makes the shard dirty, so the next round has real work for the stage.
+    let response = runtime.inner.engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "loop-after-the-quiet-index".to_string(),
+            value: vec![b'w'; 96],
+        },
+    });
+    assert!(response.status.ok, "write after the quiet rounds: {:?}", response.status);
+    let report = runtime.run_storage_manager_once(1, options.clone());
+    assert!(
+        index_stage_walk(&report) > 0,
+        "a dirty shard's round did not do the index stage's work, so the gate is skipping a stage \
+         that had something to dump"
+    );
+}
