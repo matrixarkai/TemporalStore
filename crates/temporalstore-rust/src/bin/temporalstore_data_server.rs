@@ -2712,7 +2712,6 @@ struct RaftAdminBootstrapExternalSnapshotRequest {
     #[serde(default = "default_snapshot_cluster_id")]
     cluster_id: String,
     #[serde(default = "default_snapshot_bucket")]
-    #[serde(alias = "slot")]
     bucket: String,
 }
 
@@ -2723,7 +2722,6 @@ struct RaftAdminPublishExternalSnapshotRequest {
     #[serde(default = "default_snapshot_cluster_id")]
     cluster_id: String,
     #[serde(default = "default_snapshot_bucket")]
-    #[serde(alias = "slot")]
     bucket: String,
 }
 

@@ -101,13 +101,8 @@ type Row = (&'static str, &'static str, usize, Class, &'static str);
 /// zero is deleted rather than kept, because a roster that keeps its zeroes is a list nobody can
 /// tell is finished.
 const ROSTER: &[Row] = &[
-    ("crates/temporalstore-rust/src/engine/engine_compaction.rs", "<strings>", 2, Class::PublishedKey, "the layout-policy label `component_block_object` is a stored and published value (the compaction report names the policy), and a value that is published does not move with a rename"),
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "<strings>", 1, Class::OtherSense, "the #[path] of this guard own file, which is named for the word it counts down"),
     ("crates/temporalstore-rust/src/engine/engine_regression_test_modules.rs", "component_is_retired", 1, Class::OtherSense, "this guard, registered under the name of the word it counts down"),
-    ("crates/temporalstore-rust/src/engine/engine_reports.rs", "\"component\"", 1, Class::PublishedKey, "the key the published block-index report writes; consumers read it, so the Rust field is renamed and the key is kept by an explicit rename"),
-    ("crates/temporalstore-rust/src/engine/engine_reports.rs", "//", 1, Class::PublishedKey, "the comment on the renamed field that says the published key is still spelled as it was"),
-    ("crates/temporalstore-rust/src/engine/engine_storage_state.rs", "\"component\"", 1, Class::PublishedKey, "the key a tombstone row is stored under in the index dump; a dump an earlier build wrote must still read, so the key is kept by an explicit rename"),
-    ("crates/temporalstore-rust/src/engine/engine_storage_state.rs", "//", 1, Class::PublishedKey, "the comment on the renamed field that says the stored key is still spelled as it was"),
     ("crates/temporalstore-rust/src/engine/tests/address_footprint.rs", "<strings>", 1, Class::OtherSense, "a literal field name the fixture writes; its byte length is part of what the assertions measure"),
     ("crates/temporalstore-rust/src/engine/tests/block_entry_element_naming.rs", "<strings>", 1, Class::LegacyAlias, "asserts that the stored text no longer carries the old key"),
     ("crates/temporalstore-rust/src/engine/tests/block_entry_names.rs", "<strings>", 12, Class::LegacyAlias, "fixtures: the index text an earlier build stored, which spells the key as it was, and the assertions that it is still read"),
@@ -117,12 +112,11 @@ const ROSTER: &[Row] = &[
     ("crates/temporalstore-rust/src/engine/tests/storage_maintenance_and_compaction.rs", "<strings>", 1, Class::OtherSense, "a literal member name the fixture writes; its byte length is part of what the assertions measure"),
     ("crates/temporalstore-rust/src/engine/tests/stream_reads_and_shard_controls.rs", "<strings>", 1, Class::LegacyAlias, "asserts that a stored block carries neither the old key nor the short one"),
     ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "//", 1, Class::OtherSense, "names the guard this file is read beside"),
-    ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "<strings>", 7, Class::LegacyAlias, "the long key an older record carries and the keys a published row keeps, spelled as the data"),
+    ("crates/temporalstore-rust/src/engine/tests/what_an_element_name_writes_to_disk_and_the_wire.rs", "<strings>", 1, Class::OtherSense, "the assertion that the long spelling is never written"),
     ("crates/temporalstore-rust/src/engine/tests/what_the_slot_index_is_made_of.rs", "<strings>", 5, Class::OtherSense, "a tally label for the slot the entry no longer has; the label is a table key"),
-    ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "<strings>", 3, Class::OtherSense, "the guard table of FOREIGN type names, which quotes foreign words on purpose, and the stored layout label it leaves alone"),
+    ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "<strings>", 1, Class::OtherSense, "the guard table of FOREIGN type names, which quotes foreign words on purpose"),
     ("crates/temporalstore-rust/src/foreign_type_name_guard.rs", "components", 2, Class::OtherSense, "std::path::Path::components(), the standard library iterator over a path"),
     ("crates/temporalstore-rust/src/matrixark_rust_proxy_impl.rs", "sanitize_path_component", 3, Class::OtherSense, "a filesystem path component: the directory name a namespace or table is stored under"),
-    ("crates/temporalstore-rust/src/wal.rs", "\"component\"", 2, Class::LegacyAlias, "alias on the two renamed WAL record fields: a record written under the long key still decodes (an alias is deserialize-only, the written key is the short rename)"),
 ];
 
 /// Files whose NAME contains the word. The module a file declares is counted as an identifier in

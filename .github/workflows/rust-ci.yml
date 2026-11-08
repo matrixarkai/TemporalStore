@@ -502,7 +502,7 @@ jobs:
             engine::tests::component_is_retired::a_sentence_moves_only_its_own_row \
             engine::tests::component_is_retired::the_roster_matches_the_tree_in_both_directions \
             engine::tests::component_is_retired::the_files_named_for_the_word_are_the_roster \
-            engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_short_key_and_the_long_key_write_one_wal_json \
+            engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_short_key_writes_the_wal_json \
             engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_protobuf_framing_of_a_named_record_does_not_move \
             engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_key_a_block_is_filed_under_spells_the_name_in_its_third_slot \
             engine::tests::what_an_element_name_writes_to_disk_and_the_wire::the_tombstone_row_keeps_its_key \

@@ -993,7 +993,6 @@ pub struct ShardStats {
     pub control_state_records: usize,
     pub storage_bytes: u64,
     pub object_manager: ObjectManagerStats,
-    #[serde(alias = "partition_info")]
     pub shard_stat_info: ShardStatInfo,
     #[serde(default)]
     pub storage: ShardCanonicalStorageStats,
@@ -1075,7 +1074,7 @@ pub enum StreamKind {
 pub struct StreamReadRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub size: u64,
@@ -1091,7 +1090,7 @@ pub struct StreamReadResponse {
 pub struct ScanStreamRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub start_offset: u64,
     pub end_offset: u64,
@@ -1115,15 +1114,11 @@ pub struct ScanStreamResponse {
 mod tests {
     use super::*;
 
-    /// The two stream requests still write, and still read, their durable field name.
+    /// The two stream requests write, and read, their durable field name.
     ///
-    /// `a_durable_name_is_never_quietly_dropped` watches the NAME `page_segment_id`, and that name
-    /// is not what is at risk here: seven other structs in the crate spell it, so the list would
-    /// go on finding it even if both of these stopped. What a list of names structurally cannot
-    /// say is that a PARTICULAR struct still carries one -- and these two are the ones on the
-    /// wire, parsed straight out of a request body by `/read_stream` and `/scan_stream`, where
-    /// losing the rename means an existing client's body quietly stops binding the field it names
-    /// and the read starts at slab zero.
+    /// These are the two structs on the wire, parsed straight out of a request body by
+    /// `/read_stream` and `/scan_stream`, where losing the rename means a client's body quietly
+    /// stops binding the field it names and the read starts at slab zero.
     ///
     /// The two are asserted SEPARATELY. They are separate structs carrying separate attributes,
     /// and one round trip over both passes while one of them is wrong.
@@ -1154,7 +1149,7 @@ mod tests {
         let read_body = serde_json::json!({
             "shard_id": 1,
             "stream_kind": "wal",
-            "page_segment_id": SLAB,
+            "block_segment_id": SLAB,
             "offset": 64,
             "size": 128,
         });
@@ -1166,7 +1161,7 @@ mod tests {
             serde_json::from_value(read_body).expect("a client body parses");
         assert_eq!(
             read_back, read,
-            "a /read_stream body naming page_segment_id no longer binds the slab id"
+            "a /read_stream body naming block_segment_id no longer binds the slab id"
         );
 
         // --- ScanStreamRequest, asserted on its own.
@@ -1190,7 +1185,7 @@ mod tests {
         let scan_body = serde_json::json!({
             "shard_id": 1,
             "stream_kind": "wal",
-            "page_segment_id": SLAB,
+            "block_segment_id": SLAB,
             "start_offset": 0,
             "end_offset": 4096,
             "max_bytes": 1024,
@@ -1203,7 +1198,7 @@ mod tests {
             serde_json::from_value(scan_body).expect("a client body parses");
         assert_eq!(
             scan_back, scan,
-            "a /scan_stream body naming page_segment_id no longer binds the slab id"
+            "a /scan_stream body naming block_segment_id no longer binds the slab id"
         );
     }
 }

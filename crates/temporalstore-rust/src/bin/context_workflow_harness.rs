@@ -181,7 +181,6 @@ struct ResourceSkillConversationScaleSummary {
     embedding_production_evidence_ready: bool,
     fanout_node_count: usize,
     fanout_event_count: usize,
-    #[serde(alias = "fanout_segment_count")]
     fanout_slab_count: usize,
     fanout_entity_count: usize,
     fanout_child_ref_count: usize,
