@@ -1020,6 +1020,11 @@ pub struct StorageManagerOptions {
     pub enable_index_gc: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_metrics_reap: bool,
+    /// How many buckets one reap reads gauges for. The sweep resumes where the last round
+    /// stopped, so a shard of any size is covered over several rounds at a fixed cost per round.
+    /// Zero turns the per-bucket gauges off and leaves the rest of the reap running.
+    #[serde(default = "default_reap_metrics_max_buckets_per_round")]
+    pub reap_metrics_max_buckets_per_round: usize,
     /// Whether the periodic loop may EVICT, not merely invalidate cached blocks.
     ///
     /// DEFAULTS TO TRUE, with the other eight stage flags, and what changed is not an appetite for
@@ -1351,6 +1356,7 @@ impl Default for StorageManagerOptions {
             enable_block_compaction: true,
             enable_index_gc: true,
             enable_metrics_reap: true,
+            reap_metrics_max_buckets_per_round: default_reap_metrics_max_buckets_per_round(),
             // ON, with every stage above it, and the ninth of nine to get there. See the field
             // doc. This flag and `index_resident_limit_bytes` below are ONE decision: alone, at
             // the threshold of 0 on the next line, this is an always-open gate, and the bound is
@@ -1472,6 +1478,10 @@ fn default_storage_manager_max_dump_buckets_per_round() -> usize {
 
 fn default_storage_manager_stage_enabled() -> bool {
     true
+}
+
+fn default_reap_metrics_max_buckets_per_round() -> usize {
+    500
 }
 
 fn default_storage_manager_block_gc_max_destroy_slabs_per_round() -> usize {
@@ -1657,6 +1667,30 @@ pub struct StorageMetricsReapReport {
     /// This shard's write-ahead log counters at the moment of the reap.
     #[serde(default)]
     pub wal: crate::wal::WriteAheadLogStats,
+    /// WAL records no dump covers yet: the distance between the log and what the index has made
+    /// durable.
+    #[serde(default)]
+    pub undumped_wal_records: u64,
+    /// Bytes the write-ahead log and the index log have written.
+    #[serde(default)]
+    pub wal_bytes: u64,
+    #[serde(default)]
+    pub index_log_bytes: u64,
+    /// Memory the cache and the bucket index hold, and the cache threshold the loop evicts at.
+    #[serde(default)]
+    pub cache_memory_bytes: u64,
+    #[serde(default)]
+    pub bucket_index_resident_bytes: u64,
+    #[serde(default)]
+    pub cache_memory_pressure_threshold_bytes: u64,
+    /// One bounded slice of the per-bucket gauges, where the next round resumes, and how many
+    /// buckets the shard has in all.
+    #[serde(default)]
+    pub bucket_gauges: Vec<crate::BucketGauge>,
+    #[serde(default)]
+    pub bucket_sweep_next_after: Option<u32>,
+    #[serde(default)]
+    pub buckets_total: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2075,6 +2109,9 @@ struct DataNodeRuntimeInner {
     /// that has nothing to free still counts as having run the stage, so the stage list keeps
     /// saying maintenance is alive; one that is not reclaimable stays skipped, as it always was.
     quiet_wal_reclaim: Mutex<HashMap<ShardId, (runtime_storage::QuietWalReclaimKey, bool)>>,
+    /// Where each shard's per-bucket gauge sweep left off. Live-path state, never persisted: a
+    /// restart starts the sweep from the first bucket.
+    reap_cursors: Mutex<HashMap<ShardId, Option<u32>>>,
     lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
     lifecycle_snapshot_path: Option<PathBuf>,
     lifecycle_persistence: Mutex<DataNodeLifecyclePersistenceReport>,
@@ -2390,6 +2427,7 @@ impl DataNodeRuntime {
             lifecycle: Mutex::default(),
             expiry_cursors: Mutex::default(),
             quiet_wal_reclaim: Mutex::default(),
+            reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),
@@ -2548,6 +2586,7 @@ impl DataNodeRuntime {
             lifecycle: Mutex::default(),
             expiry_cursors: Mutex::default(),
             quiet_wal_reclaim: Mutex::default(),
+            reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
             lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
                 lifecycle_snapshot_path.as_ref(),

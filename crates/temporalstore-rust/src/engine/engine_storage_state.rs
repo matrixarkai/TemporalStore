@@ -1830,6 +1830,21 @@ impl BucketMap {
         self.nodes.is_empty()
     }
 
+    /// The buckets after `after`, in routing order, or all of them when `after` is `None`.
+    ///
+    /// What a bounded, resumable sweep walks: it starts where the last one stopped and does not
+    /// visit the buckets before it.
+    pub(super) fn range_after(
+        &self,
+        after: Option<u32>,
+    ) -> std::collections::btree_map::Range<'_, u32, BucketNode> {
+        use std::ops::Bound;
+        match after {
+            Some(bucket) => self.nodes.range((Bound::Excluded(bucket), Bound::Unbounded)),
+            None => self.nodes.range(..),
+        }
+    }
+
     pub(super) fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, BucketNode> {
         self.nodes.iter()
     }

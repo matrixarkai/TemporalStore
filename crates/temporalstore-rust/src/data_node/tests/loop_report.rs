@@ -518,3 +518,91 @@ fn a_quiet_round_for_the_profiler() {
         );
     }
 }
+
+/// THE REAP PUBLISHES PER-BUCKET GAUGES IN BOUNDED, RESUMABLE SLICES, AND THE SLICES ADD UP.
+///
+/// Three claims, each of which can fail on its own. A slice never holds more buckets than the option
+/// allows, so a round's cost does not grow with the shard. The slices, taken in the order the rounds
+/// ran, are EXACTLY the whole-shard sweep -- no bucket twice, none skipped, in routing order -- so
+/// resuming from the cursor loses nothing. And once the last bucket is read the next round starts
+/// again from the first, so the gauges stay current instead of stopping at the end.
+///
+/// The fixture must hold more buckets than two slices, or the sweep never has to resume and the
+/// second claim is satisfied by a sweep that is really one slice. That is asserted, not assumed.
+#[test]
+fn the_metrics_reap_sweeps_every_bucket_in_bounded_slices_and_wraps() {
+    const SLICE: usize = 16;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let off = StorageManagerOptions {
+        reap_metrics_max_buckets_per_round: 0,
+        ..StorageManagerOptions::default()
+    };
+    let sliced = StorageManagerOptions {
+        reap_metrics_max_buckets_per_round: SLICE,
+        ..StorageManagerOptions::default()
+    };
+
+    // Settle first, with the gauges off, so maintenance has finished changing the shard before the
+    // whole-shard sweep that the slices are compared against is taken.
+    for _ in 0..3 {
+        runtime.run_storage_manager_once(1, off.clone());
+    }
+    let truth = runtime.inner.engine.bucket_gauge_sweep(1, None, usize::MAX);
+    assert!(
+        truth.gauges.len() > SLICE * 2,
+        "the fixture holds {} buckets, which is not more than two slices of {SLICE}; the sweep \
+         would never have to resume",
+        truth.gauges.len()
+    );
+    assert_eq!(truth.buckets_total, truth.gauges.len());
+    assert_eq!(truth.next_after, None, "a whole-shard sweep reaches the end");
+    assert_eq!(
+        truth.gauges.iter().map(|gauge| gauge.object_count).sum::<u64>(),
+        200,
+        "every seeded key is one object in exactly one bucket"
+    );
+
+    let mut seen = Vec::new();
+    let mut rounds = 0usize;
+    let mut wrapped = false;
+    while rounds < 200 {
+        rounds += 1;
+        let report = runtime.run_storage_manager_once(1, sliced.clone());
+        let reap = report.metrics_reap.as_ref().expect("the reap ran");
+        assert!(
+            reap.bucket_gauges.len() <= SLICE,
+            "round {rounds} published {} buckets against a slice of {SLICE}",
+            reap.bucket_gauges.len()
+        );
+        assert_eq!(reap.buckets_total, truth.buckets_total);
+        seen.extend(reap.bucket_gauges.iter().cloned());
+        if reap.bucket_sweep_next_after.is_none() {
+            wrapped = true;
+            break;
+        }
+    }
+    assert!(wrapped, "{rounds} rounds never reached the last bucket");
+    assert!(rounds > 1, "a single slice cannot show that the sweep resumes");
+    assert_eq!(
+        seen, truth.gauges,
+        "the slices, in the order the rounds ran, must be exactly the whole-shard sweep"
+    );
+
+    // Wrapped: the next round starts again from the first bucket.
+    let again = runtime.run_storage_manager_once(1, sliced.clone());
+    assert_eq!(
+        again
+            .metrics_reap
+            .as_ref()
+            .and_then(|reap| reap.bucket_gauges.first()),
+        truth.gauges.first(),
+        "after the last bucket the sweep must start over from the first"
+    );
+
+    // Zero turns the per-bucket gauges off and leaves the rest of the reap running.
+    let report = runtime.run_storage_manager_once(1, off);
+    let reap = report.metrics_reap.as_ref().expect("the reap still ran");
+    assert!(reap.bucket_gauges.is_empty());
+    assert_eq!(reap.buckets_total, 0);
+}
