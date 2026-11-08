@@ -2440,12 +2440,14 @@ pub fn retrieve_context(
                 node_hashes: candidate_chunk.to_vec(),
             },
         });
-        let mut returned = HashSet::with_capacity(candidate_chunk.len());
-        if let CommandResponse::ContextNodeVectorProjections { projections } = response.response {
+        let projections = match response.response {
+            CommandResponse::ContextNodeVectorProjections { projections } => projections,
+            _ => Vec::new(),
+        };
+        {
             let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             for projection in &projections {
-                returned.insert(projection.node_hash);
                 // Use the node's compact L1 vector copy when it covers this query's point in
                 // time. A node without a usable copy joins `summary_lookup_nodes` and is scored
                 // by that pass exactly as before.
@@ -2551,16 +2553,25 @@ pub fn retrieve_context(
                 }
             }
         }
+        // The projection loader preserves request order while omitting missing nodes. Walk both
+        // ordered lists once instead of allocating a hash set and hashing every id twice.
+        let mut returned = projections.iter().map(|projection| projection.node_hash).peekable();
         // A node the engine did not return cannot carry a vector either.
         for node_hash in candidate_chunk {
-            if !returned.contains(node_hash) {
-                l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
-                // ...and it cannot have supplied a summary vector copy either, so it keeps the
-                // lookup it has always had. A node record can be missing while its summaries are
-                // not: the summary series lives in its own keyspace.
-                summary_lookup_nodes.push(*node_hash);
+            if returned
+                .peek()
+                .is_some_and(|returned_hash| *returned_hash == *node_hash)
+            {
+                returned.next();
+                continue;
             }
+            l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
+            // ...and it cannot have supplied a summary vector copy either, so it keeps the
+            // lookup it has always had. A node record can be missing while its summaries are
+            // not: the summary series lives in its own keyspace.
+            summary_lookup_nodes.push(*node_hash);
         }
+        debug_assert!(returned.next().is_none());
     }
     for chunk in lexical_fallback_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         let response = engine.execute(ExecuteRequest {
