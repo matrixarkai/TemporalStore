@@ -7970,6 +7970,28 @@ fn read_block_frame_bytes(
     if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
+    read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )
+}
+
+/// Read a frame from durable storage after its cache key has already missed.
+///
+/// Shared and batched callers perform their own zero-copy lookup. Passing the key they already
+/// built keeps a cold read from constructing and probing the same key a second time.
+fn read_block_frame_bytes_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
     // Past the cache, so this call goes to storage. Counted here rather than at each of the
     // three fallbacks below because every one of them is a trip to the store and they must not
     // drift apart in the tally; a cache HIT returns above and is not I/O.
@@ -8079,6 +8101,28 @@ fn read_block_bytes(
     select_container_value(&bytes, element_name)
 }
 
+fn read_block_bytes_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
+    let bytes = read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )?;
+    let Some(element_name) = identity.element_name() else {
+        return Some(bytes);
+    };
+    select_container_value(&bytes, element_name)
+}
+
 /// Select one element name from bytes already fetched by the caller.
 ///
 /// Keeping this separate from the storage funnel lets a multi-field projection retain one packed
@@ -8157,10 +8201,10 @@ fn read_block_shared(
     if let Ok(Some(bytes)) = cached {
         return select_shared_block_value(bytes, identity);
     }
-    // Every path below writes to the cache and hands back what it wrote, so going through
-    // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
-    // place rather than duplicating three fallbacks that must not drift apart.
-    read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
+    // Every path below writes to the cache and hands back what it wrote. Continue after the miss
+    // already observed above so the storage fallbacks stay in one place without probing this key
+    // again.
+    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
         .map(std::sync::Arc::from)
 }
 
@@ -8200,18 +8244,19 @@ fn read_blocks_shared(
 
     reads
         .iter()
+        .zip(cache_keys)
         .zip(cached)
-        .map(|(read, bytes)| {
+        .map(|((read, cache_key), bytes)| {
             if let Some(bytes) = bytes {
                 return select_shared_block_value(bytes, read.identity);
             }
-            read_block_bytes(
+            read_block_bytes_after_cache_miss(
                 cache,
                 block_store,
                 shard_id,
                 read.address,
                 read.identity,
-                read.routing_bucket,
+                cache_key,
             )
             .map(std::sync::Arc::from)
         })
