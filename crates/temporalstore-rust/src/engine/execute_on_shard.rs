@@ -511,7 +511,7 @@ pub(super) fn execute_hash_multi_get(
     }
     let values = if !distinct_addresses {
         if let Some((address, first_field)) = shared {
-            let frame = read_block_frame_bytes(
+            let frame = read_block_frame_shared(
                 cache,
                 block_store,
                 shard_id,

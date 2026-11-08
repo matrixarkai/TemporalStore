@@ -7989,6 +7989,45 @@ fn read_block_frame_bytes(
     )
 }
 
+/// Read a whole block frame from the cache without copying its payload.
+///
+/// Packed feature rows are parsed in place and copy only the requested values into the response.
+/// Returning the cache's shared bytes keeps a warm projection from first cloning the entire frame,
+/// which is especially costly when a batch reads several blob-bearing rows. Cold reads retain the
+/// established storage, spill, and log fallbacks and promote the same bytes into the cache.
+#[allow(clippy::too_many_arguments)]
+fn read_block_frame_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    routing_bucket: Option<u32>,
+) -> Option<std::sync::Arc<[u8]>> {
+    let cache_key = CacheKey::page_with_slot(
+        shard_id,
+        address.block_slab_id(),
+        address.offset(),
+        address.length(),
+        routing_bucket,
+    );
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&cache_key)
+    });
+    if let Ok(Some(bytes)) = cached {
+        return Some(bytes);
+    }
+    read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )
+    .map(std::sync::Arc::from)
+}
+
 /// Read a frame from durable storage after its cache key has already missed.
 ///
 /// Shared and batched callers perform their own zero-copy lookup. Passing the key they already
