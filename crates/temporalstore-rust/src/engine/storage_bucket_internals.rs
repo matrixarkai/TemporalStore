@@ -2956,20 +2956,21 @@ pub(super) fn sync_blocks_for_written_element_names(
 /// Returns false if any field's address is not in the hash; the caller then runs the whole-object
 /// sync exactly as before, so a shape this does not model costs a fallback rather than a stale
 /// index.
-pub(super) fn sync_written_hash_fields(
+pub(super) fn sync_written_hash_fields<'a>(
     shard: &mut ShardState,
     shard_id: ShardId,
     object_key: &str,
-    fields: &[&str],
+    fields: impl IntoIterator<Item = &'a str>,
 ) -> bool {
-    if fields.is_empty() {
+    let mut fields = fields.into_iter().peekable();
+    if fields.peek().is_none() {
         return false;
     }
     for field in fields {
         let address = shard
             .bucket_index.hashes
             .get(object_key)
-            .and_then(|held| held.get(*field))
+            .and_then(|held| held.get(field))
             .cloned();
         let Some(address) = address else {
             return false;
@@ -2982,7 +2983,7 @@ pub(super) fn sync_written_hash_fields(
             shard_id,
             "hash",
             object_key,
-            Some((*field).to_string()),
+            Some(field.to_string()),
             address,
             true,
             false,

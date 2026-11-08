@@ -4159,6 +4159,7 @@ fn what_a_retrieve_allocates() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider: provider.clone(),
+            include_debug: false,
         };
         // Warm first: the first call through any path allocates one-off structures that are not
         // part of a steady-state retrieve, and counting those would flatter or damn the result
