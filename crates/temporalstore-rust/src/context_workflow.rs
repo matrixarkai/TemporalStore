@@ -3384,8 +3384,26 @@ fn summarize_l1(kind: ContextSourceKind, title: &str, body: &str) -> String {
 }
 
 fn truncate_words(value: &str, limit: usize) -> String {
-    let words = value.split_whitespace().take(limit).collect::<Vec<_>>();
-    words.join(" ")
+    let words = value.split_whitespace().take(limit);
+    let (word_bytes, word_count) = words.clone().fold((0usize, 0usize), |totals, word| {
+        (
+            totals.0.saturating_add(word.len()),
+            totals.1.saturating_add(1),
+        )
+    });
+    if word_count == 0 {
+        return String::new();
+    }
+    let mut truncated = String::with_capacity(
+        word_bytes.saturating_add(word_count.saturating_sub(1)),
+    );
+    for (index, word) in words.enumerate() {
+        if index > 0 {
+            truncated.push(' ');
+        }
+        truncated.push_str(word);
+    }
+    truncated
 }
 
 fn context_importance(body: &str) -> f32 {
