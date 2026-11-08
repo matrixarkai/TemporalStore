@@ -2356,7 +2356,8 @@ pub fn retrieve_context(
     }
     drop(seen_node_hashes);
     fanout_plan.namespace_node_candidates = node_hashes.len();
-    let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
+    let mut summary_scores_by_node =
+        HashMap::<u64, (i64, usize)>::with_capacity(node_hashes.len());
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
     let mut prefetched_nodes = HashMap::<u64, ContextNode>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
