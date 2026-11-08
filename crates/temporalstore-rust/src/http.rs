@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, IoSlice, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::thread;
@@ -487,10 +487,19 @@ fn handle_stream(
     }
 }
 
-/// Write a fully-buffered response (coalesced header + body in a single write so
-/// it leaves in one TCP segment where possible).
+/// Write a fully-buffered response with one gathered header/body write where possible.
+/// The encoded body remains borrowed instead of being copied into a second response buffer.
 fn write_buffered_response(
     stream: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    keep_alive: bool,
+) -> Result<(), HttpError> {
+    write_buffered_response_to(stream, status, body, keep_alive)
+}
+
+fn write_buffered_response_to<W: Write>(
+    writer: &mut W,
     status: u16,
     body: &[u8],
     keep_alive: bool,
@@ -502,11 +511,29 @@ fn write_buffered_response(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
         body.len()
     );
-    let mut response = Vec::with_capacity(header.len() + body.len());
-    response.extend_from_slice(header.as_bytes());
-    response.extend_from_slice(body);
-    stream.write_all(&response)?;
-    stream.flush()?;
+    write_header_and_body(writer, header.as_bytes(), body)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_header_and_body<W: Write>(
+    writer: &mut W,
+    header: &[u8],
+    body: &[u8],
+) -> std::io::Result<()> {
+    let written = writer.write_vectored(&[IoSlice::new(header), IoSlice::new(body)])?;
+    if written == 0 && (!header.is_empty() || !body.is_empty()) {
+        return Err(std::io::Error::new(
+            ErrorKind::WriteZero,
+            "failed to write buffered response",
+        ));
+    }
+    if written < header.len() {
+        writer.write_all(&header[written..])?;
+        writer.write_all(body)?;
+    } else {
+        writer.write_all(&body[written.saturating_sub(header.len())..])?;
+    }
     Ok(())
 }
 
@@ -940,6 +967,103 @@ mod tests {
     use serde_json::Value;
     use std::net::TcpListener;
     use std::time::Instant;
+
+    struct ShortVectoredWriter {
+        bytes: Vec<u8>,
+        max_write: usize,
+        vectored_calls: usize,
+    }
+
+    impl Write for ShortVectoredWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let written = bytes.len().min(self.max_write);
+            self.bytes.extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> std::io::Result<usize> {
+            self.vectored_calls += 1;
+            let mut remaining = self.max_write;
+            let mut written = 0;
+            for buffer in buffers {
+                let take = buffer.len().min(remaining);
+                self.bytes.extend_from_slice(&buffer[..take]);
+                written += take;
+                remaining -= take;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            Ok(written)
+        }
+    }
+
+    #[test]
+    fn buffered_response_handles_a_short_gathered_write() {
+        let body = b"one encoded response body";
+        let mut writer = ShortVectoredWriter {
+            bytes: Vec::with_capacity(256),
+            max_write: 17,
+            vectored_calls: 0,
+        };
+        write_buffered_response_to(&mut writer, 200, body, true).unwrap();
+
+        let expected_header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+            body.len()
+        );
+        assert_eq!(writer.vectored_calls, 1);
+        assert_eq!(writer.bytes, [expected_header.as_bytes(), body].concat());
+    }
+
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    fn buffered_response_does_not_allocate_a_body_sized_copy() {
+        struct DiscardWriter {
+            written: usize,
+            vectored_calls: usize,
+        }
+
+        impl Write for DiscardWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.written += bytes.len();
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> std::io::Result<usize> {
+                self.vectored_calls += 1;
+                let written = buffers.iter().map(|buffer| buffer.len()).sum::<usize>();
+                self.written += written;
+                Ok(written)
+            }
+        }
+
+        let body = vec![b'x'; 1024 * 1024];
+        let mut writer = DiscardWriter {
+            written: 0,
+            vectored_calls: 0,
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        write_buffered_response_to(&mut writer, 200, &body, true).unwrap();
+        let spent = probe.stop();
+
+        assert_eq!(writer.vectored_calls, 1);
+        assert!(writer.written > body.len());
+        assert!(
+            spent.alloc_bytes < 1024,
+            "response allocated {spent:?} for a {} byte body",
+            body.len()
+        );
+        std::hint::black_box((writer, body));
+    }
 
     #[test]
     fn msgpack_response_is_named_binary_with_the_binary_content_type() {
