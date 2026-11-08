@@ -767,7 +767,7 @@ where
             retry_policy: SharedStoreRetryPolicy::default(),
             wal_append_mode: SharedStoreWalAppendMode::default(),
             wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
-            wal_batch_container: false,
+            wal_batch_container: true,
             fence: None,
             cursor_abandon: None,
         }
@@ -787,7 +787,7 @@ where
             },
             wal_append_mode: SharedStoreWalAppendMode::default(),
             wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
-            wal_batch_container: false,
+            wal_batch_container: true,
             fence: None,
             cursor_abandon: None,
         }
@@ -852,10 +852,12 @@ where
     /// actually its own: its payload and that payload's CRC32C. An index or an encoding the
     /// header already implies is omitted per entry and derived on read.
     ///
-    /// **Off by default, and deliberately.** A container is refused BY NAME by a reader built
-    /// before the format existed, so turning this on makes a log that such a reader cannot
-    /// replay. One log may hold both shapes -- that is what a rolling restart leaves behind --
-    /// so the safe order is to deploy readers first and only then enable this on writers.
+    /// **On by default.** It was off while an older reader could still be asked to replay a log
+    /// this writer produced: such a reader refuses a container BY NAME, so the safe order was
+    /// readers first and writers second. Before a first release there is no such reader, and a
+    /// batch of 64 measured at 66.9 B per entry as frames costs 55.2 B as a container
+    /// (8 B values), so the default follows the cheaper shape. Passing `false` writes frames,
+    /// which the reader still accepts; one log may hold both shapes.
     ///
     /// Applies only to a coalesced batch of more than one entry on an append-blob store. A
     /// single entry gains nothing (its container header would cost more than the frame fields
@@ -12946,6 +12948,68 @@ mod tests {
                  loaded once and the decoded records are what the loop iterates",
             );
         }
+    }
+
+    /// A BATCH PUBLISHED BY A DEFAULT REPLICATOR IS ONE CONTAINER, AND IT REPLAYS.
+    ///
+    /// The container encoder and decoder are tested on their own, and a correct encoder with a
+    /// reader that accepts it says nothing about what a replicator built with no flag writes. This
+    /// publishes through the public batch entry point with nothing set, reads the WAL object back
+    /// and asserts its bytes ARE a container, then replays it end to end so the default is
+    /// exercised in both directions. A batch of one must still be a frame: its container header
+    /// would cost more than the frame fields it hoists.
+    #[tokio::test]
+    async fn a_default_replicator_publishes_a_batch_as_one_container_and_replays_it() {
+        fn entry(wal_index: u64) -> SharedStoreWalEntry {
+            SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index,
+                command: Some(Command::StringSet {
+                    key: format!("key-{wal_index}"),
+                    value: b"value".to_vec(),
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(CountingObjectStore::new(FileObjectStore::new(
+            dir.path().join("objects"),
+        )));
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        let entries: Vec<SharedStoreWalEntry> = (1..=6u64).map(entry).collect();
+        replicator.publish_wal_entries_batch(&entries).await.unwrap();
+        let blob = store.get(&replicator.wal_blob_key(1)).await.unwrap();
+        assert!(
+            is_wal_batch_container(&blob),
+            "a batch of six published by a default replicator was written as frames, so the              container is not the default"
+        );
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal_strict(1, 0, &follower)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.applied, 6,
+            "every entry of the container must replay with its own index and command"
+        );
+
+        // A batch of one keeps the frame path.
+        let lone_dir = tempfile::tempdir().unwrap();
+        let lone_store = Arc::new(CountingObjectStore::new(FileObjectStore::new(
+            lone_dir.path().join("objects"),
+        )));
+        let lone = SharedStoreReplicator::new(TEST_CLUSTER_ID, lone_store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        lone.publish_wal_entries_batch(&[entry(1)]).await.unwrap();
+        let lone_blob = lone_store.get(&lone.wal_blob_key(1)).await.unwrap();
+        assert!(
+            !is_wal_batch_container(&lone_blob),
+            "a batch of one must stay a frame: its container header costs more than it saves"
+        );
     }
 
     /// Fails EVERY `append_blob` (the shared-store durable barrier) so the group-commit failure

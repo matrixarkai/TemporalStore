@@ -216,6 +216,7 @@ jobs:
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
             shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_and_older_json \
+            shared_store::tests::a_default_replicator_publishes_a_batch_as_one_container_and_replays_it \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
