@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Every input the loop's WAL-reclaim stage reads in O(1) before it decides whether a reclaim
+/// Every input the loop's WAL-reclaim stage reads cheaply before it decides whether a reclaim
 /// could do anything.
 ///
 /// A shard nobody writes to asks the stage the same question every round and gets the same
@@ -17,14 +17,14 @@ use std::time::Duration;
 /// against: if none of it has moved, the answer cannot have either.
 ///
 /// A WRITE moves `wal_last_sequence`. A dump or an index-log truncate moves
-/// `index_log_last_sequence` or `wal_persistent_bytes`. Moving a block out of the log moves
+/// `index_log_bytes` or `wal_persistent_bytes`. Moving a block out of the log moves
 /// `resident_blocks`, which lowers the retention floor without touching any sequence. A change
 /// to the cursors or snapshot references the caller passes moves `retention_inputs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct QuietWalReclaimKey {
     wal_last_sequence: u64,
     wal_persistent_bytes: u64,
-    index_log_last_sequence: u64,
+    index_log_bytes: u64,
     resident_blocks: usize,
     dirty_buckets: usize,
     undumped_wal_records: u64,
@@ -40,7 +40,13 @@ impl DataNodeRuntime {
         undumped_wal_records: u64,
     ) -> QuietWalReclaimKey {
         use std::hash::{Hash, Hasher};
-        let wal = self.inner.engine.write_ahead_log_store().stats(shard_id);
+        // `stats` answers the last sequence with a scan of the active piece; the cached variant
+        // scans once per shard per process and is already trusted for the per-write index anchor.
+        let wal = self
+            .inner
+            .engine
+            .write_ahead_log_store()
+            .stats_without_rescan(shard_id);
         let retention_inputs = if options.follower_replay_cursors.is_empty()
             && options.raft_snapshot_refs.is_empty()
         {
@@ -57,7 +63,10 @@ impl DataNodeRuntime {
         QuietWalReclaimKey {
             wal_last_sequence: wal.last_sequence,
             wal_persistent_bytes: wal.persistent_bytes,
-            index_log_last_sequence: self.inner.engine.index_log_store().stats(shard_id).last_sequence,
+            // The log's LENGTH, not its last sequence: the sequence is read by scanning the active
+            // piece, while the length is one directory listing and a stat per piece. An append, a
+            // truncate and a collect each change it, so the key keeps what it needs.
+            index_log_bytes: self.inner.engine.index_log_store().log_len_bytes(shard_id),
             resident_blocks: self.inner.engine.wal_resident_block_count(shard_id),
             dirty_buckets,
             undumped_wal_records,
@@ -537,7 +546,7 @@ impl DataNodeRuntime {
         //
         // AND NOT TWICE FOR THE SAME ANSWER. Building the plan walks every live block, so a shard
         // that nobody writes to paid that walk on every round for an answer that could not have
-        // changed. The round that finds nothing to reclaim remembers what it read in O(1); the
+        // changed. The round that finds nothing to reclaim remembers what it read, without walking the shard; the
         // next round compares, and skips the question while none of it has moved.
         let quiet_key_before = (options.enable_wal_reclaim && !dump_pressure).then(|| {
             self.quiet_wal_reclaim_key(
