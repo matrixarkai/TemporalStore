@@ -618,8 +618,7 @@ impl TemporalEngine {
     /// shard that is not limited settles under a READ lock -- taking the write lock on every
     /// command would serialise the engine on a feature almost nobody has turned on.
     fn charge_quota(&self, shard_id: ShardId, kind: quota::QuotaKind) -> bool {
-        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
-        let default = *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env);
+        let default = Self::default_shard_quota();
         if default.is_unlimited() {
             let table = self.quotas.read().expect("quota lock poisoned");
             if !table.limits(shard_id) {
@@ -630,6 +629,25 @@ impl TemporalEngine {
             .write()
             .expect("quota lock poisoned")
             .try_consume(shard_id, kind, default)
+    }
+
+    /// Whether commands for this shard need token accounting at all.
+    ///
+    /// Batch execution asks once before entering its command loop, avoiding one read lock per
+    /// command on the overwhelmingly common unlimited path.
+    fn shard_quota_checks_enabled(&self, shard_id: ShardId) -> bool {
+        let default = Self::default_shard_quota();
+        !default.is_unlimited()
+            || self
+                .quotas
+                .read()
+                .expect("quota lock poisoned")
+                .limits(shard_id)
+    }
+
+    fn default_shard_quota() -> quota::ShardQuotaConfig {
+        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
+        *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env)
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
