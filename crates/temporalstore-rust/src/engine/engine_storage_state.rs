@@ -373,7 +373,7 @@ pub(super) struct ShardState {
     // inner types already derive Serialize, so carrying it costs only a `default` so
     // that dumps written before this still decode.
     #[serde(default)]
-    #[serde(rename = "object_block_layouts", alias = "object_page_layouts")]
+    #[serde(rename = "object_block_layouts")]
     pub(super) object_block_layouts: super::object_record::BlockLayoutStore,
     /// Per `(key, bucket)` distinct-count state, in whichever representation the bucket holds.
     ///
@@ -6402,7 +6402,7 @@ pub(super) struct TombstoneElement {
     /// earlier build wrote must still read. The Rust field is the element name; the key stays.
     #[serde(rename = "component")]
     pub(super) element_name: Arc<str>,
-    #[serde(rename = "block", alias = "page")]
+    #[serde(rename = "block")]
     pub(super) block: (u64, u64, u64),
 }
 
