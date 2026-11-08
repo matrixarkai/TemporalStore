@@ -1199,18 +1199,16 @@ impl TemporalEngine {
                             shard,
                             request.shard_id,
                             key,
-                            &[field.as_str()],
+                            std::iter::once(field.as_str()),
                         )
                     }
                     Command::HashMultiSet { key, entries }
                     | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
-                        let fields: Vec<&str> =
-                            entries.iter().map(|(field, _)| field.as_str()).collect();
                         storage_bucket_internals::sync_written_hash_fields(
                             shard,
                             request.shard_id,
                             key,
-                            &fields,
+                            entries.iter().map(|(field, _)| field.as_str()),
                         )
                     }
                     _ => false,
