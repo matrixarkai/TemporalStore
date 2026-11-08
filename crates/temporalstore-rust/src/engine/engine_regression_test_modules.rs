@@ -131,6 +131,8 @@ mod a_plan_learns_a_log_tail_from_its_appenders;
 mod a_removal_states_no_block_rows;
 #[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
 mod a_manifest_is_fingerprinted_once_not_once_per_plan;
+#[path = "tests/a_hash_get_all_shares_its_page_keys.rs"]
+mod a_hash_get_all_shares_its_page_keys;
 #[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
 mod a_feature_sum_reads_each_point_in_place;
 #[path = "tests/warm_read_decomposition.rs"]

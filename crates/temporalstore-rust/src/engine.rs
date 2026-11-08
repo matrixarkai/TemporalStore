@@ -1864,16 +1864,22 @@ impl TemporalEngine {
                 fields,
                 routing_bucket,
             } => {
+                // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the page keys of a whole-hash read
+                // share their record key: building each from scratch spent three allocations a
+                // field, two of them spelling the same slab name again.
+                let mut page_keys = PageKeys::new();
                 let mut entries = fields
                     .iter()
                     .filter_map(|(field, address)| {
-                        read_block_bytes(
+                        let cache_key =
+                            page_keys.key(request.shard_id, address, Some(routing_bucket));
+                        read_block_bytes_keyed(
                             &self.cache,
                             &self.block_store,
                             request.shard_id,
                             address,
                             BlockIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
-                            Some(routing_bucket),
+                            cache_key,
                         )
                         .map(|value| (field.to_string(), value))
                     })
@@ -8160,6 +8166,24 @@ fn read_block_bytes(
         identity,
         routing_bucket,
     )?;
+    let Some(element_name) = identity.element_name() else {
+        return Some(bytes);
+    };
+    select_container_value(&bytes, element_name)
+}
+
+/// [`read_block_bytes`] with the page key already built (see [`PageKeys`]).
+#[allow(clippy::too_many_arguments)]
+fn read_block_bytes_keyed(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
+    let bytes =
+        read_block_frame_bytes_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
     let Some(element_name) = identity.element_name() else {
         return Some(bytes);
     };

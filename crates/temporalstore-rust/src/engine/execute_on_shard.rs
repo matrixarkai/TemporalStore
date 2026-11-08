@@ -1734,21 +1734,22 @@ pub(crate) fn execute_on_shard(
                 }
             }
 
+            // The routing bucket is the object's, so it is one value for every field; and the
+            // fields of one hash sit in few slabs, so the page keys share their record key.
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let mut page_keys = crate::engine::PageKeys::new();
             let entries = resolved
                 .into_iter()
                 .filter_map(|(name, element_name, address)| {
-                    read_block_bytes(
+                    let cache_key = page_keys.key(shard_id, &address, Some(routing_bucket));
+                    read_block_bytes_keyed(
                         cache,
                         block_store,
                         shard_id,
                         &address,
                         // The element the whole-object door handed back beside this address.
                         BlockIdentity::of(shard_id, "hash", &key, element_name.as_deref()),
-                        Some(block_routing_bucket(
-                            &key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        )),
+                        cache_key,
                     )
                     .map(|value| (name, value))
                 })
