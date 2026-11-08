@@ -3284,11 +3284,14 @@ fn normalize_provider(mut provider: ContextModelProviderConfig) -> ContextModelP
     provider
 }
 
-fn context_sentences(body: &str) -> Vec<&str> {
+fn context_sentence_iter(body: &str) -> impl Iterator<Item = &str> {
     body.split(['.', '\n', '!', '?'])
         .map(str::trim)
         .filter(|sentence| !sentence.is_empty())
-        .collect()
+}
+
+fn context_sentences(body: &str) -> Vec<&str> {
+    context_sentence_iter(body).collect()
 }
 
 /// Whether a source carries enough to justify the (more expensive) richer L1
@@ -3296,7 +3299,8 @@ fn context_sentences(body: &str) -> Vec<&str> {
 /// internal `node_l1_generation_policy` (>=3 events / >=180 tokens); at
 /// extract time sentences stand in for events.
 pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
-    context_sentences(body).len() >= 3 || body.split_whitespace().count() >= 180
+    context_sentence_iter(body).take(3).count() >= 3
+        || body.split_whitespace().nth(179).is_some()
 }
 
 /// L0: the short routing/preview summary (the required
@@ -3304,8 +3308,7 @@ pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
 /// just enough to route and recall. L1 is a strict superset that carries more
 /// content; raw event evidence lives in the separate L2 tier.
 fn summarize_l0(title: &str, body: &str) -> String {
-    let lead = context_sentences(body)
-        .into_iter()
+    let lead = context_sentence_iter(body)
         .next()
         .unwrap_or_else(|| body.trim());
     truncate_words(&format!("{title}: {lead}"), 18)
