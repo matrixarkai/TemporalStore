@@ -127,6 +127,8 @@ mod a_hash_write_files_only_what_it_wrote;
 mod a_write_names_only_the_blocks_of_the_objects_it_touched;
 #[path = "tests/a_plan_learns_a_log_tail_from_its_appenders.rs"]
 mod a_plan_learns_a_log_tail_from_its_appenders;
+#[path = "tests/a_removal_states_no_block_rows.rs"]
+mod a_removal_states_no_block_rows;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]

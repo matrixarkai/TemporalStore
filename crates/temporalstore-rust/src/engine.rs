@@ -3956,12 +3956,21 @@ fn collect_upsert_index_items(
 
 /// The (kind, element name) a typed removal deleted, when the command names it outright.
 ///
-/// Only commands whose element name is derivable from their own fields appear here. ZSetRemove's
-/// element name folds in the score it is deleting, and ListPop's is the sequence it just took --
-/// neither survives the operation, so neither can be named from the command afterwards. Those
-/// keep restating the whole object until the element name is carried out of the arm.
+/// A removal that names its element states NO block rows (see `collect_command_index_items_for`:
+/// every row is filtered out when a name is asked for), so what this answers is "does the record
+/// restate the object or not", and the name itself is read for nothing but its presence.
+///
+/// ZSetRemove's element name is the member alone: the score came off the string, so it is derivable
+/// from the command like a set's. ListPop's is the sequence it just took, which does not survive
+/// the operation and cannot be named from the command afterwards -- and need not be, for the reason
+/// above, so it answers with an empty name.
 fn command_removed_element_name(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
+        Command::ZSetRemove { member, .. } => Some((
+            "zset",
+            Some(crate::engine::execute_on_shard::zset_element_name(member)),
+        )),
+        Command::ListPop { .. } => Some(("list", Some(String::new()))),
         Command::SetRemove { member, .. } => Some((
             "set",
             Some(crate::engine::execute_on_shard::set_element_name(member)),

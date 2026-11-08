@@ -357,7 +357,9 @@ jobs:
             engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container \
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::a_restricted_inversion_names_what_the_whole_shard_one_names_for_its_keys \
             engine::tests::a_plan_learns_a_log_tail_from_its_appenders::the_cached_tail_equals_the_scanned_tail_through_a_history \
-            engine::tests::a_plan_learns_a_log_tail_from_its_appenders::a_maintenance_plan_reads_neither_log_tail_back ; do
+            engine::tests::a_plan_learns_a_log_tail_from_its_appenders::a_maintenance_plan_reads_neither_log_tail_back \
+            engine::tests::a_removal_states_no_block_rows::a_removal_states_no_block_rows \
+            engine::tests::a_removal_states_no_block_rows::a_removed_member_stays_removed_and_the_rest_stay_across_a_cold_reload ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log
