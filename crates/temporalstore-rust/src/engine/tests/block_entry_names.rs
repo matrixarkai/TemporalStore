@@ -851,7 +851,7 @@ const STORED_LOG_RESIDENT_FALSE: &str = r#","log_backed":false"#;
 const EMPTIED_OBJECT_ID: &str = r#""oi":null,"#;
 const EMPTY_ROUTING_BUCKET: &str = r#""#;
 
-const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:4":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:4":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
+const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"block_index":{"hash:k:f0:1:9:3:4:4":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:4":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
 
 /// THE SAME INDEX, CARRYING THE COMBINATION NO WRITER PRODUCES.
 ///
@@ -860,7 +860,7 @@ const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"
 /// every production constructor passed `block_id.or(object_id)` -- but an index that DID carry it
 /// must not be loaded and silently re-keyed, because the generation is hashed into the block
 /// handle and rendered into the key, and those handles are on disk inside the lookup refs.
-const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:9":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:9":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
+const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"block_index":{"hash:k:f0:1:9:3:4:9":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:9":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
 
 /// What this binary must write back after loading `OLD_STORE_INDEX`: the same bytes, MINUS the one
 /// key the node no longer holds.
@@ -2331,118 +2331,69 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
 /// name there is no way left to BUILD this store -- not with a gate, not by hand -- so bytes are
 /// the only form of it that outlives the field. This is the yesterday\x27s-input kind of golden: it
 /// is not what this engine writes and must never be regenerated to match what it writes.
-pub(super) const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_version":8,"wal_resident_blocks":{},"expires_at_ms":{},"strings":{},"hashes":{"ungated/hash":{"f1":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"f0":{"a":0,"l":27,"pi":0,"oi":null,"g":0}}},"sets":{},"seen":{},"buckets":{},"zsets":{"ungated/zset":[[[109,48],[13830554455654793216,{"a":54,"l":34,"pi":0,"oi":null,"g":0}]]]},"lists":{},"features":{},"control_state":{},"control_state_blocks":{},"control_state_changes":{},"control_state_change_sketch":{},"control_state_selection":{},"control_state_uuid":{},"context_nodes":{},"context_event_timeline":{},"context_audits":{},"context_entities":{},"context_children":{},"context_summaries":{},"context_compressions":{},"slot_index":{"bucket_map":{"979707521":{"routing_slot":979707521,"layout":"SingleBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":1,"object_index":[3660521199139779587],"deleted_object_index":[],"page_index":{"zset:ungated/zset:6d30:0:54:34:0:0":{"object_key":"ungated/zset","model_id":"zset","component":"6d30","address":{"a":54,"l":34,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false}}},"3709665044":{"routing_slot":3709665044,"layout":"MultiBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":2,"object_index":[14105434925875933987],"deleted_object_index":[],"page_index":{"hash:ungated/hash:f0:0:0:27:0:0":{"object_key":"ungated/hash","model_id":"hash","component":"f0","address":{"a":0,"l":27,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false},"hash:ungated/hash:f1:0:27:27:1:1":{"object_key":"ungated/hash","model_id":"hash","component":"f1","address":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"dirty":true,"deleted":false}}}}},"applied_wal_sequence":3}
+pub(super) const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_version":8,"wal_resident_blocks":{},"expires_at_ms":{},"strings":{},"hashes":{"ungated/hash":{"f1":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"f0":{"a":0,"l":27,"pi":0,"oi":null,"g":0}}},"sets":{},"seen":{},"buckets":{},"zsets":{"ungated/zset":[[[109,48],[13830554455654793216,{"a":54,"l":34,"pi":0,"oi":null,"g":0}]]]},"lists":{},"features":{},"control_state":{},"control_state_blocks":{},"control_state_changes":{},"control_state_change_sketch":{},"control_state_selection":{},"control_state_uuid":{},"context_nodes":{},"context_event_timeline":{},"context_audits":{},"context_entities":{},"context_children":{},"context_summaries":{},"context_compressions":{},"slot_index":{"bucket_map":{"979707521":{"routing_slot":979707521,"layout":"SingleBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":1,"object_index":[3660521199139779587],"deleted_object_index":[],"block_index":{"zset:ungated/zset:6d30:0:54:34:0:0":{"object_key":"ungated/zset","model_id":"zset","component":"6d30","address":{"a":54,"l":34,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false}}},"3709665044":{"routing_slot":3709665044,"layout":"MultiBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":2,"object_index":[14105434925875933987],"deleted_object_index":[],"block_index":{"hash:ungated/hash:f0:0:0:27:0:0":{"object_key":"ungated/hash","model_id":"hash","component":"f0","address":{"a":0,"l":27,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false},"hash:ungated/hash:f1:0:27:27:1:1":{"object_key":"ungated/hash","model_id":"hash","component":"f1","address":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"dirty":true,"deleted":false}}}}},"applied_wal_sequence":3}
 "##;
 
-/// AN UNGATED STORE IS REFUSED BEFORE IT IS SERVED, WHICH IS WHAT MAKES THE ELEMENT NAME REMOVABLE.
+/// THE BUCKET NODE READER TAKES `block_index` AND NOT THE RETIRED SPELLINGS.
 ///
-/// # THE QUESTION THIS SETTLES
-///
-/// Removing the element name from a block entry means a store whose entries DO name their elements
-/// becomes uninterpretable: the named decoder drops a key it has no field for, SILENTLY, so such a
-/// store would decode cleanly into an index whose container entries name nothing. If that index
-/// were then served, every element it names would be lost or mis-served -- which is not a format
-/// change, it is data loss.
-///
-/// The stamp is what has to stop it, and `persistence.rs` compares with `<`, so a value that is too
-/// LOW falls through to Accepted. That asymmetry is exactly the lethal direction, which is why this
-/// is DRIVEN rather than argued: the store is planted, the shard is loaded, and the load path is
-/// read off the engine's own counters.
-///
-/// # THE ORDER IS THE LOAD-BEARING PART
-///
-/// The refusal happens AFTER the decode and BEFORE the index is used -- `decode_index_bytes`
-/// succeeds, the dropped key is already gone by then, and `load_index_inner` refuses on the stamp
-/// and answers `Ok(None)` so the caller replays the write-ahead log instead. So the silent drop is
-/// harmless only because the refusal follows it. If that order ever inverted, this guard is what
-/// would catch it: the first arm asserts the decode SUCCEEDS and the names are gone, and the second
-/// asserts the shard nevertheless serves nothing from it.
-///
-/// # AND IT IS COUNTED BOTH WAYS
-///
-/// `stale > 0` alone is not enough: `index_load_path_counts` is four independent counters and a
-/// load that was refused AND accepted would move both. So `accepted` is asserted at zero over the
-/// same reset window. An earlier guard in this file moves `stale` and leaves `accepted` unchecked.
-/// THE READER TAKES BOTH SPELLINGS, PROVED AGAINST BYTES AND NOT AGAINST A ROUND TRIP.
-///
-/// The bucket node's block index is WRITTEN under the key `page_index` and held in a field called
-/// `block_index`. Converging that is a stored-format change, so the reader has to land first --
-/// but "reader first" buys nothing if the reader is single-form, and this one WAS: its accepted
-/// set held `page_index` and `page_refs`, two RETIRED spellings, and not the canonical one. A
-/// writer flipped to `block_index` would have produced an index this very binary could not read.
-///
-/// So the set is what is asserted, in both directions:
-///
-///   * the committed `UNGATED_STORE_INDEX_AT_STAMP_8`, which spells `page_index` and was written
-///     by a binary that predates all of this, still loads with its block index POPULATED. A round
-///     trip could not establish this -- it writes and reads with the same build, so both halves
-///     move together and agree. Only bytes nobody can edit into agreement can.
-///   * the same document with the key spelled `block_index` loads to the SAME block count, which
-///     is what makes flipping the writer safe rather than hopeful.
-///
-/// A non-zero count is asserted on both arms. A named map DROPS a key its struct does not declare,
-/// silently and with every other value intact, so "it loaded" is not the property -- "it loaded
-/// carrying the blocks" is, and an empty block index is exactly what the silent drop looks like.
+/// The bucket node's block index is written under `block_index`. It used to be written under
+/// `page_index` (and before that `page_refs`), and the reader accepted all three. The first
+/// release carries no installed base, so the two older spellings are not accepted. A named map
+/// DROPS a key its struct does not declare, silently and with every other value intact, so "it
+/// loaded" is not the property -- "it loaded carrying the blocks" is, and an empty block index is
+/// exactly what the silent drop looks like. So the control is that the committed bytes, spelled
+/// `block_index`, decode to a non-zero block count, and each retired spelling, swapped in alone for
+/// that key, must not produce the same count.
 #[test]
-fn the_bucket_node_reader_takes_the_block_spelling_and_the_page_spelling() {
-    let stored = crate::engine::decode_index_bytes(UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes())
-        .expect("the committed pre-change bytes must still decode");
-    let stored_blocks = super::blocks_with_identity(&stored.bucket_index).len();
-    assert!(
-        stored_blocks > 0,
-        "the committed bytes decoded to ZERO blocks. A named map drops an undeclared key in          silence, so this is what losing the stored spelling looks like -- not an error"
-    );
-
-    // The canonical spelling, in a document otherwise identical. Built by rewriting the KEY in
-    // the committed bytes, so the two arms differ in exactly one token and nothing else.
-    assert!(
-        UNGATED_STORE_INDEX_AT_STAMP_8.contains("\"page_index\":"),
-        "the committed bytes no longer spell `page_index`, so the arm below varies nothing"
-    );
-    let as_block = UNGATED_STORE_INDEX_AT_STAMP_8.replace("\"page_index\":", "\"block_index\":");
-    assert!(
-        !as_block.contains("\"page_index\":"),
-        "the rewrite left a `page_index` key behind, so this arm is still testing the old spelling"
-    );
-    let canonical = crate::engine::decode_index_bytes(as_block.as_bytes())
-        .expect("an index spelling the key `block_index` must load, or the writer cannot converge");
+fn the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones() {
+    let canonical = crate::engine::decode_index_bytes(UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes())
+        .expect("the committed bytes, spelling `block_index`, must decode");
     let canonical_blocks = super::blocks_with_identity(&canonical.bucket_index).len();
-
-    assert_eq!(
-        stored_blocks, canonical_blocks,
-        "the two spellings decoded to different block counts ({stored_blocks} under `page_index`,          {canonical_blocks} under `block_index`). The reader has to take the set, not one of them"
+    assert!(
+        canonical_blocks > 0,
+        "the control decoded to ZERO blocks, so every comparison below would pass vacuously"
     );
-    println!(
-        "  `page_index` -> {stored_blocks} blocks, `block_index` -> {canonical_blocks} blocks, from the same document"
+    assert!(
+        UNGATED_STORE_INDEX_AT_STAMP_8.contains("\"block_index\":"),
+        "the committed bytes no longer spell `block_index`, so the swaps below vary nothing"
     );
 
-    // THE DECLINE THAT STOOD HERE HAS BEEN LIFTED, AND THIS RECORDS THE LIFT RATHER THAN
-    // ERASING IT.
-    //
-    // What stood here asserted that BOTH WRITERS STILL SPELL `page_index`, PERMANENTLY, on the
-    // ground that "a stored name's installed base is on-disk data written by older builds, and no
-    // release schedule changes that". It priced the convergence too: 12 test sites reading the
-    // written key off freshly serialized output, and 78 occurrences across four committed
-    // `compat/` corpora.
-    //
-    // THE PRICE WAS PAID AND THE PREMISE WAS DATED. The reader was widened first and shipped on
-    // its own -- `block_index`, `page_index` and `page_refs` are all accepted, which the two
-    // decode arms above drive against committed bytes -- so an index written by any earlier build
-    // still loads, and the corpora keep RECORDING what those builds emitted rather than being
-    // rewritten. What moved is the writer, and the direction that premise was protecting is the
-    // other one: an older binary reading an index written after the flip would drop the key it
-    // does not declare and load every bucket with an EMPTY block map. That is what
-    // `SHARD_INDEX_FORMAT_VERSION` 29 refuses, which is why the decline's "NO STAMP IS OWED" was
-    // true of leaving the writer alone and is not true of moving it.
-    //
-    // The premise itself -- an installed base of on-disk data from older builds -- is a statement
-    // about the world on a given day, and before a first release that base is development stores
-    // and this repository's own fixtures. Dating a decline's premise is the whole reason this note
-    // is a lift and not an override.
-    //
-    // SO THE PIN IS KEPT AND POINTED THE OTHER WAY: it now fails if a writer stops spelling the
-    // canonical name, and separately if the reader stops ACCEPTING the stored one. A comment does
-    // not fail; these do.
+    for retired in ["page_index", "page_refs"] {
+        let swapped = UNGATED_STORE_INDEX_AT_STAMP_8
+            .replace("\"block_index\":", &format!("\"{retired}\":"));
+        assert_ne!(swapped, UNGATED_STORE_INDEX_AT_STAMP_8, "the swap to `{retired}` did not take");
+        let loaded = crate::engine::decode_index_bytes(swapped.as_bytes());
+        let blocks = loaded
+            .as_ref()
+            .map(|index| super::blocks_with_identity(&index.bucket_index).len());
+        assert!(
+            blocks.as_ref().map_or(true, |count| *count != canonical_blocks),
+            "an index spelling the block index `{retired}` decoded to the same {canonical_blocks} \
+             blocks as `block_index`: the retired spelling is accepted"
+        );
+    }
+
+    // THE OBJECT INDEX TOO: `object_ids` is the retired spelling of `object_index`. Compared as the
+    // JSON the decoded index serialises to, which differs when the key was dropped as unknown (the
+    // object index falls to empty) and would be equal if the retired spelling were read.
+    assert!(
+        UNGATED_STORE_INDEX_AT_STAMP_8.contains("\"object_index\":["),
+        "the committed bytes carry no object_index array, so the swap below varies nothing"
+    );
+    let with_ids = UNGATED_STORE_INDEX_AT_STAMP_8.replace("\"object_index\":", "\"object_ids\":");
+    assert_ne!(with_ids, UNGATED_STORE_INDEX_AT_STAMP_8, "the swap to `object_ids` did not take");
+    let canonical_json = serde_json::to_value(&canonical.bucket_index).unwrap();
+    let loaded = crate::engine::decode_index_bytes(with_ids.as_bytes());
+    assert!(
+        loaded
+            .as_ref()
+            .map_or(true, |index| serde_json::to_value(&index.bucket_index).unwrap() != canonical_json),
+        "an index spelling the object index `object_ids` decoded to the same buckets as \
+         `object_index`: the retired spelling is accepted"
+    );
+
+    // THE WRITERS STILL SPELL THE CANONICAL NAME, read from the source: a writer that drifted back
+    // to a retired spelling would write bytes this reader no longer takes.
     let state = include_str!("../engine_storage_state.rs");
     for writer in [
         "node.serialize_field(\"block_index\"",
@@ -2450,21 +2401,13 @@ fn the_bucket_node_reader_takes_the_block_spelling_and_the_page_spelling() {
     ] {
         assert!(
             state.contains(writer),
-            "a writer stopped spelling the canonical key: {writer:?} is gone from \
-             engine_storage_state.rs. The stored spelling is an ALIAS now, not the emitted name, \
-             so a writer that drifts back to it writes bytes this build's own reader accepts and \
-             an older one silently misreads"
+            "a writer stopped spelling the canonical key: {writer:?} is gone from engine_storage_state.rs"
         );
     }
-    for accepted in ["\"block_index\" | \"page_index\" | \"page_refs\"", "\"page_index\","] {
-        assert!(
-            state.contains(accepted),
-            "the reader stopped accepting a stored spelling: {accepted:?} is gone from \
-             engine_storage_state.rs. This is the half that keeps every index already on disk \
-             readable, and losing it is silent -- a named map drops an undeclared key and the \
-             bucket loads with an EMPTY block map"
-        );
-    }
+    assert!(
+        !state.contains("\"page_index\" =>") && !state.contains("| \"page_refs\""),
+        "the bucket node field reader names a retired spelling again"
+    );
 }
 
 #[test]
