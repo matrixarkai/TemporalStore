@@ -654,22 +654,32 @@ impl EmbeddingIndex {
                 actual: batch.model_hash,
             });
         }
-        let new_entries = batch
-            .keys
-            .iter()
-            .filter(|key| {
-                !self
-                    .tenants
-                    .get(&key.tenant_id)
-                    .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
-            })
-            .count();
+        let mut new_entries_by_tenant = HashMap::<u64, usize>::new();
+        for key in &batch.keys {
+            if !self
+                .tenants
+                .get(&key.tenant_id)
+                .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
+            {
+                *new_entries_by_tenant.entry(key.tenant_id).or_default() += 1;
+            }
+        }
+        let new_entries = new_entries_by_tenant.values().sum::<usize>();
         let requested = self.len().saturating_add(new_entries);
         if requested > self.config.max_entries {
             return Err(EmbeddingIndexError::CapacityExceeded {
                 capacity: self.config.max_entries,
                 requested,
             });
+        }
+
+        for (tenant_id, new_entries) in new_entries_by_tenant {
+            let rows = self.tenants.entry(tenant_id).or_default();
+            rows.item_ids.reserve(new_entries);
+            rows.positions.reserve(new_entries);
+            rows.scales.reserve(new_entries);
+            rows.vectors
+                .reserve(new_entries.saturating_mul(self.config.dimensions));
         }
 
         let mut inserted = 0usize;
