@@ -4891,9 +4891,11 @@ const RETIRED_NAMES: &[&str] = &[
             [
                 "block_segment_id",
                 "first_block_id",
+                "has_corruption",
                 "last_block_id",
                 "logical_bytes",
                 "physical_bytes",
+                "readable_prefix_physical_bytes",
                 "state",
                 "stored_slab_id",
             ],
