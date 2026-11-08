@@ -9,7 +9,7 @@ use crate::block_store::ElementEntry;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEntity,
     ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
-    ContextPackAudit, ContextSummary, ContextTraversedNode, ContextWire,
+    ContextNodeVectorProjection, ContextPackAudit, ContextSummary, ContextTraversedNode, ContextWire,
     FeaturePoint, InternalContextIndex, ShardId, Status,
 };
 use matrixcache::MultiLayerCache;
@@ -950,6 +950,58 @@ pub(super) fn load_context_node_vector(
                 routing_bucket,
             )
                 .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
+        })
+}
+
+pub(super) fn load_context_node_vector_projection(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    node_hash: u64,
+) -> Option<ContextNodeVectorProjection> {
+    let object_key = context_node_key(tenant_hash, node_hash);
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = Some(crate::engine::hashing::block_routing_bucket(
+        &object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    ));
+    shard
+        .bucket_index
+        .hashes
+        .get(&object_key)
+        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+        .map(|address| {
+            (
+                address,
+                BlockIdentity::of(
+                    shard_id,
+                    "hash",
+                    &object_key,
+                    Some(super::constants::CONTEXT_NODE_FIELD),
+                ),
+            )
+        })
+        .or_else(|| {
+            shard.context_nodes().get(object_key.as_str()).map(|address| {
+                (
+                    address,
+                    BlockIdentity::of(shard_id, "context_node", &object_key, None),
+                )
+            })
+        })
+        .and_then(|(address, identity)| {
+            super::read_block_shared(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                identity,
+                routing_bucket,
+            )
+            .and_then(|bytes| crate::types::decode_context_node_vector_projection(&bytes))
         })
 }
 

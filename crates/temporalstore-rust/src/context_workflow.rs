@@ -2428,36 +2428,35 @@ pub fn retrieve_context(
         None
     };
     let storage_candidates = cold_node_hashes.as_deref().unwrap_or(&node_hashes);
+    let mut lexical_fallback_nodes = Vec::new();
     for candidate_chunk in storage_candidates.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if candidate_chunk.is_empty() {
             continue;
         }
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
-            command: Command::ContextGetNodes {
+            command: Command::ContextQueryNodeVectorProjections {
                 tenant_hash: request.tenant_hash,
                 node_hashes: candidate_chunk.to_vec(),
             },
         });
         let mut returned = HashSet::with_capacity(candidate_chunk.len());
-        if let CommandResponse::ContextNodes { nodes } = response.response {
+        if let CommandResponse::ContextNodeVectorProjections { projections } = response.response {
             let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
-            for node in &nodes {
-                returned.insert(node.node_hash);
-                // The node's own copy of its L1 summary vector, when it has one that covers this
-                // query's point in time. Taking it here is the whole saving: this fetch was going
-                // to happen anyway, and the second per-candidate pass below now has nothing to
-                // ask for. A node without a usable copy joins `summary_lookup_nodes` and is
-                // scored by that pass exactly as before.
-                match node.summary_vector_as_of(summary_as_of_ms) {
+            for projection in &projections {
+                returned.insert(projection.node_hash);
+                // Use the node's compact L1 vector copy when it covers this query's point in
+                // time. A node without a usable copy joins `summary_lookup_nodes` and is scored
+                // by that pass exactly as before.
+                match projection.summary_vector_as_of(summary_as_of_ms) {
                     Some(summary_vector) => {
                         if context_embedding_width_conflicts(&query_embedding, summary_vector) {
                             // Same reasoning as everywhere else here: skip without recording, so
                             // the score count stays at zero and the lexical pass still owns it.
                             width_conflict_nodes = width_conflict_nodes.saturating_add(1);
                         } else if context_embedding_model_conflicts(
-                            node.summary_vector_model_hash,
+                            projection.summary_vector_model_hash,
                             active_embedding_model_hash,
                         ) {
                             // Declined here rather than sent to the lookup below. The lookup
@@ -2467,26 +2466,28 @@ pub fn retrieve_context(
                             model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                         } else {
                             summary_rows
-                                .entry((node.summary_vector_model_hash, summary_vector.len()))
+                                .entry((projection.summary_vector_model_hash, summary_vector.len()))
                                 .or_default()
                                 .push(EmbeddingVector {
                                     key: EmbeddingKey {
                                         tenant_id: request.tenant_hash,
-                                        item_id: node.node_hash,
+                                        item_id: projection.node_hash,
                                     },
                                     values: summary_vector,
                                 });
                         }
                     }
-                    None => summary_lookup_nodes.push(node.node_hash),
+                    None => summary_lookup_nodes.push(projection.node_hash),
                 }
-                if node.vector.is_empty() {
+                if projection.vector.is_empty() {
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
-                } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
+                    lexical_fallback_nodes.push(projection.node_hash);
+                } else if context_embedding_width_conflicts(&query_embedding, &projection.vector) {
                     width_conflict_nodes = width_conflict_nodes.saturating_add(1);
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
+                    lexical_fallback_nodes.push(projection.node_hash);
                 } else if context_embedding_model_conflicts(
-                    node.embedding_model_hash,
+                    projection.embedding_model_hash,
                     active_embedding_model_hash,
                 ) {
                     // Same width, different encoder: no length mismatch and no error, so this
@@ -2499,16 +2500,17 @@ pub fn retrieve_context(
                     // bottom of the ranking with no second chance.
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
+                    lexical_fallback_nodes.push(projection.node_hash);
                 } else {
                     node_rows
-                        .entry((node.embedding_model_hash, node.vector.len()))
+                        .entry((projection.embedding_model_hash, projection.vector.len()))
                         .or_default()
                         .push(EmbeddingVector {
                             key: EmbeddingKey {
                                 tenant_id: request.tenant_hash,
-                                item_id: node.node_hash,
+                                item_id: projection.node_hash,
                             },
-                            values: &node.vector,
+                            values: &projection.vector,
                         });
                 }
             }
@@ -2548,9 +2550,6 @@ pub fn retrieve_context(
                     }
                 }
             }
-            for node in nodes {
-                prefetched_nodes.insert(node.node_hash, node);
-            }
         }
         // A node the engine did not return cannot carry a vector either.
         for node_hash in candidate_chunk {
@@ -2560,6 +2559,20 @@ pub fn retrieve_context(
                 // lookup it has always had. A node record can be missing while its summaries are
                 // not: the summary series lives in its own keyspace.
                 summary_lookup_nodes.push(*node_hash);
+            }
+        }
+    }
+    for chunk in lexical_fallback_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextGetNodes {
+                tenant_hash: request.tenant_hash,
+                node_hashes: chunk.to_vec(),
+            },
+        });
+        if let CommandResponse::ContextNodes { nodes } = response.response {
+            for node in nodes {
+                prefetched_nodes.insert(node.node_hash, node);
             }
         }
     }
@@ -2748,9 +2761,8 @@ pub fn retrieve_context(
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
     // bulk-loaded (un-embedded) store collapsed to recency order and lost focused
-    // recall. Instead, score those un-embedded candidates from the node records already retained
-    // by the vector pass, using query/text lexical overlap normalized into the same micros scale
-    // as cosine.
+    // recall. Instead, fetch only those un-embedded/conflicting candidates and score their text
+    // with lexical overlap normalized into the same micros scale as cosine.
     // Embedded nodes keep their cosine score untouched, so when every node is
     // embedded this pass does nothing and behavior is identical to before.
     // Every retrieve does this. `MATRIXARK_CONTEXT_HYBRID_LEXICAL` could skip it and
@@ -2764,8 +2776,8 @@ pub fn retrieve_context(
             .copied()
             .unwrap_or_default();
         // Embedded node (found > 0): cosine score, exactly as before. Otherwise fall back to
-        // lexical overlap so un-embedded nodes remain rankable. Every candidate node was decoded
-        // above, and one reusable buffer avoids both another node read and one allocation per row.
+        // lexical overlap so un-embedded nodes remain rankable. One reusable buffer avoids an
+        // allocation per row.
         if found == 0 {
             if let Some(node) = prefetched_nodes.get(node_hash) {
                 scoring_text.clear();
