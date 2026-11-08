@@ -295,6 +295,8 @@ jobs:
             engine::tests::part4::the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one \
             engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
             index_log::tests::an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item \
+            wal::tests::a_record_with_the_long_field_names_is_refused \
+            index_log::tests::a_delta_record_written_with_the_long_field_names_is_refused \
             engine::tests::page_and_block_name_one_tier::the_stored_object_layout_emits_the_block_spelling_and_does_not_read_the_page_spelling \
             engine::tests::page_and_block_name_one_tier::the_index_log_item_kind_reads_the_block_token_and_refuses_the_page_token \
             data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_protobuf_with_every_field_and_refuses_everything_else \

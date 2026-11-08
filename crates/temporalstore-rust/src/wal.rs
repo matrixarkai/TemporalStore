@@ -230,9 +230,9 @@ pub struct WriteAheadLogRecord {
     // The names below are deliberately short. They are repeated in every record for the life of
     // the log, and on a small write they cost more than the data does; the alias on each keeps
     // every record already written readable.
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     /// The operation this write performed, for a record that cannot say what it DID.
     ///
@@ -242,14 +242,12 @@ pub struct WriteAheadLogRecord {
     /// and on any write that still records nothing, so both replay exactly as they always did.
     #[serde(
         rename = "c",
-        alias = "command",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub command: Option<Command>,
     #[serde(
         rename = "m",
-        alias = "metadata",
         default,
         skip_serializing_if = "Option::is_none"
     )]
@@ -272,7 +270,6 @@ pub struct WriteAheadLogRecord {
     /// `tests/what_an_ack_promises.rs` walks all eight write shapes and prints the column.
     #[serde(
         rename = "p",
-        alias = "staged_blocks",
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
@@ -300,7 +297,6 @@ pub struct WriteAheadLogRecord {
     /// record from a build that had no such field.
     #[serde(
         rename = "t",
-        alias = "outcomes",
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
@@ -671,9 +667,9 @@ mod outcome_address_serde {
 /// replay does not need to know -- that is the entire point.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WalOutcomeItem {
-    #[serde(rename = "k", alias = "kind")]
+    #[serde(rename = "k")]
     pub kind: String,
-    #[serde(rename = "o", alias = "object_key")]
+    #[serde(rename = "o")]
     pub object_key: String,
     /// WHICH ELEMENT OF THAT OBJECT, FOR EVERY KEYED KIND THAT HAS NO BLOCK TO ASK.
     ///
@@ -764,15 +760,14 @@ pub struct WalOutcomeItem {
         skip_serializing_if = "Option::is_none"
     )]
     pub element_name: Option<String>,
-    #[serde(rename = "i", alias = "object_id")]
+    #[serde(rename = "i")]
     pub object_id: u64,
-    #[serde(rename = "b", alias = "routing_bucket")]
+    #[serde(rename = "b")]
     pub routing_bucket: u32,
     /// Where the block went. `None` for state that no block backs -- the seen-sets and token
     /// buckets persist with the index snapshot and have no address to name.
     #[serde(
         rename = "a",
-        alias = "address",
         default,
         with = "outcome_address_serde",
         skip_serializing_if = "Option::is_none"
@@ -787,7 +782,6 @@ pub struct WalOutcomeItem {
     /// `value` beside its `page`, and a `meta_log` flag to tell them apart.
     #[serde(
         rename = "v",
-        alias = "value",
         default,
         skip_serializing_if = "Option::is_none",
         with = "outcome_value_serde"
@@ -796,7 +790,6 @@ pub struct WalOutcomeItem {
     /// The deadline this outcome set, if it set one.
     #[serde(
         rename = "x",
-        alias = "ttl",
         default,
         skip_serializing_if = "Option::is_none"
     )]
@@ -804,7 +797,6 @@ pub struct WalOutcomeItem {
     /// The object is gone.
     #[serde(
         rename = "d",
-        alias = "deleted",
         default,
         skip_serializing_if = "outcome_not_deleted"
     )]
@@ -812,7 +804,6 @@ pub struct WalOutcomeItem {
     /// This item states metadata rather than a block image -- their `meta_log`.
     #[serde(
         rename = "m",
-        alias = "meta",
         default,
         skip_serializing_if = "outcome_not_deleted"
     )]
@@ -896,12 +887,11 @@ pub struct WriteAheadLogRecordMetadata {
     /// and saying so in every record costs more than the statement is worth.
     #[serde(
         rename = "v",
-        alias = "version",
         default = "current_write_ahead_log_format_version",
         skip_serializing_if = "is_current_write_ahead_log_format_version"
     )]
     pub version: u32,
-    #[serde(rename = "t", alias = "timestamp_ms")]
+    #[serde(rename = "t")]
     pub timestamp_ms: u64,
     /// Per-item description of the write.
     ///
@@ -912,7 +902,6 @@ pub struct WriteAheadLogRecordMetadata {
     /// carry theirs and still load.
     #[serde(
         rename = "i",
-        alias = "items",
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
@@ -7690,7 +7679,7 @@ mod tests {
             let mut pad = 8usize;
             loop {
                 let payload = format!(
-                    "{{\"shard_id\":1,\"sequence\":{sequence},\"command\":{{\"kind\":\"string_set\",\"key\":\"{}\",\"value\":[118]}}}}",
+                    "{{\"s\":1,\"q\":{sequence},\"c\":{{\"kind\":\"string_set\",\"key\":\"{}\",\"value\":[118]}}}}",
                     "k".repeat(pad)
                 );
                 let line = crate::log_framing::encode_line(payload.as_bytes());
@@ -11076,16 +11065,6 @@ mod tests {
     }
 
     #[test]
-    fn a_record_written_with_the_array_shape_still_loads() {
-        // The long field name and the array-shaped bytes must both still load: the compact
-        // key is what gets written, and the long spelling is what the alias accepts.
-        let json = br#"{"shard_id":1,"sequence":2,"command":{"kind":"string_set","key":"k","value":[]},"staged_blocks":[{"object_id":9,"bytes":[104,105]}]}"#;
-        let decoded: WriteAheadLogRecord = serde_json::from_slice(json).unwrap();
-        assert_eq!(decoded.staged_blocks[0].object_id, 9);
-        assert_eq!(decoded.staged_blocks[0].bytes, b"hi".to_vec());
-    }
-
-    #[test]
     fn a_record_with_no_staged_block_is_unchanged_on_disk() {
         // The gate-off path must serialize exactly as it did before staging existed.
         let record = WriteAheadLogRecord {
@@ -11207,20 +11186,28 @@ mod tests {
     }
 
 
-    /// A record written with the long field names still loads.
+    /// A record written with the long field names is refused, and the short names load.
     ///
-    /// The rename is only safe because every field keeps an alias for what it was called, and
-    /// nothing rewrites logs already on disk. This is that promise, in the shape the previous code
-    /// actually wrote -- including the format version, which new records leave out.
+    /// The first release carries no installed base, so the long names an earlier build used
+    /// (`shard_id`, `sequence`, `command`, `metadata`) are not accepted. The record's required
+    /// `s` and `q` are absent from such a document, so it is refused rather than read as some
+    /// other record. The same record in the names the writer produces is the control.
     #[test]
-    fn a_record_with_the_long_field_names_still_loads() {
-        let written_before = concat!(
+    fn a_record_with_the_long_field_names_is_refused() {
+        let long = concat!(
             r#"{"shard_id":1,"sequence":7,"command":{"kind":"string_set","key":"k","#,
             r#""value":[104,105]},"metadata":{"version":1,"timestamp_ms":1787429651961}}"#
         );
+        assert!(
+            serde_json::from_str::<WriteAheadLogRecord>(long).is_err(),
+            "a record spelled with the long field names was read: the alias is back"
+        );
+        let short = concat!(
+            r#"{"s":1,"q":7,"c":{"kind":"string_set","key":"k","value":[104,105]},"#,
+            r#""m":{"t":1787429651961}}"#
+        );
         let record: WriteAheadLogRecord =
-            serde_json::from_str(written_before).expect("the long field names must still load");
-
+            serde_json::from_str(short).expect("the control, in the written names, must load");
         assert_eq!(record.shard_id, 1);
         assert_eq!(record.sequence, 7);
         assert_eq!(
@@ -11230,9 +11217,10 @@ mod tests {
                 value: b"hi".to_vec(),
             })
         );
-        let metadata = record.metadata.expect("the metadata block should load");
-        assert_eq!(metadata.version, WRITE_AHEAD_LOG_FORMAT_VERSION);
-        assert_eq!(metadata.timestamp_ms, 1_787_429_651_961);
+        assert_eq!(
+            record.metadata.expect("the metadata block should load").timestamp_ms,
+            1_787_429_651_961
+        );
     }
 
     /// A record that omits the version is read as the current one.

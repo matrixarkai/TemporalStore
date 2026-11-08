@@ -4032,7 +4032,6 @@ mod tests {
         const DURABLE_NAMES: &[&str] = &[
         "active_storage_zones",
         "block_segment_id",
-        "block_segment_target_bytes",
         "compact_pages",
         "dirty_slot_count",
         "dirty_slot_pressure",
@@ -4105,6 +4104,7 @@ const RETIRED_NAMES: &[&str] = &[
         "band_manifest_reconciled_on_open",
         "band_manifest_writes",
         "band_state_transition_count",
+        "block_segment_target_bytes",
         "block_store_segment_api_ready",
         "block_store_zones",
         "blocked_page_segment_ids",
