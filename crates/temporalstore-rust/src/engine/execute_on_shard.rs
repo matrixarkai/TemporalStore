@@ -476,6 +476,7 @@ pub(super) fn execute_hash_multi_get(
     key: &str,
     fields: &[String],
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
+    projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ExecuteOutcome {
     if remove_if_expired(shard, key) {
         let _ = cache.invalidate_record(shard_id, "hash", key);
@@ -523,6 +524,7 @@ pub(super) fn execute_hash_multi_get(
                 container_blocks::project_utf8_container_elements_with_plan(
                     bytes,
                     projection_plan,
+                    projection_scratch,
                 )
             }) {
                 Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
@@ -1496,6 +1498,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashMultiGet { key, fields } => {
             let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+            let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
             return execute_hash_multi_get(
                 cache,
                 block_store,
@@ -1506,6 +1509,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &fields,
                 &projection_plan,
+                &mut projection_scratch,
             );
         }
         Command::HashMultiSet { key, entries } => {

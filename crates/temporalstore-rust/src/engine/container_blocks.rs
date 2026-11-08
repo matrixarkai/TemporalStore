@@ -344,6 +344,22 @@ impl<'a> Utf8ProjectionPlan<'a> {
     }
 }
 
+/// Reusable per-row state for one shared-field projection batch.
+pub(super) struct Utf8ProjectionScratch {
+    found: Vec<bool>,
+}
+
+impl Utf8ProjectionScratch {
+    pub(super) fn new() -> Self {
+        Self { found: Vec::new() }
+    }
+
+    fn reset(&mut self, field_count: usize) {
+        self.found.resize(field_count, false);
+        self.found.fill(false);
+    }
+}
+
 fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
@@ -774,12 +790,14 @@ pub(super) fn project_utf8_container_elements(
     element_names: &[String],
 ) -> Utf8ContainerProjection {
     let plan = Utf8ProjectionPlan::new(element_names);
-    project_utf8_container_elements_with_plan(bytes, &plan)
+    let mut scratch = Utf8ProjectionScratch::new();
+    project_utf8_container_elements_with_plan(bytes, &plan, &mut scratch)
 }
 
 pub(super) fn project_utf8_container_elements_with_plan(
     bytes: &[u8],
     plan: &Utf8ProjectionPlan<'_>,
+    scratch: &mut Utf8ProjectionScratch,
 ) -> Utf8ContainerProjection {
     let Some(header) = frame_header(bytes) else {
         return Utf8ContainerProjection::NotFramed;
@@ -792,8 +810,8 @@ pub(super) fn project_utf8_container_elements_with_plan(
         return Utf8ContainerProjection::OtherSpelling;
     }
 
+    scratch.reset(plan.element_names.len());
     let mut values = vec![None; plan.element_names.len()];
-    let mut found = vec![false; plan.element_names.len()];
     let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
         Ok(count) => count,
@@ -813,8 +831,8 @@ pub(super) fn project_utf8_container_elements_with_plan(
         let Some(&position) = plan.first_position.get(key) else {
             continue;
         };
-        if !found[position] {
-            found[position] = true;
+        if !scratch.found[position] {
+            scratch.found[position] = true;
             if !deleted {
                 values[position] = Some(value.to_vec());
             }
@@ -822,7 +840,7 @@ pub(super) fn project_utf8_container_elements_with_plan(
     }
     for (index, element_name) in plan.element_names.iter().enumerate() {
         let first = plan.first_position[element_name.as_bytes()];
-        if index != first && found[first] {
+        if index != first && scratch.found[first] {
             values[index] = values[first].clone();
         }
     }
@@ -1105,6 +1123,37 @@ mod member_element_name_tests {
         assert_eq!(
             encode_utf8_container_block(&owned),
             encode_container_block(ElementKeySpelling::Utf8, &borrowed),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    fn warm_projection_reuses_its_match_bitmap() {
+        let fields = (0..64)
+            .map(|index| format!("wanted-{index}"))
+            .collect::<Vec<_>>();
+        let rows = vec![("other".to_string(), b"value".to_vec())];
+        let block = encode_utf8_container_block(&rows);
+        let plan = Utf8ProjectionPlan::new(&fields);
+        let mut scratch = Utf8ProjectionScratch::new();
+
+        let warm = project_utf8_container_elements_with_plan(&block, &plan, &mut scratch);
+        assert_eq!(
+            warm,
+            Utf8ContainerProjection::Values(vec![None; fields.len()])
+        );
+
+        let probe = crate::alloc_probe::Probe::start();
+        let projected = project_utf8_container_elements_with_plan(&block, &plan, &mut scratch);
+        let counted = probe.stop();
+
+        assert_eq!(
+            projected,
+            Utf8ContainerProjection::Values(vec![None; fields.len()])
+        );
+        assert_eq!(
+            counted.allocs, 1,
+            "a warm projection should allocate only its returned value slots: {counted:?}"
         );
     }
 
