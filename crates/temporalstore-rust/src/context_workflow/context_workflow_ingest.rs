@@ -142,8 +142,15 @@ fn process_context_source_window(
         let mut chunk_start = 0usize;
         while chunk_start < source_indexes.len() {
             let mut chunk_end = chunk_start;
-            let mut input_count = 0usize;
-            let mut input_bytes = 0usize;
+            // Provider limits apply to distinct encoder inputs, not the number of source owners.
+            let remaining_inputs = source_indexes
+                .len()
+                .saturating_sub(chunk_start)
+                .saturating_mul(2)
+                .min(limits.max_items);
+            let mut unique_texts =
+                std::collections::HashSet::<&str>::with_capacity(remaining_inputs);
+            let mut unique_input_bytes = 0usize;
             while chunk_end < source_indexes.len() {
                 let (source, summaries) = &prepared_sources[source_indexes[chunk_end]];
                 let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
@@ -152,22 +159,35 @@ fn process_context_source_window(
                 } else {
                     summaries.l0.as_str()
                 };
-                let pair_bytes = node_embedding_text.len().saturating_add(source.body.len());
-                let candidate_count = input_count.saturating_add(2);
-                let candidate_bytes = input_bytes.saturating_add(pair_bytes);
+                let event_text = source.body.as_str();
+                let node_is_new = !unique_texts.contains(node_embedding_text);
+                let event_is_new = event_text != node_embedding_text
+                    && !unique_texts.contains(event_text);
+                let new_count =
+                    usize::from(node_is_new).saturating_add(usize::from(event_is_new));
+                let new_bytes = usize::from(node_is_new)
+                    .saturating_mul(node_embedding_text.len())
+                    .saturating_add(usize::from(event_is_new).saturating_mul(event_text.len()));
+                let candidate_count = unique_texts.len().saturating_add(new_count);
+                let candidate_bytes = unique_input_bytes.saturating_add(new_bytes);
                 if chunk_end > chunk_start
                     && (candidate_count > limits.max_items
                         || candidate_bytes > limits.max_request_bytes)
                 {
                     break;
                 }
-                input_count = candidate_count;
-                input_bytes = candidate_bytes;
+                if node_is_new {
+                    unique_texts.insert(node_embedding_text);
+                }
+                if event_is_new {
+                    unique_texts.insert(event_text);
+                }
+                unique_input_bytes = candidate_bytes;
                 chunk_end += 1;
                 if node_embedding_text.len() > limits.max_input_bytes
                     || source.body.len() > limits.max_input_bytes
-                    || input_count > limits.max_items
-                    || input_bytes > limits.max_request_bytes
+                    || unique_texts.len() > limits.max_items
+                    || unique_input_bytes > limits.max_request_bytes
                 {
                     break;
                 }
@@ -192,21 +212,21 @@ fn process_context_source_window(
                 embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
                 embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
             }
-            let ContextEmbeddingOutcome {
-                rows,
+            let ContextCompactEmbeddingOutcome {
+                rows: batch,
+                input_rows,
                 report,
                 deferred,
-            } = context_embeddings_with_fallback(&provider, &embedding_inputs);
-            let batch = match rows {
-                ContextEmbeddingRows::Owned(batch) => Arc::new(batch),
-                ContextEmbeddingRows::Shared { batch, .. } => batch,
-            };
+            } = context_compact_embeddings_with_fallback(&provider, &embedding_inputs);
+            let batch = Arc::new(batch);
+            let input_rows = Arc::<[usize]>::from(input_rows);
             for (chunk_offset, source_index) in chunk_indexes.iter().copied().enumerate() {
                 let mut source_report = report.clone();
                 source_report.requested_vector_count = 2;
                 source_report.generated_vector_count = if deferred { 0 } else { 2 };
                 embedding_outcomes[source_index] = Some(ContextEmbeddingOutcome::shared(
                     Arc::clone(&batch),
+                    Arc::clone(&input_rows),
                     chunk_offset.saturating_mul(2),
                     source_report,
                     deferred,

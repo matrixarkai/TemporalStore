@@ -380,9 +380,31 @@ pub(crate) fn context_embeddings_for_extract(
     provider: &ContextModelProviderConfig,
     inputs: &[(&str, u64, u32, &str)],
 ) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    let (unique_batch, input_rows, report) =
+        context_embeddings_for_extract_compact(provider, inputs)?;
+    if unique_batch.rows() == inputs.len() {
+        return Ok((unique_batch, report));
+    }
+
+    let dimensions = unique_batch.dimensions;
+    let mut values = Vec::with_capacity(inputs.len().saturating_mul(dimensions));
+    for row in input_rows {
+        let start = row.saturating_mul(dimensions);
+        values.extend_from_slice(&unique_batch.values[start..start + dimensions]);
+    }
+    Ok((EmbeddingBatch { dimensions, values }, report))
+}
+
+/// Encodes each distinct text once and returns the logical input-to-vector row map separately.
+/// Batch ingestion uses this form so duplicate source text never expands back into copied vectors.
+pub(crate) fn context_embeddings_for_extract_compact(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<(EmbeddingBatch, Vec<usize>, ContextEmbeddingGenerationReport), Status> {
     let provider = normalize_provider(provider.clone());
     if inputs.is_empty() {
-        return context_embeddings_for_extract_one_batch(&provider, inputs);
+        let (batch, report) = context_embeddings_for_extract_one_batch(&provider, inputs)?;
+        return Ok((batch, Vec::new(), report));
     }
 
     // Encoder output depends on the configured model and text, not the caller's label or object
@@ -405,19 +427,9 @@ pub(crate) fn context_embeddings_for_extract(
 
     let (unique_batch, mut report) =
         context_embeddings_for_unique_inputs(&provider, &unique_inputs)?;
-    if unique_inputs.len() == inputs.len() {
-        return Ok((unique_batch, report));
-    }
-
-    let dimensions = unique_batch.dimensions;
-    let mut values = Vec::with_capacity(inputs.len().saturating_mul(dimensions));
-    for row in input_rows {
-        let start = row.saturating_mul(dimensions);
-        values.extend_from_slice(&unique_batch.values[start..start + dimensions]);
-    }
     report.requested_vector_count = inputs.len();
     report.generated_vector_count = inputs.len();
-    Ok((EmbeddingBatch { dimensions, values }, report))
+    Ok((unique_batch, input_rows, report))
 }
 
 fn context_embeddings_for_unique_inputs(

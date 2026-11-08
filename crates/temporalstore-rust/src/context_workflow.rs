@@ -1660,6 +1660,7 @@ pub(crate) enum ContextEmbeddingRows {
     Owned(EmbeddingBatch),
     Shared {
         batch: Arc<EmbeddingBatch>,
+        input_rows: Arc<[usize]>,
         row_offset: usize,
     },
 }
@@ -1668,7 +1669,13 @@ impl ContextEmbeddingRows {
     fn get_row(&self, index: usize) -> Option<&[f32]> {
         match self {
             Self::Owned(batch) => batch.get_row(index),
-            Self::Shared { batch, row_offset } => batch.get_row(row_offset.saturating_add(index)),
+            Self::Shared {
+                batch,
+                input_rows,
+                row_offset,
+            } => input_rows
+                .get(row_offset.saturating_add(index))
+                .and_then(|row| batch.get_row(*row)),
         }
     }
 }
@@ -1694,15 +1701,67 @@ impl ContextEmbeddingOutcome {
 
     pub(crate) fn shared(
         batch: Arc<EmbeddingBatch>,
+        input_rows: Arc<[usize]>,
         row_offset: usize,
         report: ContextEmbeddingGenerationReport,
         deferred: bool,
     ) -> Self {
         Self {
-            rows: ContextEmbeddingRows::Shared { batch, row_offset },
+            rows: ContextEmbeddingRows::Shared {
+                batch,
+                input_rows,
+                row_offset,
+            },
             report,
             deferred,
         }
+    }
+}
+
+pub(crate) struct ContextCompactEmbeddingOutcome {
+    rows: EmbeddingBatch,
+    input_rows: Vec<usize>,
+    report: ContextEmbeddingGenerationReport,
+    deferred: bool,
+}
+
+pub(crate) fn context_compact_embeddings_with_fallback(
+    provider: &ContextModelProviderConfig,
+    embedding_inputs: &[(&str, u64, u32, &str)],
+) -> ContextCompactEmbeddingOutcome {
+    let embed_outcome = match context_embeddings_for_extract_compact(provider, embedding_inputs) {
+        Ok(value) => Ok(value),
+        Err(status) => {
+            if let Some(fallback) = provider.fallback_provider.as_deref() {
+                let fallback = normalize_provider(fallback.clone());
+                context_embeddings_for_extract_compact(&fallback, embedding_inputs).map(
+                    |(vectors, input_rows, mut report)| {
+                        report.fallback_used = true;
+                        report.provider_name = format!(
+                            "{}+fallback:{}",
+                            provider.provider_name, report.provider_name
+                        );
+                        (vectors, input_rows, report)
+                    },
+                )
+            } else {
+                Err(status)
+            }
+        }
+    };
+    match embed_outcome {
+        Ok((rows, input_rows, report)) => ContextCompactEmbeddingOutcome {
+            rows,
+            input_rows,
+            report,
+            deferred: false,
+        },
+        Err(_) => ContextCompactEmbeddingOutcome {
+            rows: EmbeddingBatch::default(),
+            input_rows: Vec::new(),
+            report: ContextEmbeddingGenerationReport::default(),
+            deferred: true,
+        },
     }
 }
 
@@ -2033,11 +2092,8 @@ pub(crate) fn prepare_context_gated_prepared(
     //
     // When L1 is emitted, the string the node embeds is the string the level-2 summary embeds --
     // both are `l1`. It goes to the provider ONCE and the single vector that comes back is handed
-    // to every owner of it. Listing it twice made the batch carry the same text in two slots, and
-    // `context_embeddings_for_extract` maps inputs to vectors one for one with no dedupe, so a
-    // real OpenAI-compatible provider was asked to encode it twice on every rich ingest and billed
-    // for both. Embedding is the slowest part of an ingest; the second copy bought a vector that
-    // was already in hand.
+    // to every owner of it. Batch ingestion preserves that ownership with compact row mappings,
+    // so repeated source text also occupies one temporary vector instead of one copy per owner.
     //
     // So the batch is two texts whether or not L1 is emitted: the text the node is searched by,
     // and the event body.
