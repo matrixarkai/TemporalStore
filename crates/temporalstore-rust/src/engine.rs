@@ -7254,9 +7254,7 @@ fn persist_control_state_block(
     if async_storage && shard.control_coalesce_persist {
         return true;
     }
-    // PACKED: the container byte and two parallel arrays. There is NO JSON encode path left here;
-    // `decode_control_state_block` keeps its JSON arm for the blocks already on disk, and an
-    // encoder nobody calls is how a retired format comes back.
+    // Two parallel packed arrays, protobuf only. There is no JSON path in the block codec at all.
     let bytes = encode_control_state_block(series);
     append_control_state_block(
         cache,

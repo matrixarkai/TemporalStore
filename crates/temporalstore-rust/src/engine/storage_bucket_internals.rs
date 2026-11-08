@@ -7059,9 +7059,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                         );
                         warm_batch.push((key, bytes.clone()));
                     }
-                    // Either shape, and an unreadable one is COUNTED: this used to be an `if let Ok`
-                    // that left the series absent without a word. It is still left absent, because a
-                    // zero series would be a plausible wrong answer.
+                    // An unreadable block is COUNTED: this used to be an `if let Ok` that left the
+                    // series absent without a word. It is still left absent, because a zero series
+                    // would be a plausible wrong answer.
                     match decode_control_state_block(&bytes) {
                         Ok(series) => {
                             control_state
