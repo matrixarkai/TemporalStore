@@ -10,7 +10,10 @@ use matrixcache::{CacheKey, MultiLayerCache};
 use super::constants::{FEATURE_BLOCK_BINARY_MAGIC, FEATURE_BLOCK_MAGIC};
 use super::state::{PackedFeatureBlock, PackedFeatureBlockDecode};
 use super::hashing::BlockIdentity;
-use super::{append_value, read_block_bytes, read_block_bytes_cold, stable_block_object_id};
+use super::{
+    append_value, read_block_bytes, read_block_bytes_cold, read_block_shared_keyed,
+    stable_block_object_id, PageKeys,
+};
 use crate::storage_config::context_block_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
@@ -639,6 +642,81 @@ pub(super) fn read_feature_point_cached(
             None
         }
     }
+}
+
+/// Hand `with` the value of the point at `timestamp_ms`, borrowed from the block's own bytes.
+///
+/// Answers exactly what [`read_feature_point`] answers about the same bytes -- a value for a point
+/// that is there, `None` for one that is not, `None` for a block that does not decode -- without
+/// building the `Vec<FeaturePoint>` and the value `Vec` that answer used to cost. A sum over a
+/// series reads every point and keeps only a number from each, so those two allocations per point
+/// were the whole of what it paid beyond the cache lookup.
+///
+/// THE WHOLE BLOCK IS WALKED even after the point is found. The strict decoder refuses a block with
+/// a torn tail or bytes after the last point, and a point read out of such a block must be refused
+/// too, or the two readers would disagree about a damaged block. The first point with the
+/// timestamp wins, as `find` picks it.
+pub(super) fn with_feature_point_value<R>(
+    bytes: &[u8],
+    timestamp_ms: u64,
+    with: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
+    let Some(payload) = bytes.strip_prefix(FEATURE_BLOCK_BINARY_MAGIC) else {
+        // The JSON shape and the unframed legacy value keep the allocating reader: nothing writes
+        // the first any more, and the second is the block's own bytes.
+        return match decode_feature_block_strict(bytes) {
+            PackedFeatureBlockDecode::Packed(points) => points
+                .into_iter()
+                .find(|point| point.timestamp_ms == timestamp_ms)
+                .map(|point| with(&point.value)),
+            PackedFeatureBlockDecode::Legacy => Some(with(bytes)),
+            PackedFeatureBlockDecode::Corrupt(_) => None,
+        };
+    };
+    let (count_bytes, mut rest) = split_at_checked(payload, 4)?;
+    let count = u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]])
+        as usize;
+    if count.saturating_mul(FEATURE_POINT_HEADER_BYTES) > rest.len() {
+        return None;
+    }
+    let mut found: Option<&[u8]> = None;
+    for _ in 0..count {
+        let (header, tail) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES)?;
+        let point_timestamp = u64::from_le_bytes([
+            header[0], header[1], header[2], header[3], header[4], header[5], header[6], header[7],
+        ]);
+        let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+        let (value, tail) = split_at_checked(tail, length)?;
+        if found.is_none() && point_timestamp == timestamp_ms {
+            found = Some(value);
+        }
+        rest = tail;
+    }
+    if !rest.is_empty() {
+        return None;
+    }
+    found.map(with)
+}
+
+/// The value of one feature point, read in place: the shared cache bytes are inspected, not copied,
+/// and the page key reuses the record key of the slab it shares with the previous point.
+///
+/// Same answer as [`read_feature_point`], see [`with_feature_point_value`].
+#[allow(clippy::too_many_arguments)]
+pub(super) fn read_feature_value_with<R>(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    timestamp_ms: u64,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    routing_bucket: Option<u32>,
+    keys: &mut PageKeys,
+    with: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
+    let cache_key = keys.key(shard_id, address, routing_bucket);
+    let bytes = read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
+    with_feature_point_value(&bytes, timestamp_ms, with)
 }
 
 #[cfg(test)]
