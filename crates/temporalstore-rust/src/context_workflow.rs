@@ -1725,32 +1725,35 @@ pub(crate) struct ContextCompactEmbeddingOutcome {
     deferred: bool,
 }
 
-pub(crate) fn context_compact_embeddings_with_fallback(
+pub(crate) fn context_prepared_embeddings_with_fallback(
     provider: &ContextModelProviderConfig,
-    embedding_inputs: &[(&str, u64, u32, &str)],
+    unique_inputs: &[(&str, u64, u32, &str)],
+    input_rows: Vec<usize>,
 ) -> ContextCompactEmbeddingOutcome {
-    let embed_outcome = match context_embeddings_for_extract_compact(provider, embedding_inputs) {
-        Ok(value) => Ok(value),
-        Err(status) => {
-            if let Some(fallback) = provider.fallback_provider.as_deref() {
+    let embed_outcome =
+        context_embeddings_for_prepared_unique(provider, unique_inputs, input_rows.len()).or_else(
+            |status| {
+                let Some(fallback) = provider.fallback_provider.as_deref() else {
+                    return Err(status);
+                };
                 let fallback = normalize_provider(fallback.clone());
-                context_embeddings_for_extract_compact(&fallback, embedding_inputs).map(
-                    |(vectors, input_rows, mut report)| {
-                        report.fallback_used = true;
-                        report.provider_name = format!(
-                            "{}+fallback:{}",
-                            provider.provider_name, report.provider_name
-                        );
-                        (vectors, input_rows, report)
-                    },
+                context_embeddings_for_prepared_unique(
+                    &fallback,
+                    unique_inputs,
+                    input_rows.len(),
                 )
-            } else {
-                Err(status)
-            }
-        }
-    };
+                .map(|(vectors, mut report)| {
+                    report.fallback_used = true;
+                    report.provider_name = format!(
+                        "{}+fallback:{}",
+                        provider.provider_name, report.provider_name
+                    );
+                    (vectors, report)
+                })
+            },
+        );
     match embed_outcome {
-        Ok((rows, input_rows, report)) => ContextCompactEmbeddingOutcome {
+        Ok((rows, report)) => ContextCompactEmbeddingOutcome {
             rows,
             input_rows,
             report,

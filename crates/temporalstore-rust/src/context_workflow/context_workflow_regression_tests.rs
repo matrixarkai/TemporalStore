@@ -2143,7 +2143,7 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
             source_kind: ContextSourceKind::Chat,
             source_id: "local-chat".to_string(),
             title: "checkout".to_string(),
-            body: "Checkout failed during payment. Risk increased and support paused the account."
+            body: "Checkout failed during payment. Risk increased and support paused the account. Customers could not complete purchases."
                 .to_string(),
             timestamp_ms: 17,
             provider: ContextModelProviderConfig {
