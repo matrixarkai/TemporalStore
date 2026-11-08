@@ -519,6 +519,7 @@ impl TemporalEngine {
             !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
         let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+        let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
         for (index, key) in keys.iter().enumerate() {
             let rejected = if enforce_foreground_limits
                 && (quota_checks_enabled || read_admission_enabled)
@@ -557,6 +558,7 @@ impl TemporalEngine {
                 key,
                 &fields,
                 &projection_plan,
+                &mut projection_scratch,
             );
             debug_assert!(!outcome.mutated, "TTL state must use the generic batch path");
             let now = now_ms();
