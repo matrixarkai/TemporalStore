@@ -2242,7 +2242,7 @@ pub(crate) fn prepare_context_gated_prepared(
 
 pub fn retrieve_context(
     engine: &TemporalEngine,
-    request: ContextRetrieveRequest,
+    mut request: ContextRetrieveRequest,
 ) -> ContextRetrieveReport {
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
@@ -2276,7 +2276,7 @@ pub fn retrieve_context(
     let tiers = if request.tiers.is_empty() {
         default_tiers()
     } else {
-        request.tiers.clone()
+        std::mem::take(&mut request.tiers)
     };
     let include_l0 = tiers.contains(&ContextTier::L0);
     let include_l1 = tiers.contains(&ContextTier::L1);
@@ -2295,7 +2295,7 @@ pub fn retrieve_context(
             parity: context_pipeline_parity_evidence(),
         };
     } else {
-        request.node_hashes.clone()
+        std::mem::take(&mut request.node_hashes)
     };
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query) {
