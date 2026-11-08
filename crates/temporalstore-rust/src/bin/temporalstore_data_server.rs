@@ -1065,7 +1065,10 @@ fn main() {
                             && req.fields.len() <= 4096
                             && req.keys.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
                     {
-                        msgpack_response(200, &runtime.batch_hash_multi_get_compact(req))
+                        (
+                            200,
+                            runtime.batch_hash_multi_get_compact_msgpack(req),
+                        )
                     }
                     Ok(_) => json_response(
                         400,

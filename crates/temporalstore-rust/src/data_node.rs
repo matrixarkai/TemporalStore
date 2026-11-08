@@ -2975,6 +2975,16 @@ impl DataNodeRuntime {
         self.inner.engine.batch_hash_multi_get_compact(request)
     }
 
+    /// Encode a compact shared projection without copying packed values into intermediate rows.
+    pub fn batch_hash_multi_get_compact_msgpack(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> Vec<u8> {
+        self.inner
+            .engine
+            .batch_hash_multi_get_compact_msgpack(request)
+    }
+
     /// Write one shared field projection to many hashes.
     ///
     /// The data-only path moves one shared schema through every row. Duplicate
