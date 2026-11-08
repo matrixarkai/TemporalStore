@@ -4129,23 +4129,14 @@ pub(crate) fn execute_on_shard(
                     &context_node_key(tenant_hash, node_hash),
                 );
             }
-            let projections = node_hashes
-                .into_iter()
-                .filter_map(|node_hash| {
-                    let mut projection = load_context_node_vector_projection(
-                        cache,
-                        block_store,
-                        shard_id,
-                        shard,
-                        tenant_hash,
-                        node_hash,
-                    )?;
-                    // The addressed owner is authoritative even for legacy payloads that did
-                    // not carry their own hash.
-                    projection.node_hash = node_hash;
-                    Some(projection)
-                })
-                .collect();
+            let projections = load_context_node_vector_projections(
+                cache,
+                block_store,
+                shard_id,
+                shard,
+                tenant_hash,
+                &node_hashes,
+            );
             CommandResponse::ContextNodeVectorProjections { projections }
         }
         Command::ContextSetNodeEmbedding {

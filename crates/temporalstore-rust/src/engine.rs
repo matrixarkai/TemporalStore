@@ -8155,32 +8155,89 @@ fn read_block_shared(
         cache.get_shared(&cache_key)
     });
     if let Ok(Some(bytes)) = cached {
-        // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
-        // `container_blocks` one address can name a block holding several elements -- so the shared
-        // path has to select out of a cache HIT exactly as `read_block_bytes` selects out of a
-        // store read. Returning the hit unselected is the one way the two doors can disagree, and
-        // it would disagree only when the block is warm: a cold read would answer correctly and a
-        // second read of the same element would answer with framing bytes.
-        let Some(element_name) = identity.element_name() else {
-            return Some(bytes);
-        };
-        return match container_blocks::select_container_element(&bytes, element_name) {
-            container_blocks::ContainerElementRead::NotFramed => Some(bytes),
-            container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
-            // Collapsed for the same reason as the owning funnel above: no value either way.
-            container_blocks::ContainerElementRead::Absent
-            | container_blocks::ContainerElementRead::Removed => None,
-            container_blocks::ContainerElementRead::Corrupt(_) => {
-                note_corrupt_container_block();
-                None
-            }
-        };
+        return select_shared_block_value(bytes, identity);
     }
     // Every path below writes to the cache and hands back what it wrote, so going through
     // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
     // place rather than duplicating three fallbacks that must not drift apart.
     read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
         .map(std::sync::Arc::from)
+}
+
+struct SharedBlockRead<'a> {
+    address: &'a ElementEntry,
+    identity: BlockIdentity<'a>,
+    routing_bucket: Option<u32>,
+}
+
+/// Read several addressed values with one cache operation.
+///
+/// The cache returns frames, so each hit still passes through the same element selector as the
+/// single-value path. Misses retain the ordinary storage funnel, including log reads, spill
+/// redirects and cache promotion.
+fn read_blocks_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    reads: &[SharedBlockRead<'_>],
+) -> Vec<Option<std::sync::Arc<[u8]>>> {
+    let cache_keys = reads
+        .iter()
+        .map(|read| {
+            CacheKey::page_with_slot(
+                shard_id,
+                read.address.block_slab_id(),
+                read.address.offset(),
+                read.address.length(),
+                read.routing_bucket,
+            )
+        })
+        .collect::<Vec<_>>();
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared_batch(&cache_keys)
+    })
+    .unwrap_or_else(|_| vec![None; reads.len()]);
+
+    reads
+        .iter()
+        .zip(cached)
+        .map(|(read, bytes)| {
+            if let Some(bytes) = bytes {
+                return select_shared_block_value(bytes, read.identity);
+            }
+            read_block_bytes(
+                cache,
+                block_store,
+                shard_id,
+                read.address,
+                read.identity,
+                read.routing_bucket,
+            )
+            .map(std::sync::Arc::from)
+        })
+        .collect()
+}
+
+fn select_shared_block_value(
+    bytes: std::sync::Arc<[u8]>,
+    identity: BlockIdentity<'_>,
+) -> Option<std::sync::Arc<[u8]>> {
+    // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
+    // `container_blocks` one address can name a block holding several elements, a hit must select
+    // the requested element exactly as the owning read path does.
+    let Some(element_name) = identity.element_name() else {
+        return Some(bytes);
+    };
+    match container_blocks::select_container_element(&bytes, element_name) {
+        container_blocks::ContainerElementRead::NotFramed => Some(bytes),
+        container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
+        container_blocks::ContainerElementRead::Absent
+        | container_blocks::ContainerElementRead::Removed => None,
+        container_blocks::ContainerElementRead::Corrupt(_) => {
+            note_corrupt_container_block();
+            None
+        }
+    }
 }
 
 fn read_block_bytes_cold(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {
