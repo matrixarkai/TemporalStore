@@ -33,7 +33,7 @@ pub struct HashReadDivergenceSample {
 
 /// WHAT THE SERVED HASH WHOLE-OBJECT READ SAW OF ITS TWO SOURCES, PROCESS-WIDE.
 ///
-/// `Command::HashGetAll` resolves field names from the durable container `shard.hashes`, still
+/// `Command::HashGetAll` resolves field names from the durable container `shard.bucket_index.hashes`, still
 /// consults the block index, and serves the UNION of the two. This is what it observed while doing
 /// so.
 ///

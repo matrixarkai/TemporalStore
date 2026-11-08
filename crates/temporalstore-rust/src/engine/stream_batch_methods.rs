@@ -835,6 +835,10 @@ impl TemporalEngine {
         let mut wal_commands = Vec::new();
         let mut wal_payloads_elided = false;
         let mut context_embedding_commands = Vec::new();
+        // Async and bulk writes defer served-index persistence, so they do not consume the
+        // per-key delta metadata below. Building it anyway clones every touched hash key and
+        // field, then drops the complete batch without writing it.
+        let persist_index_delta = !config.async_storage && !bulk_ingest_mode();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
@@ -952,21 +956,16 @@ impl TemporalEngine {
                 continue;
             }
             let object_keys = command_object_keys(&command);
-            // What the touched keys held before this command, so the capture below can be
-            // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(usize, Option<u64>)> = object_keys
-                .iter()
-                .map(|key| {
-                    let size = key_membership_size(shard, key);
-                    let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                    (size, deadline)
-                })
-                .collect();
-            let feature_trimmed_membership = command_will_trim_feature_membership(
-                &command,
-                shard,
-                config.feature_max_size,
-            );
+            // Only a persisted served-index delta consumes this state. Async and bulk writes
+            // defer that delta, so avoid even the map probes on their per-row path.
+            let membership_before =
+                persist_index_delta.then(|| key_state_before(shard, &object_keys));
+            let feature_trimmed_membership = persist_index_delta
+                && command_will_trim_feature_membership(
+                    &command,
+                    shard,
+                    config.feature_max_size,
+                );
             let reuse_consumed_metadata = reuse_hash_command_metadata
                 && matches!(
                     &command,
@@ -985,6 +984,7 @@ impl TemporalEngine {
                             end_routing_bucket,
                             shard,
                             config.async_storage,
+                            !config.async_storage,
                             key,
                             entries,
                         );
@@ -1005,6 +1005,7 @@ impl TemporalEngine {
                             start_routing_bucket,
                             end_routing_bucket,
                             shard,
+                            config.async_storage,
                             key,
                             timestamp_field,
                             timestamp_seconds,
@@ -1070,20 +1071,33 @@ impl TemporalEngine {
                 // Same question as the single-command path, through the SAME function: a
                 // membership shrink OR a deadline change. Two spellings of this test is how
                 // one of them keeps a bug the other fixed, so there is only one.
-                if !batch_membership_shrank {
+                if persist_index_delta && !batch_membership_shrank {
                     batch_membership_shrank = feature_trimmed_membership
                         || delta_key_state_change(
                             shard,
                             &object_keys,
-                            &membership_before,
+                            membership_before
+                                .as_ref()
+                                .expect("persisted index delta captured pre-write state")
+                                .as_slice(),
                         );
                 }
-                let written_element_names =
-                    command_upsert_element_names(command_for_post_write_ref, shard);
-                batch_touched_container_elements.extend(command_touched_container_elements(
+                let hash_command = matches!(
                     command_for_post_write_ref,
-                    shard,
-                ));
+                    Command::HashSet { .. }
+                        | Command::HashMultiSet { .. }
+                        | Command::HashMultiSetIfTimestampOlder { .. }
+                        | Command::HashIncrBy { .. }
+                );
+                let written_element_names = (!hash_command || persist_index_delta)
+                    .then(|| command_upsert_element_names(command_for_post_write_ref, shard))
+                    .flatten();
+                if persist_index_delta {
+                    batch_touched_container_elements.extend(command_touched_container_elements(
+                        command_for_post_write_ref,
+                        shard,
+                    ));
+                }
                 if object_keys.is_empty() {
                     rebuild_bucket_block_ownership(
                         shard_id,
@@ -1116,21 +1130,44 @@ impl TemporalEngine {
                 let maintained_bucket_index = if shard.bucket_index.bucket_map.is_empty() {
                     false
                 } else {
+                    let narrow_hash = match command_for_post_write_ref {
+                        Command::HashSet { key, field, .. }
+                        | Command::HashIncrBy { key, field, .. } => {
+                            crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                shard,
+                                shard_id,
+                                key,
+                                std::iter::once(field.as_str()),
+                            )
+                        }
+                        Command::HashMultiSet { key, entries }
+                        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
+                            crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                shard,
+                                shard_id,
+                                key,
+                                entries.iter().map(|(field, _)| field.as_str()),
+                            )
+                        }
+                        _ => false,
+                    };
                     // Prefer the element names this command actually wrote. The whole-object sync
                     // below re-upserts every field the object holds, which is quadratic in that
                     // count; this is one upsert per written element name. It reports false when it
                     // cannot model the write, and the whole-object sync then runs.
-                    let narrow = match written_element_names.as_deref() {
-                        Some(element_names) => {
-                            crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
-                                shard,
-                                shard_id,
-                                element_names,
-                            )
-                        }
-                        None => false,
-                    };
-                    narrow
+                    let narrow = !hash_command
+                        && match written_element_names.as_deref() {
+                            Some(element_names) => {
+                                crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
+                                    shard,
+                                    shard_id,
+                                    element_names,
+                                )
+                            }
+                            None => false,
+                        };
+                    narrow_hash
+                        || narrow
                         || (!object_keys.is_empty()
                             && object_keys.iter().all(|object_key| {
                                 crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
@@ -1140,13 +1177,17 @@ impl TemporalEngine {
                                 )
                             }))
                 };
-                match (&mut batch_upsert_element_names, written_element_names) {
-                    (Some(collected), Some(element_names)) => collected.extend(element_names),
-                    (state, _) => *state = None,
+                if persist_index_delta {
+                    match (&mut batch_upsert_element_names, written_element_names) {
+                        (Some(collected), Some(element_names)) => collected.extend(element_names),
+                        (state, _) => *state = None,
+                    }
                 }
                 // Every per-command consumer above borrows these keys. The batch delta keeps
                 // them beyond this iteration, so transfer ownership only after maintenance.
-                delta_command_keys.extend(object_keys);
+                if persist_index_delta {
+                    delta_command_keys.extend(object_keys);
+                }
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
                     // A command that writes no block cannot have changed the block index, so a
@@ -1273,7 +1314,7 @@ impl TemporalEngine {
             }
             // Block/index materialization stays deferred to the background dump in
             // async and bulk modes (index_log/persist already no-op under bulk).
-            if !config.async_storage && !bulk_ingest_mode() {
+            if persist_index_delta {
                 // Anchor the served index to the WAL sequence it reflects (see the
                 // single-command path) so shard load replays only records after it. Under
                 // flat append read the O(1) cached last sequence instead of `stats()` (which
@@ -1540,7 +1581,7 @@ impl TemporalEngine {
                     .collect::<Vec<_>>();
                 publish_targets.extend(
                     shard
-                        .hashes
+                        .bucket_index.hashes
                         .iter()
                         .flat_map(|(key, fields)| {
                             fields.iter().filter_map(move |(field, address)| {
@@ -1569,7 +1610,7 @@ impl TemporalEngine {
                             ));
                         }
                     }
-                    if let Some(fields) = shard.hashes.get(key) {
+                    if let Some(fields) = shard.bucket_index.hashes.get(key) {
                         publish_targets.extend(fields.iter().filter_map(|(field, address)| {
                             crate::wal_record::is_wal_resident(address.block_slab_id()).then(|| {
                                 (
@@ -1692,7 +1733,7 @@ impl TemporalEngine {
                         shard.set_string_address(stored, &published);
                     }
                     PublishTarget::Hash { key, field } => {
-                        let current = shard.hashes.get(&key).and_then(|fields| fields.get(&field));
+                        let current = shard.bucket_index.hashes.get(&key).and_then(|fields| fields.get(&field));
                         if current != Some(&original) {
                             continue;
                         }

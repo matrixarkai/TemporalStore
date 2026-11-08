@@ -10,9 +10,9 @@
 //! had spelled it into -- then assigned the result over the top:
 //!
 //! ```text
-//!     if saw_lists { shard.lists = lists; }
-//!     if saw_zsets { shard.zsets = zsets; }
-//!     if saw_sets  { shard.sets  = sets;  }
+//!     if saw_lists { shard.bucket_index.lists = lists; }
+//!     if saw_zsets { shard.bucket_index.zsets = zsets; }
+//!     if saw_sets  { shard.bucket_index.sets  = sets;  }
 //! ```
 //!
 //! All three of those maps are PERSISTED. So a stored value was being reconstructed from a second
@@ -317,7 +317,7 @@ pub(super) fn count_across_index_files(indexes: &std::path::Path, needle: &str) 
 ///
 /// AND THE DEFECT IS NOW UNREACHABLE RATHER THAN ABSENT, which is worth more than the original
 /// test was. A score parsed out of a name cannot outrank the durable map, because there is no name
-/// to parse: `shard.zsets` (`zset_index_serde`) is the only place a score is written down. The
+/// to parse: `shard.bucket_index.zsets` (`zset_index_serde`) is the only place a score is written down. The
 /// positive half is still driven -- the score comes back at 7.5 across a reload -- so this arm
 /// still fails if the durable map stops being read.
 ///
@@ -385,7 +385,7 @@ fn a_durable_zset_score_has_no_name_left_to_disagree_with_it() {
     );
 
     // AND THE DURABLE MAP IS STILL READ, which is the half that can still fail. The score survives
-    // a reload because `shard.zsets` is written and read back; nothing re-derives it.
+    // a reload because `shard.bucket_index.zsets` is written and read back; nothing re-derives it.
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
     let answered = match read(
@@ -702,7 +702,7 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
 ///      directly, and its own comment called that "the shape a delta fold produces: an element the
 ///      index knows about and the persisted map does not". The fold cannot produce it any more:
 ///      `collect_upsert_index_items` resolves each item's address THROUGH the resident map for all
-///      four container kinds -- `shard.hashes`/`sets`/`zsets`/`lists` -- and `continue`s where the
+///      four container kinds -- `shard.bucket_index.hashes`/`sets`/`zsets`/`lists` -- and `continue`s where the
 ///      lookup misses, so a delta item exists only where the map held the element.
 ///   2. THE DURABLE MAP DOES NOT LOSE ELEMENTS ACROSS A LOAD. It is written to the index snapshot
 ///      and read back; `length_answer_and_listing_agree` drives that a short container STAYS short
@@ -742,7 +742,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let removed = shard
-            .zsets
+            .bucket_index.zsets
             .elements_mut_for_test("fb-zset")
             .expect("the zset is present")
             .remove(b"fb-two".as_slice());
@@ -796,7 +796,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
     {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let members = shard.zsets.get("fb-zset").expect("the zset is present");
+        let members = shard.bucket_index.zsets.get("fb-zset").expect("the zset is present");
         assert_eq!(
             1,
             members.len(),
@@ -944,11 +944,11 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
     // This paragraph read "which is the door the merge is actually for ... Without the merge the
     // derived view has skipped this member, the remove cannot find it, and the set holds a member
     // nobody can delete." There is no skip to recover from: nothing derives a set member from an
-    // index entry, so `shard.sets` is not a repair of a derived view -- it IS the membership.
+    // index entry, so `shard.bucket_index.sets` is not a repair of a derived view -- it IS the membership.
     //
     // WHAT MAKES THE ASSERTION WORTH KEEPING is that the two sides of a set are still different
     // artefacts. `SetMembers` answers from the BLOCKS, and `SetRemove` is the one command that
-    // consults `shard.sets`. So a member present in the blocks and absent from the map is served
+    // consults `shard.bucket_index.sets`. So a member present in the blocks and absent from the map is served
     // and undeletable -- the same end state the old defect produced, by a different route -- and
     // this is the arm that would show it.
     let removed = read(
@@ -973,7 +973,7 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
     assert!(
         !after.iter().any(|member| member == &second),
         "a member is STILL SERVED after a remove: {after:?}. `SetMembers` answers from the blocks \
-         and `SetRemove` consults `shard.sets`, so a member the map does not hold is served and \
+         and `SetRemove` consults `shard.bucket_index.sets`, so a member the map does not hold is served and \
          undeletable -- the end state the unreadable-name defect used to produce, by a different \
          route."
     );
@@ -1014,9 +1014,9 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
 ///
 /// # WHAT IS ASSERTED, AND WHAT WOULD HAVE TO DISAGREE FOR IT TO FAIL
 ///
-/// Both fields must be in `shard.hashes` after a reload, and the index must name neither. The two
+/// Both fields must be in `shard.bucket_index.hashes` after a reload, and the index must name neither. The two
 /// independent artefacts are the index, which names zero fields, and the durable map, which names
-/// two: if the merge stops consulting the map -- `shard.hashes = hashes`, or
+/// two: if the merge stops consulting the map -- `shard.bucket_index.hashes = hashes`, or
 /// `insert_element_if_absent` ceasing to insert -- the reload serves ZERO fields, because nothing
 /// else can name one. That is a strictly larger failure than the single field the planted version
 /// could lose, so the restatement did not weaken what this holds.
@@ -1053,7 +1053,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
         let shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         assert_eq!(
-            shard.hashes.get("un-hash").map(|fields| fields.len()),
+            shard.bucket_index.hashes.get("un-hash").map(|fields| fields.len()),
             Some(2),
             "the durable map does not hold both fields, so this fixture cannot create the state it \
              needs and the assertions below would be about nothing"
@@ -1106,7 +1106,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
     // arm non-vacuous did exactly that. An absent key IS zero fields, so it is folded into the
     // field set and the assertion under test is the one that speaks.
     let field_names: std::collections::BTreeSet<String> = shard
-        .hashes
+        .bucket_index.hashes
         .get("un-hash")
         .map(|fields| fields.keys().map(|name| name.to_string()).collect())
         .unwrap_or_default();
@@ -1224,7 +1224,7 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
     let empty_element_name_len = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let members = shard.zsets.get("mt-zset").expect("the zset is present");
+        let members = shard.bucket_index.zsets.get("mt-zset").expect("the zset is present");
         assert_eq!(
             members.len(),
             2,
@@ -1325,7 +1325,7 @@ fn an_empty_zset_member_is_a_whole_element_name_and_survives_the_fold_shape() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let removed = shard
-            .zsets
+            .bucket_index.zsets
             .elements_mut_for_test("mt-zset")
             .expect("the zset is present")
             .remove(empty.as_slice());
@@ -1538,10 +1538,10 @@ fn a_key_state_blob_that_carries_no_elements_leaves_the_container_maps_untouched
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let before = (
-        shard.sets.clone(),
-        shard.zsets.clone(),
-        shard.lists.clone(),
-        shard.hashes.clone(),
+        shard.bucket_index.sets.clone(),
+        shard.bucket_index.zsets.clone(),
+        shard.bucket_index.lists.clone(),
+        shard.bucket_index.hashes.clone(),
     );
     let populated: usize = before.0.len() + before.1.len() + before.2.len() + before.3.len();
     assert_eq!(
@@ -1557,10 +1557,10 @@ fn a_key_state_blob_that_carries_no_elements_leaves_the_container_maps_untouched
     super::fold_carried_container_elements(shard, &old_shape);
 
     let after = (
-        shard.sets.clone(),
-        shard.zsets.clone(),
-        shard.lists.clone(),
-        shard.hashes.clone(),
+        shard.bucket_index.sets.clone(),
+        shard.bucket_index.zsets.clone(),
+        shard.bucket_index.lists.clone(),
+        shard.bucket_index.hashes.clone(),
     );
     assert_eq!(
         before.0, after.0,
@@ -1620,7 +1620,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let address = shard
-        .sets
+        .bucket_index.sets
         .get("seed")
         .and_then(|members| members.get(b"seed-member".as_slice()))
         .cloned()
@@ -1649,7 +1649,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
     })];
 
     assert!(
-        shard.sets.get("folded").is_none() && shard.zsets.get("folded").is_none(),
+        shard.bucket_index.sets.get("folded").is_none() && shard.bucket_index.zsets.get("folded").is_none(),
         "DENOMINATOR: the shard already holds this key, so an element found after the fold would \
          not have come from the fold"
     );
@@ -1662,12 +1662,12 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
     super::fold_carried_container_elements(shard, &blob);
 
     let folded_set = shard
-        .sets
+        .bucket_index.sets
         .get("folded")
         .and_then(|members| members.get(member.as_slice()))
         .cloned();
     let folded_zset = shard
-        .zsets
+        .bucket_index.zsets
         .get("folded")
         .and_then(|members| members.get(member.as_slice()))
         .cloned();
@@ -1685,7 +1685,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_an_e
          name its block was filed under."
     );
     let (folded_score, _) = folded_zset.expect(
-        "the fold did not restore the zset element from its carried identity, so `shard.zsets` is \
+        "the fold did not restore the zset element from its carried identity, so `shard.bucket_index.zsets` is \
          still a map the fold cannot write",
     );
     assert_eq!(
@@ -1772,7 +1772,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let live_address = shard
-        .sets
+        .bucket_index.sets
         .get("res-seed")
         .and_then(|members| members.get(b"res-seed-member".as_slice()))
         .cloned()
@@ -1815,7 +1815,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
     super::fold_carried_container_elements(shard, &blob);
 
     let restored: Vec<Vec<u8>> = shard
-        .sets
+        .bucket_index.sets
         .get("res")
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
@@ -1886,7 +1886,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let address = shard
-        .sets
+        .bucket_index.sets
         .get("carry-ttl")
         .and_then(|members| members.get(b"ttl-member".as_slice()))
         .cloned()
@@ -1937,7 +1937,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     // And it did do its own job.
     assert!(
         shard
-            .sets
+            .bucket_index.sets
             .get("carry-ttl")
             .is_some_and(|members| members.contains_key(b"another-member".as_slice())),
         "the carry did not restore its own element, so arm one may be passing because nothing ran"
@@ -2469,7 +2469,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
             let shards = fresh.shards.read().expect("engine lock poisoned");
             shards
                 .get(&1)
-                .and_then(|shard| shard.hashes.get(KEY))
+                .and_then(|shard| shard.bucket_index.hashes.get(KEY))
                 .map(|held| held.keys().map(|name| name.to_string()).collect())
                 .unwrap_or_default()
         } else {
@@ -2632,7 +2632,7 @@ fn the_shared_install_pairs_carried_blocks_by_object_and_element_name() {
         let shards = fresh.shards.read().expect("engine lock poisoned");
         shards
             .get(&1)
-            .and_then(|shard| shard.hashes.get(KEY))
+            .and_then(|shard| shard.bucket_index.hashes.get(KEY))
             .map(|held| held.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default()
     };
@@ -2780,7 +2780,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         let shards = fresh.shards.read().expect("engine lock poisoned");
         shards
             .get(&1)
-            .and_then(|shard| shard.hashes.get(KEY))
+            .and_then(|shard| shard.bucket_index.hashes.get(KEY))
             .map(|fields| fields.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default()
     } else {

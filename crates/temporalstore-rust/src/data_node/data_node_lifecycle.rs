@@ -80,9 +80,12 @@ pub fn decode_lifecycle_snapshot_file(bytes: &[u8]) -> Result<DataNodeLifecycleS
     })
 }
 
-/// A lifecycle snapshot as the binary file. Test-only until the writer flips.
-#[cfg(test)]
-pub(crate) fn encode_lifecycle_snapshot_file(snapshot: &DataNodeLifecycleSnapshot) -> Vec<u8> {
+/// A lifecycle snapshot as the binary file. THE ONLY ENCODER: the runtime's persist and the data
+/// server's save-to-path both call it, and nothing writes the JSON snapshot any more. An encoder
+/// nobody calls is how a retired format comes back; `decode_lifecycle_snapshot_file` keeps its JSON
+/// arm because the snapshots already on disk are JSON. Opposite reasons, so one is deleted and the
+/// other held.
+pub fn encode_lifecycle_snapshot_file(snapshot: &DataNodeLifecycleSnapshot) -> Vec<u8> {
     use prost::Message as _;
     let proto = crate::sdk::v1::DurableDataNodeLifecycleSnapshot {
         format_version: snapshot.format_version,
@@ -219,10 +222,9 @@ pub(super) fn persist_lifecycle_snapshot_inner(inner: &DataNodeRuntimeInner) {
     } else {
         Ok(())
     }
-    .and_then(|_| {
-        serde_json::to_vec_pretty(&lifecycle_snapshot_inner(inner))
-            .map_err(|err| Status::error("bad_lifecycle_snapshot", err.to_string()))
-    })
+    // BINARY: the container byte and a protobuf snapshot. There is no JSON encode path left;
+    // `decode_lifecycle_snapshot_file` keeps its JSON arm for the snapshots already on disk.
+    .map(|_| encode_lifecycle_snapshot_file(&lifecycle_snapshot_inner(inner)))
     .and_then(|bytes| {
         let tmp_path = path.with_extension("tmp");
         fs::write(&tmp_path, bytes)
@@ -532,5 +534,100 @@ mod tests {
         let report = runtime.lifecycle_persistence_report();
         assert_eq!((report.restore_success_total, report.restore_failure_total), (0, 1));
         assert!(runtime.lifecycle_snapshot().transitions.is_empty());
+    }
+
+    /// THE RUNTIME PERSISTS A BINARY SNAPSHOT, AND A RESTART READS IT.
+    ///
+    /// Through the real paths: `require_lifecycle_token` persists, and a second runtime built on the
+    /// same path restores. The JSON arm is not exercised here -- no writer produces it any more --
+    /// and is driven by the planted file in the reader test above.
+    #[test]
+    fn the_runtime_persists_a_binary_lifecycle_snapshot_and_a_restart_reads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("persisted.snapshot");
+        let runtime = a_runtime_on(&dir.path().join("first"), &path);
+        runtime.require_lifecycle_token(SchedulerLifecycleToken {
+            task_id: 0,
+            shard_id: 61,
+            operation: "load".to_string(),
+            load_version: 5,
+            generation: 6,
+        });
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(
+            written[0], LIFECYCLE_SNAPSHOT_CONTAINER_PROTOBUF,
+            "the runtime did not persist the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&written).is_err(),
+            "the persisted snapshot parses as JSON, so the container byte proves nothing"
+        );
+
+        let restarted = a_runtime_on(&dir.path().join("second"), &path);
+        assert_eq!(restarted.lifecycle_snapshot(), runtime.lifecycle_snapshot());
+        assert_eq!(restarted.lifecycle_tokens().len(), 1);
+        assert_eq!(restarted.lifecycle_tokens()[0].task_id, 0);
+        let report = restarted.lifecycle_persistence_report();
+        assert_eq!((report.restore_success_total, report.restore_failure_total), (1, 0));
+    }
+
+    /// NO JSON ENCODE PATH IS LEFT FOR A LIFECYCLE SNAPSHOT.
+    ///
+    /// The test above reads the first byte of what the runtime wrote; this sees an encoder nobody
+    /// calls YET, and covers the data server's save-to-path route, which has no test of its own.
+    /// It reads each writer with comment lines removed and asserts none names `serde_json`. The
+    /// POSITIVE CONTROL is the decoder, which still calls `serde_json::from_slice` (the permanent
+    /// JSON arm): a scan that could not see that call would pass over any writer.
+    #[test]
+    fn no_json_encode_path_is_left_for_a_lifecycle_snapshot() {
+        fn body(source: &str, from: &str, to: &str) -> String {
+            let start = source
+                .find(from)
+                .unwrap_or_else(|| panic!("no declaration {from}"));
+            let rest = &source[start..];
+            let end = rest[from.len()..]
+                .find(to)
+                .unwrap_or_else(|| panic!("no declaration {to} after {from}"))
+                + from.len();
+            rest[..end]
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let lifecycle = include_str!("data_node_lifecycle.rs");
+        let server = include_str!("../bin/temporalstore_data_server.rs");
+
+        let persist = body(
+            lifecycle,
+            "pub(super) fn persist_lifecycle_snapshot_inner(",
+            "pub(super) fn shard_has_queued_or_running_work(",
+        );
+        let save = body(
+            server,
+            "fn save_lifecycle_snapshot_file(",
+            "fn load_lifecycle_snapshot_file(",
+        );
+        for (name, code) in [("persist_lifecycle_snapshot_inner", &persist), ("save_lifecycle_snapshot_file", &save)] {
+            assert!(code.len() > 200, "{name}: the scan found almost nothing");
+            assert!(
+                code.contains("encode_lifecycle_snapshot_file("),
+                "{name} does not call the binary encoder"
+            );
+            assert!(
+                !code.contains("serde_json"),
+                "{name} still reaches for serde_json: a JSON encode path survives. Delete it; \
+                 the decoder keeps its JSON arm for the snapshots already on disk."
+            );
+        }
+        let decoder = body(
+            lifecycle,
+            "pub fn decode_lifecycle_snapshot_file(",
+            "pub fn encode_lifecycle_snapshot_file(",
+        );
+        assert!(
+            decoder.contains("serde_json::from_slice"),
+            "the control no longer sees the permanent JSON arm, so this scan could pass over a writer it cannot see"
+        );
     }
 }

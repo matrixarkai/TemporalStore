@@ -1186,7 +1186,7 @@ mod tests {
         // did for their kinds.
         //
         // This expectation used to list it, which made it an assertion that an emptied set stays
-        // enumerable: `record_exists_exact` ORs `shard.sets.contains_key(key)` in, `SetRemove` left
+        // enumerable: `record_exists_exact` ORs `shard.bucket_index.sets.contains_key(key)` in, `SetRemove` left
         // the key behind holding an empty member map, and `KEYS`, `SCAN`, `DBSIZE`, `EXISTS`, `TYPE`
         // and `EXPIRE` all answered for a set with nothing in it. A set that holds no member does
         // not exist, and the three `*_match_native` tests beside this one are the standard this

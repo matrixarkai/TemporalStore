@@ -233,6 +233,7 @@ jobs:
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
+            data_node::tests::loop_report::the_loop_report_prices_every_stage_it_reaches \
             data_node::tests::evict_live::a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted \
             data_node::tests::evict_live::an_acknowledged_row_keeps_its_fields_across_the_cache_budget \
             data_node::tests::evict_live::the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_clock \
@@ -256,6 +257,11 @@ jobs:
             ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart \
             shared_store::tests::the_widened_object_readers_accept_both_shapes \
             shared_store::tests::the_object_writers_are_binary_and_planted_json_objects_are_still_read \
+            shared_store::tests::a_checkpoint_manifest_survives_the_binary_round_trip \
+            shared_store::tests::a_json_checkpoint_manifest_still_decodes_and_matches_the_binary_one \
+            shared_store::tests::a_truncated_binary_checkpoint_manifest_is_an_error_not_a_shorter_manifest \
+            shared_store::tests::the_checkpoint_manifest_field_numbers_do_not_move \
+            shared_store::tests::list_checkpoints_reads_a_binary_manifest_and_a_json_one_alike \
             engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read \
             engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
@@ -277,15 +283,23 @@ jobs:
             shared_store::tests::no_json_encode_path_is_left_in_the_per_key_wal_publish \
             index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
             index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
+            engine::tests::the_control_state_block_in_either_shape::a_series_block_codec_reads_both_shapes_and_refuses_what_it_cannot_read \
+            engine::tests::the_control_state_block_in_either_shape::the_load_path_reads_a_json_block_and_a_packed_one_and_counts_the_unreadable \
+            engine::tests::the_control_state_block_in_either_shape::a_counter_write_stores_a_packed_block_a_fraction_of_the_size_and_a_restart_reads_it \
+            engine::tests::the_control_state_block_in_either_shape::no_json_encode_path_is_left_in_the_control_state_writer \
+            engine::tests::the_sequence_row_in_either_shape::a_sequence_row_codec_reads_both_shapes_and_refuses_what_it_cannot_read \
+            engine::tests::the_sequence_row_in_either_shape::both_read_paths_decode_both_shapes_across_a_restart_and_count_the_unreadable \
             data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_both_shapes_with_every_field \
             data_node::lifecycle::tests::a_runtime_restores_a_lifecycle_snapshot_in_either_shape_and_refuses_a_bad_one \
+            data_node::lifecycle::tests::the_runtime_persists_a_binary_lifecycle_snapshot_and_a_restart_reads_it \
+            data_node::lifecycle::tests::no_json_encode_path_is_left_for_a_lifecycle_snapshot \
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_served_index_encoder_does_not_fall_through_to_json \
             engine::tests::the_config_log_in_either_shape::the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_misread \
             engine::tests::the_config_log_in_either_shape::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
             engine::tests::the_config_log_in_either_shape::no_json_encode_path_is_left_in_the_config_log_writer \
             shared_store::tests::shared_store_rejects_corrupt_wal_checksum \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
-            block_store::tests::a_folded_manifest_still_writes_the_keys_on_disk \
+            block_store::tests::a_written_manifest_is_the_binary_shape_and_reopens \
             block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \
             block_store::tests::a_stored_slab_id_that_disagrees_with_its_descriptor_is_normalised_on_load \
             block_store::shorter_struct_against_an_existing_row::a_shorter_positional_row_is_refused_rather_than_defaulting_its_generation \
@@ -339,7 +353,8 @@ jobs:
             engine::tests::round_scale::a_round_walks_the_live_block_set_a_constant_number_of_times \
             engine::tests::round_scale::an_idle_round_still_walks_the_live_block_set \
             engine::tests::model_map_container_cost::no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container \
-            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container ; do
+            engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container \
+            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::a_restricted_inversion_names_what_the_whole_shard_one_names_for_its_keys ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log
@@ -458,12 +473,9 @@ jobs:
             engine::tests::what_the_core_index_puts_on_the_wire::an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one \
             block_store::slab_manifest_wire::tests::every_descriptor_field_survives_the_wire_round_trip \
             block_store::slab_manifest_wire::tests::a_wire_manifest_loads_with_values_only_those_bytes_can_carry \
-            block_store::slab_manifest_wire::tests::a_json_manifest_still_loads_through_the_same_reader \
-            block_store::slab_manifest_wire::tests::the_two_spellings_load_to_the_same_descriptors \
-            block_store::slab_manifest_wire::tests::a_frame_of_123_bytes_starts_with_an_open_brace \
-            block_store::slab_manifest_wire::tests::no_json_document_opens_with_the_container_byte \
             block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store \
             block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name \
+            block_store::slab_manifest_wire::tests::the_stored_field_numbers_do_not_move \
             engine::tests::component_is_retired::the_lexer_reads_code_and_leaves_comments_strings_and_lifetimes_alone \
             engine::tests::component_is_retired::a_comment_or_string_edit_moves_nothing_and_a_code_edit_moves_exactly_one \
             engine::tests::component_is_retired::a_sentence_moves_only_its_own_row \
@@ -542,9 +554,16 @@ jobs:
           # 400 (571 at 100, 5,080 at 1,000), because its filter against re-filing asks a lookup
           # that resolves no named element. The guard varies the FIELD COUNT and carries a control:
           # a read of the whole hash must grow with it, or the probe cannot see that dimension.
+          #
+          # a_write_does_not_pay_for_the_objects_it_did_not_touch pins that the walk which builds a
+          # write's index-log rows names the blocks of the objects the write touched and not the
+          # blocks of the whole shard. The whole-shard inversion costs 19 KB at 20 objects and 1.2 MB
+          # at 1,000; the walk is flat. The guard varies the OBJECT COUNT and carries a control: the
+          # whole-shard inversion must grow with it, or the probe cannot see that dimension.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
-            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has ; do
+            engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
+            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log

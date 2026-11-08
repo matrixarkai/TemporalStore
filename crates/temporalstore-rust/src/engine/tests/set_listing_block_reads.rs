@@ -34,7 +34,7 @@
 //! block read past the cache is noted (`note_block_read`).
 //!
 //! THE CONTROL IS THE ZSET, and it is a control that can fail. A zset's listing answers from
-//! `shard.zsets` and reads no block at all, so it must report 0.00 reads per member WHILE STILL
+//! `shard.bucket_index.zsets` and reads no block at all, so it must report 0.00 reads per member WHILE STILL
 //! RETURNING MEMBERS -- the returned bytes are asserted non-zero, because a listing over an empty
 //! key reads zero blocks too and would pass a weaker assertion without exercising anything.
 //!
@@ -59,12 +59,12 @@
 //! trade an answer storage vouches for against one nothing does, and it would give up the element
 //! check as well as the byte one. It is measured here and not taken.
 //!
-//! ## Serving from `shard.sets`
+//! ## Serving from `shard.bucket_index.sets`
 //!
 //! The members ARE the keys of that map, resident and ordered, and walking them would read no block.
 //! `the_resident_set_map_and_the_live_block_index_are_not_the_same_population` drove why that was
 //! refused: `reconcile_secondary_views_from_bucket_index` installs
-//! `shard.sets = fill_absent_elements(derived, persisted)`, whose documented job is to KEEP EVERY
+//! `shard.bucket_index.sets = fill_absent_elements(derived, persisted)`, whose documented job is to KEEP EVERY
 //! DURABLE ELEMENT THE DERIVED VIEW COULD NOT PRODUCE, and it kept them without asking whether the
 //! block each named was still there. The map held members the block index did not, and a listing served
 //! from it would have returned them. `durable_outranks_derived`'s
@@ -248,7 +248,7 @@ fn block_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
 /// ONE BLOCK READ PER MEMBER FOR A SET LISTING, AND NONE FOR A ZSET'S.
 ///
 /// The headline. `SetMembers` walks the block index and reads a block per entry; `ZSetRange` answers
-/// out of `shard.zsets` and reads nothing. Both arms return members, and both return-populations
+/// out of `shard.bucket_index.zsets` and reads nothing. Both arms return members, and both return-populations
 /// are asserted non-zero, so the zero row is a measured zero and not an unexercised one.
 ///
 /// THE LISTING MUST BE COLD. `SetMembers` is wrapped in `cached_response`, which stores the whole
@@ -373,7 +373,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
             assert_eq!(
                 0, zset_reads,
                 "the zset listing for {zset_key} performed {zset_reads} block reads. A zset answers \
-                 from `shard.zsets` and must read no block at all"
+                 from `shard.bucket_index.zsets` and must read no block at all"
             );
 
             let per = set_reads as f64 / population as f64;
@@ -722,7 +722,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_element_name() {
 /// ever taught to ask about the ELEMENT the arm goes red and says so.
 ///
 /// THE REFUSAL THIS MODULE EXISTS FOR IS THEREFORE RE-ESTABLISHED ON FRESH GROUNDS, and it is
-/// stronger than it was: a listing served from `shard.sets` would hand back a member the store was
+/// stronger than it was: a listing served from `shard.bucket_index.sets` would hand back a member the store was
 /// told to forget, and the only reason the store does not is that the listing is not served from
 /// there. Both halves are asserted, because the divergence alone does not say which side is right.
 ///
@@ -761,7 +761,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         shard
-            .sets
+            .bucket_index.sets
             .get(&key)
             .expect("the seeded key is in the resident map")
             .clone()
@@ -814,7 +814,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         shard
-            .sets
+            .bucket_index.sets
             .insert_elements_for_test(&key, persisted_before_removal);
 
         let live_blocks: usize = shard
@@ -853,7 +853,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         println!("  index walk pairs carrying a member name: {named}");
 
         shard
-            .sets
+            .bucket_index.sets
             .get(&key)
             .map(|members| members.keys().cloned().collect())
             .unwrap_or_default()
@@ -901,7 +901,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         !served.contains(&removed),
         "the store SERVED a member it was told to forget. This is the defect the refusal exists to \
          prevent: the resident map holds the removed member, so anything answering out of \
-         `shard.sets` returns it"
+         `shard.bucket_index.sets` returns it"
     );
     assert_ne!(
         in_map, served,
@@ -911,7 +911,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     );
     println!(
         "  => the resident map over-reports by {}, and the refusal stands: a listing served from \
-         `shard.sets` would hand back a removed member",
+         `shard.bucket_index.sets` would hand back a removed member",
         in_map.len() - served.len()
     );
 }

@@ -702,6 +702,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok);
@@ -790,6 +791,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 prefer_current_agent: false,
                 current_agent_scope_key: "agent:codex".to_string(),
                 provider: ContextModelProviderConfig::default(),
+                include_debug: true,
             },
             prompt: "Explain current risk.".to_string(),
             session_hash: 7,
@@ -857,6 +859,7 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -992,6 +995,7 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -1087,6 +1091,7 @@ fn context_benchmark_injection_uses_entity_slab_l0_l1_and_secondary_index() {
         prefer_current_agent: false,
         current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
+        include_debug: true,
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
     assert!(retrieved.status.ok, "{:?}", retrieved.status);
@@ -1779,6 +1784,7 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         prefer_current_agent: false,
         current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
+        include_debug: true,
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
     assert!(retrieved.status.ok, "{:?}", retrieved.status);
@@ -1895,6 +1901,7 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
         prompt: "one two three four five".to_string(),
         session_hash: 7,
@@ -2241,6 +2248,7 @@ fn retrieve_top_node(engine: &TemporalEngine, tenant_hash: u64, node_hashes: Vec
             prefer_current_agent: false,
             current_agent_scope_key: String::new(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -2336,6 +2344,7 @@ fn hybrid_mixed_store_keeps_both_embedded_and_unembedded_rankable() {
             prefer_current_agent: false,
             current_agent_scope_key: String::new(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -2392,6 +2401,7 @@ fn extraction_prewarms_and_retrieval_rebuilds_the_compact_vector_index() {
             prefer_current_agent: false,
             current_agent_scope_key: String::new(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -3297,6 +3307,7 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -3420,6 +3431,7 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4147,6 +4159,7 @@ fn what_a_retrieve_allocates() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider: provider.clone(),
+            include_debug: false,
         };
         // Warm first: the first call through any path allocates one-off structures that are not
         // part of a steady-state retrieve, and counting those would flatter or damn the result
@@ -4591,6 +4604,7 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4758,6 +4772,7 @@ fn a_summary_vector_from_another_encoder_is_declined_and_counted() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4837,6 +4852,7 @@ fn a_summary_vector_with_no_recorded_encoder_is_still_scored() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4943,6 +4959,7 @@ fn scoring_request(
         prefer_current_agent: false,
         current_agent_scope_key: "agent:test".to_string(),
         provider: ContextModelProviderConfig::default(),
+        include_debug: true,
     }
 }
 

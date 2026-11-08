@@ -215,17 +215,17 @@ fn resident_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<O
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held: Vec<Option<u64>> = match kind {
         "hash" => shard
-            .hashes
+            .bucket_index.hashes
             .get(key)
             .map(|fields| fields.values().map(|address| address.block_id()).collect())
             .unwrap_or_default(),
         "set" => shard
-            .sets
+            .bucket_index.sets
             .get(key)
             .map(|members| members.values().map(|address| address.block_id()).collect())
             .unwrap_or_default(),
         "zset" => shard
-            .zsets
+            .bucket_index.zsets
             .get(key)
             .map(|members| {
                 members
@@ -235,7 +235,7 @@ fn resident_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<O
             })
             .unwrap_or_default(),
         "list" => shard
-            .lists
+            .bucket_index.lists
             .get(key)
             .map(|entries| entries.values().map(|address| address.block_id()).collect())
             .unwrap_or_default(),
@@ -1075,7 +1075,7 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
     let resident_member = b"already-at-the-ceiling".to_vec();
     let resident_element_name = hex::encode(&resident_member);
     shard
-        .sets
+        .bucket_index.sets
         .insert_element_for_test(key, resident_member.clone(), at_ceiling.clone());
 
     // A NEW member of the same object: one past the ceiling.

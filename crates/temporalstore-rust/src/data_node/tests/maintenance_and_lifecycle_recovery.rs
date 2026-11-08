@@ -745,7 +745,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
         generation: 800,
     });
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.tokens.len(), 1);
     assert!(saved.transitions.is_empty());
     let report = runtime.lifecycle_persistence_report();
@@ -767,7 +767,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     });
     assert!(load.status.ok, "{load:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.transitions[0].operation, "load");
     assert_eq!(saved.transitions[0].state, "serving");
     assert_eq!(saved.transitions[0].scheduler_task_id, Some(31));
@@ -808,7 +808,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     });
     assert!(reload.status.ok, "{reload:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.transitions[0].operation, "reload");
     assert_eq!(saved.transitions[0].state, "readonly");
     assert_eq!(saved.transitions[0].scheduler_task_id, Some(32));
@@ -823,7 +823,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     let unload = restored.unload_shard_with(crate::control::UnloadShardRequest { shard_id: 8 });
     assert!(unload.status.ok, "{unload:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.tokens.len(), 3);
     assert_eq!(saved.transitions[0].operation, "unload");
     assert_eq!(saved.transitions[0].state, "unloaded");
@@ -6907,8 +6907,8 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 ///
 /// #1465 gave compaction a budget of 2,048 block refs a round, and the round CONTINUES on the same
 /// slab rather than re-rolling, so the work each round does is bounded and makes progress. What
-/// that does not bound is the SCAN: the relocation walks `shard.hashes`, `shard.zsets`,
-/// `shard.lists` and `shard.sets` from the start every round, so a block already sitting on the
+/// that does not bound is the SCAN: the relocation walks `shard.bucket_index.hashes`, `shard.bucket_index.zsets`,
+/// `shard.bucket_index.lists` and `shard.bucket_index.sets` from the start every round, so a block already sitting on the
 /// target slab is still visited before being skipped.
 ///
 /// The design being followed bounds the scan too: it walks `page_compaction_max_slots_per_round`

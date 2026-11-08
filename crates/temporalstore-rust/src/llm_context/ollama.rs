@@ -444,7 +444,7 @@ impl OllamaProvider {
         let mut messages_by_id = HashMap::with_capacity(messages.len());
         for (message_index, message) in messages.iter().enumerate() {
             if messages_by_id
-                .insert(message.message_id, (message_index, message))
+                .insert(message.message_id, message_index)
                 .is_some()
             {
                 return Err(OllamaError::DuplicateMessageId(message.message_id));
@@ -461,23 +461,24 @@ impl OllamaProvider {
                 extraction_schema(),
             )?;
             for item in output.items {
-                let (source_index, source) = messages_by_id
+                let source_index = messages_by_id
                     .get(&item.source_message_id)
                     .copied()
                     .ok_or(OllamaError::UnknownSourceMessage(item.source_message_id))?;
                 if !(start..end).contains(&source_index) {
                     return Err(OllamaError::UnknownSourceMessage(item.source_message_id));
                 }
-                let text = item.text.trim();
+                let source = &messages[source_index];
+                let text = trim_owned(item.text);
                 if text.is_empty() {
                     return Err(OllamaError::EmptyContext);
                 }
                 extracted.push(ExtractedContext {
                     tenant_id: source.tenant_id,
-                    context_id: context_id(source.tenant_id, source.message_id, text),
+                    context_id: context_id(source.tenant_id, source.message_id, &text),
                     source_message_id: source.message_id,
                     event_time_ms: source.event_time_ms,
-                    text: text.to_string(),
+                    text,
                 });
             }
             start = end;
@@ -531,6 +532,18 @@ fn context_id(tenant_id: u64, source_message_id: u64, text: &str) -> u64 {
         .try_into()
         .expect("fixed digest prefix");
     u64::from_le_bytes(bytes)
+}
+
+fn trim_owned(mut text: String) -> String {
+    let start = text.len().saturating_sub(text.trim_start().len());
+    let end = start.saturating_add(text.trim().len());
+    if end < text.len() {
+        text.truncate(end);
+    }
+    if start > 0 {
+        drop(text.drain(..start));
+    }
+    text
 }
 
 fn extraction_schema() -> &'static Value {

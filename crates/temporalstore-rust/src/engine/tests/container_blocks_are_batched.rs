@@ -389,7 +389,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
 /// measured failure ("the block that loses is handed the FIRST block's BYTES rather than answering
 /// missing"), one level up.
 ///
-/// THE RELOAD IS THE HALF THAT MATTERS. Before it, `shard.hashes` still holds what the writes put
+/// THE RELOAD IS THE HALF THAT MATTERS. Before it, `shard.bucket_index.hashes` still holds what the writes put
 /// there. After it, the maps are derived from the block index and the values come off the folded
 /// blocks, which is the arm a later stage builds on.
 ///
@@ -596,7 +596,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     );
     // THE FOURTH KIND, AND IT GUARDS A DIFFERENT THING THAN THE THREE ABOVE.
     //
-    // `ZSetRange` answers out of `shard.zsets` and reads no block, so this cannot show that a
+    // `ZSetRange` answers out of `shard.bucket_index.zsets` and reads no block, so this cannot show that a
     // folded zset block is readable -- no production read of a zset reads one. What it shows is
     // that every member survived the fold and the reload, which runs on the durable map, the
     // carried elements and the live-address filter. A count first, so a lost member fails here

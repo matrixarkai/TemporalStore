@@ -73,7 +73,7 @@ use self::task_output::*;
 use self::worker::*;
 use self::storage_manager_runtime::*;
 
-pub use lifecycle::decode_lifecycle_snapshot_file;
+pub use lifecycle::{decode_lifecycle_snapshot_file, encode_lifecycle_snapshot_file};
 use lifecycle::{
     final_loaded_lifecycle_state, lifecycle_persistence_report_for_path, lifecycle_snapshot_inner,
     lifecycle_snapshot_path_from_env, persist_lifecycle_snapshot_inner,
@@ -1691,6 +1691,32 @@ pub struct StorageManagerLoopReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eviction: Option<crate::engine::reports::StorageEvictionReport>,
     pub status: Status,
+    /// One row per stage the loop reached, in the order it reached them, led by the
+    /// `pressure_snapshot` row for the plan the round computes before any stage. Skipped stages
+    /// get a row too (`executed: false`), so a stage that costs something while declining shows
+    /// up rather than vanishing. Empty on a report built before this field existed.
+    #[serde(default)]
+    pub stage_spans: Vec<StorageManagerLoopStageSpan>,
+    /// The whole call in microseconds. The span rows are intervals of this same clock, so their
+    /// sum never exceeds it; the remainder is the bookkeeping after the last stage.
+    #[serde(default)]
+    pub duration_us: u64,
+}
+
+/// What one stage of the periodic loop cost: how long its work took and how much of the store
+/// that work walked. Same units and the same read-and-clear walk counters as the cycle's stage
+/// rows, so the two reports can be read side by side.
+///
+/// The walk counters are process-wide: a round that shares the process with another round, or
+/// with a test that is walking a shard, is charged for both.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerLoopStageSpan {
+    pub stage: String,
+    pub executed: bool,
+    #[serde(default)]
+    pub duration_us: u64,
+    #[serde(default)]
+    pub walk: crate::engine::reports::StageWalkCharges,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

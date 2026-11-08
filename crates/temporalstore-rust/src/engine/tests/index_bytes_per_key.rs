@@ -779,10 +779,10 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             .saturating_sub(lookup_bytes);
         let dirty_bytes = deep_heap_bytes(&shard.dirty_objects);
         let recency_bytes = deep_heap_bytes(&shard.bucket_recency);
-        let other_model_bytes = deep_heap_bytes(&shard.hashes)
-            + deep_heap_bytes(&shard.sets)
-            + deep_heap_bytes(&shard.zsets)
-            + deep_heap_bytes(&shard.lists)
+        let other_model_bytes = deep_heap_bytes(&shard.bucket_index.hashes)
+            + deep_heap_bytes(&shard.bucket_index.sets)
+            + deep_heap_bytes(&shard.bucket_index.zsets)
+            + deep_heap_bytes(&shard.bucket_index.lists)
             + deep_heap_bytes(&shard.seen)
             + deep_heap_bytes(&shard.buckets);
         // THE COMPATIBILITY FIELD IS NO LONGER PRICED, BECAUSE IT NO LONGER EXISTS. It used to be
@@ -2343,7 +2343,7 @@ fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, 
         ("strings", strings_bytes),
         ("features", features_bytes),
         ("objects, the other kinds", objects_other),
-        ("hashes", deep_heap_bytes(&shard.hashes)),
+        ("hashes", deep_heap_bytes(&shard.bucket_index.hashes)),
         ("bucket_index.bucket_map", bucket_map),
         ("bucket_index.object_block_lookup", lookup),
         ("bucket_index, the rest of CoreIndex", core_rest),
@@ -2625,7 +2625,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
             let rows = census_bytes(shard);
             let strings_n = shard.strings().len();
             let features_n = shard.features().len();
-            let hashes_n = shard.hashes.len();
+            let hashes_n = shard.bucket_index.hashes.len();
             let lookup_n = shard.bucket_index.object_block_lookup.len();
             let dirty_n = shard.dirty_objects.len();
             let recency_n = shard.bucket_recency.len();
@@ -5285,7 +5285,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
     let hashes_only = {
         let mut shard = crate::engine::state::ShardState::default();
         for i in 0..KEYS {
-            shard.hashes.insert_element_for_test(
+            shard.bucket_index.hashes.insert_element_for_test(
                 &format!("h-{i:06}"),
                 std::sync::Arc::from("field"),
                 address(i),
@@ -5962,8 +5962,8 @@ fn what_one_hash_field_write_allocates() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         (
-            shard.hashes.len(),
-            shard.hashes.iter().map(|(_, f)| f.len()).sum::<usize>(),
+            shard.bucket_index.hashes.len(),
+            shard.bucket_index.hashes.iter().map(|(_, f)| f.len()).sum::<usize>(),
         )
     };
     println!("    objects held     : {objects_held}");
@@ -5995,7 +5995,7 @@ fn what_one_hash_field_write_allocates() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let mut addresses = std::collections::HashSet::new();
-        for (_, fields) in shard.hashes.iter() {
+        for (_, fields) in shard.bucket_index.hashes.iter() {
             for name in fields.keys() {
                 addresses.insert(name.as_ptr() as usize);
             }
@@ -6764,7 +6764,7 @@ fn what_one_set_add_costs_at_two_collection_sizes() {
         let held = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            shard.sets.get(key.as_str()).map_or(0, |members| members.len())
+            shard.bucket_index.sets.get(key.as_str()).map_or(0, |members| members.len())
         };
         rows.push((members, counts.allocs, counts.chunk_bytes, held));
     }
@@ -7899,10 +7899,10 @@ fn what_one_stats_read_allocates() {
             let sums = {
                 let probe = crate::alloc_probe::Probe::start();
                 let total = shard.strings().len()
-                    + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
-                    + shard.sets.values().map(std::collections::BTreeMap::len).sum::<usize>()
-                    + shard.lists.values().map(std::collections::BTreeMap::len).sum::<usize>()
-                    + shard.zsets.values().map(std::collections::BTreeMap::len).sum::<usize>()
+                    + shard.bucket_index.hashes.values().map(|fields| fields.len()).sum::<usize>()
+                    + shard.bucket_index.sets.values().map(std::collections::BTreeMap::len).sum::<usize>()
+                    + shard.bucket_index.lists.values().map(std::collections::BTreeMap::len).sum::<usize>()
+                    + shard.bucket_index.zsets.values().map(std::collections::BTreeMap::len).sum::<usize>()
                     + shard.features().values().map(|series| series.len()).sum::<usize>()
                     + shard.context_nodes().len();
                 let counted = probe.stop().alloc_bytes;
@@ -9133,7 +9133,7 @@ fn what_consolidating_into_a_fixed_node_would_cost() {
 ///
 /// TWO: `context_nodes` HAS NO PRODUCTION WRITER. Sixty-four nodes written through
 /// `Command::ContextUpsertNode` leave that map empty, because `write_context_node` frames a node as
-/// a HASH BLOCK -- its own comment says the block "lands in `shard.hashes` under
+/// a HASH BLOCK -- its own comment says the block "lands in `shard.bucket_index.hashes` under
 /// `CONTEXT_NODE_FIELD`" -- and the only `.insert` into `context_nodes` anywhere in the tree is
 /// inside `#[cfg(test)]`.
 ///
@@ -9216,7 +9216,7 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
     println!("  strings:       {:>4} entries, {with_block_id} with a block id, {with_generation} with a generation",
         string_entries.len());
     println!("  context_nodes: {:>4} entries after 64 upserts", shard.context_nodes().len());
-    println!("  hashes:        {:>4} keys -- where a node is actually filed", shard.hashes.len());
+    println!("  hashes:        {:>4} keys -- where a node is actually filed", shard.bucket_index.hashes.len());
 
     // CLAIM ONE. The fixture must have written strings, or the counts below are about nothing.
     assert!(
@@ -9240,7 +9240,7 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
         shard.context_nodes().len()
     );
     assert!(
-        !shard.hashes.is_empty(),
+        !shard.bucket_index.hashes.is_empty(),
         "the hash map is empty after 64 node upserts, so the nodes went somewhere this test does \
          not name -- and the emptiness of `context_nodes` above proves nothing until this holds"
     );
@@ -11970,7 +11970,7 @@ fn how_many_holders_a_key_allocation_has_by_kind() {
     for key in shard.strings().keys() {
         holders.entry(key.as_ptr() as usize).or_default().push("strings");
     }
-    for key in shard.hashes.keys() {
+    for key in shard.bucket_index.hashes.keys() {
         holders.entry(key.as_ptr() as usize).or_default().push("hashes");
     }
     for key in shard.context_nodes().keys() {
@@ -12021,7 +12021,7 @@ fn how_many_holders_a_key_allocation_has_by_kind() {
         shard.strings().len()
     );
     assert!(
-        shard.hashes.len() > 0,
+        shard.bucket_index.hashes.len() > 0,
         "the hash map is empty, so every row below is the string path again and this arm answers \
          nothing about the container kinds it exists to measure"
     );

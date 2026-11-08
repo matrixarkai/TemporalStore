@@ -882,9 +882,10 @@ message ControlStateSelectionSet {
 // the binary arm only when asked. See `SHARED_OBJECT_CONTAINER_PROTOBUF` in `shared_store.rs`
 // for why one leading byte is enough to tell the two apart.
 //
-// The two manifests and the WAL entry envelope are NOT here yet. The manifests carry nested
-// report structures, and the WAL envelope carries a `Command`, which cannot be modelled while
-// the command roster still names writes the proto does not describe.
+// The checkpoint manifest is at the end of this section. The bucket-dump manifest and the WAL
+// entry envelope are NOT here yet: the dump manifest carries nested report structures, and the
+// WAL envelope carries a `Command`, which cannot be modelled while the command roster still
+// names writes the proto does not describe.
 // ===========================================================================================
 
 message SharedStoreShardLease {
@@ -901,6 +902,37 @@ message SharedStoreReplayCursorObject {
 message SharedStoreRoutingRangeStamp {
   uint32 start_routing_bucket = 1;
   uint32 end_routing_bucket = 2;
+}
+
+// One block slab a checkpoint names, with the sealed-slab metadata a lazy restore installs before
+// the first fetch. The optional fields keep "unknown" distinct from zero.
+message SharedStoreBlockSlabRef {
+  uint64 block_slab_id = 1;
+  string key = 2;
+  uint64 byte_size = 3;
+  string sha256 = 4;
+  uint64 logical_bytes = 5;
+  optional uint64 first_block_id = 6;
+  optional uint64 last_block_id = 7;
+  optional uint64 created_unix_ms = 8;
+  optional uint64 updated_unix_ms = 9;
+}
+
+// Which index and which slabs make up one durable checkpoint of a shard. `routing_range` is
+// absent on a manifest written before the range was stamped, which is what a missing message
+// field means here; `next_block_id` is zero on one written before it was recorded.
+message SharedStoreCheckpointManifest {
+  string cluster_id = 1;
+  uint64 shard_id = 2;
+  string checkpoint_id = 3;
+  uint64 checkpoint_wal_index = 4;
+  uint64 created_at_ms = 5;
+  string index_key = 6;
+  uint64 index_byte_size = 7;
+  string index_sha256 = 8;
+  repeated SharedStoreBlockSlabRef block_slabs = 9;
+  uint64 next_block_id = 10;
+  SharedStoreRoutingRangeStamp routing_range = 11;
 }
 
 // ===========================================================================================
@@ -1389,7 +1421,7 @@ message ContextWritePackAudit {
 //
 // NOTHING ASSERTS THE FILENAME. `state.json` appears exactly once in the crate, as a
 // `root.join("state.json")` construction with no test or doc pinning it, so the spelling is
-// not a durable contract the way `slab_manifest.json` is. The name stays regardless: the
+// not a durable contract the way `slab_manifest.pb` is. The name stays regardless: the
 // writer retires either way, and renaming a path that is already on disk is a separate,
 // riskier decision.
 // ===========================================================================================
@@ -1706,4 +1738,21 @@ message DurableDataNodeLifecycleSnapshot {
   // the order given.
   repeated DurableShardLifecycleState transitions = 2;
   repeated DurableSchedulerLifecycleToken tokens = 3;
+}
+
+// ===========================================================================================
+// DURABLE CONTROL STATE COUNTER SERIES BLOCK, PACKED SHAPE.
+//
+// The block a Control State counter writes: the whole series, `timestamp_ms -> value`. Two PARALLEL
+// PACKED arrays rather than a repeated pair message, so a point costs its two varints and no tag or
+// length. The arrays are the same length and the timestamps are strictly ascending (the writer
+// iterates a `BTreeMap`); a reader refuses anything else rather than keep one of two values for a
+// repeated timestamp. The container byte in front of this message is 0x01; 0x02 is reserved for a
+// delta-coded shape and is refused by this build, see `engine/control_state_block.rs`.
+// ===========================================================================================
+
+message DurableControlStateSeries {
+  repeated uint64 timestamps_ms = 1;
+  // `sint64`: zigzag, so a small negative amount is one byte and not ten.
+  repeated sint64 values = 2;
 }

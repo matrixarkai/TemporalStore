@@ -1926,15 +1926,8 @@ fn save_lifecycle_snapshot_file(
             }
         }
     }
-    let bytes = match serde_json::to_vec_pretty(&snapshot) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return LifecycleSnapshotFileResponse {
-                status: Status::error("bad_lifecycle_snapshot", err.to_string()),
-                snapshot: None,
-            };
-        }
-    };
+    // Binary, through the same encoder the runtime's persist uses.
+    let bytes = temporalstore_rust::data_node::encode_lifecycle_snapshot_file(&snapshot);
     let tmp_path = request.path.with_extension("tmp");
     if let Err(err) = fs::write(&tmp_path, bytes).and_then(|_| fs::rename(&tmp_path, &request.path))
     {

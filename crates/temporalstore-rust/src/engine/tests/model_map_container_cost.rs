@@ -27,11 +27,11 @@
 //! fixture. `write_context_node` in `execute_on_shard.rs` is commented "the one producer of a node
 //! block", and it does exactly one thing to the model map:
 //!
-//!     shard.hashes.entry(object_key.to_string()).or_default()
+//!     shard.bucket_index.hashes.entry(object_key.to_string()).or_default()
 //!          .insert(CONTEXT_NODE_FIELD.to_string(), address);
 //!
 //! `CONTEXT_NODE_FIELD` is the constant `"meta"` (`constants.rs:36`). Every read of a context node
-//! spells the same constant -- `shard.hashes.get(key).and_then(|f| f.get(CONTEXT_NODE_FIELD))` at
+//! spells the same constant -- `shard.bucket_index.hashes.get(key).and_then(|f| f.get(CONTEXT_NODE_FIELD))` at
 //! nine production sites. So every context node in the store is a hash holding EXACTLY ONE FIELD,
 //! and the only producer of a wider one is the Redis-compatible `HashSet`/`HashMultiSet` surface.
 //! `the_context_node_write_path_produces_exactly_one_field_per_hash` asserts the site count and
@@ -478,7 +478,7 @@ fn seed_sets(engine: &TemporalEngine, keys: usize, members: usize) {
 fn fields_per_hash(engine: &TemporalEngine) -> Vec<usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut occupancies: Vec<usize> = shard.hashes.values().map(|fields| fields.len()).collect();
+    let mut occupancies: Vec<usize> = shard.bucket_index.hashes.values().map(|fields| fields.len()).collect();
     occupancies.sort_unstable();
     occupancies
 }
@@ -1055,9 +1055,9 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
         let shard = shards.get(&1).expect("shard is loaded");
 
         // COPY ONE: the outer model map's own owned key text.
-        let model_keys = shard.hashes.len();
+        let model_keys = shard.bucket_index.hashes.len();
         let model_key_bytes: usize = shard
-            .hashes
+            .bucket_index.hashes
             .keys()
             .map(|k| k.len() + std::mem::size_of::<String>())
             .sum();
@@ -1343,7 +1343,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let pairs: Vec<Vec<(String, ElementEntry)>> = shard
-                .hashes
+                .bucket_index.hashes
                 .values()
                 .map(|fields| {
                     fields
@@ -1353,7 +1353,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
                 })
                 .collect();
             let set_pairs: Vec<Vec<(Vec<u8>, ElementEntry)>> = shard
-                .sets
+                .bucket_index.sets
                 .values()
                 .map(|members| {
                     members
@@ -1385,7 +1385,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
         // was handed an allocation made outside the probe window and charged nothing for it, while
         // the table could not reuse it and paid in full. Reading a container comparison off that
         // would have been an artefact of the harness. Filling through `insert` also matches
-        // `shard.hashes.entry(key).or_default().insert(field, address)` exactly.
+        // `shard.bucket_index.hashes.entry(key).or_default().insert(field, address)` exactly.
         let before_input = pairs.clone();
         let probe = Probe::start();
         let before: Vec<HashMap<String, ElementEntry>> = before_input
@@ -1774,7 +1774,7 @@ fn the_hash_field_map_wire_shape_is_still_the_table_shape() {
 /// MEASURED ON THE REAL ENCODER, NOT A PROXY. `serialize_index_stamped` is what the two production
 /// snapshot sites call, and it emits the `TSIDX` container whose payload codec is zstd -- so the
 /// length it returns IS the compressed checkpoint size. The arms differ in one thing: whether
-/// `shard.hashes` is populated when it is called. The "without" arm is byte-for-byte what main
+/// `shard.bucket_index.hashes` is populated when it is called. The "without" arm is byte-for-byte what main
 /// wrote, because main skipped the field.
 ///
 /// THE CORPUS IS THE ONE THIS MODULE ALREADY MEASURES AT: 40,000 one-field hashes plus 40 hashes of
@@ -1794,7 +1794,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
     let mut shard = ShardState::default();
     // The context-node shape: one field per hash, under one constant name.
     for i in 0..NARROW_HASHES {
-        shard.hashes.insert_element_for_test(
+        shard.bucket_index.hashes.insert_element_for_test(
             &format!("ctx:node:{i}"),
             std::sync::Arc::from("meta"),
             ElementEntry::from_parts(1, (i as u64) * 512, 384, None, None),
@@ -1810,12 +1810,12 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
             );
         }
         shard
-            .hashes
+            .bucket_index.hashes
             .insert_elements_for_test(&format!("wide:hash:{h}"), entry);
     }
 
-    let keys = shard.hashes.len();
-    let fields: usize = shard.hashes.values().map(|m| m.len()).sum();
+    let keys = shard.bucket_index.hashes.len();
+    let fields: usize = shard.bucket_index.hashes.values().map(|m| m.len()).sum();
     assert_eq!(
         NARROW_HASHES + WIDE_HASHES,
         keys,
@@ -1829,9 +1829,9 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
 
     let with_bytes = serialize_index_stamped(&mut shard).len();
     // What main wrote: the same shard with the field skipped.
-    let held = shard.hashes.take_for_test();
+    let held = shard.bucket_index.hashes.take_for_test();
     let without_bytes = serialize_index_stamped(&mut shard).len();
-    shard.hashes.restore_for_test(held);
+    shard.bucket_index.hashes.restore_for_test(held);
 
     assert!(
         with_bytes > without_bytes,

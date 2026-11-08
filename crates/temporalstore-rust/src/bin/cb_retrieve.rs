@@ -219,6 +219,7 @@ fn main() {
                 prefer_current_agent: false,
                 current_agent_scope_key: format!("agent:{}", agent),
                 provider: provider.clone(),
+                include_debug: false,
             },
         );
         if trace_stages {

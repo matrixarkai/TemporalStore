@@ -22,7 +22,7 @@ use matrixcache::MultiLayerCache;
 use super::packed_blocks::decode_feature_block_strict;
 use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
-use super::{parse_i64, read_block_bytes, ShardState};
+use super::{decode_or_count_sequence_row, note_unreadable_sequence_row, parse_i64, read_block_bytes, ShardState};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -38,12 +38,17 @@ pub(super) fn read_sequence_row(
 ) -> Option<SequenceFeatureRow> {
     let bytes = read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
+        // A value is read in whichever shape it holds and an unreadable one is COUNTED, never
+        // silently dropped. See `sequence_row_value`.
         PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
             .find(|point| point.timestamp_ms == timestamp_ms)
-            .and_then(|point| serde_json::from_slice(&point.value).ok()),
-        PackedFeatureBlockDecode::Legacy => serde_json::from_slice(&bytes).ok(),
-        PackedFeatureBlockDecode::Corrupt(_) => None,
+            .and_then(|point| decode_or_count_sequence_row(timestamp_ms, &point.value)),
+        PackedFeatureBlockDecode::Legacy => decode_or_count_sequence_row(timestamp_ms, &bytes),
+        PackedFeatureBlockDecode::Corrupt(_) => {
+            note_unreadable_sequence_row(timestamp_ms, "the block is corrupt");
+            None
+        }
     }
 }
 

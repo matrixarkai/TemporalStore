@@ -54,12 +54,89 @@ pub(super) fn for_each_precomputed_touched_key(
     }
 }
 
-pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
+#[derive(Clone)]
+pub(crate) enum CommandObjectKeys {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl CommandObjectKeys {
+    fn one(key: String) -> Self {
+        Self::One(key)
+    }
+
+    fn many(keys: Vec<String>) -> Self {
+        Self::Many(keys)
+    }
+
+    fn as_slice(&self) -> &[String] {
+        match self {
+            Self::One(key) => std::slice::from_ref(key),
+            Self::Many(keys) => keys,
+        }
+    }
+}
+
+impl std::ops::Deref for CommandObjectKeys {
+    type Target = [String];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+pub(crate) enum CommandObjectKeysIntoIter {
+    One(std::iter::Once<String>),
+    Many(std::vec::IntoIter<String>),
+}
+
+impl Iterator for CommandObjectKeysIntoIter {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::One(key) => key.next(),
+            Self::Many(keys) => keys.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::One(key) => key.size_hint(),
+            Self::Many(keys) => keys.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for CommandObjectKeysIntoIter {}
+
+impl IntoIterator for CommandObjectKeys {
+    type Item = String;
+    type IntoIter = CommandObjectKeysIntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Self::One(key) => CommandObjectKeysIntoIter::One(std::iter::once(key)),
+            Self::Many(keys) => CommandObjectKeysIntoIter::Many(keys.into_iter()),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a CommandObjectKeys {
+    type Item = &'a String;
+    type IntoIter = std::slice::Iter<'a, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.as_slice().iter()
+    }
+}
+
+pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
     match command {
         // Touches no object, so it holds no object keys.
-        Command::LeaderEstablish => Vec::new(),
-        Command::CommonDelete { key } => associated_record_keys(key),
-        Command::CommonPersist { key } => associated_record_keys(key),
+        Command::LeaderEstablish => CommandObjectKeys::many(Vec::new()),
+        Command::CommonDelete { key } => CommandObjectKeys::many(associated_record_keys(key)),
+        Command::CommonPersist { key } => CommandObjectKeys::many(associated_record_keys(key)),
         Command::CommonExpire { key, .. }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
@@ -97,20 +174,20 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ControlStateIncrement { key, .. }
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
-        | Command::ControlStateSelectionSet { key, .. } => vec![key.clone()],
+        | Command::ControlStateSelectionSet { key, .. } => CommandObjectKeys::one(key.clone()),
         Command::ControlStateSet { family, key, .. }
         | Command::ControlStateSetAndGet { family, key, .. }
         | Command::ControlStateSetAndGetWithOptions { family, key, .. } => {
-            vec![control_state_family_key(*family, key)]
+            CommandObjectKeys::one(control_state_family_key(*family, key))
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
-            vec![context_node_key(*tenant_hash, node.node_hash)]
+            CommandObjectKeys::one(context_node_key(*tenant_hash, node.node_hash))
         }
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
             ..
-        } => vec![context_event_key(*tenant_hash, *node_hash)],
+        } => CommandObjectKeys::one(context_event_key(*tenant_hash, *node_hash)),
         Command::ContextWriteExtractedEvent {
             tenant_hash,
             node_hash,
@@ -174,7 +251,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
                         }),
                 );
             }
-            keys
+            CommandObjectKeys::many(keys)
         }
         Command::ContextWriteIndexRef {
             tenant_hash,
@@ -182,65 +259,67 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
             index_value_hash,
             scope_hash,
             ..
-        } => vec![context_index_key(
+        } => CommandObjectKeys::one(context_index_key(
             *tenant_hash,
             index_name,
             *index_value_hash,
             *scope_hash,
-        )],
+        )),
         Command::ContextWritePackAudit { tenant_hash, audit } => {
-            vec![context_audit_key(*tenant_hash, audit.session_hash)]
+            CommandObjectKeys::one(context_audit_key(*tenant_hash, audit.session_hash))
         }
         Command::ContextMarkSummaryDirty {
             tenant_hash,
             node_hash,
             ..
-        } => vec![context_dirty_key(*tenant_hash, *node_hash)],
+        } => CommandObjectKeys::one(context_dirty_key(*tenant_hash, *node_hash)),
         Command::ContextMarkEmbeddingDirty {
             tenant_hash,
             node_hash,
             ..
-        } => vec![context_embedding_dirty_key(*tenant_hash, *node_hash)],
+        } => CommandObjectKeys::one(context_embedding_dirty_key(*tenant_hash, *node_hash)),
         Command::ContextUpsertEntity {
             tenant_hash,
             entity,
-        } => vec![context_entity_key(
+        } => CommandObjectKeys::one(context_entity_key(
             *tenant_hash,
             entity.node_hash,
             entity.entity_hash,
-        )],
+        )),
         Command::ContextUpsertChildRef {
             tenant_hash,
             child_ref,
-        } => vec![context_child_key(*tenant_hash, child_ref.parent_hash)],
+        } => CommandObjectKeys::one(context_child_key(*tenant_hash, child_ref.parent_hash)),
         Command::ContextSetNodeEmbedding {
             tenant_hash,
             node_hash,
             ..
-        } => vec![context_node_key(*tenant_hash, *node_hash)],
+        } => CommandObjectKeys::one(context_node_key(*tenant_hash, *node_hash)),
         Command::ContextQueryNodeEmbeddings {
             tenant_hash,
             node_hashes,
-        } => node_hashes
-            .iter()
-            .map(|node_hash| context_node_key(*tenant_hash, *node_hash))
-            .collect(),
+        } => CommandObjectKeys::many(
+            node_hashes
+                .iter()
+                .map(|node_hash| context_node_key(*tenant_hash, *node_hash))
+                .collect(),
+        ),
         Command::ContextUpsertSummary {
             tenant_hash,
             summary,
-        } => vec![context_summary_key(
+        } => CommandObjectKeys::one(context_summary_key(
             *tenant_hash,
             summary.node_hash,
             summary.level,
-        )],
+        )),
         Command::ContextWriteCompressionEvent { tenant_hash, event } => {
-            vec![context_compression_key(*tenant_hash, event.node_hash)]
+            CommandObjectKeys::one(context_compression_key(*tenant_hash, event.node_hash))
         }
         Command::ContextCompressEvents {
             tenant_hash,
             node_hash,
             ..
-        } => vec![context_compression_key(*tenant_hash, *node_hash)],
+        } => CommandObjectKeys::one(context_compression_key(*tenant_hash, *node_hash)),
         Command::SequenceBatchQuery { .. }
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
@@ -282,7 +361,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextResourceBlobPut { .. }
         | Command::ContextResourceBlobFetch { .. }
         | Command::ContextResourceBlobSweep { .. }
-        | Command::ContextQueryNodeContext { .. } => Vec::new(),
+        | Command::ContextQueryNodeContext { .. } => CommandObjectKeys::many(Vec::new()),
     }
 }
 
@@ -974,7 +1053,7 @@ pub(super) fn validate_command_preconditions(
             return Ok(());
         }
         let Some(bytes) = shard
-            .hashes
+            .bucket_index.hashes
             .get(key)
             .and_then(|entries| entries.get(field))
             .and_then(|address| {

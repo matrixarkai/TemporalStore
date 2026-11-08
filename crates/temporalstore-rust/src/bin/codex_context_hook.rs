@@ -537,6 +537,7 @@ fn retrieve_scope(
         prefer_current_agent: false,
         current_agent_scope_key: format!("agent:{}", agent_profile(&args.agent_name)),
         provider: ContextModelProviderConfig::default(),
+        include_debug: false,
     };
     let inject = inject_context(
         engine,

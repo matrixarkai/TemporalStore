@@ -18,5 +18,7 @@ mod part3;
 mod exported_storage_terms;
 #[path = "tests/evict_live.rs"]
 mod evict_live;
+#[path = "tests/loop_report.rs"]
+mod loop_report;
 #[path = "tests/evict_dump_drop.rs"]
 mod evict_dump_drop;

@@ -2339,8 +2339,8 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
             surrendered > 0,
             "denominator: no string row carried refs, so clearing the rows is not the missing              secondary view this test means to simulate"
         );
-        shard.hashes.clear_for_test();
-        shard.sets.clear_for_test();
+        shard.bucket_index.hashes.clear_for_test();
+        shard.bucket_index.sets.clear_for_test();
     }
 
     let exists = engine.execute(ExecuteRequest {

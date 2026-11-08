@@ -123,6 +123,8 @@ mod cache_invalidation_cost;
 mod cache_read_cost;
 #[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
 mod a_hash_write_files_only_what_it_wrote;
+#[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
+mod a_write_names_only_the_blocks_of_the_objects_it_touched;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]
@@ -474,3 +476,7 @@ mod routing_range_stamp_binary;
 mod the_config_log_in_either_shape;
 #[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
 mod the_served_index_encoder_has_no_json_fallback;
+#[path = "tests/the_control_state_block_in_either_shape.rs"]
+mod the_control_state_block_in_either_shape;
+#[path = "tests/the_sequence_row_in_either_shape.rs"]
+mod the_sequence_row_in_either_shape;

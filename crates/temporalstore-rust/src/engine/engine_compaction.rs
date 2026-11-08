@@ -135,13 +135,13 @@ pub(super) fn model_compaction_policy_reports(
         .iter()
         .filter(|key| !record_exists(shard, key))
     {
-        let model_id = if shard.hashes.contains_key(key) {
+        let model_id = if shard.bucket_index.hashes.contains_key(key) {
             "hash"
-        } else if shard.sets.contains_key(key) {
+        } else if shard.bucket_index.sets.contains_key(key) {
             "set"
-        } else if shard.lists.contains_key(key) {
+        } else if shard.bucket_index.lists.contains_key(key) {
             "list"
-        } else if shard.zsets.contains_key(key) {
+        } else if shard.bucket_index.zsets.contains_key(key) {
             "zset"
         } else if shard.features().contains_key(key) {
             "feature"
@@ -468,9 +468,9 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "hash",
-        shard.hashes.len(),
+        shard.bucket_index.hashes.len(),
         shard
-            .hashes
+            .bucket_index.hashes
             .values()
             .flat_map(|fields| fields.values().cloned()),
         &slab_block_counts,
@@ -478,9 +478,9 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "zset",
-        shard.zsets.len(),
+        shard.bucket_index.zsets.len(),
         shard
-            .zsets
+            .bucket_index.zsets
             .values()
             .flat_map(|members| members.values().map(|(_, address)| address.clone())),
         &slab_block_counts,
@@ -488,9 +488,9 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "list",
-        shard.lists.len(),
+        shard.bucket_index.lists.len(),
         shard
-            .lists
+            .bucket_index.lists
             .values()
             .flat_map(|elements| elements.values().cloned()),
         &slab_block_counts,
@@ -498,9 +498,9 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "set",
-        shard.sets.len(),
+        shard.bucket_index.sets.len(),
         shard
-            .sets
+            .bucket_index.sets
             .values()
             .flat_map(|members| members.values().cloned()),
         &slab_block_counts,

@@ -5926,7 +5926,7 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let fields = shard.hashes.get("wide").expect("the hash exists");
+    let fields = shard.bucket_index.hashes.get("wide").expect("the hash exists");
     assert_eq!(fields.len(), 64, "all fields written");
 
     // THE LOOKUP TAKES NO ELEMENT NAME NOW, AND THE ADDRESS IS STILL WHAT IS CHECKED.
@@ -7019,7 +7019,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // per-key ceiling above, which is the assertion that would eventually fail for it.
         let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
         let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
-        let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
+        let resident = shard.bucket_index.hashes.get("wide").map_or(0, |fields| fields.len());
         // RESTATED: THE LIVE ENTRY IS RETAINED TOO, NOT ONLY A TOMBSTONE ADDED.
         //
         // The paragraph above said "the map holds ONE LIVE entry and TWO TOMBSTONES, three
@@ -7108,7 +7108,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .expect("the object must still be filed");
         let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
         let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
-        let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
+        let resident = shard.bucket_index.hashes.get("wide").map_or(0, |fields| fields.len());
         // THE TOMBSTONE CLAIM HELD AND WAS CHECKED RATHER THAN ADJUSTED. The message below is the
         // one this arm shipped with, and the measurement still agrees with it: writing a field back
         // clears its tombstone through the upsert's retain, so the tombstone cost is bounded at one
@@ -8807,7 +8807,7 @@ fn large_async_hash_values_remain_readable_after_cache_eviction() {
         let fields = shards
             .get(&1)
             .unwrap()
-            .hashes
+            .bucket_index.hashes
             .get("sequence/0")
             .unwrap();
         assert!(fields
@@ -14029,7 +14029,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
 /// This decides how the per-record rebuild can be removed, and the code says two things that pull
 /// opposite ways. The executor for `ContextUpsertNode` stages its outcome under its own kind with
 /// the comment "this writes a hash block and -- unlike HashSet -- never registers it in the bucket
-/// index". But the block IS put into `shard.hashes`, and `rebuild_bucket_first_index` derives the
+/// index". But the block IS put into `shard.bucket_index.hashes`, and `rebuild_bucket_first_index` derives the
 /// index from `collect_model_live_block_entries`, which reads the model maps.
 ///
 /// If context blocks ARE in the index, the rebuild is load-bearing and removing it needs the write
@@ -14093,7 +14093,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     }
     // And the context keys the model map holds, so the two can be compared.
     let context_keys_in_model = shard
-        .hashes
+        .bucket_index.hashes
         .keys()
         .filter(|key| key.contains("ctx") || key.contains("context"))
         .count();
@@ -17449,7 +17449,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
     let (head_seq, tail_seq) = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let list = shard.lists.get("queue").expect("the list exists");
+        let list = shard.bucket_index.lists.get("queue").expect("the list exists");
         (
             *list.keys().next().expect("a head"),
             *list.keys().next_back().expect("a tail"),
@@ -17466,7 +17466,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
     // This read the pushed sequence out of `IndexItem::element_name` -- the sequence as sixteen hex
     // digits, biased -- and the row has no such field any more. The sequence is carried instead in
     // the record's `key_states` blobs, under `CARRIED_CONTAINER_FIELDS[2]` (`list_elements`), as
-    // the (sequence, address) pair read back out of `shard.lists` after the write. That is the
+    // the (sequence, address) pair read back out of `shard.bucket_index.lists` after the write. That is the
     // source `fold_carried_container_elements` reads on a reload, so it is the source this arm
     // should have been asking: the question "which entry did the push file its item under" still
     // has an answer, and this is where the answer lives.
@@ -17975,10 +17975,10 @@ fn what_one_entry_costs_in_each_structure() {
             let shards = engine.shards.read().expect("shards lock poisoned");
             let shard = shards.get(&1).expect("shard 1 loaded");
             match kind {
-                "hash" => shard.hashes.values().map(|m| m.len()).sum::<usize>(),
-                "zset" => shard.zsets.values().map(|m| m.len()).sum::<usize>(),
-                "set" => shard.sets.values().map(|m| m.len()).sum::<usize>(),
-                "list" => shard.lists.values().map(|m| m.len()).sum::<usize>(),
+                "hash" => shard.bucket_index.hashes.values().map(|m| m.len()).sum::<usize>(),
+                "zset" => shard.bucket_index.zsets.values().map(|m| m.len()).sum::<usize>(),
+                "set" => shard.bucket_index.sets.values().map(|m| m.len()).sum::<usize>(),
+                "list" => shard.bucket_index.lists.values().map(|m| m.len()).sum::<usize>(),
                 _ => 0,
             }
         };

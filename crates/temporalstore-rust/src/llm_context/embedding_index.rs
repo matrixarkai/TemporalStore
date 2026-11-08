@@ -35,6 +35,40 @@ pub struct EmbeddingHit {
     pub score: f32,
 }
 
+/// A validated query vector whose inverse norm can be reused across scoring passes.
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedEmbeddingQuery<'a> {
+    values: &'a [f32],
+    inverse_norm: f32,
+}
+
+impl<'a> PreparedEmbeddingQuery<'a> {
+    pub fn new(values: &'a [f32]) -> Result<Self, EmbeddingIndexError> {
+        Ok(Self {
+            values,
+            inverse_norm: query_inverse_norm(values, values.len())?,
+        })
+    }
+
+    pub fn values(self) -> &'a [f32] {
+        self.values
+    }
+
+    pub fn dimensions(self) -> usize {
+        self.values.len()
+    }
+
+    fn validate_dimensions(self, expected: usize) -> Result<(), EmbeddingIndexError> {
+        if self.values.len() != expected {
+            return Err(EmbeddingIndexError::QueryDimensionMismatch {
+                expected,
+                actual: self.values.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Exact cosine scores for a bounded rerank set.
 ///
 /// The compact index should select the set. This function is deliberately
@@ -43,13 +77,19 @@ pub fn score_embedding_candidates_exact(
     query: &[f32],
     candidates: &[EmbeddingVector<'_>],
 ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
-    let query_inverse_norm = query_inverse_norm(query, query.len())?;
+    score_prepared_embedding_candidates_exact(PreparedEmbeddingQuery::new(query)?, candidates)
+}
+
+pub fn score_prepared_embedding_candidates_exact(
+    query: PreparedEmbeddingQuery<'_>,
+    candidates: &[EmbeddingVector<'_>],
+) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
     let mut hits = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        if candidate.values.len() != query.len() {
+        if candidate.values.len() != query.dimensions() {
             return Err(EmbeddingIndexError::DimensionMismatch {
                 key: candidate.key,
-                expected: query.len(),
+                expected: query.dimensions(),
                 actual: candidate.values.len(),
             });
         }
@@ -62,7 +102,7 @@ pub fn score_embedding_candidates_exact(
                     dimension,
                 });
             }
-            dot += query[dimension] * value;
+            dot += query.values[dimension] * value;
             norm_squared += value * value;
         }
         if norm_squared <= f32::EPSILON {
@@ -70,7 +110,7 @@ pub fn score_embedding_candidates_exact(
         }
         hits.push(EmbeddingHit {
             key: candidate.key,
-            score: dot * query_inverse_norm * norm_squared.sqrt().recip(),
+            score: dot * query.inverse_norm * norm_squared.sqrt().recip(),
         });
     }
     Ok(hits)
@@ -239,6 +279,39 @@ struct SignatureRouting {
     buckets: [HashMap<u16, Vec<u32>>; SIGNATURE_ROUTING_TABLES],
 }
 
+enum SeenPositions {
+    Dense(Vec<u64>),
+    Sparse(HashSet<u32>),
+}
+
+impl SeenPositions {
+    fn new(row_count: usize, budget: usize) -> Self {
+        let dense_words = row_count.div_ceil(u64::BITS as usize);
+        let dense_bytes = dense_words.saturating_mul(std::mem::size_of::<u64>());
+        let sparse_key_bytes = budget.saturating_mul(std::mem::size_of::<u32>());
+        // Never trade more query memory for direct bit tests.
+        if dense_bytes <= sparse_key_bytes {
+            Self::Dense(vec![0; dense_words])
+        } else {
+            Self::Sparse(HashSet::with_capacity(budget))
+        }
+    }
+
+    fn insert(&mut self, position: u32) -> bool {
+        match self {
+            Self::Dense(words) => {
+                let position = position as usize;
+                let word = position / u64::BITS as usize;
+                let mask = 1u64 << (position % u64::BITS as usize);
+                let inserted = words[word] & mask == 0;
+                words[word] |= mask;
+                inserted
+            }
+            Self::Sparse(positions) => positions.insert(position),
+        }
+    }
+}
+
 impl SignatureRouting {
     fn build(rows: &TenantRows, dimensions: usize) -> Self {
         let mut routing = Self {
@@ -284,10 +357,10 @@ impl SignatureRouting {
         }
     }
 
-    fn candidates(&self, signature: u64, budget: usize) -> Vec<u32> {
+    fn candidates(&self, signature: u64, row_count: usize, budget: usize) -> Vec<u32> {
         // Routing stores u32 positions, so keep query scratch at that width until scoring.
         let mut positions = Vec::with_capacity(budget);
-        let mut seen = HashSet::<u32>::with_capacity(budget);
+        let mut seen = SeenPositions::new(row_count, budget);
         for distance in 0..=2 {
             for table in 0..SIGNATURE_ROUTING_TABLES {
                 let bucket = signature_bucket(signature, table);
@@ -337,7 +410,7 @@ impl SignatureRouting {
         table: usize,
         bucket: u16,
         budget: usize,
-        seen: &mut HashSet<u32>,
+        seen: &mut SeenPositions,
         positions: &mut Vec<u32>,
     ) -> bool {
         let Some(bucket_positions) = self.buckets[table].get(&bucket) else {
@@ -737,7 +810,32 @@ impl EmbeddingIndex {
         let Some(rows) = self.tenants.get(&tenant_id) else {
             return Ok(Vec::new());
         };
-        let query_inverse_norm = query_inverse_norm(query, self.config.dimensions)?;
+        self.search_prepared_rows(tenant_id, rows, PreparedEmbeddingQuery::new(query)?, limit)
+    }
+
+    pub(crate) fn search_prepared(
+        &self,
+        tenant_id: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(rows) = self.tenants.get(&tenant_id) else {
+            return Ok(Vec::new());
+        };
+        self.search_prepared_rows(tenant_id, rows, query, limit)
+    }
+
+    fn search_prepared_rows(
+        &self,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        query.validate_dimensions(self.config.dimensions)?;
         let limit = limit.min(rows.item_ids.len());
         // Large tenants route first, then reuse the exact compact scorer on a bounded set.
         if let Some(routing) = &rows.signature_routing {
@@ -745,14 +843,18 @@ impl EmbeddingIndex {
                 .saturating_mul(SIGNATURE_CANDIDATES_PER_HIT)
                 .clamp(SIGNATURE_MIN_CANDIDATES, SIGNATURE_MAX_CANDIDATES)
                 .min(rows.item_ids.len());
-            let positions = routing.candidates(embedding_signature_f32(query), candidate_budget);
+            let positions = routing.candidates(
+                embedding_signature_f32(query.values),
+                rows.item_ids.len(),
+                candidate_budget,
+            );
             let minimum_routed_candidates = limit.saturating_mul(4).min(rows.item_ids.len());
             if positions.len() >= minimum_routed_candidates {
                 return Ok(self.search_positions(
                     tenant_id,
                     rows,
-                    query,
-                    query_inverse_norm,
+                    query.values,
+                    query.inverse_norm,
                     limit,
                     positions.into_iter().map(|position| position as usize),
                 ));
@@ -761,8 +863,8 @@ impl EmbeddingIndex {
         Ok(self.search_positions(
             tenant_id,
             rows,
-            query,
-            query_inverse_norm,
+            query.values,
+            query.inverse_norm,
             limit,
             0..rows.item_ids.len(),
         ))
@@ -822,23 +924,73 @@ impl EmbeddingIndex {
         query: &[f32],
         candidate_item_ids: &[u64],
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.score_candidate_ids(
+            tenant_id,
+            query,
+            candidate_item_ids.iter().copied(),
+            candidate_item_ids.len(),
+        )
+    }
+
+    pub(crate) fn score_candidate_ids(
+        &self,
+        tenant_id: u64,
+        query: &[f32],
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        candidate_count: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
         let Some(rows) = self.tenants.get(&tenant_id) else {
             return Ok(Vec::new());
         };
-        let query_inverse_norm = query_inverse_norm(query, self.config.dimensions)?;
-        let mut hits = Vec::with_capacity(candidate_item_ids.len().min(rows.item_ids.len()));
+        self.score_prepared_candidate_ids_for_rows(
+            tenant_id,
+            rows,
+            PreparedEmbeddingQuery::new(query)?,
+            candidate_item_ids,
+            candidate_count,
+        )
+    }
+
+    pub(crate) fn score_prepared_candidate_ids(
+        &self,
+        tenant_id: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        candidate_count: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        let Some(rows) = self.tenants.get(&tenant_id) else {
+            return Ok(Vec::new());
+        };
+        self.score_prepared_candidate_ids_for_rows(
+            tenant_id,
+            rows,
+            query,
+            candidate_item_ids,
+            candidate_count,
+        )
+    }
+
+    fn score_prepared_candidate_ids_for_rows(
+        &self,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        candidate_count: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        query.validate_dimensions(self.config.dimensions)?;
+        let mut hits = Vec::with_capacity(candidate_count.min(rows.item_ids.len()));
         for item_id in candidate_item_ids {
-            let Some(&position) = rows.positions.get(item_id) else {
+            let Some(&position) = rows.positions.get(&item_id) else {
                 continue;
             };
             let start = position * self.config.dimensions;
             let row = &rows.vectors[start..start + self.config.dimensions];
             hits.push(EmbeddingHit {
-                key: EmbeddingKey {
-                    tenant_id,
-                    item_id: *item_id,
-                },
-                score: (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm)
+                key: EmbeddingKey { tenant_id, item_id },
+                score: (dot_i8_f32(row, query.values)
+                    * rows.scales[position]
+                    * query.inverse_norm)
                     .clamp(-1.0, 1.0),
             });
         }
