@@ -73,6 +73,11 @@ use self::task_output::*;
 use self::worker::*;
 use self::storage_manager_runtime::*;
 
+enum SharedWriteExecution {
+    Compact(BatchConditionalWriteResponse),
+    Expanded(BatchExecuteResponse),
+}
+
 pub use lifecycle::{decode_lifecycle_snapshot_file, encode_lifecycle_snapshot_file};
 use lifecycle::{
     final_loaded_lifecycle_state, lifecycle_persistence_report_for_path, lifecycle_snapshot_inner,
@@ -2812,7 +2817,7 @@ impl DataNodeRuntime {
     fn batch_execute_packed_hash_rows(
         &self,
         request: BatchHashTimestampSetRequest,
-    ) -> BatchExecuteResponse {
+    ) -> SharedWriteExecution {
         let lifecycle_marker = Command::HashMultiSetIfTimestampOlder {
             key: String::new(),
             timestamp_field: String::new(),
@@ -2825,10 +2830,10 @@ impl DataNodeRuntime {
             request.shard_id,
             std::slice::from_ref(&lifecycle_marker),
         ) {
-            return BatchExecuteResponse {
+            return SharedWriteExecution::Expanded(BatchExecuteResponse {
                 status,
                 responses: Vec::new(),
-            };
+            });
         }
 
         let unique_fields = request
@@ -2848,22 +2853,16 @@ impl DataNodeRuntime {
             && unique_fields
         {
             let shard_id = request.shard_id;
-            let (response, completed_keys) =
+            let (response, applied_keys) =
                 self.inner.engine.batch_execute_packed_hash_rows(request);
-            mark_dirty_for_successful_row_keys(
-                &self.inner.dirty,
-                shard_id,
-                completed_keys,
-                &response.responses,
-                true,
-            );
-            return response;
+            mark_dirty_keys(&self.inner.dirty, shard_id, applied_keys);
+            return SharedWriteExecution::Compact(response);
         }
         drop(shared_wal_sink);
 
         let fields = request.fields;
         let timestamp_field = request.timestamp_field;
-        self.batch_execute_inner(BatchExecuteRequest {
+        SharedWriteExecution::Expanded(self.batch_execute_inner(BatchExecuteRequest {
             shard_id: request.shard_id,
             commands: request
                 .rows
@@ -2880,13 +2879,13 @@ impl DataNodeRuntime {
                         .collect(),
                 })
                 .collect(),
-        })
+        }))
     }
 
     fn batch_execute_shared_hash_rows(
         &self,
         request: BatchHashMultiSetRequest,
-    ) -> BatchExecuteResponse {
+    ) -> SharedWriteExecution {
         let lifecycle_marker = Command::HashMultiSet {
             key: String::new(),
             entries: Vec::new(),
@@ -2896,10 +2895,10 @@ impl DataNodeRuntime {
             request.shard_id,
             std::slice::from_ref(&lifecycle_marker),
         ) {
-            return BatchExecuteResponse {
+            return SharedWriteExecution::Expanded(BatchExecuteResponse {
                 status,
                 responses: Vec::new(),
-            };
+            });
         }
 
         let unique_fields = request
@@ -2919,21 +2918,15 @@ impl DataNodeRuntime {
             && unique_fields
         {
             let shard_id = request.shard_id;
-            let (response, completed_keys) =
+            let (response, applied_keys) =
                 self.inner.engine.batch_execute_shared_hash_rows(request);
-            mark_dirty_for_successful_row_keys(
-                &self.inner.dirty,
-                shard_id,
-                completed_keys,
-                &response.responses,
-                false,
-            );
-            return response;
+            mark_dirty_keys(&self.inner.dirty, shard_id, applied_keys);
+            return SharedWriteExecution::Compact(response);
         }
         drop(shared_wal_sink);
 
         let fields = request.fields;
-        self.batch_execute_inner(BatchExecuteRequest {
+        SharedWriteExecution::Expanded(self.batch_execute_inner(BatchExecuteRequest {
             shard_id: request.shard_id,
             commands: request
                 .rows
@@ -2947,7 +2940,7 @@ impl DataNodeRuntime {
                         .collect(),
                 })
                 .collect(),
-        })
+        }))
     }
 
     fn batch_execute_inner(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
@@ -3052,7 +3045,16 @@ impl DataNodeRuntime {
             };
         }
 
-        let response = self.batch_execute_shared_hash_rows(request);
+        let response = match self.batch_execute_shared_hash_rows(request) {
+            SharedWriteExecution::Compact(response) => {
+                return BatchWriteResponse {
+                    status: response.status,
+                    applied: response.applied,
+                    errors: response.errors,
+                };
+            }
+            SharedWriteExecution::Expanded(response) => response,
+        };
         if !response.status.ok {
             return BatchWriteResponse {
                 status: response.status,
@@ -3120,7 +3122,10 @@ impl DataNodeRuntime {
             };
         }
 
-        let response = self.batch_execute_packed_hash_rows(request);
+        let response = match self.batch_execute_packed_hash_rows(request) {
+            SharedWriteExecution::Compact(response) => return response,
+            SharedWriteExecution::Expanded(response) => response,
+        };
         if !response.status.ok {
             return BatchConditionalWriteResponse {
                 status: response.status,
