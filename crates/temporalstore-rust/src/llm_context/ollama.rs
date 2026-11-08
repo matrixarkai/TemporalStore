@@ -382,10 +382,10 @@ impl OllamaProvider {
         user_prompt: &str,
         schema: &Value,
     ) -> Result<Value, OllamaError> {
-        self.generate_structured(system_prompt, user_prompt, schema)
+        self.generate_structured_output(system_prompt, user_prompt, schema)
     }
 
-    fn generate_structured<T: DeserializeOwned>(
+    pub(crate) fn generate_structured_output<T: DeserializeOwned>(
         &self,
         system_prompt: &str,
         user_prompt: &str,
@@ -455,7 +455,7 @@ impl OllamaProvider {
         let mut start = 0usize;
         while start < messages.len() {
             let (end, prompt) = self.extraction_batch_prompt(messages, start)?;
-            let output: OllamaExtractionOutput = self.generate_structured(
+            let output: OllamaExtractionOutput = self.generate_structured_output(
                 EXTRACTION_SYSTEM_PROMPT,
                 &prompt,
                 extraction_schema(),

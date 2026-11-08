@@ -36,6 +36,14 @@ struct ContextSummaryBatchItem {
     l1: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct ContextSummaryOutput {
+    #[serde(default)]
+    l0: Value,
+    #[serde(default)]
+    l1: Value,
+}
+
 #[derive(Serialize)]
 struct ContextSummaryBatchSource<'a> {
     source_index: usize,
@@ -152,8 +160,8 @@ pub(crate) fn context_summaries_for_extract(
             })
         }
         ContextProviderKind::Ollama => {
-            let content = call_ollama_context_provider(&provider, request)?;
-            let (l0, l1) = parse_provider_summary_content(&content, request);
+            let output = call_ollama_context_provider(&provider, request)?;
+            let (l0, l1) = normalize_ollama_summary(output, request);
             let l2_ref = format!(
                 "tsctx://tenant/{}/model/{}/source/{}",
                 request.tenant_hash, provider.provider_name, request.source_id
@@ -198,8 +206,8 @@ pub(crate) fn context_summaries_for_extract_batch(
     while start < requests.len() {
         let (end, prompt) = ollama_summary_batch_prompt(&client, requests, start);
         let chunk = &requests[start..end];
-        let output = client
-            .generate_structured_json(
+        let output: Result<ContextSummaryBatchOutput, Status> = client
+            .generate_structured_output(
                 CONTEXT_SUMMARY_SYSTEM_PROMPT,
                 &prompt,
                 context_summary_batch_schema(),
@@ -212,17 +220,6 @@ pub(crate) fn context_summaries_for_extract_batch(
                         provider.provider_name
                     ),
                 )
-            })
-            .and_then(|value| {
-                serde_json::from_value::<ContextSummaryBatchOutput>(value).map_err(|err| {
-                    Status::error(
-                        "model_provider_bad_response",
-                        format!(
-                            "context provider {} returned invalid summary JSON: {err}",
-                            provider.provider_name
-                        ),
-                    )
-                })
             });
 
         if let Ok(output) = output {
@@ -695,16 +692,15 @@ fn call_ollama_embedding_provider(
 fn call_ollama_context_provider(
     provider: &ContextModelProviderConfig,
     request: &ContextExtractRequest,
-) -> Result<String, Status> {
+) -> Result<ContextSummaryOutput, Status> {
     let client = ollama_provider(provider)?;
     let prompt = context_summary_prompt(request);
     client
-        .generate_structured_json(
+        .generate_structured_output(
             CONTEXT_SUMMARY_SYSTEM_PROMPT,
             &prompt,
             context_summary_schema(),
         )
-        .map(|value| value.to_string())
         .map_err(|err| {
             Status::error(
                 "model_provider_request_failed",
@@ -714,6 +710,39 @@ fn call_ollama_context_provider(
                 ),
             )
         })
+}
+
+fn normalize_ollama_summary(
+    output: ContextSummaryOutput,
+    request: &ContextExtractRequest,
+) -> (String, String) {
+    let l0 = output.l0.as_str().filter(|value| !value.trim().is_empty());
+    let l1 = output.l1.as_str().filter(|value| !value.trim().is_empty());
+    let require_model = context_require_model_summaries();
+    let raw = if require_model && (l0.is_none() || l1.is_none()) {
+        serde_json::to_string(&output).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let l0 = l0
+        .map(|value| truncate_words(value, 32))
+        .unwrap_or_else(|| {
+            if require_model {
+                truncate_words(&raw, 32)
+            } else {
+                summarize_l0(&request.title, &request.body)
+            }
+        });
+    let l1 = l1
+        .map(|value| truncate_words(value, 96))
+        .unwrap_or_else(|| {
+            if require_model {
+                truncate_words(&raw, 96)
+            } else {
+                summarize_l1(request.source_kind, &request.title, &request.body)
+            }
+        });
+    (l0, l1)
 }
 
 pub(crate) fn call_openai_compatible_embedding_provider(
