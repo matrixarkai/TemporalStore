@@ -4089,9 +4089,9 @@ pub(crate) fn execute_on_shard(
                     &context_node_key(tenant_hash, node_hash),
                 );
             }
-            // One node read per hash, and the vector comes back with it -- where the separate
-            // record meant a second lookup per node on top of the node read retrieval does
-            // anyway.
+            // One node read per hash. Decode only the vector: this command feeds embedding
+            // backfill and scoring, so allocating node text and the cached summary vector would
+            // create short-lived work proportional to the batch without changing the response.
             // Every id asked about is answered for. A limit belongs on a query that searches,
             // where the caller cannot know how many results exist; this batch is a list of ids the
             // caller already holds, so truncating it drops nodes the caller named, with nothing in
@@ -4100,41 +4100,18 @@ pub(crate) fn execute_on_shard(
             let embeddings = node_hashes
                 .into_iter()
                 .filter_map(|node_hash| {
-                    let object_key = context_node_key(tenant_hash, node_hash);
-                    let node = shard
-                        .bucket_index.hashes
-                        .get(&object_key)
-                        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-                        .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
-                        .or_else(|| {
-                                // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
-                                // hash. `model_map_block_address` spells it `("context_node", None)` and is the
-                                // authority; one element named for both arms is wrong for whichever arm it does
-                                // not describe, and this chain named the field for both.
-                                shard
-                                    .context_nodes()
-                                    .get(object_key.as_str())
-                                    .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &object_key, None)))
-                        })
-                        .and_then(|(address, identity)| {
-                            read_block_shared(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                identity,
-                                Some(block_routing_bucket(
-                                    &object_key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
-                            )
-                            .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
-                        })?;
-                    if node.vector.is_empty() {
+                    let vector = load_context_node_vector(
+                        cache,
+                        block_store,
+                        shard_id,
+                        shard,
+                        tenant_hash,
+                        node_hash,
+                    )?;
+                    if vector.is_empty() {
                         return None;
                     }
-                    Some((node_hash, node.vector))
+                    Some((node_hash, vector))
                 })
                 .collect();
             CommandResponse::ContextNodeEmbeddings { embeddings }
