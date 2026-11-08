@@ -19086,6 +19086,42 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one() {
     );
 }
 
+/// THE SHORT NAMES A BUCKET SUMMARY WRITES ARE THE ONES ITS READER ACCEPTS.
+///
+/// `BucketStorageSummary` has a hand-written `Serialize` that emits `rs`, `oc`, `prc`, `lb`, `pb`,
+/// `doc`, `dg`, `lds`, `psi` and `lcz`, and a derived `Deserialize` that reads them back through
+/// `alias` items. Those aliases are NOT retired spellings: they are the names the writer produces,
+/// so deleting them would make a summary unreadable by the build that wrote it. This is the test
+/// that holds them, written once with the short names and once with the long ones, and asserting
+/// each reads back equal.
+#[test]
+fn a_bucket_summary_reads_back_the_names_it_writes() {
+    use crate::engine::reports::{BucketStorageSummary, SummaryNamed};
+    let summary = BucketStorageSummary {
+        routing_bucket: 9,
+        object_count: 8,
+        block_ref_count: 7,
+        logical_bytes: 6,
+        physical_bytes: 5,
+        dirty_object_count: 4,
+        dirty_generation: 3,
+        last_dump_sequence: 2,
+        block_slab_ids: vec![1],
+        last_compacted_slab: Some(0),
+    };
+    let short = serde_json::to_value(SummaryNamed(&summary, true)).expect("serialize short");
+    for key in ["rs", "oc", "prc", "lb", "pb", "doc", "dg", "lds", "psi", "lcz"] {
+        assert!(short.get(key).is_some(), "the short spelling does not write `{key}`: {short}");
+    }
+    let long = serde_json::to_value(SummaryNamed(&summary, false)).expect("serialize long");
+    assert!(long.get("rs").is_none() && long.get("routing_slot").is_some(), "{long}");
+    for (what, document) in [("short", short), ("long", long)] {
+        let back: BucketStorageSummary = serde_json::from_value(document)
+            .unwrap_or_else(|error| panic!("the {what} spelling does not read back: {error}"));
+        assert_eq!(back, summary, "the {what} spelling read back as a different summary");
+    }
+}
+
 #[test]
 fn the_delete_marker_rename_did_not_move_any_wire_name() {
     // `tombstone` became `delete_marker` in Rust. The WIRE must not follow: the compat corpora
