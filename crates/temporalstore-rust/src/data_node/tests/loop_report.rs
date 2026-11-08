@@ -299,7 +299,17 @@ fn wal_stage_walk(report: &StorageManagerLoopReport) -> u64 {
 fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_again() {
     let dir = tempfile::tempdir().unwrap();
     let runtime = seeded_runtime(dir.path(), 200);
-    let options = StorageManagerOptions::default();
+    // THE DUMP THRESHOLDS ARE RAISED, AND THAT IS WHAT MAKES THE WRITE HALF MEAN ANYTHING. At the
+    // shipped defaults one write makes the shard dirty enough to cross `dirty_bucket_pressure`, and
+    // the stage then runs for THAT reason on a path that never consults the memory at all. The
+    // post-write walk was satisfied by the other trigger, so planting a memory that never
+    // invalidates still passed. With the thresholds out of reach, the only thing that can make the
+    // stage ask again after a write is the memory's own key having moved.
+    let options = StorageManagerOptions {
+        dirty_bucket_pressure: 1_000_000,
+        min_undumped_wal_records: 1_000_000,
+        ..StorageManagerOptions::default()
+    };
 
     // Settle: the first rounds do the shard's real work (dump, reclaim). Bound the wait so a stage
     // that never settles fails here instead of hanging the suite.
@@ -340,5 +350,33 @@ fn a_quiet_shard_stops_asking_the_wal_reclaim_question_and_a_write_makes_it_ask_
         wal_stage_walk(&report) > 0,
         "a write after the quiet rounds did not make the WAL-reclaim stage ask again, so it is \
          skipping on a stale answer"
+    );
+
+    // QUIET AGAIN, then change only what the CALLER passes. A reader that appears registers no
+    // write, so nothing on the shard moves; the retention inputs are the only part of the memory's
+    // key that can notice, and a stage that answered from the old key would keep skipping.
+    let mut quiet_again = false;
+    for _ in 0..12 {
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        if wal_stage_walk(&report) == 0 {
+            quiet_again = true;
+            break;
+        }
+    }
+    assert!(quiet_again, "the stage never went quiet again after the write");
+    let with_a_reader = StorageManagerOptions {
+        follower_replay_cursors: vec![crate::BucketDumpFollowerReplayCursor {
+            follower_id: "a-reader-that-just-appeared".to_string(),
+            shard_id: 1,
+            wal_sequence: 1,
+            index_log_sequence: 1,
+        }],
+        ..options.clone()
+    };
+    let report = runtime.run_storage_manager_once(1, with_a_reader);
+    assert!(
+        wal_stage_walk(&report) > 0,
+        "a new retention input did not make the WAL-reclaim stage ask again, so the memory's key \
+         does not include what the caller passes"
     );
 }
