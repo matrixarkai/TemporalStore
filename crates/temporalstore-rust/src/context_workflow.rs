@@ -3316,8 +3316,16 @@ fn summarize_l0(title: &str, body: &str) -> String {
 
 /// Rank a sentence by how much concrete detail it carries: figures, proper
 /// nouns, and temporal/correction markers are what queries actually target.
+fn contains_ascii_case_insensitive(value: &str, marker: &str) -> bool {
+    if marker.is_empty() {
+        return true;
+    }
+    value.as_bytes().windows(marker.len()).any(|candidate| {
+        candidate.eq_ignore_ascii_case(marker.as_bytes())
+    })
+}
+
 fn context_fact_score(sentence: &str) -> i32 {
-    let lower = sentence.to_ascii_lowercase();
     let mut score = 0;
     if sentence.chars().any(|ch| ch.is_ascii_digit()) {
         score += 3;
@@ -3347,7 +3355,7 @@ fn context_fact_score(sentence: &str) -> i32 {
         "after",
         "before",
     ] {
-        if lower.contains(marker) {
+        if contains_ascii_case_insensitive(sentence, marker) {
             score += 2;
         }
     }
@@ -3407,8 +3415,10 @@ fn truncate_words(value: &str, limit: usize) -> String {
 }
 
 fn context_importance(body: &str) -> f32 {
-    let lower = body.to_ascii_lowercase();
-    if lower.contains("incident") || lower.contains("customer") || lower.contains("risk") {
+    if ["incident", "customer", "risk"]
+        .iter()
+        .any(|marker| contains_ascii_case_insensitive(body, marker))
+    {
         0.9
     } else {
         0.5
