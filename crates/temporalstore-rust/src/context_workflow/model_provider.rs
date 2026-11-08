@@ -941,7 +941,20 @@ fn ollama_summary_batch_prompt(
         .len()
         .min(start.saturating_add(config.max_batch_items));
     let mut end = start;
-    let mut prompt = Vec::with_capacity(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2);
+    let estimated_prompt_bytes = requests[start..max_end].iter().fold(
+        CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2,
+        |bytes, request| {
+            bytes
+                .saturating_add(request.source_id.len())
+                .saturating_add(request.title.len())
+                .saturating_add(request.body.len())
+                .saturating_add(128)
+        },
+    );
+    let mut prompt = Vec::with_capacity(client.bounded_prompt_capacity(
+        CONTEXT_SUMMARY_SYSTEM_PROMPT.len(),
+        estimated_prompt_bytes,
+    ));
     prompt.extend_from_slice(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.as_bytes());
     prompt.push(b'[');
     while end < max_end {

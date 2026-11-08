@@ -195,6 +195,20 @@ impl OllamaProvider {
         }
     }
 
+    pub(crate) fn bounded_prompt_capacity(
+        &self,
+        system_prompt_bytes: usize,
+        estimated_prompt_bytes: usize,
+    ) -> usize {
+        estimated_prompt_bytes
+            .min(self.config.max_input_bytes)
+            .min(
+                self.config
+                    .max_request_bytes
+                    .saturating_sub(system_prompt_bytes),
+            )
+    }
+
     fn endpoint(&self, suffix: &str) -> String {
         if self.path_prefix.is_empty() {
             suffix.to_string()
@@ -245,7 +259,17 @@ impl OllamaProvider {
             .len()
             .min(start.saturating_add(self.config.max_batch_items));
         let mut end = start;
-        let mut prompt = Vec::with_capacity(2);
+        let estimated_prompt_bytes = messages[start..max_end]
+            .iter()
+            .fold(2usize, |bytes, message| {
+                bytes
+                    .saturating_add(message.text.len())
+                    .saturating_add(64)
+            });
+        let mut prompt = Vec::with_capacity(self.bounded_prompt_capacity(
+            EXTRACTION_SYSTEM_PROMPT.len(),
+            estimated_prompt_bytes,
+        ));
         prompt.push(b'[');
 
         while end < max_end {
