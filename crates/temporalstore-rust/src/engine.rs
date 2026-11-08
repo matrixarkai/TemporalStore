@@ -60,8 +60,9 @@ pub use self::sequence_row_value::sequence_rows_unreadable;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
-    bucket_dump_manifest_memo_len,
-    reset_bucket_dump_manifest_io_counts, BucketDumpManifestIoCounts,
+    bucket_dump_manifest_memo_len, manifest_digest_memo_counts,
+    reset_bucket_dump_manifest_io_counts, reset_manifest_digest_memo_counts,
+    BucketDumpManifestIoCounts,
 };
 mod command_validation;
 pub mod resource_blobs;

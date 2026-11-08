@@ -452,3 +452,69 @@ fn a_shard_with_nothing_for_the_index_stage_stops_paying_for_it_and_a_dirty_one_
          that had something to dump"
     );
 }
+
+
+
+/// The span a profiler collects over: ONE periodic round of a shard that has nothing to do, so the
+/// instructions it reports are the unattended loop's idle cost. `#[inline(never)]` so the symbol
+/// exists for `valgrind --toggle-collect`.
+#[inline(never)]
+fn quiet_round_span(
+    runtime: &DataNodeRuntime,
+    options: &StorageManagerOptions,
+) -> StorageManagerLoopReport {
+    runtime.run_storage_manager_once(1, options.clone())
+}
+
+/// Drain a seeded shard with a gate that releases the dump, then settle it under the shipped
+/// options, so the round the profiler sees is a round with nothing to do.
+fn drained_runtime(dir: &std::path::Path, keys: usize) -> DataNodeRuntime {
+    let releasing = StorageManagerOptions {
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        ..StorageManagerOptions::default()
+    };
+    let runtime = seeded_runtime(dir, keys);
+    for _ in 0..12 {
+        runtime.run_storage_manager_once(1, releasing.clone());
+    }
+    let shipped = StorageManagerOptions::default();
+    for _ in 0..3 {
+        runtime.run_storage_manager_once(1, shipped.clone());
+    }
+    runtime
+}
+
+/// Profiler driver, not a gate: `LOOP_KEYS=<n>`, run under
+/// `valgrind --tool=callgrind --toggle-collect='*quiet_round_span*'`.
+#[test]
+#[ignore]
+fn a_quiet_round_for_the_profiler() {
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1000usize);
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = drained_runtime(dir.path(), keys);
+    let shipped = StorageManagerOptions::default();
+    crate::engine::reset_storage_plan_build_counts();
+    crate::engine::reset_manifest_digest_memo_counts();
+    let report = quiet_round_span(&runtime, &shipped);
+    let (lifecycle_plans, wal_plans) = crate::engine::storage_plan_build_counts();
+    let (digest_hits, digest_computed) = crate::engine::manifest_digest_memo_counts();
+    eprintln!(
+        "QUIET_PLANS keys={keys} lifecycle_plans={lifecycle_plans} wal_reclaim_plans={wal_plans}          manifest_digest_hits={digest_hits} manifest_digests_computed={digest_computed}          manifests_retained={}",
+        runtime.engine().list_bucket_dump_manifests(1).len()
+    );
+    eprintln!(
+        "QUIET_ROUND keys={keys} state=[{}] executed={:?}",
+        state(&runtime, &shipped),
+        report.executed_stages
+    );
+    for span in &report.stage_spans {
+        eprintln!(
+            "QUIET_STAGE keys={keys} {:<18} ran={} walk_entries={} encodes={}",
+            span.stage, span.executed, span.walk.live_block_entries, span.walk.index_encodes
+        );
+    }
+}

@@ -664,6 +664,89 @@ pub fn bucket_dump_manifest_memo_len() -> usize {
 
 pub(super) fn clear_bucket_dump_manifest_parse_memo() {
     MANIFEST_PARSE_MEMO.with(|memo| memo.borrow_mut().clear());
+    MANIFEST_DIGEST_MEMO.with(|memo| memo.borrow_mut().clear());
+}
+
+struct ManifestDigestEntry {
+    shard_id: ShardId,
+    /// Held, not just compared: the address is the key, and an address can only be reused once its
+    /// allocation is freed, which this reference prevents for as long as the entry exists.
+    manifest: std::sync::Arc<BucketDumpManifest>,
+    digests: Option<std::sync::Arc<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>>,
+}
+
+/// THE FINGERPRINT DIGESTS OF MANIFESTS THIS THREAD HAS ALREADY DECODED.
+///
+/// The reclaim plan needs, per bucket, a digest of what a manifest's index image says the bucket
+/// held, and getting it means decoding the image whole. A manifest is never rewritten
+/// (`persist_bucket_dump_manifest` writes temp + rename under an id carrying its creation time), and
+/// the listing above hands out the SAME `Arc` for as long as the file's length, mtime and inode are
+/// unchanged -- so the allocation is an identity for the bytes, and what was computed from it once
+/// is what any later call would compute. The plan used to decode every manifest it consulted, on
+/// every call, and a drained shard consults all of them.
+///
+/// BOUNDED BY THE LISTING MEMO. An entry survives only while something other than this memo holds
+/// its manifest (the parse memo, or a caller mid-plan); the first call after the last of those lets
+/// go drops it, so a pruned manifest's digests do not outlive it.
+///
+/// A digest is 16 bytes per bucket. The lines they stand for were a string per live block.
+thread_local! {
+    static MANIFEST_DIGEST_MEMO: std::cell::RefCell<Vec<ManifestDigestEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static MANIFEST_DIGEST_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_DIGEST_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// `compute` runs only for a manifest this thread has not computed for, and its answer -- including
+/// "this manifest cannot be fingerprinted" -- is kept with the manifest.
+pub(super) fn manifest_digests_memoised(
+    shard_id: ShardId,
+    manifest: &std::sync::Arc<BucketDumpManifest>,
+    compute: impl FnOnce() -> Option<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>,
+) -> Option<std::sync::Arc<BTreeMap<u32, super::storage_reporting::BucketFingerprintDigest>>> {
+    let enabled = manifest_parse_memo_enabled();
+    if enabled {
+        let hit = MANIFEST_DIGEST_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            // Only this memo holds it: nothing can ask for it again.
+            memo.retain(|entry| std::sync::Arc::strong_count(&entry.manifest) > 1);
+            memo.iter()
+                .find(|entry| {
+                    entry.shard_id == shard_id && std::sync::Arc::ptr_eq(&entry.manifest, manifest)
+                })
+                .map(|entry| entry.digests.clone())
+        });
+        if let Some(digests) = hit {
+            MANIFEST_DIGEST_HITS.with(|cell| cell.set(cell.get().saturating_add(1)));
+            return digests;
+        }
+    }
+    MANIFEST_DIGEST_MISSES.with(|cell| cell.set(cell.get().saturating_add(1)));
+    let digests = compute().map(std::sync::Arc::new);
+    if enabled {
+        MANIFEST_DIGEST_MEMO.with(|memo| {
+            memo.borrow_mut().push(ManifestDigestEntry {
+                shard_id,
+                manifest: manifest.clone(),
+                digests: digests.clone(),
+            });
+        });
+    }
+    digests
+}
+
+/// How many manifest digest lookups this thread served from memory, and how many computed.
+pub fn manifest_digest_memo_counts() -> (u64, u64) {
+    (
+        MANIFEST_DIGEST_HITS.with(std::cell::Cell::get),
+        MANIFEST_DIGEST_MISSES.with(std::cell::Cell::get),
+    )
+}
+
+/// Zero the two counts, so a probe measures a round rather than a thread's history.
+pub fn reset_manifest_digest_memo_counts() {
+    MANIFEST_DIGEST_HITS.with(|cell| cell.set(0));
+    MANIFEST_DIGEST_MISSES.with(|cell| cell.set(0));
 }
 
 #[cfg(test)]

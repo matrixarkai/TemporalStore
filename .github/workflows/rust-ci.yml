@@ -361,7 +361,9 @@ jobs:
             engine::tests::a_plan_learns_a_log_tail_from_its_appenders::the_cached_tail_equals_the_scanned_tail_through_a_history \
             engine::tests::a_plan_learns_a_log_tail_from_its_appenders::a_maintenance_plan_reads_neither_log_tail_back \
             engine::tests::a_removal_states_no_block_rows::a_removal_states_no_block_rows \
-            engine::tests::a_removal_states_no_block_rows::a_removed_member_stays_removed_and_the_rest_stay_across_a_cold_reload ; do
+            engine::tests::a_removal_states_no_block_rows::a_removed_member_stays_removed_and_the_rest_stay_across_a_cold_reload \
+            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
+            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log

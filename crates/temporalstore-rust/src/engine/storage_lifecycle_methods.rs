@@ -1138,7 +1138,7 @@ impl TemporalEngine {
             .read()
             .expect("shards lock poisoned")
             .get(&shard_id)
-            .map(|shard| bucket_generation_fingerprints_by_bucket(shard_id, shard))
+            .map(|shard| bucket_generation_digests_by_bucket(shard_id, shard))
             .unwrap_or_default();
         // What each bucket holds over the two logs when no manifest covers it.
         //
@@ -1200,8 +1200,14 @@ impl TemporalEngine {
         // (which matched nothing before and matches nothing now). `Some(Some(map))` = computed.
         // The memo lives for THIS call only, so there is no cross-round staleness question: a
         // manifest's index bytes cannot change while one plan is being built.
+        //
+        // AND KEPT BETWEEN CALLS. What a manifest's index image says about each bucket is a function
+        // of the image, and a manifest is never rewritten, so the digests below are looked up in
+        // `manifest_digests_memoised` and the image is decoded once per manifest rather than once
+        // per manifest per call. The per-call vector stays: it spares the lookup (a scan of the
+        // memo) for the second and later buckets that reach the same manifest.
         let mut manifest_fingerprints: Vec<
-            Option<Option<BTreeMap<u32, BTreeSet<String>>>>,
+            Option<Option<std::sync::Arc<BTreeMap<u32, BucketFingerprintDigest>>>>,
         > = (0..manifests.len()).map(|_| None).collect();
 
         // Index each manifest's bucket summaries BY ROUTING BUCKET, once.
@@ -1249,29 +1255,39 @@ impl TemporalEngine {
                 };
                 if manifest_fingerprints[manifest_index].is_none() {
                     manifest_fingerprints[manifest_index] = Some(
-                        crate::engine::decode_index_bytes(&manifest.index_bytes)
-                            .ok()
-                            // A STALE-STAMPED MANIFEST FINGERPRINTS NOTHING, exactly as an
-                            // undecodable one already did. Not counted: this is a plan, and it
-                            // installs nothing.
-                            //
-                            // THE SAFE DIRECTION IS "NO MATCH", which is why this is a filter and
-                            // not a refusal. A manifest that matches a bucket's current generation
-                            // is a manifest the plan believes has that bucket's records durably
-                            // dumped, and the log beneath them becomes reclaimable. Fingerprints
-                            // derived from an image whose fields may mean something else could
-                            // match a bucket no dump actually covers, and the reclaim that follows
-                            // is not recoverable. Declining to match costs a dump that is kept
-                            // longer than it had to be.
-                            .filter(|manifest_state| {
-                                !crate::engine::persistence::index_stamp_is_stale(manifest_state)
-                            })
-                            .map(|manifest_state| {
-                                // The shard this plan is FOR. A decoded manifest state carries no
-                                // stamp of its own -- only `install_shard_state` sets one -- so
-                                // asking IT for a shard yields None and fingerprints nothing.
-                                bucket_generation_fingerprints_by_bucket(shard_id, &manifest_state)
-                            }),
+                        crate::engine::bucket_dump_io::manifest_digests_memoised(
+                            shard_id,
+                            manifest,
+                            || {
+                                crate::engine::decode_index_bytes(&manifest.index_bytes)
+                                    .ok()
+                                    // A STALE-STAMPED MANIFEST FINGERPRINTS NOTHING, exactly as an
+                                    // undecodable one already did. Not counted: this is a plan, and
+                                    // it installs nothing.
+                                    //
+                                    // THE SAFE DIRECTION IS "NO MATCH", which is why this is a
+                                    // filter and not a refusal. A manifest that matches a bucket's
+                                    // current generation is a manifest the plan believes has that
+                                    // bucket's records durably dumped, and the log beneath them
+                                    // becomes reclaimable. Fingerprints derived from an image whose
+                                    // fields may mean something else could match a bucket no dump
+                                    // actually covers, and the reclaim that follows is not
+                                    // recoverable. Declining to match costs a dump that is kept
+                                    // longer than it had to be.
+                                    .filter(|manifest_state| {
+                                        !crate::engine::persistence::index_stamp_is_stale(
+                                            manifest_state,
+                                        )
+                                    })
+                                    .map(|manifest_state| {
+                                        // The shard this plan is FOR. A decoded manifest state
+                                        // carries no stamp of its own -- only `install_shard_state`
+                                        // sets one -- so asking IT for a shard yields None and
+                                        // fingerprints nothing.
+                                        bucket_generation_digests_by_bucket(shard_id, &manifest_state)
+                                    })
+                            },
+                        ),
                     );
                 }
                 // A manifest whose index will not decode matched nothing before and matches
