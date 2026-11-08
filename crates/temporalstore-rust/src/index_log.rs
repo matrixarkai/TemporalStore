@@ -4096,8 +4096,48 @@ impl LocalIndexLogStore {
 
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
         let inner = self.inner.lock().expect("index log lock poisoned");
+        TAIL_SCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
         IndexLogStats {
             last_sequence: last_sequence_at(&inner.root, shard_id).unwrap_or_default(),
+            ..inner.stats
+        }
+    }
+
+    /// `stats`, WITHOUT reading the active piece back to learn its last sequence.
+    ///
+    /// `stats` answers `last_sequence` with `last_sequence_at`, which opens the piece being written
+    /// and decodes the head of EVERY record in it -- work proportional to the piece, and bounded
+    /// only by the rolling threshold. A maintenance round asks three or four times, and the plans
+    /// that ask are on a timer.
+    ///
+    /// THE CACHED SEQUENCE IS ALREADY THE ONE EVERY APPEND TRUSTS. The three append paths read
+    /// `last_sequence_by_shard` and scan only on a miss, then write the sequence they assigned back,
+    /// so a value good enough to number the next record is good enough to report. A store that has
+    /// neither appended nor scanned for this shard has no cached value, and answering 0 there would
+    /// under-report after a cold load, so a miss scans -- and keeps what it found, once per shard
+    /// per process instead of once per read. A scan that FAILS is not kept: the failure is the
+    /// answer `stats` gives (0), and remembering it would make a damaged log read as empty for good.
+    ///
+    /// The scan also trims a torn tail. That repair still happens on the first read of a shard and
+    /// on the first append, which is where a tail can have been torn; nothing tears it afterwards
+    /// without a restart, and a restart starts with an empty cache.
+    pub fn stats_without_rescan(&self, shard_id: ShardId) -> IndexLogStats {
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
+            Some(sequence) => sequence,
+            None => {
+                TAIL_SCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
+                match last_sequence_at(&inner.root, shard_id) {
+                    Ok(sequence) => {
+                        inner.last_sequence_by_shard.insert(shard_id, sequence);
+                        sequence
+                    }
+                    Err(_) => 0,
+                }
+            }
+        };
+        IndexLogStats {
+            last_sequence,
             ..inner.stats
         }
     }
@@ -4173,6 +4213,17 @@ fn active_index_log(root: &Path, shard_id: ShardId) -> (PathBuf, u64) {
         return (legacy, metadata.len());
     }
     (renamed, 0)
+}
+
+thread_local! {
+    /// Times THIS THREAD asked `stats` or `stats_without_rescan` to read a piece back for its last
+    /// sequence. Per thread, so a probe counts its own reads and not a neighbouring test's.
+    static TAIL_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has had a stats read decode the active index-log piece.
+pub fn index_log_tail_scans() -> u64 {
+    TAIL_SCANS.with(std::cell::Cell::get)
 }
 
 fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {

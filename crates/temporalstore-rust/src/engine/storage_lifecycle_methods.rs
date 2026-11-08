@@ -343,7 +343,9 @@ impl TemporalEngine {
             .as_ref()
             .map(|manifest| manifest.wal_sequence)
             .unwrap_or_default();
-        let wal_stats = self.wal_store.stats(request.shard_id);
+        // THE CACHED TAIL, NOT A RESCAN: see `LocalIndexLogStore::stats_without_rescan`. This plan
+        // is built several times a round and the rescan read the active WAL piece back each time.
+        let wal_stats = self.wal_store.stats_without_rescan(request.shard_id);
         let current_wal_sequence = wal_stats.last_sequence;
         let undumped_wal_records =
             current_wal_sequence.saturating_sub(latest_dump_wal_sequence);
@@ -1120,8 +1122,16 @@ impl TemporalEngine {
         WAL_RECLAIM_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
-        let current_wal_sequence = self.write_ahead_log_store().stats(shard_id).last_sequence;
-        let current_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
+        // Both tails from the sequence each log's appenders keep, not by reading the active piece
+        // of each back: the plan is built several times a round.
+        let current_wal_sequence = self
+            .write_ahead_log_store()
+            .stats_without_rescan(shard_id)
+            .last_sequence;
+        let current_index_log_sequence = self
+            .index_log_store
+            .stats_without_rescan(shard_id)
+            .last_sequence;
         let bucket_summaries = self.bucket_storage_summaries(shard_id);
         let current_bucket_fingerprints = self
             .shards
@@ -1556,8 +1566,15 @@ impl TemporalEngine {
                 .map(|report| report.bytes_after)
                 .unwrap_or_default(),
             index_log_records_removed: 0,
-            index_log_bytes_before: self.index_log_store.stats(plan.shard_id).bytes_written,
-            index_log_bytes_after: self.index_log_store.stats(plan.shard_id).bytes_written,
+            // `bytes_written` is a counter the store keeps; neither read needs the tail.
+            index_log_bytes_before: self
+                .index_log_store
+                .stats_without_rescan(plan.shard_id)
+                .bytes_written,
+            index_log_bytes_after: self
+                .index_log_store
+                .stats_without_rescan(plan.shard_id)
+                .bytes_written,
             // Whole segments dropped by this pass. The gc report has measured them all along;
             // stopping here meant a pass that unlinked 64 files and freed 28 MB reported
             // `wal_records_removed: 0` and byte counts covering only the active segment.
