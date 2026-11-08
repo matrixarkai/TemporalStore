@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -10,11 +11,12 @@ use sha2::{Digest, Sha256};
 use crate::types::{ContextEvent, Status};
 
 use super::{
-    context_embeddings_for_extract, normalize_provider, truncate_words, ContextBlock,
-    ContextFilterGroupCandidateDecisionDebug, ContextInjectionOrderingDebug,
-    ContextModelProviderConfig, ContextPrefilterCandidateDebug, ContextQueryFilterGroupDebug,
-    ContextQueryFilterGroupSummaryDebug, ContextQueryUnderstandingDebug, ContextRetrieveRequest,
-    ContextSelectedRefDebug, ContextTier, ContextTreeTraversalDebug,
+    contains_ascii_case_insensitive, context_embeddings_for_extract, normalize_provider,
+    truncate_words, ContextBlock, ContextFilterGroupCandidateDecisionDebug,
+    ContextInjectionOrderingDebug, ContextModelProviderConfig, ContextPrefilterCandidateDebug,
+    ContextQueryFilterGroupDebug, ContextQueryFilterGroupSummaryDebug,
+    ContextQueryUnderstandingDebug, ContextRetrieveRequest, ContextSelectedRefDebug, ContextTier,
+    ContextTreeTraversalDebug,
 };
 pub(super) fn tier_rank(tier: ContextTier) -> u8 {
     match tier {
@@ -72,10 +74,9 @@ pub(super) fn context_query_matches(query: &str, text: &str) -> bool {
 }
 
 pub(super) fn context_query_matches_plan(plan: &ContextQueryPlan, text: &str) -> bool {
-    let text_lower = text.to_ascii_lowercase();
-    let text_normalized = context_normalize_for_match(text);
+    let text = ContextTextMatcher::new(text);
     if let Some(topic_phrase) = plan.topic_phrase.as_ref() {
-        if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
+        if text.matches(topic_phrase.as_str()) {
             return true;
         }
     }
@@ -85,11 +86,7 @@ pub(super) fn context_query_matches_plan(plan: &ContextQueryPlan, text: &str) ->
     let matched_groups = plan
         .term_groups
         .iter()
-        .filter(|group| {
-            group
-                .iter()
-                .any(|term| context_text_matches_term(&text_lower, &text_normalized, term))
-        })
+        .filter(|group| group.iter().any(|term| text.matches(term)))
         .count();
     matched_groups > 0
 }
@@ -461,15 +458,13 @@ fn context_debug_filter_group_matched_terms(
     candidate_terms: &[String],
     text: &str,
 ) -> Vec<String> {
-    let text_lower = text.to_ascii_lowercase();
-    let text_normalized = context_normalize_for_match(text);
+    let text_matcher = ContextTextMatcher::new(text);
     group
         .terms
         .iter()
         .filter(|term| {
             if let Some(query_term) = term.strip_prefix("query_term:") {
-                query_term == "*"
-                    || context_text_matches_term(&text_lower, &text_normalized, query_term)
+                query_term == "*" || text_matcher.matches(query_term)
             } else if let Some(source_term) = term.strip_prefix("source_ref:") {
                 candidate_terms.iter().any(|candidate| {
                     candidate
@@ -477,10 +472,10 @@ fn context_debug_filter_group_matched_terms(
                         .map_or(false, |candidate_source| {
                             candidate_source.contains(source_term)
                         })
-                }) || text_lower.contains(source_term)
+                }) || contains_ascii_case_insensitive(text, source_term)
             } else {
                 candidate_terms.iter().any(|candidate| candidate == *term)
-                    || text_lower.contains(term.as_str())
+                    || contains_ascii_case_insensitive(text, term)
             }
         })
         .cloned()
@@ -579,11 +574,10 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     if plan.term_groups.is_empty() {
         return 0;
     }
-    let text_lower = text.to_ascii_lowercase();
-    let text_normalized = context_normalize_for_match(text);
+    let text = ContextTextMatcher::new(text);
     let mut score = 0u32;
     if let Some(topic_phrase) = plan.topic_phrase.as_ref() {
-        if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
+        if text.matches(topic_phrase.as_str()) {
             score = score.saturating_add(1_000);
         }
     }
@@ -591,7 +585,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     for group in &plan.term_groups {
         let best_match = group
             .iter()
-            .filter(|term| context_text_matches_term(&text_lower, &text_normalized, term))
+            .filter(|term| text.matches(term))
             .map(|term| term.len() as u32)
             .max()
             .unwrap_or_default();
@@ -606,14 +600,13 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
         score = score.saturating_add(matched_groups.saturating_mul(12));
     }
     for phrase in &plan.adjacent_phrases {
-        if context_text_matches_term(&text_lower, &text_normalized, phrase.as_str()) {
+        if text.matches(phrase.as_str()) {
             score = score.saturating_add(50);
         }
     }
     if plan.requests_latest
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "latest", "recent", "current", "updated", "changed", "replaced",
             ],
@@ -623,8 +616,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_temporal_reasoning
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "timeline", "temporal", "history", "sequence", "before", "after", "during",
             ],
@@ -634,34 +626,28 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_after {
         if context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "after", "later", "latest", "new", "current", "update", "moved to",
             ],
         ) {
             score = score.saturating_add(65);
         }
-        if context_text_matches_any(&text_lower, &text_normalized, &["before", "earlier", "old"]) {
+        if context_text_matches_any(&text, &["before", "earlier", "old"]) {
             score = score.saturating_sub(25);
         }
     }
     if plan.requests_before {
-        if context_text_matches_any(&text_lower, &text_normalized, &["before", "earlier", "old"]) {
+        if context_text_matches_any(&text, &["before", "earlier", "old"]) {
             score = score.saturating_add(65);
         }
-        if context_text_matches_any(
-            &text_lower,
-            &text_normalized,
-            &["after", "later", "latest", "new", "current"],
-        ) {
+        if context_text_matches_any(&text, &["after", "later", "latest", "new", "current"]) {
             score = score.saturating_sub(25);
         }
     }
     if plan.requests_correction
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "correction",
                 "corrected",
@@ -676,8 +662,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_reminder
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &["remember", "reminder", "mentioned", "said", "told", "note"],
         )
     {
@@ -685,8 +670,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_contrastive_update
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "switched",
                 "switch",
@@ -702,8 +686,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_social_link
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "recommended",
                 "suggested",
@@ -718,8 +701,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_schedule_detail
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "rescheduled",
                 "scheduled",
@@ -735,10 +717,9 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
         score = score.saturating_add(80);
     }
     if plan.requests_quantity_detail
-        && (text_lower.chars().any(|ch| ch.is_ascii_digit())
+        && (text.text.chars().any(|ch| ch.is_ascii_digit())
             || context_text_matches_any(
-                &text_lower,
-                &text_normalized,
+                &text,
                 &["count", "total", "number", "score", "amount", "quantity"],
             ))
     {
@@ -746,8 +727,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_alias_detail
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "roommate", "manager", "owner", "named", "called", "pet", "dog", "cat",
             ],
@@ -893,41 +873,60 @@ pub(super) fn context_query_stem(term: &str) -> Option<String> {
 }
 
 pub(super) fn context_normalize_for_match(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
+    let mut normalized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        normalized.push(if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            ' '
+        });
+    }
+    normalized
+}
+
+pub(super) struct ContextTextMatcher<'a> {
+    text: &'a str,
+    normalized: OnceCell<String>,
+}
+
+impl<'a> ContextTextMatcher<'a> {
+    pub(super) fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            normalized: OnceCell::new(),
+        }
+    }
+
+    pub(super) fn matches(&self, term: &str) -> bool {
+        if term.is_empty() {
+            return true;
+        }
+
+        let normalized_term_storage;
+        let normalized_term = if term
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b' ')
+        {
+            term.trim()
+        } else {
+            if contains_ascii_case_insensitive(self.text, term) {
+                return true;
             }
-        })
-        .collect::<String>()
+            normalized_term_storage = context_normalize_for_match(term);
+            normalized_term_storage.trim()
+        };
+        if normalized_term.is_empty() {
+            return false;
+        }
+
+        self.normalized
+            .get_or_init(|| context_normalize_for_match(self.text))
+            .contains(normalized_term)
+    }
 }
 
-pub(super) fn context_text_matches_term(
-    text_lower: &str,
-    text_normalized: &str,
-    term: &str,
-) -> bool {
-    if text_lower.contains(term) {
-        return true;
-    }
-    let normalized_term = context_normalize_for_match(term);
-    if normalized_term.trim().is_empty() {
-        return false;
-    }
-    text_normalized.contains(normalized_term.trim())
-}
-
-pub(super) fn context_text_matches_any(
-    text_lower: &str,
-    text_normalized: &str,
-    terms: &[&str],
-) -> bool {
-    terms
-        .iter()
-        .any(|term| context_text_matches_term(text_lower, text_normalized, term))
+pub(super) fn context_text_matches_any(text: &ContextTextMatcher<'_>, terms: &[&str]) -> bool {
+    terms.iter().any(|term| text.matches(term))
 }
 
 pub(super) fn context_query_requests_latest(terms: &[String]) -> bool {
