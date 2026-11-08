@@ -2355,8 +2355,7 @@ pub fn retrieve_context(
     fanout_plan.namespace_node_candidates = node_hashes.len();
     let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
-    let mut prefetched_nodes =
-        HashMap::<u64, ContextNode>::with_capacity(initial_candidate_capacity);
+    let mut prefetched_nodes = HashMap::<u64, ContextNode>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
     // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
@@ -2584,6 +2583,7 @@ pub fn retrieve_context(
         }
         debug_assert!(returned.next().is_none());
     }
+    prefetched_nodes.reserve(lexical_fallback_nodes.len());
     for chunk in lexical_fallback_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
@@ -2702,6 +2702,7 @@ pub fn retrieve_context(
             (!prefetched_nodes.contains_key(node_hash)).then_some(*node_hash)
         })
         .collect::<Vec<_>>();
+    prefetched_nodes.reserve(missing_prefetch_nodes.len());
     for chunk in missing_prefetch_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
