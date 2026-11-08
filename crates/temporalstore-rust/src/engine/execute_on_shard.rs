@@ -511,7 +511,7 @@ pub(super) fn execute_hash_multi_get(
     }
     let values = if !distinct_addresses {
         if let Some((address, first_field)) = shared {
-            let frame = read_block_frame_bytes(
+            let frame = read_block_frame_shared(
                 cache,
                 block_store,
                 shard_id,
@@ -713,10 +713,11 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
 
-    // Durable shared feature-row batches carry one projection and read it back together, so one
-    // packed block avoids repeating the block header and physical append for every field. Async
-    // batches retain their per-field hot-cache representation; a large value still selects the
-    // packed layout on every path so its scalar siblings stay with it under pressure.
+    // Shared feature-row batches carry one projection and read it back together, so one packed
+    // block avoids repeating the block header and physical append for every field. The packed
+    // projection reader fetches that shared address once on both storage modes. Generic hash
+    // writes retain their per-field representation; a large value still selects the packed
+    // layout on every path so its scalar siblings stay with it under pressure.
     let mutated = if pack_projection || contains_large_value {
         let (mutated, returned_entries) = write_packed_hash_entries(
             cache,
@@ -797,12 +798,16 @@ pub(super) fn execute_packed_conditional_hash_write(
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let stored_timestamp = shard
         .bucket_index.hashes
         .get(&key)
         .and_then(|fields| fields.get(&timestamp_field))
         .and_then(|address| {
-            read_block_bytes(
+            // Keep the cached packed row shared while selecting its tiny timestamp. Copying the
+            // whole frame here makes every stale embedding write pay for its payload a second
+            // time before it can be rejected.
+            read_block_frame_shared(
                 cache,
                 block_store,
                 shard_id,
@@ -813,14 +818,13 @@ pub(super) fn execute_packed_conditional_hash_write(
                     &key,
                     Some(timestamp_field.as_str()),
                 ),
-                Some(block_routing_bucket(
-                    &key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                )),
+                Some(routing_bucket),
             )
         })
-        .and_then(|bytes| <HashTimestamp as prost::Message>::decode(bytes.as_slice()).ok())
+        .and_then(|frame| select_container_value(&frame, &timestamp_field))
+        .and_then(|timestamp| {
+            <HashTimestamp as prost::Message>::decode(timestamp.as_slice()).ok()
+        })
         .map(|timestamp| (timestamp.seconds, timestamp.nanos));
     if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
         let mut metadata_entries = entries;
@@ -3290,13 +3294,13 @@ pub(crate) fn execute_on_shard(
                 &key,
             );
             let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
+            // PROTOBUF ONLY: the same wire form `FeatureAppend` rows hold, so both read paths decode
+            // it. There is no JSON encode path here; see `sequence_row_value`.
             let points = rows
                 .into_iter()
-                .filter_map(|row| {
-                    serde_json::to_vec(&row).ok().map(|value| FeaturePoint {
-                        timestamp_ms: row.timestamp_ms,
-                        value,
-                    })
+                .map(|row| FeaturePoint {
+                    timestamp_ms: row.timestamp_ms,
+                    value: row.encode_feature_proto_value(),
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
@@ -4115,6 +4119,29 @@ pub(crate) fn execute_on_shard(
                 })
                 .collect();
             CommandResponse::ContextNodeEmbeddings { embeddings }
+        }
+        Command::ContextQueryNodeVectorProjections {
+            tenant_hash,
+            node_hashes,
+        } => {
+            let node_hashes = dedupe_nonzero_u64_preserve_order(node_hashes);
+            for node_hash in node_hashes.iter().copied() {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_node_key(tenant_hash, node_hash),
+                );
+            }
+            let projections = load_context_node_vector_projections(
+                cache,
+                block_store,
+                shard_id,
+                shard,
+                tenant_hash,
+                &node_hashes,
+            );
+            CommandResponse::ContextNodeVectorProjections { projections }
         }
         Command::ContextSetNodeEmbedding {
             tenant_hash,

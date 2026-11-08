@@ -1816,7 +1816,7 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
     );
     let manifest_dir = index_dir.join("slot-dumps").join("shard-1");
     std::fs::create_dir_all(&manifest_dir).expect("manifest dir");
-    std::fs::write(manifest_dir.join("dump-0001.json"), b"{}").expect("write a manifest");
+    std::fs::write(manifest_dir.join("dump-0001.manifest"), b"{}").expect("write a manifest");
     assert!(
         store_has_on_disk_state(&index_dir, 1),
         "a shard with a durable bucket dump manifest and no base index is not reported as having \
@@ -1837,7 +1837,7 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
     }
     // Put the base index back so the cases below are over the shape they describe.
     std::fs::write(index_dir.join("shard-1.index.json"), b"{}").expect("write a base index");
-    std::fs::remove_file(manifest_dir.join("dump-0001.json")).expect("removable");
+    std::fs::remove_file(manifest_dir.join("dump-0001.manifest")).expect("removable");
 
     // CASE 1: a stamp that agrees -- load, write nothing.
     write_routing_range_stamp(

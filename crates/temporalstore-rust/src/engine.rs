@@ -60,8 +60,9 @@ pub use self::sequence_row_value::sequence_rows_unreadable;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
-    bucket_dump_manifest_memo_len,
-    reset_bucket_dump_manifest_io_counts, BucketDumpManifestIoCounts,
+    bucket_dump_manifest_memo_len, manifest_digest_memo_counts,
+    reset_bucket_dump_manifest_io_counts, reset_manifest_digest_memo_counts,
+    BucketDumpManifestIoCounts,
 };
 mod command_validation;
 pub mod resource_blobs;
@@ -177,7 +178,9 @@ use crate::types::{
 };
 use crate::wal::{LocalWriteAheadLogStore, WriteAheadLogRecord};
 use context::{context_index_ref_identity, validate_context_index_lookup};
-use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
+use matrixcache::{
+    CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache, PageCacheKeyPrefix,
+};
 // FOR THE SLOT'S SERIES SURFACE: `ObjectSlot` implements these, and the names it keeps
 // (`len`, `get`, `is_empty`) already matched the call sites -- only the trait was out of
 // scope here. Anonymous, because only the methods are wanted.
@@ -618,8 +621,7 @@ impl TemporalEngine {
     /// shard that is not limited settles under a READ lock -- taking the write lock on every
     /// command would serialise the engine on a feature almost nobody has turned on.
     fn charge_quota(&self, shard_id: ShardId, kind: quota::QuotaKind) -> bool {
-        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
-        let default = *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env);
+        let default = Self::default_shard_quota();
         if default.is_unlimited() {
             let table = self.quotas.read().expect("quota lock poisoned");
             if !table.limits(shard_id) {
@@ -630,6 +632,25 @@ impl TemporalEngine {
             .write()
             .expect("quota lock poisoned")
             .try_consume(shard_id, kind, default)
+    }
+
+    /// Whether commands for this shard need token accounting at all.
+    ///
+    /// Batch execution asks once before entering its command loop, avoiding one read lock per
+    /// command on the overwhelmingly common unlimited path.
+    fn shard_quota_checks_enabled(&self, shard_id: ShardId) -> bool {
+        let default = Self::default_shard_quota();
+        !default.is_unlimited()
+            || self
+                .quotas
+                .read()
+                .expect("quota lock poisoned")
+                .limits(shard_id)
+    }
+
+    fn default_shard_quota() -> quota::ShardQuotaConfig {
+        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
+        *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env)
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
@@ -3936,12 +3957,21 @@ fn collect_upsert_index_items(
 
 /// The (kind, element name) a typed removal deleted, when the command names it outright.
 ///
-/// Only commands whose element name is derivable from their own fields appear here. ZSetRemove's
-/// element name folds in the score it is deleting, and ListPop's is the sequence it just took --
-/// neither survives the operation, so neither can be named from the command afterwards. Those
-/// keep restating the whole object until the element name is carried out of the arm.
+/// A removal that names its element states NO block rows (see `collect_command_index_items_for`:
+/// every row is filtered out when a name is asked for), so what this answers is "does the record
+/// restate the object or not", and the name itself is read for nothing but its presence.
+///
+/// ZSetRemove's element name is the member alone: the score came off the string, so it is derivable
+/// from the command like a set's. ListPop's is the sequence it just took, which does not survive
+/// the operation and cannot be named from the command afterwards -- and need not be, for the reason
+/// above, so it answers with an empty name.
 fn command_removed_element_name(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
+        Command::ZSetRemove { member, .. } => Some((
+            "zset",
+            Some(crate::engine::execute_on_shard::zset_element_name(member)),
+        )),
+        Command::ListPop { .. } => Some(("list", Some(String::new()))),
         Command::SetRemove { member, .. } => Some((
             "set",
             Some(crate::engine::execute_on_shard::set_element_name(member)),
@@ -7236,9 +7266,7 @@ fn persist_control_state_block(
     if async_storage && shard.control_coalesce_persist {
         return true;
     }
-    // PACKED: the container byte and two parallel arrays. There is NO JSON encode path left here;
-    // `decode_control_state_block` keeps its JSON arm for the blocks already on disk, and an
-    // encoder nobody calls is how a retired format comes back.
+    // Two parallel packed arrays, protobuf only. There is no JSON path in the block codec at all.
     let bytes = encode_control_state_block(series);
     append_control_state_block(
         cache,
@@ -7952,6 +7980,67 @@ fn read_block_frame_bytes(
     if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
+    read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )
+}
+
+/// Read a whole block frame from the cache without copying its payload.
+///
+/// Packed feature rows are parsed in place and copy only the requested values into the response.
+/// Returning the cache's shared bytes keeps a warm projection from first cloning the entire frame,
+/// which is especially costly when a batch reads several blob-bearing rows. Cold reads retain the
+/// established storage, spill, and log fallbacks and promote the same bytes into the cache.
+#[allow(clippy::too_many_arguments)]
+fn read_block_frame_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    routing_bucket: Option<u32>,
+) -> Option<std::sync::Arc<[u8]>> {
+    let cache_key = CacheKey::page_with_slot(
+        shard_id,
+        address.block_slab_id(),
+        address.offset(),
+        address.length(),
+        routing_bucket,
+    );
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&cache_key)
+    });
+    if let Ok(Some(bytes)) = cached {
+        return Some(bytes);
+    }
+    read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )
+    .map(std::sync::Arc::from)
+}
+
+/// Read a frame from durable storage after its cache key has already missed.
+///
+/// Shared and batched callers perform their own zero-copy lookup. Passing the key they already
+/// built keeps a cold read from constructing and probing the same key a second time.
+fn read_block_frame_bytes_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
     // Past the cache, so this call goes to storage. Counted here rather than at each of the
     // three fallbacks below because every one of them is a trip to the store and they must not
     // drift apart in the tally; a cache HIT returns above and is not I/O.
@@ -8061,6 +8150,28 @@ fn read_block_bytes(
     select_container_value(&bytes, element_name)
 }
 
+fn read_block_bytes_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
+    let bytes = read_block_frame_bytes_after_cache_miss(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        cache_key,
+    )?;
+    let Some(element_name) = identity.element_name() else {
+        return Some(bytes);
+    };
+    select_container_value(&bytes, element_name)
+}
+
 /// Select one element name from bytes already fetched by the caller.
 ///
 /// Keeping this separate from the storage funnel lets a multi-field projection retain one packed
@@ -8137,32 +8248,93 @@ fn read_block_shared(
         cache.get_shared(&cache_key)
     });
     if let Ok(Some(bytes)) = cached {
-        // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
-        // `container_blocks` one address can name a block holding several elements -- so the shared
-        // path has to select out of a cache HIT exactly as `read_block_bytes` selects out of a
-        // store read. Returning the hit unselected is the one way the two doors can disagree, and
-        // it would disagree only when the block is warm: a cold read would answer correctly and a
-        // second read of the same element would answer with framing bytes.
-        let Some(element_name) = identity.element_name() else {
-            return Some(bytes);
-        };
-        return match container_blocks::select_container_element(&bytes, element_name) {
-            container_blocks::ContainerElementRead::NotFramed => Some(bytes),
-            container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
-            // Collapsed for the same reason as the owning funnel above: no value either way.
-            container_blocks::ContainerElementRead::Absent
-            | container_blocks::ContainerElementRead::Removed => None,
-            container_blocks::ContainerElementRead::Corrupt(_) => {
-                note_corrupt_container_block();
-                None
-            }
-        };
+        return select_shared_block_value(bytes, identity);
     }
-    // Every path below writes to the cache and hands back what it wrote, so going through
-    // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
-    // place rather than duplicating three fallbacks that must not drift apart.
-    read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
+    // Every path below writes to the cache and hands back what it wrote. Continue after the miss
+    // already observed above so the storage fallbacks stay in one place without probing this key
+    // again.
+    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
         .map(std::sync::Arc::from)
+}
+
+struct SharedBlockRead<'a> {
+    address: &'a ElementEntry,
+    identity: BlockIdentity<'a>,
+    routing_bucket: Option<u32>,
+}
+
+/// Read several addressed values with one cache operation.
+///
+/// The cache returns frames, so each hit still passes through the same element selector as the
+/// single-value path. Misses retain the ordinary storage funnel, including log reads, spill
+/// redirects and cache promotion.
+fn read_blocks_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    reads: &[SharedBlockRead<'_>],
+) -> Vec<Option<std::sync::Arc<[u8]>>> {
+    let mut page_prefixes = HashMap::with_capacity(reads.len().min(64));
+    let cache_keys = reads
+        .iter()
+        .map(|read| {
+            let block_slab_id = read.address.block_slab_id();
+            page_prefixes
+                .entry(block_slab_id)
+                .or_insert_with(|| PageCacheKeyPrefix::new(shard_id, block_slab_id))
+                .key_with_slot(
+                    read.address.offset(),
+                    read.address.length(),
+                    read.routing_bucket,
+                )
+        })
+        .collect::<Vec<_>>();
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared_batch(&cache_keys)
+    })
+    .unwrap_or_else(|_| vec![None; reads.len()]);
+
+    reads
+        .iter()
+        .zip(cache_keys)
+        .zip(cached)
+        .map(|((read, cache_key), bytes)| {
+            if let Some(bytes) = bytes {
+                return select_shared_block_value(bytes, read.identity);
+            }
+            read_block_bytes_after_cache_miss(
+                cache,
+                block_store,
+                shard_id,
+                read.address,
+                read.identity,
+                cache_key,
+            )
+            .map(std::sync::Arc::from)
+        })
+        .collect()
+}
+
+fn select_shared_block_value(
+    bytes: std::sync::Arc<[u8]>,
+    identity: BlockIdentity<'_>,
+) -> Option<std::sync::Arc<[u8]>> {
+    // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
+    // `container_blocks` one address can name a block holding several elements, a hit must select
+    // the requested element exactly as the owning read path does.
+    let Some(element_name) = identity.element_name() else {
+        return Some(bytes);
+    };
+    match container_blocks::select_container_element(&bytes, element_name) {
+        container_blocks::ContainerElementRead::NotFramed => Some(bytes),
+        container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
+        container_blocks::ContainerElementRead::Absent
+        | container_blocks::ContainerElementRead::Removed => None,
+        container_blocks::ContainerElementRead::Corrupt(_) => {
+            note_corrupt_container_block();
+            None
+        }
+    }
 }
 
 fn read_block_bytes_cold(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {

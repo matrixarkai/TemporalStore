@@ -265,12 +265,12 @@ jobs:
             engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read \
             engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
-            shared_store::tests::restore_reads_a_published_binary_dump_manifest_beside_a_planted_json_one \
-            engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_both_shapes_and_the_digest_payload_is_the_encoding \
-            engine::tests::bucket_dump_binary_shape::each_checksum_version_verifies_its_own_manifests_and_never_the_others \
-            engine::tests::bucket_dump_binary_shape::a_binary_manifest_is_listed_beside_a_json_one_and_a_changed_field_is_not_trusted \
-            engine::tests::bucket_dump_binary_shape::an_install_marker_is_read_in_either_shape \
-            engine::tests::bucket_dump_binary_shape::no_json_encode_path_is_left_for_a_manifest_or_a_marker \
+            shared_store::tests::restore_reads_a_published_dump_manifest_and_refuses_a_planted_json_one \
+            engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_protobuf_refuses_everything_else_and_the_digest_payload_is_the_encoding \
+            engine::tests::bucket_dump_binary_shape::a_manifest_verifies_under_the_one_digest_and_a_changed_field_does_not \
+            engine::tests::bucket_dump_binary_shape::a_manifest_is_listed_a_json_one_is_not_and_a_changed_field_is_not_trusted \
+            engine::tests::bucket_dump_binary_shape::an_install_marker_is_protobuf_only \
+            engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
             shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
@@ -283,16 +283,21 @@ jobs:
             shared_store::tests::no_json_encode_path_is_left_in_the_per_key_wal_publish \
             index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
             index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
-            engine::tests::the_control_state_block_in_either_shape::a_series_block_codec_reads_both_shapes_and_refuses_what_it_cannot_read \
-            engine::tests::the_control_state_block_in_either_shape::the_load_path_reads_a_json_block_and_a_packed_one_and_counts_the_unreadable \
-            engine::tests::the_control_state_block_in_either_shape::a_counter_write_stores_a_packed_block_a_fraction_of_the_size_and_a_restart_reads_it \
-            engine::tests::the_control_state_block_in_either_shape::no_json_encode_path_is_left_in_the_control_state_writer \
-            engine::tests::the_sequence_row_in_either_shape::a_sequence_row_codec_reads_both_shapes_and_refuses_what_it_cannot_read \
-            engine::tests::the_sequence_row_in_either_shape::both_read_paths_decode_both_shapes_across_a_restart_and_count_the_unreadable \
-            data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_both_shapes_with_every_field \
-            data_node::lifecycle::tests::a_runtime_restores_a_lifecycle_snapshot_in_either_shape_and_refuses_a_bad_one \
-            data_node::lifecycle::tests::the_runtime_persists_a_binary_lifecycle_snapshot_and_a_restart_reads_it \
-            data_node::lifecycle::tests::no_json_encode_path_is_left_for_a_lifecycle_snapshot \
+            engine::tests::the_control_state_block_is_protobuf_only::a_series_block_codec_reads_protobuf_and_refuses_everything_else \
+            engine::tests::the_control_state_block_is_protobuf_only::the_load_path_reads_a_protobuf_block_and_counts_the_unreadable \
+            engine::tests::the_control_state_block_is_protobuf_only::a_counter_write_stores_a_block_a_fraction_of_the_json_size_and_a_restart_reads_it \
+            engine::tests::the_control_state_block_is_protobuf_only::no_json_path_is_left_in_the_control_state_block_code \
+            engine::tests::the_sequence_row_is_protobuf_only::a_sequence_row_codec_reads_protobuf_and_refuses_everything_else \
+            engine::tests::the_sequence_row_is_protobuf_only::a_sequence_add_row_is_stored_as_protobuf_and_both_read_paths_read_it_across_a_restart \
+            engine::tests::the_sequence_row_is_protobuf_only::no_json_path_is_left_in_the_sequence_row_code \
+            block_store::tests::an_address_written_with_an_older_field_name_is_not_read_as_the_same_address \
+            block_store::tests::a_slab_descriptor_spelled_with_a_retired_name_is_not_read_as_the_same_descriptor \
+            engine::tests::part4::the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one \
+            engine::tests::part4::a_bucket_summary_reads_back_the_names_it_writes \
+            data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_protobuf_with_every_field_and_refuses_everything_else \
+            data_node::lifecycle::tests::a_runtime_restores_a_lifecycle_snapshot_and_refuses_a_bad_one \
+            data_node::lifecycle::tests::the_runtime_persists_a_protobuf_lifecycle_snapshot_and_a_restart_reads_it \
+            data_node::lifecycle::tests::no_json_path_is_left_for_a_lifecycle_snapshot \
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_served_index_encoder_does_not_fall_through_to_json \
             engine::tests::the_config_log_in_either_shape::the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_misread \
             engine::tests::the_config_log_in_either_shape::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
@@ -354,7 +359,13 @@ jobs:
             engine::tests::round_scale::an_idle_round_still_walks_the_live_block_set \
             engine::tests::model_map_container_cost::no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container \
             engine::tests::the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container \
-            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::a_restricted_inversion_names_what_the_whole_shard_one_names_for_its_keys ; do
+            engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::a_restricted_inversion_names_what_the_whole_shard_one_names_for_its_keys \
+            engine::tests::a_plan_learns_a_log_tail_from_its_appenders::the_cached_tail_equals_the_scanned_tail_through_a_history \
+            engine::tests::a_plan_learns_a_log_tail_from_its_appenders::a_maintenance_plan_reads_neither_log_tail_back \
+            engine::tests::a_removal_states_no_block_rows::a_removal_states_no_block_rows \
+            engine::tests::a_removal_states_no_block_rows::a_removed_member_stays_removed_and_the_rest_stay_across_a_cold_reload \
+            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
+            engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/cost-gate.log

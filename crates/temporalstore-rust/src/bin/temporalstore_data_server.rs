@@ -1926,7 +1926,7 @@ fn save_lifecycle_snapshot_file(
             }
         }
     }
-    // Binary, through the same encoder the runtime's persist uses.
+    // Through the same encoder the runtime's persist uses.
     let bytes = temporalstore_rust::data_node::encode_lifecycle_snapshot_file(&snapshot);
     let tmp_path = request.path.with_extension("tmp");
     if let Err(err) = fs::write(&tmp_path, bytes).and_then(|_| fs::rename(&tmp_path, &request.path))
@@ -1956,7 +1956,7 @@ fn load_lifecycle_snapshot_file(
             };
         }
     };
-    // Either shape: see `decode_lifecycle_snapshot_file`. The JSON arm is permanent.
+    // Protobuf only: see `decode_lifecycle_snapshot_file`.
     let snapshot = match temporalstore_rust::data_node::decode_lifecycle_snapshot_file(&bytes) {
         Ok(snapshot) => snapshot,
         Err(err) => {

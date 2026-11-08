@@ -377,6 +377,17 @@ fn context_query_plan_matches_legacy_match_and_score_helpers() {
 }
 
 #[test]
+fn context_text_matcher_preserves_case_and_separator_matching() {
+    let text = ContextTextMatcher::new("Latest PAYMENT-error: manager update complete.");
+
+    assert!(text.matches("latest"));
+    assert!(text.matches("payment-error"));
+    assert!(text.matches("payment error"));
+    assert!(text.matches("PAYMENT ERROR"));
+    assert!(!text.matches("refund"));
+}
+
+#[test]
 fn context_extract_gates_l1_for_thin_sources() {
     let engine = test_engine();
     // Thin single-sentence source: L1 is gated -> L0 only, 2 embeddings.
@@ -1860,11 +1871,10 @@ fn context_reference_reasoning_vlm_cases_cover_required_gaps() {
             "{} did not outrank stale memory",
             case.case_name
         );
+        let text = ContextTextMatcher::new(&case.positive_memory);
         for term in case.expected_terms {
-            let text_lower = case.positive_memory.to_ascii_lowercase();
-            let text_normalized = context_normalize_for_match(&case.positive_memory);
             assert!(
-                context_text_matches_term(&text_lower, &text_normalized, &term),
+                text.matches(&term),
                 "{} positive memory did not expose expected term {term}",
                 case.case_name
             );

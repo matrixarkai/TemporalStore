@@ -304,6 +304,15 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
                 .map(|node_hash| context_node_key(*tenant_hash, *node_hash))
                 .collect(),
         ),
+        Command::ContextQueryNodeVectorProjections {
+            tenant_hash,
+            node_hashes,
+        } => CommandObjectKeys::many(
+            node_hashes
+                .iter()
+                .map(|node_hash| context_node_key(*tenant_hash, *node_hash))
+                .collect(),
+        ),
         Command::ContextUpsertSummary {
             tenant_hash,
             summary,

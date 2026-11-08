@@ -514,15 +514,21 @@ impl TemporalEngine {
             }
         }
 
+        let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
+        let read_admission_enabled =
+            !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
+        let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
         for (index, key) in keys.iter().enumerate() {
-            let rejected = if !raft_applying() && !replaying_wal() {
-                if !self.charge_quota(shard_id, quota::QuotaKind::Read) {
+            let rejected = if enforce_foreground_limits
+                && (quota_checks_enabled || read_admission_enabled)
+            {
+                if quota_checks_enabled && !self.charge_quota(shard_id, quota::QuotaKind::Read) {
                     Some(Status::error(
                         "quota_exhausted",
                         format!("shard {shard_id} is over its read rate limit"),
                     ))
-                } else {
+                } else if read_admission_enabled {
                     self.check_admission(
                         shard_id,
                         false,
@@ -530,6 +536,8 @@ impl TemporalEngine {
                         info.table_name.as_deref(),
                     )
                     .err()
+                } else {
+                    None
                 }
             } else {
                 None
@@ -778,6 +786,12 @@ impl TemporalEngine {
             .or_else(|| config.table_write_qps.filter(|limit| *limit > 0))
             .is_some();
         let info = self.request_shard_info(shard_id, table_admission_enabled);
+        let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
+        let read_admission_enabled =
+            !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
+        let write_admission_enabled =
+            !admission_limits(shard_id, true, &config, info.table_name.as_deref()).is_empty();
+        let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
         // but not yet serving. Reject the whole batch with a retryable status so batch writes
         // cannot interleave with replay (anchor regression / double-apply) -- the batch path
@@ -876,7 +890,14 @@ impl TemporalEngine {
             // does route here would otherwise arrive at an ungated limit, and the failure it
             // produces (a follower quietly skipping a committed entry) is not one that shows up
             // as an error anywhere.
-            if !raft_applying() && !replaying_wal() {
+            if enforce_foreground_limits
+                && (quota_checks_enabled
+                    || if write_command {
+                        write_admission_enabled
+                    } else {
+                        read_admission_enabled
+                    })
+            {
                 // Charged per COMMAND, not per batch. The single-command path spends one token a
                 // command, and a batch is not one unit of work -- a limit that counted it as one
                 // would be escaped by batching, which is how most traffic arrives here.
@@ -885,7 +906,7 @@ impl TemporalEngine {
                 } else {
                     quota::QuotaKind::Read
                 };
-                if !self.charge_quota(shard_id, kind) {
+                if quota_checks_enabled && !self.charge_quota(shard_id, kind) {
                     responses.push(ExecuteResponse {
                         status: Status::error(
                             "quota_exhausted",
@@ -903,26 +924,31 @@ impl TemporalEngine {
                     command_source.recycle(command);
                     continue;
                 }
-                if let Err(status) = self.check_admission(
-                    shard_id,
-                    write_command,
-                    &config,
-                    info.table_name.as_deref(),
-                )
-                {
-                    responses.push(ExecuteResponse {
-                        status,
-                        response: CommandResponse::Empty,
-                    });
-                    command_source.recycle(command);
-                    continue;
+                let admission_enabled = if write_command {
+                    write_admission_enabled
+                } else {
+                    read_admission_enabled
+                };
+                if admission_enabled {
+                    if let Err(status) = self.check_admission(
+                        shard_id,
+                        write_command,
+                        &config,
+                        info.table_name.as_deref(),
+                    ) {
+                        responses.push(ExecuteResponse {
+                            status,
+                            response: CommandResponse::Empty,
+                        });
+                        command_source.recycle(command);
+                        continue;
+                    }
                 }
             }
             // Exempt under raft apply and under replay, as the single-command path is and for
             // the same reason. Symmetry here, on the same footing as the admission guard above:
             // neither reaches this function today.
-            if !raft_applying()
-                && !replaying_wal()
+            if enforce_foreground_limits
                 && write_command
                 && config
                     .maxmemory_bytes
@@ -955,22 +981,32 @@ impl TemporalEngine {
                 command_source.recycle(command);
                 continue;
             }
-            let object_keys = command_object_keys(&command);
-            // Only a persisted served-index delta consumes this state. Async and bulk writes
-            // defer that delta, so avoid even the map probes on their per-row path.
-            let membership_before =
-                persist_index_delta.then(|| key_state_before(shard, &object_keys));
-            let feature_trimmed_membership = persist_index_delta
-                && command_will_trim_feature_membership(
-                    &command,
-                    shard,
-                    config.feature_max_size,
-                );
             let reuse_consumed_metadata = reuse_hash_command_metadata
                 && matches!(
                     &command,
                     Command::HashMultiSet { .. }
                         | Command::HashMultiSetIfTimestampOlder { .. }
+                );
+            // Shared async hash rows return the consumed command as their post-write metadata.
+            // Borrow its key below instead of cloning the same String into a one-element Vec.
+            let defer_object_key_clone = reuse_consumed_metadata && !persist_index_delta;
+            let mut owned_object_keys =
+                (!defer_object_key_clone).then(|| command_object_keys(&command));
+            // Only a persisted served-index delta consumes this state. Async and bulk writes
+            // defer that delta, so avoid even the map probes on their per-row path.
+            let membership_before = persist_index_delta.then(|| {
+                key_state_before(
+                    shard,
+                    owned_object_keys
+                        .as_deref()
+                        .expect("persisted index delta owns command keys"),
+                )
+            });
+            let feature_trimmed_membership = persist_index_delta
+                && command_will_trim_feature_membership(
+                    &command,
+                    shard,
+                    config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
             let (outcome, returned_post_write) = match command {
@@ -984,7 +1020,7 @@ impl TemporalEngine {
                             end_routing_bucket,
                             shard,
                             config.async_storage,
-                            !config.async_storage,
+                            true,
                             key,
                             entries,
                         );
@@ -1043,6 +1079,16 @@ impl TemporalEngine {
             let command_for_post_write_ref = command_for_post_write
                 .as_ref()
                 .expect("post-write command remains available until WAL or recycle");
+            let object_keys: &[String] = match owned_object_keys.as_deref() {
+                Some(keys) => keys,
+                None => match command_for_post_write_ref {
+                    Command::HashMultiSet { key, .. }
+                    | Command::HashMultiSetIfTimestampOlder { key, .. } => {
+                        std::slice::from_ref(key)
+                    }
+                    _ => unreachable!("only shared hash rows defer their key clone"),
+                },
+            };
             let payload_elided = reuse_consumed_metadata;
             if Self::command_updates_context_embedding(command_for_post_write_ref) {
                 context_embedding_commands.push(command_for_post_write_ref.clone());
@@ -1054,7 +1100,7 @@ impl TemporalEngine {
                 crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                     for_each_precomputed_touched_key(
                         command_for_post_write_ref,
-                        &object_keys,
+                        object_keys,
                         |key| {
                             let recency_bucket = block_routing_bucket(
                                 key,
@@ -1075,7 +1121,7 @@ impl TemporalEngine {
                     batch_membership_shrank = feature_trimmed_membership
                         || delta_key_state_change(
                             shard,
-                            &object_keys,
+                            object_keys,
                             membership_before
                                 .as_ref()
                                 .expect("persisted index delta captured pre-write state")
@@ -1106,7 +1152,7 @@ impl TemporalEngine {
                         end_routing_bucket,
                     );
                 } else {
-                    for object_key in &object_keys {
+                    for object_key in object_keys {
                         // `mark_object_dirty` records the key together with the
                         // routing bucket it computes on the next line. Inserting it here as well
                         // was redundant when the set was flat and is wrong now: this site does
@@ -1186,7 +1232,11 @@ impl TemporalEngine {
                 // Every per-command consumer above borrows these keys. The batch delta keeps
                 // them beyond this iteration, so transfer ownership only after maintenance.
                 if persist_index_delta {
-                    delta_command_keys.extend(object_keys);
+                    delta_command_keys.extend(
+                        owned_object_keys
+                            .take()
+                            .expect("persisted index delta owns command keys"),
+                    );
                 }
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()

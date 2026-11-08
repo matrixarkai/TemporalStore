@@ -320,6 +320,37 @@ impl ContextNode {
     }
 }
 
+/// The fields needed to rank a context node without allocating its text and metadata.
+///
+/// `summary_vector_same_as_node` preserves the compact on-disk representation in the response:
+/// callers borrow `vector` for both channels instead of allocating an identical second vector.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextNodeVectorProjection {
+    pub node_hash: u64,
+    pub vector: Vec<f32>,
+    pub embedding_model_hash: u64,
+    pub summary_vector: Vec<f32>,
+    pub summary_vector_same_as_node: bool,
+    pub summary_vector_valid_from_ms: u64,
+    pub summary_vector_model_hash: u64,
+}
+
+impl ContextNodeVectorProjection {
+    pub fn summary_vector_as_of(&self, as_of_ms: u64) -> Option<&[f32]> {
+        if self.summary_vector_valid_from_ms == 0
+            || self.summary_vector_valid_from_ms > as_of_ms
+        {
+            return None;
+        }
+        let vector = if self.summary_vector_same_as_node {
+            &self.vector
+        } else {
+            &self.summary_vector
+        };
+        (!vector.is_empty()).then_some(vector)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextEvent {
     pub event_id_hash: u64,
@@ -1717,6 +1748,11 @@ pub enum Command {
         tenant_hash: u64,
         node_hashes: Vec<u64>,
     },
+    /// Ranking fields for these nodes, excluding text and unrelated node metadata.
+    ContextQueryNodeVectorProjections {
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+    },
     /// Attachment blob store: start a multi-part upload into the engine-owned blob directory.
     /// The full original payload of an oversized resource lives here so one TemporalStore holds
     /// everything -- chunks stay searchable in records while the attachment itself is fetchable
@@ -2052,6 +2088,85 @@ pub(crate) fn decode_context_node_vector(bytes: &[u8]) -> Option<Vec<f32>> {
             .ok()
             .map(|node| node.vector)
     })
+}
+
+pub(crate) fn decode_context_node_vector_projection(
+    bytes: &[u8],
+) -> Option<ContextNodeVectorProjection> {
+    decode_context_node_vector_projection_proto(bytes).or_else(|| {
+        serde_json::from_slice::<ContextNode>(bytes)
+            .ok()
+            .map(|node| {
+                let summary_vector_same_as_node = !node.summary_vector.is_empty()
+                    && node.summary_vector == node.vector;
+                ContextNodeVectorProjection {
+                    node_hash: node.node_hash,
+                    vector: node.vector,
+                    embedding_model_hash: node.embedding_model_hash,
+                    summary_vector: if summary_vector_same_as_node {
+                        Vec::new()
+                    } else {
+                        node.summary_vector
+                    },
+                    summary_vector_same_as_node,
+                    summary_vector_valid_from_ms: node.summary_vector_valid_from_ms,
+                    summary_vector_model_hash: node.summary_vector_model_hash,
+                }
+            })
+    })
+}
+
+fn decode_context_node_vector_projection_proto(
+    bytes: &[u8],
+) -> Option<ContextNodeVectorProjection> {
+    let mut cursor = 0;
+    let mut value = ContextNodeVectorProjection {
+        node_hash: 0,
+        vector: Vec::new(),
+        embedding_model_hash: 0,
+        summary_vector: Vec::new(),
+        summary_vector_same_as_node: false,
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
+    };
+    while cursor < bytes.len() {
+        let tag = decode_varint(bytes, &mut cursor)?;
+        match (tag >> 3, tag & 0x7) {
+            (1, 0) => value.node_hash = decode_varint(bytes, &mut cursor)?,
+            (CONTEXT_VECTOR_FIELD, 2) => {
+                value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
+            }
+            (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                value.vector = unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?)
+            }
+            (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
+                value.vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
+            }
+            (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
+                value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
+            }
+            (CONTEXT_SUMMARY_VECTOR_FIELD, 2) => {
+                value.summary_vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
+            }
+            (CONTEXT_SUMMARY_VECTOR_INT8_FIELD, 2) => {
+                value.summary_vector = unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?)
+            }
+            (CONTEXT_SUMMARY_VECTOR_SCALED_FIELD, 2) => {
+                value.summary_vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
+            }
+            (CONTEXT_SUMMARY_VECTOR_VALID_FROM_FIELD, 0) => {
+                value.summary_vector_valid_from_ms = decode_varint(bytes, &mut cursor)?
+            }
+            (CONTEXT_SUMMARY_VECTOR_SAME_FIELD, 0) => {
+                value.summary_vector_same_as_node = decode_varint(bytes, &mut cursor)? != 0
+            }
+            (CONTEXT_SUMMARY_VECTOR_MODEL_FIELD, 0) => {
+                value.summary_vector_model_hash = decode_varint(bytes, &mut cursor)?
+            }
+            (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
+        }
+    }
+    Some(value)
 }
 
 fn decode_context_node_vector_proto(bytes: &[u8]) -> Option<Vec<f32>> {
@@ -2704,6 +2819,9 @@ pub enum CommandResponse {
     /// can tell "not embedded yet" from "embedded to the zero vector".
     ContextNodeEmbeddings {
         embeddings: Vec<(u64, Vec<f32>)>,
+    },
+    ContextNodeVectorProjections {
+        projections: Vec<ContextNodeVectorProjection>,
     },
     ContextTraversedNodes {
         nodes: Vec<ContextTraversedNode>,
