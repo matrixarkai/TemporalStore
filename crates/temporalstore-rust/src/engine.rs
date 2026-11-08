@@ -7974,6 +7974,22 @@ fn read_block_frame_bytes(
         address.offset(),
         address.length(),
         routing_bucket);
+    read_block_frame_bytes_keyed(cache, block_store, shard_id, address, identity, cache_key)
+}
+
+/// [`read_block_frame_bytes`] with the page key already built.
+///
+/// A caller that reads many blocks builds their keys itself, through [`PageKeys`], so that blocks
+/// of one slab share one record-key allocation instead of each minting its own.
+#[allow(clippy::too_many_arguments)]
+fn read_block_frame_bytes_keyed(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<Vec<u8>> {
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
         cache.get(&cache_key)
     });
@@ -8172,6 +8188,66 @@ fn read_block_bytes_after_cache_miss(
     select_container_value(&bytes, element_name)
 }
 
+/// Builds the physical page key for a run of reads, sharing the record key between blocks of one
+/// slab.
+///
+/// `CacheKey::page_with_slot` allocates three times per call: the record-key `String`, the `Arc`
+/// copy of it, and the selector. The record key depends on the SLAB alone, and a run of reads walks
+/// blocks that mostly sit in the same slab, so the second and third allocation are the same bytes
+/// every time. This keeps the last slab's `Arc` and hands out clones of it -- a refcount, not an
+/// allocation. The selector is per block and is still built per key.
+///
+/// The record key is taken FROM `page_with_slot` (called once per slab, with a placeholder block),
+/// so its spelling has one home. The selector is the one piece restated here, because the
+/// constructor builds it from the block's position; a test compares every key this makes with
+/// `page_with_slot`'s, field for field, because a changed byte is a silent cache miss.
+pub(crate) struct PageKeys {
+    slab: Option<(u64, std::sync::Arc<str>)>,
+}
+
+impl PageKeys {
+    pub(crate) fn new() -> Self {
+        Self { slab: None }
+    }
+
+    pub(crate) fn key(
+        &mut self,
+        shard_id: ShardId,
+        address: &ElementEntry,
+        routing_bucket: Option<u32>,
+    ) -> CacheKey {
+        let slab = address.block_slab_id();
+        let record_key = match &self.slab {
+            Some((held, record_key)) if *held == slab => std::sync::Arc::clone(record_key),
+            _ => {
+                let record_key =
+                    CacheKey::page_with_slot(shard_id, slab, 0, 0, None).record_key;
+                self.slab = Some((slab, std::sync::Arc::clone(&record_key)));
+                record_key
+            }
+        };
+        use std::fmt::Write as _;
+        // Sized exactly: a miss stores this key, and a string grown by appends can sit on up to
+        // twice the bytes it holds for as long as the entry does.
+        let width = |n: u64| n.checked_ilog10().map_or(1, |digits| digits as usize + 1);
+        let capacity = width(address.offset())
+            + 1
+            + width(address.length())
+            + routing_bucket.map_or(0, |bucket| "slot-".len() + width(u64::from(bucket)) + 1);
+        let mut selector = String::with_capacity(capacity);
+        if let Some(bucket) = routing_bucket {
+            let _ = write!(selector, "slot-{bucket}:");
+        }
+        let _ = write!(selector, "{}:{}", address.offset(), address.length());
+        CacheKey {
+            shard_id,
+            record_key,
+            namespace: std::borrow::Cow::Borrowed("page"),
+            selector: std::borrow::Cow::Owned(selector),
+        }
+    }
+}
+
 /// Select one element name from bytes already fetched by the caller.
 ///
 /// Keeping this separate from the storage funnel lets a multi-field projection retain one packed
@@ -8244,6 +8320,19 @@ fn read_block_shared(
         address.offset(),
         address.length(),
         routing_bucket);
+    read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)
+}
+
+/// [`read_block_shared`] with the page key already built (see [`PageKeys`]).
+#[allow(clippy::too_many_arguments)]
+fn read_block_shared_keyed(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<std::sync::Arc<[u8]>> {
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
         cache.get_shared(&cache_key)
     });
@@ -8360,6 +8449,11 @@ fn cache_entry_routing_bucket(entry: &CacheEntryInfo) -> Option<u32> {
 }
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
+    parse_i64_slice(bytes)
+}
+
+/// [`parse_i64`] over a borrowed slice, so a value read in place need not be copied to be parsed.
+fn parse_i64_slice(bytes: &[u8]) -> Option<i64> {
     // Parse the integer with strtoll semantics (leading-whitespace tolerant):
     // strtoll skips leading whitespace, so a stored counter like " 5" is the valid integer 5.
     // Rust's str::parse rejects leading whitespace; trim it (ASCII only, so we do not accept
