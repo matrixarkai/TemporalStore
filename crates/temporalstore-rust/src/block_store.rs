@@ -4880,6 +4880,25 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(original.block_slab_id, 7);
         assert_eq!(original.first_block_id, Some(11));
         assert_eq!(original.last_block_id, Some(29));
+        // WHAT THE WRITER PRODUCES, as literal keys: the alias removal must not move a written key,
+        // and only a `rename` could. Every key below is spelled out, so a renamed field fails here
+        // by name instead of passing because the test reads back what it wrote.
+        let written = serde_json::to_value(&original).unwrap();
+        let mut keys: Vec<&str> = written.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "block_segment_id",
+                "first_block_id",
+                "last_block_id",
+                "logical_bytes",
+                "physical_bytes",
+                "state",
+                "stored_slab_id",
+            ],
+            "the slab descriptor writes a different set of keys"
+        );
         for (canonical, retired) in [
             ("block_segment_id", "page_segment_id"),
             ("stored_slab_id", "band_id"),
