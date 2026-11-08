@@ -2373,11 +2373,11 @@ pub fn retrieve_context(
     // Candidates whose summary vector the node fetch did NOT supply, and which therefore still
     // need the per-node summary lookup. Every candidate is on this list until its node carries a
     // copy, so a store written before the copy existed behaves exactly as it does today.
-    let mut summary_lookup_nodes = Vec::<u64>::with_capacity(initial_candidate_capacity);
+    let mut summary_lookup_nodes = Vec::<u64>::new();
     // A current-state query can use a fully warm pair directly. Historical queries still read
     // every row because the compact index deliberately carries no summary-validity timestamp.
     let cold_node_hashes = if request.end_time_ms == u64::MAX {
-        let mut cold = Vec::with_capacity(initial_candidate_capacity);
+        let mut cold = Vec::new();
         for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
             if let Some(prepared_query) = prepared_query_embedding {
                 if let Ok(summary_hits) = engine.score_context_embedding_candidates(
@@ -2419,6 +2419,9 @@ pub fn retrieve_context(
                 if needs_storage {
                     // Do not let a partial warm hit inflate the durable-row score count below.
                     summary_scores_by_node.remove(node_hash);
+                    if cold.is_empty() {
+                        cold.reserve(node_hashes.len());
+                    }
                     cold.push(*node_hash);
                 }
             }
@@ -2479,7 +2482,12 @@ pub fn retrieve_context(
                                 });
                         }
                     }
-                    None => summary_lookup_nodes.push(projection.node_hash),
+                    None => {
+                        if summary_lookup_nodes.is_empty() {
+                            summary_lookup_nodes.reserve(initial_candidate_capacity);
+                        }
+                        summary_lookup_nodes.push(projection.node_hash);
+                    }
                 }
                 if projection.vector.is_empty() {
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
@@ -2569,6 +2577,9 @@ pub fn retrieve_context(
             // ...and it cannot have supplied a summary vector copy either, so it keeps the
             // lookup it has always had. A node record can be missing while its summaries are
             // not: the summary series lives in its own keyspace.
+            if summary_lookup_nodes.is_empty() {
+                summary_lookup_nodes.reserve(initial_candidate_capacity);
+            }
             summary_lookup_nodes.push(*node_hash);
         }
         debug_assert!(returned.next().is_none());
