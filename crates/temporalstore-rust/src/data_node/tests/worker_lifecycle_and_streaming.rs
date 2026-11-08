@@ -312,6 +312,86 @@ fn warm_packed_projection_does_not_copy_the_frame_from_cache() {
 }
 
 #[test]
+#[cfg(feature = "alloc-probe")]
+fn conditional_hash_stale_packed_writes_do_not_copy_the_frame() {
+    const WRITES: usize = 32;
+    const EMBEDDING_BYTES: usize = 8 * 1024;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let encode_timestamp = |seconds| {
+        <TestTimestamp as prost::Message>::encode_to_vec(&TestTimestamp {
+            seconds,
+            nanos: 0,
+        })
+    };
+    let fields = vec![
+        "timestamp".to_string(),
+        "embedding".to_string(),
+        "score".to_string(),
+    ];
+    let initial = runtime.batch_hash_timestamp_set(BatchHashTimestampSetRequest {
+        shard_id: 1,
+        fields: fields.clone(),
+        timestamp_field: "timestamp".to_string(),
+        rows: vec![BatchHashTimestampSetRow(
+            "entity".to_string(),
+            20,
+            0,
+            vec![
+                BatchHashMultiSetValue(encode_timestamp(20)),
+                BatchHashMultiSetValue(vec![7; EMBEDDING_BYTES]),
+                BatchHashMultiSetValue(b"0.75".to_vec()),
+            ],
+        )],
+    });
+    assert!(initial.status.ok, "{initial:?}");
+    assert_eq!(initial.applied, 1);
+
+    let stale = BatchHashTimestampSetRequest {
+        shard_id: 1,
+        fields,
+        timestamp_field: "timestamp".to_string(),
+        rows: vec![BatchHashTimestampSetRow(
+            "entity".to_string(),
+            10,
+            0,
+            vec![
+                BatchHashMultiSetValue(encode_timestamp(10)),
+                BatchHashMultiSetValue(vec![9; EMBEDDING_BYTES]),
+                BatchHashMultiSetValue(b"0.25".to_vec()),
+            ],
+        )],
+    };
+
+    let warm = runtime.batch_hash_timestamp_set(stale.clone());
+    assert!(warm.status.ok, "{warm:?}");
+    assert_eq!(warm.applied, 0);
+    assert_eq!(warm.skipped, 1);
+
+    let span = crate::alloc_probe::ClassSpan::open();
+    for _ in 0..WRITES {
+        let response = runtime.batch_hash_timestamp_set(stale.clone());
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(response.applied, 0);
+        assert_eq!(response.skipped, 1);
+    }
+    let counted = span.close().expect("the counting allocator must be installed");
+    let cache_read = counted
+        .classes
+        .row(crate::alloc_probe::AllocClass::CacheRead);
+
+    assert!(
+        cache_read.alloc_bytes < (WRITES * 2 * 1024) as u64,
+        "stale packed writes allocated {} cache-read bytes across {WRITES} timestamp checks; \
+         copying each {EMBEDDING_BYTES}-byte frame would allocate at least {} bytes",
+        cache_read.alloc_bytes,
+        WRITES * EMBEDDING_BYTES,
+    );
+}
+
+#[test]
 fn async_shared_field_hash_write_packs_a_small_projection() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
