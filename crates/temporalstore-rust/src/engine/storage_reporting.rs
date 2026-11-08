@@ -271,6 +271,60 @@ pub(super) fn dirty_bucket_claims(shard: &ShardState) -> BTreeMap<u32, (u64, u64
         .collect()
 }
 
+/// How many times [`dirty_generations_of`] had to fall back to the whole-shard summaries, across
+/// every call. A fallback is the old cost, so this is what says the fast path was taken.
+pub(crate) static DIRTY_GENERATION_FALLBACK_WALKS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// THE DERIVED DIRTY GENERATION OF THE NAMED BUCKETS, without walking the shard to find it.
+///
+/// [`bucket_storage_summaries`] reports a bucket's `dirty_generation` as the node's own plus the
+/// number of dirty objects the bucket holds. The post-dump clear used to call it to read that one
+/// figure for the buckets a manifest names, which is a materialisation of every live block in the
+/// shard to answer a question about a few buckets.
+///
+/// FOR A DIRTY NODE THE WALK'S ANSWER IS TWO LOOKUPS. The summary loop over `bucket_map` takes a node
+/// that is dirty whatever the block walk found, assigns the node's generation, and the dirty-object
+/// loop then adds the bucket's count -- so `generation + bucket_count` is exactly that, and no
+/// question about whether the bucket holds a live block has to be asked.
+///
+/// ANY OTHER BUCKET TAKES THE WALK. A node that is clean, or absent, is credited with its own
+/// generation only if the block walk finds a live block for it -- which is a derivation (naming each
+/// block, and supplementing released buckets from the model maps) that this function does not
+/// repeat. Re-deriving it here is the second home for a rule that has already been wrong once, so
+/// the whole answer is taken from the walk instead.
+///
+/// The common caller names the buckets it just dumped, which are dirty by construction, so the
+/// fallback is the exception: an explicit selection, a full dump, or a bucket cleaned meanwhile.
+pub(super) fn dirty_generations_of(
+    shard: &ShardState,
+    routing_buckets: &[u32],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> HashMap<u32, u64> {
+    let mut generations = HashMap::with_capacity(routing_buckets.len());
+    for routing_bucket in routing_buckets {
+        let node = shard
+            .bucket_index
+            .bucket_map
+            .get(routing_bucket)
+            .filter(|node| node.dirty());
+        let Some(node) = node else {
+            DIRTY_GENERATION_FALLBACK_WALKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return bucket_storage_summaries(shard, start_routing_bucket, end_routing_bucket)
+                .into_iter()
+                .map(|summary| (summary.routing_bucket, summary.dirty_generation))
+                .collect();
+        };
+        generations.insert(
+            *routing_bucket,
+            node.dirty_generation
+                .saturating_add(shard.dirty_objects.bucket_count(*routing_bucket)),
+        );
+    }
+    generations
+}
+
 pub(super) fn bucket_storage_summaries(
     shard: &ShardState,
     start_routing_bucket: u32,
