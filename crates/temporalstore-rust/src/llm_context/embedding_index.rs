@@ -357,43 +357,57 @@ impl SignatureRouting {
         }
     }
 
-    fn candidates(&self, signature: u64, row_count: usize, budget: usize) -> Vec<u32> {
-        // Routing stores u32 positions, so keep query scratch at that width until scoring.
-        let mut positions = Vec::with_capacity(budget);
+    fn visit_candidates(
+        &self,
+        signature: u64,
+        row_count: usize,
+        budget: usize,
+        mut visit: impl FnMut(u32),
+    ) -> usize {
         let mut seen = SeenPositions::new(row_count, budget);
+        let mut visited = 0usize;
         for distance in 0..=2 {
             for table in 0..SIGNATURE_ROUTING_TABLES {
                 let bucket = signature_bucket(signature, table);
                 match distance {
                     0 => {
-                        if self.extend_bucket(table, bucket, budget, &mut seen, &mut positions) {
-                            return positions;
+                        if self.visit_bucket(
+                            table,
+                            bucket,
+                            budget,
+                            &mut seen,
+                            &mut visited,
+                            &mut visit,
+                        ) {
+                            return visited;
                         }
                     }
                     1 => {
                         for first in 0..SIGNATURE_ROUTING_BITS {
-                            if self.extend_bucket(
+                            if self.visit_bucket(
                                 table,
                                 bucket ^ (1 << first),
                                 budget,
                                 &mut seen,
-                                &mut positions,
+                                &mut visited,
+                                &mut visit,
                             ) {
-                                return positions;
+                                return visited;
                             }
                         }
                     }
                     2 => {
                         for first in 0..SIGNATURE_ROUTING_BITS {
                             for second in first + 1..SIGNATURE_ROUTING_BITS {
-                                if self.extend_bucket(
+                                if self.visit_bucket(
                                     table,
                                     bucket ^ (1 << first) ^ (1 << second),
                                     budget,
                                     &mut seen,
-                                    &mut positions,
+                                    &mut visited,
+                                    &mut visit,
                                 ) {
-                                    return positions;
+                                    return visited;
                                 }
                             }
                         }
@@ -402,24 +416,26 @@ impl SignatureRouting {
                 }
             }
         }
-        positions
+        visited
     }
 
-    fn extend_bucket(
+    fn visit_bucket(
         &self,
         table: usize,
         bucket: u16,
         budget: usize,
         seen: &mut SeenPositions,
-        positions: &mut Vec<u32>,
+        visited: &mut usize,
+        visit: &mut impl FnMut(u32),
     ) -> bool {
         let Some(bucket_positions) = self.buckets[table].get(&bucket) else {
             return false;
         };
         for position in bucket_positions {
             if seen.insert(*position) {
-                positions.push(*position);
-                if positions.len() >= budget {
+                visit(*position);
+                *visited += 1;
+                if *visited >= budget {
                     return true;
                 }
             }
@@ -843,21 +859,28 @@ impl EmbeddingIndex {
                 .saturating_mul(SIGNATURE_CANDIDATES_PER_HIT)
                 .clamp(SIGNATURE_MIN_CANDIDATES, SIGNATURE_MAX_CANDIDATES)
                 .min(rows.item_ids.len());
-            let positions = routing.candidates(
+            // Score while walking the buckets. The routed set can be 32K positions, and keeping
+            // that set in a second vector only delays the same bounded-heap work while retaining
+            // 128 KiB of query scratch at the configured ceiling.
+            let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
+            let routed_count = routing.visit_candidates(
                 embedding_signature_f32(query.values),
                 rows.item_ids.len(),
                 candidate_budget,
+                |position| {
+                    self.score_position(
+                        rows,
+                        query.values,
+                        query.inverse_norm,
+                        limit,
+                        position as usize,
+                        &mut heap,
+                    );
+                },
             );
             let minimum_routed_candidates = limit.saturating_mul(4).min(rows.item_ids.len());
-            if positions.len() >= minimum_routed_candidates {
-                return Ok(self.search_positions(
-                    tenant_id,
-                    rows,
-                    query.values,
-                    query.inverse_norm,
-                    limit,
-                    positions.into_iter().map(|position| position as usize),
-                ));
+            if routed_count >= minimum_routed_candidates {
+                return Ok(Self::finish_search(tenant_id, rows, heap));
             }
         }
         Ok(self.search_positions(
@@ -882,19 +905,39 @@ impl EmbeddingIndex {
         let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
 
         for position in positions {
-            let start = position * self.config.dimensions;
-            let row = &rows.vectors[start..start + self.config.dimensions];
-            let score = (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm)
-                .clamp(-1.0, 1.0);
-            let candidate = HeapHit { score, position };
-            if heap.len() < limit {
-                heap.push(Reverse(candidate));
-            } else if heap.peek().is_some_and(|smallest| candidate > smallest.0) {
-                heap.pop();
-                heap.push(Reverse(candidate));
-            }
+            self.score_position(rows, query, query_inverse_norm, limit, position, &mut heap);
         }
 
+        Self::finish_search(tenant_id, rows, heap)
+    }
+
+    fn score_position(
+        &self,
+        rows: &TenantRows,
+        query: &[f32],
+        query_inverse_norm: f32,
+        limit: usize,
+        position: usize,
+        heap: &mut BinaryHeap<Reverse<HeapHit>>,
+    ) {
+        let start = position * self.config.dimensions;
+        let row = &rows.vectors[start..start + self.config.dimensions];
+        let score =
+            (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm).clamp(-1.0, 1.0);
+        let candidate = HeapHit { score, position };
+        if heap.len() < limit {
+            heap.push(Reverse(candidate));
+        } else if heap.peek().is_some_and(|smallest| candidate > smallest.0) {
+            heap.pop();
+            heap.push(Reverse(candidate));
+        }
+    }
+
+    fn finish_search(
+        tenant_id: u64,
+        rows: &TenantRows,
+        heap: BinaryHeap<Reverse<HeapHit>>,
+    ) -> Vec<EmbeddingHit> {
         let mut hits: Vec<EmbeddingHit> = heap
             .into_iter()
             .map(|Reverse(hit)| EmbeddingHit {
@@ -1349,6 +1392,37 @@ mod tests {
                 .unwrap_err(),
             EmbeddingIndexError::ZeroNorm { key }
         );
+    }
+
+    #[test]
+    fn routed_search_streams_the_same_hits_as_a_full_scan() {
+        let dimensions = SIGNATURE_ROUTING_MIN_DIMENSIONS;
+        let row_count = 256;
+        let mut rows = TenantRows {
+            item_ids: (0..row_count as u64).collect(),
+            positions: HashMap::new(),
+            scales: vec![1.0 / 127.0; row_count],
+            vectors: vec![1; row_count * dimensions],
+            signature_routing: None,
+        };
+        rows.signature_routing = Some(SignatureRouting::build(&rows, dimensions));
+        let mut index =
+            EmbeddingIndex::new(EmbeddingIndexConfig::new(dimensions, row_count)).unwrap();
+        index.total_entries = row_count;
+        index.tenants.insert(7, rows);
+        let query = vec![1.0; dimensions];
+        let prepared = PreparedEmbeddingQuery::new(&query).unwrap();
+        let rows = index.tenants.get(&7).unwrap();
+        let expected = index.search_positions(
+            7,
+            rows,
+            prepared.values,
+            prepared.inverse_norm,
+            16,
+            0..row_count,
+        );
+
+        assert_eq!(index.search(7, &query, 16).unwrap(), expected);
     }
 
     #[cfg(feature = "alloc-probe")]
