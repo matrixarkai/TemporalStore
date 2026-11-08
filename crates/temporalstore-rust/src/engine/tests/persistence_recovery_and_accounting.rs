@@ -1810,7 +1810,7 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
 
 #[test]
 fn torn_manifest_does_not_hide_valid_manifests() {
-    // Crash-consistency: a torn/corrupt manifest .json (from a crash mid-write, now
+    // Crash-consistency: a torn/corrupt manifest file (from a crash mid-write, now
     // prevented by the atomic write) must not fail the whole manifest listing and
     // silently drop all dumped state on load. list_bucket_dump_manifests skips the bad
     // file and keeps the valid one.
@@ -1834,7 +1834,7 @@ fn torn_manifest_does_not_hide_valid_manifests() {
         .create_bucket_dump_manifest(1, Vec::<u32>::new())
         .unwrap();
     let manifest_dir = index_dir.join("slot-dumps").join("shard-1");
-    std::fs::write(manifest_dir.join("torn-9999.json"), b"{ not valid json").unwrap();
+    std::fs::write(manifest_dir.join("torn-9999.manifest"), b"{ not valid json").unwrap();
     let listed = engine.list_bucket_dump_manifests(1);
     assert!(
         listed
