@@ -2047,6 +2047,14 @@ pub enum Command {
 /// vector field it meets, so the last encoding present is the one that wins. Stopping at the
 /// first would disagree with it on any record carrying more than one.
 pub(crate) fn decode_context_node_vector(bytes: &[u8]) -> Option<Vec<f32>> {
+    decode_context_node_vector_proto(bytes).or_else(|| {
+        serde_json::from_slice::<ContextNode>(bytes)
+            .ok()
+            .map(|node| node.vector)
+    })
+}
+
+fn decode_context_node_vector_proto(bytes: &[u8]) -> Option<Vec<f32>> {
     let mut cursor = 0;
     let mut found: Option<Vec<f32>> = None;
     while cursor < bytes.len() {
