@@ -868,11 +868,18 @@ impl TemporalEngine {
         //
         // The test that would catch it is not obvious either: any fixture that does not write
         // CONCURRENTLY with a dump will pass a hoisted version happily.
-        let current: std::collections::HashMap<u32, u64> =
-            bucket_storage_summaries(shard, start_routing_bucket, end_routing_bucket)
-                .into_iter()
-                .map(|summary| (summary.routing_bucket, summary.dirty_generation))
-                .collect();
+        //
+        // STILL READ NOW, AND NO LONGER BY WALKING THE SHARD. The loop below consults this only for
+        // the buckets the manifest names, so only those are asked: a dirty node answers from its own
+        // generation and its dirty-object count, and anything else takes the walk -- see
+        // `dirty_generations_of`. Freshness is unchanged: it is read under this same write lock,
+        // after the dump, which is the property the paragraph above is about.
+        let current: std::collections::HashMap<u32, u64> = crate::engine::storage_reporting::dirty_generations_of(
+            shard,
+            &manifest.bucket_ids,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
         // Buckets this dump actually clears. Collected first so the dirty set is walked ONCE.
         //
         // The retain used to sit inside this loop, so every qualifying bucket walked every dirty

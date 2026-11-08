@@ -171,6 +171,8 @@ mod bucket_node_container_header;
 mod bucket_flag_masks;
 #[path = "tests/the_dirty_buckets_are_a_set_the_map_keeps.rs"]
 mod the_dirty_buckets_are_a_set_the_map_keeps;
+#[path = "tests/a_dump_clear_asks_only_the_buckets_it_names.rs"]
+mod a_dump_clear_asks_only_the_buckets_it_names;
 #[path = "tests/inline_arm_trade.rs"]
 mod inline_arm_trade;
 #[path = "tests/layout_arm_selection.rs"]
