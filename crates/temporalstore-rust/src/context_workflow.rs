@@ -2802,7 +2802,15 @@ pub fn retrieve_context(
     // defaulted on; nothing set it, so a node with no stored summary embedding has
     // always been scored by lexical overlap rather than left at a flat 0.
     let mut scoring_text = String::new();
-    let mut summary_scores = Vec::with_capacity(node_hashes.len());
+    let summary_candidate_count = node_hashes.len();
+    let summary_node_limit = request
+        .max_summary_nodes
+        .max(1)
+        .min(summary_candidate_count.max(1));
+    let mut debug_summary_scores =
+        include_debug.then(|| Vec::with_capacity(summary_candidate_count));
+    let mut serving_summary_scores =
+        (!include_debug).then(|| BinaryHeap::with_capacity(summary_node_limit));
     for node_hash in &node_hashes {
         let (mut best_score, found) = summary_scores_by_node
             .get(node_hash)
@@ -2825,21 +2833,30 @@ pub fn retrieve_context(
                 ));
             }
         }
-        summary_scores.push((*node_hash, best_score, found, 0u32, 0u64));
-    }
-    summary_scores.sort_unstable_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
-        (
-            Reverse(*score),
-            Reverse(*found),
-            Reverse(*summary_score),
-            Reverse(*freshness_ms),
+        let candidate = (
+            Reverse(best_score),
+            Reverse(found),
+            Reverse(0u32),
+            Reverse(0u64),
             *node_hash,
-        )
-    });
-    let summary_node_limit = request
-        .max_summary_nodes
-        .max(1)
-        .min(summary_scores.len().max(1));
+        );
+        if let Some(summary_scores) = debug_summary_scores.as_mut() {
+            summary_scores.push(candidate);
+        } else if let Some(summary_scores) = serving_summary_scores.as_mut() {
+            if summary_scores.len() < summary_node_limit {
+                summary_scores.push(candidate);
+            } else if summary_scores
+                .peek()
+                .is_some_and(|worst| candidate < *worst)
+            {
+                summary_scores.pop();
+                summary_scores.push(candidate);
+            }
+        }
+    }
+    let mut summary_scores = debug_summary_scores
+        .unwrap_or_else(|| serving_summary_scores.unwrap_or_default().into_vec());
+    summary_scores.sort_unstable();
     let query_aware_event_limit = request.max_events.max(1);
     let event_node_limit = request
         .max_event_nodes
@@ -2851,7 +2868,7 @@ pub fn retrieve_context(
     // second decode, this keeps a concurrent update from mixing two node versions in one ranking.
     // The candidates are already the sorted prefix, so mutate that prefix directly instead of
     // allocating their hashes and searching the same vector once per candidate.
-    for (node_hash, score, _, summary_score_slot, freshness_slot) in
+    for (Reverse(score), _, Reverse(summary_score_slot), Reverse(freshness_slot), node_hash) in
         summary_scores.iter_mut().take(rerank_node_limit)
     {
         let Some(node) = prefetched_nodes.get(node_hash) else {
@@ -2878,19 +2895,11 @@ pub fn retrieve_context(
         *summary_score_slot = summary_score;
         *freshness_slot = freshness_ms;
     }
-    summary_scores.sort_unstable_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
-        (
-            Reverse(*score),
-            Reverse(*found),
-            Reverse(*summary_score),
-            Reverse(*freshness_ms),
-            *node_hash,
-        )
-    });
+    summary_scores.sort_unstable();
     node_hashes = summary_scores
         .iter()
         .take(summary_node_limit)
-        .map(|(node_hash, _, _, _, _)| *node_hash)
+        .map(|(_, _, _, _, node_hash)| *node_hash)
         .collect();
     let event_node_hashes = node_hashes
         .iter()
@@ -2903,12 +2912,12 @@ pub fn retrieve_context(
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(2);
-    let skipped_node_count = summary_scores.len().saturating_sub(event_node_limit);
-    fanout_plan.summary_candidate_nodes = summary_scores.len();
+    let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
+    fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
     fanout_plan.event_expanded_nodes = event_node_hashes.len();
     fanout_plan.skipped_node_count = skipped_node_count;
-    fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
+    fanout_plan.summary_lookup_batches = usize::from(summary_candidate_count > 0);
     fanout_plan.event_query_budget = if include_l2 { event_pack_budget } else { 0 };
     fanout_plan.event_query_node_count = event_node_hashes.len();
     if include_debug {
@@ -2916,7 +2925,7 @@ pub fn retrieve_context(
         fanout_plan.skipped_node_hashes = summary_scores
             .iter()
             .skip(event_node_limit)
-            .map(|(node_hash, _, _, _, _)| *node_hash)
+            .map(|(_, _, _, _, node_hash)| *node_hash)
             .collect();
         fanout_plan.locality_keys = event_node_hashes
             .iter()
@@ -2932,16 +2941,16 @@ pub fn retrieve_context(
             .fallback_to_flat = false;
         query_understanding_debug
             .tree_traversal_summary
-            .summary_embedding_candidate_count = summary_scores.len();
+            .summary_embedding_candidate_count = summary_candidate_count;
         query_understanding_debug
             .tree_traversal_summary
             .summary_embedding_selected_count = summary_scores
             .iter()
-            .filter(|(_, _, found, _, _)| *found > 0)
+            .filter(|(_, Reverse(found), _, _, _)| *found > 0)
             .count();
         query_understanding_debug
             .tree_traversal_summary
-            .summary_embedding_lookup_batches = usize::from(!summary_scores.is_empty());
+            .summary_embedding_lookup_batches = usize::from(summary_candidate_count > 0);
         query_understanding_debug
             .tree_traversal_summary
             .query_embedding_dimension = query_embedding.len();
@@ -2961,11 +2970,19 @@ pub fn retrieve_context(
             .tree_traversal_summary
             .summary_embeddings = summary_scores
             .iter()
-            .map(|(node_hash, score, found, summary_score, freshness_ms)| {
-                format!(
-                    "node:{node_hash}:score:{score}:refs:{found}:summary_score:{summary_score}:last_event:{freshness_ms}"
-                )
-            })
+            .map(
+                |(
+                    Reverse(score),
+                    Reverse(found),
+                    Reverse(summary_score),
+                    Reverse(freshness_ms),
+                    node_hash,
+                )| {
+                    format!(
+                        "node:{node_hash}:score:{score}:refs:{found}:summary_score:{summary_score}:last_event:{freshness_ms}"
+                    )
+                },
+            )
             .collect();
     }
 
