@@ -1767,7 +1767,6 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
             metadata: Some(WriteAheadLogRecordMetadata {
                 version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
                 timestamp_ms: stamp_ms,
-                items: Vec::new(),
                 batch_id: None,
                 batch_size: None,
                 batch_index: None,

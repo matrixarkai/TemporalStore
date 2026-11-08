@@ -17,91 +17,8 @@ use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use serde::Serializer;
 
-thread_local! {
-}
-
-thread_local! {
-    /// Payloads pulled out of the document being written, in the order they were met.
-    ///
-    /// Only the log sets this, and only while it is encoding one record. Everywhere else -- a
-    /// request on the wire, a response to a client -- the payload stays in the document, so nothing
-    /// outside the log sees a different shape.
-    static CARRIED: std::cell::RefCell<Option<Vec<Vec<u8>>>> = const { std::cell::RefCell::new(None) };
-    /// Payloads read out of a record, for the document to refer back to.
-    static AVAILABLE: std::cell::RefCell<Option<Vec<Vec<u8>>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Marks a payload that lives beside the document. Base64 never produces a leading `~`, so a
-/// marker can never be mistaken for an encoded payload, in either direction.
-const CARRIED_PREFIX: char = '~';
-
-/// Collect the payloads of whatever `write` serializes, instead of encoding them into the document.
-///
-/// Returns them in the order they were met, which is the order a reader meets the markers.
-pub(crate) fn carrying_payloads<T>(write: impl FnOnce() -> T) -> (T, Vec<Vec<u8>>) {
-    CARRIED.with(|carried| *carried.borrow_mut() = Some(Vec::new()));
-    let outcome = write();
-    let payloads = CARRIED
-        .with(|carried| carried.borrow_mut().take())
-        .unwrap_or_default();
-    (outcome, payloads)
-}
-
-/// Resolve payload markers while `read` deserializes.
-pub(crate) fn with_payloads<T>(payloads: Vec<Vec<u8>>, read: impl FnOnce() -> T) -> T {
-    AVAILABLE.with(|available| *available.borrow_mut() = Some(payloads));
-    let outcome = read();
-    AVAILABLE.with(|available| *available.borrow_mut() = None);
-    outcome
-}
-
-/// What escaping this payload would cost, so the cheaper of the two can be chosen on the bytes
-/// rather than on a guess. Newline and the escape byte each become two.
-fn escaped_len(bytes: &[u8]) -> usize {
-    bytes
-        .iter()
-        .map(|byte| usize::from(*byte == b'\n' || *byte == ESCAPE) + 1)
-        .sum()
-}
-
+/// The byte a binary-safe name is tagged with (see `binary_safe_name`).
 pub(crate) const ESCAPE: u8 = 0x1b;
-
-/// Remove newlines from a payload so it can sit in a newline-delimited log.
-pub(crate) fn escape_payload(bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(escaped_len(bytes));
-    for byte in bytes {
-        match *byte {
-            b'\n' => out.extend_from_slice(&[ESCAPE, b'n']),
-            ESCAPE => out.extend_from_slice(&[ESCAPE, ESCAPE]),
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// Put back what [`escape_payload`] took out.
-pub(crate) fn unescape_payload(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut following_escape = false;
-    for byte in bytes {
-        if following_escape {
-            match *byte {
-                b'n' => out.push(b'\n'),
-                ESCAPE => out.push(ESCAPE),
-                other => return Err(format!("payload has an unknown escape: {other:#04x}")),
-            }
-            following_escape = false;
-        } else if *byte == ESCAPE {
-            following_escape = true;
-        } else {
-            out.push(*byte);
-        }
-    }
-    if following_escape {
-        return Err("payload ends inside an escape".to_string());
-    }
-    Ok(out)
-}
 
 /// Write a byte payload in the encoded shape.
 ///
@@ -121,24 +38,7 @@ pub(crate) fn unescape_payload(bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// either shape by inspection, so a store written with the array shape still reads back -- what
 /// is gone is the ability to produce more of it.
 pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-    // Carried beside the document when that is smaller. Escaping costs whatever newlines weigh in
-    // these particular bytes -- about 1% for most payloads -- against base64's flat third. A
-    // payload that is mostly newlines would grow, so it stays encoded.
-    let marker = CARRIED.with(|carried| {
-        let mut carried = carried.borrow_mut();
-        let Some(payloads) = carried.as_mut() else {
-            return None;
-        };
-        if escaped_len(bytes) >= bytes.len().div_ceil(3) * 4 {
-            return None;
-        }
-        payloads.push(bytes.to_vec());
-        Some(format!("{CARRIED_PREFIX}{}", payloads.len() - 1))
-    });
-    match marker {
-        Some(marker) => serializer.serialize_str(&marker),
-        None => serializer.serialize_str(&STANDARD.encode(bytes)),
-    }
+    serializer.serialize_str(&STANDARD.encode(bytes))
 }
 
 pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
@@ -188,27 +88,6 @@ impl<'de> Visitor<'de> for EitherShape {
     }
 
     fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
-        // A marker naming a payload carried beside the document. Base64 never starts with this,
-        // so there is no shape a payload could take that would be read as the wrong one.
-        if let Some(index) = value.strip_prefix(CARRIED_PREFIX) {
-            let index: usize = index
-                .parse()
-                .map_err(|_| E::custom(format!("payload marker is not a number: {value}")))?;
-            return AVAILABLE.with(|available| {
-                let available = available.borrow();
-                let payloads = available.as_ref().ok_or_else(|| {
-                    E::custom(format!(
-                        "record refers to a payload carried beside it, but none were read: {value}"
-                    ))
-                })?;
-                payloads.get(index).cloned().ok_or_else(|| {
-                    E::custom(format!(
-                        "record refers to payload {index}, and only {} were read",
-                        payloads.len()
-                    ))
-                })
-            });
-        }
         STANDARD
             .decode(value)
             .map_err(|err| E::custom(format!("bytes are not valid base64: {err}")))
@@ -279,37 +158,6 @@ pub mod pairs {
 #[cfg(test)]
 mod tests {
     use crate::types::Command;
-
-    /// A record written before this encoding existed still loads.
-    ///
-    /// This is the whole migration story: nothing rewrites logs, so the reader has to accept both
-    /// shapes forever. The array shape below is exactly what the previous code emitted.
-    #[test]
-    fn the_array_shape_written_before_still_loads() {
-        let legacy = r#"{"kind":"string_set","key":"k","value":[104,105]}"#;
-        let decoded: Command = serde_json::from_str(legacy).expect("the array shape must load");
-        assert_eq!(
-            decoded,
-            Command::StringSet {
-                key: "k".to_string(),
-                value: b"hi".to_vec(),
-            }
-        );
-    }
-
-    /// ...including inside a list of pairs, which encodes separately.
-    #[test]
-    fn the_array_shape_still_loads_inside_pairs() {
-        let legacy = r#"{"kind":"hash_multi_set","key":"k","entries":[["f",[104,105]]]}"#;
-        let decoded: Command = serde_json::from_str(legacy).expect("the array shape must load");
-        assert_eq!(
-            decoded,
-            Command::HashMultiSet {
-                key: "k".to_string(),
-                entries: vec![("f".to_string(), b"hi".to_vec())],
-            }
-        );
-    }
 
     /// Every payload survives the round trip byte for byte, including bytes that are not text.
     #[test]
