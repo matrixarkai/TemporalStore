@@ -1004,25 +1004,6 @@ impl EmbeddingIndex {
         )
     }
 
-    pub(crate) fn score_prepared_candidate_ids(
-        &self,
-        tenant_id: u64,
-        query: PreparedEmbeddingQuery<'_>,
-        candidate_item_ids: impl IntoIterator<Item = u64>,
-        candidate_count: usize,
-    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
-        let Some(rows) = self.tenants.get(&tenant_id) else {
-            return Ok(Vec::new());
-        };
-        self.score_prepared_candidate_ids_for_rows(
-            tenant_id,
-            rows,
-            query,
-            candidate_item_ids,
-            candidate_count,
-        )
-    }
-
     fn score_prepared_candidate_ids_for_rows(
         &self,
         tenant_id: u64,
@@ -1031,23 +1012,62 @@ impl EmbeddingIndex {
         candidate_item_ids: impl IntoIterator<Item = u64>,
         candidate_count: usize,
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
-        query.validate_dimensions(self.config.dimensions)?;
         let mut hits = Vec::with_capacity(candidate_count.min(rows.item_ids.len()));
+        self.visit_prepared_candidate_ids_for_rows(
+            tenant_id,
+            rows,
+            query,
+            candidate_item_ids,
+            |hit| hits.push(hit),
+        )?;
+        Ok(hits)
+    }
+
+    pub(crate) fn visit_prepared_candidate_ids(
+        &self,
+        tenant_id: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        visit: impl FnMut(EmbeddingHit),
+    ) -> Result<usize, EmbeddingIndexError> {
+        let Some(rows) = self.tenants.get(&tenant_id) else {
+            return Ok(0);
+        };
+        self.visit_prepared_candidate_ids_for_rows(
+            tenant_id,
+            rows,
+            query,
+            candidate_item_ids,
+            visit,
+        )
+    }
+
+    fn visit_prepared_candidate_ids_for_rows(
+        &self,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        mut visit: impl FnMut(EmbeddingHit),
+    ) -> Result<usize, EmbeddingIndexError> {
+        query.validate_dimensions(self.config.dimensions)?;
+        let mut visited = 0usize;
         for item_id in candidate_item_ids {
             let Some(&position) = rows.positions.get(&item_id) else {
                 continue;
             };
             let start = position * self.config.dimensions;
             let row = &rows.vectors[start..start + self.config.dimensions];
-            hits.push(EmbeddingHit {
+            visit(EmbeddingHit {
                 key: EmbeddingKey { tenant_id, item_id },
                 score: (dot_i8_f32(row, query.values)
                     * rows.scales[position]
                     * query.inverse_norm)
                     .clamp(-1.0, 1.0),
             });
+            visited = visited.saturating_add(1);
         }
-        Ok(hits)
+        Ok(visited)
     }
 
     fn validate_vector_dimensions(
