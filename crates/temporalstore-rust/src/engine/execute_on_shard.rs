@@ -713,10 +713,11 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
 
-    // Durable shared feature-row batches carry one projection and read it back together, so one
-    // packed block avoids repeating the block header and physical append for every field. Async
-    // batches retain their per-field hot-cache representation; a large value still selects the
-    // packed layout on every path so its scalar siblings stay with it under pressure.
+    // Shared feature-row batches carry one projection and read it back together, so one packed
+    // block avoids repeating the block header and physical append for every field. The packed
+    // projection reader fetches that shared address once on both storage modes. Generic hash
+    // writes retain their per-field representation; a large value still selects the packed
+    // layout on every path so its scalar siblings stay with it under pressure.
     let mutated = if pack_projection || contains_large_value {
         let (mutated, returned_entries) = write_packed_hash_entries(
             cache,
