@@ -8463,12 +8463,10 @@ fn read_block_bytes_cold(block_store: &BlockStore, address: &ElementEntry) -> Op
     block_store.read(address).ok()
 }
 
-fn dedupe_nonzero_u64_preserve_order(values: Vec<u64>) -> Vec<u64> {
-    let mut seen = HashSet::new();
+fn dedupe_nonzero_u64_preserve_order(mut values: Vec<u64>) -> Vec<u64> {
+    let mut seen = HashSet::with_capacity(values.len());
+    values.retain(|value| *value != 0 && seen.insert(*value));
     values
-        .into_iter()
-        .filter(|value| *value != 0 && seen.insert(*value))
-        .collect()
 }
 
 fn cache_entry_routing_bucket(entry: &CacheEntryInfo) -> Option<u32> {
