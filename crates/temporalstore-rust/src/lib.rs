@@ -170,6 +170,7 @@ pub use engine::reports::{
     GoldenCaseReport, GoldenCorpusReport, RustStorageObservation, ShardCompactionReport,
     ShardCompactionUtilityReport, ShardExpirySweepReport, BucketDumpFaultMatrixReport,
     BucketDumpFaultScenarioReport, BucketDumpFollowerReplayCursor, BucketDumpFollowerRetentionBlock,
+    BucketGauge, BucketGaugeSweep,
     BucketDumpInstallMarker, BucketDumpInstallPreflightReport, BucketDumpInstallRollForwardReport,
     BucketDumpManifest, BucketDumpManifestChainIssue, BucketDumpManifestPrunePlan,
     BucketDumpManifestPruneReport, BucketDumpRaftSnapshotRef, BucketDumpRaftSnapshotRetentionBlock,

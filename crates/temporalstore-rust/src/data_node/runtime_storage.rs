@@ -1599,6 +1599,32 @@ impl DataNodeRuntime {
         // a reset: `durability_metrics` documents its counters as process-wide and monotonic,
         // and tests reset them to isolate a measurement window -- a background cycle clearing
         // them would pull the floor out from under anyone diffing two points in time.
+        // The per-bucket gauges are a BOUNDED, resumable slice: the cursor says where the last round
+        // stopped, so the cost of a round is the buckets it reads and not the size of the shard.
+        let bucket_sweep = (options.enable_metrics_reap
+            && options.reap_metrics_max_buckets_per_round > 0)
+            .then(|| {
+                let after = self
+                    .inner
+                    .reap_cursors
+                    .lock()
+                    .expect("reap cursor lock poisoned")
+                    .get(&shard_id)
+                    .copied()
+                    .flatten();
+                let sweep = self.inner.engine.bucket_gauge_sweep(
+                    shard_id,
+                    after,
+                    options.reap_metrics_max_buckets_per_round,
+                );
+                self.inner
+                    .reap_cursors
+                    .lock()
+                    .expect("reap cursor lock poisoned")
+                    .insert(shard_id, sweep.next_after);
+                sweep
+            })
+            .unwrap_or_default();
         let metrics_reap = options.enable_metrics_reap.then(|| {
             let durability_barriers: std::collections::BTreeMap<String, u64> =
                 crate::durability_metrics::snapshot()
@@ -1608,7 +1634,22 @@ impl DataNodeRuntime {
             StorageMetricsReapReport {
                 durability_barriers_total: durability_barriers.values().copied().sum(),
                 durability_barriers,
-                wal: self.inner.engine.write_ahead_log_store().stats(shard_id),
+                // From the cache the append path keeps. `stats` answers the last sequence by
+                // scanning the active piece, and the loop reaps every round.
+                wal: self
+                    .inner
+                    .engine
+                    .write_ahead_log_store()
+                    .stats_without_rescan(shard_id),
+                undumped_wal_records: pressure.undumped_wal_records,
+                wal_bytes: pressure.wal_bytes,
+                index_log_bytes: pressure.index_log_bytes,
+                cache_memory_bytes: pressure.cache_memory_bytes,
+                bucket_index_resident_bytes: pressure.bucket_index_resident_bytes,
+                cache_memory_pressure_threshold_bytes: options.cache_memory_bytes_pressure,
+                bucket_gauges: bucket_sweep.gauges,
+                bucket_sweep_next_after: bucket_sweep.next_after,
+                buckets_total: bucket_sweep.buckets_total,
             }
         });
         if metrics_reap.is_some() {
