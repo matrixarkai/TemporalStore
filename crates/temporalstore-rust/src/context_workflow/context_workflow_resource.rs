@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use super::*;
+use std::borrow::Cow;
 
 pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextResourceParseReport {
     let resource_type =
@@ -681,13 +682,11 @@ fn split_context_resource_text(
     max_chunk_chars: usize,
     overlap_chars: usize,
 ) -> Vec<String> {
-    let mut normalized = text.trim().to_string();
-    while normalized.contains("\n\n\n") {
-        normalized = normalized.replace("\n\n\n", "\n\n");
-    }
+    let normalized = normalize_context_resource_text(text);
     if normalized.len() <= max_chunk_chars {
-        return vec![normalized];
+        return vec![normalized.into_owned()];
     }
+    let normalized = normalized.as_ref();
     let mut pieces = Vec::new();
     let mut start = 0;
     while start < normalized.len() {
@@ -720,6 +719,54 @@ fn split_context_resource_text(
         );
     }
     pieces
+}
+
+fn normalize_context_resource_text(text: &str) -> Cow<'_, str> {
+    let trimmed = text.trim();
+    if !trimmed.contains("\n\n\n") {
+        return Cow::Borrowed(trimmed);
+    }
+
+    let mut normalized = String::with_capacity(trimmed.len());
+    let mut newline_run = 0usize;
+    for ch in trimmed.chars() {
+        if ch == '\n' {
+            newline_run += 1;
+            if newline_run <= 2 {
+                normalized.push(ch);
+            }
+        } else {
+            newline_run = 0;
+            normalized.push(ch);
+        }
+    }
+    Cow::Owned(normalized)
+}
+
+#[cfg(test)]
+mod resource_chunk_tests {
+    use super::*;
+
+    #[test]
+    fn resource_text_normalization_collapses_blank_line_runs_once() {
+        let text = "  alpha\n\n\n\nβeta\r\n\r\n\r\ngamma  ";
+        assert_eq!(
+            normalize_context_resource_text(text),
+            "alpha\n\nβeta\r\n\r\n\r\ngamma"
+        );
+    }
+
+    #[test]
+    fn resource_text_chunking_preserves_long_utf8_boundaries() {
+        let text = format!("  {}  ", "段落内容。".repeat(1_024));
+        let chunks = split_context_resource_text(&text, 257, 31);
+
+        assert!(chunks.len() > 20);
+        assert!(chunks.iter().all(|chunk| !chunk.is_empty()));
+        assert!(chunks.iter().all(|chunk| chunk.len() <= 257));
+        assert_eq!(chunks.first().unwrap(), &text.trim()[..255]);
+        assert_eq!(chunks.last().unwrap().chars().last(), Some('。'));
+    }
 }
 
 fn floor_char_boundary(value: &str, mut index: usize) -> usize {
