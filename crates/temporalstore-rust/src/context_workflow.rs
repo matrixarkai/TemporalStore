@@ -2901,11 +2901,7 @@ pub fn retrieve_context(
         .take(summary_node_limit)
         .map(|(_, _, _, _, node_hash)| *node_hash)
         .collect();
-    let event_node_hashes = node_hashes
-        .iter()
-        .copied()
-        .take(event_node_limit)
-        .collect::<Vec<_>>();
+    let event_node_count = event_node_limit.min(node_hashes.len());
     let event_pack_budget = request.max_events.max(1);
     let event_overfetch = std::env::var("MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH")
         .ok()
@@ -2915,11 +2911,11 @@ pub fn retrieve_context(
     let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
     fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
-    fanout_plan.event_expanded_nodes = event_node_hashes.len();
+    fanout_plan.event_expanded_nodes = event_node_count;
     fanout_plan.skipped_node_count = skipped_node_count;
     fanout_plan.summary_lookup_batches = usize::from(summary_candidate_count > 0);
     fanout_plan.event_query_budget = if include_l2 { event_pack_budget } else { 0 };
-    fanout_plan.event_query_node_count = event_node_hashes.len();
+    fanout_plan.event_query_node_count = event_node_count;
     if include_debug {
         fanout_plan.selected_node_hashes = node_hashes.clone();
         fanout_plan.skipped_node_hashes = summary_scores
@@ -2927,8 +2923,9 @@ pub fn retrieve_context(
             .skip(event_node_limit)
             .map(|(_, _, _, _, node_hash)| *node_hash)
             .collect();
-        fanout_plan.locality_keys = event_node_hashes
+        fanout_plan.locality_keys = node_hashes
             .iter()
+            .take(event_node_count)
             .map(|node_hash| format!("tenant:{}:node:{node_hash}", request.tenant_hash))
             .collect();
     }
@@ -2986,10 +2983,9 @@ pub fn retrieve_context(
             .collect();
     }
 
-    let event_node_set = event_node_hashes.iter().copied().collect::<HashSet<_>>();
     let mut event_query_returned_count = 0usize;
     let mut event_node_index = 0usize;
-    for node_hash in node_hashes.iter().copied() {
+    for (selected_node_index, node_hash) in node_hashes.iter().copied().enumerate() {
         let mut node_source_ref = String::new();
         let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
             let node_response = engine.execute(ExecuteRequest {
@@ -3033,10 +3029,9 @@ pub fn retrieve_context(
             }
         }
 
-        if include_l2 && event_count < event_pack_budget && event_node_set.contains(&node_hash) {
+        if include_l2 && event_count < event_pack_budget && selected_node_index < event_node_count {
             let remaining_budget = event_pack_budget.saturating_sub(event_count).max(1);
-            let remaining_nodes = event_node_hashes
-                .len()
+            let remaining_nodes = event_node_count
                 .saturating_sub(event_node_index)
                 .max(1);
             event_node_index = event_node_index.saturating_add(1);
