@@ -2382,37 +2382,37 @@ pub fn retrieve_context(
         let mut cold = Vec::new();
         for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
             if let Some(prepared_query) = prepared_query_embedding {
-                if let Ok(summary_hits) = engine.score_context_embedding_candidates(
+                let _ = engine.visit_context_embedding_candidate_ids(
                     EmbeddingChannel::Summary,
                     request.tenant_hash,
                     active_embedding_model_hash,
                     prepared_query,
-                    candidate_chunk,
-                ) {
-                    for summary_hit in summary_hits {
+                    candidate_chunk.iter().copied(),
+                    |summary_hit| {
                         // Count zero marks a summary-only warm hit until the node channel joins it.
-                        summary_scores_by_node.insert(
-                            summary_hit.key.item_id,
-                            ((summary_hit.score * 1_000_000.0) as i64, 0),
-                        );
-                    }
-                }
-                if let Ok(node_hits) = engine.score_context_embedding_candidates(
+                        let scores = summary_scores_by_node
+                            .entry(summary_hit.key.item_id)
+                            .or_default();
+                        scores.0 = scores
+                            .0
+                            .max((summary_hit.score * 1_000_000.0) as i64);
+                    },
+                );
+                let _ = engine.visit_context_embedding_candidate_ids(
                     EmbeddingChannel::Node,
                     request.tenant_hash,
                     active_embedding_model_hash,
                     prepared_query,
-                    candidate_chunk,
-                ) {
-                    for node_hit in node_hits {
+                    candidate_chunk.iter().copied(),
+                    |node_hit| {
                         let Some(scores) = summary_scores_by_node.get_mut(&node_hit.key.item_id)
                         else {
-                            continue;
+                            return;
                         };
                         scores.0 = scores.0.max((node_hit.score * 1_000_000.0) as i64);
                         scores.1 = 2;
-                    }
-                }
+                    },
+                );
             }
             for node_hash in candidate_chunk {
                 let needs_storage = summary_scores_by_node
@@ -2544,22 +2544,19 @@ pub fn retrieve_context(
                 (EmbeddingChannel::Node, &node_rows),
                 (EmbeddingChannel::Summary, &summary_rows),
             ] {
-                let candidate_count = rows_by_space.values().map(Vec::len).sum();
                 if let Some(prepared_query) = prepared_query_embedding {
-                    if let Ok(hits) = engine.score_context_embedding_candidate_ids(
+                    let _ = engine.visit_context_embedding_candidate_ids(
                         channel,
                         request.tenant_hash,
                         active_embedding_model_hash,
                         prepared_query,
                         rows_by_space.values().flatten().map(|row| row.key.item_id),
-                        candidate_count,
-                    ) {
-                        for hit in hits {
+                        |hit| {
                             let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
                             scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
                             scores.1 = scores.1.saturating_add(1);
-                        }
-                    }
+                        },
+                    );
                 }
             }
         }

@@ -309,29 +309,38 @@ impl EmbeddingIndexRegistry {
         )
     }
 
-    pub(crate) fn score_prepared_candidate_ids(
+    /// Streams scores from every compatible embedding space without retaining a hit buffer.
+    ///
+    /// An item can be emitted more than once when both an unknown-model space and the active
+    /// model space contain it. Callers combine those scores while folding them into their own
+    /// result state.
+    pub(crate) fn visit_prepared_candidate_ids<I, F>(
         &self,
         channel: EmbeddingChannel,
         tenant_id: u64,
         model_hash: u64,
         query: PreparedEmbeddingQuery<'_>,
-        candidate_item_ids: impl Clone + Iterator<Item = u64>,
-        candidate_count: usize,
-    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
-        self.score_candidate_ids_with(
-            channel,
-            model_hash,
-            query.dimensions(),
-            candidate_item_ids,
-            |index, candidate_item_ids| {
-                index.score_prepared_candidate_ids(
-                    tenant_id,
-                    query,
-                    candidate_item_ids,
-                    candidate_count,
-                )
-            },
-        )
+        candidate_item_ids: I,
+        mut visit: F,
+    ) -> Result<usize, EmbeddingIndexError>
+    where
+        I: Clone + Iterator<Item = u64>,
+        F: FnMut(EmbeddingHit),
+    {
+        let mut visited = 0usize;
+        for (_, index) in self.spaces.iter().filter(|(space, _)| {
+            space.channel == channel
+                && space.dimensions == query.dimensions()
+                && (model_hash == 0 || space.model_hash == 0 || space.model_hash == model_hash)
+        }) {
+            visited = visited.saturating_add(index.visit_prepared_candidate_ids(
+                tenant_id,
+                query,
+                candidate_item_ids.clone(),
+                &mut visit,
+            )?);
+        }
+        Ok(visited)
     }
 
     fn score_candidate_ids_with<I, F>(
@@ -622,6 +631,34 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].key.item_id, 9);
+
+        registry
+            .upsert_batch(
+                EmbeddingChannel::Summary,
+                17,
+                &[EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 3,
+                        item_id: 10,
+                    },
+                    values: &x,
+                }],
+            )
+            .unwrap();
+        let mut streamed = Vec::new();
+        let visited = registry
+            .visit_prepared_candidate_ids(
+                EmbeddingChannel::Summary,
+                3,
+                17,
+                PreparedEmbeddingQuery::new(&x).unwrap(),
+                [9, 10].into_iter(),
+                |hit| streamed.push(hit.key.item_id),
+            )
+            .unwrap();
+        streamed.sort_unstable();
+        assert_eq!(visited, 2);
+        assert_eq!(streamed, vec![9, 10]);
     }
 
     #[test]
