@@ -469,8 +469,12 @@ pub fn ingest_resource_skill_context(
                     .push(format!("resource blob store put failed: {err}")),
             }
         }
+        resources.push(resource);
+    }
+
+    for resource in &resources {
         for chunk in &resource.chunks {
-            resource_ref_by_source.insert(chunk.source_ref.clone(), resource.raw_uri.clone());
+            resource_ref_by_source.insert(chunk.source_ref.as_str(), resource.raw_uri.as_str());
             sources.push(ContextExtractRequest {
                 shard_id: request.shard_id,
                 tenant_hash: request.tenant_hash,
@@ -487,14 +491,17 @@ pub fn ingest_resource_skill_context(
             });
             timestamp_ms = timestamp_ms.saturating_add(1);
         }
-        resources.push(resource);
     }
 
     for skill_input in request.skills {
         let skill = parse_context_skill_markdown(skill_input.raw_uri, skill_input.text);
+        skills.push(skill);
+    }
+
+    for skill in &skills {
         if skill.enabled {
             for chunk in &skill.resource.chunks {
-                skill_ref_by_source.insert(chunk.source_ref.clone(), skill.skill_name.clone());
+                skill_ref_by_source.insert(chunk.source_ref.as_str(), skill.skill_name.as_str());
                 sources.push(ContextExtractRequest {
                     shard_id: request.shard_id,
                     tenant_hash: request.tenant_hash,
@@ -508,7 +515,6 @@ pub fn ingest_resource_skill_context(
                 timestamp_ms = timestamp_ms.saturating_add(1);
             }
         }
-        skills.push(skill);
     }
     let skill_registry = context_skill_registry_from_parsed(&skills, request.start_time_ms);
     let skill_selection = if skill_registry.entries.is_empty() {
@@ -587,11 +593,11 @@ pub fn ingest_resource_skill_context(
         for summary_ref in &extract.summary_refs {
             index_writes.push(("summary_ref".to_string(), summary_ref.clone()));
         }
-        if let Some(resource_ref) = resource_ref_by_source.get(&extract.source_ref) {
-            index_writes.push(("resource_ref".to_string(), resource_ref.clone()));
+        if let Some(resource_ref) = resource_ref_by_source.get(extract.source_ref.as_str()) {
+            index_writes.push(("resource_ref".to_string(), (*resource_ref).to_string()));
         }
-        if let Some(skill_ref) = skill_ref_by_source.get(&extract.source_ref) {
-            index_writes.push(("skill_ref".to_string(), skill_ref.clone()));
+        if let Some(skill_ref) = skill_ref_by_source.get(extract.source_ref.as_str()) {
+            index_writes.push(("skill_ref".to_string(), (*skill_ref).to_string()));
         }
 
         let commands = vec![
