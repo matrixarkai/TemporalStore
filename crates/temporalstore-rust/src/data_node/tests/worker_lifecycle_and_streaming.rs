@@ -263,6 +263,55 @@ fn shared_field_hash_write_keeps_large_and_small_fields_readable() {
 }
 
 #[test]
+#[cfg(feature = "alloc-probe")]
+fn warm_packed_projection_does_not_copy_the_frame_from_cache() {
+    const READS: usize = 32;
+    const EMBEDDING_BYTES: usize = 8 * 1024;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let embedding = vec![7; EMBEDDING_BYTES];
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["embedding".to_string(), "score".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![
+                BatchHashMultiSetValue(embedding),
+                BatchHashMultiSetValue(b"0.75".to_vec()),
+            ],
+        )],
+    });
+    assert!(written.status.ok, "{written:?}");
+
+    let request = BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["entity".to_string()],
+        fields: vec!["score".to_string(), "embedding".to_string()],
+    };
+    let warm = runtime.batch_hash_multi_get_compact(request.clone());
+    assert!(warm.status.ok, "{warm:?}");
+
+    let span = crate::alloc_probe::ClassSpan::open();
+    for _ in 0..READS {
+        std::hint::black_box(runtime.batch_hash_multi_get_compact(request.clone()));
+    }
+    let counted = span.close().expect("the counting allocator must be installed");
+    let cache_read = counted
+        .classes
+        .row(crate::alloc_probe::AllocClass::CacheRead);
+
+    assert!(
+        cache_read.alloc_bytes < (READS * 2 * 1024) as u64,
+        "warm packed projections allocated {} cache-read bytes across {READS} reads; \
+         copying each {EMBEDDING_BYTES}-byte frame would allocate at least {} bytes",
+        cache_read.alloc_bytes,
+        READS * EMBEDDING_BYTES,
+    );
+}
+
+#[test]
 fn async_shared_field_hash_write_packs_a_small_projection() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
