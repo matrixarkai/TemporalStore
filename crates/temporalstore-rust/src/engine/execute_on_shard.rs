@@ -4116,6 +4116,38 @@ pub(crate) fn execute_on_shard(
                 .collect();
             CommandResponse::ContextNodeEmbeddings { embeddings }
         }
+        Command::ContextQueryNodeVectorProjections {
+            tenant_hash,
+            node_hashes,
+        } => {
+            let node_hashes = dedupe_nonzero_u64_preserve_order(node_hashes);
+            for node_hash in node_hashes.iter().copied() {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_node_key(tenant_hash, node_hash),
+                );
+            }
+            let projections = node_hashes
+                .into_iter()
+                .filter_map(|node_hash| {
+                    let mut projection = load_context_node_vector_projection(
+                        cache,
+                        block_store,
+                        shard_id,
+                        shard,
+                        tenant_hash,
+                        node_hash,
+                    )?;
+                    // The addressed owner is authoritative even for legacy payloads that did
+                    // not carry their own hash.
+                    projection.node_hash = node_hash;
+                    Some(projection)
+                })
+                .collect();
+            CommandResponse::ContextNodeVectorProjections { projections }
+        }
         Command::ContextSetNodeEmbedding {
             tenant_hash,
             node_hash,

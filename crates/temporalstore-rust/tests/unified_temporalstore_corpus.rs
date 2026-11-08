@@ -418,6 +418,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::ContextResourceBlobSwept { .. } => "context_resource_blob_swept",
         CommandResponse::ContextNodeContext { .. } => "context_node_context",
         CommandResponse::ContextNodes { .. } => "context_nodes",
+        CommandResponse::ContextNodeVectorProjections { .. } => "context_node_vector_projections",
     }
 }
 
