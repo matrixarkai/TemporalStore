@@ -3780,6 +3780,31 @@ fn command_upsert_element_names(
                     .collect(),
             )
         }
+        // A SEQUENCE ROW FILES THE SAME BLOCK A FEATURE POINT DOES -- one per timestamp, in the same
+        // series, under the same element name -- so a sequence write is the same upsert, and it was
+        // in the `None` bucket: every write restated one row per block the series already held.
+        // Measured with the allocation probe, 462 blocks and 316 KB for one row added to a
+        // 100-row series. The trim and the replaced-timestamp cases are the feature append's and
+        // are handled where they are for it: `command_will_trim_feature_membership` predicts the
+        // trim, and `delta_key_state_change` sees a shrink.
+        Command::SequenceAdd { key, rows } => {
+            let mut seen = std::collections::BTreeSet::new();
+            Some(
+                rows.iter()
+                    .filter(|row| seen.insert(row.timestamp_ms))
+                    .map(|row| {
+                        (
+                            "feature",
+                            key.clone(),
+                            Some(crate::engine::packed_blocks::timestamped_element_name(
+                                row.timestamp_ms,
+                                None,
+                            )),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         Command::FeatureAppendWithPolicy { key, points, .. } => {
             let mut seen = std::collections::BTreeSet::new();
             Some(
@@ -4169,6 +4194,22 @@ fn command_will_trim_feature_membership(
     shard: &ShardState,
     feature_max_size: usize,
 ) -> bool {
+    // A sequence row is a feature point for this question: it files under its timestamp in the
+    // same series, and the trim it can cause is the same trim.
+    if let Command::SequenceAdd { key, rows } = command {
+        let series = shard.features().get(key.as_str());
+        let current_len = series.map_or(0, |series| series.len());
+        if current_len > feature_max_size {
+            return true;
+        }
+        let mut new_timestamps = std::collections::BTreeSet::new();
+        for row in rows {
+            if series.map_or(true, |series| series.get(row.timestamp_ms).is_none()) {
+                new_timestamps.insert(row.timestamp_ms);
+            }
+        }
+        return current_len.saturating_add(new_timestamps.len()) > feature_max_size;
+    }
     let (key, points, may_add) = match command {
         Command::FeatureAppend { key, points } => (key, points, true),
         Command::FeatureAppendWithPolicy { key, points, policy } => (
