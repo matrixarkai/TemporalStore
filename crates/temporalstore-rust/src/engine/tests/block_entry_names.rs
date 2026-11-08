@@ -2373,6 +2373,25 @@ fn the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones(
         );
     }
 
+    // THE OBJECT INDEX TOO: `object_ids` is the retired spelling of `object_index`. Compared as the
+    // JSON the decoded index serialises to, which differs when the key was dropped as unknown (the
+    // object index falls to empty) and would be equal if the retired spelling were read.
+    assert!(
+        UNGATED_STORE_INDEX_AT_STAMP_8.contains("\"object_index\":["),
+        "the committed bytes carry no object_index array, so the swap below varies nothing"
+    );
+    let with_ids = UNGATED_STORE_INDEX_AT_STAMP_8.replace("\"object_index\":", "\"object_ids\":");
+    assert_ne!(with_ids, UNGATED_STORE_INDEX_AT_STAMP_8, "the swap to `object_ids` did not take");
+    let canonical_json = serde_json::to_value(&canonical.bucket_index).unwrap();
+    let loaded = crate::engine::decode_index_bytes(with_ids.as_bytes());
+    assert!(
+        loaded
+            .as_ref()
+            .map_or(true, |index| serde_json::to_value(&index.bucket_index).unwrap() != canonical_json),
+        "an index spelling the object index `object_ids` decoded to the same buckets as \
+         `object_index`: the retired spelling is accepted"
+    );
+
     // THE WRITERS STILL SPELL THE CANONICAL NAME, read from the source: a writer that drifted back
     // to a retired spelling would write bytes this reader no longer takes.
     let state = include_str!("../engine_storage_state.rs");
