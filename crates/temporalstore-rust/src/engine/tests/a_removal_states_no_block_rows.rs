@@ -252,6 +252,79 @@ fn a_removed_member_stays_removed_and_the_rest_stay_across_a_cold_reload() {
     }
 }
 
+/// A REMOVAL THAT STATES NO ROW DOES NOT BUILD THE INVERSION THAT NAMES ROWS.
+///
+/// Naming a row's object needs an inversion of the object's block refs, and for a removal from a
+/// collection that is one entry per member in two hash maps -- built, and then every row it could
+/// have named was filtered out. Measured on a ZSetRemove from a thousand-member key: 86% of its
+/// instructions and ~307 KB of its ~307 KB, flat in the number of blocks it did not need to name.
+/// The count of inversions is the dimension the cost lives in, and it does not depend on the box.
+///
+/// The control is a delete the engine cannot name: it still states its rows, so it must build one.
+#[test]
+fn a_named_removal_builds_no_identity_inversion() {
+    let before = |engine: &TemporalEngine| {
+        let _ = engine;
+        crate::engine::state::keyed_block_inversions()
+    };
+    for family in FAMILIES {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_on(dir.path(), "cache");
+        load(&engine);
+        fill(&engine, family, 40);
+        let started = before(&engine);
+        remove_one(&engine, family, 7);
+        assert_eq!(
+            crate::engine::state::keyed_block_inversions(),
+            started,
+            "{family:?}: removing one member of forty built a block-identity inversion"
+        );
+        assert_eq!(member_count(&engine, family), 39, "{family:?}: nothing was removed");
+    }
+    // A hash field is named too.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path(), "cache");
+    load(&engine);
+    for index in 0..40 {
+        run(
+            &engine,
+            Command::HashSet {
+                key: "h".to_string(),
+                field: format!("f{index:03}"),
+                value: vec![b'v'; 16],
+            },
+        );
+    }
+    let started = crate::engine::state::keyed_block_inversions();
+    run(
+        &engine,
+        Command::HashDelete {
+            key: "h".to_string(),
+            field: "f007".to_string(),
+        },
+    );
+    assert_eq!(
+        crate::engine::state::keyed_block_inversions(),
+        started,
+        "a hash field removal built a block-identity inversion"
+    );
+
+    // THE CONTROL: a delete that names no element states its rows, and has to name them.
+    run(
+        &engine,
+        Command::StringSet {
+            key: "s".to_string(),
+            value: vec![b'v'; 16],
+        },
+    );
+    let started = crate::engine::state::keyed_block_inversions();
+    run(&engine, Command::StringDelete { key: "s".to_string() });
+    assert!(
+        crate::engine::state::keyed_block_inversions() > started,
+        "the unnamed delete built no inversion, so the counter cannot see one"
+    );
+}
+
 /// Profiler and allocation driver, not a gate: `REM_FAMILY=set|zset|list REM_E=<members>
 /// REM_K=<removals>`; run under `valgrind --tool=callgrind --toggle-collect='*removal_span*'`.
 #[inline(never)]
