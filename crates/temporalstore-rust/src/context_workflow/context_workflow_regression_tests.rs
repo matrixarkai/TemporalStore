@@ -2496,6 +2496,57 @@ fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
     }));
 }
 
+#[test]
+fn oversized_resource_ingest_keeps_original_blob_fetchable() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let payload = format!("# Large resource\n\n{}", "payload line\n".repeat(90_000));
+    let report = ingest_resource_skill_context(
+        &engine,
+        ContextResourceSkillIngestRequest {
+            shard_id: 1,
+            tenant_hash: 7,
+            resources: vec![ContextResourceParseRequest {
+                raw_uri: "large-resource.md".to_string(),
+                resource_type: Some("md".to_string()),
+                text: payload.clone(),
+                max_chunk_chars: 262_144,
+                overlap_chars: 0,
+                chunk_hash_base: None,
+                owner_scope: "user".to_string(),
+                version: "v1".to_string(),
+                watch_interval_minutes: 0,
+                parser_name: "unit-test-parser".to_string(),
+            }],
+            skills: Vec::new(),
+            query: "large resource".to_string(),
+            start_time_ms: 1,
+            end_time_ms: 2,
+            max_events: 8,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+
+    let resource = &report.resources[0];
+    assert!(!resource.inline_payload);
+    let (_, content_hash) = crate::engine::resource_blobs::parse_resource_blob_uri(
+        &resource.external_object_uri,
+    )
+    .expect("resource blob URI");
+    let (stored, total, eof) = engine
+        .resource_blob_fetch(7, content_hash, 0, 0)
+        .expect("fetch resource blob");
+    assert_eq!(stored, payload.as_bytes());
+    assert_eq!(total as usize, payload.len());
+    assert!(eof);
+}
+
 // shared-corpus: context_resource_skill_parser_reference_parity
 #[test]
 fn context_resource_parser_matches_reference_stable_refs() {
