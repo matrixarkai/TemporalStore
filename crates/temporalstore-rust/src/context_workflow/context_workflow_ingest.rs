@@ -453,16 +453,16 @@ pub fn ingest_resource_skill_context(
         // parsing, so the synthesized external URI on the report is real and fetchable --
         // chunks stay searchable in records while the original attachment lives beside the
         // engine, one TemporalStore holding everything.
-        let oversized_payload = if resource_request.text.as_bytes().len()
+        let oversized_blob = if resource_request.text.as_bytes().len()
             > default_context_resource_max_inline_bytes()
         {
-            Some(resource_request.text.clone())
+            Some(engine.resource_blob_put(request.tenant_hash, resource_request.text.as_bytes()))
         } else {
             None
         };
         let mut resource = parse_context_resource(resource_request);
-        if let Some(payload) = oversized_payload {
-            match engine.resource_blob_put(request.tenant_hash, payload.as_bytes()) {
+        if let Some(result) = oversized_blob {
+            match result {
                 Ok((uri, _size, _hash)) => resource.external_object_uri = uri,
                 Err(err) => resource
                     .parser_warnings
