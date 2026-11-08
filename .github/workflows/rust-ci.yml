@@ -287,8 +287,9 @@ jobs:
             engine::tests::the_control_state_block_in_either_shape::the_load_path_reads_a_json_block_and_a_packed_one_and_counts_the_unreadable \
             engine::tests::the_control_state_block_in_either_shape::a_counter_write_stores_a_packed_block_a_fraction_of_the_size_and_a_restart_reads_it \
             engine::tests::the_control_state_block_in_either_shape::no_json_encode_path_is_left_in_the_control_state_writer \
-            engine::tests::the_sequence_row_in_either_shape::a_sequence_row_codec_reads_both_shapes_and_refuses_what_it_cannot_read \
-            engine::tests::the_sequence_row_in_either_shape::both_read_paths_decode_both_shapes_across_a_restart_and_count_the_unreadable \
+            engine::tests::the_sequence_row_is_protobuf_only::a_sequence_row_codec_reads_protobuf_and_refuses_everything_else \
+            engine::tests::the_sequence_row_is_protobuf_only::a_sequence_add_row_is_stored_as_protobuf_and_both_read_paths_read_it_across_a_restart \
+            engine::tests::the_sequence_row_is_protobuf_only::no_json_path_is_left_in_the_sequence_row_code \
             data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_both_shapes_with_every_field \
             data_node::lifecycle::tests::a_runtime_restores_a_lifecycle_snapshot_in_either_shape_and_refuses_a_bad_one \
             data_node::lifecycle::tests::the_runtime_persists_a_binary_lifecycle_snapshot_and_a_restart_reads_it \
