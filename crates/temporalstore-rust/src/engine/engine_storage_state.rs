@@ -1412,6 +1412,17 @@ pub(super) struct BlockKeysByPosition<'a> {
     restricted: bool,
 }
 
+thread_local! {
+    /// Times THIS THREAD built a block-identity inversion restricted to named keys. Per thread, so
+    /// a probe counts its own writes and not a neighbouring test's.
+    static KEYED_INVERSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many keyed inversions this thread has built.
+pub fn keyed_block_inversions() -> u64 {
+    KEYED_INVERSIONS.with(std::cell::Cell::get)
+}
+
 impl<'a> BlockKeysByPosition<'a> {
     /// REACHABLE FROM THE SIBLING MODULE THAT DERIVES, not only from this file's encoder.
     ///
@@ -1496,6 +1507,7 @@ impl<'a> BlockKeysByPosition<'a> {
         lookup: &'a ObjectBlockLookup,
         keys: impl IntoIterator<Item = &'k str>,
     ) -> Self {
+        KEYED_INVERSIONS.with(|cell| cell.set(cell.get().saturating_add(1)));
         let mut by_position = std::collections::HashMap::new();
         let mut by_handle = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {

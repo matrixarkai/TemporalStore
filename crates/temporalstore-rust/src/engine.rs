@@ -4009,6 +4009,15 @@ fn collect_command_index_items_for(
     only: Option<(&str, Option<&str>)>,
 ) -> Vec<crate::index_log::IndexItem> {
     use std::collections::BTreeSet;
+    // A REMOVAL THAT NAMES ITS ELEMENT STATES NO ROW, so nothing below can emit one. Every block of
+    // the object is filtered out when a name is asked for (see the filter in the walk), and the
+    // inversion that gives each block its identity was built first -- over every block the object
+    // holds, which for a removal from a thousand-member collection is a thousand entries in two
+    // hash maps, thrown away unread. Measured at ~307 KB and 86% of the instructions of one
+    // ZSetRemove at 1,000 members.
+    if matches!(only, Some((_, Some(_)))) {
+        return Vec::new();
+    }
     let keys: BTreeSet<&str> = command_keys.iter().map(String::as_str).collect();
     if keys.is_empty() {
         return Vec::new();
