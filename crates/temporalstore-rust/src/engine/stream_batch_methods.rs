@@ -514,15 +514,21 @@ impl TemporalEngine {
             }
         }
 
+        let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
+        let read_admission_enabled =
+            !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
+        let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
         for (index, key) in keys.iter().enumerate() {
-            let rejected = if !raft_applying() && !replaying_wal() {
-                if !self.charge_quota(shard_id, quota::QuotaKind::Read) {
+            let rejected = if enforce_foreground_limits
+                && (quota_checks_enabled || read_admission_enabled)
+            {
+                if quota_checks_enabled && !self.charge_quota(shard_id, quota::QuotaKind::Read) {
                     Some(Status::error(
                         "quota_exhausted",
                         format!("shard {shard_id} is over its read rate limit"),
                     ))
-                } else {
+                } else if read_admission_enabled {
                     self.check_admission(
                         shard_id,
                         false,
@@ -530,6 +536,8 @@ impl TemporalEngine {
                         info.table_name.as_deref(),
                     )
                     .err()
+                } else {
+                    None
                 }
             } else {
                 None
@@ -1012,7 +1020,7 @@ impl TemporalEngine {
                             end_routing_bucket,
                             shard,
                             config.async_storage,
-                            !config.async_storage,
+                            true,
                             key,
                             entries,
                         );

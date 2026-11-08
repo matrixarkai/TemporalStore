@@ -5,6 +5,7 @@
 #![allow(clippy::all)]
 use super::*;
 use super::helpers::*;
+use crate::{Config, SetConfigRequest};
 use crate::types::{
     BatchHashMultiSetRow, BatchHashMultiSetValue, BatchHashTimestampSetRequest,
     BatchHashTimestampSetRow,
@@ -257,6 +258,78 @@ fn shared_field_hash_write_keeps_large_and_small_fields_readable() {
         read.responses[0].response,
         CommandResponse::Values {
             values: vec![Some(b"0.75".to_vec()), Some(embedding)]
+        }
+    );
+}
+
+#[test]
+fn async_shared_field_hash_write_packs_a_small_projection() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec![
+            "timestamp".to_string(),
+            "f0".to_string(),
+            "f1".to_string(),
+            "f2".to_string(),
+        ],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![
+                BatchHashMultiSetValue(b"stamp".to_vec()),
+                BatchHashMultiSetValue(b"one".to_vec()),
+                BatchHashMultiSetValue(b"two".to_vec()),
+                BatchHashMultiSetValue(b"three".to_vec()),
+            ],
+        )],
+    });
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 1);
+    let carried_blocks = runtime
+        .engine()
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(&line).ok())
+        .map(|record| record.staged_blocks.len())
+        .sum::<usize>();
+    assert_eq!(
+        carried_blocks, 1,
+        "one shared projection must carry one packed WAL block"
+    );
+    assert_eq!(
+        runtime.engine().block_store().stats().writes,
+        0,
+        "async storage must defer the packed block rather than append it synchronously"
+    );
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["entity".to_string()],
+        fields: vec!["f2".to_string(), "f0".to_string(), "f1".to_string()],
+    });
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![
+                Some(b"three".to_vec()),
+                Some(b"one".to_vec()),
+                Some(b"two".to_vec()),
+            ]
         }
     );
 }
