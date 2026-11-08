@@ -13084,7 +13084,10 @@ mod tests {
             reports.push(handle.await.unwrap().expect("every group-commit write must ack Ok"));
         }
 
-        // Every write acked durable with a distinct, non-overlapping byte range.
+        // Every write acked durable, and no two ranges PARTIALLY overlap: they are disjoint, or they
+        // are identical because the writes shared one container record. A container is the unit the
+        // log stores, so every entry of one reports the whole container as its range; only a range
+        // that cuts across another is a corrupt layout.
         let mut ranges: Vec<(u64, u64)> = reports
             .iter()
             .map(|report| {
@@ -13097,8 +13100,8 @@ mod tests {
         ranges.sort();
         for pair in ranges.windows(2) {
             assert!(
-                pair[0].1 <= pair[1].0,
-                "WAL byte ranges must not overlap: {:?} vs {:?}",
+                pair[0].1 <= pair[1].0 || pair[0] == pair[1],
+                "WAL byte ranges must be disjoint or identical (one container): {:?} vs {:?}",
                 pair[0],
                 pair[1]
             );
