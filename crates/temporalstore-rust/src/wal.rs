@@ -11186,41 +11186,43 @@ mod tests {
     }
 
 
-    /// A record written with the long field names is refused, and the short names load.
+    /// A record written with a long field name is not read as the same record.
     ///
     /// The first release carries no installed base, so the long names an earlier build used
-    /// (`shard_id`, `sequence`, `command`, `metadata`) are not accepted. The record's required
-    /// `s` and `q` are absent from such a document, so it is refused rather than read as some
-    /// other record. The same record in the names the writer produces is the control.
+    /// (`shard_id`, `sequence`, `command`, `metadata`) are not accepted. Each is swapped in alone
+    /// for its short name in a document the writer's names load, against the control that the
+    /// unmodified document loads, so that ONE alias coming back is caught and not only all of
+    /// them: a record is compared as the JSON it serialises to, which differs when a long name was
+    /// dropped as an unknown key (an optional field falls to its default) and is an error when a
+    /// required one is missing.
     #[test]
-    fn a_record_with_the_long_field_names_is_refused() {
-        let long = concat!(
-            r#"{"shard_id":1,"sequence":7,"command":{"kind":"string_set","key":"k","#,
-            r#""value":[104,105]},"metadata":{"version":1,"timestamp_ms":1787429651961}}"#
-        );
-        assert!(
-            serde_json::from_str::<WriteAheadLogRecord>(long).is_err(),
-            "a record spelled with the long field names was read: the alias is back"
-        );
-        let short = concat!(
+    fn a_record_with_a_long_field_name_is_not_read_as_the_same_record() {
+        const CURRENT: &str = concat!(
             r#"{"s":1,"q":7,"c":{"kind":"string_set","key":"k","value":[104,105]},"#,
             r#""m":{"t":1787429651961}}"#
         );
-        let record: WriteAheadLogRecord =
-            serde_json::from_str(short).expect("the control, in the written names, must load");
-        assert_eq!(record.shard_id, 1);
-        assert_eq!(record.sequence, 7);
-        assert_eq!(
-            record.command,
-            Some(Command::StringSet {
-                key: "k".to_string(),
-                value: b"hi".to_vec(),
-            })
-        );
-        assert_eq!(
-            record.metadata.expect("the metadata block should load").timestamp_ms,
-            1_787_429_651_961
-        );
+        let original: WriteAheadLogRecord =
+            serde_json::from_str(CURRENT).expect("the control, in the written names, must load");
+        assert_eq!(original.shard_id, 1);
+        assert_eq!(original.sequence, 7);
+        assert!(original.command.is_some() && original.metadata.is_some());
+        let original_json = serde_json::to_value(&original).unwrap();
+        for (short, long) in [
+            ("s", "shard_id"),
+            ("q", "sequence"),
+            ("c", "command"),
+            ("m", "metadata"),
+        ] {
+            let swapped = CURRENT.replacen(&format!("\"{short}\":"), &format!("\"{long}\":"), 1);
+            assert_ne!(swapped, CURRENT, "the swap of `{short}` did not take");
+            let loaded = serde_json::from_str::<WriteAheadLogRecord>(&swapped);
+            assert!(
+                loaded
+                    .as_ref()
+                    .map_or(true, |record| serde_json::to_value(record).unwrap() != original_json),
+                "a record with `{short}` spelled `{long}` loaded as the same record: the alias is back"
+            );
+        }
     }
 
     /// A record that omits the version is read as the current one.

@@ -5292,42 +5292,47 @@ mod tests {
         );
     }
 
-    /// A delta record written with the long field names is refused, and the short names load.
+    /// A delta record written with a long field name is not read as the same record.
     ///
     /// The record-level names are short, and the long spellings (`shard_id`, `sequence`,
     /// `applied_wal_sequence`, `upsert`, `key_states`) are not accepted: the first release carries
     /// no installed base. `items` and `meta` are NOT short names; whole-index and delta records are
-    /// told apart on read by the presence of those two keys. The same record in the written names
-    /// is the control.
+    /// told apart on read by the presence of those two keys. Each long name is swapped in alone for
+    /// its short name against the control that the unmodified document loads, so one alias coming
+    /// back is caught and not only all of them.
     #[test]
-    fn a_delta_record_written_with_the_long_field_names_is_refused() {
-        let long = serde_json::json!({
-            "shard_id": 7,
-            "sequence": 3,
-            "items": [],
-            "applied_wal_sequence": 11,
-            "upsert": true,
-            "key_states": [{"key": "m:0"}]
-        });
-        assert!(
-            serde_json::from_value::<IndexDeltaRecord>(long).is_err(),
-            "a delta record spelled with the long field names was read: the alias is back"
-        );
-        let short = serde_json::json!({
-            "s": 7,
-            "q": 3,
-            "items": [],
-            "aw": 11,
-            "u": true,
-            "ks": [{"key": "m:0"}]
-        });
-        let record: IndexDeltaRecord =
-            serde_json::from_value(short).expect("the control, in the written names, must load");
-        assert_eq!(record.shard_id, 7);
-        assert_eq!(record.sequence, 3);
-        assert_eq!(record.applied_wal_sequence, Some(11));
-        assert!(record.upsert);
-        assert_eq!(record.key_states.len(), 1);
+    fn a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record() {
+        let current = r#"{"s":7,"q":3,"items":[],"aw":11,"u":true,"ks":[{"key":"m:0"}]}"#;
+        let original: IndexDeltaRecord =
+            serde_json::from_str(current).expect("the control, in the written names, must load");
+        assert_eq!(original.shard_id, 7);
+        assert_eq!(original.sequence, 3);
+        assert_eq!(original.applied_wal_sequence, Some(11));
+        assert!(original.upsert);
+        assert_eq!(original.key_states.len(), 1);
+        for (short, long) in [
+            ("s", "shard_id"),
+            ("q", "sequence"),
+            ("aw", "applied_wal_sequence"),
+            ("u", "upsert"),
+            ("ks", "key_states"),
+        ] {
+            let swapped = current.replacen(&format!("\"{short}\":"), &format!("\"{long}\":"), 1);
+            assert_ne!(swapped, current, "the swap of `{short}` did not take");
+            let loaded = serde_json::from_str::<IndexDeltaRecord>(&swapped);
+            assert!(
+                loaded.as_ref().map_or(true, |record| {
+                    (
+                        record.shard_id,
+                        record.sequence,
+                        record.applied_wal_sequence,
+                        record.upsert,
+                        record.key_states.len(),
+                    ) != (7, 3, Some(11), true, 1)
+                }),
+                "a delta record with `{short}` spelled `{long}` loaded as the same record: the alias is back"
+            );
+        }
     }
 
     #[test]
