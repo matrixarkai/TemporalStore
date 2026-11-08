@@ -798,12 +798,16 @@ pub(super) fn execute_packed_conditional_hash_write(
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let stored_timestamp = shard
         .bucket_index.hashes
         .get(&key)
         .and_then(|fields| fields.get(&timestamp_field))
         .and_then(|address| {
-            read_block_bytes(
+            // Keep the cached packed row shared while selecting its tiny timestamp. Copying the
+            // whole frame here makes every stale embedding write pay for its payload a second
+            // time before it can be rejected.
+            read_block_frame_shared(
                 cache,
                 block_store,
                 shard_id,
@@ -814,14 +818,13 @@ pub(super) fn execute_packed_conditional_hash_write(
                     &key,
                     Some(timestamp_field.as_str()),
                 ),
-                Some(block_routing_bucket(
-                    &key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                )),
+                Some(routing_bucket),
             )
         })
-        .and_then(|bytes| <HashTimestamp as prost::Message>::decode(bytes.as_slice()).ok())
+        .and_then(|frame| select_container_value(&frame, &timestamp_field))
+        .and_then(|timestamp| {
+            <HashTimestamp as prost::Message>::decode(timestamp.as_slice()).ok()
+        })
         .map(|timestamp| (timestamp.seconds, timestamp.nanos));
     if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
         let mut metadata_entries = entries;
@@ -3203,6 +3206,10 @@ pub(crate) fn execute_on_shard(
                     .map(|values| values.len() != feature_len)
                     .unwrap_or(feature_len > 0);
                 if stale {
+                    // Each value is read IN PLACE and parsed where it sits: a point's number is
+                    // `parse_i64` of its bytes, or 0 when it is not a number, which is what summing
+                    // the one-element slice came to. No `FeaturePoint` or value copy is built.
+                    let mut page_keys = crate::engine::PageKeys::new();
                     let decoded: BTreeMap<u64, i64> = shard
                         .features()
                         .get(&key[..])
@@ -3210,7 +3217,7 @@ pub(crate) fn execute_on_shard(
                             series
                                 .points()
                                 .filter_map(|(timestamp_ms, address)| {
-                                    read_feature_point(
+                                    read_feature_value_with(
                                         cache,
                                         block_store,
                                         shard_id,
@@ -3222,13 +3229,10 @@ pub(crate) fn execute_on_shard(
                                             start_routing_bucket,
                                             end_routing_bucket,
                                         )),
+                                        &mut page_keys,
+                                        |value| parse_i64_slice(value).unwrap_or(0),
                                     )
-                                    .map(|point| {
-                                        (
-                                            timestamp_ms,
-                                            aggregate_feature_values(&[point.value], "sum"),
-                                        )
-                                    })
+                                    .map(|number| (timestamp_ms, number))
                                 })
                                 .collect()
                         })
@@ -3243,6 +3247,41 @@ pub(crate) fn execute_on_shard(
                 CommandResponse::Aggregate {
                     value: control_rollup::feature_windowed_sum(shard, &key, start_ms, end_ms),
                 }
+            } else if aggregator.eq_ignore_ascii_case("sum") {
+                // THE SUM KEEPS A NUMBER PER POINT, so it reads each value in place and adds it
+                // up instead of collecting every value into a `Vec<Vec<u8>>` first. The same
+                // iterator shape as `aggregate_feature_values`'s "sum" arm (parse, drop what is not
+                // a number, `sum`), over the same points in the same order.
+                let mut page_keys = crate::engine::PageKeys::new();
+                let value = shard
+                    .features()
+                    .get(&key[..])
+                    .map(|series| {
+                        series
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                            .take(count.unwrap_or(feature_max_size))
+                            .filter_map(|(timestamp_ms, address)| {
+                                read_feature_value_with(
+                                    cache,
+                                    block_store,
+                                    shard_id,
+                                    timestamp_ms,
+                                    address,
+                                    BlockIdentity::of(shard_id, "feature", &key, None),
+                                    Some(block_routing_bucket(
+                                        &key,
+                                        start_routing_bucket,
+                                        end_routing_bucket,
+                                    )),
+                                    &mut page_keys,
+                                    parse_i64_slice,
+                                )
+                                .flatten()
+                            })
+                            .sum::<i64>()
+                    })
+                    .unwrap_or_default();
+                CommandResponse::Aggregate { value }
             } else {
                 let values = shard
                     .features()
