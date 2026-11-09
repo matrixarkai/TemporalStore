@@ -7252,12 +7252,14 @@ fn append_value_inner(
 /// `BTreeMap` iterates its keys ascending, so the first `len - max_size` of them ARE the oldest
 /// points; `max_size == 0` means unbounded and trims nothing.
 ///
-/// NEITHER DURABLE REPRESENTATION RESURRECTS WHAT THIS DROPS, which is why the trim needs no
-/// removal record of its own. In block mode the whole series is re-serialised immediately below,
-/// so the persisted block already excludes the trimmed points and a rebuild from it finds
-/// nothing to bring back. In coalesced mode durability is the index snapshot plus WAL replay,
-/// and replay re-executes each increment through this same trim with the config effective at
-/// that record's frontier, so it converges on the same series.
+/// THE TRIM RECORDS NO REMOVAL, so something at recovery has to run it again. The block holds the
+/// series as it stood after the trim, but a block is not what recovery installs last: replay
+/// installs each logged `control_counter` outcome, one point each, and an outcome from before the
+/// trim brings its point back. Measured with the block written on every increment: after 10,140
+/// increments at a bound of 10,000 the live series held 10,000 points and a recovery with no
+/// unload held 10,140. The `control_counter` install in `apply_outcome_item_inner` therefore runs
+/// this function, with the bound in force at that record's frontier. In coalesced mode, where
+/// durability is the index snapshot plus replay, the same install does the work.
 fn trim_control_state_series(shard: &mut ShardState, key: &str, max_size: usize) -> bool {
     if max_size == 0 {
         return false;
@@ -7291,8 +7293,9 @@ thread_local! {
 /// the block-derived one (`the serialized i64 series is authoritative`). Rewriting the whole
 /// series into the log and the block store on every increment bought nothing a recovery used, and
 /// cost the series' length every time: 1.7 B per entry written to each of the log and the block
-/// store, and about 4,100 instructions per entry, per increment. At the default cap of 30,000
-/// points that is roughly 120 million instructions for one increment.
+/// store, and about 4,100 instructions per entry, per increment in a debug build. At the default
+/// cap of 10,000 points (`feature_max_size`) a release build spent 3.16 million instructions on one
+/// increment, against 61 thousand with the block due-only.
 ///
 /// The block is still written on the first increment of a key, which anchors the object in the
 /// bucket index, and on a deterministic share of the rest: one in `len / 16` (at least 16), chosen
