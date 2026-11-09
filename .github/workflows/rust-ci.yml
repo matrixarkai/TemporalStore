@@ -309,6 +309,7 @@ jobs:
             engine::tests::the_config_log_is_framed_only::the_config_log_reads_frames_skips_a_json_line_and_a_torn_or_damaged_frame_is_not_misread \
             engine::tests::the_config_log_is_framed_only::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
             engine::tests::the_config_log_is_framed_only::no_json_path_is_left_in_the_config_log_code \
+            types::tests::a_context_value_is_read_as_protobuf_and_nothing_else \
             engine::tests::dump_release_scale::a_byte_the_measuring_thread_writes_under_the_cache_dir_is_still_a_residual \
             shared_store::tests::shared_store_rejects_corrupt_wal_checksum \
             shared_store::tests::a_checkpoint_manifest_survives_the_round_trip \
