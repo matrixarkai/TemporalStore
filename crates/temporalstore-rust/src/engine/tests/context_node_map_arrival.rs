@@ -111,7 +111,12 @@ fn plant_in_base_index(dir: &std::path::Path, stamp: u32) {
         .clone();
     restored.context_nodes_mut().insert(PLANTED.into(), live.address());
     restored.index_format_version = stamp;
-    std::fs::write(&path, crate::engine::encode_index_bytes(&restored)).expect("write");
+    // PLAIN JSON, NOT THE CONTAINER. The container's reader takes the stamp from its header, so a
+    // msgpack image written from a shard whose field says `stamp` decodes as CURRENT, and the image
+    // this test needs -- one that decodes and carries an old stamp -- can only be spelled by an
+    // encoding that stores the field. The plain-JSON reader still exists for exactly this.
+    std::fs::write(&path, crate::engine::encode_index_bytes_as_plain_json(&restored))
+        .expect("write");
 }
 
 /// Is `PLANTED` in shard 7's `context_nodes` map, as the engine now holds it?
