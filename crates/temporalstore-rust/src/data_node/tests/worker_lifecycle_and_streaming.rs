@@ -234,7 +234,18 @@ fn shared_field_hash_batch_keeps_requested_order_duplicates_and_missing_values()
 fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
     let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    crate::engine::reset_routing_bucket_derivations();
 
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
@@ -258,6 +269,11 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
     });
     assert!(written.status.ok, "{written:?}");
     assert_eq!(written.applied, 2);
+    assert_eq!(
+        crate::engine::routing_bucket_derivations(),
+        (2, ("first".len() + "second".len()) as u64),
+        "each shared row must derive its routing bucket once"
+    );
     assert_eq!(runtime.dirty_shards(), vec![1]);
 
     let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
@@ -288,6 +304,54 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
     });
     assert_eq!(rejected.status.code, "field_value_count_mismatch");
     assert_eq!(rejected.applied, 0);
+}
+
+#[test]
+fn wide_shared_field_hash_write_routes_each_row_once() {
+    const FIELDS: usize = 110;
+    const ROWS: usize = 3;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let fields = (0..FIELDS)
+        .map(|index| format!("feature-{index:03}"))
+        .collect::<Vec<_>>();
+    let rows = (0..ROWS)
+        .map(|row| {
+            BatchHashMultiSetRow(
+                format!("entity-{row}"),
+                (0..FIELDS)
+                    .map(|field| BatchHashMultiSetValue(vec![row as u8, field as u8]))
+                    .collect(),
+            )
+        })
+        .collect();
+
+    crate::engine::reset_routing_bucket_derivations();
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields,
+        rows,
+    });
+
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, ROWS);
+    assert_eq!(
+        crate::engine::routing_bucket_derivations(),
+        (ROWS as u64, (ROWS * "entity-0".len()) as u64),
+        "routing work must scale with rows rather than shared fields"
+    );
 }
 
 #[test]

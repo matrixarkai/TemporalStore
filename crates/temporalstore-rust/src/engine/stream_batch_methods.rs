@@ -1241,6 +1241,13 @@ impl TemporalEngine {
                     Command::HashMultiSet { .. }
                         | Command::HashMultiSetIfTimestampOlder { .. }
                 );
+            let shared_row_routing_bucket = reuse_consumed_metadata.then(|| match &command {
+                Command::HashMultiSet { key, .. }
+                | Command::HashMultiSetIfTimestampOlder { key, .. } => {
+                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
+                }
+                _ => unreachable!("only shared hash rows reuse command metadata"),
+            });
             // Shared async hash rows return the consumed command as their post-write metadata.
             // Borrow its key below instead of cloning the same String into a one-element Vec.
             let defer_object_key_clone = reuse_consumed_metadata && !persist_index_delta;
@@ -1266,12 +1273,12 @@ impl TemporalEngine {
             let (outcome, returned_post_write) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
                     let (outcome, metadata) =
-                        execute_on_shard::execute_hash_multi_set_reusing_metadata(
+                        execute_on_shard::execute_hash_multi_set_reusing_metadata_at_bucket(
                             &self.cache,
                             &self.block_store,
                             shard_id,
-                            start_routing_bucket,
-                            end_routing_bucket,
+                            shared_row_routing_bucket
+                                .expect("shared hash row has a routing bucket"),
                             shard,
                             config.async_storage,
                             true,
@@ -1288,12 +1295,12 @@ impl TemporalEngine {
                     entries,
                 } if reuse_consumed_metadata => {
                     let (outcome, metadata) =
-                        execute_on_shard::execute_packed_conditional_hash_write(
+                        execute_on_shard::execute_packed_conditional_hash_write_at_bucket(
                             &self.cache,
                             &self.block_store,
                             shard_id,
-                            start_routing_bucket,
-                            end_routing_bucket,
+                            shared_row_routing_bucket
+                                .expect("shared timestamp row has a routing bucket"),
                             shard,
                             config.async_storage,
                             key,
@@ -1349,7 +1356,9 @@ impl TemporalEngine {
             }
             // LRU recency: stamp the bucket(s) this command
             // touched, read or write, so eviction can prefer least-recently-used buckets.
-            {
+            if let Some(routing_bucket) = shared_row_routing_bucket {
+                shard.bucket_recency.insert(routing_bucket, now_ms());
+            } else {
                 let now = now_ms();
                 crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                     for_each_precomputed_touched_key(
@@ -1411,12 +1420,20 @@ impl TemporalEngine {
                         // routing bucket it computes on the next line. Inserting it here as well
                         // was redundant when the set was flat and is wrong now: this site does
                         // not know the bucket, and a key filed without one belongs to no bucket.
-                        mark_object_dirty(
-                            shard,
-                            object_key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        );
+                        if let Some(routing_bucket) = shared_row_routing_bucket {
+                            crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket(
+                                shard,
+                                object_key,
+                                routing_bucket,
+                            );
+                        } else {
+                            mark_object_dirty(
+                                shard,
+                                object_key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            );
+                        }
                     }
                 }
                 // The same maintenance the single-command path does. An ingest's writes are
@@ -1433,21 +1450,39 @@ impl TemporalEngine {
                     let narrow_hash = match command_for_post_write_ref {
                         Command::HashSet { key, field, .. }
                         | Command::HashIncrBy { key, field, .. } => {
-                            crate::engine::storage_bucket_internals::sync_written_hash_fields(
-                                shard,
-                                shard_id,
-                                key,
-                                std::iter::once(field.as_str()),
-                            )
+                            match shared_row_routing_bucket {
+                                Some(routing_bucket) => crate::engine::storage_bucket_internals::sync_written_hash_fields_at_bucket(
+                                    shard,
+                                    shard_id,
+                                    key,
+                                    routing_bucket,
+                                    std::iter::once(field.as_str()),
+                                ),
+                                None => crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                    shard,
+                                    shard_id,
+                                    key,
+                                    std::iter::once(field.as_str()),
+                                ),
+                            }
                         }
                         Command::HashMultiSet { key, entries }
                         | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
-                            crate::engine::storage_bucket_internals::sync_written_hash_fields(
-                                shard,
-                                shard_id,
-                                key,
-                                entries.iter().map(|(field, _)| field.as_str()),
-                            )
+                            match shared_row_routing_bucket {
+                                Some(routing_bucket) => crate::engine::storage_bucket_internals::sync_written_hash_fields_at_bucket(
+                                    shard,
+                                    shard_id,
+                                    key,
+                                    routing_bucket,
+                                    entries.iter().map(|(field, _)| field.as_str()),
+                                ),
+                                None => crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                    shard,
+                                    shard_id,
+                                    key,
+                                    entries.iter().map(|(field, _)| field.as_str()),
+                                ),
+                            }
                         }
                         _ => false,
                     };

@@ -1421,6 +1421,14 @@ pub(super) fn mark_object_dirty(
     end_routing_bucket: u32,
 ) {
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    mark_object_dirty_at_bucket(shard, object_key, routing_bucket);
+}
+
+pub(super) fn mark_object_dirty_at_bucket(
+    shard: &mut ShardState,
+    object_key: &str,
+    routing_bucket: u32,
+) {
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
     // ONE COPY OF THE CHARACTERS -- see `DirtyObjectIndex::insert_shared`. The handle is read out
@@ -2962,6 +2970,22 @@ pub(super) fn sync_written_hash_fields<'a>(
     object_key: &str,
     fields: impl IntoIterator<Item = &'a str>,
 ) -> bool {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(
+        object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    );
+    sync_written_hash_fields_at_bucket(shard, shard_id, object_key, routing_bucket, fields)
+}
+
+pub(super) fn sync_written_hash_fields_at_bucket<'a>(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+    routing_bucket: u32,
+    fields: impl IntoIterator<Item = &'a str>,
+) -> bool {
     let mut fields = fields.into_iter().peekable();
     if fields.peek().is_none() {
         return false;
@@ -2978,9 +3002,10 @@ pub(super) fn sync_written_hash_fields<'a>(
         // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
         // write staged its own outcome already and a second would have replay install the same
         // block twice.
-        upsert_bucket_index_block_with(
+        upsert_bucket_index_block_with_routing(
             shard,
             shard_id,
+            routing_bucket,
             "hash",
             object_key,
             Some(field.to_string()),
@@ -4291,6 +4316,35 @@ pub(super) fn upsert_bucket_index_block_filed(
     BlockFiled(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_block_filed_at_bucket(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    value: Option<Vec<u8>>,
+    replaces: ReplacedBlock,
+) -> BlockFiled {
+    upsert_bucket_index_block_with_value_at_bucket(
+        shard,
+        shard_id,
+        routing_bucket,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        true,
+        value,
+        replaces,
+    );
+    BlockFiled(())
+}
+
 /// [`super::mark_bucket_index_object_deleted`], returning its witness and the flag it answered.
 pub(super) fn mark_bucket_index_object_deleted_filed(
     shard: &mut ShardState,
@@ -4679,10 +4733,38 @@ pub(super) fn upsert_bucket_index_block_with(
     dirty: bool,
     stage: bool,
 ) {
-    BLOCK_UPSERTS.with(|cell| cell.set(cell.get().saturating_add(1)));
-    upsert_bucket_index_block_with_value(
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    upsert_bucket_index_block_with_routing(
         shard,
         shard_id,
+        routing_bucket,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_block_with_routing(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+) {
+    BLOCK_UPSERTS.with(|cell| cell.set(cell.get().saturating_add(1)));
+    upsert_bucket_index_block_with_value_at_bucket(
+        shard,
+        shard_id,
+        routing_bucket,
         kind,
         object_key,
         element_name,
@@ -4690,13 +4772,10 @@ pub(super) fn upsert_bucket_index_block_with(
         dirty,
         stage,
         None,
-        // NO BLOCK REPLACED, AND THAT IS A STATEMENT AND NOT A DEFAULT. Every caller of this
-        // function files a block whose element it does not claim to have overwritten -- the
-        // context-node registration and the maintenance paths -- so there is no previous address
-        // for it to hand over. The element writes that DO overwrite go through
-        // `upsert_bucket_index_block_filed`, which takes one.
+        // No block was replaced. Element writers that do replace one use the filed helper and
+        // carry the previous address explicitly.
         ReplacedBlock::none(),
-    )
+    );
 }
 
 /// [`upsert_bucket_index_block_with`], carrying one extra byte string onto the staged outcome.
@@ -4717,6 +4796,37 @@ pub(super) fn upsert_bucket_index_block_with_value(
     value: Option<Vec<u8>>,
     replaces: ReplacedBlock,
 ) {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    upsert_bucket_index_block_with_value_at_bucket(
+        shard,
+        shard_id,
+        routing_bucket,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+        value,
+        replaces,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_block_with_value_at_bucket(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+    value: Option<Vec<u8>>,
+    replaces: ReplacedBlock,
+) {
     // Every single-block writer reaches the bucket index through here, so the charge sits here and
     // not at the arms. A new command arm that files a block is counted because this function counts
     // it; the outcome staged in the middle re-tags itself, so the two do not overlap.
@@ -4724,6 +4834,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
         upsert_bucket_index_block_inner(
             shard,
             shard_id,
+            routing_bucket,
             kind,
             object_key,
             element_name,
@@ -4740,6 +4851,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
 fn upsert_bucket_index_block_inner(
     shard: &mut ShardState,
     shard_id: ShardId,
+    routing_bucket: u32,
     kind: &str,
     object_key: &str,
     element_name: Option<String>,
@@ -4754,8 +4866,6 @@ fn upsert_bucket_index_block_inner(
     // whole range an unrouted block went into a bucket a `0..1023` shard does not hold -- filed
     // where nothing scoped to the shard will look for it. An unstamped state still answers the
     // whole range, which is what this line passed unconditionally before.
-    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     // THERE IS ONE NAME HERE: THE ELEMENT'S. An entry is not filed under a name -- it is filed under
     // its block -- so nothing below has a second `Option<&str>` to take for it. This used to split
     // the parameter into the element's name and a "filed" name that was `None` for a container, and
