@@ -4509,6 +4509,14 @@ fn what_one_add_costs_end_to_end() {
     }
 }
 
+#[test]
+fn segmented_event_hash_preserves_existing_ids() {
+    let source_id = "session:large-source";
+    let body = "context body ".repeat(8_192);
+    let existing = stable_hash64(&format!("event:{source_id}:{body}"));
+    assert_eq!(existing, context_event_id_hash(source_id, &body));
+}
+
 // --- Restored ---------------------------------------------------------------------
 // These cover `context_embedding_model_conflicts`, which is live in
 // context_workflow/context_query_scoring.rs and wired in context_workflow.rs. They were lost when a ship

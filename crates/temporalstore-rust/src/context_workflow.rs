@@ -1951,6 +1951,29 @@ pub(crate) fn prepare_context_gated_prepared(
     summaries: ContextExtractSummaries,
     embedding_outcome: Option<ContextEmbeddingOutcome>,
 ) -> PreparedContextExtract {
+    let node_hash = stable_hash64(&format!(
+        "{}:{}:{}",
+        request.tenant_hash, request.source_kind as u8, request.source_id
+    ));
+    let event_id_hash = context_event_id_hash(&request.source_id, &request.body);
+    prepare_context_gated_prepared_with_ids(
+        request,
+        gate_l1,
+        summaries,
+        embedding_outcome,
+        node_hash,
+        event_id_hash,
+    )
+}
+
+pub(crate) fn prepare_context_gated_prepared_with_ids(
+    request: ContextExtractRequest,
+    gate_l1: bool,
+    summaries: ContextExtractSummaries,
+    embedding_outcome: Option<ContextEmbeddingOutcome>,
+    node_hash: u64,
+    event_id_hash: u64,
+) -> PreparedContextExtract {
     let provider = summaries.provider;
     if !summaries.status.ok {
         return PreparedContextExtract {
@@ -1987,11 +2010,6 @@ pub(crate) fn prepare_context_gated_prepared(
         };
     }
 
-    let node_hash = stable_hash64(&format!(
-        "{}:{}:{}",
-        request.tenant_hash, request.source_kind as u8, request.source_id
-    ));
-    let event_id_hash = stable_hash64(&format!("event:{}:{}", request.source_id, request.body));
     let timestamp_ms = request.timestamp_ms.max(1);
     let l0 = summaries.l0;
     // Emit L1 when not gating (bulk ingest) or when the source is rich enough to

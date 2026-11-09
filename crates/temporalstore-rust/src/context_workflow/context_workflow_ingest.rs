@@ -107,7 +107,14 @@ fn process_context_source_window(
             .take()
             .expect("every validated source receives a summary result")
         {
-            Ok(summaries) if summaries.status.ok => prepared_sources.push((source, summaries)),
+            Ok(summaries) if summaries.status.ok => {
+                let node_hash = stable_hash64(&format!(
+                    "{}:{}:{}",
+                    source.tenant_hash, source.source_kind as u8, source.source_id
+                ));
+                let event_id_hash = context_event_id_hash(&source.source_id, &source.body);
+                prepared_sources.push((source, summaries, node_hash, event_id_hash));
+            }
             Ok(summaries) => failed_sources.push(ContextIngestSourceFailure {
                 source_id: source.source_id,
                 status: summaries.status,
@@ -123,7 +130,7 @@ fn process_context_source_window(
     // item count and bytes. Every source addresses its two rows in the shared provider matrix,
     // avoiding a second allocation and copy for every source in the window.
     let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
-    for (source_index, (_, summaries)) in prepared_sources.iter().enumerate() {
+    for (source_index, (_, summaries, _, _)) in prepared_sources.iter().enumerate() {
         if let Some((_, source_indexes)) = provider_groups
             .iter_mut()
             .find(|(provider, _)| *provider == summaries.provider)
@@ -154,7 +161,8 @@ fn process_context_source_window(
             let mut input_rows = Vec::with_capacity(remaining_inputs);
             let mut unique_input_bytes = 0usize;
             while chunk_end < source_indexes.len() {
-                let (source, summaries) = &prepared_sources[source_indexes[chunk_end]];
+                let (source, summaries, node_hash, event_id_hash) =
+                    &prepared_sources[source_indexes[chunk_end]];
                 let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
                 let node_embedding_text = if emit_l1 {
                     summaries.l1.as_str()
@@ -182,12 +190,8 @@ fn process_context_source_window(
                     *row
                 } else {
                     let row = unique_inputs.len();
-                    let node_hash = stable_hash64(&format!(
-                        "{}:{}:{}",
-                        source.tenant_hash, source.source_kind as u8, source.source_id
-                    ));
                     unique_by_text.insert(node_embedding_text, row);
-                    unique_inputs.push(("node_text", node_hash, 1, node_embedding_text));
+                    unique_inputs.push(("node_text", *node_hash, 1, node_embedding_text));
                     row
                 };
                 input_rows.push(node_row);
@@ -195,10 +199,8 @@ fn process_context_source_window(
                     *row
                 } else {
                     let row = unique_inputs.len();
-                    let event_id_hash =
-                        stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
                     unique_by_text.insert(event_text, row);
-                    unique_inputs.push(("event_text", event_id_hash, 3, event_text));
+                    unique_inputs.push(("event_text", *event_id_hash, 3, event_text));
                     row
                 };
                 input_rows.push(event_row);
@@ -243,7 +245,9 @@ fn process_context_source_window(
     }
 
     let mut pending_extracts = Vec::with_capacity(CONTEXT_DURABLE_SOURCE_BATCH);
-    for (source_index, (source, summaries)) in prepared_sources.into_iter().enumerate() {
+    for (source_index, (source, summaries, node_hash, event_id_hash)) in
+        prepared_sources.into_iter().enumerate()
+    {
         let embedding_outcome = embedding_outcomes[source_index]
             .take()
             .unwrap_or_else(|| {
@@ -253,11 +257,13 @@ fn process_context_source_window(
                     true,
                 )
             });
-        let prepared = prepare_context_gated_prepared(
+        let prepared = prepare_context_gated_prepared_with_ids(
             source,
             gate_l1,
             summaries,
             Some(embedding_outcome),
+            node_hash,
+            event_id_hash,
         );
         if prepared.report.status.ok {
             pending_extracts.push(prepared);
