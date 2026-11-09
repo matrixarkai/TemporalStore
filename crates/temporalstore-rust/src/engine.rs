@@ -31,6 +31,12 @@ mod object_manager;
 mod packed_blocks;
 mod product_model;
 mod window_aggregate;
+// Step one of three for merged cell sets: the key, the per-key header and the packed snapshot
+// land with nothing calling them, so the byte format and its bounds can be reviewed before any
+// write or read path depends on them. The allow is the honest consequence and comes off in the
+// step that wires the write policy to it.
+#[allow(dead_code)]
+mod cell_set;
 // Step one of three: the container lands with nothing using it, so the design can be reviewed
 // without a call-site conversion riding on it. The allow is the honest consequence and comes off
 // in the step that converts a map to it.

@@ -351,7 +351,30 @@ jobs:
             engine::window_aggregate::algorithm_tests::mergeability_is_declared_and_matches_what_merge_can_do \
             engine::window_aggregate::algorithm_tests::merging_partial_results_equals_reducing_the_concatenation \
             engine::window_aggregate::algorithm_tests::first_and_last_merge_only_in_stream_order \
-            engine::window_aggregate::algorithm_tests::parsed_reducer_names_map_to_the_declared_reducers ; do
+            engine::window_aggregate::algorithm_tests::parsed_reducer_names_map_to_the_declared_reducers \
+            engine::cell_set::tests::a_bytes_entity_round_trips_and_is_bounded \
+            engine::cell_set::tests::a_decoded_snapshot_is_held_to_the_same_bounds \
+            engine::cell_set::tests::a_distance_that_overflows_or_a_misplaced_flag_is_refused \
+            engine::cell_set::tests::a_header_check_accepts_the_same_header_and_additions_and_refuses_the_rest_naming_the_field \
+            engine::cell_set::tests::a_header_round_trips_and_a_snapshot_round_trips_with_values_only_this_path_makes \
+            engine::cell_set::tests::a_header_that_declares_too_many_fields_is_refused_while_it_is_read \
+            engine::cell_set::tests::a_key_round_trips_and_numeric_order_is_lexical_order \
+            engine::cell_set::tests::a_key_that_is_not_the_canonical_spelling_is_refused \
+            engine::cell_set::tests::a_malformed_or_truncated_image_is_an_error_and_never_a_panic \
+            engine::cell_set::tests::a_merge_that_would_overflow_the_snapshot_changes_nothing \
+            engine::cell_set::tests::a_request_merges_into_what_is_stored_and_the_first_write_creates_the_key \
+            engine::cell_set::tests::a_request_over_the_cell_limit_is_refused_and_at_the_limit_is_accepted \
+            engine::cell_set::tests::a_request_with_another_header_is_refused_and_one_that_adds_a_lane_upgrades_the_stored_snapshot \
+            engine::cell_set::tests::a_text_value_holding_the_separator_or_a_length_prefix_cannot_collide \
+            engine::cell_set::tests::a_value_carries_its_header_and_round_trips \
+            engine::cell_set::tests::an_old_snapshot_reads_a_new_trailing_lane_and_label_as_zero \
+            engine::cell_set::tests::each_lane_reducer_combines_as_documented \
+            engine::cell_set::tests::every_bound_refuses_one_past_the_limit_and_accepts_the_limit \
+            engine::cell_set::tests::keys_that_do_not_fit_the_spec_are_refused \
+            engine::cell_set::tests::members_out_of_order_or_repeated_are_written_as_they_are_and_read_back \
+            engine::cell_set::tests::merging_applies_each_lane_reducer_per_member_and_replaces_labels \
+            engine::cell_set::tests::sorted_u64_members_are_stored_as_distances_and_cost_one_byte_each \
+            engine::cell_set::tests::the_version_gate_accepts_at_exactly_the_first_additive_version_and_refuses_below ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
@@ -617,13 +640,20 @@ jobs:
           # blocks of the whole shard. The whole-shard inversion costs 19 KB at 20 objects and 1.2 MB
           # at 1,000; the walk is flat. The guard varies the OBJECT COUNT and carries a control: the
           # whole-shard inversion must grow with it, or the probe cannot see that dimension.
+          # a_cell_set_key_costs_one_allocation_whatever_its_size and
+          # a_cell_costs_the_same_allocations_at_any_member_size pin that a merged-cell key is
+          # built in one allocation and that a cell costs the same allocations at a 16-byte and a
+          # 256-byte member. Each carries a control: the byte count must grow with the size, or
+          # the probe cannot see the dimension it claims is flat.
           for t in \
             engine::recorded_map::element_write_key_allocation::an_element_write_into_a_live_object_does_not_copy_its_key \
             engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
             engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
-            engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point ; do
+            engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
+            engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
+            engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
