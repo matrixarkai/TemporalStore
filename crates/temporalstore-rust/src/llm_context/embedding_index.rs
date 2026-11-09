@@ -884,6 +884,21 @@ impl EmbeddingIndex {
         limit: usize,
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
         query.validate_dimensions(self.config.dimensions)?;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(dot) = Avx2DotProduct::detect() {
+            return Ok(self.search_prepared_rows_with(&dot, tenant_id, rows, query, limit));
+        }
+        Ok(self.search_prepared_rows_with(&ScalarDotProduct, tenant_id, rows, query, limit))
+    }
+
+    fn search_prepared_rows_with<D: CompactDotProduct>(
+        &self,
+        dot: &D,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+    ) -> Vec<EmbeddingHit> {
         let limit = limit.min(rows.item_ids.len());
         // Large tenants route first, then reuse the exact compact scorer on a bounded set.
         if let Some(routing) = &rows.signature_routing {
@@ -901,6 +916,7 @@ impl EmbeddingIndex {
                 candidate_budget,
                 |position| {
                     self.score_position(
+                        dot,
                         rows,
                         query.values,
                         query.inverse_norm,
@@ -912,21 +928,23 @@ impl EmbeddingIndex {
             );
             let minimum_routed_candidates = limit.saturating_mul(4).min(rows.item_ids.len());
             if routed_count >= minimum_routed_candidates {
-                return Ok(Self::finish_search(tenant_id, rows, heap));
+                return Self::finish_search(tenant_id, rows, heap);
             }
         }
-        Ok(self.search_positions(
+        self.search_positions(
+            dot,
             tenant_id,
             rows,
             query.values,
             query.inverse_norm,
             limit,
             0..rows.item_ids.len(),
-        ))
+        )
     }
 
-    fn search_positions(
+    fn search_positions<D: CompactDotProduct>(
         &self,
+        dot: &D,
         tenant_id: u64,
         rows: &TenantRows,
         query: &[f32],
@@ -937,14 +955,23 @@ impl EmbeddingIndex {
         let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
 
         for position in positions {
-            self.score_position(rows, query, query_inverse_norm, limit, position, &mut heap);
+            self.score_position(
+                dot,
+                rows,
+                query,
+                query_inverse_norm,
+                limit,
+                position,
+                &mut heap,
+            );
         }
 
         Self::finish_search(tenant_id, rows, heap)
     }
 
-    fn score_position(
+    fn score_position<D: CompactDotProduct>(
         &self,
+        dot: &D,
         rows: &TenantRows,
         query: &[f32],
         query_inverse_norm: f32,
@@ -955,7 +982,7 @@ impl EmbeddingIndex {
         let start = position * self.config.dimensions;
         let row = &rows.vectors[start..start + self.config.dimensions];
         let score =
-            (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm).clamp(-1.0, 1.0);
+            (dot.dot(row, query) * rows.scales[position] * query_inverse_norm).clamp(-1.0, 1.0);
         let candidate = HeapHit { score, position };
         if heap.len() < limit {
             heap.push(Reverse(candidate));
@@ -1070,9 +1097,39 @@ impl EmbeddingIndex {
         rows: &TenantRows,
         query: PreparedEmbeddingQuery<'_>,
         candidate_item_ids: impl IntoIterator<Item = u64>,
-        mut visit: impl FnMut(EmbeddingHit),
+        visit: impl FnMut(EmbeddingHit),
     ) -> Result<usize, EmbeddingIndexError> {
         query.validate_dimensions(self.config.dimensions)?;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(dot) = Avx2DotProduct::detect() {
+            return Ok(self.visit_prepared_candidate_ids_for_rows_with(
+                &dot,
+                tenant_id,
+                rows,
+                query,
+                candidate_item_ids,
+                visit,
+            ));
+        }
+        Ok(self.visit_prepared_candidate_ids_for_rows_with(
+            &ScalarDotProduct,
+            tenant_id,
+            rows,
+            query,
+            candidate_item_ids,
+            visit,
+        ))
+    }
+
+    fn visit_prepared_candidate_ids_for_rows_with<D: CompactDotProduct>(
+        &self,
+        dot: &D,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        mut visit: impl FnMut(EmbeddingHit),
+    ) -> usize {
         let mut visited = 0usize;
         for item_id in candidate_item_ids {
             let Some(&position) = rows.positions.get(&item_id) else {
@@ -1082,14 +1139,12 @@ impl EmbeddingIndex {
             let row = &rows.vectors[start..start + self.config.dimensions];
             visit(EmbeddingHit {
                 key: EmbeddingKey { tenant_id, item_id },
-                score: (dot_i8_f32(row, query.values)
-                    * rows.scales[position]
-                    * query.inverse_norm)
+                score: (dot.dot(row, query.values) * rows.scales[position] * query.inverse_norm)
                     .clamp(-1.0, 1.0),
             });
             visited = visited.saturating_add(1);
         }
-        Ok(visited)
+        visited
     }
 
     fn validate_vector_dimensions(
@@ -1249,19 +1304,46 @@ fn embedding_signature(
     signature
 }
 
-#[inline]
-fn dot_i8_f32(left: &[i8], right: &[f32]) -> f32 {
-    debug_assert_eq!(left.len(), right.len());
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::arch::is_x86_feature_detected!("avx2") {
-        // SAFETY: the runtime feature check covers every instruction used below.
-        return unsafe { dot_i8_f32_avx2(left, right) };
+/// Selected once per search so row scoring does not repeat CPU feature detection.
+trait CompactDotProduct {
+    fn dot(&self, left: &[i8], right: &[f32]) -> f32;
+}
+
+struct ScalarDotProduct;
+
+impl CompactDotProduct for ScalarDotProduct {
+    #[inline(always)]
+    fn dot(&self, left: &[i8], right: &[f32]) -> f32 {
+        dot_i8_f32_scalar(left, right)
     }
-    dot_i8_f32_scalar(left, right)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+struct Avx2DotProduct {
+    _feature_detected: (),
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl Avx2DotProduct {
+    fn detect() -> Option<Self> {
+        std::arch::is_x86_feature_detected!("avx2").then_some(Self {
+            _feature_detected: (),
+        })
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl CompactDotProduct for Avx2DotProduct {
+    #[inline(always)]
+    fn dot(&self, left: &[i8], right: &[f32]) -> f32 {
+        // SAFETY: an instance exists only after a successful runtime AVX2 check.
+        unsafe { dot_i8_f32_avx2(left, right) }
+    }
 }
 
 #[inline]
 fn dot_i8_f32_scalar(left: &[i8], right: &[f32]) -> f32 {
+    debug_assert_eq!(left.len(), right.len());
     let mut sum = 0.0f32;
     let mut index = 0usize;
     while index + 8 <= left.len() {
@@ -1285,6 +1367,7 @@ fn dot_i8_f32_scalar(left: &[i8], right: &[f32]) -> f32 {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 unsafe fn dot_i8_f32_avx2(left: &[i8], right: &[f32]) -> f32 {
+    debug_assert_eq!(left.len(), right.len());
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
@@ -1466,6 +1549,7 @@ mod tests {
         let prepared = PreparedEmbeddingQuery::new(&query).unwrap();
         let rows = index.tenants.get(&7).unwrap();
         let expected = index.search_positions(
+            &ScalarDotProduct,
             7,
             rows,
             prepared.values,
