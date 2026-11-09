@@ -467,6 +467,7 @@ pub fn reset_tombstone_append_failure_count() {
 }
 
 pub(super) enum ProjectedHashValues {
+    Missing(usize),
     Owned(Vec<Option<Vec<u8>>>),
     Shared {
         frame: std::sync::Arc<[u8]>,
@@ -477,6 +478,7 @@ pub(super) enum ProjectedHashValues {
 impl ProjectedHashValues {
     pub(super) fn len(&self) -> usize {
         match self {
+            Self::Missing(field_count) => *field_count,
             Self::Owned(values) => values.len(),
             Self::Shared { ranges, .. } => ranges.len(),
         }
@@ -484,6 +486,7 @@ impl ProjectedHashValues {
 
     pub(super) fn value_at(&self, index: usize) -> Option<&[u8]> {
         match self {
+            Self::Missing(_) => None,
             Self::Owned(values) => values.get(index).and_then(|value| value.as_deref()),
             Self::Shared { frame, ranges } => ranges
                 .get(index)
@@ -494,6 +497,7 @@ impl ProjectedHashValues {
 
     pub(super) fn into_owned(self) -> Vec<Option<Vec<u8>>> {
         match self {
+            Self::Missing(field_count) => vec![None; field_count],
             Self::Owned(values) => values,
             Self::Shared { frame, ranges } => ranges
                 .into_iter()
@@ -589,7 +593,7 @@ pub(super) fn execute_hash_multi_get_projected(
                 Some(routing_bucket),
             );
             let Some(frame) = frame else {
-                return ProjectedHashValues::Owned(vec![None; fields.len()]);
+                return ProjectedHashValues::Missing(fields.len());
             };
             match container_blocks::project_utf8_container_element_ranges_with_plan(
                 frame.as_ref(),
@@ -606,7 +610,7 @@ pub(super) fn execute_hash_multi_get_projected(
                 }
                 container_blocks::Utf8ContainerRangeProjection::Corrupt(_) => {
                     note_corrupt_container_block();
-                    ProjectedHashValues::Owned(vec![None; fields.len()])
+                    ProjectedHashValues::Missing(fields.len())
                 }
                 container_blocks::Utf8ContainerRangeProjection::NotFramed
                 | container_blocks::Utf8ContainerRangeProjection::OtherSpelling => {
@@ -623,7 +627,7 @@ pub(super) fn execute_hash_multi_get_projected(
                 }
             }
         } else {
-            ProjectedHashValues::Owned(vec![None; fields.len()])
+            ProjectedHashValues::Missing(fields.len())
         }
     } else {
         ProjectedHashValues::Owned(
