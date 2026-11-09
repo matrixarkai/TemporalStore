@@ -617,6 +617,8 @@ impl EmbeddingIndex {
                 return Err(EmbeddingIndexError::DuplicateKey { key: input.key });
             }
         }
+        // Duplicate rejection is complete; do not retain its O(N) scratch beside the vectors.
+        drop(batch_keys);
 
         let mut keys = Vec::with_capacity(batch.len());
         let mut scales = Vec::with_capacity(batch.len());
@@ -625,13 +627,13 @@ impl EmbeddingIndex {
             keys.push(input.key);
             scales.push(quantize_unit_vector(input.key, input.values, &mut vectors)?);
         }
-        CompactEmbeddingBatch::from_compact_rows(
-            self.config.dimensions,
-            self.config.model_hash,
+        Ok(CompactEmbeddingBatch {
+            dimensions: self.config.dimensions,
+            model_hash: self.config.model_hash,
             keys,
             scales,
             vectors,
-        )
+        })
     }
 
     pub fn upsert_compact_batch(
@@ -1526,6 +1528,21 @@ mod tests {
                 }])
                 .unwrap_err(),
             EmbeddingIndexError::ZeroNorm { key }
+        );
+        assert_eq!(
+            index
+                .prepare_batch(&[
+                    EmbeddingVector {
+                        key,
+                        values: &[1.0, 0.0],
+                    },
+                    EmbeddingVector {
+                        key,
+                        values: &[0.0, 1.0],
+                    },
+                ])
+                .unwrap_err(),
+            EmbeddingIndexError::DuplicateKey { key }
         );
     }
 
