@@ -528,12 +528,12 @@ pub(super) fn execute_hash_multi_get(
             mutated: true,
         };
     }
+    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     let values = execute_hash_multi_get_projected(
         cache,
         block_store,
         shard_id,
-        start_routing_bucket,
-        end_routing_bucket,
+        routing_bucket,
         shard,
         key,
         fields,
@@ -551,16 +551,16 @@ pub(super) fn execute_hash_multi_get_projected(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    start_routing_bucket: u32,
-    end_routing_bucket: u32,
+    routing_bucket: u32,
     shard: &mut ShardState,
     key: &str,
     fields: &[String],
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
     projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ProjectedHashValues {
-    let hash_fields = shard.bucket_index.hashes.get(key);
-    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    let Some(hash_fields) = shard.bucket_index.hashes.get(key) else {
+        return ProjectedHashValues::Missing(fields.len());
+    };
     // A packed row gives every present field the same address. Detect that common case
     // without allocating a per-command address map, fetch its frame once, and project all
     // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
@@ -570,27 +570,25 @@ pub(super) fn execute_hash_multi_get_projected(
     let mut shared: Option<(&ElementEntry, &str)> = None;
     let mut distinct_addresses = false;
     projection_scratch.reset_index_presence(fields.len());
-    if let Some(entries) = hash_fields {
-        let mut stored = entries.entries().peekable();
-        for &index in projection_plan.positions_by_name() {
-            let field = fields[index].as_str();
-            while stored.peek().is_some_and(|(name, _)| &name[..] < field) {
-                stored.next();
-            }
-            let Some(&(name, address)) = stored.peek() else {
+    let mut stored = hash_fields.entries().peekable();
+    for &index in projection_plan.positions_by_name() {
+        let field = fields[index].as_str();
+        while stored.peek().is_some_and(|(name, _)| &name[..] < field) {
+            stored.next();
+        }
+        let Some(&(name, address)) = stored.peek() else {
+            break;
+        };
+        if &name[..] != field {
+            continue;
+        }
+        projection_scratch.mark_present_in_index(index);
+        match shared {
+            None => shared = Some((address, field)),
+            Some((held, _)) if held == address => {}
+            Some(_) => {
+                distinct_addresses = true;
                 break;
-            };
-            if &name[..] != field {
-                continue;
-            }
-            projection_scratch.mark_present_in_index(index);
-            match shared {
-                None => shared = Some((address, field)),
-                Some((held, _)) if held == address => {}
-                Some(_) => {
-                    distinct_addresses = true;
-                    break;
-                }
             }
         }
     }
@@ -649,7 +647,7 @@ pub(super) fn execute_hash_multi_get_projected(
                 .iter()
                 .map(|field| {
                     hash_fields
-                        .and_then(|entries| entries.get(field))
+                        .get(field)
                         .and_then(|address| {
                             read_block_bytes(
                                 cache,

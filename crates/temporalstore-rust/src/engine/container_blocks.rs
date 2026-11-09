@@ -374,6 +374,21 @@ pub(super) struct Utf8ProjectionScratch {
     present_in_index: Vec<bool>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static INDEX_PRESENCE_RESETS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_index_presence_reset_count_for_test() {
+    INDEX_PRESENCE_RESETS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn index_presence_reset_count_for_test() -> u64 {
+    INDEX_PRESENCE_RESETS.with(std::cell::Cell::get)
+}
+
 impl Utf8ProjectionScratch {
     pub(super) fn new() -> Self {
         Self {
@@ -388,6 +403,8 @@ impl Utf8ProjectionScratch {
     }
 
     pub(super) fn reset_index_presence(&mut self, field_count: usize) {
+        #[cfg(test)]
+        INDEX_PRESENCE_RESETS.with(|count| count.set(count.get().saturating_add(1)));
         self.present_in_index.resize(field_count, false);
         self.present_in_index.fill(false);
     }
