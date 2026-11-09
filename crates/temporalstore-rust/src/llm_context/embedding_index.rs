@@ -11,6 +11,7 @@ const SIGNATURE_ROUTING_MIN_DIMENSIONS: usize = 384;
 const SIGNATURE_ROUTING_MIN_ROWS: usize = 8192;
 const SIGNATURE_ROUTING_TABLES: usize = 4;
 const SIGNATURE_ROUTING_BITS: usize = 12;
+const SIGNATURE_ROUTING_BUCKETS: usize = 1 << SIGNATURE_ROUTING_BITS;
 const SIGNATURE_ROUTING_MASK: u16 = (1 << SIGNATURE_ROUTING_BITS) - 1;
 const SIGNATURE_SAMPLES_PER_BIT: usize = 16;
 const SIGNATURE_CANDIDATES_PER_HIT: usize = 128;
@@ -275,9 +276,17 @@ struct TenantRows {
 
 #[derive(Debug)]
 struct SignatureRouting {
-    // Buckets retain compact row positions only; vectors stay in TenantRows.
-    buckets: [HashMap<u16, Vec<u32>>; SIGNATURE_ROUTING_TABLES],
+    // Tables retain compact row positions only; vectors stay in TenantRows.
+    tables: [SignatureTable; SIGNATURE_ROUTING_TABLES],
 }
+
+#[derive(Debug)]
+struct SignatureTable {
+    heads: Box<[u32]>,
+    next: Vec<u32>,
+}
+
+const NO_SIGNATURE_POSITION: u32 = u32::MAX;
 
 enum SeenPositions {
     Dense(Vec<u64>),
@@ -315,7 +324,7 @@ impl SeenPositions {
 impl SignatureRouting {
     fn build(rows: &TenantRows, dimensions: usize) -> Self {
         let mut routing = Self {
-            buckets: std::array::from_fn(|_| HashMap::new()),
+            tables: std::array::from_fn(|_| SignatureTable::new(rows.item_ids.len())),
         };
         for position in 0..rows.item_ids.len() {
             let start = position * dimensions;
@@ -330,10 +339,7 @@ impl SignatureRouting {
             return;
         };
         for table in 0..SIGNATURE_ROUTING_TABLES {
-            self.buckets[table]
-                .entry(signature_bucket(signature, table))
-                .or_default()
-                .push(position);
+            self.tables[table].insert(signature_bucket(signature, table), position);
         }
     }
 
@@ -342,18 +348,13 @@ impl SignatureRouting {
             return;
         };
         for table in 0..SIGNATURE_ROUTING_TABLES {
-            let bucket_key = signature_bucket(signature, table);
-            let empty = if let Some(bucket) = self.buckets[table].get_mut(&bucket_key) {
-                if let Some(offset) = bucket.iter().position(|candidate| *candidate == position) {
-                    bucket.swap_remove(offset);
-                }
-                bucket.is_empty()
-            } else {
-                false
-            };
-            if empty {
-                self.buckets[table].remove(&bucket_key);
-            }
+            self.tables[table].remove(signature_bucket(signature, table), position);
+        }
+    }
+
+    fn truncate(&mut self, rows: usize) {
+        for table in &mut self.tables {
+            table.next.truncate(rows);
         }
     }
 
@@ -428,17 +429,67 @@ impl SignatureRouting {
         visited: &mut usize,
         visit: &mut impl FnMut(u32),
     ) -> bool {
-        let Some(bucket_positions) = self.buckets[table].get(&bucket) else {
-            return false;
-        };
-        for position in bucket_positions {
-            if seen.insert(*position) {
-                visit(*position);
+        self.tables[table].visit(bucket, |position| {
+            if seen.insert(position) {
+                visit(position);
                 *visited += 1;
-                if *visited >= budget {
-                    return true;
-                }
             }
+            *visited < budget
+        })
+    }
+}
+
+impl SignatureTable {
+    fn new(rows: usize) -> Self {
+        Self {
+            heads: vec![NO_SIGNATURE_POSITION; SIGNATURE_ROUTING_BUCKETS].into_boxed_slice(),
+            next: vec![NO_SIGNATURE_POSITION; rows],
+        }
+    }
+
+    fn insert(&mut self, bucket: u16, position: u32) {
+        let position_index = position as usize;
+        if position_index >= self.next.len() {
+            self.next
+                .resize(position_index.saturating_add(1), NO_SIGNATURE_POSITION);
+        }
+        let head = &mut self.heads[bucket as usize];
+        self.next[position_index] = *head;
+        *head = position;
+    }
+
+    fn remove(&mut self, bucket: u16, position: u32) {
+        let bucket = bucket as usize;
+        let position_index = position as usize;
+        if position_index >= self.next.len() {
+            return;
+        }
+        if self.heads[bucket] == position {
+            self.heads[bucket] = self.next[position_index];
+            self.next[position_index] = NO_SIGNATURE_POSITION;
+            return;
+        }
+
+        let mut previous = self.heads[bucket];
+        while previous != NO_SIGNATURE_POSITION {
+            let previous_index = previous as usize;
+            let current = self.next[previous_index];
+            if current == position {
+                self.next[previous_index] = self.next[position_index];
+                self.next[position_index] = NO_SIGNATURE_POSITION;
+                return;
+            }
+            previous = current;
+        }
+    }
+
+    fn visit(&self, bucket: u16, mut visit: impl FnMut(u32) -> bool) -> bool {
+        let mut position = self.heads[bucket as usize];
+        while position != NO_SIGNATURE_POSITION {
+            if !visit(position) {
+                return true;
+            }
+            position = self.next[position as usize];
         }
         false
     }
@@ -824,6 +875,7 @@ impl EmbeddingIndex {
                 routing.remove(moved, last);
                 routing.insert(moved, position);
             }
+            routing.truncate(last);
         }
         if position != last {
             let source = last * self.config.dimensions;
@@ -1576,6 +1628,35 @@ mod tests {
         );
 
         assert_eq!(index.search(7, &query, 16).unwrap(), expected);
+    }
+
+    #[test]
+    fn signature_table_keeps_mutable_buckets_in_contiguous_storage() {
+        let mut table = SignatureTable::new(4);
+        assert_eq!(table.heads.len(), SIGNATURE_ROUTING_BUCKETS);
+        assert_eq!(table.next.len(), 4);
+
+        for position in 0..4 {
+            table.insert(17, position);
+        }
+        table.remove(17, 3);
+        table.remove(17, 1);
+        table.remove(17, 0);
+
+        let mut positions = Vec::new();
+        assert!(!table.visit(17, |position| {
+            positions.push(position);
+            true
+        }));
+        assert_eq!(positions, vec![2]);
+
+        table.insert(17, 1);
+        positions.clear();
+        assert!(!table.visit(17, |position| {
+            positions.push(position);
+            true
+        }));
+        assert_eq!(positions, vec![1, 2]);
     }
 
     #[cfg(feature = "alloc-probe")]
