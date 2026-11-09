@@ -931,6 +931,24 @@ fn xml_values(body: &str, tag: &str) -> Vec<String> {
     }
     out
 }
+/// Where an append-mode write ended, as the file itself reports it.
+///
+/// On unix the position after a write to a file opened for append is the end of that write,
+/// set under the same inode lock as the write, so it stays right while other appenders run.
+#[cfg(unix)]
+fn landed_end_offset(file: &mut std::fs::File) -> std::io::Result<u64> {
+    use std::io::Seek;
+    file.stream_position()
+}
+
+/// Elsewhere an append-mode handle's position is not defined to follow its writes, so the
+/// length is the best available answer. It can be later than this write's end if another
+/// appender got in first, which the unix path above does not allow.
+#[cfg(not(unix))]
+fn landed_end_offset(file: &mut std::fs::File) -> std::io::Result<u64> {
+    file.metadata().map(|metadata| metadata.len())
+}
+
 #[derive(Debug, Clone)]
 pub struct FileObjectStore {
     root: PathBuf,
@@ -994,31 +1012,49 @@ impl ObjectStore for FileObjectStore {
     ) -> Result<AppendBlobReceipt, ObjectStoreError> {
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {
-            let should_create = {
-                let mut created = self
-                    .created_dirs
-                    .lock()
-                    .expect("object-store dir cache poisoned");
-                created.insert(parent.to_path_buf())
-            };
-            if should_create {
+            // REMEMBERED ONLY ONCE IT EXISTS. This used to record the directory first and
+            // create it after, so a second appender arriving in between saw "already created",
+            // skipped the create, and opened a file in a directory that was not there yet.
+            // `create_dir_all` is idempotent, so two callers both creating it costs nothing.
+            let known = self
+                .created_dirs
+                .lock()
+                .expect("object-store dir cache poisoned")
+                .contains(parent);
+            if !known {
                 tokio::fs::create_dir_all(parent).await?;
+                self.created_dirs
+                    .lock()
+                    .expect("object-store dir cache poisoned")
+                    .insert(parent.to_path_buf());
             }
         }
-        let start_offset = match tokio::fs::metadata(&path).await {
-            Ok(metadata) => metadata.len(),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(err) => return Err(ObjectStoreError::Io(err)),
-        };
         let bytes_written = bytes.len() as u64;
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .await?;
-        file.write_all(&bytes).await?;
-        file.flush().await?;
-        let end_offset = start_offset.saturating_add(bytes_written);
+        // THE OFFSET IS WHERE THE BYTES LANDED, read after the write and never before it.
+        //
+        // This used to `stat` the file for its length, then open and append, and took the stat
+        // as the start. Two appenders that both stat'd before either wrote claimed the same
+        // start, while append mode placed each at the real end: receipts that overlapped each
+        // other and named ranges holding someone else's bytes.
+        //
+        // An append-mode write moves the file position to the end of that write as part of the
+        // write itself, so the position afterwards is this write's end and the start is that
+        // minus its length. The write is one blocking call on a plain `std::fs::File` -- a
+        // `tokio::fs::File` splits a large buffer into several writes, and a concurrent append
+        // landing between them would put this one's bytes in two places.
+        let end_offset = tokio::task::spawn_blocking(move || -> std::io::Result<u64> {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+            file.write_all(&bytes)?;
+            file.flush()?;
+            landed_end_offset(&mut file)
+        })
+        .await
+        .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
+        let start_offset = end_offset.saturating_sub(bytes_written);
         Ok(AppendBlobReceipt {
             key: key.to_string(),
             start_offset,
@@ -1230,6 +1266,61 @@ mod tests {
         assert_eq!(receipt.start_offset, 5);
         assert_eq!(receipt.end_offset, 11);
         assert_eq!(receipt.object_length, 11);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_appends_report_the_offsets_their_bytes_landed_at() {
+        // THE RECEIPT HAS TO NAME WHERE THE BYTES LANDED, not where the file ended when the
+        // append began. The offset used to be read with a `stat` before the file was opened,
+        // so two appenders that stat'd the same length both claimed it, while the append-mode
+        // write put each at the real end: receipts that overlapped each other and described
+        // bytes that were not there. Every receipt here is checked against the object itself.
+        const WRITERS: usize = 8;
+        const APPENDS: usize = 60;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path()));
+
+        let mut tasks = Vec::new();
+        for writer in 0..WRITERS {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut receipts = Vec::new();
+                for round in 0..APPENDS {
+                    // A byte value and a length unique to the writer, so a range holding
+                    // anyone else's bytes cannot pass for this one.
+                    let payload = vec![b'a' + writer as u8; 7 + writer * 3 + round % 5];
+                    let receipt = store
+                        .append_blob("wal/shared", Bytes::from(payload.clone()))
+                        .await
+                        .unwrap();
+                    receipts.push((receipt, payload));
+                }
+                receipts
+            }));
+        }
+        let mut receipts = Vec::new();
+        for task in tasks {
+            receipts.extend(task.await.unwrap());
+        }
+
+        let object = store.get("wal/shared").await.unwrap();
+        let total: u64 = receipts.iter().map(|(_, payload)| payload.len() as u64).sum();
+        assert_eq!(object.len() as u64, total, "every appended byte is in the object");
+
+        receipts.sort_by_key(|(receipt, _)| receipt.start_offset);
+        let mut expected_start = 0u64;
+        for (receipt, payload) in &receipts {
+            assert_eq!(
+                receipt.start_offset, expected_start,
+                "receipts must tile the object: a hole or an overlap means an offset is wrong"
+            );
+            assert_eq!(receipt.end_offset, expected_start + payload.len() as u64);
+            assert_eq!(receipt.bytes_written, payload.len() as u64);
+            let landed = &object[receipt.start_offset as usize..receipt.end_offset as usize];
+            assert_eq!(landed, payload.as_slice(), "the range a receipt names holds its bytes");
+            expected_start = receipt.end_offset;
+        }
+        assert_eq!(expected_start, total);
     }
 
     #[tokio::test]
