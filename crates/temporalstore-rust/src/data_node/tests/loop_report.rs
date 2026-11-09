@@ -680,3 +680,78 @@ fn a_warm_cache_survives_a_default_round_and_an_explicit_bound_still_drops_it() 
         "an explicit bound ran the stage but the cache is still warm"
     );
 }
+
+/// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
+/// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
+/// round, so this prices what a round pays then, stage by stage and by the call site that walked.
+#[test]
+#[ignore]
+fn what_a_dirty_loop_round_walks_by_call_site() {
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1500usize);
+    let writes = std::env::var("LOOP_WRITES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20usize);
+    let rounds = 8usize;
+    // `LOOP_OLD_CACHE_GATE=1` restores the one-byte cache bounds the shipped defaults used to carry.
+    let shipped = if std::env::var("LOOP_OLD_CACHE_GATE").is_ok() {
+        StorageManagerOptions {
+            cache_memory_bytes_pressure: 1,
+            cache_disk_bytes_pressure: 1,
+            ..StorageManagerOptions::default()
+        }
+    } else {
+        StorageManagerOptions::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    // Warm the cache the way a served shard would be, so the stage's gate has something to see.
+    {
+        let engine = runtime.engine();
+        for index in 0..keys.min(200) {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("loop-{index:06}"),
+                },
+            });
+        }
+    }
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, shipped.clone());
+    }
+    let engine = runtime.engine();
+    for round in 0..rounds {
+        for write in 0..writes {
+            let index = (round * writes + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        crate::engine::reset_live_block_scan_sites();
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        eprintln!(
+            "D round {round}: {} us, walk_entries={walked} (= {:.1} whole-shard walks of {keys})",
+            report.duration_us,
+            walked as f64 / keys as f64
+        );
+        for span in &report.stage_spans {
+            eprintln!(
+                "      {:<18} ran={} {:>8} us walk={}",
+                span.stage, span.executed, span.duration_us, span.walk.live_block_entries
+            );
+        }
+        for (site, entries) in crate::engine::live_block_scan_sites_snapshot() {
+            eprintln!("      site {site:<60} {entries:>8} entries ({:.1}x)", entries as f64 / keys as f64);
+        }
+    }
+}
