@@ -85,7 +85,10 @@ use self::resource::{
 };
 
 use crate::engine::TemporalEngine;
-use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
+use crate::http::{
+    post_json_streaming_with_options_and_headers, post_json_with_options_and_headers,
+    HttpRequestOptions,
+};
 use crate::llm_context::{
     score_prepared_embedding_candidates_exact, EmbeddingBatch, EmbeddingChannel, EmbeddingKey,
     EmbeddingVector, PreparedEmbeddingQuery,
@@ -912,7 +915,6 @@ pub struct ContextResourceSkillIngestRequest {
 pub struct ContextResourceSkillModelFanoutReport {
     pub node_count: usize,
     pub event_count: usize,
-    #[serde(alias = "segment_count")]
     pub slab_count: usize,
     pub entity_count: usize,
     pub child_ref_count: usize,
@@ -1725,32 +1727,35 @@ pub(crate) struct ContextCompactEmbeddingOutcome {
     deferred: bool,
 }
 
-pub(crate) fn context_compact_embeddings_with_fallback(
+pub(crate) fn context_prepared_embeddings_with_fallback(
     provider: &ContextModelProviderConfig,
-    embedding_inputs: &[(&str, u64, u32, &str)],
+    unique_inputs: &[(&str, u64, u32, &str)],
+    input_rows: Vec<usize>,
 ) -> ContextCompactEmbeddingOutcome {
-    let embed_outcome = match context_embeddings_for_extract_compact(provider, embedding_inputs) {
-        Ok(value) => Ok(value),
-        Err(status) => {
-            if let Some(fallback) = provider.fallback_provider.as_deref() {
+    let embed_outcome =
+        context_embeddings_for_prepared_unique(provider, unique_inputs, input_rows.len()).or_else(
+            |status| {
+                let Some(fallback) = provider.fallback_provider.as_deref() else {
+                    return Err(status);
+                };
                 let fallback = normalize_provider(fallback.clone());
-                context_embeddings_for_extract_compact(&fallback, embedding_inputs).map(
-                    |(vectors, input_rows, mut report)| {
-                        report.fallback_used = true;
-                        report.provider_name = format!(
-                            "{}+fallback:{}",
-                            provider.provider_name, report.provider_name
-                        );
-                        (vectors, input_rows, report)
-                    },
+                context_embeddings_for_prepared_unique(
+                    &fallback,
+                    unique_inputs,
+                    input_rows.len(),
                 )
-            } else {
-                Err(status)
-            }
-        }
-    };
+                .map(|(vectors, mut report)| {
+                    report.fallback_used = true;
+                    report.provider_name = format!(
+                        "{}+fallback:{}",
+                        provider.provider_name, report.provider_name
+                    );
+                    (vectors, report)
+                })
+            },
+        );
     match embed_outcome {
-        Ok((rows, input_rows, report)) => ContextCompactEmbeddingOutcome {
+        Ok((rows, report)) => ContextCompactEmbeddingOutcome {
             rows,
             input_rows,
             report,
@@ -1946,6 +1951,29 @@ pub(crate) fn prepare_context_gated_prepared(
     summaries: ContextExtractSummaries,
     embedding_outcome: Option<ContextEmbeddingOutcome>,
 ) -> PreparedContextExtract {
+    let node_hash = stable_hash64(&format!(
+        "{}:{}:{}",
+        request.tenant_hash, request.source_kind as u8, request.source_id
+    ));
+    let event_id_hash = context_event_id_hash(&request.source_id, &request.body);
+    prepare_context_gated_prepared_with_ids(
+        request,
+        gate_l1,
+        summaries,
+        embedding_outcome,
+        node_hash,
+        event_id_hash,
+    )
+}
+
+pub(crate) fn prepare_context_gated_prepared_with_ids(
+    request: ContextExtractRequest,
+    gate_l1: bool,
+    summaries: ContextExtractSummaries,
+    embedding_outcome: Option<ContextEmbeddingOutcome>,
+    node_hash: u64,
+    event_id_hash: u64,
+) -> PreparedContextExtract {
     let provider = summaries.provider;
     if !summaries.status.ok {
         return PreparedContextExtract {
@@ -1982,11 +2010,6 @@ pub(crate) fn prepare_context_gated_prepared(
         };
     }
 
-    let node_hash = stable_hash64(&format!(
-        "{}:{}:{}",
-        request.tenant_hash, request.source_kind as u8, request.source_id
-    ));
-    let event_id_hash = stable_hash64(&format!("event:{}:{}", request.source_id, request.body));
     let timestamp_ms = request.timestamp_ms.max(1);
     let l0 = summaries.l0;
     // Emit L1 when not gating (bulk ingest) or when the source is rich enough to
@@ -2353,7 +2376,8 @@ pub fn retrieve_context(
     }
     drop(seen_node_hashes);
     fanout_plan.namespace_node_candidates = node_hashes.len();
-    let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
+    let mut summary_scores_by_node =
+        HashMap::<u64, (i64, usize)>::with_capacity(node_hashes.len());
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
     let mut prefetched_nodes = HashMap::<u64, ContextNode>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
@@ -2379,37 +2403,37 @@ pub fn retrieve_context(
         let mut cold = Vec::new();
         for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
             if let Some(prepared_query) = prepared_query_embedding {
-                if let Ok(summary_hits) = engine.score_context_embedding_candidates(
+                let _ = engine.visit_context_embedding_candidate_ids(
                     EmbeddingChannel::Summary,
                     request.tenant_hash,
                     active_embedding_model_hash,
                     prepared_query,
-                    candidate_chunk,
-                ) {
-                    for summary_hit in summary_hits {
+                    candidate_chunk.iter().copied(),
+                    |summary_hit| {
                         // Count zero marks a summary-only warm hit until the node channel joins it.
-                        summary_scores_by_node.insert(
-                            summary_hit.key.item_id,
-                            ((summary_hit.score * 1_000_000.0) as i64, 0),
-                        );
-                    }
-                }
-                if let Ok(node_hits) = engine.score_context_embedding_candidates(
+                        let scores = summary_scores_by_node
+                            .entry(summary_hit.key.item_id)
+                            .or_default();
+                        scores.0 = scores
+                            .0
+                            .max((summary_hit.score * 1_000_000.0) as i64);
+                    },
+                );
+                let _ = engine.visit_context_embedding_candidate_ids(
                     EmbeddingChannel::Node,
                     request.tenant_hash,
                     active_embedding_model_hash,
                     prepared_query,
-                    candidate_chunk,
-                ) {
-                    for node_hit in node_hits {
+                    candidate_chunk.iter().copied(),
+                    |node_hit| {
                         let Some(scores) = summary_scores_by_node.get_mut(&node_hit.key.item_id)
                         else {
-                            continue;
+                            return;
                         };
                         scores.0 = scores.0.max((node_hit.score * 1_000_000.0) as i64);
                         scores.1 = 2;
-                    }
-                }
+                    },
+                );
             }
             for node_hash in candidate_chunk {
                 let needs_storage = summary_scores_by_node
@@ -2418,9 +2442,6 @@ pub fn retrieve_context(
                 if needs_storage {
                     // Do not let a partial warm hit inflate the durable-row score count below.
                     summary_scores_by_node.remove(node_hash);
-                    if cold.is_empty() {
-                        cold.reserve(node_hashes.len());
-                    }
                     cold.push(*node_hash);
                 }
             }
@@ -2541,22 +2562,19 @@ pub fn retrieve_context(
                 (EmbeddingChannel::Node, &node_rows),
                 (EmbeddingChannel::Summary, &summary_rows),
             ] {
-                let candidate_count = rows_by_space.values().map(Vec::len).sum();
                 if let Some(prepared_query) = prepared_query_embedding {
-                    if let Ok(hits) = engine.score_context_embedding_candidate_ids(
+                    let _ = engine.visit_context_embedding_candidate_ids(
                         channel,
                         request.tenant_hash,
                         active_embedding_model_hash,
                         prepared_query,
                         rows_by_space.values().flatten().map(|row| row.key.item_id),
-                        candidate_count,
-                    ) {
-                        for hit in hits {
+                        |hit| {
                             let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
                             scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
                             scores.1 = scores.1.saturating_add(1);
-                        }
-                    }
+                        },
+                    );
                 }
             }
         }
@@ -2583,7 +2601,9 @@ pub fn retrieve_context(
         }
         debug_assert!(returned.next().is_none());
     }
-    prefetched_nodes.reserve(lexical_fallback_nodes.len());
+    // Score fallback text while each storage chunk is live, then release the full nodes. Only
+    // the bounded metadata/rerank set below needs to retain ContextNode strings and vectors.
+    let mut scoring_text = String::new();
     for chunk in lexical_fallback_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
@@ -2594,7 +2614,22 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextNodes { nodes } = response.response {
             for node in nodes {
-                prefetched_nodes.insert(node.node_hash, node);
+                if summary_scores_by_node
+                    .get(&node.node_hash)
+                    .is_none_or(|(_, found)| *found == 0)
+                {
+                    scoring_text.clear();
+                    scoring_text.push_str(&node.canonical_name);
+                    scoring_text.push(' ');
+                    scoring_text.push_str(&node.l0);
+                    scoring_text.push(' ');
+                    scoring_text.push_str(&node.l1_ref);
+                    summary_scores_by_node.entry(node.node_hash).or_default().0 =
+                        lexical_score_to_micros(context_relevance_score_plan(
+                            &query_plan,
+                            &scoring_text,
+                        ));
+                }
             }
         }
     }
@@ -2801,7 +2836,6 @@ pub fn retrieve_context(
     // Every retrieve does this. `MATRIXARK_CONTEXT_HYBRID_LEXICAL` could skip it and
     // defaulted on; nothing set it, so a node with no stored summary embedding has
     // always been scored by lexical overlap rather than left at a flat 0.
-    let mut scoring_text = String::new();
     let summary_candidate_count = node_hashes.len();
     let summary_node_limit = request
         .max_summary_nodes
@@ -2908,6 +2942,11 @@ pub fn retrieve_context(
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(2);
+    let event_scan_cap = std::env::var("MATRIXARK_CONTEXT_EVENT_SCAN_CAP")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(64);
     let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
     fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
@@ -3004,7 +3043,9 @@ pub fn retrieve_context(
         });
         if let Some(node) = cached_node {
             node_count += 1;
-            node_source_ref = node.raw_metadata_ref.clone();
+            if include_l2 {
+                node_source_ref = node.raw_metadata_ref.clone();
+            }
             if include_l0 {
                 blocks.push(ContextBlock {
                     uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
@@ -3040,11 +3081,6 @@ pub fn retrieve_context(
                 .max(1)
                 .saturating_mul(event_overfetch)
                 .min(event_pack_budget);
-            let event_scan_cap = std::env::var("MATRIXARK_CONTEXT_EVENT_SCAN_CAP")
-                .ok()
-                .and_then(|value| value.trim().parse::<usize>().ok())
-                .filter(|value| *value > 0)
-                .unwrap_or(64);
             let events_response = engine.execute(ExecuteRequest {
                 shard_id: request.shard_id,
                 command: Command::ContextQueryEvents {
@@ -3086,7 +3122,7 @@ pub fn retrieve_context(
                     let source_ref = if event.source_ref.is_empty() {
                         node_source_ref.clone()
                     } else {
-                        event.source_ref.clone()
+                        event.source_ref
                     };
                     blocks.push(ContextBlock {
                         uri: context_event_uri(request.tenant_hash, node_hash, event.event_time_ms),

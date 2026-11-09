@@ -513,6 +513,13 @@ fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardI
         .and_then(kind_from_code)
         .unwrap_or(item.kind.as_str());
     let derived = crate::engine::hashing::stable_block_object_id(shard_id, kind, &item.object_key);
+    item_object_id_to_write_with_derived(item, derived)
+}
+
+fn item_object_id_to_write_with_derived(
+    item: &WalOutcomeItem,
+    derived: u64,
+) -> Option<u64> {
     (item.object_id != derived).then_some(item.object_id)
 }
 
@@ -643,12 +650,25 @@ fn derive_item<'a>(
     implied_length: Option<u64>,
     command_key: Option<&str>,
 ) -> DerivedItem<'a> {
+    derive_item_with_object_id(item, shard_id, implied_length, command_key, None)
+}
+
+fn derive_item_with_object_id<'a>(
+    item: &'a WalOutcomeItem,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+    derived_object_id: Option<u64>,
+) -> DerivedItem<'a> {
     // `item_to_proto` calls this three times for three fields; it is one answer.
     let numeric = numeric_element_name(&item.kind, item.element_name.as_deref());
     let code = kind_code(&item.kind);
     DerivedItem {
         object_key: item_object_key_to_write(item, command_key),
-        object_id: item_object_id_to_write(item, shard_id),
+        object_id: derived_object_id.map_or_else(
+            || item_object_id_to_write(item, shard_id),
+            |derived| item_object_id_to_write_with_derived(item, derived),
+        ),
         element_name: match numeric {
             Some(_) => None,
             None => item.element_name.as_deref(),
@@ -821,34 +841,6 @@ fn metadata_to_proto(
     metadata: &WriteAheadLogRecordMetadata,
     stamp_has_a_reader: bool,
 ) -> Result<v1::EngineWalMetadata, String> {
-    // The descriptive item list travels verbatim rather than field by field. It is off by default,
-    // every field of it is derived from the command beside it, and modelling it would risk losing
-    // one for no measurable saving.
-    let items = if metadata.items.is_empty() {
-        Vec::new()
-    } else {
-        vec![v1::EngineWalItem {
-            item_kind: 0,
-            model: 0,
-            object_key: None,
-            bucket_id: None,
-            object_id: None,
-            block_id: None,
-            ttl_ms: None,
-            deleted: false,
-            meta_log: false,
-            block_log: false,
-            element_name: None,
-            block: None,
-            value: Some(serde_json::to_vec(&metadata.items).map_err(|err| err.to_string())?),
-            kind_name: Some(String::from("__verbatim_items")),
-            kind_code: None,
-            routing_bucket: None,
-            timestamp_ms: None,
-            entry_id: None,
-            object_deleted: false,
-        }]
-    };
     Ok(v1::EngineWalMetadata {
         // Omitted while it is the current version, which is exactly what the record's own serde
         // form already does: "a record that does not say otherwise is current". The binary form
@@ -866,7 +858,7 @@ fn metadata_to_proto(
         } else {
             0
         },
-        items,
+        items: Vec::new(),
         batch_id: metadata.batch_id,
         batch_size: metadata.batch_size,
         batch_index: metadata.batch_index,
@@ -876,13 +868,6 @@ fn metadata_to_proto(
 fn metadata_from_proto(
     metadata: v1::EngineWalMetadata,
 ) -> Result<WriteAheadLogRecordMetadata, String> {
-    let items = match metadata.items.into_iter().next() {
-        Some(carried) if carried.kind_name.as_deref() == Some("__verbatim_items") => {
-            serde_json::from_slice(&carried.value.unwrap_or_default())
-                .map_err(|err| err.to_string())?
-        }
-        _ => Vec::new(),
-    };
     Ok(WriteAheadLogRecordMetadata {
         // Absent means current, the reading half of the rule above. No record has ever been
         // written with a zero here, so nothing legitimate is being read as current.
@@ -892,7 +877,6 @@ fn metadata_from_proto(
             metadata.version
         },
         timestamp_ms: metadata.timestamp_ms,
-        items,
         batch_id: metadata.batch_id,
         batch_size: metadata.batch_size,
         batch_index: metadata.batch_index,
@@ -943,10 +927,40 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
     };
     let implied_length = implied_block_length(record);
     let command_key = strippable_command_key(record);
+    let mut previous_object_id: Option<(usize, u64)> = None;
     let items = record
         .outcomes
         .iter()
-        .map(|item| derive_item(item, record.shard_id, implied_length, command_key.as_deref()))
+        .enumerate()
+        .map(|(index, item)| {
+            let kind = kind_code(&item.kind)
+                .and_then(kind_from_code)
+                .unwrap_or(item.kind.as_str());
+            let derived = previous_object_id
+                .and_then(|(previous_index, previous_id)| {
+                    let previous = &record.outcomes[previous_index];
+                    let previous_kind = kind_code(&previous.kind)
+                        .and_then(kind_from_code)
+                        .unwrap_or(previous.kind.as_str());
+                    (previous_kind == kind && previous.object_key == item.object_key)
+                        .then_some(previous_id)
+                })
+                .unwrap_or_else(|| {
+                    crate::engine::hashing::stable_block_object_id(
+                        record.shard_id,
+                        kind,
+                        &item.object_key,
+                    )
+                });
+            previous_object_id = Some((index, derived));
+            derive_item_with_object_id(
+                item,
+                record.shard_id,
+                implied_length,
+                command_key.as_deref(),
+                Some(derived),
+            )
+        })
         .collect::<Vec<_>>();
     let items_len = record
         .outcomes
@@ -1913,7 +1927,6 @@ mod tests {
         with_metadata.metadata = Some(WriteAheadLogRecordMetadata {
             version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
             timestamp_ms: 1_787_270_070_192,
-            items: Vec::new(),
             batch_id: Some(11),
             batch_size: Some(3),
             batch_index: Some(1),
@@ -1952,7 +1965,6 @@ mod tests {
         everything.metadata = Some(WriteAheadLogRecordMetadata {
             version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
             timestamp_ms: 1_787_270_070_192,
-            items: Vec::new(),
             batch_id: Some(4),
             batch_size: Some(2),
             batch_index: Some(0),
@@ -2166,7 +2178,6 @@ mod tests {
         record.metadata = Some(WriteAheadLogRecordMetadata {
             version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
             timestamp_ms: 1_787_270_070_192,
-            items: Vec::new(),
             batch_id: None,
             batch_size: None,
             batch_index: None,

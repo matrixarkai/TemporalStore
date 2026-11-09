@@ -45,6 +45,30 @@ impl ProxyClient {
         self.feature_add_with_policy(key, points, None)
     }
 
+    /// Appends cell-set requests under the merge-reduce policy and returns what landed. Each
+    /// point's value is a cell request: the key spec, label and lane names, per-lane reducers and
+    /// the cells (see the engine's cell-set encoding). A request that disagrees with the header
+    /// stored for the key is refused and nothing is written.
+    pub fn feature_merge_cells(
+        &self,
+        key: &str,
+        points: &[FeaturePoint],
+    ) -> Result<crate::CellMergeReceipt> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("format", serde_json::json!("protobuf")),
+                ("points", serde_json::to_value(points).map_err(json_error)?),
+                (
+                    "policy",
+                    serde_json::to_value(Some(FeatureWritePolicy::MergeReduce)).map_err(json_error)?,
+                ),
+            ],
+        );
+        let response = self.proxy_service_execute("/ProxyService/FeatureAdd", body)?;
+        serde_json::from_value(response).map_err(json_error)
+    }
+
     pub fn feature_add_with_policy(
         &self,
         key: &str,

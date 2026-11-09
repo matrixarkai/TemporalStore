@@ -53,13 +53,13 @@ fn note_routing_bucket_derivation(key: &str) {
 fn note_routing_bucket_derivation(_key: &str) {}
 
 #[cfg(test)]
-pub(super) fn reset_routing_bucket_derivations() {
+pub(crate) fn reset_routing_bucket_derivations() {
     ROUTING_BUCKET_DERIVATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
     ROUTING_BUCKET_KEY_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(test)]
-pub(super) fn routing_bucket_derivations() -> (u64, u64) {
+pub(crate) fn routing_bucket_derivations() -> (u64, u64) {
     (
         ROUTING_BUCKET_DERIVATIONS.load(std::sync::atomic::Ordering::Relaxed),
         ROUTING_BUCKET_KEY_BYTES.load(std::sync::atomic::Ordering::Relaxed),
@@ -103,13 +103,13 @@ fn note_object_id_derivation(kind: &str, key: &str) {
 fn note_object_id_derivation(_kind: &str, _key: &str) {}
 
 #[cfg(test)]
-pub(super) fn reset_object_id_derivations() {
+pub(crate) fn reset_object_id_derivations() {
     OBJECT_ID_DERIVATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
     OBJECT_ID_KEY_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(test)]
-pub(super) fn object_id_derivations() -> (u64, u64) {
+pub(crate) fn object_id_derivations() -> (u64, u64) {
     (
         OBJECT_ID_DERIVATIONS.load(std::sync::atomic::Ordering::Relaxed),
         OBJECT_ID_KEY_BYTES.load(std::sync::atomic::Ordering::Relaxed),

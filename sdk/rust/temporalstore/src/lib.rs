@@ -25,7 +25,7 @@ mod feature_types;
 mod types;
 pub use types::{
     ControlStateFolType, ControlStateHType, ControlStatePrecision, ControlStateWindow,
-    ControlStateWindowUnit, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, SequenceFeatureRow,
+    CellMergeReceipt, ControlStateWindowUnit, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, SequenceFeatureRow,
 };
 
 #[path = "client_options.rs"]

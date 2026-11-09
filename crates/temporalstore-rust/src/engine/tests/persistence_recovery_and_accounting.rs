@@ -20385,9 +20385,11 @@ fn the_index_gc_gate_costs_pieces_not_records() {
     // cheap byte test skips before it measures anything and every number below is zero. Asserted,
     // not assumed -- and the assertion earned itself: the first fixture here was 4,000 records,
     // which is 755,234 B, and every arm read zero bytes decoded because the round never got past
-    // that test. A record is about 189 B, so 6,000 is 1.13 MB and clears it with room.
-    let small = 6_000usize;
-    let large = 18_000usize;
+    // that test. A record was about 189 B when this log was filled with padded whole-index records,
+    // so 6,000 was 1.13 MB. It is filled with anchors now, which are a fixed 47 B, so the same
+    // 1.13 MB takes four times the records: 24,000 and 72,000.
+    let small = 24_000usize;
+    let large = 72_000usize;
     let threshold = crate::engine::reports::DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD;
 
     struct Arm {
@@ -20420,9 +20422,9 @@ fn the_index_gc_gate_costs_pieces_not_records() {
             let store = engine.index_log_store();
             for value in 0..records {
                 store
-                    .append_json(
+                    .append_index_bytes(
                         1,
-                        format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                        format!("TSIDX\x01\x02{value}").as_bytes(),
                     )
                     .expect("index-log append");
             }
@@ -22094,7 +22096,10 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
     }
 
     let threshold = crate::engine::reports::DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD;
-    for (records, expect_fires) in [(6_000usize, false), (18_000usize, true)] {
+    // 24,000 and 72,000 anchors are the byte sizes 6,000 and 18,000 padded whole-index records were
+    // (about 1.13 MB and 3.4 MB); an anchor is a fixed 47 B, so the same geometry takes four times
+    // the records.
+    for (records, expect_fires) in [(24_000usize, false), (72_000usize, true)] {
         let _rolling = RollingThreshold;
         crate::index_log::set_index_log_segment_bytes_for_test(Some(
             crate::index_log::DEFAULT_INDEX_LOG_SEGMENT_BYTES,
@@ -22104,9 +22109,9 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
         let store = engine.index_log_store();
         for value in 0..records {
             store
-                .append_json(
+                .append_index_bytes(
                     1,
-                    format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                    format!("TSIDX\x01\x02{value}").as_bytes(),
                 )
                 .expect("index-log append");
         }

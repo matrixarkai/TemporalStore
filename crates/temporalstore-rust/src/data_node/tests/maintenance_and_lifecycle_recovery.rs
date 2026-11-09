@@ -492,8 +492,11 @@ fn the_running_scheduler_reaches_every_phase() {
     // this test makes. The claim is that the LOOP reaches every phase, so the fixture names a
     // trigger it can reach. That the field is still read on the shipped path is pinned separately,
     // by `the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable`.
+    // THE CACHE BOUND, PUT BACK EXPLICITLY, for the same reason: the cache-drop phase ships OFF and
+    // waits for an operator to set a bound, so a fixture that wants the loop to reach it names one.
     let options = StorageManagerOptions {
         min_undumped_wal_records: 1_000,
+        cache_memory_bytes_pressure: 1,
         ..StorageManagerOptions::default()
     };
     // Pressure of several kinds, so a phase that declines for want of work is distinguishable

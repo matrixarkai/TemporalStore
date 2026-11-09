@@ -106,7 +106,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
         "Our word for a stored unit is BLOCK, not block: `ElementEntry`, `block_size`, \
          `block_in_log`, and `page_segment_id` was renamed to `block_slab_id`. A new CamelCase \
          `*Block*` type name is therefore a copy rather than a coinage. Our own layout policies \
-         spell this concept `single_block_object` and `component_block_object`, in snake_case, and \
+         spell this concept `single_block_object` and `element_block_object`, in snake_case, and \
          those are stored strings this scan leaves alone.",
     ),
     (
@@ -381,7 +381,7 @@ mod tests {
             "#[serde(rename = \"routing_slot\")]",
             "pub block_in_log: bool,",
             "    \"single_block_object\"",
-            "        \"hash\" | \"set\" => \"component_block_object\",",
+            "        \"hash\" | \"set\" => \"element_block_object\",",
             "let mut round_trips = 0; // skips and flips are fine too",
             "Sequence = \"sequence\" @ 5,",
             // What the repaired descriptor table now carries.

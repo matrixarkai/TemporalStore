@@ -138,24 +138,15 @@ pub(super) fn mark_dirty_for_successful_keys(
     }
 }
 
-pub(super) fn mark_dirty_for_successful_row_keys(
+pub(super) fn mark_dirty_keys(
     dirty: &Mutex<DirtyTracker>,
     shard_id: ShardId,
     keys: Vec<String>,
-    responses: &[ExecuteResponse],
-    conditional: bool,
 ) {
     let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
-    for (key, response) in keys.into_iter().zip(responses) {
-        if response.status.ok
-            && (!conditional
-                || matches!(
-                    &response.response,
-                    CommandResponse::Integer { value } if *value > 0
-                ))
-        {
-            mark_dirty_in(&mut dirty, shard_id, key, now_ms());
-        }
+    let now = now_ms();
+    for key in keys {
+        mark_dirty_in(&mut dirty, shard_id, key, now);
     }
 }
 

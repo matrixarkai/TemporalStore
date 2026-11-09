@@ -1421,6 +1421,14 @@ pub(super) fn mark_object_dirty(
     end_routing_bucket: u32,
 ) {
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    mark_object_dirty_at_bucket(shard, object_key, routing_bucket);
+}
+
+pub(super) fn mark_object_dirty_at_bucket(
+    shard: &mut ShardState,
+    object_key: &str,
+    routing_bucket: u32,
+) {
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
     // ONE COPY OF THE CHARACTERS -- see `DirtyObjectIndex::insert_shared`. The handle is read out
@@ -2962,6 +2970,31 @@ pub(super) fn sync_written_hash_fields<'a>(
     object_key: &str,
     fields: impl IntoIterator<Item = &'a str>,
 ) -> bool {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(
+        object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    );
+    let object_id = stable_block_object_id(shard_id, "hash", object_key);
+    sync_written_hash_fields_at_bucket(
+        shard,
+        shard_id,
+        object_key,
+        routing_bucket,
+        object_id,
+        fields,
+    )
+}
+
+pub(super) fn sync_written_hash_fields_at_bucket<'a>(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+    routing_bucket: u32,
+    object_id: u64,
+    fields: impl IntoIterator<Item = &'a str>,
+) -> bool {
     let mut fields = fields.into_iter().peekable();
     if fields.peek().is_none() {
         return false;
@@ -2978,9 +3011,11 @@ pub(super) fn sync_written_hash_fields<'a>(
         // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
         // write staged its own outcome already and a second would have replay install the same
         // block twice.
-        upsert_bucket_index_block_with(
+        upsert_bucket_index_block_with_routing_and_object_id(
             shard,
             shard_id,
+            routing_bucket,
+            object_id,
             "hash",
             object_key,
             Some(field.to_string()),
@@ -4291,6 +4326,37 @@ pub(super) fn upsert_bucket_index_block_filed(
     BlockFiled(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_block_filed_at_bucket(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    value: Option<Vec<u8>>,
+    replaces: ReplacedBlock,
+) -> BlockFiled {
+    upsert_bucket_index_block_with_value_at_bucket_and_object_id(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_id,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        true,
+        value,
+        replaces,
+    );
+    BlockFiled(())
+}
+
 /// [`super::mark_bucket_index_object_deleted`], returning its witness and the flag it answered.
 pub(super) fn mark_bucket_index_object_deleted_filed(
     shard: &mut ShardState,
@@ -4632,6 +4698,43 @@ pub(super) fn insert_container_tombstone_entry(
 /// would then install the same block twice under two kinds. `stage: false` says "file this block in
 /// the index; the record already knows about it".
 #[allow(clippy::too_many_arguments)]
+thread_local! {
+    /// Blocks THIS THREAD filed into a bucket index through `upsert_bucket_index_block_with`. Per
+    /// thread, so a probe counts its own writes and not a neighbouring test's.
+    static BLOCK_UPSERTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Test switch: take the whole-object sync for a hash delete, as it did before the narrow one.
+    #[cfg(test)]
+    pub(super) static WHOLE_OBJECT_HASH_DELETE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// How many blocks this thread has filed through `upsert_bucket_index_block_with`.
+pub fn bucket_block_upserts() -> u64 {
+    BLOCK_UPSERTS.with(std::cell::Cell::get)
+}
+
+/// A HASH DELETE FILES NOTHING, AND THE ANSWER IT GIVES DOES NOT DEPEND ON WHAT THE HASH HOLDS.
+///
+/// The delete has already marked its field's block deleted in the index. What the whole-object sync
+/// did afterwards was walk every field the hash still held, ask whether each was filed -- through a
+/// lookup that resolves no named element, so the answer was always no -- and file every one again,
+/// each filing shifting the object's block vector: 534 KB per delete at 200 fields and 47 MB at
+/// 3,200, 88x between the two.
+///
+/// This used to answer "does the hash still hold a field", the question the whole-object sync
+/// answered, and fall back to that sync when the hash was empty. The question is dead: a `false`
+/// takes the rebuild only for a command that does not update the bucket index directly, and
+/// `command_updates_bucket_index_directly` names `HashDelete`; and the fallback sync on an empty
+/// hash files nothing. A plant that answered `true` for an emptied hash was not caught by the
+/// equivalence guard for that reason, and no history separates the two answers.
+pub(super) fn hash_delete_maintained() -> bool {
+    #[cfg(test)]
+    if WHOLE_OBJECT_HASH_DELETE.with(std::cell::Cell::get) {
+        return false;
+    }
+    true
+}
+
 pub(super) fn upsert_bucket_index_block_with(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -4642,9 +4745,67 @@ pub(super) fn upsert_bucket_index_block_with(
     dirty: bool,
     stage: bool,
 ) {
-    upsert_bucket_index_block_with_value(
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    upsert_bucket_index_block_with_routing(
         shard,
         shard_id,
+        routing_bucket,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_block_with_routing(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+) {
+    let object_id = stable_block_object_id(shard_id, kind, object_key);
+    upsert_bucket_index_block_with_routing_and_object_id(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_id,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_bucket_index_block_with_routing_and_object_id(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+) {
+    BLOCK_UPSERTS.with(|cell| cell.set(cell.get().saturating_add(1)));
+    upsert_bucket_index_block_with_value_at_bucket_and_object_id(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_id,
         kind,
         object_key,
         element_name,
@@ -4652,13 +4813,10 @@ pub(super) fn upsert_bucket_index_block_with(
         dirty,
         stage,
         None,
-        // NO BLOCK REPLACED, AND THAT IS A STATEMENT AND NOT A DEFAULT. Every caller of this
-        // function files a block whose element it does not claim to have overwritten -- the
-        // context-node registration and the maintenance paths -- so there is no previous address
-        // for it to hand over. The element writes that DO overwrite go through
-        // `upsert_bucket_index_block_filed`, which takes one.
+        // No block was replaced. Element writers that do replace one use the filed helper and
+        // carry the previous address explicitly.
         ReplacedBlock::none(),
-    )
+    );
 }
 
 /// [`upsert_bucket_index_block_with`], carrying one extra byte string onto the staged outcome.
@@ -4679,6 +4837,69 @@ pub(super) fn upsert_bucket_index_block_with_value(
     value: Option<Vec<u8>>,
     replaces: ReplacedBlock,
 ) {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    upsert_bucket_index_block_with_value_at_bucket(
+        shard,
+        shard_id,
+        routing_bucket,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+        value,
+        replaces,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_block_with_value_at_bucket(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+    value: Option<Vec<u8>>,
+    replaces: ReplacedBlock,
+) {
+    let object_id = stable_block_object_id(shard_id, kind, object_key);
+    upsert_bucket_index_block_with_value_at_bucket_and_object_id(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_id,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+        value,
+        replaces,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_bucket_index_block_with_value_at_bucket_and_object_id(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+    value: Option<Vec<u8>>,
+    replaces: ReplacedBlock,
+) {
     // Every single-block writer reaches the bucket index through here, so the charge sits here and
     // not at the arms. A new command arm that files a block is counted because this function counts
     // it; the outcome staged in the middle re-tags itself, so the two do not overlap.
@@ -4686,6 +4907,8 @@ pub(super) fn upsert_bucket_index_block_with_value(
         upsert_bucket_index_block_inner(
             shard,
             shard_id,
+            routing_bucket,
+            object_id,
             kind,
             object_key,
             element_name,
@@ -4702,6 +4925,8 @@ pub(super) fn upsert_bucket_index_block_with_value(
 fn upsert_bucket_index_block_inner(
     shard: &mut ShardState,
     shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
     kind: &str,
     object_key: &str,
     element_name: Option<String>,
@@ -4716,8 +4941,6 @@ fn upsert_bucket_index_block_inner(
     // whole range an unrouted block went into a bucket a `0..1023` shard does not hold -- filed
     // where nothing scoped to the shard will look for it. An unstamped state still answers the
     // whole range, which is what this line passed unconditionally before.
-    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     // THERE IS ONE NAME HERE: THE ELEMENT'S. An entry is not filed under a name -- it is filed under
     // its block -- so nothing below has a second `Option<&str>` to take for it. This used to split
     // the parameter into the element's name and a "filed" name that was `None` for a container, and
@@ -4735,7 +4958,6 @@ fn upsert_bucket_index_block_inner(
     // be resident, with the rest of its blocks still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
     reload_released_bucket(shard, shard_id, routing_bucket);
-    let object_id = stable_block_object_id(shard_id, kind, object_key);
     // This IS the outcome: an object, its identity, and where its block ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
@@ -4963,21 +5185,21 @@ fn upsert_bucket_index_block_inner(
             touched_buckets.push(block_ref.routing_bucket);
             // THE OBJECT IS THIS UPSERT'S OWN, which is what the supersede predicate
             // established: a block is superseded only when it matches this entry's (object key,
-            // kind, element name), so the id derived here is derived from the same characters it
-            // always was.
-            let removed_object_id = bucket
+            // kind, element name), so the identity already carried by this upsert is also the
+            // identity the removed block contributed.
+            let removed = bucket
                 .block_index
                 .remove(
                     &block_ref.block_ref_key,
                     &mut shard.bucket_index.block_slab_live,
                     crate::engine::state::StaleCause::Overwrite,
                 )
-                .map(|block| block.object_id(shard_id, &entry.object_key));
-            if let Some(removed_object_id) = removed_object_id {
+                .is_some();
+            if removed {
                 // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THIS OBJECT,
                 // answered from its slot above rather than by naming every block in the bucket.
                 if !buckets_still_holding.contains(&block_ref.routing_bucket) {
-                    bucket.object_index.remove(&removed_object_id);
+                    bucket.object_index.remove(&object_id);
                 }
                 classify_bucket_layout_in_place(&mut bucket);
             }

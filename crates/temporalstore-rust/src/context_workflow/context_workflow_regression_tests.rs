@@ -1998,10 +1998,15 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                     inputs[0], inputs[1],
                     "no text may appear twice in one embedding batch: {inputs:?}"
                 );
+                let mut first = vec![0.0; 1024];
+                first[0] = 1.0;
+                let mut second = vec![0.0; 1024];
+                second[1] = 1.0;
                 serde_json::json!({
+                    "object": "list",
                     "data": [
-                        {"embedding": [1.0, 0.0, 0.0, 0.0]},
-                        {"embedding": [0.0, 1.0, 0.0, 0.0]}
+                        {"object": "embedding", "index": 0, "embedding": first},
+                        {"object": "embedding", "index": 1, "embedding": second}
                     ]
                 })
                 .to_string()
@@ -2049,7 +2054,7 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
         report.embedding_generation.embedding_model,
         "context-embedding-live-test"
     );
-    assert_eq!(report.embedding_generation.vector_dimension, 4);
+    assert_eq!(report.embedding_generation.vector_dimension, 1024);
     assert_eq!(report.embedding_generation.requested_vector_count, 2);
     assert_eq!(report.embedding_generation.generated_vector_count, 2);
     assert_eq!(report.embedding_generation.batch_count, 1);
@@ -2143,7 +2148,7 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
             source_kind: ContextSourceKind::Chat,
             source_id: "local-chat".to_string(),
             title: "checkout".to_string(),
-            body: "Checkout failed during payment. Risk increased and support paused the account."
+            body: "Checkout failed during payment. Risk increased and support paused the account. Customers could not complete purchases."
                 .to_string(),
             timestamp_ms: 17,
             provider: ContextModelProviderConfig {
@@ -4502,6 +4507,14 @@ fn what_one_add_costs_end_to_end() {
             (layout + clear_dirty + refresh) as f64 / adds as f64,
         );
     }
+}
+
+#[test]
+fn segmented_event_hash_preserves_existing_ids() {
+    let source_id = "session:large-source";
+    let body = "context body ".repeat(8_192);
+    let existing = stable_hash64(&format!("event:{source_id}:{body}"));
+    assert_eq!(existing, context_event_id_hash(source_id, &body));
 }
 
 // --- Restored ---------------------------------------------------------------------

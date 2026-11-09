@@ -1139,14 +1139,10 @@ impl TemporalEngine {
             .index_log_store
             .stats_without_rescan(shard_id)
             .last_sequence;
-        let bucket_summaries = self.bucket_storage_summaries(shard_id);
-        let current_bucket_fingerprints = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&shard_id)
-            .map(|shard| bucket_generation_digests_by_bucket(shard_id, shard))
-            .unwrap_or_default();
+        // The summaries and the live shard's digests come off ONE listing of the live blocks. They
+        // were two calls that each listed every block of the shard, in two lock acquisitions.
+        let (bucket_summaries, current_bucket_fingerprints) =
+            self.bucket_storage_summaries_with_digests(shard_id, true);
         // What each bucket holds over the two logs when no manifest covers it.
         //
         // A dirty bucket with no durable dump manifest is captured nowhere, so the only answer

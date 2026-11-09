@@ -38,6 +38,34 @@ impl TemporalStoreTable {
         }
     }
 
+    /// Appends cell-set requests under the merge-reduce policy and says what landed:
+    /// `(snapshots written, cells created, cells merged)`. A request that disagrees with the
+    /// header stored for the key is refused and nothing is written.
+    pub fn feature_merge_cells(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+    ) -> Result<(u64, u64, u64), ClientError> {
+        match self
+            .execute(Command::FeatureAppendWithPolicy {
+                key: key.into(),
+                points,
+                policy: FeatureWritePolicy::MergeReduce,
+            })?
+            .response
+        {
+            CommandResponse::CellMergeReceipt {
+                snapshots_written,
+                cells_created,
+                cells_merged,
+            } => Ok((snapshots_written, cells_created, cells_merged)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_merge_cells",
+                response,
+            }),
+        }
+    }
+
     pub fn feature_query(
         &self,
         key: impl Into<String>,

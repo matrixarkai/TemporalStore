@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE CONFIG LOG IS READ IN EITHER SHAPE.
+//! THE CONFIG LOG IS FRAMED PROTOBUF ONLY.
 //!
-//! `shard-<id>.configlog.jsonl` is where a shard's runtime config is made durable, because that
-//! config is not carried in the served-index checkpoint: without it a reload defaults `Config`,
-//! which silently resets the flags that change how already-written data is read. It held JSON lines.
-//! A binary entry cannot be a line (its payload may contain a newline), so it is a length-prefixed,
-//! checksummed frame, and the reader takes both from one file.
-//!
-//! The writer appends frames only, so every JSON line below is the installed base and is PLANTED by
-//! hand beside the real writer's output.
+//! `shard-<id>.configlog` is where a shard's runtime config is made durable, because that config is
+//! not carried in the served-index checkpoint: without it a reload defaults `Config`, which
+//! silently resets the flags that change how already-written data is read. Each entry is a
+//! length-prefixed, checksummed frame holding a protobuf (a payload may contain a newline, so an
+//! entry cannot be a line). There is no JSON arm: the first release carries no installed base, so a
+//! JSON line is not an entry, and no test here plants one to prove it still loads. A JSON line is
+//! planted only to prove it is NOT read.
 #![allow(clippy::all)]
 use super::*;
 use crate::control::Config;
@@ -47,6 +46,7 @@ fn append(engine: &TemporalEngine, bytes: &[u8]) {
     file.write_all(bytes).unwrap();
 }
 
+/// The JSON line this log used to hold. Used only to show it is refused.
 fn json_line(entry: &ConfigLogEntry) -> Vec<u8> {
     let mut bytes = serde_json::to_vec(entry).unwrap();
     bytes.push(b'\n');
@@ -82,7 +82,7 @@ fn same(a: &ConfigLogEntry, b: &ConfigLogEntry) -> bool {
 }
 
 #[test]
-fn the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_misread() {
+fn the_config_log_reads_frames_skips_a_json_line_and_a_torn_or_damaged_frame_is_not_misread() {
     let (_dir, engine) = a_loaded_engine();
 
     // ---- a REAL config change, written by the real writer (a frame).
@@ -98,14 +98,14 @@ fn the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_mis
             .ok,
         true
     );
-    let real_line = std::fs::read(engine.config_log_path(SHARD)).unwrap();
+    let real_frame = std::fs::read(engine.config_log_path(SHARD)).unwrap();
     assert_eq!(
-        real_line[0],
+        real_frame[0],
         crate::log_framing::FRAME_MAGIC_V3,
         "the real writer is expected to write a frame"
     );
 
-    // ---- a mixture: line (real, after_seq N), frame (30), line (40), planted by hand.
+    // ---- a second frame, planted by hand beside the real writer's output.
     let framed = entry(30, a_config_with_every_field_set(5));
     let frame_bytes = encode_config_log_frame(&framed);
     assert_eq!(frame_bytes[0], crate::log_framing::FRAME_MAGIC_V3);
@@ -114,19 +114,32 @@ fn the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_mis
         "the frame has no newline inside it, so it does not show why a line cannot carry it"
     );
     append(&engine, &frame_bytes);
-    let tail = entry(40, {
+
+    // ---- A JSON LINE BETWEEN TWO FRAMES IS NOT AN ENTRY, AND DOES NOT HIDE THE FRAME AFTER IT.
+    let json_entry = entry(40, {
         let mut c = Config::default();
         c.version = 9;
         c.feature_max_size = 31;
         c
     });
-    append(&engine, &json_line(&tail));
+    append(&engine, &json_line(&json_entry));
+    let after_json = entry(45, {
+        let mut c = Config::default();
+        c.version = 11;
+        c.feature_max_size = 32;
+        c
+    });
+    append(&engine, &encode_config_log_frame(&after_json));
 
     let read = engine.config_log_entries(SHARD);
-    assert_eq!(read.len(), 3, "an entry was skipped: {read:?}");
+    assert_eq!(read.len(), 3, "the JSON line was read, or hid an entry: {read:?}");
     assert_eq!(read[0].config, first, "the real writer's entry read back differently");
     assert!(same(&read[1], &framed), "the framed entry read back differently: {:?}", read[1]);
-    assert!(same(&read[2], &tail), "the JSON line after the frame was lost");
+    assert!(same(&read[2], &after_json), "the frame after the JSON line was lost: {:?}", read[2]);
+    assert!(
+        read.iter().all(|e| e.config.version != 9),
+        "the JSON line was returned as an entry: the JSON arm is back"
+    );
     // Present-and-zero is not absent, and neither is a missing option.
     assert_eq!(read[1].config.maxmemory_bytes, Some(0));
     assert_eq!(read[1].config.write_qps, None);
@@ -160,15 +173,12 @@ fn the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_mis
         .expect("the last frame carries the tenant name");
     let mut damaged = bytes.clone();
     damaged[at + 7] = b'b';
-    // A WELL-FORMED JSON LINE AFTER THE DAMAGED FRAME. Its declared length cannot be trusted to
-    // step over the frame, so nothing after it is found: reading stops, and this later line is NOT
+    // A WELL-FORMED FRAME AFTER THE DAMAGED ONE. Its declared length cannot be trusted to step
+    // over the frame, so nothing after it is found: reading stops, and this later frame is NOT
     // returned. A reader that resynchronised byte by byte would find it, and would be finding it
     // by luck of where the damage was.
-    // A bare newline separates it from the frame (the line format leaves them between entries), so
-    // a byte-by-byte resync would reach the line with nothing glued to its front.
     let later = entry(70, Config::default());
-    damaged.push(b'\n');
-    damaged.extend_from_slice(&json_line(&later));
+    damaged.extend_from_slice(&encode_config_log_frame(&later));
     std::fs::write(&path, &damaged).unwrap();
     let read = engine.config_log_entries(SHARD);
     assert_eq!(read.len(), 3, "a damaged frame was read, or the log resynchronised past it: {read:?}");
@@ -176,22 +186,13 @@ fn the_config_log_is_read_in_either_shape_and_a_torn_or_damaged_frame_is_not_mis
         read.iter().all(|e| e.config.tenant_name.as_deref() != Some("tenant-b\nline-two")),
         "the changed tenant name was returned as a real config"
     );
-    // CONTROL: the original bytes, with the same later line after them, read all five.
+    // CONTROL: the original bytes, with the same later frame after them, read all five.
     let mut undamaged = bytes.clone();
-    undamaged.push(b'\n');
-    undamaged.extend_from_slice(&json_line(&later));
+    undamaged.extend_from_slice(&encode_config_log_frame(&later));
     std::fs::write(&path, &undamaged).unwrap();
     assert_eq!(engine.config_log_entries(SHARD).len(), 5);
     std::fs::write(&path, &bytes).unwrap();
     assert_eq!(engine.config_log_entries(SHARD).len(), 4);
-
-    // ---- an unterminated but complete JSON final line is still taken, as it always was.
-    let mut with_open_line = bytes.clone();
-    let mut open_line = json_line(&entry(60, Config::default()));
-    open_line.pop();
-    with_open_line.extend_from_slice(&open_line);
-    std::fs::write(&path, &with_open_line).unwrap();
-    assert_eq!(engine.config_log_entries(SHARD).len(), 5);
 }
 
 fn versions(engine: &TemporalEngine) -> Vec<u64> {
@@ -219,18 +220,24 @@ fn set_version(engine: &TemporalEngine, version: u64) {
 
 /// THE WRITER IS A BINARY FRAME, AND A TORN TAIL DOES NOT SWALLOW THE NEXT ENTRY.
 ///
-/// A line appended behind a partial line cost only the partial line. A frame appended behind a
-/// partial FRAME is swallowed by it: the partial frame declares more bytes than it has, so the
-/// reader takes the new entry as the rest of the old one, fails its checksum, and stops -- and the
-/// entry lost is the NEWEST config. So the writer cuts a torn tail off first; the entry it cuts was
-/// never acknowledged, because the caller returns only after the fsync.
+/// A frame appended behind a partial FRAME is swallowed by it: the partial frame declares more
+/// bytes than it has, so the reader would take the new entry as the rest of the old one, fail its
+/// checksum, and stop -- and the entry lost is the NEWEST config. So the writer cuts a torn tail off
+/// first; the entry it cuts was never acknowledged, because the caller returns only after the
+/// fsync. A complete line of JSON with no terminator is no longer a special case: it is bytes that
+/// are not a whole frame, so it is a torn tail like any other and is cut before the next append.
 ///
-/// Driven through the real `set_config` throughout. The JSON arms are PLANTED (a line in the middle
-/// of the file, and a complete line with no terminator), because the writer that made them is gone.
+/// Driven through the real `set_config` throughout.
 #[test]
 fn the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry() {
     let (_dir, engine) = a_loaded_engine();
     let path = engine.config_log_path(SHARD);
+    // The file is named for what it is: it holds frames, not JSON lines.
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some(format!("shard-{SHARD}.configlog").as_str()),
+        "the config log is not named for what it holds"
+    );
 
     // ---- the real writer is binary.
     set_version(&engine, 2);
@@ -247,30 +254,21 @@ fn the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_ent
     );
     assert_eq!(versions(&engine), vec![2, 3]);
 
-    // ---- the installed base: a JSON line planted between two frames.
-    let planted = entry(0, {
-        let mut c = Config::default();
-        c.version = 9;
-        c
-    });
-    append(&engine, &json_line(&planted));
-    set_version(&engine, 4);
-    assert_eq!(versions(&engine), vec![2, 3, 9, 4], "the planted JSON line was not read between frames");
-
     // ---- a TORN frame: the last 3 bytes of the version-4 frame are gone. The next write must
     // ---- cut it off, and the entry written AFTER it must be readable.
+    set_version(&engine, 4);
     let mut bytes = std::fs::read(&path).unwrap();
     bytes.truncate(bytes.len() - 3);
     std::fs::write(&path, &bytes).unwrap();
-    assert_eq!(versions(&engine), vec![2, 3, 9], "the torn frame was read");
+    assert_eq!(versions(&engine), vec![2, 3], "the torn frame was read");
     set_version(&engine, 5);
     assert_eq!(
         versions(&engine),
-        vec![2, 3, 9, 5],
+        vec![2, 3, 5],
         "the entry written after a torn frame was swallowed by it (or the torn frame survived)"
     );
 
-    // ---- a complete JSON line with no terminator: the next frame must not be glued onto it.
+    // ---- a complete JSON line with no terminator: not an entry, and cut like any torn tail.
     let mut open_line = json_line(&entry(0, {
         let mut c = Config::default();
         c.version = 8;
@@ -278,9 +276,14 @@ fn the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_ent
     }));
     open_line.pop();
     append(&engine, &open_line);
-    assert_eq!(versions(&engine), vec![2, 3, 9, 5, 8]);
+    assert_eq!(versions(&engine), vec![2, 3, 5], "an unterminated JSON line was read as an entry");
     set_version(&engine, 6);
-    assert_eq!(versions(&engine), vec![2, 3, 9, 5, 8, 6]);
+    assert_eq!(versions(&engine), vec![2, 3, 5, 6]);
+    let after_cut = std::fs::read(&path).unwrap();
+    assert!(
+        !after_cut.windows(open_line.len()).any(|w| w == open_line.as_slice()),
+        "the unterminated JSON line was left in the file instead of being cut"
+    );
 
     // ---- COMMITTED corruption is not cut. The last byte of the version-6 frame changes: the frame
     // ---- is complete, so its checksum is what refuses it, and the writer must leave the file's
@@ -289,7 +292,7 @@ fn the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_ent
     let last = damaged.len() - 1;
     damaged[last] ^= 0x01;
     std::fs::write(&path, &damaged).unwrap();
-    assert_eq!(versions(&engine), vec![2, 3, 9, 5, 8], "the damaged frame was read");
+    assert_eq!(versions(&engine), vec![2, 3, 5], "the damaged frame was read");
     let len_before = damaged.len();
     set_version(&engine, 7);
     let after = std::fs::read(&path).unwrap();
@@ -299,15 +302,15 @@ fn the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_ent
     );
 }
 
-/// NO JSON ENCODE PATH IS LEFT IN THE CONFIG-LOG WRITER.
+/// NO JSON PATH IS LEFT IN THE CONFIG-LOG CODE.
 ///
-/// The test above reads the first byte of what the writer produced; this sees an encoder nobody
-/// calls YET. It reads `append_config_log_entry` with comment lines removed and asserts it names no
-/// `serde_json`. The POSITIVE CONTROL is `decode_config_log_payload`, which still calls
-/// `serde_json::from_slice` (the permanent JSON arm): a scan that could not see that call would
-/// pass over any writer.
+/// The tests above read the bytes the writer produced and show a JSON line is not read; this sees
+/// an encoder or decoder arm nobody calls YET. It reads the writer, the frame encoder, the payload
+/// decoder and the walk with comment lines removed and asserts none names `serde_json`. The CONTROL
+/// runs the same scan over a string that does name it, so a scan that could not see the token would
+/// fail here instead of passing over a writer.
 #[test]
-fn no_json_encode_path_is_left_in_the_config_log_writer() {
+fn no_json_path_is_left_in_the_config_log_code() {
     let source = include_str!("../../engine.rs");
     fn body(source: &str, from: &str, to: &str) -> String {
         let start = source
@@ -324,6 +327,13 @@ fn no_json_encode_path_is_left_in_the_config_log_writer() {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    // control
+    assert!(
+        body("fn a() {\n// a comment\nlet v = serde_json::to_vec(&x);\n}\nfn b", "fn a(", "fn b")
+            .contains("serde_json"),
+        "the scan cannot see a serde_json call"
+    );
+
     let writer = body(
         source,
         "pub(super) fn append_config_log_entry(",
@@ -349,8 +359,14 @@ fn no_json_encode_path_is_left_in_the_config_log_writer() {
         "fn decode_config_log_payload(",
         "struct ConfigLogWalk",
     );
+    assert!(decoder.len() > 200, "the decoder scan found almost nothing");
     assert!(
-        decoder.contains("serde_json::from_slice"),
-        "the control no longer sees the permanent JSON arm, so this scan could pass over a writer it cannot see"
+        !decoder.contains("serde_json"),
+        "the config-log payload decoder still names serde_json: a JSON arm survives"
+    );
+    let walk = body(source, "fn walk_config_log(", "pub(super) fn encode_config_log_frame(");
+    assert!(
+        !walk.contains("serde_json") && !walk.contains("unterminated_json"),
+        "the config-log walk still special-cases a JSON line"
     );
 }

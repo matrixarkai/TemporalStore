@@ -3628,6 +3628,8 @@ mod address_size_tests {
         }
         assert!(json.get("present").is_none(), "presence bits must not reach the wire");
 
+        let round_tripped: ElementEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, address, "an address written now must read back identical");
         // The old long names are NOT read. An address spelled with them has no `l`, which is
         // required, so it is refused rather than loaded as some other address.
         let long_form = serde_json::json!({
@@ -4032,7 +4034,6 @@ mod tests {
         const DURABLE_NAMES: &[&str] = &[
         "active_storage_zones",
         "block_segment_id",
-        "block_segment_target_bytes",
         "compact_pages",
         "dirty_slot_count",
         "dirty_slot_pressure",
@@ -4105,6 +4106,7 @@ const RETIRED_NAMES: &[&str] = &[
         "band_manifest_reconciled_on_open",
         "band_manifest_writes",
         "band_state_transition_count",
+        "block_segment_target_bytes",
         "block_store_segment_api_ready",
         "block_store_zones",
         "blocked_page_segment_ids",
@@ -5239,10 +5241,6 @@ const RETIRED_NAMES: &[&str] = &[
             serde_json::to_value(&address).unwrap().get("sha256"),
             None,
             "an index written now omits the digest; the block envelope carries it"
-        );
-        assert_eq!(
-            serde_json::json!(sha256_hex(b"address-contract")),
-            serde_json::json!(sha256_hex(b"address-contract"))
         );
     }
 

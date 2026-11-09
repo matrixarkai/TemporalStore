@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{
     EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError, EmbeddingKey,
@@ -134,12 +134,19 @@ impl EmbeddingIndexRegistry {
         let rows = if !only_missing {
             batch
         } else if let Some(index) = self.spaces.get(&space) {
-            if batch.iter().all(|row| !index.contains(row.key)) {
+            if let Some(first_existing) = batch.iter().position(|row| index.contains(row.key)) {
+                missing.reserve(batch.len().saturating_sub(1));
+                missing.extend_from_slice(&batch[..first_existing]);
+                missing.extend(
+                    batch[first_existing + 1..]
+                        .iter()
+                        .copied()
+                        .filter(|row| !index.contains(row.key)),
+                );
+                missing.as_slice()
+            } else {
                 // A cold chunk can be quantized directly from the caller's borrowed rows.
                 batch
-            } else {
-                missing.extend(batch.iter().copied().filter(|row| !index.contains(row.key)));
-                missing.as_slice()
             }
         } else {
             batch
@@ -187,7 +194,9 @@ impl EmbeddingIndexRegistry {
             );
         }
 
-        let new_entries = {
+        let new_entries = if only_missing {
+            compact.len()
+        } else {
             let index = self.spaces.get(&space).expect("embedding space exists");
             (0..compact.len())
                 .filter(|row| !index.contains(compact.key(*row)))
@@ -211,11 +220,17 @@ impl EmbeddingIndexRegistry {
                 break;
             }
         }
+        let protected = only_missing.then(|| {
+            batch
+                .iter()
+                .map(|row| row.key)
+                .collect::<HashSet<EmbeddingKey>>()
+        });
         let report = self
             .spaces
             .get_mut(&space)
             .expect("embedding space exists")
-            .upsert_compact_batch_bounded(&compact)?;
+            .upsert_compact_batch_bounded(&compact, only_missing, protected.as_ref())?;
         self.touch_space(space);
         Ok(Some(report))
     }
@@ -309,29 +324,38 @@ impl EmbeddingIndexRegistry {
         )
     }
 
-    pub(crate) fn score_prepared_candidate_ids(
+    /// Streams scores from every compatible embedding space without retaining a hit buffer.
+    ///
+    /// An item can be emitted more than once when both an unknown-model space and the active
+    /// model space contain it. Callers combine those scores while folding them into their own
+    /// result state.
+    pub(crate) fn visit_prepared_candidate_ids<I, F>(
         &self,
         channel: EmbeddingChannel,
         tenant_id: u64,
         model_hash: u64,
         query: PreparedEmbeddingQuery<'_>,
-        candidate_item_ids: impl Clone + Iterator<Item = u64>,
-        candidate_count: usize,
-    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
-        self.score_candidate_ids_with(
-            channel,
-            model_hash,
-            query.dimensions(),
-            candidate_item_ids,
-            |index, candidate_item_ids| {
-                index.score_prepared_candidate_ids(
-                    tenant_id,
-                    query,
-                    candidate_item_ids,
-                    candidate_count,
-                )
-            },
-        )
+        candidate_item_ids: I,
+        mut visit: F,
+    ) -> Result<usize, EmbeddingIndexError>
+    where
+        I: Clone + Iterator<Item = u64>,
+        F: FnMut(EmbeddingHit),
+    {
+        let mut visited = 0usize;
+        for (_, index) in self.spaces.iter().filter(|(space, _)| {
+            space.channel == channel
+                && space.dimensions == query.dimensions()
+                && (model_hash == 0 || space.model_hash == 0 || space.model_hash == model_hash)
+        }) {
+            visited = visited.saturating_add(index.visit_prepared_candidate_ids(
+                tenant_id,
+                query,
+                candidate_item_ids.clone(),
+                &mut visit,
+            )?);
+        }
+        Ok(visited)
     }
 
     fn score_candidate_ids_with<I, F>(
@@ -600,6 +624,67 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_batch_keeps_existing_rows_and_appends_new_rows() {
+        let mut registry = EmbeddingIndexRegistry::new(2);
+        let x = [1.0, 0.0];
+        let y = [0.0, 1.0];
+        let key = |item_id| EmbeddingKey {
+            tenant_id: 3,
+            item_id,
+        };
+        registry
+            .upsert_batch(
+                EmbeddingChannel::Node,
+                7,
+                &[
+                    EmbeddingVector {
+                        key: key(1),
+                        values: &x,
+                    },
+                    EmbeddingVector {
+                        key: key(3),
+                        values: &x,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let report = registry
+            .upsert_missing_batch(
+                EmbeddingChannel::Node,
+                7,
+                &[
+                    EmbeddingVector {
+                        key: key(1),
+                        values: &y,
+                    },
+                    EmbeddingVector {
+                        key: key(2),
+                        values: &y,
+                    },
+                ],
+            )
+            .unwrap()
+            .expect("one row is missing");
+        assert_eq!(report.inserted, 1);
+        assert_eq!(report.updated, 0);
+        assert_eq!(report.total_entries, 2);
+
+        let existing = registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &x, &[1])
+            .unwrap();
+        assert!(existing[0].score > 0.99);
+        let inserted = registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &y, &[2])
+            .unwrap();
+        assert!(inserted[0].score > 0.99);
+        assert!(registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &x, &[3])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn an_unknown_stored_model_remains_scoreable() {
         let mut registry = EmbeddingIndexRegistry::new(4);
         let x = [1.0, 0.0];
@@ -622,6 +707,34 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].key.item_id, 9);
+
+        registry
+            .upsert_batch(
+                EmbeddingChannel::Summary,
+                17,
+                &[EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 3,
+                        item_id: 10,
+                    },
+                    values: &x,
+                }],
+            )
+            .unwrap();
+        let mut streamed = Vec::new();
+        let visited = registry
+            .visit_prepared_candidate_ids(
+                EmbeddingChannel::Summary,
+                3,
+                17,
+                PreparedEmbeddingQuery::new(&x).unwrap(),
+                [9, 10].into_iter(),
+                |hit| streamed.push(hit.key.item_id),
+            )
+            .unwrap();
+        streamed.sort_unstable();
+        assert_eq!(visited, 2);
+        assert_eq!(streamed, vec![9, 10]);
     }
 
     #[test]

@@ -295,6 +295,9 @@ message CommandResponse {
   repeated ContextNode context_nodes = 6;
   uint64 count = 7;
   bool exists = 8;
+  // A merge-reduce feature append reports what landed. `count` stays the snapshots written.
+  uint64 cells_created = 9;
+  uint64 cells_merged = 10;
 }
 
 message StringSet {
@@ -874,18 +877,15 @@ message ControlStateSelectionSet {
 }
 
 // ===========================================================================================
-// DURABLE SHARED-STORE OBJECTS, BINARY SHAPE.
+// DURABLE SHARED-STORE OBJECTS.
 //
-// These are the small scalar objects the shared object store keeps beside a shard: the
-// single-writer lease, the replay cursor, and the routing range stamped next to a published
-// index. They are written as JSON today; every reader accepts BOTH shapes, and the writer takes
-// the binary arm only when asked. See `SHARED_OBJECT_CONTAINER_PROTOBUF` in `shared_store.rs`
-// for why one leading byte is enough to tell the two apart.
+// The small objects the shared object store keeps beside a shard: the single-writer lease, the
+// replay cursor, the routing range stamped next to a published index, and the checkpoint
+// manifest. Each is one protobuf message behind a one-byte container marker
+// (`SHARED_OBJECT_CONTAINER_PROTOBUF` in `shared_store.rs`); there is no JSON form of any of them.
 //
-// The checkpoint manifest is at the end of this section. The bucket-dump manifest and the WAL
-// entry envelope are NOT here yet: the dump manifest carries nested report structures, and the
-// WAL envelope carries a `Command`, which cannot be modelled while the command roster still
-// names writes the proto does not describe.
+// The bucket-dump manifest has its own codec, and the WAL entry carries a `Command` that the WAL
+// frame codec owns, so neither is described here.
 // ===========================================================================================
 
 message SharedStoreShardLease {
@@ -918,9 +918,8 @@ message SharedStoreBlockSlabRef {
   optional uint64 updated_unix_ms = 9;
 }
 
-// Which index and which slabs make up one durable checkpoint of a shard. `routing_range` is
-// absent on a manifest written before the range was stamped, which is what a missing message
-// field means here; `next_block_id` is zero on one written before it was recorded.
+// Which index and which slabs make up one durable checkpoint of a shard. `routing_range` is absent
+// when none was stamped; a zero `next_block_id` means none was recorded.
 message SharedStoreCheckpointManifest {
   string cluster_id = 1;
   uint64 shard_id = 2;
@@ -957,6 +956,7 @@ enum FeatureWritePolicy {
   FEATURE_WRITE_POLICY_INSERT_IF_ABSENT = 2;
   FEATURE_WRITE_POLICY_REPLACE_EXISTING = 3;
   FEATURE_WRITE_POLICY_BLOCK = 4;
+  FEATURE_WRITE_POLICY_MERGE_REDUCE = 5;
 }
 
 message BucketTake {

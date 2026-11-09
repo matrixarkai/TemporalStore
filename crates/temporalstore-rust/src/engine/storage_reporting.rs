@@ -330,9 +330,53 @@ pub(super) fn bucket_storage_summaries(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> Vec<BucketStorageSummary> {
+    bucket_storage_summaries_from_entries(
+        shard,
+        start_routing_bucket,
+        end_routing_bucket,
+        &collect_live_block_entries(shard),
+    )
+}
+
+/// The summaries and, when asked, the live digests, off ONE listing of the shard's live blocks.
+pub(super) fn bucket_summaries_and_digests(
+    shard_id: ShardId,
+    shard: &ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    with_digests: bool,
+) -> (
+    Vec<BucketStorageSummary>,
+    BTreeMap<u32, BucketFingerprintDigest>,
+) {
+    let entries = collect_live_block_entries(shard);
+    let summaries = bucket_storage_summaries_from_entries(
+        shard,
+        start_routing_bucket,
+        end_routing_bucket,
+        &entries,
+    );
+    let digests = if with_digests {
+        bucket_generation_digests_from_entries(shard_id, &entries)
+    } else {
+        BTreeMap::new()
+    };
+    (summaries, digests)
+}
+
+/// The summaries of a shard whose live blocks the caller has already listed.
+///
+/// `entries` MUST be `collect_live_block_entries(shard)` taken under the same read of the shard;
+/// the function reads nothing else of the block set.
+pub(super) fn bucket_storage_summaries_from_entries(
+    shard: &ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    entries: &[LiveBlockEntry],
+) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
     let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
-    for entry in collect_live_block_entries(shard) {
+    for entry in entries {
         // The shard's OWN routing range, which is what every other consumer of this fallback
         // uses -- `rebuild_bucket_first_index`, `refresh_pending_bucket_runtime_flags` and the
         // dirty-key loop at the foot of this function all reach for
@@ -1041,10 +1085,19 @@ pub(super) fn bucket_generation_digests_by_bucket(
     shard_id: ShardId,
     shard: &ShardState,
 ) -> BTreeMap<u32, BucketFingerprintDigest> {
+    bucket_generation_digests_from_entries(shard_id, &collect_live_block_entries(shard))
+}
+
+/// The digests of a block set the caller has already listed. `entries` is the shard's own
+/// `collect_live_block_entries` (or a decoded dump state's), read once for every consumer.
+pub(super) fn bucket_generation_digests_from_entries(
+    shard_id: ShardId,
+    entries: &[LiveBlockEntry],
+) -> BTreeMap<u32, BucketFingerprintDigest> {
     let mut lines = BTreeMap::<u32, Vec<(u64, u64)>>::new();
     // One buffer for every line: the digest reads the bytes and keeps none of them.
     let mut line = String::new();
-    for entry in collect_live_block_entries(shard) {
+    for entry in entries {
         let routing_bucket = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));

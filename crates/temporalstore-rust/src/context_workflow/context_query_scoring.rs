@@ -1118,13 +1118,23 @@ pub(super) fn is_context_query_stopword(term: &str) -> bool {
     )
 }
 
-pub(super) fn stable_hash64(value: &str) -> u64 {
+pub(super) fn stable_hash64_parts(parts: &[&str]) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
     }
     hash
+}
+
+pub(super) fn stable_hash64(value: &str) -> u64 {
+    stable_hash64_parts(&[value])
+}
+
+pub(super) fn context_event_id_hash(source_id: &str, body: &str) -> u64 {
+    stable_hash64_parts(&["event:", source_id, ":", body])
 }
 
 pub(super) fn context_event_with_storage_keys(
@@ -1138,10 +1148,8 @@ pub(super) fn context_event_with_storage_keys(
         event.ingestion_time_ms = event.event_time_ms;
     }
     if event.event_id_hash == 0 {
-        event.event_id_hash = stable_hash64(&format!(
-            "context_event:{}:{}:{}",
-            node_hash, event.event_time_ms, event.text
-        ));
+        let prefix = format!("context_event:{}:{}:", node_hash, event.event_time_ms);
+        event.event_id_hash = stable_hash64_parts(&[&prefix, &event.text]);
     }
     event
 }

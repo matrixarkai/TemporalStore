@@ -727,9 +727,8 @@ impl serde::Serialize for SummaryNamed<'_> {
 pub struct StoragePhysicalBlockIndex {
     pub object_key: String,
     pub model_id: String,
-    /// Published under the key `component`, which is what every consumer of this report reads. The
-    /// Rust field is the element name; the key is the contract and does not move with it.
-    #[serde(rename = "component", default, skip_serializing_if = "Option::is_none")]
+    /// The name of the container element this block belongs to, when it belongs to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub element_name: Option<String>,
     #[serde(rename = "routing_slot")]
     pub routing_bucket: u32,
@@ -3008,6 +3007,27 @@ pub struct StorageWalReclaimPlan {
     pub missing_bucket_generations: Vec<u32>,
     pub retained_manifest_ids: Vec<String>,
     pub blocker_reasons: Vec<String>,
+}
+
+/// One bucket's gauges: how many objects and blocks it holds and how many bytes those blocks are.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketGauge {
+    pub routing_bucket: u32,
+    pub object_count: u64,
+    pub block_count: u64,
+    pub block_bytes: u64,
+}
+
+/// What one bounded sweep over a shard's buckets read.
+///
+/// `next_after` is where the next sweep resumes, or `None` once this one reached the last bucket,
+/// so the sweep after that starts again from the first. A gauge is a sample, not a census: a bucket
+/// that appears or vanishes between two sweeps is seen or missed once.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketGaugeSweep {
+    pub gauges: Vec<BucketGauge>,
+    pub next_after: Option<u32>,
+    pub buckets_total: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

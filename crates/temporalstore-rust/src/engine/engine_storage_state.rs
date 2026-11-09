@@ -1842,6 +1842,21 @@ impl BucketMap {
         self.nodes.is_empty()
     }
 
+    /// The buckets after `after`, in routing order, or all of them when `after` is `None`.
+    ///
+    /// What a bounded, resumable sweep walks: it starts where the last one stopped and does not
+    /// visit the buckets before it.
+    pub(super) fn range_after(
+        &self,
+        after: Option<u32>,
+    ) -> std::collections::btree_map::Range<'_, u32, BucketNode> {
+        use std::ops::Bound;
+        match after {
+            Some(bucket) => self.nodes.range((Bound::Excluded(bucket), Bound::Unbounded)),
+            None => self.nodes.range(..),
+        }
+    }
+
     pub(super) fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, BucketNode> {
         self.nodes.iter()
     }
@@ -6410,9 +6425,6 @@ pub(super) struct BucketNode {
 pub(super) struct TombstoneElement {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    /// Stored under the key `component`: this row is written into the index dump, and a dump an
-    /// earlier build wrote must still read. The Rust field is the element name; the key stays.
-    #[serde(rename = "component")]
     pub(super) element_name: Arc<str>,
     #[serde(rename = "block")]
     pub(super) block: (u64, u64, u64),
@@ -6831,9 +6843,10 @@ impl BucketNode {
 ///     engine writes does not carry it, and an index this engine writes has to load. An index
 ///     THIS engine writes will not load in an engine older than this change, which is the whole
 ///     of the break and is why it is stated here rather than discovered;
-///   * `object_ids`, `deleted_object_ids` and `page_refs` are still accepted as aliases, which is
-///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_page_field_names`
-///     holds that spelling and an alias dropped from here is a store that stops loading;
+///   * each field has ONE accepted spelling. `object_ids`, `deleted_object_ids`, `page_index` and
+///     `page_refs` are not read: a key nothing declares falls to `Ignore`, so a document that
+///     spells one loads with that field empty, which `the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones`
+///     asserts;
 ///   * the fields that had `#[serde(default)]` still default when the key is absent, and the ones
 ///     that did not still REFUSE a node that omits them. Presence comes from the wire.
 ///
@@ -6948,13 +6961,7 @@ const BUCKET_NODE_FIELDS: &[&str] = &[
     "last_dump_sequence",
     "object_index",
     "deleted_object_index",
-    // THE CANONICAL SPELLING FIRST, THE TWO OLDER ONES AFTER IT. The reader has to accept the
-    // name a converged writer will write BEFORE that writer exists, or landing the reader first
-    // buys nothing: a reader that accepts only what it would write rejects its own future as
-    // surely as one that accepts only the past rejects its history. Until this entry existed the
-    // accepted set held two RETIRED spellings and not the current one.
     "block_index",
-    "page_index",
     "tombstone_elements",
 ];
 
@@ -6987,12 +6994,12 @@ impl<'de> Deserialize<'de> for BucketNodeField {
                     "ttl_ms" => BucketNodeField::TtlMs,
                     "dirty_generation" => BucketNodeField::DirtyGeneration,
                     "last_dump_sequence" => BucketNodeField::LastDumpSequence,
-                    // The three older spellings, each alongside the one that replaced it.
-                    "object_index" | "object_ids" => BucketNodeField::ObjectIndex,
-                    "deleted_object_index" | "deleted_object_ids" => {
-                        BucketNodeField::DeletedObjectIndex
-                    }
-                    "block_index" | "page_index" | "page_refs" => BucketNodeField::BlockIndex,
+                    // One spelling each. The older ones (`object_ids`, `deleted_object_ids`,
+                    // `page_index`, `page_refs`) are not accepted: the first release carries no
+                    // installed base, and an unrecognised key falls to `Ignore` below.
+                    "object_index" => BucketNodeField::ObjectIndex,
+                    "deleted_object_index" => BucketNodeField::DeletedObjectIndex,
+                    "block_index" => BucketNodeField::BlockIndex,
                     "tombstone_elements" => BucketNodeField::TombstoneElements,
                     _ => BucketNodeField::Ignore,
                 })

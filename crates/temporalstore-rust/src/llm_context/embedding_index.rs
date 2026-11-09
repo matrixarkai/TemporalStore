@@ -11,6 +11,7 @@ const SIGNATURE_ROUTING_MIN_DIMENSIONS: usize = 384;
 const SIGNATURE_ROUTING_MIN_ROWS: usize = 8192;
 const SIGNATURE_ROUTING_TABLES: usize = 4;
 const SIGNATURE_ROUTING_BITS: usize = 12;
+const SIGNATURE_ROUTING_BUCKETS: usize = 1 << SIGNATURE_ROUTING_BITS;
 const SIGNATURE_ROUTING_MASK: u16 = (1 << SIGNATURE_ROUTING_BITS) - 1;
 const SIGNATURE_SAMPLES_PER_BIT: usize = 16;
 const SIGNATURE_CANDIDATES_PER_HIT: usize = 128;
@@ -275,9 +276,17 @@ struct TenantRows {
 
 #[derive(Debug)]
 struct SignatureRouting {
-    // Buckets retain compact row positions only; vectors stay in TenantRows.
-    buckets: [HashMap<u16, Vec<u32>>; SIGNATURE_ROUTING_TABLES],
+    // Tables retain compact row positions only; vectors stay in TenantRows.
+    tables: [SignatureTable; SIGNATURE_ROUTING_TABLES],
 }
+
+#[derive(Debug)]
+struct SignatureTable {
+    heads: Box<[u32]>,
+    next: Vec<u32>,
+}
+
+const NO_SIGNATURE_POSITION: u32 = u32::MAX;
 
 enum SeenPositions {
     Dense(Vec<u64>),
@@ -315,7 +324,7 @@ impl SeenPositions {
 impl SignatureRouting {
     fn build(rows: &TenantRows, dimensions: usize) -> Self {
         let mut routing = Self {
-            buckets: std::array::from_fn(|_| HashMap::new()),
+            tables: std::array::from_fn(|_| SignatureTable::new(rows.item_ids.len())),
         };
         for position in 0..rows.item_ids.len() {
             let start = position * dimensions;
@@ -330,10 +339,7 @@ impl SignatureRouting {
             return;
         };
         for table in 0..SIGNATURE_ROUTING_TABLES {
-            self.buckets[table]
-                .entry(signature_bucket(signature, table))
-                .or_default()
-                .push(position);
+            self.tables[table].insert(signature_bucket(signature, table), position);
         }
     }
 
@@ -342,18 +348,13 @@ impl SignatureRouting {
             return;
         };
         for table in 0..SIGNATURE_ROUTING_TABLES {
-            let bucket_key = signature_bucket(signature, table);
-            let empty = if let Some(bucket) = self.buckets[table].get_mut(&bucket_key) {
-                if let Some(offset) = bucket.iter().position(|candidate| *candidate == position) {
-                    bucket.swap_remove(offset);
-                }
-                bucket.is_empty()
-            } else {
-                false
-            };
-            if empty {
-                self.buckets[table].remove(&bucket_key);
-            }
+            self.tables[table].remove(signature_bucket(signature, table), position);
+        }
+    }
+
+    fn truncate(&mut self, rows: usize) {
+        for table in &mut self.tables {
+            table.next.truncate(rows);
         }
     }
 
@@ -428,17 +429,67 @@ impl SignatureRouting {
         visited: &mut usize,
         visit: &mut impl FnMut(u32),
     ) -> bool {
-        let Some(bucket_positions) = self.buckets[table].get(&bucket) else {
-            return false;
-        };
-        for position in bucket_positions {
-            if seen.insert(*position) {
-                visit(*position);
+        self.tables[table].visit(bucket, |position| {
+            if seen.insert(position) {
+                visit(position);
                 *visited += 1;
-                if *visited >= budget {
-                    return true;
-                }
             }
+            *visited < budget
+        })
+    }
+}
+
+impl SignatureTable {
+    fn new(rows: usize) -> Self {
+        Self {
+            heads: vec![NO_SIGNATURE_POSITION; SIGNATURE_ROUTING_BUCKETS].into_boxed_slice(),
+            next: vec![NO_SIGNATURE_POSITION; rows],
+        }
+    }
+
+    fn insert(&mut self, bucket: u16, position: u32) {
+        let position_index = position as usize;
+        if position_index >= self.next.len() {
+            self.next
+                .resize(position_index.saturating_add(1), NO_SIGNATURE_POSITION);
+        }
+        let head = &mut self.heads[bucket as usize];
+        self.next[position_index] = *head;
+        *head = position;
+    }
+
+    fn remove(&mut self, bucket: u16, position: u32) {
+        let bucket = bucket as usize;
+        let position_index = position as usize;
+        if position_index >= self.next.len() {
+            return;
+        }
+        if self.heads[bucket] == position {
+            self.heads[bucket] = self.next[position_index];
+            self.next[position_index] = NO_SIGNATURE_POSITION;
+            return;
+        }
+
+        let mut previous = self.heads[bucket];
+        while previous != NO_SIGNATURE_POSITION {
+            let previous_index = previous as usize;
+            let current = self.next[previous_index];
+            if current == position {
+                self.next[previous_index] = self.next[position_index];
+                self.next[position_index] = NO_SIGNATURE_POSITION;
+                return;
+            }
+            previous = current;
+        }
+    }
+
+    fn visit(&self, bucket: u16, mut visit: impl FnMut(u32) -> bool) -> bool {
+        let mut position = self.heads[bucket as usize];
+        while position != NO_SIGNATURE_POSITION {
+            if !visit(position) {
+                return true;
+            }
+            position = self.next[position as usize];
         }
         false
     }
@@ -617,6 +668,8 @@ impl EmbeddingIndex {
                 return Err(EmbeddingIndexError::DuplicateKey { key: input.key });
             }
         }
+        // Duplicate rejection is complete; do not retain its O(N) scratch beside the vectors.
+        drop(batch_keys);
 
         let mut keys = Vec::with_capacity(batch.len());
         let mut scales = Vec::with_capacity(batch.len());
@@ -625,18 +678,26 @@ impl EmbeddingIndex {
             keys.push(input.key);
             scales.push(quantize_unit_vector(input.key, input.values, &mut vectors)?);
         }
-        CompactEmbeddingBatch::from_compact_rows(
-            self.config.dimensions,
-            self.config.model_hash,
+        Ok(CompactEmbeddingBatch {
+            dimensions: self.config.dimensions,
+            model_hash: self.config.model_hash,
             keys,
             scales,
             vectors,
-        )
+        })
     }
 
     pub fn upsert_compact_batch(
         &mut self,
         batch: &CompactEmbeddingBatch,
+    ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
+        self.upsert_compact_batch_inner(batch, false)
+    }
+
+    fn upsert_compact_batch_inner(
+        &mut self,
+        batch: &CompactEmbeddingBatch,
+        all_missing: bool,
     ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
         if batch.dimensions != self.config.dimensions {
             return Err(EmbeddingIndexError::DimensionMismatch {
@@ -654,22 +715,33 @@ impl EmbeddingIndex {
                 actual: batch.model_hash,
             });
         }
-        let new_entries = batch
-            .keys
-            .iter()
-            .filter(|key| {
-                !self
+        let mut new_entries_by_tenant = HashMap::<u64, usize>::new();
+        for key in &batch.keys {
+            if all_missing
+                || !self
                     .tenants
                     .get(&key.tenant_id)
                     .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
-            })
-            .count();
+            {
+                *new_entries_by_tenant.entry(key.tenant_id).or_default() += 1;
+            }
+        }
+        let new_entries = new_entries_by_tenant.values().sum::<usize>();
         let requested = self.len().saturating_add(new_entries);
         if requested > self.config.max_entries {
             return Err(EmbeddingIndexError::CapacityExceeded {
                 capacity: self.config.max_entries,
                 requested,
             });
+        }
+
+        for (tenant_id, new_entries) in new_entries_by_tenant {
+            let rows = self.tenants.entry(tenant_id).or_default();
+            rows.item_ids.reserve(new_entries);
+            rows.positions.reserve(new_entries);
+            rows.scales.reserve(new_entries);
+            rows.vectors
+                .reserve(new_entries.saturating_mul(self.config.dimensions));
         }
 
         let mut inserted = 0usize;
@@ -679,26 +751,28 @@ impl EmbeddingIndex {
             let scale = batch.scale(row);
             let vector = batch.vector(row);
             let rows = self.tenants.entry(key.tenant_id).or_default();
-            if let Some(&position) = rows.positions.get(&key.item_id) {
-                let old_signature = rows.signature_at(self.config.dimensions, position);
-                rows.scales[position] = scale;
-                let start = position * self.config.dimensions;
-                rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
-                rows.refresh_signature_routing(
-                    self.config.dimensions,
-                    position,
-                    old_signature,
-                );
-                updated += 1;
-            } else {
-                let position = rows.item_ids.len();
-                rows.item_ids.push(key.item_id);
-                rows.positions.insert(key.item_id, position);
-                rows.scales.push(scale);
-                rows.vectors.extend_from_slice(vector);
-                rows.refresh_signature_routing(self.config.dimensions, position, None);
-                inserted += 1;
+            if !all_missing {
+                if let Some(&position) = rows.positions.get(&key.item_id) {
+                    let old_signature = rows.signature_at(self.config.dimensions, position);
+                    rows.scales[position] = scale;
+                    let start = position * self.config.dimensions;
+                    rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
+                    rows.refresh_signature_routing(
+                        self.config.dimensions,
+                        position,
+                        old_signature,
+                    );
+                    updated += 1;
+                    continue;
+                }
             }
+            let position = rows.item_ids.len();
+            rows.item_ids.push(key.item_id);
+            rows.positions.insert(key.item_id, position);
+            rows.scales.push(scale);
+            rows.vectors.extend_from_slice(vector);
+            rows.refresh_signature_routing(self.config.dimensions, position, None);
+            inserted += 1;
         }
         self.total_entries += inserted;
 
@@ -716,6 +790,8 @@ impl EmbeddingIndex {
     pub(crate) fn upsert_compact_batch_bounded(
         &mut self,
         batch: &CompactEmbeddingBatch,
+        all_missing: bool,
+        protected: Option<&HashSet<EmbeddingKey>>,
     ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
         if batch.len() > self.config.max_entries {
             return Err(EmbeddingIndexError::CapacityExceeded {
@@ -723,10 +799,19 @@ impl EmbeddingIndex {
                 requested: batch.len(),
             });
         }
-        let protected = (0..batch.len())
-            .map(|row| batch.key(row))
-            .collect::<HashSet<_>>();
-        let new_entries = protected.iter().filter(|key| !self.contains(**key)).count();
+        let owned_protected = protected.is_none().then(|| {
+            (0..batch.len())
+                .map(|row| batch.key(row))
+                .collect::<HashSet<_>>()
+        });
+        let protected = protected
+            .or(owned_protected.as_ref())
+            .expect("bounded insert always has protected keys");
+        let new_entries = if all_missing {
+            batch.len()
+        } else {
+            protected.iter().filter(|key| !self.contains(**key)).count()
+        };
         let evict = self
             .len()
             .saturating_add(new_entries)
@@ -754,7 +839,7 @@ impl EmbeddingIndex {
                 self.remove(key);
             }
         }
-        self.upsert_compact_batch(batch)
+        self.upsert_compact_batch_inner(batch, all_missing)
     }
 
     pub fn remove(&mut self, key: EmbeddingKey) -> bool {
@@ -790,6 +875,7 @@ impl EmbeddingIndex {
                 routing.remove(moved, last);
                 routing.insert(moved, position);
             }
+            routing.truncate(last);
         }
         if position != last {
             let source = last * self.config.dimensions;
@@ -852,6 +938,21 @@ impl EmbeddingIndex {
         limit: usize,
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
         query.validate_dimensions(self.config.dimensions)?;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(dot) = Avx2DotProduct::detect() {
+            return Ok(self.search_prepared_rows_with(&dot, tenant_id, rows, query, limit));
+        }
+        Ok(self.search_prepared_rows_with(&ScalarDotProduct, tenant_id, rows, query, limit))
+    }
+
+    fn search_prepared_rows_with<D: CompactDotProduct>(
+        &self,
+        dot: &D,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+    ) -> Vec<EmbeddingHit> {
         let limit = limit.min(rows.item_ids.len());
         // Large tenants route first, then reuse the exact compact scorer on a bounded set.
         if let Some(routing) = &rows.signature_routing {
@@ -869,6 +970,7 @@ impl EmbeddingIndex {
                 candidate_budget,
                 |position| {
                     self.score_position(
+                        dot,
                         rows,
                         query.values,
                         query.inverse_norm,
@@ -880,21 +982,23 @@ impl EmbeddingIndex {
             );
             let minimum_routed_candidates = limit.saturating_mul(4).min(rows.item_ids.len());
             if routed_count >= minimum_routed_candidates {
-                return Ok(Self::finish_search(tenant_id, rows, heap));
+                return Self::finish_search(tenant_id, rows, heap);
             }
         }
-        Ok(self.search_positions(
+        self.search_positions(
+            dot,
             tenant_id,
             rows,
             query.values,
             query.inverse_norm,
             limit,
             0..rows.item_ids.len(),
-        ))
+        )
     }
 
-    fn search_positions(
+    fn search_positions<D: CompactDotProduct>(
         &self,
+        dot: &D,
         tenant_id: u64,
         rows: &TenantRows,
         query: &[f32],
@@ -905,14 +1009,23 @@ impl EmbeddingIndex {
         let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
 
         for position in positions {
-            self.score_position(rows, query, query_inverse_norm, limit, position, &mut heap);
+            self.score_position(
+                dot,
+                rows,
+                query,
+                query_inverse_norm,
+                limit,
+                position,
+                &mut heap,
+            );
         }
 
         Self::finish_search(tenant_id, rows, heap)
     }
 
-    fn score_position(
+    fn score_position<D: CompactDotProduct>(
         &self,
+        dot: &D,
         rows: &TenantRows,
         query: &[f32],
         query_inverse_norm: f32,
@@ -923,7 +1036,7 @@ impl EmbeddingIndex {
         let start = position * self.config.dimensions;
         let row = &rows.vectors[start..start + self.config.dimensions];
         let score =
-            (dot_i8_f32(row, query) * rows.scales[position] * query_inverse_norm).clamp(-1.0, 1.0);
+            (dot.dot(row, query) * rows.scales[position] * query_inverse_norm).clamp(-1.0, 1.0);
         let candidate = HeapHit { score, position };
         if heap.len() < limit {
             heap.push(Reverse(candidate));
@@ -994,25 +1107,6 @@ impl EmbeddingIndex {
         )
     }
 
-    pub(crate) fn score_prepared_candidate_ids(
-        &self,
-        tenant_id: u64,
-        query: PreparedEmbeddingQuery<'_>,
-        candidate_item_ids: impl IntoIterator<Item = u64>,
-        candidate_count: usize,
-    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
-        let Some(rows) = self.tenants.get(&tenant_id) else {
-            return Ok(Vec::new());
-        };
-        self.score_prepared_candidate_ids_for_rows(
-            tenant_id,
-            rows,
-            query,
-            candidate_item_ids,
-            candidate_count,
-        )
-    }
-
     fn score_prepared_candidate_ids_for_rows(
         &self,
         tenant_id: u64,
@@ -1021,23 +1115,90 @@ impl EmbeddingIndex {
         candidate_item_ids: impl IntoIterator<Item = u64>,
         candidate_count: usize,
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
-        query.validate_dimensions(self.config.dimensions)?;
         let mut hits = Vec::with_capacity(candidate_count.min(rows.item_ids.len()));
+        self.visit_prepared_candidate_ids_for_rows(
+            tenant_id,
+            rows,
+            query,
+            candidate_item_ids,
+            |hit| hits.push(hit),
+        )?;
+        Ok(hits)
+    }
+
+    pub(crate) fn visit_prepared_candidate_ids(
+        &self,
+        tenant_id: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        visit: impl FnMut(EmbeddingHit),
+    ) -> Result<usize, EmbeddingIndexError> {
+        let Some(rows) = self.tenants.get(&tenant_id) else {
+            return Ok(0);
+        };
+        self.visit_prepared_candidate_ids_for_rows(
+            tenant_id,
+            rows,
+            query,
+            candidate_item_ids,
+            visit,
+        )
+    }
+
+    fn visit_prepared_candidate_ids_for_rows(
+        &self,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        visit: impl FnMut(EmbeddingHit),
+    ) -> Result<usize, EmbeddingIndexError> {
+        query.validate_dimensions(self.config.dimensions)?;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(dot) = Avx2DotProduct::detect() {
+            return Ok(self.visit_prepared_candidate_ids_for_rows_with(
+                &dot,
+                tenant_id,
+                rows,
+                query,
+                candidate_item_ids,
+                visit,
+            ));
+        }
+        Ok(self.visit_prepared_candidate_ids_for_rows_with(
+            &ScalarDotProduct,
+            tenant_id,
+            rows,
+            query,
+            candidate_item_ids,
+            visit,
+        ))
+    }
+
+    fn visit_prepared_candidate_ids_for_rows_with<D: CompactDotProduct>(
+        &self,
+        dot: &D,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: impl IntoIterator<Item = u64>,
+        mut visit: impl FnMut(EmbeddingHit),
+    ) -> usize {
+        let mut visited = 0usize;
         for item_id in candidate_item_ids {
             let Some(&position) = rows.positions.get(&item_id) else {
                 continue;
             };
             let start = position * self.config.dimensions;
             let row = &rows.vectors[start..start + self.config.dimensions];
-            hits.push(EmbeddingHit {
+            visit(EmbeddingHit {
                 key: EmbeddingKey { tenant_id, item_id },
-                score: (dot_i8_f32(row, query.values)
-                    * rows.scales[position]
-                    * query.inverse_norm)
+                score: (dot.dot(row, query.values) * rows.scales[position] * query.inverse_norm)
                     .clamp(-1.0, 1.0),
             });
+            visited = visited.saturating_add(1);
         }
-        Ok(hits)
+        visited
     }
 
     fn validate_vector_dimensions(
@@ -1197,19 +1358,46 @@ fn embedding_signature(
     signature
 }
 
-#[inline]
-fn dot_i8_f32(left: &[i8], right: &[f32]) -> f32 {
-    debug_assert_eq!(left.len(), right.len());
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if std::arch::is_x86_feature_detected!("avx2") {
-        // SAFETY: the runtime feature check covers every instruction used below.
-        return unsafe { dot_i8_f32_avx2(left, right) };
+/// Selected once per search so row scoring does not repeat CPU feature detection.
+trait CompactDotProduct {
+    fn dot(&self, left: &[i8], right: &[f32]) -> f32;
+}
+
+struct ScalarDotProduct;
+
+impl CompactDotProduct for ScalarDotProduct {
+    #[inline(always)]
+    fn dot(&self, left: &[i8], right: &[f32]) -> f32 {
+        dot_i8_f32_scalar(left, right)
     }
-    dot_i8_f32_scalar(left, right)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+struct Avx2DotProduct {
+    _feature_detected: (),
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl Avx2DotProduct {
+    fn detect() -> Option<Self> {
+        std::arch::is_x86_feature_detected!("avx2").then_some(Self {
+            _feature_detected: (),
+        })
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+impl CompactDotProduct for Avx2DotProduct {
+    #[inline(always)]
+    fn dot(&self, left: &[i8], right: &[f32]) -> f32 {
+        // SAFETY: an instance exists only after a successful runtime AVX2 check.
+        unsafe { dot_i8_f32_avx2(left, right) }
+    }
 }
 
 #[inline]
 fn dot_i8_f32_scalar(left: &[i8], right: &[f32]) -> f32 {
+    debug_assert_eq!(left.len(), right.len());
     let mut sum = 0.0f32;
     let mut index = 0usize;
     while index + 8 <= left.len() {
@@ -1233,6 +1421,7 @@ fn dot_i8_f32_scalar(left: &[i8], right: &[f32]) -> f32 {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 unsafe fn dot_i8_f32_avx2(left: &[i8], right: &[f32]) -> f32 {
+    debug_assert_eq!(left.len(), right.len());
     #[cfg(target_arch = "x86")]
     use std::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
@@ -1392,6 +1581,21 @@ mod tests {
                 .unwrap_err(),
             EmbeddingIndexError::ZeroNorm { key }
         );
+        assert_eq!(
+            index
+                .prepare_batch(&[
+                    EmbeddingVector {
+                        key,
+                        values: &[1.0, 0.0],
+                    },
+                    EmbeddingVector {
+                        key,
+                        values: &[0.0, 1.0],
+                    },
+                ])
+                .unwrap_err(),
+            EmbeddingIndexError::DuplicateKey { key }
+        );
     }
 
     #[test]
@@ -1414,6 +1618,7 @@ mod tests {
         let prepared = PreparedEmbeddingQuery::new(&query).unwrap();
         let rows = index.tenants.get(&7).unwrap();
         let expected = index.search_positions(
+            &ScalarDotProduct,
             7,
             rows,
             prepared.values,
@@ -1423,6 +1628,35 @@ mod tests {
         );
 
         assert_eq!(index.search(7, &query, 16).unwrap(), expected);
+    }
+
+    #[test]
+    fn signature_table_keeps_mutable_buckets_in_contiguous_storage() {
+        let mut table = SignatureTable::new(4);
+        assert_eq!(table.heads.len(), SIGNATURE_ROUTING_BUCKETS);
+        assert_eq!(table.next.len(), 4);
+
+        for position in 0..4 {
+            table.insert(17, position);
+        }
+        table.remove(17, 3);
+        table.remove(17, 1);
+        table.remove(17, 0);
+
+        let mut positions = Vec::new();
+        assert!(!table.visit(17, |position| {
+            positions.push(position);
+            true
+        }));
+        assert_eq!(positions, vec![2]);
+
+        table.insert(17, 1);
+        positions.clear();
+        assert!(!table.visit(17, |position| {
+            positions.push(position);
+            true
+        }));
+        assert_eq!(positions, vec![1, 2]);
     }
 
     #[cfg(feature = "alloc-probe")]

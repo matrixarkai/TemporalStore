@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{BufReader, ErrorKind, IoSlice, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::thread;
@@ -383,6 +383,27 @@ pub fn post_json_with_options_and_headers<Req: Serialize, Res: DeserializeOwned>
     Ok(serde_json::from_slice(&raw)?)
 }
 
+/// POST JSON and deserialize the response directly from the socket body.
+///
+/// This is intended for large responses such as embedding matrices, where retaining the encoded
+/// response beside the decoded object needlessly doubles peak live memory. The response header and
+/// any body bytes received with it remain buffered; the rest flows through serde's reader.
+pub fn post_json_streaming_with_options_and_headers<Req: Serialize, Res: DeserializeOwned>(
+    addr: &str,
+    path: &str,
+    request: &Req,
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
+    let body = serde_json::to_vec(request)?;
+    let headers: std::borrow::Cow<'static, str> = if extra_headers.is_empty() {
+        std::borrow::Cow::Borrowed("Content-Type: application/json\r\n")
+    } else {
+        std::borrow::Cow::Owned(format!("Content-Type: application/json\r\n{extra_headers}"))
+    };
+    request_streaming_json_with_options(addr, "POST", path, &body, &headers, options)
+}
+
 /// Send a raw request body (e.g. a large binary attachment) and return the raw
 /// response body. Used by the blob/attachment path where bodies are not JSON.
 pub fn request_bytes_with_options(
@@ -487,10 +508,19 @@ fn handle_stream(
     }
 }
 
-/// Write a fully-buffered response (coalesced header + body in a single write so
-/// it leaves in one TCP segment where possible).
+/// Write a fully-buffered response with one gathered header/body write where possible.
+/// The encoded body remains borrowed instead of being copied into a second response buffer.
 fn write_buffered_response(
     stream: &mut TcpStream,
+    status: u16,
+    body: &[u8],
+    keep_alive: bool,
+) -> Result<(), HttpError> {
+    write_buffered_response_to(stream, status, body, keep_alive)
+}
+
+fn write_buffered_response_to<W: Write>(
+    writer: &mut W,
     status: u16,
     body: &[u8],
     keep_alive: bool,
@@ -502,11 +532,29 @@ fn write_buffered_response(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n",
         body.len()
     );
-    let mut response = Vec::with_capacity(header.len() + body.len());
-    response.extend_from_slice(header.as_bytes());
-    response.extend_from_slice(body);
-    stream.write_all(&response)?;
-    stream.flush()?;
+    write_header_and_body(writer, header.as_bytes(), body)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_header_and_body<W: Write>(
+    writer: &mut W,
+    header: &[u8],
+    body: &[u8],
+) -> std::io::Result<()> {
+    let written = writer.write_vectored(&[IoSlice::new(header), IoSlice::new(body)])?;
+    if written == 0 && (!header.is_empty() || !body.is_empty()) {
+        return Err(std::io::Error::new(
+            ErrorKind::WriteZero,
+            "failed to write buffered response",
+        ));
+    }
+    if written < header.len() {
+        writer.write_all(&header[written..])?;
+        writer.write_all(body)?;
+    } else {
+        writer.write_all(&body[written.saturating_sub(header.len())..])?;
+    }
     Ok(())
 }
 
@@ -664,6 +712,32 @@ fn request_raw_with_options(
     Err(last_error.unwrap_or_else(|| HttpError::BadResponse("request failed".to_string())))
 }
 
+fn request_streaming_json_with_options<Res: DeserializeOwned>(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
+    let mut last_error = None;
+    let mut retry_sleep_ms = 2;
+    for attempt in 0..=options.max_retries {
+        match request_streaming_json_once(addr, method, path, body, extra_headers, options) {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                let retryable = is_retryable_request_error(&err);
+                last_error = Some(err);
+                if attempt < options.max_retries && retryable {
+                    thread::sleep(Duration::from_millis(retry_sleep_ms));
+                    retry_sleep_ms = (retry_sleep_ms * 2).min(50);
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| HttpError::BadResponse("request failed".to_string())))
+}
+
 /// Whether the exchange failed because the peer stopped answering, rather than because the
 /// connection was already dead. The distinction decides whether the request may be sent
 /// again: a dead socket carried nothing, a timeout may have carried everything.
@@ -747,6 +821,32 @@ fn connect_fresh(addr: &str, options: HttpRequestOptions) -> Result<TcpStream, H
 /// nothing beside the syscalls it sits between, and it is what makes that distinction checkable.
 pub static EXCHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+fn write_exchange_request(
+    stream: &mut TcpStream,
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<(), HttpError> {
+    EXCHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut framed = Vec::with_capacity(
+        96 + method.len() + path.len() + addr.len() + extra_headers.len() + body.len(),
+    );
+    {
+        use std::io::Write as _;
+        let _ = write!(
+            framed,
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: keep-alive\r\n\r\n",
+            body.len()
+        );
+    }
+    framed.extend_from_slice(body);
+    write_all_with_would_block_retry(stream, &framed, options.io_timeout_ms)?;
+    flush_with_would_block_retry(stream, options.io_timeout_ms)
+}
+
 fn exchange_once(
     stream: &mut TcpStream,
     addr: &str,
@@ -756,26 +856,7 @@ fn exchange_once(
     extra_headers: &str,
     options: HttpRequestOptions,
 ) -> Result<Vec<u8>, HttpError> {
-    EXCHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    // Coalesce header + body into a single buffer so the request leaves in one TCP segment
-    // where possible, and format the header STRAIGHT INTO it. Building the header as its own
-    // `String` first cost two allocations on every request the proxy and the client make, for
-    // a line thrown away as soon as it is copied here.
-    let mut framed = Vec::with_capacity(
-        96 + method.len() + path.len() + addr.len() + extra_headers.len() + body.len(),
-    );
-    {
-        use std::io::Write as _;
-        // Writing into a `Vec` cannot fail, so there is no error case to handle.
-        let _ = write!(
-            framed,
-            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: keep-alive\r\n\r\n",
-            body.len()
-        );
-    }
-    framed.extend_from_slice(body);
-    write_all_with_would_block_retry(stream, &framed, options.io_timeout_ms)?;
-    flush_with_would_block_retry(stream, options.io_timeout_ms)?;
+    write_exchange_request(stream, addr, method, path, body, extra_headers, options)?;
 
     let response = read_http_response(stream, options.io_timeout_ms)?;
     let (header_end, content_length) = parse_response_header(&response)?;
@@ -806,6 +887,62 @@ fn exchange_once(
     response.truncate(body_start + content_length);
     response.drain(..body_start);
     Ok(response)
+}
+
+fn exchange_streaming_json_once<Res: DeserializeOwned>(
+    stream: &mut TcpStream,
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
+    write_exchange_request(stream, addr, method, path, body, extra_headers, options)?;
+
+    let (mut response, header_end, content_length) =
+        read_http_response_head(stream, options.io_timeout_ms)?;
+    let first_line_end = response[..header_end]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(header_end);
+    let status_bytes = &response[..first_line_end];
+    if !status_bytes.windows(5).any(|window| window == b" 200 ") {
+        let status_line = String::from_utf8_lossy(status_bytes)
+            .trim_end_matches('\r')
+            .to_string();
+        return Err(HttpError::BadResponse(status_line));
+    }
+
+    let body_start = header_end + b"\r\n\r\n".len();
+    if response.len().saturating_sub(body_start) >= content_length {
+        response.truncate(body_start + content_length);
+        return Ok(serde_json::from_slice(&response[body_start..])?);
+    }
+    let mut prefix = response.split_off(body_start);
+    drop(response);
+    prefix.truncate(content_length);
+    let remaining = content_length.saturating_sub(prefix.len());
+    let socket_body = stream.take(remaining as u64);
+    let chained = std::io::Cursor::new(prefix).chain(socket_body);
+    let mut reader = BufReader::with_capacity(16 * 1024, chained);
+    let result = serde_json::from_reader(&mut reader);
+    let unread = reader.get_ref().get_ref().1.limit();
+    drop(reader);
+    match result {
+        Ok(response) if unread == 0 => Ok(response),
+        Ok(_) => Err(HttpError::BadResponse(
+            "incomplete response body".to_string(),
+        )),
+        Err(err) if err.is_eof() => Err(HttpError::BadResponse(
+            "incomplete response body".to_string(),
+        )),
+        Err(err) if err.io_error_kind().is_some() => {
+            let kind = err.io_error_kind().unwrap_or(ErrorKind::Other);
+            Err(HttpError::Io(std::io::Error::new(kind, err)))
+        }
+        Err(err) => Err(HttpError::Json(err)),
+    }
 }
 
 fn request_raw_once(
@@ -845,6 +982,46 @@ fn request_raw_once(
     Ok(response)
 }
 
+fn request_streaming_json_once<Res: DeserializeOwned>(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
+    if let Some(mut stream) = pool_take(addr) {
+        match exchange_streaming_json_once(
+            &mut stream,
+            addr,
+            method,
+            path,
+            body,
+            extra_headers,
+            options,
+        ) {
+            Ok(response) => {
+                pool_put(addr, stream);
+                return Ok(response);
+            }
+            Err(err) if timed_out(&err) || matches!(err, HttpError::Json(_)) => return Err(err),
+            Err(_) => {}
+        }
+    }
+    let mut stream = connect_fresh(addr, options)?;
+    let response = exchange_streaming_json_once(
+        &mut stream,
+        addr,
+        method,
+        path,
+        body,
+        extra_headers,
+        options,
+    )?;
+    pool_put(addr, stream);
+    Ok(response)
+}
+
 fn read_http_response(stream: &mut TcpStream, timeout_ms: u64) -> Result<Vec<u8>, HttpError> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
     let marker = b"\r\n\r\n";
@@ -862,6 +1039,41 @@ fn read_http_response(stream: &mut TcpStream, timeout_ms: u64) -> Result<Vec<u8>
                         response.truncate(expected_len);
                         return Ok(response);
                     }
+                }
+            }
+            Err(err)
+                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(err) => return Err(HttpError::Io(err)),
+        }
+    }
+}
+
+fn read_http_response_head(
+    stream: &mut TcpStream,
+    timeout_ms: u64,
+) -> Result<(Vec<u8>, usize, usize), HttpError> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    let marker = b"\r\n\r\n";
+    let mut response = Vec::with_capacity(4096);
+    let mut chunk = [0; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => {
+                return Err(HttpError::BadResponse(
+                    "missing response header".to_string(),
+                ));
+            }
+            Ok(read) => {
+                response.extend_from_slice(&chunk[..read]);
+                if let Some(header_end) =
+                    response.windows(marker.len()).position(|window| window == marker)
+                {
+                    let (_, content_length) = parse_response_header(&response)?;
+                    return Ok((response, header_end, content_length));
                 }
             }
             Err(err)
@@ -940,6 +1152,103 @@ mod tests {
     use serde_json::Value;
     use std::net::TcpListener;
     use std::time::Instant;
+
+    struct ShortVectoredWriter {
+        bytes: Vec<u8>,
+        max_write: usize,
+        vectored_calls: usize,
+    }
+
+    impl Write for ShortVectoredWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let written = bytes.len().min(self.max_write);
+            self.bytes.extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> std::io::Result<usize> {
+            self.vectored_calls += 1;
+            let mut remaining = self.max_write;
+            let mut written = 0;
+            for buffer in buffers {
+                let take = buffer.len().min(remaining);
+                self.bytes.extend_from_slice(&buffer[..take]);
+                written += take;
+                remaining -= take;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            Ok(written)
+        }
+    }
+
+    #[test]
+    fn buffered_response_handles_a_short_gathered_write() {
+        let body = b"one encoded response body";
+        let mut writer = ShortVectoredWriter {
+            bytes: Vec::with_capacity(256),
+            max_write: 17,
+            vectored_calls: 0,
+        };
+        write_buffered_response_to(&mut writer, 200, body, true).unwrap();
+
+        let expected_header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+            body.len()
+        );
+        assert_eq!(writer.vectored_calls, 1);
+        assert_eq!(writer.bytes, [expected_header.as_bytes(), body].concat());
+    }
+
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    fn buffered_response_does_not_allocate_a_body_sized_copy() {
+        struct DiscardWriter {
+            written: usize,
+            vectored_calls: usize,
+        }
+
+        impl Write for DiscardWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.written += bytes.len();
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> std::io::Result<usize> {
+                self.vectored_calls += 1;
+                let written = buffers.iter().map(|buffer| buffer.len()).sum::<usize>();
+                self.written += written;
+                Ok(written)
+            }
+        }
+
+        let body = vec![b'x'; 1024 * 1024];
+        let mut writer = DiscardWriter {
+            written: 0,
+            vectored_calls: 0,
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        write_buffered_response_to(&mut writer, 200, &body, true).unwrap();
+        let spent = probe.stop();
+
+        assert_eq!(writer.vectored_calls, 1);
+        assert!(writer.written > body.len());
+        assert!(
+            spent.alloc_bytes < 1024,
+            "response allocated {spent:?} for a {} byte body",
+            body.len()
+        );
+        std::hint::black_box((writer, body));
+    }
 
     #[test]
     fn msgpack_response_is_named_binary_with_the_binary_content_type() {
@@ -1100,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_alive_reuses_a_single_connection_for_many_requests() {
+    fn keep_alive_reuses_a_single_connection_for_buffered_and_streaming_requests() {
         // The server accepts exactly ONE connection and serves every request on
         // it via the keep-alive loop in `handle_stream`. If client pooling +
         // server keep-alive work, all requests succeed over that one connection;
@@ -1115,24 +1424,45 @@ mod tests {
             let _ = handle_stream(
                 stream,
                 &|_head, _transfer| StreamAction::Declined,
-                &|request| json_response(200, &serde_json::json!({ "path": request.path })),
+                &|request| {
+                    if request.path == "/large" {
+                        json_response(200, &serde_json::json!({ "values": vec![7u64; 4096] }))
+                    } else {
+                        json_response(200, &serde_json::json!({ "path": request.path }))
+                    }
+                },
             );
         });
 
         for i in 0..5 {
-            let response: Value = post_json_with_options(
-                &addr,
-                &format!("/p{i}"),
-                &serde_json::json!({ "i": i }),
-                HttpRequestOptions {
-                    connect_timeout_ms: 200,
-                    io_timeout_ms: 500,
-                    max_retries: 1,
-                },
-            )
+            let path = format!("/p{i}");
+            let request = serde_json::json!({ "i": i });
+            let options = HttpRequestOptions {
+                connect_timeout_ms: 200,
+                io_timeout_ms: 500,
+                max_retries: 1,
+            };
+            let response: Value = if i % 2 == 0 {
+                post_json_streaming_with_options_and_headers(&addr, &path, &request, "", options)
+            } else {
+                post_json_with_options(&addr, &path, &request, options)
+            }
             .unwrap();
             assert_eq!(response["path"], format!("/p{i}"));
         }
+        let large: Value = post_json_streaming_with_options_and_headers(
+            &addr,
+            "/large",
+            &serde_json::json!({ "large": true }),
+            "",
+            HttpRequestOptions {
+                connect_timeout_ms: 200,
+                io_timeout_ms: 500,
+                max_retries: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(large["values"].as_array().map(Vec::len), Some(4096));
 
         // Exactly one idle socket should be pooled for this destination.
         let pooled =

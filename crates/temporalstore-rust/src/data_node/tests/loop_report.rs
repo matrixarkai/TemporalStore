@@ -518,3 +518,296 @@ fn a_quiet_round_for_the_profiler() {
         );
     }
 }
+
+/// THE REAP PUBLISHES PER-BUCKET GAUGES IN BOUNDED, RESUMABLE SLICES, AND THE SLICES ADD UP.
+///
+/// Three claims, each of which can fail on its own. A slice never holds more buckets than the option
+/// allows, so a round's cost does not grow with the shard. The slices, taken in the order the rounds
+/// ran, are EXACTLY the whole-shard sweep -- no bucket twice, none skipped, in routing order -- so
+/// resuming from the cursor loses nothing. And once the last bucket is read the next round starts
+/// again from the first, so the gauges stay current instead of stopping at the end.
+///
+/// The fixture must hold more buckets than two slices, or the sweep never has to resume and the
+/// second claim is satisfied by a sweep that is really one slice. That is asserted, not assumed.
+#[test]
+fn the_metrics_reap_sweeps_every_bucket_in_bounded_slices_and_wraps() {
+    const SLICE: usize = 16;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let off = StorageManagerOptions {
+        reap_metrics_max_buckets_per_round: 0,
+        ..StorageManagerOptions::default()
+    };
+    let sliced = StorageManagerOptions {
+        reap_metrics_max_buckets_per_round: SLICE,
+        ..StorageManagerOptions::default()
+    };
+
+    // Settle first, with the gauges off, so maintenance has finished changing the shard before the
+    // whole-shard sweep that the slices are compared against is taken.
+    for _ in 0..3 {
+        runtime.run_storage_manager_once(1, off.clone());
+    }
+    let truth = runtime.inner.engine.bucket_gauge_sweep(1, None, usize::MAX);
+    assert!(
+        truth.gauges.len() > SLICE * 2,
+        "the fixture holds {} buckets, which is not more than two slices of {SLICE}; the sweep \
+         would never have to resume",
+        truth.gauges.len()
+    );
+    assert_eq!(truth.buckets_total, truth.gauges.len());
+    assert_eq!(truth.next_after, None, "a whole-shard sweep reaches the end");
+    assert_eq!(
+        truth.gauges.iter().map(|gauge| gauge.object_count).sum::<u64>(),
+        200,
+        "every seeded key is one object in exactly one bucket"
+    );
+
+    let mut seen = Vec::new();
+    let mut rounds = 0usize;
+    let mut wrapped = false;
+    while rounds < 200 {
+        rounds += 1;
+        let report = runtime.run_storage_manager_once(1, sliced.clone());
+        let reap = report.metrics_reap.as_ref().expect("the reap ran");
+        assert!(
+            reap.bucket_gauges.len() <= SLICE,
+            "round {rounds} published {} buckets against a slice of {SLICE}",
+            reap.bucket_gauges.len()
+        );
+        assert_eq!(reap.buckets_total, truth.buckets_total);
+        seen.extend(reap.bucket_gauges.iter().cloned());
+        if reap.bucket_sweep_next_after.is_none() {
+            wrapped = true;
+            break;
+        }
+    }
+    assert!(wrapped, "{rounds} rounds never reached the last bucket");
+    assert!(rounds > 1, "a single slice cannot show that the sweep resumes");
+    assert_eq!(
+        seen, truth.gauges,
+        "the slices, in the order the rounds ran, must be exactly the whole-shard sweep"
+    );
+
+    // Wrapped: the next round starts again from the first bucket.
+    let again = runtime.run_storage_manager_once(1, sliced.clone());
+    assert_eq!(
+        again
+            .metrics_reap
+            .as_ref()
+            .and_then(|reap| reap.bucket_gauges.first()),
+        truth.gauges.first(),
+        "after the last bucket the sweep must start over from the first"
+    );
+
+    // Zero turns the per-bucket gauges off and leaves the rest of the reap running.
+    let report = runtime.run_storage_manager_once(1, off);
+    let reap = report.metrics_reap.as_ref().expect("the reap still ran");
+    assert!(reap.bucket_gauges.is_empty());
+    assert_eq!(reap.buckets_total, 0);
+}
+
+/// A WARM CACHE SURVIVES A ROUND UNLESS AN OPERATOR SET A BOUND, AND A BOUND STILL INVALIDATES IT.
+///
+/// The `reclaim_memory` stage drops every cached block of the shard. Its gate used to open at one
+/// cached byte, so a shard that had served a single read lost its cache on the next round and every
+/// round after, and readers paid cold reads each time. The expire and evict stages are what relieve
+/// memory pressure; this stage is a blanket invalidation, so by default it waits for a bound.
+///
+/// BOTH ARMS ARE ASSERTED. The default arm alone would pass a stage that had stopped working, so the
+/// second arm sets a one-byte bound and requires the same warm cache to be dropped.
+#[test]
+fn a_warm_cache_survives_a_default_round_and_an_explicit_bound_still_drops_it() {
+    fn warm(engine: &TemporalEngine) {
+        for index in 0..50 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("loop-{index:06}"),
+                },
+            });
+            assert!(response.status.ok, "read {index}: {:?}", response.status);
+        }
+    }
+    fn cached(runtime: &DataNodeRuntime, options: &StorageManagerOptions) -> u64 {
+        runtime
+            .storage_manager_pressure_snapshot(1, options)
+            .0
+            .cache_memory_bytes
+    }
+
+    // DEFAULT: the cache stays.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let shipped = StorageManagerOptions::default();
+    let engine = runtime.engine();
+    warm(&engine);
+    let before = cached(&runtime, &shipped);
+    assert!(
+        before > 0,
+        "the fixture never warmed the cache, so the arms below prove nothing"
+    );
+    let report = runtime.run_storage_manager_once(1, shipped.clone());
+    assert!(
+        !report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "a default round ran the blanket invalidation: {:?}",
+        report.executed_stages
+    );
+    assert!(
+        cached(&runtime, &shipped) > 0,
+        "a default round dropped a warm cache ({before} bytes before)"
+    );
+
+    // CONTROL: an explicit one-byte bound still invalidates.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let bounded = StorageManagerOptions {
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let engine = runtime.engine();
+    warm(&engine);
+    assert!(cached(&runtime, &bounded) > 0, "the control fixture never warmed");
+    let report = runtime.run_storage_manager_once(1, bounded.clone());
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "an explicit bound did not run the stage: {:?}",
+        report.executed_stages
+    );
+    assert_eq!(
+        cached(&runtime, &bounded),
+        0,
+        "an explicit bound ran the stage but the cache is still warm"
+    );
+}
+
+/// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
+/// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
+/// round, so this prices what a round pays then, stage by stage and by the call site that walked.
+#[test]
+#[ignore]
+fn what_a_dirty_loop_round_walks_by_call_site() {
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1500usize);
+    let writes = std::env::var("LOOP_WRITES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20usize);
+    let rounds = 8usize;
+    // `LOOP_OLD_CACHE_GATE=1` restores the one-byte cache bounds the shipped defaults used to carry.
+    let shipped = if std::env::var("LOOP_OLD_CACHE_GATE").is_ok() {
+        StorageManagerOptions {
+            cache_memory_bytes_pressure: 1,
+            cache_disk_bytes_pressure: 1,
+            ..StorageManagerOptions::default()
+        }
+    } else {
+        StorageManagerOptions::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    // Warm the cache the way a served shard would be, so the stage's gate has something to see.
+    {
+        let engine = runtime.engine();
+        for index in 0..keys.min(200) {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("loop-{index:06}"),
+                },
+            });
+        }
+    }
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, shipped.clone());
+    }
+    let engine = runtime.engine();
+    for round in 0..rounds {
+        for write in 0..writes {
+            let index = (round * writes + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        crate::engine::reset_live_block_scan_sites();
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        eprintln!(
+            "D round {round}: {} us, walk_entries={walked} (= {:.1} whole-shard walks of {keys})",
+            report.duration_us,
+            walked as f64 / keys as f64
+        );
+        for span in &report.stage_spans {
+            eprintln!(
+                "      {:<18} ran={} {:>8} us walk={}",
+                span.stage, span.executed, span.duration_us, span.walk.live_block_entries
+            );
+        }
+        for (site, entries) in crate::engine::live_block_scan_sites_snapshot() {
+            eprintln!("      site {site:<60} {entries:>8} entries ({:.1}x)", entries as f64 / keys as f64);
+        }
+    }
+}
+
+/// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.
+///
+/// A shard that takes writes between rounds is dirty at every round, and the round then builds its
+/// plans from a listing of every live block. The WAL reclaim plan needs the bucket summaries and the
+/// live digests; those come off ONE listing, so each plan build lists the shard once instead of twice
+/// and the round totals 20 listings of the shard. Counted in live-block entries visited, not timed, because a stopwatch on a shared box
+/// measures the other tenants.
+///
+/// THE BOUND IS EXACT, so a plan that lists the shard once more fails it. The bound is on the TOTAL
+/// of the round and not on one stage: dropping one stage's walks has moved them to a later stage
+/// before. The control is that the walk is large enough to mean something and that the round did
+/// dump (a round that did nothing would pass a bound trivially).
+const DIRTY_ROUND_WALK_BOUND: u64 = 20;
+
+#[test]
+fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
+    let keys = 300usize;
+    let writes = 20usize;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let options = StorageManagerOptions::default();
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let engine = runtime.engine();
+    let mut checked = 0;
+    for round in 0..4usize {
+        for write in 0..writes {
+            let index = (round * writes + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        eprintln!("dirty round {round}: walk_entries={walked} ({:.1} listings)", walked as f64 / keys as f64);
+        // The first dirty round also settles the writes of the warm-up; the bound is for the rest.
+        if round == 0 {
+            continue;
+        }
+        assert!(walked >= keys as u64 * 10, "the round listed only {walked} entries");
+        assert!(
+            walked <= DIRTY_ROUND_WALK_BOUND * keys as u64,
+            "a dirty round listed {walked} entries = {:.1} listings of {keys} keys, bound {DIRTY_ROUND_WALK_BOUND}",
+            walked as f64 / keys as f64
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}

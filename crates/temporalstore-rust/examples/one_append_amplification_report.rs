@@ -254,7 +254,8 @@ async fn batched_appends(
         MatrixObjectObjectStore::new(BUCKET, options.clone()).expect("a store of its own"),
     );
     let replicator = SharedStoreReplicator::new(cluster, store.clone())
-        .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+        .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob)
+        .with_wal_batch_container(std::env::var("BATCH_CONTAINER").is_ok());
 
     let mut seed = 0x1234_5678u32;
     let value: Vec<u8> = (0..payload)

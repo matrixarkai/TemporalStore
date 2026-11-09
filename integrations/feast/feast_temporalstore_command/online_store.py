@@ -374,6 +374,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             written += 1
 
         prepared_rows: List[Tuple[str, int, int, List[bytes]]] = []
+        prepared_row_shape_bytes: List[int] = []
         row_layouts: List[Tuple[str, ...]] = []
         shared_fields: Optional[Tuple[str, ...]] = None
         shared_layout = True
@@ -397,6 +398,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             values.extend(item[2] for item in serialized_values)
             prepared_rows.append(
                 (hash_key, proto_ts.seconds, proto_ts.nanos, values)
+            )
+            prepared_row_shape_bytes.append(
+                4 * len(hash_key)
+                + 5 * len(values)
+                + sum(map(len, values))
             )
             row_layouts.append(row_fields)
             if shared_fields is None:
@@ -437,7 +443,16 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             and not commands
         ):
             conditional_result = client.batch_hash_timestamp_set(
-                list(shared_fields), ts_field, prepared_rows
+                list(shared_fields),
+                ts_field,
+                prepared_rows,
+                128
+                + 4 * len(ts_field)
+                + 5
+                + 4 * sum(map(len, shared_fields))
+                + 5 * len(shared_fields)
+                + sum(prepared_row_shape_bytes)
+                + 33 * len(prepared_rows),
             )
             if conditional_result is not None:
                 conditional_handled = True
@@ -457,7 +472,12 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         )
                 retained_rows: List[Tuple[str, int, int, List[bytes]]] = []
                 retained_layouts: List[Tuple[str, ...]] = []
-                for row, layout in zip(prepared_rows, row_layouts):
+                retained_row_shape_bytes: List[int] = []
+                for row, layout, row_shape_bytes in zip(
+                    prepared_rows,
+                    row_layouts,
+                    prepared_row_shape_bytes,
+                ):
                     hash_key, seconds, nanos, _values = row
                     event_nanos = seconds * 1_000_000_000 + nanos
                     if event_nanos <= stored_nanos.get(hash_key, 0):
@@ -465,8 +485,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     else:
                         retained_rows.append(row)
                         retained_layouts.append(layout)
+                        retained_row_shape_bytes.append(row_shape_bytes)
                 prepared_rows = retained_rows
                 row_layouts = retained_layouts
+                prepared_row_shape_bytes = retained_row_shape_bytes
 
             if shared_fields is not None and shared_layout and not commands:
                 client.batch_hash_multi_set(
@@ -475,6 +497,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         (hash_key, values)
                         for hash_key, _seconds, _nanos, values in prepared_rows
                     ],
+                    128
+                    + 4 * sum(map(len, shared_fields))
+                    + 5 * len(shared_fields)
+                    + sum(prepared_row_shape_bytes)
+                    + 15 * len(prepared_rows),
                 )
             elif prepared_rows or commands:
                 client.batch_write(

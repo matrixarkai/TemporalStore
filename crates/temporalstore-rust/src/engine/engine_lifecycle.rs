@@ -3664,7 +3664,6 @@ mod replay_window_tests {
             metadata: Some(WriteAheadLogRecordMetadata {
                 version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
                 timestamp_ms: 1,
-                items: Vec::new(),
                 batch_id: batch.map(|(id, _, _)| id),
                 batch_size: batch.map(|(_, size, _)| size),
                 batch_index: batch.map(|(_, _, index)| index),

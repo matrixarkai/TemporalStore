@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE LOCAL ROUTING-RANGE STAMP IS WRITTEN BINARY, AND A JSON STAMP IS STILL READ.
+//! THE LOCAL ROUTING-RANGE STAMP IS WRITTEN BINARY, AND A JSON STAMP IS NOT READ.
 //!
-//! The published copy of this stamp was flipped earlier; this is the copy beside the base index.
-//! The READER already went through the shared decoder (so it accepted both shapes before this
-//! change), which is why this is a writer-only change: the hold rule was already satisfied.
+//! The published copy of this stamp and the copy beside the base index go through one shared
+//! codec, and that codec reads protobuf only: the first release has no installed base, so there is
+//! no JSON stamp on disk to keep loading.
 //!
-//! The JSON arm is driven on bytes PLANTED into the file, because the writer that used to produce
-//! them is gone. Every value is chosen so only one arm can have produced it: the writer's stamp and
-//! the planted one share no number, and a reader that failed on a file answers `None`, which a
-//! "read back the planted value" assertion cannot be confused with.
+//! The refused shape is driven on bytes PLANTED into the file, because the writer that used to
+//! produce them is gone. The planted stamp shares no number with the writer's, so a reader that
+//! decoded it would answer `Some(planted)`, which cannot be confused with the `None` of a refusal.
 #![allow(clippy::all)]
 use super::*;
 use crate::engine::routing_range_stamp::{
@@ -20,7 +19,7 @@ use crate::engine::routing_range_stamp::{
 use crate::shared_store::SHARED_OBJECT_CONTAINER_PROTOBUF;
 
 #[test]
-fn the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read() {
+fn the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let index_dir = dir.path().join("indexes");
 
@@ -46,7 +45,7 @@ fn the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read() {
         "the stamp is opened by exact path and keeps its name: {path:?}"
     );
 
-    // ---- the installed base: a JSON stamp, planted over it. Disjoint from the writer's values.
+    // ---- a JSON stamp, planted over it. Disjoint from the writer's values.
     let legacy = RoutingRangeStamp {
         start_routing_bucket: 11,
         end_routing_bucket: 9999,
@@ -61,22 +60,22 @@ fn the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read() {
     );
     assert_eq!(
         read_routing_range_stamp(&index_dir, 4),
-        Some(legacy),
-        "a JSON stamp was not read: every store written before this change would now read as \
-         UNSTAMPED, which a load refuses by name"
+        None,
+        "a planted JSON stamp was read as {legacy:?}: a JSON decode path survives"
     );
 
-    // ---- CONTROL: a file neither shape can parse reads as None, so a Some above means a decode.
-    std::fs::write(&path, [0x02u8, b'x', b'y']).unwrap();
-    assert_eq!(read_routing_range_stamp(&index_dir, 4), None);
+    // ---- CONTROL: the real writer's file reads back after the refusal, so the `None` above is
+    // the codec's answer to JSON and not a reader that fails on every file.
+    write_routing_range_stamp(&index_dir, 4, written).unwrap();
+    assert_eq!(read_routing_range_stamp(&index_dir, 4), Some(written));
 }
 
 /// NO JSON ENCODE PATH IS LEFT FOR THE LOCAL STAMP.
 ///
 /// The test above asserts the first byte of what the writer produced; this sees an encoder that
 /// nobody calls YET. The scan reads the writer's own code with comment lines removed, anchored on its
-/// declaration up to the next item, and its POSITIVE CONTROL is the shared decoder, which does call
-/// `serde_json` (the permanent JSON arm): a scan that could not see that would pass over any writer.
+/// declaration up to the next item, and its POSITIVE CONTROL is a synthetic body that does call
+/// `serde_json`: a scan that could not see that would pass over any writer.
 #[test]
 fn no_json_encode_path_is_left_for_the_local_routing_range_stamp() {
     fn body(source: &'static str, from: &str, to: &str) -> String {
@@ -118,9 +117,20 @@ fn no_json_encode_path_is_left_for_the_local_routing_range_stamp() {
         "pub(crate) fn decode_routing_range_stamp(",
         "pub(crate) fn encode_routing_range_stamp(",
     );
+    assert!(decoder.len() > 100, "the scan found almost nothing in the decoder");
     assert!(
-        decoder.contains("serde_json::from_slice"),
-        "the control no longer sees the permanent JSON arm, so this scan could pass over a writer \
-         it cannot see"
+        !decoder.contains("serde_json"),
+        "the shared stamp decoder reaches for serde_json: a JSON decode path survives"
+    );
+
+    // POSITIVE CONTROL: the same scan, over a body that does call serde_json, must see it.
+    let planted = body(
+        "fn a() { serde_json::to_vec(&x) } fn b() {}",
+        "fn a(",
+        "fn b(",
+    );
+    assert!(
+        planted.contains("serde_json"),
+        "the control no longer sees serde_json, so this scan could pass over a writer it cannot see"
     );
 }

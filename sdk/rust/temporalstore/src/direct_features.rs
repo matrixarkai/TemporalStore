@@ -25,6 +25,14 @@ impl Client {
         points: &[FeaturePoint],
         policy: FeatureWritePolicy,
     ) -> Result<()> {
+        if matches!(policy, FeatureWritePolicy::MergeReduce) {
+            // The in-process door passes each value as a C string through a lossy UTF-8 view, and a
+            // cell request is binary. Refused rather than corrupted; use the proxy client.
+            return Err(crate::Error {
+                code: -1,
+                message: "merge-reduce needs binary values, which the in-process door cannot carry; use the proxy client".to_string(),
+            });
+        }
         let key = cstring(key)?;
         let values = points
             .iter()

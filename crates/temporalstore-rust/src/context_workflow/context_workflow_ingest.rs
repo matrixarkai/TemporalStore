@@ -107,7 +107,14 @@ fn process_context_source_window(
             .take()
             .expect("every validated source receives a summary result")
         {
-            Ok(summaries) if summaries.status.ok => prepared_sources.push((source, summaries)),
+            Ok(summaries) if summaries.status.ok => {
+                let node_hash = stable_hash64(&format!(
+                    "{}:{}:{}",
+                    source.tenant_hash, source.source_kind as u8, source.source_id
+                ));
+                let event_id_hash = context_event_id_hash(&source.source_id, &source.body);
+                prepared_sources.push((source, summaries, node_hash, event_id_hash));
+            }
             Ok(summaries) => failed_sources.push(ContextIngestSourceFailure {
                 source_id: source.source_id,
                 status: summaries.status,
@@ -123,7 +130,7 @@ fn process_context_source_window(
     // item count and bytes. Every source addresses its two rows in the shared provider matrix,
     // avoiding a second allocation and copy for every source in the window.
     let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
-    for (source_index, (_, summaries)) in prepared_sources.iter().enumerate() {
+    for (source_index, (_, summaries, _, _)) in prepared_sources.iter().enumerate() {
         if let Some((_, source_indexes)) = provider_groups
             .iter_mut()
             .find(|(provider, _)| *provider == summaries.provider)
@@ -148,11 +155,14 @@ fn process_context_source_window(
                 .saturating_sub(chunk_start)
                 .saturating_mul(2)
                 .min(limits.max_items);
-            let mut unique_texts =
-                std::collections::HashSet::<&str>::with_capacity(remaining_inputs);
+            let mut unique_by_text =
+                std::collections::HashMap::<&str, usize>::with_capacity(remaining_inputs);
+            let mut unique_inputs = Vec::with_capacity(remaining_inputs);
+            let mut input_rows = Vec::with_capacity(remaining_inputs);
             let mut unique_input_bytes = 0usize;
             while chunk_end < source_indexes.len() {
-                let (source, summaries) = &prepared_sources[source_indexes[chunk_end]];
+                let (source, summaries, node_hash, event_id_hash) =
+                    &prepared_sources[source_indexes[chunk_end]];
                 let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
                 let node_embedding_text = if emit_l1 {
                     summaries.l1.as_str()
@@ -160,15 +170,21 @@ fn process_context_source_window(
                     summaries.l0.as_str()
                 };
                 let event_text = source.body.as_str();
-                let node_is_new = !unique_texts.contains(node_embedding_text);
-                let event_is_new = event_text != node_embedding_text
-                    && !unique_texts.contains(event_text);
+                let existing_node_row = unique_by_text.get(node_embedding_text).copied();
+                let existing_event_row = if event_text == node_embedding_text {
+                    existing_node_row
+                } else {
+                    unique_by_text.get(event_text).copied()
+                };
+                let node_is_new = existing_node_row.is_none();
+                let event_is_new =
+                    event_text != node_embedding_text && existing_event_row.is_none();
                 let new_count =
                     usize::from(node_is_new).saturating_add(usize::from(event_is_new));
                 let new_bytes = usize::from(node_is_new)
                     .saturating_mul(node_embedding_text.len())
                     .saturating_add(usize::from(event_is_new).saturating_mul(event_text.len()));
-                let candidate_count = unique_texts.len().saturating_add(new_count);
+                let candidate_count = unique_by_text.len().saturating_add(new_count);
                 let candidate_bytes = unique_input_bytes.saturating_add(new_bytes);
                 if chunk_end > chunk_start
                     && (candidate_count > limits.max_items
@@ -176,17 +192,31 @@ fn process_context_source_window(
                 {
                     break;
                 }
-                if node_is_new {
-                    unique_texts.insert(node_embedding_text);
-                }
-                if event_is_new {
-                    unique_texts.insert(event_text);
-                }
+                let node_row = if let Some(row) = existing_node_row {
+                    row
+                } else {
+                    let row = unique_inputs.len();
+                    unique_by_text.insert(node_embedding_text, row);
+                    unique_inputs.push(("node_text", *node_hash, 1, node_embedding_text));
+                    row
+                };
+                input_rows.push(node_row);
+                let event_row = if event_text == node_embedding_text {
+                    node_row
+                } else if let Some(row) = existing_event_row {
+                    row
+                } else {
+                    let row = unique_inputs.len();
+                    unique_by_text.insert(event_text, row);
+                    unique_inputs.push(("event_text", *event_id_hash, 3, event_text));
+                    row
+                };
+                input_rows.push(event_row);
                 unique_input_bytes = candidate_bytes;
                 chunk_end += 1;
                 if node_embedding_text.len() > limits.max_input_bytes
                     || source.body.len() > limits.max_input_bytes
-                    || unique_texts.len() > limits.max_items
+                    || unique_by_text.len() > limits.max_items
                     || unique_input_bytes > limits.max_request_bytes
                 {
                     break;
@@ -194,30 +224,16 @@ fn process_context_source_window(
             }
 
             let chunk_indexes = &source_indexes[chunk_start..chunk_end];
-            let mut embedding_inputs = Vec::with_capacity(chunk_indexes.len().saturating_mul(2));
-            for source_index in chunk_indexes {
-                let (source, summaries) = &prepared_sources[*source_index];
-                let node_hash = stable_hash64(&format!(
-                    "{}:{}:{}",
-                    source.tenant_hash, source.source_kind as u8, source.source_id
-                ));
-                let event_id_hash =
-                    stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
-                let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
-                let node_embedding_text = if emit_l1 {
-                    summaries.l1.as_str()
-                } else {
-                    summaries.l0.as_str()
-                };
-                embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
-                embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
-            }
             let ContextCompactEmbeddingOutcome {
                 rows: batch,
                 input_rows,
                 report,
                 deferred,
-            } = context_compact_embeddings_with_fallback(&provider, &embedding_inputs);
+            } = context_prepared_embeddings_with_fallback(
+                &provider,
+                &unique_inputs,
+                input_rows,
+            );
             let batch = Arc::new(batch);
             let input_rows = Arc::<[usize]>::from(input_rows);
             for (chunk_offset, source_index) in chunk_indexes.iter().copied().enumerate() {
@@ -237,7 +253,9 @@ fn process_context_source_window(
     }
 
     let mut pending_extracts = Vec::with_capacity(CONTEXT_DURABLE_SOURCE_BATCH);
-    for (source_index, (source, summaries)) in prepared_sources.into_iter().enumerate() {
+    for (source_index, (source, summaries, node_hash, event_id_hash)) in
+        prepared_sources.into_iter().enumerate()
+    {
         let embedding_outcome = embedding_outcomes[source_index]
             .take()
             .unwrap_or_else(|| {
@@ -247,11 +265,13 @@ fn process_context_source_window(
                     true,
                 )
             });
-        let prepared = prepare_context_gated_prepared(
+        let prepared = prepare_context_gated_prepared_with_ids(
             source,
             gate_l1,
             summaries,
             Some(embedding_outcome),
+            node_hash,
+            event_id_hash,
         );
         if prepared.report.status.ok {
             pending_extracts.push(prepared);
@@ -299,7 +319,19 @@ pub fn ingest_extract_context(
 /// an argument all along; this just gives the caller a way to supply one.
 pub fn ingest_extract_context_with_l1_gate(
     engine: &TemporalEngine,
+    mut request: ContextIngestExtractRequest,
+    gate_l1: bool,
+) -> ContextIngestExtractReport {
+    let source_count = request.sources.len();
+    let sources = std::mem::take(&mut request.sources);
+    ingest_extract_context_from_sources(engine, request, source_count, sources, gate_l1)
+}
+
+fn ingest_extract_context_from_sources(
+    engine: &TemporalEngine,
     request: ContextIngestExtractRequest,
+    source_count: usize,
+    sources: impl IntoIterator<Item = ContextExtractRequest>,
     gate_l1: bool,
 ) -> ContextIngestExtractReport {
     // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
@@ -313,12 +345,12 @@ pub fn ingest_extract_context_with_l1_gate(
     let mut source_kind_counts = BTreeMap::new();
     let mut provider_counts = BTreeMap::new();
     let provider = normalize_provider(request.provider.clone());
-    let source_count = request.sources.len();
     let start_time_ms = request.start_time_ms;
     let end_time_ms = request.end_time_ms;
-    let mut validated_sources = Vec::with_capacity(source_count);
+    let source_window_capacity = source_count.min(CONTEXT_MODEL_SOURCE_WINDOW);
+    let mut validated_sources = Vec::with_capacity(source_window_capacity);
 
-    for mut source in request.sources {
+    for mut source in sources {
         source.shard_id = request.shard_id;
         source.tenant_hash = request.tenant_hash;
         if source.provider.provider_name.is_empty() {
@@ -340,22 +372,28 @@ pub fn ingest_extract_context_with_l1_gate(
             continue;
         }
         validated_sources.push(source);
-    }
-
-    let mut validated_sources = validated_sources.into_iter();
-    loop {
-        let source_window = validated_sources
-            .by_ref()
-            .take(CONTEXT_MODEL_SOURCE_WINDOW)
-            .collect::<Vec<_>>();
-        if source_window.is_empty() {
-            break;
+        if validated_sources.len() == CONTEXT_MODEL_SOURCE_WINDOW {
+            let source_window = std::mem::replace(
+                &mut validated_sources,
+                Vec::with_capacity(source_window_capacity),
+            );
+            process_context_source_window(
+                engine,
+                request.shard_id,
+                gate_l1,
+                source_window,
+                &mut extracts,
+                &mut failed_sources,
+                &mut node_hashes,
+            );
         }
+    }
+    if !validated_sources.is_empty() {
         process_context_source_window(
             engine,
             request.shard_id,
             gate_l1,
-            source_window,
+            validated_sources,
             &mut extracts,
             &mut failed_sources,
             &mut node_hashes,
@@ -443,10 +481,8 @@ pub fn ingest_resource_skill_context(
     let provider = normalize_provider(request.provider.clone());
     let mut resources = Vec::new();
     let mut skills = Vec::new();
-    let mut sources = Vec::new();
     let mut resource_ref_by_source = BTreeMap::new();
     let mut skill_ref_by_source = BTreeMap::new();
-    let mut timestamp_ms = request.start_time_ms.max(1);
 
     for resource_request in request.resources {
         // An oversized payload gets stored WHOLE in the engine-owned blob store before
@@ -475,21 +511,6 @@ pub fn ingest_resource_skill_context(
     for resource in &resources {
         for chunk in &resource.chunks {
             resource_ref_by_source.insert(chunk.source_ref.as_str(), resource.raw_uri.as_str());
-            sources.push(ContextExtractRequest {
-                shard_id: request.shard_id,
-                tenant_hash: request.tenant_hash,
-                source_kind: ContextSourceKind::Document,
-                source_id: chunk.source_ref.clone(),
-                title: chunk
-                    .metadata
-                    .get("heading")
-                    .cloned()
-                    .unwrap_or_else(|| resource.resource_title.clone()),
-                body: chunk.text.clone(),
-                timestamp_ms,
-                provider: provider.clone(),
-            });
-            timestamp_ms = timestamp_ms.saturating_add(1);
         }
     }
 
@@ -502,17 +523,6 @@ pub fn ingest_resource_skill_context(
         if skill.enabled {
             for chunk in &skill.resource.chunks {
                 skill_ref_by_source.insert(chunk.source_ref.as_str(), skill.skill_name.as_str());
-                sources.push(ContextExtractRequest {
-                    shard_id: request.shard_id,
-                    tenant_hash: request.tenant_hash,
-                    source_kind: ContextSourceKind::Document,
-                    source_id: chunk.source_ref.clone(),
-                    title: format!("skill:{}", skill.skill_name),
-                    body: chunk.text.clone(),
-                    timestamp_ms,
-                    provider: provider.clone(),
-                });
-                timestamp_ms = timestamp_ms.saturating_add(1);
             }
         }
     }
@@ -531,18 +541,83 @@ pub fn ingest_resource_skill_context(
         })
     };
 
-    let ingest = ingest_extract_context(
+    // Parsed reports retain their chunk text for callers. Build extraction requests lazily so
+    // only the active model window duplicates those bodies, independent of the corpus size.
+    let source_count = resources
+        .iter()
+        .map(|resource| resource.chunks.len())
+        .sum::<usize>()
+        .saturating_add(
+            skills
+                .iter()
+                .filter(|skill| skill.enabled)
+                .map(|skill| skill.resource.chunks.len())
+                .sum(),
+        );
+    let source_provider = provider.clone();
+    let resource_sources = resources.iter().flat_map(|resource| {
+        let source_provider = source_provider.clone();
+        resource
+            .chunks
+            .iter()
+            .map(move |chunk| ContextExtractRequest {
+                shard_id: request.shard_id,
+                tenant_hash: request.tenant_hash,
+                source_kind: ContextSourceKind::Document,
+                source_id: chunk.source_ref.clone(),
+                title: chunk
+                    .metadata
+                    .get("heading")
+                    .cloned()
+                    .unwrap_or_else(|| resource.resource_title.clone()),
+                body: chunk.text.clone(),
+                timestamp_ms: 0,
+                provider: source_provider.clone(),
+            })
+    });
+    let skill_sources = skills
+        .iter()
+        .filter(|skill| skill.enabled)
+        .flat_map(|skill| {
+            let source_provider = source_provider.clone();
+            skill
+                .resource
+                .chunks
+                .iter()
+                .map(move |chunk| ContextExtractRequest {
+                    shard_id: request.shard_id,
+                    tenant_hash: request.tenant_hash,
+                    source_kind: ContextSourceKind::Document,
+                    source_id: chunk.source_ref.clone(),
+                    title: format!("skill:{}", skill.skill_name),
+                    body: chunk.text.clone(),
+                    timestamp_ms: 0,
+                    provider: source_provider.clone(),
+                })
+        });
+    let first_timestamp_ms = request.start_time_ms.max(1);
+    let sources = resource_sources
+        .chain(skill_sources)
+        .enumerate()
+        .map(|(index, mut source)| {
+            source.timestamp_ms = first_timestamp_ms.saturating_add(index as u64);
+            source
+        });
+    let ingest = ingest_extract_context_from_sources(
         engine,
         ContextIngestExtractRequest {
             shard_id: request.shard_id,
             tenant_hash: request.tenant_hash,
-            sources,
+            sources: Vec::new(),
             query: request.query.clone(),
             start_time_ms: request.start_time_ms,
             end_time_ms: request.end_time_ms,
             max_events: request.max_events,
             provider,
         },
+        source_count,
+        sources,
+        false,
     );
     let mut fanout = ContextResourceSkillModelFanoutReport {
         node_count: ingest.extracts.len(),

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::env_flag::{env_bool, env_number};
-use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
+use crate::http::{post_json_streaming_with_options_and_headers, HttpError, HttpRequestOptions};
 
 use super::{
     BatchEmbedder, BatchExtractor, ContextMessage, ContextRole, EmbeddingBatch, ExtractedContext,
@@ -350,10 +350,11 @@ impl OllamaProvider {
                 truncate: self.config.truncate_embeddings,
                 keep_alive: &self.config.keep_alive,
             };
-            let mut response: OllamaEmbedResponse = post_json_with_options(
+            let mut response: OllamaEmbedResponse = post_json_streaming_with_options_and_headers(
                 &self.addr,
                 &self.endpoint("/api/embed"),
                 &request,
+                "",
                 self.request_options(),
             )
             .map_err(OllamaError::Http)?;
@@ -450,10 +451,11 @@ impl OllamaProvider {
             keep_alive: &self.config.keep_alive,
             options: OllamaChatOptions { temperature: 0.0 },
         };
-        let response: OllamaChatResponse = post_json_with_options(
+        let response: OllamaChatResponse = post_json_streaming_with_options_and_headers(
             &self.addr,
             &self.endpoint("/api/chat"),
             &request,
+            "",
             self.request_options(),
         )
         .map_err(OllamaError::Http)?;
@@ -465,20 +467,43 @@ impl OllamaProvider {
     }
 
     fn extract(&self, messages: &[ContextMessage]) -> Result<Vec<ExtractedContext>, OllamaError> {
-        let mut messages_by_id = HashMap::with_capacity(messages.len());
+        let mut messages_by_id = (messages.len() <= self.config.max_batch_items)
+            .then(|| HashMap::with_capacity(messages.len()));
+        let mut seen_message_ids = messages_by_id
+            .is_none()
+            .then(|| HashSet::with_capacity(messages.len()));
         for (message_index, message) in messages.iter().enumerate() {
-            if messages_by_id
-                .insert(message.message_id, message_index)
-                .is_some()
-            {
+            let duplicate = if let Some(messages_by_id) = messages_by_id.as_mut() {
+                messages_by_id
+                    .insert(message.message_id, message_index)
+                    .is_some()
+            } else {
+                !seen_message_ids
+                    .as_mut()
+                    .expect("large extraction has an id set")
+                    .insert(message.message_id)
+            };
+            if duplicate {
                 return Err(OllamaError::DuplicateMessageId(message.message_id));
             }
         }
+        drop(seen_message_ids);
 
         let mut extracted = Vec::new();
+        let mut messages_in_chunk = HashMap::new();
         let mut start = 0usize;
         while start < messages.len() {
             let (end, prompt) = self.extraction_batch_prompt(messages, start)?;
+            if messages_by_id.is_none() {
+                messages_in_chunk.clear();
+                messages_in_chunk.reserve(end - start);
+                messages_in_chunk.extend(
+                    messages[start..end]
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, message)| (message.message_id, start + offset)),
+                );
+            }
             let output: OllamaExtractionOutput = self.generate_structured_output(
                 EXTRACTION_SYSTEM_PROMPT,
                 &prompt,
@@ -486,12 +511,11 @@ impl OllamaProvider {
             )?;
             for item in output.items {
                 let source_index = messages_by_id
+                    .as_ref()
+                    .unwrap_or(&messages_in_chunk)
                     .get(&item.source_message_id)
                     .copied()
                     .ok_or(OllamaError::UnknownSourceMessage(item.source_message_id))?;
-                if !(start..end).contains(&source_index) {
-                    return Err(OllamaError::UnknownSourceMessage(item.source_message_id));
-                }
                 let source = &messages[source_index];
                 let text = trim_owned(item.text);
                 if text.is_empty() {
@@ -792,12 +816,16 @@ mod tests {
                         break;
                     }
                 }
-                let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response.len(),
-                    response
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
                 );
-                stream.write_all(reply.as_bytes()).unwrap();
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                thread::sleep(std::time::Duration::from_millis(5));
+                for chunk in response.as_bytes().chunks(7) {
+                    stream.write_all(chunk).unwrap();
+                }
             }
         });
         (addr, handle)
@@ -841,6 +869,57 @@ mod tests {
     }
 
     #[test]
+    fn native_extraction_reuses_a_bounded_chunk_lookup() {
+        let (addr, server) = serve_json(vec![
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":7,\"text\":\"first fact\"},{\"source_message_id\":8,\"text\":\"second fact\"}]}"}}"#,
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":9,\"text\":\"third fact\"}]}"}}"#,
+        ]);
+        let messages = [
+            ContextMessage {
+                tenant_id: 4,
+                message_id: 7,
+                event_time_ms: 11,
+                role: ContextRole::User,
+                text: "first".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 4,
+                message_id: 8,
+                event_time_ms: 12,
+                role: ContextRole::Assistant,
+                text: "second".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 4,
+                message_id: 9,
+                event_time_ms: 13,
+                role: ContextRole::User,
+                text: "third".to_string(),
+            },
+        ];
+        let output = provider(addr).extract_batch(&messages).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(
+            output
+                .iter()
+                .map(|item| {
+                    (
+                        item.source_message_id,
+                        item.event_time_ms,
+                        item.text.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (7, 11, "first fact"),
+                (8, 12, "second fact"),
+                (9, 13, "third fact"),
+            ]
+        );
+    }
+
+    #[test]
     fn invalid_or_oversized_inputs_fail_before_network_io() {
         let provider = OllamaProvider::new(OllamaConfig {
             max_input_bytes: 3,
@@ -857,6 +936,39 @@ mod tests {
                 ..OllamaConfig::default()
             }),
             Err(OllamaError::UnsupportedUrl)
+        ));
+
+        let duplicate_messages = [
+            ContextMessage {
+                tenant_id: 1,
+                message_id: 7,
+                event_time_ms: 1,
+                role: ContextRole::User,
+                text: "first".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 1,
+                message_id: 8,
+                event_time_ms: 2,
+                role: ContextRole::Assistant,
+                text: "middle".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 1,
+                message_id: 7,
+                event_time_ms: 3,
+                role: ContextRole::User,
+                text: "duplicate in a later request chunk".to_string(),
+            },
+        ];
+        let duplicate_provider = OllamaProvider::new(OllamaConfig {
+            max_batch_items: 2,
+            ..OllamaConfig::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            duplicate_provider.extract_batch(&duplicate_messages),
+            Err(OllamaError::DuplicateMessageId(7))
         ));
     }
 }

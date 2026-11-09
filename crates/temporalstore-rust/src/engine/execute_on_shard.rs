@@ -169,6 +169,48 @@ fn stage_meta_outcome(
     });
 }
 
+/// A counter write's RESULT at one bucket, and the series block when it is due.
+///
+/// The result, not the delta: an outcome installed twice is the same value, which is what lets a
+/// record be replayed more than once. All five counter arms add into one bucket of one series and
+/// can state the total they left there, so all five stage it here and let
+/// `persist_control_state_block_after_increment` decide whether the whole series is rewritten.
+#[allow(clippy::too_many_arguments)]
+fn record_counter_result(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+    bucket_ms: u64,
+    resulting: i64,
+) -> bool {
+    stage_element_name_outcome(
+        shard_id,
+        "control_counter",
+        key,
+        Some(bucket_ms.to_string()),
+        block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+        None,
+        Some(resulting.to_le_bytes().to_vec()),
+    );
+    persist_control_state_block_after_increment(
+        cache,
+        block_store,
+        shard_id,
+        shard,
+        key,
+        start_routing_bucket,
+        end_routing_bucket,
+        async_storage,
+        bucket_ms,
+        resulting,
+    )
+}
+
 /// Read a node record back, by the same two lookups every node reader here uses.
 fn load_context_node(
     cache: &MultiLayerCache,
@@ -467,6 +509,7 @@ pub fn reset_tombstone_append_failure_count() {
 }
 
 pub(super) enum ProjectedHashValues {
+    Missing(usize),
     Owned(Vec<Option<Vec<u8>>>),
     Shared {
         frame: std::sync::Arc<[u8]>,
@@ -477,6 +520,7 @@ pub(super) enum ProjectedHashValues {
 impl ProjectedHashValues {
     pub(super) fn len(&self) -> usize {
         match self {
+            Self::Missing(field_count) => *field_count,
             Self::Owned(values) => values.len(),
             Self::Shared { ranges, .. } => ranges.len(),
         }
@@ -484,6 +528,7 @@ impl ProjectedHashValues {
 
     pub(super) fn value_at(&self, index: usize) -> Option<&[u8]> {
         match self {
+            Self::Missing(_) => None,
             Self::Owned(values) => values.get(index).and_then(|value| value.as_deref()),
             Self::Shared { frame, ranges } => ranges
                 .get(index)
@@ -494,6 +539,7 @@ impl ProjectedHashValues {
 
     pub(super) fn into_owned(self) -> Vec<Option<Vec<u8>>> {
         match self {
+            Self::Missing(field_count) => vec![None; field_count],
             Self::Owned(values) => values,
             Self::Shared { frame, ranges } => ranges
                 .into_iter()
@@ -524,12 +570,12 @@ pub(super) fn execute_hash_multi_get(
             mutated: true,
         };
     }
+    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     let values = execute_hash_multi_get_projected(
         cache,
         block_store,
         shard_id,
-        start_routing_bucket,
-        end_routing_bucket,
+        routing_bucket,
         shard,
         key,
         fields,
@@ -547,34 +593,44 @@ pub(super) fn execute_hash_multi_get_projected(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    start_routing_bucket: u32,
-    end_routing_bucket: u32,
+    routing_bucket: u32,
     shard: &mut ShardState,
     key: &str,
     fields: &[String],
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
     projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ProjectedHashValues {
-    let hash_fields = shard.bucket_index.hashes.get(key);
-    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    let Some(hash_fields) = shard.bucket_index.hashes.get(key) else {
+        return ProjectedHashValues::Missing(fields.len());
+    };
     // A packed row gives every present field the same address. Detect that common case
     // without allocating a per-command address map, fetch its frame once, and project all
     // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
-    // the established independent-read path.
+    // the established independent-read path. Both collections are sorted by field name, so
+    // merge them once and retain presence in reusable scratch instead of binary-searching the
+    // field map twice per requested slot.
     let mut shared: Option<(&ElementEntry, &str)> = None;
     let mut distinct_addresses = false;
-    if let Some(entries) = hash_fields {
-        for field in fields {
-            let Some(address) = entries.get(field) else {
-                continue;
-            };
-            match shared {
-                None => shared = Some((address, field.as_str())),
-                Some((held, _)) if held == address => {}
-                Some(_) => {
-                    distinct_addresses = true;
-                    break;
-                }
+    projection_scratch.reset_index_presence(fields.len());
+    let mut stored = hash_fields.entries().peekable();
+    for &index in projection_plan.positions_by_name() {
+        let field = fields[index].as_str();
+        while stored.peek().is_some_and(|(name, _)| &name[..] < field) {
+            stored.next();
+        }
+        let Some(&(name, address)) = stored.peek() else {
+            break;
+        };
+        if &name[..] != field {
+            continue;
+        }
+        projection_scratch.mark_present_in_index(index);
+        match shared {
+            None => shared = Some((address, field)),
+            Some((held, _)) if held == address => {}
+            Some(_) => {
+                distinct_addresses = true;
+                break;
             }
         }
     }
@@ -589,7 +645,7 @@ pub(super) fn execute_hash_multi_get_projected(
                 Some(routing_bucket),
             );
             let Some(frame) = frame else {
-                return ProjectedHashValues::Owned(vec![None; fields.len()]);
+                return ProjectedHashValues::Missing(fields.len());
             };
             match container_blocks::project_utf8_container_element_ranges_with_plan(
                 frame.as_ref(),
@@ -597,33 +653,35 @@ pub(super) fn execute_hash_multi_get_projected(
                 projection_scratch,
             ) {
                 container_blocks::Utf8ContainerRangeProjection::Values(mut ranges) => {
-                    for (index, field) in fields.iter().enumerate() {
-                        if hash_fields.and_then(|entries| entries.get(field)).is_none() {
-                            ranges[index] = None;
+                    for (index, range) in ranges.iter_mut().enumerate() {
+                        if !projection_scratch.is_present_in_index(index) {
+                            *range = None;
                         }
                     }
                     ProjectedHashValues::Shared { frame, ranges }
                 }
                 container_blocks::Utf8ContainerRangeProjection::Corrupt(_) => {
                     note_corrupt_container_block();
-                    ProjectedHashValues::Owned(vec![None; fields.len()])
+                    ProjectedHashValues::Missing(fields.len())
                 }
                 container_blocks::Utf8ContainerRangeProjection::NotFramed
                 | container_blocks::Utf8ContainerRangeProjection::OtherSpelling => {
                     ProjectedHashValues::Owned(
                         fields
                             .iter()
-                            .map(|field| {
-                                hash_fields
-                                    .and_then(|entries| entries.get(field))
-                                    .and_then(|_| select_container_value(frame.as_ref(), field))
+                            .enumerate()
+                            .map(|(index, field)| {
+                                projection_scratch
+                                    .is_present_in_index(index)
+                                    .then(|| select_container_value(frame.as_ref(), field))
+                                    .flatten()
                             })
                             .collect(),
                     )
                 }
             }
         } else {
-            ProjectedHashValues::Owned(vec![None; fields.len()])
+            ProjectedHashValues::Missing(fields.len())
         }
     } else {
         ProjectedHashValues::Owned(
@@ -631,7 +689,7 @@ pub(super) fn execute_hash_multi_get_projected(
                 .iter()
                 .map(|field| {
                     hash_fields
-                        .and_then(|entries| entries.get(field))
+                        .get(field)
                         .and_then(|address| {
                             read_block_bytes(
                                 cache,
@@ -701,16 +759,14 @@ fn write_packed_hash_entries(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    start_routing_bucket: u32,
-    end_routing_bucket: u32,
+    routing_bucket: u32,
+    object_id: u64,
     shard: &mut ShardState,
     key: &str,
     async_storage: bool,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (bool, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = deduplicate_hash_entries(entries);
-    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-    let object_id = stable_block_object_id(shard_id, "hash", key);
     let block_ordinal = packed_entries
         .iter()
         .find_map(|(field, _)| {
@@ -747,9 +803,11 @@ fn write_packed_hash_entries(
             for (field, _) in &packed_entries {
                 let field_handle =
                     super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
-                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                super::recorded_map::install_element_at_bucket::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
+                    routing_bucket,
+                    object_id,
                     key,
                     Some(field.clone()),
                     field_handle,
@@ -777,13 +835,38 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     async_storage: bool,
     pack_projection: bool,
     key: String,
+    entries: Vec<(String, Vec<u8>)>,
+) -> (ExecuteOutcome, Command) {
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    let object_id = stable_block_object_id(shard_id, "hash", &key);
+    execute_hash_multi_set_reusing_metadata_at_bucket(
+        cache,
+        block_store,
+        shard_id,
+        routing_bucket,
+        object_id,
+        shard,
+        async_storage,
+        pack_projection,
+        key,
+        entries,
+    )
+}
+
+pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    shard: &mut ShardState,
+    async_storage: bool,
+    pack_projection: bool,
+    key: String,
     mut entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     remove_if_expired(shard, &key);
-    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
-    let object_id = stable_block_object_id(shard_id, "hash", &key);
-
     // Shared feature-row batches carry one projection and read it back together, so one packed
     // block avoids repeating the block header and physical append for every field. The packed
     // projection reader fetches that shared address once on both storage modes. Generic hash
@@ -794,8 +877,8 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
             cache,
             block_store,
             shard_id,
-            start_routing_bucket,
-            end_routing_bucket,
+            routing_bucket,
+            object_id,
             shard,
             &key,
             async_storage,
@@ -868,8 +951,39 @@ pub(super) fn execute_packed_conditional_hash_write(
     timestamp_nanos: i32,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
-    let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    let object_id = stable_block_object_id(shard_id, "hash", &key);
+    execute_packed_conditional_hash_write_at_bucket(
+        cache,
+        block_store,
+        shard_id,
+        routing_bucket,
+        object_id,
+        shard,
+        async_storage,
+        key,
+        timestamp_field,
+        timestamp_seconds,
+        timestamp_nanos,
+        entries,
+    )
+}
+
+pub(super) fn execute_packed_conditional_hash_write_at_bucket(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    shard: &mut ShardState,
+    async_storage: bool,
+    key: String,
+    timestamp_field: String,
+    timestamp_seconds: i64,
+    timestamp_nanos: i32,
+    entries: Vec<(String, Vec<u8>)>,
+) -> (ExecuteOutcome, Command) {
+    let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
         .bucket_index.hashes
         .get(&key)
@@ -919,8 +1033,8 @@ pub(super) fn execute_packed_conditional_hash_write(
         cache,
         block_store,
         shard_id,
-        start_routing_bucket,
-        end_routing_bucket,
+        routing_bucket,
+        object_id,
         shard,
         &key,
         async_storage,
@@ -1803,21 +1917,22 @@ pub(crate) fn execute_on_shard(
                 }
             }
 
+            // The routing bucket is the object's, so it is one value for every field; and the
+            // fields of one hash sit in few slabs, so the page keys share their record key.
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let mut page_keys = crate::engine::PageKeys::new();
             let entries = resolved
                 .into_iter()
                 .filter_map(|(name, element_name, address)| {
-                    read_block_bytes(
+                    let cache_key = page_keys.key(shard_id, &address, Some(routing_bucket));
+                    read_block_bytes_keyed(
                         cache,
                         block_store,
                         shard_id,
                         &address,
                         // The element the whole-object door handed back beside this address.
                         BlockIdentity::of(shard_id, "hash", &key, element_name.as_deref()),
-                        Some(block_routing_bucket(
-                            &key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        )),
+                        cache_key,
                     )
                     .map(|value| (name, value))
                 })
@@ -2932,6 +3047,43 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // MERGE-REDUCE: the request's cells are merged into what is stored BEFORE the series
+            // is borrowed for writing, and what is appended below is the merged snapshot at each
+            // timestamp -- an ordinary upsert of it. See `cell_merge_append` for where a violation
+            // is refused (validation) and why this plan cannot fail here for a validated command.
+            let mut merge_receipt = None;
+            let points = if policy == FeatureWritePolicy::MergeReduce {
+                match crate::engine::cell_merge_append::plan_cell_merge(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard.features().get(&key[..]),
+                    &key,
+                    routing_bucket,
+                    &points,
+                ) {
+                    Ok(plan) => {
+                        merge_receipt = Some((
+                            plan.points.len() as u64,
+                            plan.cells_created,
+                            plan.cells_merged,
+                        ));
+                        plan.points
+                    }
+                    Err(_) => {
+                        return ExecuteOutcome {
+                            response: CommandResponse::CellMergeReceipt {
+                                snapshots_written: 0,
+                                cells_created: 0,
+                                cells_merged: 0,
+                            },
+                            mutated,
+                        };
+                    }
+                }
+            } else {
+                points
+            };
             // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
             // `ShardState` where `&mut shard.features` borrowed one field, so this read of
             // `shard.bucket_index` can no longer sit inside the append call below -- the
@@ -2962,6 +3114,8 @@ pub(crate) fn execute_on_shard(
                     FeatureWritePolicy::InsertIfAbsent => !exists,
                     FeatureWritePolicy::ReplaceExisting => exists,
                     FeatureWritePolicy::Block => false,
+                    // The point is already the merged snapshot: an upsert of it.
+                    FeatureWritePolicy::MergeReduce => true,
                 };
                 if should_write {
                     accepted_timestamps.insert(point.timestamp_ms);
@@ -3023,8 +3177,23 @@ pub(crate) fn execute_on_shard(
                 );
             }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
-            CommandResponse::Integer {
-                value: if mutated { 1 } else { 0 },
+            match merge_receipt {
+                // A plan that was never appended reports nothing landed.
+                Some((snapshots_written, cells_created, cells_merged)) if mutated => {
+                    CommandResponse::CellMergeReceipt {
+                        snapshots_written,
+                        cells_created,
+                        cells_merged,
+                    }
+                }
+                Some(_) => CommandResponse::CellMergeReceipt {
+                    snapshots_written: 0,
+                    cells_created: 0,
+                    cells_merged: 0,
+                },
+                None => CommandResponse::Integer {
+                    value: if mutated { 1 } else { 0 },
+                },
             }
         }
         Command::FeatureQuery {
@@ -3341,7 +3510,7 @@ pub(crate) fn execute_on_shard(
                     .features()
                     .get(&key[..])
                     .map(|series| {
-                        series
+                        crate::engine::window_aggregate::sum_legacy(series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .take(count.unwrap_or(feature_max_size))
                             .filter_map(|(timestamp_ms, address)| {
@@ -3361,8 +3530,7 @@ pub(crate) fn execute_on_shard(
                                     parse_i64_slice,
                                 )
                                 .flatten()
-                            })
-                            .sum::<i64>()
+                            }))
                     })
                     .unwrap_or_default();
                 CommandResponse::Aggregate { value }
@@ -3576,16 +3744,7 @@ pub(crate) fn execute_on_shard(
             };
             // The RESULT, not the increment. An increment replayed twice counts twice; a count
             // installed twice is the same count, which is what makes a record idempotent.
-            stage_element_name_outcome(
-                shard_id,
-                "control_counter",
-                &key,
-                Some(timestamp_ms.to_string()),
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
-                None,
-                Some(resulting.to_le_bytes().to_vec()),
-            );
-            persist_control_state_block(
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3594,6 +3753,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                timestamp_ms,
+                resulting,
             );
             if control_rollup_enabled {
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);
@@ -3613,13 +3774,17 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            *shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default()
-                .entry(bucket_ms)
-                .or_default() += amount;
-            persist_control_state_block(
+            let resulting = {
+                let counter = shard
+                    .control_state_mut()
+                    .entry(std::sync::Arc::from(&key[..]))
+                    .or_default()
+                    .entry(bucket_ms)
+                    .or_default();
+                *counter += amount;
+                *counter
+            };
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3628,6 +3793,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                bucket_ms,
+                resulting,
             );
             if let Some(ttl_ms) = ttl_ms {
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
@@ -3722,10 +3889,11 @@ pub(crate) fn execute_on_shard(
                     .control_state()
                     .get(&key[..])
                     .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .sum()
+                        crate::engine::window_aggregate::sum_legacy(
+                            series
+                                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                                .map(|(_, value)| *value),
+                        )
                     })
                     .unwrap_or_default()
             };
@@ -3805,13 +3973,17 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let key = control_state_family_key(family, &key);
-            *shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default()
-                .entry(timestamp_ms)
-                .or_default() += amount;
-            persist_control_state_block(
+            let resulting = {
+                let counter = shard
+                    .control_state_mut()
+                    .entry(std::sync::Arc::from(&key[..]))
+                    .or_default()
+                    .entry(timestamp_ms)
+                    .or_default();
+                *counter += amount;
+                *counter
+            };
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3820,6 +3992,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                timestamp_ms,
+                resulting,
             );
             if control_rollup_enabled {
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);
@@ -3839,12 +4013,16 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let key = control_state_family_key(family, &key);
             let series = shard.control_state_mut().entry(std::sync::Arc::from(&key[..])).or_default();
-            *series.entry(timestamp_ms).or_default() += amount;
+            let resulting = {
+                let counter = series.entry(timestamp_ms).or_default();
+                *counter += amount;
+                *counter
+            };
             let values = series
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(_, value)| *value)
                 .collect::<Vec<_>>();
-            persist_control_state_block(
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3853,6 +4031,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                timestamp_ms,
+                resulting,
             );
             if control_rollup_enabled {
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);
@@ -3903,9 +4083,15 @@ pub(crate) fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             let series = shard.control_state_mut().entry(std::sync::Arc::from(&key[..])).or_default();
-            if !is_duplicate {
-                *series.entry(bucket_ms).or_default() += amount;
-            }
+            // A duplicate adds nothing and so has no result to state; it keeps writing the block,
+            // which is what makes the record one a replay installs.
+            let resulting = if is_duplicate {
+                None
+            } else {
+                let counter = series.entry(bucket_ms).or_default();
+                *counter += amount;
+                Some(*counter)
+            };
             let value = if is_control_state_change_aggregator(&aggregator) {
                 count_control_state_changes(shard, &key, start_ms, end_ms)
             } else {
@@ -3921,7 +4107,9 @@ pub(crate) fn execute_on_shard(
                     .unwrap_or_default();
                 aggregate_control_state_values(&values, &aggregator)
             };
-            persist_control_state_block(
+            match resulting {
+                Some(resulting) => {
+                    record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3930,7 +4118,23 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                bucket_ms,
+                resulting,
             );
+                }
+                None => {
+                    persist_control_state_block(
+                        cache,
+                        block_store,
+                        shard_id,
+                        shard,
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        async_storage,
+                    );
+                }
+            }
             if let Some(ttl_ms) = ttl_ms {
                 // `key` is the family-prefixed key by this point, which is the key both the
                 // record and the sweep have to name. Same two requirements as every other
@@ -4152,7 +4356,9 @@ pub(crate) fn execute_on_shard(
                 ));
                 entries.push((
                     format!("{name}_sum"),
-                    all_values.iter().sum::<i64>().to_string().into_bytes(),
+                    crate::engine::window_aggregate::sum_legacy(all_values.iter().copied())
+                        .to_string()
+                        .into_bytes(),
                 ));
                 entries.push((
                     format!("{name}_window_events"),
@@ -4160,12 +4366,11 @@ pub(crate) fn execute_on_shard(
                 ));
                 entries.push((
                     format!("{name}_window_sum"),
-                    window
-                        .iter()
-                        .map(|(_, value)| *value)
-                        .sum::<i64>()
-                        .to_string()
-                        .into_bytes(),
+                    crate::engine::window_aggregate::sum_legacy(
+                        window.iter().map(|(_, value)| *value),
+                    )
+                    .to_string()
+                    .into_bytes(),
                 ));
                 entries.push((
                     format!("{name}_window_first_timestamp_ms"),

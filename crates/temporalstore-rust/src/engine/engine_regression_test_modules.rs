@@ -129,8 +129,18 @@ mod a_write_names_only_the_blocks_of_the_objects_it_touched;
 mod a_plan_learns_a_log_tail_from_its_appenders;
 #[path = "tests/a_removal_states_no_block_rows.rs"]
 mod a_removal_states_no_block_rows;
+#[path = "tests/a_hash_delete_files_nothing.rs"]
+mod a_hash_delete_files_nothing;
+#[path = "tests/a_sequence_write_states_the_rows_it_wrote.rs"]
+mod a_sequence_write_states_the_rows_it_wrote;
+#[path = "tests/a_compaction_does_not_lose_a_dirty_objects_dump.rs"]
+mod a_compaction_does_not_lose_a_dirty_objects_dump;
+#[path = "tests/a_counter_increment_writes_its_series_when_due.rs"]
+mod a_counter_increment_writes_its_series_when_due;
 #[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
 mod a_manifest_is_fingerprinted_once_not_once_per_plan;
+#[path = "tests/a_hash_get_all_shares_its_page_keys.rs"]
+mod a_hash_get_all_shares_its_page_keys;
 #[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
 mod a_feature_sum_reads_each_point_in_place;
 #[path = "tests/warm_read_decomposition.rs"]
@@ -436,6 +446,8 @@ mod the_two_eviction_arms_disagree_on_the_dirty_count;
 mod a_deferred_checkpoint_still_reloads_with_the_keys_dropped;
 #[path = "tests/what_one_visibility_publish_writes.rs"]
 mod what_one_visibility_publish_writes;
+#[path = "tests/a_checkpoint_publish_into_a_log_with_an_anchor_lands.rs"]
+mod a_checkpoint_publish_into_a_log_with_an_anchor_lands;
 #[path = "tests/a_deferred_publish_checkpoint_still_reloads_with_the_published_values.rs"]
 mod a_deferred_publish_checkpoint_still_reloads_with_the_published_values;
 #[path = "tests/what_one_shard_load_writes.rs"]
@@ -484,11 +496,15 @@ mod bucket_dump_binary_shape;
 mod what_an_element_name_writes_to_disk_and_the_wire;
 #[path = "tests/routing_range_stamp_binary.rs"]
 mod routing_range_stamp_binary;
-#[path = "tests/the_config_log_in_either_shape.rs"]
-mod the_config_log_in_either_shape;
+#[path = "tests/the_config_log_is_framed_only.rs"]
+mod the_config_log_is_framed_only;
 #[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
 mod the_served_index_encoder_has_no_json_fallback;
 #[path = "tests/the_control_state_block_is_protobuf_only.rs"]
 mod the_control_state_block_is_protobuf_only;
 #[path = "tests/the_sequence_row_is_protobuf_only.rs"]
 mod the_sequence_row_is_protobuf_only;
+#[path = "tests/a_plan_lists_the_shards_blocks_once.rs"]
+mod a_plan_lists_the_shards_blocks_once;
+#[path = "tests/a_feature_append_merges_cells_by_lane_reducer.rs"]
+mod a_feature_append_merges_cells_by_lane_reducer;

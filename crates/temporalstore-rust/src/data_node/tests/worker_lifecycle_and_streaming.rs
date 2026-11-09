@@ -116,26 +116,32 @@ fn compact_batch_write_keeps_shared_wal_mirroring() {
 }
 
 #[test]
-fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
+fn shared_field_hash_batch_keeps_requested_order_duplicates_and_missing_values() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
-    let written = runtime.batch_write(BatchExecuteRequest {
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
-        commands: vec![Command::HashMultiSet {
-            key: "present".to_string(),
-            entries: vec![
-                ("a".to_string(), b"one".to_vec()),
-                ("b".to_string(), b"two".to_vec()),
+        fields: vec!["a".to_string(), "b".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "present".to_string(),
+            vec![
+                BatchHashMultiSetValue(b"one".to_vec()),
+                BatchHashMultiSetValue(b"two".to_vec()),
             ],
-        }],
+        )],
     });
     assert!(written.status.ok, "{written:?}");
 
     let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
     });
 
     assert!(read.status.ok, "{read:?}");
@@ -143,45 +149,103 @@ fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
     assert_eq!(
         read.responses[0].response,
         CommandResponse::Values {
-            values: vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+            values: vec![
+                Some(b"two".to_vec()),
+                None,
+                Some(b"one".to_vec()),
+                Some(b"two".to_vec()),
+            ]
         }
     );
     assert_eq!(
         read.responses[1].response,
         CommandResponse::Values {
-            values: vec![None, None]
+            values: vec![None, None, None, None]
         }
     );
 
     let compact = runtime.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
     });
     assert!(compact.status.ok, "{compact:?}");
     assert!(compact.errors.is_empty());
     assert_eq!(compact.rows.len(), 2);
     assert_eq!(
         compact.rows[0].0,
-        vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+        vec![
+            Some(b"two".to_vec()),
+            None,
+            Some(b"one".to_vec()),
+            Some(b"two".to_vec()),
+        ]
     );
-    assert_eq!(compact.rows[1].0, vec![None, None]);
+    assert_eq!(compact.rows[1].0, vec![None, None, None, None]);
 
-    let direct = runtime.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+    let direct_request = BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
+    };
+    let _ = runtime.batch_hash_multi_get_compact_msgpack(direct_request.clone());
+    crate::engine::reset_hash_field_binary_search_count_for_test();
+    let _ = runtime.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: direct_request.keys.clone(),
+        fields: Vec::new(),
     });
+    let fixed_searches = crate::engine::hash_field_binary_search_count_for_test();
+    crate::engine::reset_hash_field_binary_search_count_for_test();
+    crate::engine::reset_routing_bucket_derivations();
+    crate::engine::reset_index_presence_reset_count_for_test();
+    let direct = runtime.batch_hash_multi_get_compact_msgpack(direct_request);
     let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct)
         .expect("direct compact response must retain the established wire shape");
     assert_eq!(decoded, compact);
+    assert_eq!(
+        crate::engine::hash_field_binary_search_count_for_test(),
+        fixed_searches,
+        "requested packed fields must not add field-map binary searches"
+    );
+    assert_eq!(
+        crate::engine::routing_bucket_derivations(),
+        (2, ("present".len() + "missing".len()) as u64),
+        "each entity key must be routed once per compact batch"
+    );
+    assert_eq!(
+        crate::engine::index_presence_reset_count_for_test(),
+        1,
+        "an absent entity must not clear field-projection scratch"
+    );
 }
 
 #[test]
 fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
     let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    crate::engine::reset_routing_bucket_derivations();
 
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
@@ -205,6 +269,11 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
     });
     assert!(written.status.ok, "{written:?}");
     assert_eq!(written.applied, 2);
+    assert_eq!(
+        crate::engine::routing_bucket_derivations(),
+        (2, ("first".len() + "second".len()) as u64),
+        "each shared row must derive its routing bucket once"
+    );
     assert_eq!(runtime.dirty_shards(), vec![1]);
 
     let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
@@ -235,6 +304,63 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
     });
     assert_eq!(rejected.status.code, "field_value_count_mismatch");
     assert_eq!(rejected.applied, 0);
+}
+
+#[test]
+fn wide_shared_field_hash_write_routes_each_row_once() {
+    const FIELDS: usize = 110;
+    const ROWS: usize = 3;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let fields = (0..FIELDS)
+        .map(|index| format!("feature-{index:03}"))
+        .collect::<Vec<_>>();
+    let rows = (0..ROWS)
+        .map(|row| {
+            BatchHashMultiSetRow(
+                format!("entity-{row}"),
+                (0..FIELDS)
+                    .map(|field| BatchHashMultiSetValue(vec![row as u8, field as u8]))
+                    .collect(),
+            )
+        })
+        .collect();
+
+    crate::engine::reset_routing_bucket_derivations();
+    crate::engine::hashing::reset_object_id_derivations();
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields,
+        rows,
+    });
+
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, ROWS);
+    assert_eq!(
+        crate::engine::routing_bucket_derivations(),
+        (ROWS as u64, (ROWS * "entity-0".len()) as u64),
+        "routing work must scale with rows rather than shared fields"
+    );
+    assert_eq!(
+        crate::engine::hashing::object_id_derivations(),
+        (
+            (ROWS * 2) as u64,
+            (ROWS * 2 * ("hash".len() + "entity-0".len())) as u64
+        ),
+        "storage and wire identity work must scale with rows rather than shared fields"
+    );
 }
 
 #[test]
@@ -377,6 +503,64 @@ fn direct_compact_encoding_does_not_copy_each_feature_value_first() {
         "direct={direct:?} control={control:?}"
     );
     std::hint::black_box((direct_body, control_body));
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn absent_compact_rows_do_not_allocate_one_null_vector_per_entity() {
+    const ROWS: usize = 512;
+    const FIELDS: usize = 32;
+    const SAMPLES: usize = 3;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let request = || BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: (0..ROWS).map(|index| format!("missing-{index}")).collect(),
+        fields: (0..FIELDS).map(|index| format!("feature-{index}")).collect(),
+    };
+
+    let mut owned_best = u64::MAX;
+    let mut direct_best = u64::MAX;
+    let mut owned_body = Vec::new();
+    let mut direct_body = Vec::new();
+    for _ in 0..SAMPLES {
+        let owned_request = request();
+        let owned_probe = crate::alloc_probe::Probe::start();
+        let owned_response = runtime.batch_hash_multi_get_compact(owned_request);
+        let candidate_owned_body =
+            rmp_serde::to_vec_named(&owned_response).expect("encode owned absent response");
+        let owned_cost = owned_probe.stop();
+        if owned_cost.allocs < owned_best {
+            owned_best = owned_cost.allocs;
+            owned_body = candidate_owned_body;
+        }
+
+        let direct_request = request();
+        let direct_probe = crate::alloc_probe::Probe::start();
+        let candidate_direct_body = runtime.batch_hash_multi_get_compact_msgpack(direct_request);
+        let direct_cost = direct_probe.stop();
+        if direct_cost.allocs < direct_best {
+            direct_best = direct_cost.allocs;
+            direct_body = candidate_direct_body;
+        }
+    }
+
+    assert_eq!(direct_body, owned_body);
+    let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct_body)
+        .expect("decode absent compact response");
+    assert!(decoded.status.ok, "{decoded:?}");
+    assert_eq!(decoded.rows.len(), ROWS);
+    assert!(decoded
+        .rows
+        .iter()
+        .all(|row| row.0.iter().all(Option::is_none)));
+    assert!(
+        direct_best + ((ROWS / 2) as u64) < owned_best,
+        "direct={direct_best} owned={owned_best}"
+    );
+    std::hint::black_box((direct_body, owned_body));
 }
 
 #[test]

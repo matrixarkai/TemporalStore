@@ -170,6 +170,7 @@ pub use engine::reports::{
     GoldenCaseReport, GoldenCorpusReport, RustStorageObservation, ShardCompactionReport,
     ShardCompactionUtilityReport, ShardExpirySweepReport, BucketDumpFaultMatrixReport,
     BucketDumpFaultScenarioReport, BucketDumpFollowerReplayCursor, BucketDumpFollowerRetentionBlock,
+    BucketGauge, BucketGaugeSweep,
     BucketDumpInstallMarker, BucketDumpInstallPreflightReport, BucketDumpInstallRollForwardReport,
     BucketDumpManifest, BucketDumpManifestChainIssue, BucketDumpManifestPrunePlan,
     BucketDumpManifestPruneReport, BucketDumpRaftSnapshotRef, BucketDumpRaftSnapshotRetentionBlock,
@@ -339,7 +340,7 @@ pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, Multi
 pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
-    SharedStoreWalEntry, SharedStoreWalObject, SharedStoreBlockSlab, SharedStoreReplayCursor,
+    SharedStoreWalEntry, SharedStoreBlockSlab, SharedStoreReplayCursor,
     SharedStoreCollectionReport, SharedStoreCursorAbandonPolicy, SharedStoreAbandonedCursor,
     MatrixObjectSlabSource, SharedPathSlabSource, SharedStoreReplicationError, SharedStoreReplicator,
     SharedStoreRetryPolicy, SharedStoreWalAppendMode,
@@ -369,7 +370,7 @@ pub use wal::{
 };
 pub use wal::{
     LocalWriteAheadLogStore, WriteAheadLogAppendReport, WriteAheadLogError,
-    WriteAheadLogFlushReport, WriteAheadLogGcReport, WriteAheadLogInfo, WriteAheadLogItemKind,
-    WriteAheadLogItemMetadata, WriteAheadLogModel, WriteAheadLogRecord,
+    WriteAheadLogFlushReport, WriteAheadLogGcReport, WriteAheadLogInfo,
+    WriteAheadLogRecord,
     WriteAheadLogRecordMetadata, WriteAheadLogStats, WRITE_AHEAD_LOG_FORMAT_VERSION,
 };

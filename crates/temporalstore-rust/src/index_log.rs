@@ -369,6 +369,10 @@ pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
 /// what it recognised. Rows carry no names, and a map is not proof of shape either -- a whole-index
 /// record embeds a `serde_json::Value`, which is a map whatever the rows around it are. So the
 /// container says which it holds instead of the reader guessing.
+///
+/// WHOLE is RETIRED: nothing writes it and no reader of the log skips it. The byte stays reserved so
+/// the value 0 is never given another meaning, and tests that need a payload under an unassigned
+/// shape still name it.
 pub(crate) const INDEX_LOG_SHAPE_WHOLE: u8 = 0;
 pub(crate) const INDEX_LOG_SHAPE_DELTA: u8 = 1;
 
@@ -664,9 +668,9 @@ impl From<crate::log_framing::FramingError> for IndexLogError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexLogRecord {
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     // Default so a delta-record line (which carries `items`/`meta` but no `index`) still
     // parses as an IndexLogRecord for the sequence-tail scan (`last_sequence_at`), which
@@ -707,13 +711,12 @@ impl Default for IndexItemKind {
 pub struct IndexItem {
     #[serde(
         rename = "k",
-        alias = "kind",
         default,
         serialize_with = "item_kind_as_number",
         deserialize_with = "item_kind_either_shape"
     )]
     pub kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", default)]
+    #[serde(rename = "rb", default)]
     pub routing_bucket: u32,
     /// The block handle. A `String` in this struct, a NUMBER on the wire whenever it holds one.
     ///
@@ -736,22 +739,21 @@ pub struct IndexItem {
         rename = "pk",
         default,
         deserialize_with = "block_ref_key_either_shape",
-        serialize_with = "block_ref_key_as_number_when_it_is_one"
+        serialize_with = "block_ref_key_as_number_when_it_is_one",
     )]
     pub block_ref_key: String,
     /// SHARED WITH THE RESIDENT ENTRY, which holds this same text as an `Arc<str>`. A
     /// `String` spends a capacity word on a value that is never grown in place.
-    #[serde(rename = "ok", alias = "object_key", default)]
+    #[serde(rename = "ok", default)]
     pub object_key: std::sync::Arc<str>,
     #[serde(
         rename = "mi",
-        alias = "model_id",
         default,
         serialize_with = "model_id_as_number_when_it_is_known",
         deserialize_with = "model_id_either_shape"
     )]
     pub model_id: String,
-    #[serde(rename = "oi", alias = "object_id", default)]
+    #[serde(rename = "oi", default)]
     pub object_id: u64,
     /// WHERE THE ELEMENT LIVES -- the SHARED payload, the same struct the resident model map
     /// holds as its level-2 value.
@@ -814,7 +816,7 @@ pub struct IndexItem {
     /// correction's own conclusion is restated above rather than deleted, for the same reason.
     #[serde(skip)]
     pub entry: Option<ElementEntry>,
-    #[serde(rename = "d", alias = "deleted", default)]
+    #[serde(rename = "d", default)]
     pub deleted: bool,
 }
 
@@ -850,39 +852,37 @@ pub struct IndexItem {
 struct IndexItemWire {
     #[serde(
         rename = "k",
-        alias = "kind",
         default,
         deserialize_with = "item_kind_either_shape"
     )]
     kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", default)]
+    #[serde(rename = "rb", default)]
     routing_bucket: u32,
     #[serde(
         rename = "pk",
         default,
-        deserialize_with = "block_ref_key_either_shape"
+        deserialize_with = "block_ref_key_either_shape",
     )]
     block_ref_key: String,
-    #[serde(rename = "ok", alias = "object_key", default)]
+    #[serde(rename = "ok", default)]
     object_key: std::sync::Arc<str>,
     #[serde(
         rename = "mi",
-        alias = "model_id",
         default,
         deserialize_with = "model_id_either_shape"
     )]
     model_id: String,
-    #[serde(rename = "oi", alias = "object_id", default)]
+    #[serde(rename = "oi", default)]
     object_id: u64,
     #[serde(rename = "pi", default)]
     block_id: u64,
-    #[serde(rename = "a", alias = "address", default)]
+    #[serde(rename = "a", default)]
     address: Option<ElementEntry>,
-    #[serde(rename = "sz", alias = "size", default)]
+    #[serde(rename = "sz", default)]
     size: u64,
-    #[serde(rename = "il", alias = "in_log", default)]
+    #[serde(rename = "il", default)]
     in_log: bool,
-    #[serde(rename = "d", alias = "deleted", default)]
+    #[serde(rename = "d", default)]
     deleted: bool,
 }
 
@@ -1486,6 +1486,17 @@ where
     deserializer.deserialize_any(EitherShape)
 }
 
+/// Does this payload SAY it is a record the delta fold has nothing to do with?
+///
+/// One shape qualifies: the ANCHOR, which every engine caller of `append_index_bytes` writes. An
+/// anchor is a four-slot row and an `IndexDeltaRecord` wants eleven, so a reader that took it for a
+/// delta could not fold, roll or sweep the log it sits in. The whole-index record this used to name
+/// as well has no writer left, so a payload that carries its shape byte is not skipped here: it goes
+/// to the decoder and is refused, which is the right answer for bytes nothing in this build wrote.
+pub(crate) fn payload_says_it_is_not_a_delta(payload: &[u8]) -> bool {
+    index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_ANCHOR)
+}
+
 /// Which shape a payload says it holds, if it says.
 ///
 /// A payload with no container magic is the JSON fallback, which only the whole-index path ever
@@ -1493,8 +1504,8 @@ where
 pub(crate) fn index_payload_shape(payload: &[u8]) -> Option<u8> {
     match payload.first() {
         Some(container) => Some(index_container_parts(*container).1),
-        // No container: written before there was one. Nothing writes that shape now -- even
-        // `append_json` wraps its record -- so a payload without a container says nothing about
+        // No container: written before there was one. Nothing writes that shape now -- every
+        // append wraps its record -- so a payload without a container says nothing about
         // which record it holds, and answering None hands it to the decoder. That serves both
         // cases it can be: a record from an older writer decodes, and a well-framed payload of
         // garbage is REPORTED rather than skipped, because a sweep that quietly skips what it
@@ -1904,7 +1915,6 @@ pub enum SlabCatalogState {
 pub struct SlabCatalogEntry {
     pub block_slab_id: u64,
     pub state: SlabCatalogState,
-    #[serde(alias = "total_bytes")]
     pub physical_bytes: u64,
     #[serde(default)]
     pub logical_bytes: u64,
@@ -1944,7 +1954,7 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(rename = "zones", alias = "slabs", default)]
+    #[serde(rename = "zones", default)]
     pub slabs: Vec<SlabCatalogEntry>,
     #[serde(default)]
     pub slab_version: u64,
@@ -1956,9 +1966,9 @@ pub struct MetaItem {
 /// `items`/`meta` fields, so legacy whole-index records replay untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexDeltaRecord {
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     #[serde(default)]
     pub items: Vec<IndexItem>,
@@ -1969,7 +1979,7 @@ pub struct IndexDeltaRecord {
     /// folded into the base and are skipped; folding the rest advances the reconstructed
     /// anchor so WAL replay re-executes only the uncaptured tail (never relocating the
     /// blocks the deltas already pin at their original addresses).
-    #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+    #[serde(rename = "aw", default)]
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact blocks the write produced: replay replaces
     /// each item's (kind, object, element name) predecessor and inserts, WITHOUT the covered-key
@@ -1978,7 +1988,7 @@ pub struct IndexDeltaRecord {
     /// object's whole block set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
     /// every block of each of them, every time.
-    #[serde(rename = "u", alias = "upsert", default)]
+    #[serde(rename = "u", default)]
     pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
@@ -1987,7 +1997,7 @@ pub struct IndexDeltaRecord {
     /// nodes). Opaque here so the index-log layer stays decoupled from `ShardState`; the
     /// engine builds and applies them. Replaying these on load pins the exact membership a
     /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
-    #[serde(rename = "ks", alias = "key_states", default)]
+    #[serde(rename = "ks", default)]
     pub key_states: Vec<serde_json::Value>,
     /// The one object key every item carries, when at least two items carry the same one.
     ///
@@ -2030,7 +2040,7 @@ pub struct IndexDeltaRecord {
     /// here. So the rule is a property of the field, not of the version: HOIST ONLY WHEN THE
     /// SENTINEL IS OUTSIDE THE FIELD'S LEGAL DOMAIN, and when it is not, the field stays on the
     /// item however much it repeats.
-    #[serde(rename = "sk", alias = "shared_object_key", default)]
+    #[serde(rename = "sk", default)]
     pub shared_object_key: Option<String>,
 }
 
@@ -2848,90 +2858,6 @@ impl LocalIndexLogStore {
         }
     }
 
-    /// Append an index record, PARSING the bytes into a value first.
-    ///
-    /// Prefer [`append_index_bytes`](Self::append_index_bytes), which splices the already
-    /// serialized bytes into the record instead. This one parses the whole index into a
-    /// `serde_json::Value` and then re-encodes it, so a multi-megabyte index is walked twice
-    /// more per append -- measured at 2.31 MB for a 2,000-key shard. It remains for callers
-    /// that genuinely need the parsed record back; every engine caller writes an index it has
-    /// just serialized and discards the result, so they all take the splicing path.
-    pub fn append_json(
-        &self,
-        shard_id: ShardId,
-        index_bytes: &[u8],
-    ) -> Result<IndexLogRecord, IndexLogError> {
-        // Bulk backfill: skip the replay-log append entirely (deferred to a
-        // single flush of the served index). Removes the per-record fsync bomb.
-        if bulk_ingest_mode() || !indexlog_enabled() {
-            return Ok(IndexLogRecord {
-                shard_id,
-                sequence: 0,
-                index: serde_json::Value::Null,
-            });
-        }
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        inner.ensure_root()?;
-        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
-            Some(sequence) => sequence,
-            None => {
-                let sequence = last_sequence_at(&inner.root, shard_id)?;
-                inner.last_sequence_by_shard.insert(shard_id, sequence);
-                sequence
-            }
-        };
-        // Seal the piece being written if this record would take it past the rolling threshold,
-        // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
-        // stat; the piece is walked once per ROLL, never once per append -- re-reading the file
-        // to answer "is this piece full" on every write is the cost the write-ahead log had to
-        // take back out.
-        //
-        // AFTER the sequence probe above, not before it. That probe is what trims a tail a crash
-        // left half-written, and only the piece being written is ever trimmed -- so rolling first
-        // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
-        // end would be taken from the last record before them.
-        // ONE probe, for both questions. This resolves which file the shard's log is being
-        // written to and how long it is; the roll needs the length, the open needs the name,
-        // and asking separately is what made the append probe the same path twice per record.
-        let (mut active, active_len) = active_index_log(&inner.root, shard_id);
-        if roll_index_log_segment_at(&inner.root, shard_id, &active, active_len)? {
-            // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
-            // event that can change which name the next record belongs under -- so the answer is
-            // taken again exactly when it has been invalidated, and never cached past it. A roll
-            // is 1 append in 1,000 at the rolling default, so this costs nothing per record.
-            active = active_index_log(&inner.root, shard_id).0;
-        }
-        let next_sequence = last_sequence.saturating_add(1);
-        let record = IndexLogRecord {
-            shard_id,
-            sequence: next_sequence,
-            index: serde_json::from_slice(index_bytes)?,
-        };
-        // Frame the record with a length + SHA-256 digest (crate::log_framing) so a later
-        // value-preserving bit-flip in this committed line is detected on read.
-        let bytes =
-            crate::log_framing::encode_record(&encode_index_payload(&record, INDEX_LOG_SHAPE_WHOLE)?);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&active)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
-        // still written): the WAL is the durable recovery source and replay rebuilds the
-        // served index, so the replay-log checkpoint need not be crash-durable per write.
-        if !indexlog_wal_only_sync() {
-            file.sync_data()?;
-        }
-        inner.stats.writes += 1;
-        #[cfg(test)]
-        probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        inner.stats.bytes_written += bytes.len() as u64;
-        inner.stats.last_sequence = next_sequence;
-        inner.last_sequence_by_shard.insert(shard_id, next_sequence);
-        Ok(record)
-    }
-
     pub fn append_index_bytes(
         &self,
         shard_id: ShardId,
@@ -2993,8 +2919,7 @@ impl LocalIndexLogStore {
         // anchor suites changed nothing -- 77 tests, all still green.
         //
         // The digest keeps what the copy was actually good for: an anchor can still be checked
-        // against the index file it claims to describe. `append_json` still embeds the whole
-        // index for any caller that wants the record to carry it.
+        // against the index file it claims to describe.
         let digest = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
@@ -3034,8 +2959,8 @@ impl LocalIndexLogStore {
     }
 
     /// Append one O(delta) served-index record: the block/object items a single write
-    /// touched, optionally carrying a compaction anchor. Unlike `append_json`, this never
-    /// serializes the whole index -- the appended bytes are proportional to the change,
+    /// touched, optionally carrying a compaction anchor. Unlike an anchor, this
+    /// does not name the whole index -- the appended bytes are proportional to the change,
     /// which is what turns the per-write served-index persist cost from O(store) into
     /// O(delta). Returns the assigned monotonic sequence.
     ///
@@ -3433,7 +3358,7 @@ impl LocalIndexLogStore {
                 // unrecognised shape, a truncated container -- goes to the decoder and is
                 // reported, because a sweep that quietly skips what it cannot read is how
                 // committed corruption becomes silent data loss.
-                if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+                if payload_says_it_is_not_a_delta(payload) {
                     continue;
                 }
                 let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
@@ -3784,7 +3709,7 @@ impl LocalIndexLogStore {
         #[cfg(test)]
         probe::SWEEP_ENTRIES_BUDGETED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Taken here and held to the end of the function -- past the walk, past the rewrite,
-        // past the barrier and the rename. It is the same lock `append_json` takes, so for as
+        // past the barrier and the rename. It is the same lock `append_index_bytes` takes, so for as
         // long as a sweep runs the shard's index log accepts no record. What bounds that hold is
         // therefore what bounds the sweep, and `max_entries_per_round` is not it: see the note
         // on the parameter above.
@@ -3945,7 +3870,7 @@ impl LocalIndexLogStore {
         #[cfg(test)]
         probe::SWEEP_ENTRIES_POST_DUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Held to the end of the function, exactly as the budgeted sweep holds it, and for the
-        // same reason: this is the lock `append_json` takes.
+        // same reason: this is the lock `append_index_bytes` takes.
         let inner = self.inner.lock().expect("index log lock poisoned");
         #[cfg(test)]
         let _lock_span = probe::SweepLockSpan::new();
@@ -4344,7 +4269,7 @@ pub const DEFAULT_INDEX_LOG_SEGMENT_BYTES: u64 = 64 * 1024;
 /// record is pushed onto `retained` and the loop CONTINUES, so the budget:
 ///
 /// - does not bound what the round READS -- both loops read the piece being written to its end;
-/// - does not bound how long the round holds `inner`, which is the lock `append_json` takes;
+/// - does not bound how long the round holds `inner`, which is the lock `append_index_bytes` takes;
 /// - bounds what the round REMOVES, and so makes the rewrite copy MORE, not less.
 ///
 /// Measured in counts in `index_log_sweep_bound::an_entry_budget_copies_more_and_reads_exactly_as_much`:
@@ -4754,10 +4679,10 @@ fn drop_reflected_index_segments(
 /// sequence` is deliberately NOT one of the terms here: the only caller asks this question of a
 /// record that has none, so testing it would be a clause that can never fire.
 ///
-/// A payload that SAYS it is a whole-index record is answered without decoding it -- no load path
-/// reads one, which is the whole reason the sweep may remove it.
+/// A payload that SAYS it is a whole-index record or an anchor is answered without decoding it --
+/// no load path reads either as a delta, which is the whole reason the sweep may remove it.
 fn delta_record_carries_content(payload: &[u8]) -> Result<bool, IndexLogError> {
-    if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+    if payload_says_it_is_not_a_delta(payload) {
         return Ok(false);
     }
     // A legacy whole-index line carries no container to say so, and decodes here into an
@@ -4801,21 +4726,24 @@ mod index_log_read_bytes;
 
 #[cfg(test)]
 mod tests {
+    /// Bytes that LOOK like a served index to the anchor appender, which only digests and measures
+    /// them. `tag` makes two records differ so a log of them is not a log of one record repeated.
+    fn fixture_index(tag: impl std::fmt::Display) -> Vec<u8> {
+        format!("TSIDX\x01\x02{tag}").into_bytes()
+    }
+
     /// The splicing appender and the parsing one must produce the SAME record bytes.
     ///
     /// The engine's index-log appends were routed to the splicing path to stop re-parsing and
     /// re-encoding a multi-megabyte index on every append. That is only safe while the two
     /// produce identical bytes, which holds because `IndexLogRecord` declares its fields in
     /// exactly the order the splice writes them. This test fails if either side drifts.
-    /// The two appenders now differ ON PURPOSE: `append_index_bytes` writes a constant-size
-    /// anchor, `append_json` embeds the whole index for callers that want the record to carry
-    /// it. This pins that difference, so neither silently becomes the other.
+    /// An anchor is constant-size and the whole-index record it replaced embedded the index. This
+    /// pins that difference against a whole-index record built here, since nothing writes one now.
     #[test]
     fn the_anchor_appender_writes_far_less_than_the_embedding_one() {
         let anchor_dir = tempfile::tempdir().unwrap();
-        let embed_dir = tempfile::tempdir().unwrap();
         let anchoring = LocalIndexLogStore::new(anchor_dir.path());
-        let embedding = LocalIndexLogStore::new(embed_dir.path());
         // An index big enough that copying it is obviously different from naming it.
         let mut index = br#"{"index_format_version":3,"strings":{"#.to_vec();
         for i in 0..500 {
@@ -4827,10 +4755,19 @@ mod tests {
         index.extend_from_slice(b"}}");
 
         anchoring.append_index_bytes(11, &index).unwrap();
-        embedding.append_json(11, &index).unwrap();
+        // The whole-index record, built here: nothing in the store writes one any more, but the
+        // comparison this test pins is the size of an anchor against the size of the record it
+        // replaced.
+        let whole_index_record = IndexLogRecord {
+            shard_id: 11,
+            sequence: 1,
+            index: serde_json::from_slice(&index).unwrap(),
+        };
+        let embed_bytes = crate::log_framing::encode_record(
+            &encode_index_payload(&whole_index_record, INDEX_LOG_SHAPE_WHOLE).unwrap(),
+        );
 
         let anchor_bytes = std::fs::read(index_log_path(anchor_dir.path(), 11)).unwrap();
-        let embed_bytes = std::fs::read(index_log_path(embed_dir.path(), 11)).unwrap();
         assert!(
             anchor_bytes.len() < 250,
             "the anchor record should be constant-size (got {})",
@@ -4942,7 +4879,7 @@ mod tests {
 
         probe::reset();
         store
-            .append_json(4, b"{\"a\":1}")
+            .append_index_bytes(4, &fixture_index("a1"))
             .expect("the first append must make the root that `new` could not");
         // Half one: it made it, and said so.
         assert_eq!(
@@ -4955,7 +4892,7 @@ mod tests {
 
         // Half two, ORDERED after it: the second append does NOT ask again. This is the whole
         // per-append cost the change removes, asserted on the one path that still pays it once.
-        store.append_json(4, b"{\"a\":2}").expect("the second append must land");
+        store.append_index_bytes(4, &fixture_index("a2")).expect("the second append must land");
         assert_eq!(
             probe::append_root_creates(),
             1,
@@ -4993,7 +4930,7 @@ mod tests {
             .join(format!("shard-{shard}.indexlog.{LEGACY_INDEX_LOG_SUFFIX}"));
 
         store
-            .append_json(shard, b"{\"a\":1}")
+            .append_index_bytes(shard, &fixture_index("a1"))
             .expect("seed the log under the current name");
         std::fs::rename(&current, &legacy).expect("give the log the name an older store carries");
         // THE DENOMINATOR: from here the active piece really is the legacy-named one, and it
@@ -5009,7 +4946,7 @@ mod tests {
         set_index_log_segment_bytes_for_test(Some(legacy_len));
         let _threshold = Threshold;
         store
-            .append_json(shard, b"{\"a\":2}")
+            .append_index_bytes(shard, &fixture_index("a2"))
             .expect("the append that rolls must still land");
 
         // Half one: the record went onto the current name.
@@ -5044,7 +4981,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for value in [1, 2, 3] {
             store
-                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(value))
                 .unwrap();
         }
 
@@ -5056,7 +4993,7 @@ mod tests {
         let reopened = LocalIndexLogStore::new(dir.path());
         assert_eq!(reopened.stats(5).last_sequence, 3);
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
-        store.append_json(5, b"{\"value\":4}").unwrap();
+        store.append_index_bytes(5, &fixture_index("value4")).unwrap();
         assert_eq!(store.stats(5).last_sequence, 4);
     }
 
@@ -5065,7 +5002,7 @@ mod tests {
     fn append_index_bytes_writes_an_anchor_that_identifies_the_index_without_embedding_it() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
-        let index = b"{\"value\":1}";
+        let index = &fixture_index("value1");
         let sequence = store.append_index_bytes(5, index).unwrap();
         assert_eq!(sequence, 1);
         let rows = store.scan(5, 0, u64::MAX, u64::MAX).unwrap();
@@ -5106,8 +5043,8 @@ mod tests {
     fn corrupt_tail_is_truncated_and_append_resumes_after_last_valid_index_log_sequence() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
-        store.append_json(5, b"{\"value\":1}").unwrap();
-        store.append_json(5, b"{\"value\":2}").unwrap();
+        store.append_index_bytes(5, &fixture_index("value1")).unwrap();
+        store.append_index_bytes(5, &fixture_index("value2")).unwrap();
         {
             let mut file = OpenOptions::new()
                 .append(true)
@@ -5120,8 +5057,8 @@ mod tests {
         let reopened = LocalIndexLogStore::new(dir.path());
         assert_eq!(reopened.stats(5).last_sequence, 2);
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
-        let record = reopened.append_json(5, b"{\"value\":3}").unwrap();
-        assert_eq!(record.sequence, 3);
+        let sequence = reopened.append_index_bytes(5, &fixture_index("value3")).unwrap();
+        assert_eq!(sequence, 3);
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
     }
 
@@ -5297,26 +5234,47 @@ mod tests {
         );
     }
 
+    /// A delta record written with a long field name is not read as the same record.
+    ///
+    /// The record-level names are short, and the long spellings (`shard_id`, `sequence`,
+    /// `applied_wal_sequence`, `upsert`, `key_states`) are not accepted: the first release carries
+    /// no installed base. `items` and `meta` are NOT short names; whole-index and delta records are
+    /// told apart on read by the presence of those two keys. Each long name is swapped in alone for
+    /// its short name against the control that the unmodified document loads, so one alias coming
+    /// back is caught and not only all of them.
     #[test]
-    fn a_delta_record_written_with_the_old_field_names_still_loads() {
-        // The record-level names are short now. `items` and `meta` are NOT among them: whole-index
-        // and delta records are told apart on read by the PRESENCE of those two keys, so renaming
-        // them breaks record-type detection rather than just the labels.
-        let legacy = serde_json::json!({
-            "shard_id": 7,
-            "sequence": 3,
-            "items": [],
-            "applied_wal_sequence": 11,
-            "upsert": true,
-            "key_states": [{"key": "m:0"}]
-        });
-        let record: IndexDeltaRecord =
-            serde_json::from_value(legacy).expect("a legacy delta record must load");
-        assert_eq!(record.shard_id, 7);
-        assert_eq!(record.sequence, 3);
-        assert_eq!(record.applied_wal_sequence, Some(11));
-        assert!(record.upsert);
-        assert_eq!(record.key_states.len(), 1);
+    fn a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record() {
+        let current = r#"{"s":7,"q":3,"items":[],"aw":11,"u":true,"ks":[{"key":"m:0"}]}"#;
+        let original: IndexDeltaRecord =
+            serde_json::from_str(current).expect("the control, in the written names, must load");
+        assert_eq!(original.shard_id, 7);
+        assert_eq!(original.sequence, 3);
+        assert_eq!(original.applied_wal_sequence, Some(11));
+        assert!(original.upsert);
+        assert_eq!(original.key_states.len(), 1);
+        for (short, long) in [
+            ("s", "shard_id"),
+            ("q", "sequence"),
+            ("aw", "applied_wal_sequence"),
+            ("u", "upsert"),
+            ("ks", "key_states"),
+        ] {
+            let swapped = current.replacen(&format!("\"{short}\":"), &format!("\"{long}\":"), 1);
+            assert_ne!(swapped, current, "the swap of `{short}` did not take");
+            let loaded = serde_json::from_str::<IndexDeltaRecord>(&swapped);
+            assert!(
+                loaded.as_ref().map_or(true, |record| {
+                    (
+                        record.shard_id,
+                        record.sequence,
+                        record.applied_wal_sequence,
+                        record.upsert,
+                        record.key_states.len(),
+                    ) != (7, 3, Some(11), true, 1)
+                }),
+                "a delta record with `{short}` spelled `{long}` loaded as the same record: the alias is back"
+            );
+        }
     }
 
     #[test]
@@ -5444,12 +5402,122 @@ mod tests {
         );
     }
 
+    /// A log that holds a REAL anchor -- the record every engine caller of `append_index_bytes`
+    /// writes -- can still be folded, rolled into pieces and swept.
+    ///
+    /// The tests that were meant to cover this built their anchor with a writer of the whole-index
+    /// record, so the one record the engine actually puts between deltas was never in
+    /// any of them. Read as a delta, an anchor failed the fold, the seal that names a piece and the
+    /// sweep, each with an Encoding error.
+    /// THE WHOLE-INDEX RECORD HAS NO WRITER AND NO READER LEFT, and the code that says so is read
+    /// rather than driven: a function that was deleted cannot fail a test by being absent, and a
+    /// shape nobody writes cannot be produced to be refused.
+    ///
+    /// Reads the part of this file that is not tests, comments removed, and asserts that
+    /// `append_json` is not declared, that the shape constant is named once (its declaration), and
+    /// that the predicate the fold and the content test share names the anchor and not the retired
+    /// shape. The CONTROL is the text this replaced, verbatim: the scan is shown able to see all
+    /// three of those things, so a clean result is not the scan being blind.
+    #[test]
+    fn the_whole_index_record_has_no_writer_and_no_reader_in_the_index_log() {
+        fn uncommented(text: &str) -> String {
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let whole_file = include_str!("index_log.rs");
+        let production = &whole_file[..whole_file
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("the tests module is declared in this file")];
+        let code = uncommented(production);
+        assert!(code.len() > 10_000, "the scan found almost nothing: {} bytes", code.len());
+
+        assert!(
+            !code.contains("fn append_json"),
+            "the whole-index appender is declared again"
+        );
+        assert_eq!(
+            code.matches("INDEX_LOG_SHAPE_WHOLE").count(),
+            1,
+            "the retired shape is named somewhere other than its declaration: a writer or a reader \
+             of it is back"
+        );
+        let predicate_at = code
+            .find("pub(crate) fn payload_says_it_is_not_a_delta(")
+            .expect("the shared predicate is declared");
+        let predicate = &code[predicate_at..predicate_at + 200];
+        assert!(
+            predicate.contains("INDEX_LOG_SHAPE_ANCHOR") && !predicate.contains("INDEX_LOG_SHAPE_WHOLE"),
+            "the shared predicate no longer names the anchor alone: {predicate}"
+        );
+
+        // THE CONTROL: what was here before, verbatim.
+        let before = uncommented(
+            "pub(crate) const INDEX_LOG_SHAPE_WHOLE: u8 = 0;\npub fn append_json(\n    &self,\n) {\n    encode_index_payload(&record, INDEX_LOG_SHAPE_WHOLE)?;\n}\nmatches!(index_payload_shape(payload), Some(INDEX_LOG_SHAPE_WHOLE) | Some(INDEX_LOG_SHAPE_ANCHOR))\n",
+        );
+        assert!(
+            before.contains("fn append_json") && before.matches("INDEX_LOG_SHAPE_WHOLE").count() > 1,
+            "the control no longer shows the scan the old text"
+        );
+    }
+
+    #[test]
+    fn a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(9, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, false, true)
+            .unwrap();
+        // A real anchor: digest and length of an index, in the shape the engine writes.
+        let anchor_seq = store.append_index_bytes(9, b"TSIDX\x01\x02anchor").unwrap();
+        store
+            .append_delta(9, vec![block_item(1, "b", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        // DENOMINATOR: the log really holds the anchor, between the two deltas.
+        let mut reader = std::io::BufReader::new(
+            std::fs::File::open(index_log_path(dir.path(), 9)).unwrap(),
+        );
+        let mut shapes = Vec::new();
+        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
+            shapes.push(index_payload_shape(&payload));
+        }
+        assert_eq!(
+            shapes,
+            vec![
+                Some(INDEX_LOG_SHAPE_DELTA),
+                Some(INDEX_LOG_SHAPE_ANCHOR),
+                Some(INDEX_LOG_SHAPE_DELTA)
+            ],
+            "the fixture must put an anchor between two deltas"
+        );
+        assert_eq!(anchor_seq, 2);
+
+        // The fold reads the two deltas and passes over the anchor.
+        let folded = store.read_delta_records(9, 0).unwrap();
+        assert_eq!(folded.len(), 2, "the anchor must be skipped, not refused: {folded:?}");
+
+        // A roll must read the piece to name it, anchor included.
+        let _rolling = roll_at(1);
+        store
+            .append_delta(9, vec![block_item(1, "c", false)], Vec::new(), Some(3), None, false, true)
+            .expect("the append that rolls a piece holding an anchor must land");
+        assert!(store.piece_count(9) >= 2, "denominator: the piece must have rolled");
+        assert_eq!(store.read_delta_records(9, 0).unwrap().len(), 3);
+
+        // The sweep walks the same records.
+        let report = store
+            .gc_reflected_before_anchor(9, 3, 4, 0)
+            .expect("a sweep over a log holding an anchor must not refuse it");
+        assert!(report.records_before >= 3, "denominator: {report:?}");
+    }
+
     #[test]
     fn read_delta_records_skips_anchor_and_ignores_whole_index_lines() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         // A legacy whole-index record and a delta record share the log file.
-        store.append_json(9, b"{\"value\":1}").unwrap();
+        store.append_index_bytes(9, &fixture_index("value1")).unwrap();
         let anchor_seq = store
             .append_delta(9, vec![block_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
@@ -5578,7 +5646,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         // seq 1: legacy whole-index line (no anchor; read by no load path -> reflected).
-        store.append_json(7, b"{\"value\":1}").unwrap();
+        store.append_index_bytes(7, &fixture_index("value1")).unwrap();
         // seq 2: delta reflected by the dump (WAL anchor 2 <= dump anchor 2).
         store
             .append_delta(7, vec![block_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
@@ -5703,7 +5771,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         // seq 1: a whole-index line, which is anchor-less by construction.
-        store.append_json(8, b"{\"value\":1}").unwrap();
+        store.append_index_bytes(8, &fixture_index("value1")).unwrap();
         // seq 2: a delta record with no anchor and no content.
         store
             .append_delta(8, Vec::new(), Vec::new(), None, None, false, true)
@@ -6041,7 +6109,7 @@ mod tests {
                         .unwrap();
                 } else {
                     store
-                        .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                        .append_index_bytes(5, &fixture_index(value))
                         .unwrap();
                 }
             }
@@ -6291,7 +6359,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for i in 1..=4 {
             store
-                .append_json(5, format!("{{\"value\":{i}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(i))
                 .unwrap();
         }
         drop(store);
@@ -6879,7 +6947,7 @@ mod tests {
             let store = LocalIndexLogStore::new(dir.path());
             for value in 0..records {
                 store
-                    .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                    .append_index_bytes(5, &fixture_index(value))
                     .unwrap();
             }
             let written = store.log_len_bytes(5);
@@ -7043,9 +7111,9 @@ mod tests {
             let store = LocalIndexLogStore::new(dir.path());
             for value in 0..records {
                 store
-                    .append_json(
+                    .append_index_bytes(
                         7,
-                        format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(48)).as_bytes(),
+                        &fixture_index(value),
                     )
                     .unwrap();
             }
@@ -7212,7 +7280,7 @@ mod tests {
                 let store = LocalIndexLogStore::new(dir.path());
                 for value in 0..records {
                     store
-                        .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                        .append_index_bytes(5, &fixture_index(value))
                         .unwrap();
                 }
                 let pieces = index_log_segment_paths(dir.path(), 5).len();
@@ -7246,7 +7314,7 @@ mod tests {
             let store = LocalIndexLogStore::new(dir.path());
             for value in 0..records {
                 store
-                    .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                    .append_index_bytes(5, &fixture_index(value))
                     .unwrap();
             }
             assert_eq!(
@@ -7286,7 +7354,7 @@ mod tests {
             if index % 25 == 24 {
                 // A whole-index record shares this log and is not a delta.
                 store
-                    .append_json(6, format!("{{\"value\":{index}}}").as_bytes())
+                    .append_index_bytes(6, &fixture_index(index))
                     .unwrap();
             } else {
                 let sequence = store
@@ -7514,9 +7582,9 @@ mod tests {
         // because GC retains raw payloads and never re-encodes them.
         #[derive(serde::Deserialize)]
         struct AnchorProbe {
-            #[serde(rename = "q", alias = "sequence")]
+            #[serde(rename = "q")]
             sequence: u64,
-            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            #[serde(rename = "aw", default)]
             applied_wal_sequence: Option<u64>,
         }
         let probe: AnchorProbe = rmp_serde::from_slice(&packed).unwrap();
@@ -7589,9 +7657,9 @@ mod tests {
     fn the_anchor_probe_reads_a_binary_record_without_decoding_the_rest() {
         #[derive(serde::Deserialize)]
         struct AnchorProbe {
-            #[serde(rename = "q", alias = "sequence")]
+            #[serde(rename = "q")]
             sequence: u64,
-            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            #[serde(rename = "aw", default)]
             applied_wal_sequence: Option<u64>,
         }
 
@@ -8343,13 +8411,7 @@ mod tests {
         // `serialize_seq(Some(INDEX_ITEM_SLOTS))`, so it ignores `with_struct_map()` -- an item encoded
         // "as a map" still comes out a sequence. The row is therefore only ever WRITTEN
         // positionally, and the named shape exists only on the READ side, for rows an older
-        // binary wrote through a derived `Serialize`.
-        //
-        // That read side is covered by name elsewhere in this module:
-        // `an_index_item_written_with_the_old_field_names_still_loads` and
-        // `the_old_page_id_key_still_loads_into_the_renamed_block_id_field` address the slots by
-        // their STORED NAMES, so a rename breaks them. Which is the division of labour: a
-        // rename is caught there, and order and arity -- which no named test can see -- here.
+        // binary wrote through a derived `Serialize`. Order and arity are what this test holds.
         let as_map = encode_as_map(&item, INDEX_LOG_SHAPE_DELTA);
         let still_a_sequence: Result<std::collections::BTreeMap<String, serde_json::Value>, _> =
             decode_index_payload(&as_map);
@@ -8587,7 +8649,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for value in 1..=10u64 {
             store
-                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(value))
                 .unwrap();
         }
 
@@ -8617,7 +8679,7 @@ not exhausted -- reporting otherwise schedules another round to find an empty lo
         let store = LocalIndexLogStore::new(dir.path());
         for value in 1..=10u64 {
             store
-                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(value))
                 .unwrap();
         }
         let capped = store.gc_before_sequence_limited(5, 6, REMOVABLE - 1).unwrap();
@@ -10388,8 +10450,8 @@ flag exists to say",
     /// caller, including the two that pass no anchor at all and are supposed to read the log
     /// whole.
     ///
-    /// The fixture is the one that can express it: a log built from `append_json`, which writes
-    /// whole-index records that carry no anchor by construction. A fixture of anchored deltas
+    /// The fixture is the one that can express it: a log of anchors, which carry no WAL anchor by
+    /// construction. A fixture of anchored deltas
     /// names nothing 0 and cannot tell the guard from a constant.
     #[test]
     fn a_log_whose_pieces_name_anchor_zero_is_never_declined() {
@@ -10399,7 +10461,7 @@ flag exists to say",
         const RECORDS: usize = 3_000;
         for value in 0..RECORDS {
             store
-                .append_json(15, format!("{{\"value\":\"{value:08}\"}}").as_bytes())
+                .append_index_bytes(15, &fixture_index(format!("{value:08}")))
                 .unwrap();
         }
 

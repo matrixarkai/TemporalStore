@@ -125,6 +125,13 @@ pub enum FeatureWritePolicy {
     ReplaceExisting,
     #[serde(alias = "BLOCK", alias = "block")]
     Block,
+    /// Merge each point's cells into the snapshot already stored at its timestamp, lane by lane
+    /// under the reducers the point's own header declares. The point's VALUE is the request: it
+    /// carries the key spec, the label and lane names and the per-lane reducers followed by the
+    /// cells (`engine::cell_set::encode_value`), so the command shape does not change. Every
+    /// violation is refused at validation, before anything is written, exactly as `Block` is.
+    #[serde(alias = "MERGE_REDUCE", alias = "merge")]
+    MergeReduce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -754,8 +761,12 @@ pub trait ContextWire: Sized + Serialize + for<'de> Deserialize<'de> {
         self.encode_context_proto_value()
     }
 
+    /// A stored context value is PROTOBUF AND NOTHING ELSE. This used to try the protobuf decode and
+    /// then parse the bytes as JSON, for values written by a build that stored them that way. Nothing
+    /// writes one as JSON now (`encode_context_value` is the protobuf encoding) and there is no
+    /// installed base, so bytes that are not protobuf are refused rather than read a second way.
     fn decode_context_value(bytes: &[u8]) -> Option<Self> {
-        Self::decode_context_proto_value(bytes).or_else(|| serde_json::from_slice(bytes).ok())
+        Self::decode_context_proto_value(bytes)
     }
 }
 
@@ -2083,37 +2094,13 @@ pub enum Command {
 /// vector field it meets, so the last encoding present is the one that wins. Stopping at the
 /// first would disagree with it on any record carrying more than one.
 pub(crate) fn decode_context_node_vector(bytes: &[u8]) -> Option<Vec<f32>> {
-    decode_context_node_vector_proto(bytes).or_else(|| {
-        serde_json::from_slice::<ContextNode>(bytes)
-            .ok()
-            .map(|node| node.vector)
-    })
+    decode_context_node_vector_proto(bytes)
 }
 
 pub(crate) fn decode_context_node_vector_projection(
     bytes: &[u8],
 ) -> Option<ContextNodeVectorProjection> {
-    decode_context_node_vector_projection_proto(bytes).or_else(|| {
-        serde_json::from_slice::<ContextNode>(bytes)
-            .ok()
-            .map(|node| {
-                let summary_vector_same_as_node = !node.summary_vector.is_empty()
-                    && node.summary_vector == node.vector;
-                ContextNodeVectorProjection {
-                    node_hash: node.node_hash,
-                    vector: node.vector,
-                    embedding_model_hash: node.embedding_model_hash,
-                    summary_vector: if summary_vector_same_as_node {
-                        Vec::new()
-                    } else {
-                        node.summary_vector
-                    },
-                    summary_vector_same_as_node,
-                    summary_vector_valid_from_ms: node.summary_vector_valid_from_ms,
-                    summary_vector_model_hash: node.summary_vector_model_hash,
-                }
-            })
-    })
+    decode_context_node_vector_projection_proto(bytes)
 }
 
 fn decode_context_node_vector_projection_proto(
@@ -2470,7 +2457,7 @@ fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
     encode_vector_field_as(out, &OWN_VECTOR_FIELDS, vector);
 }
 
-fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
+pub(crate) fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
     encode_varint(out, field_number << 3);
     encode_varint(out, value);
 }
@@ -2480,7 +2467,7 @@ fn encode_fixed32_field(out: &mut Vec<u8>, field_number: u64, value: u32) {
     out.extend(value.to_le_bytes());
 }
 
-fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
+pub(crate) fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
     if value.is_empty() {
         return;
     }
@@ -2489,7 +2476,7 @@ fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
     out.extend(value);
 }
 
-fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
+pub(crate) fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {
         out.push((value as u8) | 0x80);
         value >>= 7;
@@ -2497,7 +2484,7 @@ fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
     out.push(value as u8);
 }
 
-fn decode_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+pub(crate) fn decode_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
     let mut value = 0_u64;
     for shift in (0..64).step_by(7) {
         let byte = *bytes.get(*cursor)?;
@@ -2745,6 +2732,14 @@ pub enum CommandResponse {
     },
     Aggregate {
         value: i64,
+    },
+    /// What a merge-reduce append landed: snapshots written (one per distinct timestamp in the
+    /// request), cells created, cells merged into a member already stored (or repeated within
+    /// the request), and the cells the newest written snapshot holds afterwards.
+    CellMergeReceipt {
+        snapshots_written: u64,
+        cells_created: u64,
+        cells_merged: u64,
     },
     SequenceRows {
         rows: Vec<SequenceFeatureRow>,
@@ -3907,6 +3902,67 @@ mod tests {
             .expect("bare node must decode");
         assert!(decoded.vector.is_empty());
         assert_eq!(0, decoded.embedding_model_hash);
+    }
+
+    /// A STORED CONTEXT VALUE IS PROTOBUF AND NOTHING ELSE, through all three readers.
+    ///
+    /// The readers of a stored context node (`decode_context_value` and the two vector readers the
+    /// traversal scores candidates with) used to try protobuf and then fall back to parsing the
+    /// bytes as JSON, for values written by a build that stored them that way. Nothing writes one as
+    /// JSON now and there is no installed base, so a JSON value is refused by each of them. The
+    /// denominator is that the JSON IS a node: serde reads it back to the same node, so a refusal
+    /// below is a refusal of a readable value and not of garbage. The control is the same node as
+    /// protobuf, which all three read.
+    #[test]
+    fn a_context_value_is_read_as_protobuf_and_nothing_else() {
+        let node = ContextNode {
+            node_hash: 11,
+            parent_hash: 1,
+            kind: 0,
+            canonical_name: "json-or-proto".to_string(),
+            l0: "the same node, spelled two ways".to_string(),
+            last_event_time_ms: 99,
+            vector: vec![0.5, 0.25],
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 5,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+            status: 0,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        };
+        let as_json = serde_json::to_vec(&node).expect("a node serializes as JSON");
+        let read_back: ContextNode =
+            serde_json::from_slice(&as_json).expect("the JSON is a node serde reads back");
+        assert_eq!(read_back.canonical_name, node.canonical_name, "denominator: the JSON is this node");
+        assert_eq!(read_back.vector, node.vector, "denominator: the JSON is this node");
+
+        assert!(
+            ContextNode::decode_context_value(&as_json).is_none(),
+            "decode_context_value read a JSON node"
+        );
+        assert!(
+            decode_context_node_vector(&as_json).is_none(),
+            "decode_context_node_vector read a JSON node"
+        );
+        assert!(
+            decode_context_node_vector_projection(&as_json).is_none(),
+            "decode_context_node_vector_projection read a JSON node"
+        );
+
+        // THE CONTROL: the same node as protobuf.
+        let proto = node.encode_context_value();
+        let decoded = ContextNode::decode_context_value(&proto).expect("protobuf is read");
+        assert_eq!(
+            (decoded.node_hash, decoded.canonical_name.as_str(), decoded.vector.as_slice()),
+            (node.node_hash, node.canonical_name.as_str(), node.vector.as_slice())
+        );
+        assert_eq!(decode_context_node_vector(&proto), Some(node.vector.clone()));
+        assert_eq!(
+            decode_context_node_vector_projection(&proto).map(|projection| projection.node_hash),
+            Some(node.node_hash)
+        );
     }
 
     #[test]

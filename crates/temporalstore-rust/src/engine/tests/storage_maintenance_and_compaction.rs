@@ -375,7 +375,16 @@ fn stale_shard_index_is_refused_rather_than_decoded_with_the_wrong_key_meaning()
     // Built from a REAL serialized shard rather than hand-written JSON, so the fixture cannot
     // drift from the struct and quietly stop exercising the decode path.
     let shard = super::super::state::ShardState::default();
-    let stamped = super::super::stamp_index_format_version(&shard);
+    // The stamp a current writer puts on the image, set on a JSON value by hand: the helper that
+    // used to do this is gone, and this test needs a JSON image only because it removes a key.
+    let mut stamped = serde_json::to_value(&shard).expect("a shard serializes");
+    stamped
+        .as_object_mut()
+        .expect("index is a json object")
+        .insert(
+            "index_format_version".to_string(),
+            serde_json::Value::from(super::super::SHARD_INDEX_FORMAT_VERSION),
+        );
     assert_eq!(
         stamped.get("index_format_version").and_then(|v| v.as_u64()),
         Some(u64::from(super::super::SHARD_INDEX_FORMAT_VERSION)),
@@ -3600,9 +3609,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     );
     shard.applied_wal_sequence = Some(4242);
 
-    std::env::set_var("TS_INDEX_CODEC", "msgpack");
     let binary = encode_index_bytes(&shard);
-    std::env::remove_var("TS_INDEX_CODEC");
 
     assert!(binary.starts_with(b"TSIDX\x01"), "binary payload must ride the container");
     assert_eq!(binary[6], 2, "payload codec id");
@@ -3671,9 +3678,10 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
         shard.strings().len()
     );
 
-    std::env::set_var("TS_INDEX_CODEC", "zstd-json");
-    let compressed_json = encode_index_bytes(&shard);
-    std::env::remove_var("TS_INDEX_CODEC");
+    // The compressed-JSON payload has no writer left: it is built here the way an older binary
+    // built it, which is the only way to give the reader arm that still takes it a real input.
+    let compressed_json =
+        crate::engine::wrap_index_json(serde_json::to_vec(&shard).expect("shard serialises"));
     assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
     assert_eq!(
         decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings().len(),
@@ -8983,7 +8991,8 @@ before the dump.",
 #[test]
 fn one_call_walks_the_live_blocks_a_known_number_of_times() {
     const RECORDS: usize = 1_000;
-    const EXPECTED_MULTIPLE: u64 = 6;
+    // 6 -> 5: the plan's summaries and digests come off one listing (`a_plan_lists_the_shards_blocks_once`).
+    const EXPECTED_MULTIPLE: u64 = 5;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -10512,7 +10521,8 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 /// because that report is taken whether or not the round has work, which is exactly why the idle
 /// half is measured separately.
 const EXPECTED_IDLE_MULTIPLE: u64 = 2;
-const EXPECTED_DIRTY_MULTIPLE: u64 = 6;
+// 6 -> 5 for the same reason as `EXPECTED_MULTIPLE` in `one_call_walks_the_live_blocks_a_known_number_of_times`.
+const EXPECTED_DIRTY_MULTIPLE: u64 = 5;
 
 /// What one round walked, at one corpus size.
 struct RoundWalkMeasurement {

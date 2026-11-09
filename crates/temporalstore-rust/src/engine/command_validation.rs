@@ -658,6 +658,30 @@ pub(super) fn validate_command_preconditions(
                     format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
                 ));
             }
+            // Merge-reduce is refused HERE, like `Block`, so a bad request writes nothing and
+            // reaches no log. The plan is thrown away; execution plans again (see the module note).
+            if *policy == FeatureWritePolicy::MergeReduce {
+                let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                // A key past its deadline reads as absent, as it does everywhere else.
+                let expired = shard
+                    .expires_at_ms()
+                    .get(key.as_str())
+                    .map(|expires_at| *expires_at <= resolve_now_ms())
+                    .unwrap_or(false);
+                crate::engine::cell_merge_append::plan_cell_merge(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard.features().get(&key[..]).filter(|_| !expired),
+                    key,
+                    crate::engine::hashing::block_routing_bucket(
+                        key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    ),
+                    points,
+                )?;
+            }
         }
         Command::FeatureReplace { key, points, .. } => {
             let current = shard
