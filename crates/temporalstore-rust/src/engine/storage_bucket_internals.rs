@@ -4647,25 +4647,26 @@ pub fn bucket_block_upserts() -> u64 {
     BLOCK_UPSERTS.with(std::cell::Cell::get)
 }
 
-/// A HASH DELETE FILES NOTHING, and maintenance is whether the hash still holds a field.
+/// A HASH DELETE FILES NOTHING, AND THE ANSWER IT GIVES DOES NOT DEPEND ON WHAT THE HASH HOLDS.
 ///
-/// The delete has already marked its field's block deleted in the index. What the whole-object
-/// sync did afterwards was walk every field the hash still holds, ask whether each was filed --
-/// through a lookup that resolves no named element, so the answer was always no -- and file every
-/// one again, each filing shifting the object's block vector: 534 KB per delete at 200 fields and
-/// 47 MB at 3,200, 88x between the two. It returned whether the hash still HELD any field, which is
-/// the only answer the caller reads, and that is read off the map in one lookup here. A delete that
-/// takes the last field answers false, so the caller still takes the rebuild it took before.
-pub(super) fn hash_delete_maintained(shard: &ShardState, object_key: &str) -> bool {
+/// The delete has already marked its field's block deleted in the index. What the whole-object sync
+/// did afterwards was walk every field the hash still held, ask whether each was filed -- through a
+/// lookup that resolves no named element, so the answer was always no -- and file every one again,
+/// each filing shifting the object's block vector: 534 KB per delete at 200 fields and 47 MB at
+/// 3,200, 88x between the two.
+///
+/// This used to answer "does the hash still hold a field", the question the whole-object sync
+/// answered, and fall back to that sync when the hash was empty. The question is dead: a `false`
+/// takes the rebuild only for a command that does not update the bucket index directly, and
+/// `command_updates_bucket_index_directly` names `HashDelete`; and the fallback sync on an empty
+/// hash files nothing. A plant that answered `true` for an emptied hash was not caught by the
+/// equivalence guard for that reason, and no history separates the two answers.
+pub(super) fn hash_delete_maintained() -> bool {
     #[cfg(test)]
     if WHOLE_OBJECT_HASH_DELETE.with(std::cell::Cell::get) {
         return false;
     }
-    shard
-        .bucket_index
-        .hashes
-        .get(object_key)
-        .is_some_and(|fields| !fields.is_empty())
+    true
 }
 
 pub(super) fn upsert_bucket_index_block_with(
