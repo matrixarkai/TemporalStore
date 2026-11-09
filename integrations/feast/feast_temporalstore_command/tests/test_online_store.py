@@ -1523,6 +1523,57 @@ class OnlineStoreTest(unittest.TestCase):
         # dict of empty values.
         self.assertEqual(results[1], (None, None))
 
+    def test_direct_read_collapses_repeated_feature_names(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        event = Timestamp()
+        event.FromDatetime(self.datetime(2026, 3, 4, tzinfo=self.timezone.utc))
+        present = ok(
+            {
+                "kind": "values",
+                "values": [
+                    list(ValueProto(int64_val=42).SerializeToString()),
+                    list(event.SerializeToString()),
+                ],
+            }
+        )
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [present],
+                }
+            ]
+        )
+
+        result = self.store.online_read(
+            self.config,
+            self.view,
+            [self._entity_key(1)],
+            ["trips", "trips", "trips"],
+        )
+
+        self.assertEqual(client.shared_reads[0][1], ["stats:trips", "_ts:stats"])
+        self.assertEqual(result[0][1]["trips"].int64_val, 42)
+
+    def test_versioned_reads_use_the_versioned_field_namespace(self):
+        self.config.registry.enable_online_feature_view_versioning = True
+        self.view.projection.version_tag = 7
+        client = self._install()
+
+        self.assertTrue(self.store._is_versioned_read_supported())
+        self.store._check_versioned_read_support([(self.view, ["trips"])])
+        self.store.online_read(
+            self.config, self.view, [self._entity_key(1)], ["trips"]
+        )
+
+        self.assertEqual(
+            client.shared_reads[0][1],
+            ["stats_v7:trips", "_ts:stats_v7"],
+        )
+
     def test_repeated_entity_reads_share_one_hash_command(self):
         from google.protobuf.timestamp_pb2 import Timestamp
 

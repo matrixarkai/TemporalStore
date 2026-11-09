@@ -100,6 +100,10 @@ compact route are detected once per client and use
 The answers are positional; a short answer is refused
 rather than zipped, because a missing slot would shift every value onto the
 wrong feature and read downstream as a stale feature rather than as an error.
+Repeated requested feature names are collapsed before the projection is sent,
+so they do not add wire bytes or protobuf decoding work. Version-tagged feature
+views use isolated field namespaces and are supported by both direct and Feast
+orchestrated reads.
 
 An entity that was never written reads back as `(None, None)`, not as a dict of
 empty values.
@@ -191,7 +195,7 @@ Partial is written as partial below. Nothing here is rounded up.
 | `initialize` | optional, base is `pass` | inherited; nothing to initialise |
 | `retrieve_online_documents`, `retrieve_online_documents_v2` | optional, **base raises** | **not implemented — vector search is not supported by this provider** |
 | `read_precomputed_vectors`, `write_precomputed_vector` | optional, base has generic feature-row implementations | **implemented** — writes the compatible synthetic feature field without an unused timestamp and reads repeated entities through one deduplicated compact projection |
-| `get_online_features`, `get_online_features_async` | provided by Feast | inherited and exercised, with compatible feature views coalesced into one compact projection per entity set |
+| `get_online_features`, `get_online_features_async` | provided by Feast | inherited and exercised, including version-tagged views; compatible feature views are coalesced into one compact projection per entity set |
 
 ### Against Feast's own process for a new online store
 
