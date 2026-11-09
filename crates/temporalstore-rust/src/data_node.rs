@@ -205,6 +205,10 @@ pub struct DataNodeRuntimeStats {
     pub storage_manager_index_gc_runs: u64,
     #[serde(default)]
     pub storage_manager_evict_runs: u64,
+    /// Dumps that failed and were left for a later round. `dump_runs` counts the ones that
+    /// completed, so a node whose dump keeps failing showed no dumps and no error.
+    #[serde(default)]
+    pub storage_dump_failures: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

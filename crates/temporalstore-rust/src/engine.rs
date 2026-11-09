@@ -353,6 +353,13 @@ pub struct TemporalEngine {
     /// ran. This makes the claim checkable: a test can require that recovery installed what the
     /// writes recorded rather than quietly replaying commands again.
     replay_installs: Arc<std::sync::atomic::AtomicU64>,
+    /// Dumps `apply_storage_lifecycle` attempted and could not complete.
+    ///
+    /// A failed dump leaves its buckets dirty and the reclaim frontier where it was, so the next
+    /// round tries again -- safe, and invisible: the error is consumed there and nothing else
+    /// records it, so a persistent EIO read as a quiet shard whose log never shrank. Counted per
+    /// failed dump, not per failed round.
+    dump_failures: Arc<std::sync::atomic::AtomicU64>,
     /// Where to mirror writes this engine performs OUTSIDE the request path.
     ///
     /// Request-path writes are mirrored a layer up, by the data node, which sees each command

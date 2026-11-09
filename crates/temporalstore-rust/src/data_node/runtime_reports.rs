@@ -81,6 +81,7 @@ impl DataNodeRuntime {
             storage_manager_compact_runs: stats.storage_manager_compact_runs,
             storage_manager_index_gc_runs: stats.storage_manager_index_gc_runs,
             storage_manager_evict_runs: stats.storage_manager_evict_runs,
+            storage_dump_failures: self.inner.engine.storage_dump_failures(),
         }
     }
 
