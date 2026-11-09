@@ -1233,9 +1233,7 @@ impl TemporalEngine {
                         )
                     }
                     // A DELETE FILES NOTHING; see `hash_delete_maintained`.
-                    Command::HashDelete { key, .. } => {
-                        storage_bucket_internals::hash_delete_maintained(shard, key)
-                    }
+                    Command::HashDelete { .. } => storage_bucket_internals::hash_delete_maintained(),
                     _ => false,
                 };
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
