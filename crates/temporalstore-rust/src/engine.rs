@@ -3613,6 +3613,60 @@ fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
     }
 }
 
+/// The served index container as a binary of ANOTHER struct version wrote it: this shard's msgpack
+/// payload behind a header that says `version`.
+///
+/// The header is the stamp. `decode_index_bytes` checks it before it reads a byte of the payload, so
+/// this is how a test builds an image that is "from an older (or newer) build" without a second
+/// encoder: nothing about the payload changes, and what the reader must do with it is decided by
+/// the header alone.
+#[cfg(test)]
+pub(super) fn encode_index_bytes_at_version(shard: &ShardState, version: u32) -> Vec<u8> {
+    let mut bytes = encode_index_bytes(shard);
+    let at = INDEX_CONTAINER_MAGIC.len() + 1;
+    bytes[at..at + INDEX_BINARY_VERSION_BYTES].copy_from_slice(&version.to_be_bytes());
+    bytes
+}
+
+/// The same container with one extra field written beside the struct's own, behind a header that
+/// says `version`.
+///
+/// For the fixtures that carry a field the struct no longer has (`ShardState` sets no
+/// `deny_unknown_fields`, so a current-stamped image holding one decodes cleanly and drops it). The
+/// extra field is flattened into the struct's own map, so every integer-keyed map inside the shard
+/// keeps its integer keys, which a round trip through a JSON value would not.
+#[cfg(test)]
+pub(super) fn encode_index_bytes_with_extra_field(
+    shard: &ShardState,
+    field: &str,
+    value: &serde_json::Value,
+    version: u32,
+) -> Vec<u8> {
+    #[derive(serde::Serialize)]
+    struct WithExtra<'a> {
+        #[serde(flatten)]
+        shard: &'a ShardState,
+        #[serde(flatten)]
+        extra: std::collections::BTreeMap<String, serde_json::Value>,
+    }
+    let mut extra = std::collections::BTreeMap::new();
+    extra.insert(field.to_string(), value.clone());
+    let mut encoded = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut encoded).with_struct_map();
+    serde::Serialize::serialize(&WithExtra { shard, extra }, &mut serializer)
+        .expect("the image serializes");
+    let payload = zstd::stream::encode_all(encoded.as_slice(), INDEX_ZSTD_LEVEL)
+        .expect("the payload compresses");
+    let mut out = Vec::with_capacity(
+        payload.len() + INDEX_CONTAINER_MAGIC.len() + 1 + INDEX_BINARY_VERSION_BYTES,
+    );
+    out.extend_from_slice(INDEX_CONTAINER_MAGIC);
+    out.push(INDEX_CODEC_ZSTD_MSGPACK);
+    out.extend_from_slice(&version.to_be_bytes());
+    out.extend_from_slice(&payload);
+    out
+}
+
 /// The served index as an older build wrote it: the struct's JSON, in no container.
 ///
 /// Production has no way to produce this any more, and that is the point -- but the reader still

@@ -189,9 +189,8 @@ fn the_pre_bump_bucket_shape_cannot_be_read_as_the_new_one() {
     // Through the JSON codec so exactly ONE thing differs: the bucket's value shape. Building a
     // minimal hand-written image instead would also be missing every field that has no
     // `#[serde(default)]`, and the decode would fail for that reason rather than this one.
-    let json = crate::engine::encode_index_bytes_as_plain_json(&restored);
     let mut value: serde_json::Value =
-        serde_json::from_slice(&json).expect("a plain-JSON index parses as JSON");
+        serde_json::to_value(&restored).expect("the state serializes as a JSON value");
     let bucket = value
         .get_mut("control_state_changes")
         .and_then(|m| m.get_mut(KEY))
@@ -205,9 +204,12 @@ fn the_pre_bump_bucket_shape_cannot_be_read_as_the_new_one() {
     );
     // The pre-bump shape: the member set itself, with no variant tag around it.
     *bucket = serde_json::json!([[97], [98], [99]]);
-    let pre_bump = serde_json::to_vec(&value).expect("the rewritten image serializes");
 
-    let outcome = crate::engine::decode_index_bytes(&pre_bump);
+    // The TYPE's own reading of the doctored value. This asserted `decode_index_bytes` over plain
+    // JSON, whose only job here was to be `serde_json::from_slice::<ShardState>`; that reader is
+    // being retired, and the question -- can a pre-bump bucket value be read as the new shape -- is
+    // about the struct's deserializer, so it is asked of the struct's deserializer.
+    let outcome = serde_json::from_value::<crate::engine::state::ShardState>(value);
     println!("  decoding a pre-bump bucket against the new shape -> {outcome:?}");
     assert!(
         outcome.is_err(),
@@ -517,9 +519,8 @@ fn the_stored_image_no_longer_carries_the_control_state_blocks_key() {
 
     let bytes = std::fs::read(base_index_path(dir.path())).expect("a flushed base index exists");
     let restored = crate::engine::decode_index_bytes(&bytes).expect("the base index decodes");
-    let json = crate::engine::encode_index_bytes_as_plain_json(&restored);
     let value: serde_json::Value =
-        serde_json::from_slice(&json).expect("a plain-JSON index parses as JSON");
+        serde_json::to_value(&restored).expect("the state serializes as a JSON value");
     let top_level: Vec<&String> = value
         .as_object()
         .expect("the index is a JSON object")
