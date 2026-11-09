@@ -444,6 +444,8 @@ mod the_two_eviction_arms_disagree_on_the_dirty_count;
 mod a_deferred_checkpoint_still_reloads_with_the_keys_dropped;
 #[path = "tests/what_one_visibility_publish_writes.rs"]
 mod what_one_visibility_publish_writes;
+#[path = "tests/a_checkpoint_publish_into_a_log_with_an_anchor_lands.rs"]
+mod a_checkpoint_publish_into_a_log_with_an_anchor_lands;
 #[path = "tests/a_deferred_publish_checkpoint_still_reloads_with_the_published_values.rs"]
 mod a_deferred_publish_checkpoint_still_reloads_with_the_published_values;
 #[path = "tests/what_one_shard_load_writes.rs"]

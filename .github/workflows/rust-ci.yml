@@ -295,6 +295,8 @@ jobs:
             engine::tests::block_entry_names::the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones \
             index_log::tests::a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record \
             index_log::tests::a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps \
+            engine::tests::a_checkpoint_publish_into_a_log_with_an_anchor_lands::a_second_checkpoint_publish_lands_in_a_log_that_holds_the_first_ones_anchor \
+            index_log::tests::the_whole_index_record_has_no_writer_and_no_reader_in_the_index_log \
             engine::tests::page_and_block_name_one_tier::the_stored_object_layout_emits_the_block_spelling_and_does_not_read_the_page_spelling \
             engine::tests::page_and_block_name_one_tier::the_index_log_item_kind_reads_the_block_token_and_refuses_the_page_token \
             data_node::lifecycle::tests::a_lifecycle_snapshot_codec_reads_protobuf_with_every_field_and_refuses_everything_else \
