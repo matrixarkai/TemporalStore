@@ -296,10 +296,12 @@ pub(super) fn install_element<K: RecordedKind>(
         start_routing_bucket,
         end_routing_bucket,
     );
+    let object_id = super::stable_block_object_id(shard_id, K::KIND, object_key);
     install_element_at_bucket::<K>(
         shard,
         shard_id,
         routing_bucket,
+        object_id,
         object_key,
         element_name,
         element,
@@ -314,6 +316,7 @@ pub(super) fn install_element_at_bucket<K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,
     routing_bucket: u32,
+    object_id: u64,
     object_key: &str,
     element_name: Option<String>,
     element: <K::Elements as ElementMap>::Element,
@@ -347,6 +350,7 @@ pub(super) fn install_element_at_bucket<K: RecordedKind>(
         shard,
         shard_id,
         routing_bucket,
+        object_id,
         K::KIND,
         object_key,
         element_name,

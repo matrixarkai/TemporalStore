@@ -513,6 +513,13 @@ fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardI
         .and_then(kind_from_code)
         .unwrap_or(item.kind.as_str());
     let derived = crate::engine::hashing::stable_block_object_id(shard_id, kind, &item.object_key);
+    item_object_id_to_write_with_derived(item, derived)
+}
+
+fn item_object_id_to_write_with_derived(
+    item: &WalOutcomeItem,
+    derived: u64,
+) -> Option<u64> {
     (item.object_id != derived).then_some(item.object_id)
 }
 
@@ -643,12 +650,25 @@ fn derive_item<'a>(
     implied_length: Option<u64>,
     command_key: Option<&str>,
 ) -> DerivedItem<'a> {
+    derive_item_with_object_id(item, shard_id, implied_length, command_key, None)
+}
+
+fn derive_item_with_object_id<'a>(
+    item: &'a WalOutcomeItem,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+    derived_object_id: Option<u64>,
+) -> DerivedItem<'a> {
     // `item_to_proto` calls this three times for three fields; it is one answer.
     let numeric = numeric_element_name(&item.kind, item.element_name.as_deref());
     let code = kind_code(&item.kind);
     DerivedItem {
         object_key: item_object_key_to_write(item, command_key),
-        object_id: item_object_id_to_write(item, shard_id),
+        object_id: derived_object_id.map_or_else(
+            || item_object_id_to_write(item, shard_id),
+            |derived| item_object_id_to_write_with_derived(item, derived),
+        ),
         element_name: match numeric {
             Some(_) => None,
             None => item.element_name.as_deref(),
@@ -907,10 +927,40 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
     };
     let implied_length = implied_block_length(record);
     let command_key = strippable_command_key(record);
+    let mut previous_object_id: Option<(usize, u64)> = None;
     let items = record
         .outcomes
         .iter()
-        .map(|item| derive_item(item, record.shard_id, implied_length, command_key.as_deref()))
+        .enumerate()
+        .map(|(index, item)| {
+            let kind = kind_code(&item.kind)
+                .and_then(kind_from_code)
+                .unwrap_or(item.kind.as_str());
+            let derived = previous_object_id
+                .and_then(|(previous_index, previous_id)| {
+                    let previous = &record.outcomes[previous_index];
+                    let previous_kind = kind_code(&previous.kind)
+                        .and_then(kind_from_code)
+                        .unwrap_or(previous.kind.as_str());
+                    (previous_kind == kind && previous.object_key == item.object_key)
+                        .then_some(previous_id)
+                })
+                .unwrap_or_else(|| {
+                    crate::engine::hashing::stable_block_object_id(
+                        record.shard_id,
+                        kind,
+                        &item.object_key,
+                    )
+                });
+            previous_object_id = Some((index, derived));
+            derive_item_with_object_id(
+                item,
+                record.shard_id,
+                implied_length,
+                command_key.as_deref(),
+                Some(derived),
+            )
+        })
         .collect::<Vec<_>>();
     let items_len = record
         .outcomes
