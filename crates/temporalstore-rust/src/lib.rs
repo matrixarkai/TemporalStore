@@ -370,7 +370,7 @@ pub use wal::{
 };
 pub use wal::{
     LocalWriteAheadLogStore, WriteAheadLogAppendReport, WriteAheadLogError,
-    WriteAheadLogFlushReport, WriteAheadLogGcReport, WriteAheadLogInfo, WriteAheadLogItemKind,
-    WriteAheadLogItemMetadata, WriteAheadLogModel, WriteAheadLogRecord,
+    WriteAheadLogFlushReport, WriteAheadLogGcReport, WriteAheadLogInfo,
+    WriteAheadLogRecord,
     WriteAheadLogRecordMetadata, WriteAheadLogStats, WRITE_AHEAD_LOG_FORMAT_VERSION,
 };

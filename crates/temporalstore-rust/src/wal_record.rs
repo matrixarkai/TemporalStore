@@ -368,7 +368,6 @@ mod tests {
                 metadata: Some(WriteAheadLogRecordMetadata {
                     version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
                     timestamp_ms: 1_787_270_070_192,
-                    items: Vec::new(),
                     batch_id: None,
                     batch_size: None,
                     batch_index: None,
@@ -486,7 +485,6 @@ mod tests {
                 metadata: Some(WriteAheadLogRecordMetadata {
                     version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
                     timestamp_ms: 1_787_270_070_192,
-                    items: Vec::new(),
                     batch_id: None,
                     batch_size: None,
                     batch_index: None,
