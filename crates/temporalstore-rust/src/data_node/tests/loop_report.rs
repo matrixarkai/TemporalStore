@@ -606,3 +606,152 @@ fn the_metrics_reap_sweeps_every_bucket_in_bounded_slices_and_wraps() {
     assert!(reap.bucket_gauges.is_empty());
     assert_eq!(reap.buckets_total, 0);
 }
+
+/// A WARM CACHE SURVIVES A ROUND UNLESS AN OPERATOR SET A BOUND, AND A BOUND STILL INVALIDATES IT.
+///
+/// The `reclaim_memory` stage drops every cached block of the shard. Its gate used to open at one
+/// cached byte, so a shard that had served a single read lost its cache on the next round and every
+/// round after, and readers paid cold reads each time. The expire and evict stages are what relieve
+/// memory pressure; this stage is a blanket invalidation, so by default it waits for a bound.
+///
+/// BOTH ARMS ARE ASSERTED. The default arm alone would pass a stage that had stopped working, so the
+/// second arm sets a one-byte bound and requires the same warm cache to be dropped.
+#[test]
+fn a_warm_cache_survives_a_default_round_and_an_explicit_bound_still_drops_it() {
+    fn warm(engine: &TemporalEngine) {
+        for index in 0..50 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("loop-{index:06}"),
+                },
+            });
+            assert!(response.status.ok, "read {index}: {:?}", response.status);
+        }
+    }
+    fn cached(runtime: &DataNodeRuntime, options: &StorageManagerOptions) -> u64 {
+        runtime
+            .storage_manager_pressure_snapshot(1, options)
+            .0
+            .cache_memory_bytes
+    }
+
+    // DEFAULT: the cache stays.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let shipped = StorageManagerOptions::default();
+    let engine = runtime.engine();
+    warm(&engine);
+    let before = cached(&runtime, &shipped);
+    assert!(
+        before > 0,
+        "the fixture never warmed the cache, so the arms below prove nothing"
+    );
+    let report = runtime.run_storage_manager_once(1, shipped.clone());
+    assert!(
+        !report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "a default round ran the blanket invalidation: {:?}",
+        report.executed_stages
+    );
+    assert!(
+        cached(&runtime, &shipped) > 0,
+        "a default round dropped a warm cache ({before} bytes before)"
+    );
+
+    // CONTROL: an explicit one-byte bound still invalidates.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let bounded = StorageManagerOptions {
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let engine = runtime.engine();
+    warm(&engine);
+    assert!(cached(&runtime, &bounded) > 0, "the control fixture never warmed");
+    let report = runtime.run_storage_manager_once(1, bounded.clone());
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "an explicit bound did not run the stage: {:?}",
+        report.executed_stages
+    );
+    assert_eq!(
+        cached(&runtime, &bounded),
+        0,
+        "an explicit bound ran the stage but the cache is still warm"
+    );
+}
+
+/// Measurement harness, not a gate: `--ignored --nocapture`, one test thread, `LOOP_KEYS=<n>`,
+/// `LOOP_WRITES=<writes per round>`. A shard that takes writes between rounds is dirty at every
+/// round, so this prices what a round pays then, stage by stage and by the call site that walked.
+#[test]
+#[ignore]
+fn what_a_dirty_loop_round_walks_by_call_site() {
+    let keys = std::env::var("LOOP_KEYS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1500usize);
+    let writes = std::env::var("LOOP_WRITES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(20usize);
+    let rounds = 8usize;
+    // `LOOP_OLD_CACHE_GATE=1` restores the one-byte cache bounds the shipped defaults used to carry.
+    let shipped = if std::env::var("LOOP_OLD_CACHE_GATE").is_ok() {
+        StorageManagerOptions {
+            cache_memory_bytes_pressure: 1,
+            cache_disk_bytes_pressure: 1,
+            ..StorageManagerOptions::default()
+        }
+    } else {
+        StorageManagerOptions::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    // Warm the cache the way a served shard would be, so the stage's gate has something to see.
+    {
+        let engine = runtime.engine();
+        for index in 0..keys.min(200) {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("loop-{index:06}"),
+                },
+            });
+        }
+    }
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, shipped.clone());
+    }
+    let engine = runtime.engine();
+    for round in 0..rounds {
+        for write in 0..writes {
+            let index = (round * writes + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        crate::engine::reset_live_block_scan_sites();
+        let report = runtime.run_storage_manager_once(1, shipped.clone());
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        eprintln!(
+            "D round {round}: {} us, walk_entries={walked} (= {:.1} whole-shard walks of {keys})",
+            report.duration_us,
+            walked as f64 / keys as f64
+        );
+        for span in &report.stage_spans {
+            eprintln!(
+                "      {:<18} ran={} {:>8} us walk={}",
+                span.stage, span.executed, span.duration_us, span.walk.live_block_entries
+            );
+        }
+        for (site, entries) in crate::engine::live_block_scan_sites_snapshot() {
+            eprintln!("      site {site:<60} {entries:>8} entries ({:.1}x)", entries as f64 / keys as f64);
+        }
+    }
+}

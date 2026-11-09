@@ -1351,8 +1351,12 @@ impl Default for StorageManagerOptions {
             dirty_bucket_pressure: 1,
             stale_block_slab_pressure: 1,
             reclaimable_physical_bytes_pressure: 1,
-            cache_memory_bytes_pressure: 1,
-            cache_disk_bytes_pressure: 1,
+            // OFF BY DEFAULT: the stage these open drops every cached block of the shard, so a
+            // bound of one byte meant a shard that had served a single read lost its cache on every
+            // round. Expire and evict relieve memory pressure; this is a blanket invalidation, so
+            // it waits for an operator to set a bound.
+            cache_memory_bytes_pressure: u64::MAX,
+            cache_disk_bytes_pressure: u64::MAX,
             enable_prepare: true,
             enable_wal_reclaim: true,
             enable_memory_reclaim: true,
