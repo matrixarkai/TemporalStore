@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Context model-provider calls for summaries and embeddings across supported provider protocols.
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -566,13 +566,14 @@ pub(crate) fn context_embeddings_for_extract_compact(
     let mut unique_inputs = Vec::with_capacity(inputs.len());
     let mut input_rows = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let row = if let Some(row) = unique_by_text.get(input.3) {
-            *row
-        } else {
-            let row = unique_inputs.len();
-            unique_by_text.insert(input.3, row);
-            unique_inputs.push(*input);
-            row
+        let row = match unique_by_text.entry(input.3) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let row = unique_inputs.len();
+                entry.insert(row);
+                unique_inputs.push(*input);
+                row
+            }
         };
         input_rows.push(row);
     }
