@@ -2583,7 +2583,9 @@ pub fn retrieve_context(
         }
         debug_assert!(returned.next().is_none());
     }
-    prefetched_nodes.reserve(lexical_fallback_nodes.len());
+    // Score fallback text while each storage chunk is live, then release the full nodes. Only
+    // the bounded metadata/rerank set below needs to retain ContextNode strings and vectors.
+    let mut scoring_text = String::new();
     for chunk in lexical_fallback_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
@@ -2594,7 +2596,22 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextNodes { nodes } = response.response {
             for node in nodes {
-                prefetched_nodes.insert(node.node_hash, node);
+                if summary_scores_by_node
+                    .get(&node.node_hash)
+                    .is_none_or(|(_, found)| *found == 0)
+                {
+                    scoring_text.clear();
+                    scoring_text.push_str(&node.canonical_name);
+                    scoring_text.push(' ');
+                    scoring_text.push_str(&node.l0);
+                    scoring_text.push(' ');
+                    scoring_text.push_str(&node.l1_ref);
+                    summary_scores_by_node.entry(node.node_hash).or_default().0 =
+                        lexical_score_to_micros(context_relevance_score_plan(
+                            &query_plan,
+                            &scoring_text,
+                        ));
+                }
             }
         }
     }
@@ -2801,7 +2818,6 @@ pub fn retrieve_context(
     // Every retrieve does this. `MATRIXARK_CONTEXT_HYBRID_LEXICAL` could skip it and
     // defaulted on; nothing set it, so a node with no stored summary embedding has
     // always been scored by lexical overlap rather than left at a flat 0.
-    let mut scoring_text = String::new();
     let summary_candidate_count = node_hashes.len();
     let summary_node_limit = request
         .max_summary_nodes
