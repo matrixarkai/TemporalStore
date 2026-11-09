@@ -410,6 +410,16 @@ pub(super) fn context_query_secondary_index_filter_groups(terms: &[String]) -> V
             "event_time_bucket:query_range".to_string(),
         ]);
     }
+    if !groups.is_empty() {
+        let numeric_identifiers = terms
+            .iter()
+            .filter(|term| term.chars().all(|ch| ch.is_ascii_digit()))
+            .map(|term| format!("query_term:{term}"))
+            .collect::<Vec<_>>();
+        if !numeric_identifiers.is_empty() {
+            groups.push(numeric_identifiers);
+        }
+    }
     if groups.is_empty() {
         let mut lexical = terms
             .iter()
@@ -742,7 +752,11 @@ pub(super) fn context_query_terms(query: &str) -> Vec<String> {
     query
         .split(|ch: char| !ch.is_ascii_alphanumeric())
         .map(|term| term.trim().to_ascii_lowercase())
-        .filter(|term| term.len() >= 3 && !is_context_query_stopword(term))
+        .filter(|term| {
+            (term.len() >= 3 || term.chars().all(|ch| ch.is_ascii_digit()))
+                && !term.is_empty()
+                && !is_context_query_stopword(term)
+        })
         .collect()
 }
 
@@ -1171,12 +1185,30 @@ pub fn context_embedding_ref_hash(tenant_hash: u64, ref_hash: u64, level: &str) 
     stable_hash64(&format!("ctx-embedding:{tenant_hash}:{ref_hash}:{level}"))
 }
 
+pub(super) const DETERMINISTIC_EMBEDDING_DIMENSIONS: usize = 32;
+
 pub(super) fn deterministic_context_embedding(model: &str, text: &str) -> Vec<f32> {
-    let mut vector = Vec::with_capacity(16);
-    for index in 0..16_u64 {
-        let hash = stable_hash64(&format!("{model}:{index}:{text}"));
-        let signed = (hash % 20_001) as f32 - 10_000.0;
-        vector.push(signed / 10_000.0);
+    let mut vector = vec![0.0_f32; DETERMINISTIC_EMBEDDING_DIMENSIONS];
+    let tokens = text
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    for token in &tokens {
+        if let Ok(identifier) = token.parse::<usize>() {
+            let slot = identifier % vector.len();
+            vector[slot] += 4.0;
+            continue;
+        }
+        let hash = stable_hash64_parts(&[model, ":", token]);
+        let slot = (hash as usize) % vector.len();
+        let sign = if hash & (1 << 63) == 0 { 1.0 } else { -1.0 };
+        vector[slot] += sign;
+    }
+    for pair in tokens.windows(2) {
+        let hash = stable_hash64_parts(&[model, ":", pair[0], " ", pair[1]]);
+        let slot = (hash as usize) % vector.len();
+        let sign = if hash & (1 << 63) == 0 { 1.0 } else { -1.0 };
+        vector[slot] += sign * 2.0;
     }
     let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
     if norm > 0.0 {
