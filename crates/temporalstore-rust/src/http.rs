@@ -396,12 +396,24 @@ pub fn post_json_streaming_with_options_and_headers<Req: Serialize, Res: Deseria
     options: HttpRequestOptions,
 ) -> Result<Res, HttpError> {
     let body = serde_json::to_vec(request)?;
+    post_encoded_json_streaming_with_options_and_headers(addr, path, &body, extra_headers, options)
+}
+
+/// POST an already encoded JSON body and deserialize the response directly from the socket.
+/// Callers issuing a sequence of large requests can reuse their encoding buffer between calls.
+pub fn post_encoded_json_streaming_with_options_and_headers<Res: DeserializeOwned>(
+    addr: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
     let headers: std::borrow::Cow<'static, str> = if extra_headers.is_empty() {
         std::borrow::Cow::Borrowed("Content-Type: application/json\r\n")
     } else {
         std::borrow::Cow::Owned(format!("Content-Type: application/json\r\n{extra_headers}"))
     };
-    request_streaming_json_with_options(addr, "POST", path, &body, &headers, options)
+    request_streaming_json_with_options(addr, "POST", path, body, &headers, options)
 }
 
 /// Send a raw request body (e.g. a large binary attachment) and return the raw
@@ -831,20 +843,60 @@ fn write_exchange_request(
     options: HttpRequestOptions,
 ) -> Result<(), HttpError> {
     EXCHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut framed = Vec::with_capacity(
-        96 + method.len() + path.len() + addr.len() + extra_headers.len() + body.len(),
-    );
+    let mut header =
+        Vec::with_capacity(96 + method.len() + path.len() + addr.len() + extra_headers.len());
     {
         use std::io::Write as _;
         let _ = write!(
-            framed,
+            header,
             "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: keep-alive\r\n\r\n",
             body.len()
         );
     }
-    framed.extend_from_slice(body);
-    write_all_with_would_block_retry(stream, &framed, options.io_timeout_ms)?;
+    write_header_and_body_with_would_block_retry(stream, &header, body, options.io_timeout_ms)?;
     flush_with_would_block_retry(stream, options.io_timeout_ms)
+}
+
+fn write_header_and_body_with_would_block_retry<W: Write>(
+    writer: &mut W,
+    header: &[u8],
+    body: &[u8],
+    timeout_ms: u64,
+) -> Result<(), HttpError> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    let mut header_offset = 0usize;
+    let mut body_offset = 0usize;
+    while header_offset < header.len() || body_offset < body.len() {
+        let write_result = if header_offset < header.len() {
+            writer.write_vectored(&[
+                IoSlice::new(&header[header_offset..]),
+                IoSlice::new(&body[body_offset..]),
+            ])
+        } else {
+            writer.write(&body[body_offset..])
+        };
+        match write_result {
+            Ok(0) => {
+                return Err(HttpError::BadResponse(
+                    "socket closed while writing request".to_string(),
+                ));
+            }
+            Ok(written) => {
+                let header_remaining = header.len().saturating_sub(header_offset);
+                let header_written = written.min(header_remaining);
+                header_offset += header_written;
+                body_offset += written.saturating_sub(header_written);
+            }
+            Err(err)
+                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(err) => return Err(HttpError::Io(err)),
+        }
+    }
+    Ok(())
 }
 
 fn exchange_once(
@@ -1087,32 +1139,6 @@ fn read_http_response_head(
     }
 }
 
-fn write_all_with_would_block_retry(
-    stream: &mut TcpStream,
-    mut bytes: &[u8],
-    timeout_ms: u64,
-) -> Result<(), HttpError> {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
-    while !bytes.is_empty() {
-        match stream.write(bytes) {
-            Ok(0) => {
-                return Err(HttpError::BadResponse(
-                    "socket closed while writing request".to_string(),
-                ));
-            }
-            Ok(written) => bytes = &bytes[written..],
-            Err(err)
-                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
-                    && std::time::Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(err) => return Err(HttpError::Io(err)),
-        }
-    }
-    Ok(())
-}
-
 fn flush_with_would_block_retry(stream: &mut TcpStream, timeout_ms: u64) -> Result<(), HttpError> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
     loop {
@@ -1203,6 +1229,62 @@ mod tests {
         );
         assert_eq!(writer.vectored_calls, 1);
         assert_eq!(writer.bytes, [expected_header.as_bytes(), body].concat());
+    }
+
+    #[test]
+    fn request_writer_handles_short_gathered_writes_without_copying_the_body() {
+        let header = b"POST /api/embed HTTP/1.1\r\nContent-Length: 25\r\n\r\n";
+        let body = b"one encoded request body";
+        let mut writer = ShortVectoredWriter {
+            bytes: Vec::with_capacity(header.len() + body.len()),
+            max_write: 17,
+            vectored_calls: 0,
+        };
+
+        write_header_and_body_with_would_block_retry(&mut writer, header, body, 100).unwrap();
+
+        assert!(writer.vectored_calls > 0);
+        assert_eq!(writer.bytes, [header.as_slice(), body.as_slice()].concat());
+    }
+
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    fn request_writer_does_not_allocate_a_body_sized_copy() {
+        struct DiscardWriter {
+            written: usize,
+        }
+
+        impl Write for DiscardWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.written += bytes.len();
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> std::io::Result<usize> {
+                let written = buffers.iter().map(|buffer| buffer.len()).sum::<usize>();
+                self.written += written;
+                Ok(written)
+            }
+        }
+
+        let header = b"POST /api/embed HTTP/1.1\r\nContent-Length: 1048576\r\n\r\n";
+        let body = vec![b'x'; 1024 * 1024];
+        let mut writer = DiscardWriter { written: 0 };
+        let probe = crate::alloc_probe::Probe::start();
+        write_header_and_body_with_would_block_retry(&mut writer, header, &body, 100).unwrap();
+        let spent = probe.stop();
+
+        assert_eq!(writer.written, header.len() + body.len());
+        assert!(
+            spent.alloc_bytes < 1024,
+            "request writer allocated {spent:?} for a {} byte body",
+            body.len()
+        );
+        std::hint::black_box((writer, body));
     }
 
     #[test]

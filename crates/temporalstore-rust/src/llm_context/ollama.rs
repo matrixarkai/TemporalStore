@@ -12,7 +12,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::env_flag::{env_bool_first, env_number_first, env_value_any};
-use crate::http::{post_json_streaming_with_options_and_headers, HttpError, HttpRequestOptions};
+use crate::http::{
+    post_encoded_json_streaming_with_options_and_headers,
+    post_json_streaming_with_options_and_headers, HttpError, HttpRequestOptions,
+};
 
 use super::{
     BatchEmbedder, BatchExtractor, ContextMessage, ContextRole, EmbeddingBatch, ExtractedContext,
@@ -240,16 +243,11 @@ impl OllamaProvider {
         }
     }
 
-    fn batch_end<T>(
-        &self,
-        inputs: &[T],
-        start: usize,
-        input_size: impl Fn(&T) -> usize,
-    ) -> Result<usize, OllamaError> {
+    fn embedding_batch_end(&self, inputs: &[&str], start: usize) -> Result<usize, OllamaError> {
         let mut end = start;
-        let mut bytes = 0usize;
+        let mut request_bytes = ollama_embed_request_wire_bytes(&self.config, &[]);
         while end < inputs.len() && end - start < self.config.max_batch_items {
-            let item_bytes = input_size(&inputs[end]);
+            let item_bytes = inputs[end].len();
             if item_bytes > self.config.max_input_bytes {
                 return Err(OllamaError::InputTooLarge {
                     index: end,
@@ -257,17 +255,20 @@ impl OllamaProvider {
                     limit: self.config.max_input_bytes,
                 });
             }
-            if end > start && bytes.saturating_add(item_bytes) > self.config.max_request_bytes {
+            let candidate_bytes = request_bytes
+                .saturating_add(usize::from(end > start))
+                .saturating_add(json_string_wire_bytes(inputs[end]));
+            if end > start && candidate_bytes > self.config.max_request_bytes {
                 break;
             }
-            if item_bytes > self.config.max_request_bytes {
+            if candidate_bytes > self.config.max_request_bytes {
                 return Err(OllamaError::InputTooLarge {
                     index: end,
-                    bytes: item_bytes,
+                    bytes: candidate_bytes,
                     limit: self.config.max_request_bytes,
                 });
             }
-            bytes += item_bytes;
+            request_bytes = candidate_bytes;
             end += 1;
         }
         Ok(end)
@@ -364,23 +365,30 @@ impl OllamaProvider {
 
         let mut dimensions = 0usize;
         let mut values = Vec::new();
+        let mut request_body = Vec::new();
         let mut start = 0usize;
         while start < texts.len() {
-            let end = self.batch_end(texts, start, |text| text.len())?;
+            let end = self.embedding_batch_end(texts, start)?;
             let request = OllamaEmbedRequest {
                 model: &self.config.embedding_model,
                 input: &texts[start..end],
                 truncate: self.config.truncate_embeddings,
                 keep_alive: &self.config.keep_alive,
             };
-            let mut response: OllamaEmbedResponse = post_json_streaming_with_options_and_headers(
-                &self.addr,
-                &self.endpoint("/api/embed"),
-                &request,
-                "",
-                self.request_options(),
-            )
-            .map_err(OllamaError::Http)?;
+            let request_bytes = ollama_embed_request_wire_bytes(&self.config, request.input);
+            request_body.clear();
+            request_body.reserve(request_bytes);
+            serde_json::to_writer(&mut request_body, &request).map_err(OllamaError::ContentJson)?;
+            debug_assert_eq!(request_body.len(), request_bytes);
+            let mut response: OllamaEmbedResponse =
+                post_encoded_json_streaming_with_options_and_headers(
+                    &self.addr,
+                    &self.endpoint("/api/embed"),
+                    &request_body,
+                    "",
+                    self.request_options(),
+                )
+                .map_err(OllamaError::Http)?;
             let expected = end - start;
             if response.embeddings.len() != expected {
                 return Err(OllamaError::EmbeddingCount {
@@ -592,6 +600,37 @@ fn parse_base_url(base_url: &str) -> Result<(String, String), OllamaError> {
         format!("/{}", path.trim_matches('/'))
     };
     Ok((host.to_string(), path_prefix))
+}
+
+fn ollama_embed_request_wire_bytes(config: &OllamaConfig, inputs: &[&str]) -> usize {
+    let input_bytes = inputs
+        .iter()
+        .enumerate()
+        .fold(0usize, |bytes, (index, input)| {
+            bytes
+                .saturating_add(usize::from(index > 0))
+                .saturating_add(json_string_wire_bytes(input))
+        });
+    b"{\"model\":"
+        .len()
+        .saturating_add(json_string_wire_bytes(&config.embedding_model))
+        .saturating_add(b",\"input\":[".len())
+        .saturating_add(input_bytes)
+        .saturating_add(b"],\"truncate\":".len())
+        .saturating_add(if config.truncate_embeddings { 4 } else { 5 })
+        .saturating_add(b",\"keep_alive\":".len())
+        .saturating_add(json_string_wire_bytes(&config.keep_alive))
+        .saturating_add(1)
+}
+
+fn json_string_wire_bytes(value: &str) -> usize {
+    value.bytes().fold(2usize, |bytes, byte| {
+        bytes.saturating_add(match byte {
+            b'"' | b'\\' | b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+    })
 }
 
 fn context_id(tenant_id: u64, source_message_id: u64, text: &str) -> u64 {
@@ -926,6 +965,59 @@ mod tests {
 
         assert_eq!(output.dimensions, 2);
         assert_eq!(output.values, vec![1.0, 0.0, 0.0, 1.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn embedding_wire_size_matches_the_encoded_request() {
+        let config = OllamaConfig {
+            embedding_model: "embed\"model".to_string(),
+            keep_alive: "5m\\local".to_string(),
+            truncate_embeddings: false,
+            ..OllamaConfig::default()
+        };
+        let inputs = [
+            "plain",
+            "quote \" newline\n control \u{0001}",
+            "unicode \u{4e0a}\u{4e0b}\u{6587}",
+        ];
+        let request = OllamaEmbedRequest {
+            model: &config.embedding_model,
+            input: &inputs,
+            truncate: config.truncate_embeddings,
+            keep_alive: &config.keep_alive,
+        };
+
+        let encoded = serde_json::to_vec(&request).unwrap();
+
+        assert_eq!(
+            ollama_embed_request_wire_bytes(&config, &inputs),
+            encoded.len()
+        );
+    }
+
+    #[test]
+    fn embedding_batches_use_encoded_wire_bytes() {
+        let first = "quote-heavy \"\"\" and newline\n";
+        let second = "second";
+        let mut config = OllamaConfig::default();
+        config.max_request_bytes = ollama_embed_request_wire_bytes(&config, &[first]);
+        let provider = OllamaProvider::new(config.clone()).unwrap();
+
+        assert_eq!(
+            provider.embedding_batch_end(&[first, second], 0).unwrap(),
+            1
+        );
+        assert_eq!(
+            provider.embedding_batch_end(&[first, second], 1).unwrap(),
+            2
+        );
+
+        config.max_request_bytes -= 1;
+        let provider = OllamaProvider::new(config).unwrap();
+        assert!(matches!(
+            provider.embedding_batch_end(&[first], 0),
+            Err(OllamaError::InputTooLarge { index: 0, .. })
+        ));
     }
 
     #[test]
