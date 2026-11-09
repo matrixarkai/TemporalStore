@@ -10,11 +10,13 @@ use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEntity,
     ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
     ContextNodeVectorProjection, ContextPackAudit, ContextSummary, ContextTraversedNode, ContextWire,
-    FeaturePoint, InternalContextIndex, ShardId, Status,
+    InternalContextIndex, ShardId, Status,
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_blocks::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
+use super::packed_blocks::{
+    read_feature_point, read_feature_point_cached, read_feature_point_cold, CachedFeatureBlock,
+};
 use super::hashing::BlockIdentity;
 use super::timestamped_series::TimestampedSeries;
 use super::{read_blocks_shared, stable_object_hash, SharedBlockRead, ShardState};
@@ -438,7 +440,7 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
     address: &ElementEntry,
     // As `read_context_value` above.
     identity: BlockIdentity<'_>,
-    packed_block_cache: &mut HashMap<ElementEntry, Option<Vec<FeaturePoint>>>,
+    packed_block_cache: &mut HashMap<ElementEntry, Option<CachedFeatureBlock>>,
     routing_bucket: Option<u32>,
 ) -> Option<T> {
     let point = read_feature_point_cached(

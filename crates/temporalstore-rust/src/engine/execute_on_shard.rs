@@ -3217,6 +3217,12 @@ pub(crate) fn execute_on_shard(
                 cache,
                 CacheKey::feature_query(shard_id, &key, start_ms, end_ms, count),
                 || {
+                    let identity = BlockIdentity::of(shard_id, "feature", &key, None);
+                    let routing_bucket = Some(block_routing_bucket(
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    ));
                     let points = shard
                         .features()
                         .get(&key[..])
@@ -3238,13 +3244,9 @@ pub(crate) fn execute_on_shard(
                                         shard_id,
                                         timestamp_ms,
                                         address,
-                                        BlockIdentity::of(shard_id, "feature", &key, None),
+                                        identity,
                                         &mut block_cache,
-                                    Some(block_routing_bucket(
-                                        &key,
-                                        start_routing_bucket,
-                                        end_routing_bucket,
-                                    )),
+                                        routing_bucket,
                                     )
                                 })
                                 .collect()
@@ -3273,6 +3275,12 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
+            let identity = BlockIdentity::of(shard_id, "feature", &key, None);
+            let routing_bucket = Some(block_routing_bucket(
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+            ));
             let points = shard
                 .features()
                 .get(&key[..])
@@ -3288,13 +3296,9 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 timestamp_ms,
                                 address,
-                                BlockIdentity::of(shard_id, "feature", &key, None),
+                                identity,
                                 &mut block_cache,
-                                Some(block_routing_bucket(
-                                    &key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
+                                routing_bucket,
                             )
                             .and_then(|point| {
                                 let row = crate::engine::decode_or_count_sequence_row(
@@ -3452,6 +3456,12 @@ pub(crate) fn execute_on_shard(
                     // `parse_i64` of its bytes, or 0 when it is not a number, which is what summing
                     // the one-element slice came to. No `FeaturePoint` or value copy is built.
                     let mut page_keys = crate::engine::PageKeys::new();
+                    let identity = BlockIdentity::of(shard_id, "feature", &key, None);
+                    let routing_bucket = Some(block_routing_bucket(
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    ));
                     let decoded: BTreeMap<u64, i64> = shard
                         .features()
                         .get(&key[..])
@@ -3465,12 +3475,8 @@ pub(crate) fn execute_on_shard(
                                         shard_id,
                                         timestamp_ms,
                                         address,
-                                        BlockIdentity::of(shard_id, "feature", &key, None),
-                                        Some(block_routing_bucket(
-                                            &key,
-                                            start_routing_bucket,
-                                            end_routing_bucket,
-                                        )),
+                                        identity,
+                                        routing_bucket,
                                         &mut page_keys,
                                         |value| parse_i64_slice(value).unwrap_or(0),
                                     )
@@ -3495,6 +3501,12 @@ pub(crate) fn execute_on_shard(
                 // iterator shape as `aggregate_feature_values`'s "sum" arm (parse, drop what is not
                 // a number, `sum`), over the same points in the same order.
                 let mut page_keys = crate::engine::PageKeys::new();
+                let identity = BlockIdentity::of(shard_id, "feature", &key, None);
+                let routing_bucket = Some(block_routing_bucket(
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                ));
                 let value = shard
                     .features()
                     .get(&key[..])
@@ -3509,12 +3521,8 @@ pub(crate) fn execute_on_shard(
                                     shard_id,
                                     timestamp_ms,
                                     address,
-                                    BlockIdentity::of(shard_id, "feature", &key, None),
-                                    Some(block_routing_bucket(
-                                        &key,
-                                        start_routing_bucket,
-                                        end_routing_bucket,
-                                    )),
+                                    identity,
+                                    routing_bucket,
                                     &mut page_keys,
                                     parse_i64_slice,
                                 )
@@ -3524,6 +3532,12 @@ pub(crate) fn execute_on_shard(
                     .unwrap_or_default();
                 CommandResponse::Aggregate { value }
             } else {
+                let identity = BlockIdentity::of(shard_id, "feature", &key, None);
+                let routing_bucket = Some(block_routing_bucket(
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                ));
                 let values = shard
                     .features()
                     .get(&key[..])
@@ -3538,12 +3552,8 @@ pub(crate) fn execute_on_shard(
                                     shard_id,
                                     timestamp_ms,
                                     address,
-                                    BlockIdentity::of(shard_id, "feature", &key, None),
-                                    Some(block_routing_bucket(
-                                        &key,
-                                        start_routing_bucket,
-                                        end_routing_bucket,
-                                    )),
+                                    identity,
+                                    routing_bucket,
                                 )
                                 .map(|point| point.value)
                             })
@@ -3658,6 +3668,13 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
+            let identity = BlockIdentity::of(shard_id, "feature", &key, None);
+            let routing_bucket = Some(block_routing_bucket(
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+            ));
+            let mut packed_block_cache = HashMap::new();
             let rows = shard
                 .features()
                 .get(&key[..])
@@ -3666,18 +3683,15 @@ pub(crate) fn execute_on_shard(
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_sequence_row(
+                            read_sequence_row_cached(
                                 cache,
                                 block_store,
                                 shard_id,
                                 timestamp_ms,
                                 address,
-                                BlockIdentity::of(shard_id, "feature", &key, None),
-                                Some(block_routing_bucket(
-                                    &key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
+                                identity,
+                                routing_bucket,
+                                &mut packed_block_cache,
                             )
                         })
                         .filter(|row| {

@@ -529,6 +529,16 @@ pub(crate) fn item_to_proto(
     implied_length: Option<u64>,
     command_key: Option<&str>,
 ) -> v1::EngineWalItem {
+    item_to_proto_with_object_id(item, shard_id, implied_length, command_key, None)
+}
+
+fn item_to_proto_with_object_id(
+    item: &WalOutcomeItem,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+    derived_object_id: Option<u64>,
+) -> v1::EngineWalItem {
     let block = item.address.as_ref().map(|address| {
         let mut encoded = address_to_proto(address, implied_length);
         // The item already says this. Repeating it costs a full varint on every item whose block
@@ -543,7 +553,10 @@ pub(crate) fn item_to_proto(
         model: 0,
         object_key: item_object_key_to_write(item, command_key).map(str::to_string),
         bucket_id: None,
-        object_id: item_object_id_to_write(item, shard_id),
+        object_id: derived_object_id.map_or_else(
+            || item_object_id_to_write(item, shard_id),
+            |derived| item_object_id_to_write_with_derived(item, derived),
+        ),
         block_id: None,
         ttl_ms: item.ttl,
         deleted: item.deleted,
@@ -571,6 +584,43 @@ pub(crate) fn item_to_proto(
         kind_code: kind_code(&item.kind),
         routing_bucket: Some(item.routing_bucket),
     }
+}
+
+pub(crate) fn items_to_proto(
+    items: &[WalOutcomeItem],
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+) -> Vec<v1::EngineWalItem> {
+    let mut previous: Option<(&str, &str, u64)> = None;
+    items
+        .iter()
+        .map(|item| {
+            let kind = kind_code(&item.kind)
+                .and_then(kind_from_code)
+                .unwrap_or(item.kind.as_str());
+            let derived = previous
+                .and_then(|(previous_kind, previous_key, previous_id)| {
+                    (previous_kind == kind && previous_key == item.object_key)
+                        .then_some(previous_id)
+                })
+                .unwrap_or_else(|| {
+                    crate::engine::hashing::stable_block_object_id(
+                        shard_id,
+                        kind,
+                        &item.object_key,
+                    )
+                });
+            previous = Some((kind, item.object_key.as_str(), derived));
+            item_to_proto_with_object_id(
+                item,
+                shard_id,
+                implied_length,
+                command_key,
+                Some(derived),
+            )
+        })
+        .collect()
 }
 
 /// Bytes an outcome item occupies as an `EngineWalItem` body.
@@ -759,6 +809,16 @@ pub(crate) fn item_from_proto(
     implied_length: Option<u64>,
     command_key: Option<&str>,
 ) -> WalOutcomeItem {
+    item_from_proto_with_object_id(item, shard_id, implied_length, command_key, None)
+}
+
+fn item_from_proto_with_object_id(
+    item: v1::EngineWalItem,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+    derived_object_id: Option<u64>,
+) -> WalOutcomeItem {
     let kind = item
         .kind_code
         .and_then(kind_from_code)
@@ -779,11 +839,9 @@ pub(crate) fn item_from_proto(
     // omits it exactly when the derivation agrees. This goes FIRST because the address is
     // restored from it below.
     let object_id = item.object_id.unwrap_or_else(|| {
-        crate::engine::hashing::stable_block_object_id(
-            shard_id,
-            &kind,
-            &object_key,
-        )
+        derived_object_id.unwrap_or_else(|| {
+            crate::engine::hashing::stable_block_object_id(shard_id, &kind, &object_key)
+        })
     });
     WalOutcomeItem {
         kind,
@@ -801,6 +859,47 @@ pub(crate) fn item_from_proto(
         deleted: item.deleted,
         meta: item.meta_log,
     }
+}
+
+pub(crate) fn items_from_proto(
+    items: Vec<v1::EngineWalItem>,
+    shard_id: crate::types::ShardId,
+    implied_length: Option<u64>,
+    command_key: Option<&str>,
+) -> Vec<WalOutcomeItem> {
+    let mut previous: Option<(String, String, u64)> = None;
+    items
+        .into_iter()
+        .map(|item| {
+            let kind = item
+                .kind_code
+                .and_then(kind_from_code)
+                .or(item.kind_name.as_deref())
+                .unwrap_or_default();
+            let object_key = item
+                .object_key
+                .as_deref()
+                .or(command_key)
+                .unwrap_or_default();
+            let derived = match previous.as_ref() {
+                Some((previous_kind, previous_key, previous_id))
+                    if previous_kind == kind && previous_key == object_key => *previous_id,
+                _ => {
+                    let derived =
+                        crate::engine::hashing::stable_block_object_id(shard_id, kind, object_key);
+                    previous = Some((kind.to_string(), object_key.to_string(), derived));
+                    derived
+                }
+            };
+            item_from_proto_with_object_id(
+                item,
+                shard_id,
+                implied_length,
+                command_key,
+                Some(derived),
+            )
+        })
+        .collect()
 }
 
 /// WHETHER THIS RECORD'S LEADER CLOCK STAMP HAS A READER.
@@ -1186,13 +1285,12 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     // The command is decoded above, so a key an item did not write is available here. Same
     // shape as `implied_length`: read off the record, handed to every item.
     let command_key = command_object_key(command.as_ref());
-    let outcomes = message
-        .items
-        .into_iter()
-        .map(|item| {
-            item_from_proto(item, message.shard_id, implied_length, command_key.as_deref())
-        })
-        .collect::<Vec<_>>();
+    let outcomes = items_from_proto(
+        message.items,
+        message.shard_id,
+        implied_length,
+        command_key.as_deref(),
+    );
     // A block with no object id of its own takes it from the outcome it belongs to. The writer
     // drops it only when there is exactly one of each, so there is never a question of which
     // outcome an unlabelled block means.

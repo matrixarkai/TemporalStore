@@ -143,6 +143,8 @@ mod a_manifest_is_fingerprinted_once_not_once_per_plan;
 mod a_hash_get_all_shares_its_page_keys;
 #[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
 mod a_feature_sum_reads_each_point_in_place;
+#[path = "tests/feature_serving_key_work.rs"]
+mod feature_serving_key_work;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]

@@ -1351,7 +1351,12 @@ impl IndexItem {
     /// Stripped only when the derivation AGREES with what is stored. A row whose id came from
     /// somewhere else keeps it, so a disagreement costs bytes rather than correctness.
     fn strip_object_id_repeat(&mut self, shard_id: ShardId) {
-        if self.object_id == self.derived_object_id(shard_id) {
+        let derived = self.derived_object_id(shard_id);
+        self.strip_object_id_repeat_with_derived(derived);
+    }
+
+    fn strip_object_id_repeat_with_derived(&mut self, derived: u64) {
+        if self.object_id == derived {
             self.object_id = 0;
         }
     }
@@ -1359,7 +1364,14 @@ impl IndexItem {
     /// Put the object id back by deriving it again.
     fn restore_object_id_repeat(&mut self, shard_id: ShardId) {
         if self.object_id == 0 {
-            self.object_id = self.derived_object_id(shard_id);
+            let derived = self.derived_object_id(shard_id);
+            self.restore_object_id_repeat_with_derived(derived);
+        }
+    }
+
+    fn restore_object_id_repeat_with_derived(&mut self, derived: u64) {
+        if self.object_id == 0 {
+            self.object_id = derived;
         }
     }
 
@@ -3086,13 +3098,27 @@ impl LocalIndexLogStore {
         // `routing_bucket`, and the address it points at repeats both -- 18 bytes of a 142-byte
         // item. `restore_address_repeats` at the decode site puts them back.
         let mut items = items;
+        let mut previous_object_id: Option<(String, std::sync::Arc<str>, u64)> = None;
         for item in items.iter_mut() {
             item.strip_block_ref_key_repeat();
             item.strip_size_repeat();
             // The address first, because it is stripped against the item's id, and the item's
             // id is what goes next.
             item.strip_address_repeats();
-            item.strip_object_id_repeat(shard_id);
+            let derived = match previous_object_id.as_ref() {
+                Some((model_id, object_key, object_id))
+                    if model_id == &item.model_id && object_key == &item.object_key => *object_id,
+                _ => {
+                    let object_id = item.derived_object_id(shard_id);
+                    previous_object_id = Some((
+                        item.model_id.clone(),
+                        item.object_key.clone(),
+                        object_id,
+                    ));
+                    object_id
+                }
+            };
+            item.strip_object_id_repeat_with_derived(derived);
         }
         // Hoist the object key when at least two items name the same one, and blank the copies.
         // A one-item record has no repeated key to remove: moving its key to the record writes the
@@ -3374,9 +3400,25 @@ impl LocalIndexLogStore {
                         item.object_key = shared.clone();
                     }
                 }
+                let mut previous_object_id: Option<(String, std::sync::Arc<str>, u64)> = None;
                 for item in record.items.iter_mut() {
                     // The item's id first: the address is restored FROM it.
-                    item.restore_object_id_repeat(record.shard_id);
+                    let derived = match previous_object_id.as_ref() {
+                        Some((model_id, object_key, object_id))
+                            if model_id == &item.model_id && object_key == &item.object_key => {
+                                *object_id
+                            }
+                        _ => {
+                            let object_id = item.derived_object_id(record.shard_id);
+                            previous_object_id = Some((
+                                item.model_id.clone(),
+                                item.object_key.clone(),
+                                object_id,
+                            ));
+                            object_id
+                        }
+                    };
+                    item.restore_object_id_repeat_with_derived(derived);
                     item.restore_address_repeats();
                     item.restore_block_ref_key_repeat();
                     item.restore_size_repeat();

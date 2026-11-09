@@ -4275,18 +4275,12 @@ fn encode_wal_proto_frame(
                 element_name: block.element_name.as_deref().map(str::to_string),
             })
             .collect(),
-        items: entry
-            .outcomes
-            .iter()
-            .map(|item| {
-                crate::wal_proto::item_to_proto(
-                    item,
-                    entry.shard_id,
-                    implied_length,
-                    crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
-                )
-            })
-            .collect(),
+        items: crate::wal_proto::items_to_proto(
+            &entry.outcomes,
+            entry.shard_id,
+            implied_length,
+            crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
+        ),
     };
     let mut encoded = frame.encode_to_vec();
     let mut out = Vec::with_capacity(4 + encoded.len());
@@ -4552,17 +4546,12 @@ fn wal_entry_from_parts(
         shard_id,
         wal_index,
         command,
-        outcomes: items
-            .into_iter()
-            .map(|item| {
-                crate::wal_proto::item_from_proto(
-                    item,
-                    shard_id,
-                    implied_length,
-                    command_key.as_deref(),
-                )
-            })
-            .collect(),
+        outcomes: crate::wal_proto::items_from_proto(
+            items,
+            shard_id,
+            implied_length,
+            command_key.as_deref(),
+        ),
         staged_blocks: staged_blocks
             .into_iter()
             .map(|block| crate::wal::StagedBlock {
@@ -4689,18 +4678,12 @@ fn encode_wal_batch_container(
                     element_name: block.element_name.as_deref().map(str::to_string),
                 })
                 .collect(),
-            items: entry
-                .outcomes
-                .iter()
-                .map(|item| {
-                    crate::wal_proto::item_to_proto(
-                        item,
-                        entry.shard_id,
-                        implied_length,
-                        crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
-                    )
-                })
-                .collect(),
+            items: crate::wal_proto::items_to_proto(
+                &entry.outcomes,
+                entry.shard_id,
+                implied_length,
+                crate::wal_proto::command_object_key(entry.command.as_ref()).as_deref(),
+            ),
         });
     }
 
