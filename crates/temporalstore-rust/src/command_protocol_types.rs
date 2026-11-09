@@ -2470,7 +2470,7 @@ fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
     encode_vector_field_as(out, &OWN_VECTOR_FIELDS, vector);
 }
 
-fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
+pub(crate) fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
     encode_varint(out, field_number << 3);
     encode_varint(out, value);
 }
@@ -2480,7 +2480,7 @@ fn encode_fixed32_field(out: &mut Vec<u8>, field_number: u64, value: u32) {
     out.extend(value.to_le_bytes());
 }
 
-fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
+pub(crate) fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
     if value.is_empty() {
         return;
     }
@@ -2489,7 +2489,7 @@ fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
     out.extend(value);
 }
 
-fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
+pub(crate) fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {
         out.push((value as u8) | 0x80);
         value >>= 7;
@@ -2497,7 +2497,7 @@ fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
     out.push(value as u8);
 }
 
-fn decode_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+pub(crate) fn decode_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
     let mut value = 0_u64;
     for shift in (0..64).step_by(7) {
         let byte = *bytes.get(*cursor)?;
