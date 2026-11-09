@@ -375,7 +375,16 @@ fn stale_shard_index_is_refused_rather_than_decoded_with_the_wrong_key_meaning()
     // Built from a REAL serialized shard rather than hand-written JSON, so the fixture cannot
     // drift from the struct and quietly stop exercising the decode path.
     let shard = super::super::state::ShardState::default();
-    let stamped = super::super::stamp_index_format_version(&shard);
+    // The stamp a current writer puts on the image, set on a JSON value by hand: the helper that
+    // used to do this is gone, and this test needs a JSON image only because it removes a key.
+    let mut stamped = serde_json::to_value(&shard).expect("a shard serializes");
+    stamped
+        .as_object_mut()
+        .expect("index is a json object")
+        .insert(
+            "index_format_version".to_string(),
+            serde_json::Value::from(super::super::SHARD_INDEX_FORMAT_VERSION),
+        );
     assert_eq!(
         stamped.get("index_format_version").and_then(|v| v.as_u64()),
         Some(u64::from(super::super::SHARD_INDEX_FORMAT_VERSION)),
@@ -3669,8 +3678,8 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
         shard.strings().len()
     );
 
-    // The compressed-JSON payload is no longer selectable: it is built here the way the one
-    // remaining writer of it (`serialize_index`'s stale-version arm) builds it.
+    // The compressed-JSON payload has no writer left: it is built here the way an older binary
+    // built it, which is the only way to give the reader arm that still takes it a real input.
     let compressed_json =
         crate::engine::wrap_index_json(serde_json::to_vec(&shard).expect("shard serialises"));
     assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
