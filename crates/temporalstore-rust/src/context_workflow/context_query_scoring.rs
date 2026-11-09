@@ -1118,7 +1118,7 @@ pub(super) fn is_context_query_stopword(term: &str) -> bool {
     )
 }
 
-fn stable_hash64_parts(parts: &[&str]) -> u64 {
+pub(super) fn stable_hash64_parts(parts: &[&str]) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for part in parts {
         for byte in part.as_bytes() {

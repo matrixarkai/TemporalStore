@@ -122,7 +122,8 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
             }
             let source_ref = context_resource_source_ref(&request.raw_uri, &unit);
             unit.insert("source_ref".to_string(), source_ref.clone());
-            let content_hash = stable_hash64(&format!("resource_content:{source_ref}:{piece}"));
+            let content_hash =
+                stable_hash64_parts(&["resource_content:", &source_ref, ":", &piece]);
             unit.insert("content_hash".to_string(), content_hash.to_string());
             let linked_refs = extract_markdown_link_refs(&piece);
             if !linked_refs.is_empty() {
@@ -143,11 +144,17 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
             let chunk_hash = request
                 .chunk_hash_base
                 .map(|base| base.saturating_add(chunk_index as u64))
-                .unwrap_or_else(|| stable_hash64(&format!("resource_chunk:{source_ref}:{piece}")));
-            let embedding_ref_hash = stable_hash64(&format!(
-                "resource_chunk_embedding:{}:{chunk_hash}:{}",
-                request.raw_uri, "mock-embedding-v1"
-            ));
+                .unwrap_or_else(|| {
+                    stable_hash64_parts(&["resource_chunk:", &source_ref, ":", &piece])
+                });
+            let chunk_hash_text = chunk_hash.to_string();
+            let embedding_ref_hash = stable_hash64_parts(&[
+                "resource_chunk_embedding:",
+                &request.raw_uri,
+                ":",
+                &chunk_hash_text,
+                ":mock-embedding-v1",
+            ]);
             chunks.push(ContextParsedResourceChunk {
                 chunk_hash,
                 content_hash,
@@ -165,10 +172,14 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     let total_tokens = chunks.iter().fold(0_u32, |total, chunk| {
         total.saturating_add(chunk.token_estimate)
     });
-    let content_hash = stable_hash64(&format!(
-        "resource_lifecycle:{}:{}:{}",
-        request.raw_uri, request.version, request.text
-    ));
+    let content_hash = stable_hash64_parts(&[
+        "resource_lifecycle:",
+        &request.raw_uri,
+        ":",
+        &request.version,
+        ":",
+        &request.text,
+    ]);
     let watched = request.watch_interval_minutes > 0
         || matches!(import_kind, ContextResourceImportKind::WatchedResource);
     let version = if request.version.trim().is_empty() {
@@ -208,7 +219,7 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
         status: Status::ok(),
         raw_uri: request.raw_uri.clone(),
         resource_type,
-        resource_hash: stable_hash64(&format!("resource:{}", request.raw_uri)),
+        resource_hash: stable_hash64_parts(&["resource:", &request.raw_uri]),
         uri_scheme: context_resource_uri_scheme(&request.raw_uri),
         resource_title: context_resource_title(&request.raw_uri),
         embedding_model: "mock-embedding-v1".to_string(),
@@ -300,7 +311,8 @@ pub(super) fn default_resource_overlap_chars() -> usize {
 }
 
 fn context_resource_object_store_uri(raw_uri: &str, payload_size_bytes: usize) -> String {
-    let resource_hash = stable_hash64(&format!("resource_object:{raw_uri}:{payload_size_bytes}"));
+    let payload_size = payload_size_bytes.to_string();
+    let resource_hash = stable_hash64_parts(&["resource_object:", raw_uri, ":", &payload_size]);
     format!("objectstore://matrixark/resources/{resource_hash:016x}.bin")
 }
 
@@ -779,6 +791,56 @@ fn trim_owned_context_text(text: &mut String) {
 #[cfg(test)]
 mod resource_chunk_tests {
     use super::*;
+
+    #[test]
+    fn incremental_resource_hashes_preserve_existing_ids() {
+        let raw_uri = "manual.md";
+        let version = "v3";
+        let text = "# Recovery\n\nRestore the compact embedding index.";
+        let report = parse_context_resource(ContextResourceParseRequest {
+            raw_uri: raw_uri.to_string(),
+            resource_type: Some("md".to_string()),
+            text: text.to_string(),
+            max_chunk_chars: 1_400,
+            overlap_chars: 120,
+            chunk_hash_base: None,
+            owner_scope: "user".to_string(),
+            version: version.to_string(),
+            watch_interval_minutes: 0,
+            parser_name: "test-parser".to_string(),
+        });
+        let chunk = &report.chunks[0];
+
+        assert_eq!(
+            report.resource_hash,
+            stable_hash64(&format!("resource:{raw_uri}"))
+        );
+        assert_eq!(
+            report.lifecycle.content_hash,
+            stable_hash64(&format!("resource_lifecycle:{raw_uri}:{version}:{text}"))
+        );
+        assert_eq!(
+            chunk.content_hash,
+            stable_hash64(&format!(
+                "resource_content:{}:{}",
+                chunk.source_ref, chunk.text
+            ))
+        );
+        assert_eq!(
+            chunk.chunk_hash,
+            stable_hash64(&format!(
+                "resource_chunk:{}:{}",
+                chunk.source_ref, chunk.text
+            ))
+        );
+        assert_eq!(
+            chunk.embedding_ref_hash,
+            stable_hash64(&format!(
+                "resource_chunk_embedding:{raw_uri}:{}:mock-embedding-v1",
+                chunk.chunk_hash
+            ))
+        );
+    }
 
     #[test]
     fn resource_text_normalization_collapses_blank_line_runs_once() {
