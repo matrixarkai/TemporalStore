@@ -20420,9 +20420,9 @@ fn the_index_gc_gate_costs_pieces_not_records() {
             let store = engine.index_log_store();
             for value in 0..records {
                 store
-                    .append_json(
+                    .append_index_bytes(
                         1,
-                        format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                        format!("TSIDX\x01\x02{value}").as_bytes(),
                     )
                     .expect("index-log append");
             }
@@ -22104,9 +22104,9 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
         let store = engine.index_log_store();
         for value in 0..records {
             store
-                .append_json(
+                .append_index_bytes(
                     1,
-                    format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                    format!("TSIDX\x01\x02{value}").as_bytes(),
                 )
                 .expect("index-log append");
         }

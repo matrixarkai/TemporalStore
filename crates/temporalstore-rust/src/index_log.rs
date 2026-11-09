@@ -4812,6 +4812,12 @@ mod index_log_read_bytes;
 
 #[cfg(test)]
 mod tests {
+    /// Bytes that LOOK like a served index to the anchor appender, which only digests and measures
+    /// them. `tag` makes two records differ so a log of them is not a log of one record repeated.
+    fn fixture_index(tag: impl std::fmt::Display) -> Vec<u8> {
+        format!("TSIDX\x01\x02{tag}").into_bytes()
+    }
+
     /// The splicing appender and the parsing one must produce the SAME record bytes.
     ///
     /// The engine's index-log appends were routed to the splicing path to stop re-parsing and
@@ -4824,9 +4830,7 @@ mod tests {
     #[test]
     fn the_anchor_appender_writes_far_less_than_the_embedding_one() {
         let anchor_dir = tempfile::tempdir().unwrap();
-        let embed_dir = tempfile::tempdir().unwrap();
         let anchoring = LocalIndexLogStore::new(anchor_dir.path());
-        let embedding = LocalIndexLogStore::new(embed_dir.path());
         // An index big enough that copying it is obviously different from naming it.
         let mut index = br#"{"index_format_version":3,"strings":{"#.to_vec();
         for i in 0..500 {
@@ -4838,10 +4842,19 @@ mod tests {
         index.extend_from_slice(b"}}");
 
         anchoring.append_index_bytes(11, &index).unwrap();
-        embedding.append_json(11, &index).unwrap();
+        // The whole-index record, built here: nothing in the store writes one any more, but the
+        // comparison this test pins is the size of an anchor against the size of the record it
+        // replaced.
+        let whole_index_record = IndexLogRecord {
+            shard_id: 11,
+            sequence: 1,
+            index: serde_json::from_slice(&index).unwrap(),
+        };
+        let embed_bytes = crate::log_framing::encode_record(
+            &encode_index_payload(&whole_index_record, INDEX_LOG_SHAPE_WHOLE).unwrap(),
+        );
 
         let anchor_bytes = std::fs::read(index_log_path(anchor_dir.path(), 11)).unwrap();
-        let embed_bytes = std::fs::read(index_log_path(embed_dir.path(), 11)).unwrap();
         assert!(
             anchor_bytes.len() < 250,
             "the anchor record should be constant-size (got {})",
@@ -4953,7 +4966,7 @@ mod tests {
 
         probe::reset();
         store
-            .append_json(4, b"{\"a\":1}")
+            .append_index_bytes(4, &fixture_index("a1"))
             .expect("the first append must make the root that `new` could not");
         // Half one: it made it, and said so.
         assert_eq!(
@@ -4966,7 +4979,7 @@ mod tests {
 
         // Half two, ORDERED after it: the second append does NOT ask again. This is the whole
         // per-append cost the change removes, asserted on the one path that still pays it once.
-        store.append_json(4, b"{\"a\":2}").expect("the second append must land");
+        store.append_index_bytes(4, &fixture_index("a2")).expect("the second append must land");
         assert_eq!(
             probe::append_root_creates(),
             1,
@@ -5004,7 +5017,7 @@ mod tests {
             .join(format!("shard-{shard}.indexlog.{LEGACY_INDEX_LOG_SUFFIX}"));
 
         store
-            .append_json(shard, b"{\"a\":1}")
+            .append_index_bytes(shard, &fixture_index("a1"))
             .expect("seed the log under the current name");
         std::fs::rename(&current, &legacy).expect("give the log the name an older store carries");
         // THE DENOMINATOR: from here the active piece really is the legacy-named one, and it
@@ -5020,7 +5033,7 @@ mod tests {
         set_index_log_segment_bytes_for_test(Some(legacy_len));
         let _threshold = Threshold;
         store
-            .append_json(shard, b"{\"a\":2}")
+            .append_index_bytes(shard, &fixture_index("a2"))
             .expect("the append that rolls must still land");
 
         // Half one: the record went onto the current name.
@@ -5055,7 +5068,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for value in [1, 2, 3] {
             store
-                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(value))
                 .unwrap();
         }
 
@@ -5067,7 +5080,7 @@ mod tests {
         let reopened = LocalIndexLogStore::new(dir.path());
         assert_eq!(reopened.stats(5).last_sequence, 3);
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
-        store.append_json(5, b"{\"value\":4}").unwrap();
+        store.append_index_bytes(5, &fixture_index("value4")).unwrap();
         assert_eq!(store.stats(5).last_sequence, 4);
     }
 
@@ -5076,7 +5089,7 @@ mod tests {
     fn append_index_bytes_writes_an_anchor_that_identifies_the_index_without_embedding_it() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
-        let index = b"{\"value\":1}";
+        let index = &fixture_index("value1");
         let sequence = store.append_index_bytes(5, index).unwrap();
         assert_eq!(sequence, 1);
         let rows = store.scan(5, 0, u64::MAX, u64::MAX).unwrap();
@@ -5117,8 +5130,8 @@ mod tests {
     fn corrupt_tail_is_truncated_and_append_resumes_after_last_valid_index_log_sequence() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
-        store.append_json(5, b"{\"value\":1}").unwrap();
-        store.append_json(5, b"{\"value\":2}").unwrap();
+        store.append_index_bytes(5, &fixture_index("value1")).unwrap();
+        store.append_index_bytes(5, &fixture_index("value2")).unwrap();
         {
             let mut file = OpenOptions::new()
                 .append(true)
@@ -5131,8 +5144,8 @@ mod tests {
         let reopened = LocalIndexLogStore::new(dir.path());
         assert_eq!(reopened.stats(5).last_sequence, 2);
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
-        let record = reopened.append_json(5, b"{\"value\":3}").unwrap();
-        assert_eq!(record.sequence, 3);
+        let sequence = reopened.append_index_bytes(5, &fixture_index("value3")).unwrap();
+        assert_eq!(sequence, 3);
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
     }
 
@@ -5538,7 +5551,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         // A legacy whole-index record and a delta record share the log file.
-        store.append_json(9, b"{\"value\":1}").unwrap();
+        store.append_index_bytes(9, &fixture_index("value1")).unwrap();
         let anchor_seq = store
             .append_delta(9, vec![block_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
@@ -5667,7 +5680,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         // seq 1: legacy whole-index line (no anchor; read by no load path -> reflected).
-        store.append_json(7, b"{\"value\":1}").unwrap();
+        store.append_index_bytes(7, &fixture_index("value1")).unwrap();
         // seq 2: delta reflected by the dump (WAL anchor 2 <= dump anchor 2).
         store
             .append_delta(7, vec![block_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
@@ -5792,7 +5805,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         // seq 1: a whole-index line, which is anchor-less by construction.
-        store.append_json(8, b"{\"value\":1}").unwrap();
+        store.append_index_bytes(8, &fixture_index("value1")).unwrap();
         // seq 2: a delta record with no anchor and no content.
         store
             .append_delta(8, Vec::new(), Vec::new(), None, None, false, true)
@@ -6130,7 +6143,7 @@ mod tests {
                         .unwrap();
                 } else {
                     store
-                        .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                        .append_index_bytes(5, &fixture_index(value))
                         .unwrap();
                 }
             }
@@ -6380,7 +6393,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for i in 1..=4 {
             store
-                .append_json(5, format!("{{\"value\":{i}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(i))
                 .unwrap();
         }
         drop(store);
@@ -6968,7 +6981,7 @@ mod tests {
             let store = LocalIndexLogStore::new(dir.path());
             for value in 0..records {
                 store
-                    .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                    .append_index_bytes(5, &fixture_index(value))
                     .unwrap();
             }
             let written = store.log_len_bytes(5);
@@ -7132,9 +7145,9 @@ mod tests {
             let store = LocalIndexLogStore::new(dir.path());
             for value in 0..records {
                 store
-                    .append_json(
+                    .append_index_bytes(
                         7,
-                        format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(48)).as_bytes(),
+                        &fixture_index(value),
                     )
                     .unwrap();
             }
@@ -7301,7 +7314,7 @@ mod tests {
                 let store = LocalIndexLogStore::new(dir.path());
                 for value in 0..records {
                     store
-                        .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                        .append_index_bytes(5, &fixture_index(value))
                         .unwrap();
                 }
                 let pieces = index_log_segment_paths(dir.path(), 5).len();
@@ -7335,7 +7348,7 @@ mod tests {
             let store = LocalIndexLogStore::new(dir.path());
             for value in 0..records {
                 store
-                    .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                    .append_index_bytes(5, &fixture_index(value))
                     .unwrap();
             }
             assert_eq!(
@@ -7375,7 +7388,7 @@ mod tests {
             if index % 25 == 24 {
                 // A whole-index record shares this log and is not a delta.
                 store
-                    .append_json(6, format!("{{\"value\":{index}}}").as_bytes())
+                    .append_index_bytes(6, &fixture_index(index))
                     .unwrap();
             } else {
                 let sequence = store
@@ -8670,7 +8683,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for value in 1..=10u64 {
             store
-                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(value))
                 .unwrap();
         }
 
@@ -8700,7 +8713,7 @@ not exhausted -- reporting otherwise schedules another round to find an empty lo
         let store = LocalIndexLogStore::new(dir.path());
         for value in 1..=10u64 {
             store
-                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .append_index_bytes(5, &fixture_index(value))
                 .unwrap();
         }
         let capped = store.gc_before_sequence_limited(5, 6, REMOVABLE - 1).unwrap();
@@ -10482,7 +10495,7 @@ flag exists to say",
         const RECORDS: usize = 3_000;
         for value in 0..RECORDS {
             store
-                .append_json(15, format!("{{\"value\":\"{value:08}\"}}").as_bytes())
+                .append_index_bytes(15, &fixture_index(format!("{value:08}")))
                 .unwrap();
         }
 
