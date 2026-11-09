@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::env_flag::{env_bool, env_number};
+use crate::env_flag::{env_bool_first, env_number_first, env_value_any};
 use crate::http::{post_json_streaming_with_options_and_headers, HttpError, HttpRequestOptions};
 
 use super::{
@@ -57,56 +57,79 @@ impl Default for OllamaConfig {
 impl OllamaConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
-        if let Some(base_url) =
-            string_from_env("MATRIXARK_OLLAMA_BASE_URL").or_else(|| string_from_env("OLLAMA_HOST"))
-        {
+        if let Some(base_url) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_BASE_URL",
+            "MATRIXARK_OLLAMA_BASE_URL",
+            "OLLAMA_HOST",
+        ]) {
             config.base_url = if base_url.contains("://") {
                 base_url
             } else {
                 format!("http://{base_url}")
             };
         }
-        set_string_from_env(
+        if let Some(model) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_EXTRACTION_MODEL",
             "MATRIXARK_OLLAMA_EXTRACTION_MODEL",
-            &mut config.extraction_model,
-        );
-        set_string_from_env(
+        ]) {
+            config.extraction_model = model;
+        }
+        if let Some(model) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL",
             "MATRIXARK_OLLAMA_EMBEDDING_MODEL",
-            &mut config.embedding_model,
-        );
-        if let Some(keep_alive) = string_from_env("MATRIXARK_OLLAMA_KEEP_ALIVE")
-            .or_else(|| string_from_env("OLLAMA_KEEP_ALIVE"))
-        {
+        ]) {
+            config.embedding_model = model;
+        }
+        if let Some(keep_alive) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_KEEP_ALIVE",
+            "MATRIXARK_OLLAMA_KEEP_ALIVE",
+            "OLLAMA_KEEP_ALIVE",
+        ]) {
             config.keep_alive = keep_alive;
         }
-        config.timeout_ms = env_number("MATRIXARK_OLLAMA_TIMEOUT_MS", config.timeout_ms);
-        config.max_retries = env_number("MATRIXARK_OLLAMA_MAX_RETRIES", config.max_retries);
-        config.max_batch_items =
-            env_number("MATRIXARK_OLLAMA_MAX_BATCH_ITEMS", config.max_batch_items);
-        config.max_input_bytes =
-            env_number("MATRIXARK_OLLAMA_MAX_INPUT_BYTES", config.max_input_bytes);
-        config.max_request_bytes = env_number(
-            "MATRIXARK_OLLAMA_MAX_REQUEST_BYTES",
+        config.timeout_ms = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_TIMEOUT_MS",
+                "MATRIXARK_OLLAMA_TIMEOUT_MS",
+            ],
+            config.timeout_ms,
+        );
+        config.max_retries = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_RETRIES",
+                "MATRIXARK_OLLAMA_MAX_RETRIES",
+            ],
+            config.max_retries,
+        );
+        config.max_batch_items = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_BATCH_ITEMS",
+                "MATRIXARK_OLLAMA_MAX_BATCH_ITEMS",
+            ],
+            config.max_batch_items,
+        );
+        config.max_input_bytes = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_INPUT_BYTES",
+                "MATRIXARK_OLLAMA_MAX_INPUT_BYTES",
+            ],
+            config.max_input_bytes,
+        );
+        config.max_request_bytes = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_REQUEST_BYTES",
+                "MATRIXARK_OLLAMA_MAX_REQUEST_BYTES",
+            ],
             config.max_request_bytes,
         );
-        config.truncate_embeddings = env_bool(
-            "MATRIXARK_OLLAMA_TRUNCATE_EMBEDDINGS",
+        config.truncate_embeddings = env_bool_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_TRUNCATE_EMBEDDINGS",
+                "MATRIXARK_OLLAMA_TRUNCATE_EMBEDDINGS",
+            ],
             config.truncate_embeddings,
         );
         config
-    }
-}
-
-fn string_from_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn set_string_from_env(name: &str, target: &mut String) {
-    if let Some(value) = string_from_env(name) {
-        *target = value;
     }
 }
 
@@ -773,6 +796,7 @@ struct OllamaExtractionItem {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::process::Command;
     use std::thread;
 
     use super::*;
@@ -784,6 +808,64 @@ mod tests {
             ..OllamaConfig::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn temporalstore_environment_configures_the_native_provider() {
+        const CHILD: &str = "TEMPORALSTORE_OLLAMA_CONFIG_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let config = OllamaConfig::from_env();
+            assert_eq!(config.base_url, "http://127.0.0.1:21434");
+            assert_eq!(config.extraction_model, "qwen-test");
+            assert_eq!(config.embedding_model, "embed-test");
+            assert_eq!(config.keep_alive, "17m");
+            assert_eq!(config.timeout_ms, 7_001);
+            assert_eq!(config.max_retries, 3);
+            assert_eq!(config.max_batch_items, 11);
+            assert_eq!(config.max_input_bytes, 12_345);
+            assert_eq!(config.max_request_bytes, 54_321);
+            assert!(!config.truncate_embeddings);
+
+            let provider = crate::context_workflow::context_provider_from_env();
+            assert_eq!(
+                provider.provider_kind,
+                crate::context_workflow::ContextProviderKind::Ollama
+            );
+            assert_eq!(provider.base_url, config.base_url);
+            assert_eq!(provider.model, config.extraction_model);
+            assert_eq!(provider.embedding_model, config.embedding_model);
+            assert!(!provider.mock_mode);
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                "llm_context::ollama::tests::temporalstore_environment_configures_the_native_provider",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("TEMPORALSTORE_CONTEXT_PROVIDER", "ollama")
+            .env("TEMPORALSTORE_OLLAMA_BASE_URL", "127.0.0.1:21434")
+            .env("TEMPORALSTORE_OLLAMA_EXTRACTION_MODEL", "qwen-test")
+            .env("TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL", "embed-test")
+            .env("TEMPORALSTORE_OLLAMA_KEEP_ALIVE", "17m")
+            .env("TEMPORALSTORE_OLLAMA_TIMEOUT_MS", "7001")
+            .env("TEMPORALSTORE_OLLAMA_MAX_RETRIES", "3")
+            .env("TEMPORALSTORE_OLLAMA_MAX_BATCH_ITEMS", "11")
+            .env("TEMPORALSTORE_OLLAMA_MAX_INPUT_BYTES", "12345")
+            .env("TEMPORALSTORE_OLLAMA_MAX_REQUEST_BYTES", "54321")
+            .env("TEMPORALSTORE_OLLAMA_TRUNCATE_EMBEDDINGS", "off")
+            .env("MATRIXARK_CONTEXT_PROVIDER", "mock")
+            .env("MATRIXARK_OLLAMA_BASE_URL", "127.0.0.1:1")
+            .output()
+            .expect("child test process");
+        assert!(
+            output.status.success(),
+            "child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn serve_json(responses: Vec<&'static str>) -> (std::net::SocketAddr, thread::JoinHandle<()>) {

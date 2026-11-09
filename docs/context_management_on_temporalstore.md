@@ -194,6 +194,22 @@ Ollama/Qwen setup:
   --ollama-models "qwen2.5:0.5b qwen2.5:1.5b nomic-embed-text"
 ```
 
+Enable TemporalStore's native Ollama extraction and embedding path for live
+hooks, bulk ingestion, query embedding, and the asynchronous embedding drainer:
+
+```bash
+export TEMPORALSTORE_CONTEXT_PROVIDER=ollama
+export TEMPORALSTORE_OLLAMA_BASE_URL=http://127.0.0.1:11434
+export TEMPORALSTORE_OLLAMA_EXTRACTION_MODEL=qwen2.5:1.5b
+export TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+```
+
+The native client uses Ollama's `/api/chat` structured-output API and batched
+`/api/embed` API. Batch item, input-byte, request-byte, timeout, retry, keep-alive,
+and embedding truncation settings are available under the
+`TEMPORALSTORE_OLLAMA_*` prefix. Existing `MATRIXARK_OLLAMA_*` settings remain
+accepted after the TemporalStore-prefixed names.
+
 vLLM setup:
 
 ```bash

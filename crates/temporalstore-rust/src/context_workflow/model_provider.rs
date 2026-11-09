@@ -432,16 +432,20 @@ pub(crate) fn context_summaries_for_extract_batch(
 /// configured an encoder does not silently acquire one, and one that requires a real model still
 /// gets the error `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` exists to raise.
 pub fn context_provider_from_env() -> ContextModelProviderConfig {
-    if std::env::var("MATRIXARK_CONTEXT_PROVIDER")
-        .ok()
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("ollama"))
+    if crate::env_flag::env_value_any(&[
+        "TEMPORALSTORE_CONTEXT_PROVIDER",
+        "MATRIXARK_CONTEXT_PROVIDER",
+    ])
+    .is_some_and(|value| value.trim().eq_ignore_ascii_case("ollama"))
     {
         let config = OllamaConfig::from_env();
-        let embedding_model = std::env::var("MATRIXARK_EMBEDDING_MODEL")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| config.embedding_model.clone());
+        let embedding_model = crate::env_flag::env_value_any(&[
+            "TEMPORALSTORE_EMBEDDING_MODEL",
+            "MATRIXARK_EMBEDDING_MODEL",
+        ])
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| config.embedding_model.clone());
         return ContextModelProviderConfig {
             provider_name: "ollama".to_string(),
             provider_kind: ContextProviderKind::Ollama,
@@ -459,33 +463,29 @@ pub fn context_provider_from_env() -> ContextModelProviderConfig {
     // Python side read `MATRIXARK_EMBEDDING_API_BASE`, the embed drainer read
     // `MATRIXARK_EMBED_BASE_URL`. Both are honoured here so there is one constructor rather than
     // two spellings of the same deployment, and the newer name wins when both are set.
-    let base_url = std::env::var("MATRIXARK_EMBEDDING_API_BASE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var("MATRIXARK_EMBED_BASE_URL")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_default()
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    let embedding_model = std::env::var("MATRIXARK_EMBEDDING_MODEL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let api_key_env = std::env::var("MATRIXARK_EMBEDDING_API_KEY_ENV")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var("MATRIXARK_EMBED_API_KEY_ENV")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let base_url = crate::env_flag::env_value_any(&[
+        "TEMPORALSTORE_EMBEDDING_API_BASE",
+        "MATRIXARK_EMBEDDING_API_BASE",
+        "MATRIXARK_EMBED_BASE_URL",
+    ])
+    .unwrap_or_default()
+    .trim()
+    .trim_end_matches('/')
+    .to_string();
+    let embedding_model = crate::env_flag::env_value_any(&[
+        "TEMPORALSTORE_EMBEDDING_MODEL",
+        "MATRIXARK_EMBEDDING_MODEL",
+    ])
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty());
+    let api_key_env = crate::env_flag::env_value_any(&[
+        "TEMPORALSTORE_EMBEDDING_API_KEY_ENV",
+        "MATRIXARK_EMBEDDING_API_KEY_ENV",
+        "MATRIXARK_EMBED_API_KEY_ENV",
+    ])
+    .unwrap_or_default()
+    .trim()
+    .to_string();
 
     let mut provider = ContextModelProviderConfig {
         base_url: base_url.clone(),
