@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::env_flag::{env_bool, env_number};
-use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
+use crate::http::{post_json_streaming_with_options_and_headers, HttpError, HttpRequestOptions};
 
 use super::{
     BatchEmbedder, BatchExtractor, ContextMessage, ContextRole, EmbeddingBatch, ExtractedContext,
@@ -350,10 +350,11 @@ impl OllamaProvider {
                 truncate: self.config.truncate_embeddings,
                 keep_alive: &self.config.keep_alive,
             };
-            let mut response: OllamaEmbedResponse = post_json_with_options(
+            let mut response: OllamaEmbedResponse = post_json_streaming_with_options_and_headers(
                 &self.addr,
                 &self.endpoint("/api/embed"),
                 &request,
+                "",
                 self.request_options(),
             )
             .map_err(OllamaError::Http)?;
@@ -450,10 +451,11 @@ impl OllamaProvider {
             keep_alive: &self.config.keep_alive,
             options: OllamaChatOptions { temperature: 0.0 },
         };
-        let response: OllamaChatResponse = post_json_with_options(
+        let response: OllamaChatResponse = post_json_streaming_with_options_and_headers(
             &self.addr,
             &self.endpoint("/api/chat"),
             &request,
+            "",
             self.request_options(),
         )
         .map_err(OllamaError::Http)?;
@@ -792,12 +794,16 @@ mod tests {
                         break;
                     }
                 }
-                let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response.len(),
-                    response
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
                 );
-                stream.write_all(reply.as_bytes()).unwrap();
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                thread::sleep(std::time::Duration::from_millis(5));
+                for chunk in response.as_bytes().chunks(7) {
+                    stream.write_all(chunk).unwrap();
+                }
             }
         });
         (addr, handle)
