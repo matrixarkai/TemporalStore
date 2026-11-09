@@ -3505,21 +3505,6 @@ pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
     bytes.first() == Some(&b'{') || bytes.starts_with(INDEX_CONTAINER_MAGIC)
 }
 
-/// TS_INDEX_CODEC: which payload to write when the container is on. `msgpack` (the default when
-/// the container is enabled) encodes the struct itself; `zstd-json` keeps the compressed-JSON
-/// payload, which any reader can still inspect with a decompressor and a JSON parser.
-fn index_container_codec() -> u8 {
-    match std::env::var("TS_INDEX_CODEC")
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "zstd-json" | "json" => INDEX_CODEC_ZSTD_JSON,
-        _ => INDEX_CODEC_ZSTD_MSGPACK,
-    }
-}
-
 /// Encode a shard with the container's binary payload: the serde model as a binary map,
 /// compressed, behind the magic, the codec id and the struct version.
 fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
@@ -3580,22 +3565,17 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
 /// magic, so both formats stay loadable.
 ///
-/// Writing raw JSON was a switch until nothing selected it: reading is sniffed either way, so the
-/// only thing the off position produced was an index an older build could read, and producing one
-/// now means running such a build. `encode_index_bytes_as_plain_json` keeps that shape reachable
-/// from tests, which is where the claim "both shapes still load" has to be proved.
+/// Writing raw JSON was a switch until nothing selected it, and the setting that chose between the
+/// two payloads (`TS_INDEX_CODEC`) is gone: the payload is msgpack. `encode_index_bytes_as_plain_json`
+/// keeps the raw-JSON shape reachable from tests, which is where the claim "both shapes still
+/// load" has to be proved.
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
-    if index_container_codec() == INDEX_CODEC_ZSTD_MSGPACK {
-        // NO FALLBACK TO JSON. This used to fall through to the JSON arm below when the binary
-        // encode returned `None`. The JSON arm already assumed the shard serialises (it ends in
-        // the same `expect`), and a `ShardState` that msgpack refuses and JSON accepts is not a
-        // shape any type in it can produce, so the fall-through was a second way to write the
-        // image that nothing could take. The JSON writes left in this file are chosen, not fallen
-        // into: the `TS_INDEX_CODEC=zstd-json` setting below, and `serialize_index`'s
-        // stale-version arm, which is a separate decision.
-        return encode_index_msgpack(shard).expect("shard index should serialize");
-    }
-    wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
+    // MSGPACK ONLY, AND NO FALLBACK. There is no setting that selects another payload, and this
+    // does not fall through to JSON when the binary encode returns `None`: a `ShardState` that
+    // msgpack refuses and JSON accepts is not a shape any type in it can produce. The one JSON
+    // write left in this file is `serialize_index`'s stale-version arm, which is a separate
+    // decision.
+    encode_index_msgpack(shard).expect("shard index should serialize")
 }
 
 /// Put already-serialized index JSON into the container. Separate from `encode_index_bytes`
