@@ -7284,7 +7284,7 @@ thread_local! {
 
 /// Whether this increment is one whose series block is written.
 ///
-/// THE BLOCK IS A COPY, AND FOR AN INCREMENT IT IS ALREADY COVERED. `ControlStateIncrement` stages
+/// THE BLOCK IS A COPY, AND FOR A COUNTER WRITE IT IS ALREADY COVERED. A counter write stages
 /// a `control_counter` outcome -- the RESULTING value at one bucket, idempotent when replayed --
 /// before it persists the block, so the log record already carries the increment, and the series
 /// itself is durable in the served index (a dump or a flush), which a load keeps in preference to
@@ -7298,8 +7298,9 @@ thread_local! {
 /// bucket index, and on a deterministic share of the rest: one in `len / 16` (at least 16), chosen
 /// by a hash of the key, the timestamp and the result so a replay picks the same ones. The cost of an
 /// increment is then about sixteen entries' worth whatever the series holds, in expectation.
-/// The other four arms stage no outcome, so their block IS their only record and they keep writing
-/// it every time.
+/// All five counter arms stage that outcome (`record_counter_result`): each adds into one bucket of
+/// one series and states the total it left there. The one write that has no total to state, a
+/// repeated `uuid` on `ControlStateSetAndGetWithOptions`, still writes its block.
 fn control_state_block_is_due(key: &str, timestamp_ms: u64, resulting: i64, len: usize) -> bool {
     #[cfg(test)]
     if ALWAYS_WRITE_COUNTER_BLOCK.with(std::cell::Cell::get) {

@@ -441,6 +441,10 @@ jobs:
             engine::tests::a_counter_increment_writes_its_series_when_due::a_counter_series_recovers_whether_or_not_its_block_was_written \
             engine::tests::a_counter_increment_writes_its_series_when_due::a_counter_series_trimmed_at_its_bound_recovers_as_it_did_before \
             engine::tests::a_counter_increment_writes_its_series_when_due::a_counter_log_cut_mid_record_recovers_a_prefix_of_its_increments \
+            engine::tests::a_counter_increment_writes_its_series_when_due::every_counter_arm_writes_its_series_only_now_and_then \
+            engine::tests::a_counter_increment_writes_its_series_when_due::a_series_every_counter_arm_wrote_recovers_whether_or_not_its_block_was_written \
+            engine::tests::a_counter_increment_writes_its_series_when_due::a_series_every_counter_arm_trimmed_at_its_bound_recovers_as_it_did_before \
+            engine::tests::a_counter_increment_writes_its_series_when_due::a_log_cut_mid_record_recovers_a_prefix_of_the_writes_of_every_counter_arm \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_digest_equals_exactly_when_the_lines_were_equal \
             engine::tests::a_manifest_is_fingerprinted_once_not_once_per_plan::a_retained_manifest_is_decoded_once_across_plans ; do
             echo "--- $t ---"
