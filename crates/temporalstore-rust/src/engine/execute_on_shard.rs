@@ -517,6 +517,21 @@ pub(super) enum ProjectedHashValues {
     },
 }
 
+#[cfg(test)]
+thread_local! {
+    static PROJECTED_VALUE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_projected_value_visits_for_test() {
+    PROJECTED_VALUE_VISITS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn projected_value_visits_for_test() -> u64 {
+    PROJECTED_VALUE_VISITS.with(std::cell::Cell::get)
+}
+
 impl ProjectedHashValues {
     pub(super) fn len(&self) -> usize {
         match self {
@@ -527,6 +542,8 @@ impl ProjectedHashValues {
     }
 
     pub(super) fn value_at(&self, index: usize) -> Option<&[u8]> {
+        #[cfg(test)]
+        PROJECTED_VALUE_VISITS.with(|count| count.set(count.get().saturating_add(1)));
         match self {
             Self::Missing(_) => None,
             Self::Owned(values) => values.get(index).and_then(|value| value.as_deref()),

@@ -31,21 +31,6 @@ impl serde::Serialize for BinarySlice<'_> {
     }
 }
 
-impl ProjectedBatchHashMultiGetRow {
-    fn encoded_capacity(&self) -> usize {
-        if let execute_on_shard::ProjectedHashValues::Missing(field_count) = &self.0 {
-            return field_count.saturating_add(5);
-        }
-        (0..self.0.len()).fold(5usize, |capacity, index| {
-            capacity.saturating_add(
-                self.0
-                    .value_at(index)
-                    .map_or(1, |value| value.len().saturating_add(5)),
-            )
-        })
-    }
-}
-
 impl serde::Serialize for ProjectedBatchHashMultiGetRow {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
@@ -59,34 +44,46 @@ impl serde::Serialize for ProjectedBatchHashMultiGetRow {
     }
 }
 
-#[derive(serde::Serialize)]
-struct ProjectedBatchHashMultiGetResponse {
-    status: Status,
-    rows: Vec<ProjectedBatchHashMultiGetRow>,
-    errors: Vec<BatchHashMultiGetError>,
-}
-
-fn encode_projected_hash_multi_get_response(
-    response: ProjectedBatchHashMultiGetResponse,
-) -> Vec<u8> {
-    let capacity = response
-        .rows
-        .iter()
-        .map(ProjectedBatchHashMultiGetRow::encoded_capacity)
-        .sum::<usize>()
-        .saturating_add(response.errors.len().saturating_mul(128))
-        .saturating_add(128);
-    let mut body = Vec::with_capacity(capacity);
-    let mut serializer = rmp_serde::Serializer::new(&mut body).with_struct_map();
-    if serde::Serialize::serialize(&response, &mut serializer).is_ok() {
-        return body;
-    }
+fn encode_hash_multi_get_error(status: Status) -> Vec<u8> {
     rmp_serde::to_vec_named(&BatchHashMultiGetResponse {
-        status: Status::error("response_encoding_failed", "could not encode compact hash rows"),
+        status,
         rows: Vec::new(),
         errors: Vec::new(),
     })
     .unwrap_or_default()
+}
+
+fn encode_hash_multi_get_failure() -> Vec<u8> {
+    encode_hash_multi_get_error(Status::error(
+        "response_encoding_failed",
+        "could not encode compact hash rows",
+    ))
+}
+
+fn serialize_named<T: serde::Serialize>(body: &mut Vec<u8>, value: &T) -> bool {
+    let mut serializer = rmp_serde::Serializer::new(body).with_struct_map();
+    value.serialize(&mut serializer).is_ok()
+}
+
+fn push_fixstr(body: &mut Vec<u8>, value: &str) {
+    debug_assert!(value.len() < 32);
+    body.push(0xa0 | value.len() as u8);
+    body.extend_from_slice(value.as_bytes());
+}
+
+fn push_array_len(body: &mut Vec<u8>, len: usize) -> bool {
+    if len <= 15 {
+        body.push(0x90 | len as u8);
+    } else if let Ok(len) = u16::try_from(len) {
+        body.push(0xdc);
+        body.extend_from_slice(&len.to_be_bytes());
+    } else if let Ok(len) = u32::try_from(len) {
+        body.push(0xdd);
+        body.extend_from_slice(&len.to_be_bytes());
+    } else {
+        return false;
+    }
+    true
 }
 
 enum BatchCommandSource<'a> {
@@ -557,6 +554,45 @@ mod shared_timestamp_source_tests {
         assert_eq!(expired.rows[0].0, vec![None]);
         assert_eq!(hash_batch_expansions(), 1);
     }
+
+    #[test]
+    fn compact_msgpack_visits_each_projected_value_once() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let keys = ["first", "second", "third"];
+        let fields = ["alpha", "beta", "gamma", "delta"];
+        for key in keys {
+            let stored = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashMultiSet {
+                    key: key.to_string(),
+                    entries: fields
+                        .iter()
+                        .map(|field| (field.to_string(), format!("{key}-{field}").into_bytes()))
+                        .collect(),
+                },
+            });
+            assert!(stored.status.ok, "{stored:?}");
+        }
+
+        execute_on_shard::reset_projected_value_visits_for_test();
+        let direct = engine.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+            shard_id: 1,
+            keys: keys.iter().map(ToString::to_string).collect(),
+            fields: fields.iter().map(ToString::to_string).collect(),
+        });
+        assert_eq!(
+            execute_on_shard::projected_value_visits_for_test(),
+            (keys.len() * fields.len()) as u64
+        );
+
+        let owned = engine.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
+            shard_id: 1,
+            keys: keys.iter().map(ToString::to_string).collect(),
+            fields: fields.iter().map(ToString::to_string).collect(),
+        });
+        assert_eq!(direct, rmp_serde::to_vec_named(&owned).unwrap());
+    }
 }
 
 impl TemporalEngine {
@@ -949,25 +985,46 @@ impl TemporalEngine {
         request: BatchHashMultiGetRequest,
     ) -> Vec<u8> {
         let field_count = request.fields.len();
-        let mut rows = Vec::with_capacity(request.keys.len());
+        let row_count = request.keys.len();
+        let capacity = row_count
+            .saturating_mul(field_count.saturating_add(1))
+            .saturating_add(128);
+        let mut body = Vec::with_capacity(capacity);
+        body.push(0x83);
+        push_fixstr(&mut body, "status");
+        if !serialize_named(&mut body, &Status::ok()) {
+            return encode_hash_multi_get_failure();
+        }
+        push_fixstr(&mut body, "rows");
+        if !push_array_len(&mut body, row_count) {
+            return encode_hash_multi_get_failure();
+        }
+
         let mut errors = Vec::new();
-        let status = match self.visit_batch_hash_multi_get(request, |index, result| match result {
-            Ok(values) => rows.push(ProjectedBatchHashMultiGetRow(values)),
-            Err(status) => {
-                errors.push(BatchHashMultiGetError { index, status });
-                rows.push(ProjectedBatchHashMultiGetRow(
-                    execute_on_shard::ProjectedHashValues::Missing(field_count),
-                ));
-            }
-        }) {
-            Ok(()) => Status::ok(),
-            Err(status) => status,
-        };
-        encode_projected_hash_multi_get_response(ProjectedBatchHashMultiGetResponse {
-            status,
-            rows,
-            errors,
-        })
+        let mut encoding_ok = true;
+        let visited = self.visit_batch_hash_multi_get(request, |index, result| {
+            let row = match result {
+                Ok(values) => ProjectedBatchHashMultiGetRow(values),
+                Err(status) => {
+                    errors.push(BatchHashMultiGetError { index, status });
+                    ProjectedBatchHashMultiGetRow(
+                        execute_on_shard::ProjectedHashValues::Missing(field_count),
+                    )
+                }
+            };
+            encoding_ok &= serialize_named(&mut body, &row);
+        });
+        if let Err(status) = visited {
+            return encode_hash_multi_get_error(status);
+        }
+        if !encoding_ok {
+            return encode_hash_multi_get_failure();
+        }
+        push_fixstr(&mut body, "errors");
+        if !serialize_named(&mut body, &errors) {
+            return encode_hash_multi_get_failure();
+        }
+        body
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
