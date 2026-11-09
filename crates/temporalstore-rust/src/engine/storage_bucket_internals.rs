@@ -2976,7 +2976,15 @@ pub(super) fn sync_written_hash_fields<'a>(
         start_routing_bucket,
         end_routing_bucket,
     );
-    sync_written_hash_fields_at_bucket(shard, shard_id, object_key, routing_bucket, fields)
+    let object_id = stable_block_object_id(shard_id, "hash", object_key);
+    sync_written_hash_fields_at_bucket(
+        shard,
+        shard_id,
+        object_key,
+        routing_bucket,
+        object_id,
+        fields,
+    )
 }
 
 pub(super) fn sync_written_hash_fields_at_bucket<'a>(
@@ -2984,6 +2992,7 @@ pub(super) fn sync_written_hash_fields_at_bucket<'a>(
     shard_id: ShardId,
     object_key: &str,
     routing_bucket: u32,
+    object_id: u64,
     fields: impl IntoIterator<Item = &'a str>,
 ) -> bool {
     let mut fields = fields.into_iter().peekable();
@@ -3002,10 +3011,11 @@ pub(super) fn sync_written_hash_fields_at_bucket<'a>(
         // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
         // write staged its own outcome already and a second would have replay install the same
         // block twice.
-        upsert_bucket_index_block_with_routing(
+        upsert_bucket_index_block_with_routing_and_object_id(
             shard,
             shard_id,
             routing_bucket,
+            object_id,
             "hash",
             object_key,
             Some(field.to_string()),
@@ -4321,6 +4331,7 @@ pub(super) fn upsert_bucket_index_block_filed_at_bucket(
     shard: &mut ShardState,
     shard_id: ShardId,
     routing_bucket: u32,
+    object_id: u64,
     kind: &str,
     object_key: &str,
     element_name: Option<String>,
@@ -4329,10 +4340,11 @@ pub(super) fn upsert_bucket_index_block_filed_at_bucket(
     value: Option<Vec<u8>>,
     replaces: ReplacedBlock,
 ) -> BlockFiled {
-    upsert_bucket_index_block_with_value_at_bucket(
+    upsert_bucket_index_block_with_value_at_bucket_and_object_id(
         shard,
         shard_id,
         routing_bucket,
+        object_id,
         kind,
         object_key,
         element_name,
@@ -4760,11 +4772,40 @@ pub(super) fn upsert_bucket_index_block_with_routing(
     dirty: bool,
     stage: bool,
 ) {
-    BLOCK_UPSERTS.with(|cell| cell.set(cell.get().saturating_add(1)));
-    upsert_bucket_index_block_with_value_at_bucket(
+    let object_id = stable_block_object_id(shard_id, kind, object_key);
+    upsert_bucket_index_block_with_routing_and_object_id(
         shard,
         shard_id,
         routing_bucket,
+        object_id,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_bucket_index_block_with_routing_and_object_id(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+) {
+    BLOCK_UPSERTS.with(|cell| cell.set(cell.get().saturating_add(1)));
+    upsert_bucket_index_block_with_value_at_bucket_and_object_id(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_id,
         kind,
         object_key,
         element_name,
@@ -4827,6 +4868,38 @@ pub(super) fn upsert_bucket_index_block_with_value_at_bucket(
     value: Option<Vec<u8>>,
     replaces: ReplacedBlock,
 ) {
+    let object_id = stable_block_object_id(shard_id, kind, object_key);
+    upsert_bucket_index_block_with_value_at_bucket_and_object_id(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_id,
+        kind,
+        object_key,
+        element_name,
+        address,
+        dirty,
+        stage,
+        value,
+        replaces,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_bucket_index_block_with_value_at_bucket_and_object_id(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    kind: &str,
+    object_key: &str,
+    element_name: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+    value: Option<Vec<u8>>,
+    replaces: ReplacedBlock,
+) {
     // Every single-block writer reaches the bucket index through here, so the charge sits here and
     // not at the arms. A new command arm that files a block is counted because this function counts
     // it; the outcome staged in the middle re-tags itself, so the two do not overlap.
@@ -4835,6 +4908,7 @@ pub(super) fn upsert_bucket_index_block_with_value_at_bucket(
             shard,
             shard_id,
             routing_bucket,
+            object_id,
             kind,
             object_key,
             element_name,
@@ -4852,6 +4926,7 @@ fn upsert_bucket_index_block_inner(
     shard: &mut ShardState,
     shard_id: ShardId,
     routing_bucket: u32,
+    object_id: u64,
     kind: &str,
     object_key: &str,
     element_name: Option<String>,
@@ -4883,7 +4958,6 @@ fn upsert_bucket_index_block_inner(
     // be resident, with the rest of its blocks still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
     reload_released_bucket(shard, shard_id, routing_bucket);
-    let object_id = stable_block_object_id(shard_id, kind, object_key);
     // This IS the outcome: an object, its identity, and where its block ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
@@ -5111,21 +5185,21 @@ fn upsert_bucket_index_block_inner(
             touched_buckets.push(block_ref.routing_bucket);
             // THE OBJECT IS THIS UPSERT'S OWN, which is what the supersede predicate
             // established: a block is superseded only when it matches this entry's (object key,
-            // kind, element name), so the id derived here is derived from the same characters it
-            // always was.
-            let removed_object_id = bucket
+            // kind, element name), so the identity already carried by this upsert is also the
+            // identity the removed block contributed.
+            let removed = bucket
                 .block_index
                 .remove(
                     &block_ref.block_ref_key,
                     &mut shard.bucket_index.block_slab_live,
                     crate::engine::state::StaleCause::Overwrite,
                 )
-                .map(|block| block.object_id(shard_id, &entry.object_key));
-            if let Some(removed_object_id) = removed_object_id {
+                .is_some();
+            if removed {
                 // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THIS OBJECT,
                 // answered from its slot above rather than by naming every block in the bucket.
                 if !buckets_still_holding.contains(&block_ref.routing_bucket) {
-                    bucket.object_index.remove(&removed_object_id);
+                    bucket.object_index.remove(&object_id);
                 }
                 classify_bucket_layout_in_place(&mut bucket);
             }

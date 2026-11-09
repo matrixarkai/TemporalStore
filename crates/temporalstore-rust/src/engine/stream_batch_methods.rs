@@ -1248,6 +1248,13 @@ impl TemporalEngine {
                 }
                 _ => unreachable!("only shared hash rows reuse command metadata"),
             });
+            let shared_row_object_id = reuse_consumed_metadata.then(|| match &command {
+                Command::HashMultiSet { key, .. }
+                | Command::HashMultiSetIfTimestampOlder { key, .. } => {
+                    stable_block_object_id(shard_id, "hash", key)
+                }
+                _ => unreachable!("only shared hash rows reuse command metadata"),
+            });
             // Shared async hash rows return the consumed command as their post-write metadata.
             // Borrow its key below instead of cloning the same String into a one-element Vec.
             let defer_object_key_clone = reuse_consumed_metadata && !persist_index_delta;
@@ -1279,6 +1286,7 @@ impl TemporalEngine {
                             shard_id,
                             shared_row_routing_bucket
                                 .expect("shared hash row has a routing bucket"),
+                            shared_row_object_id.expect("shared hash row has an object id"),
                             shard,
                             config.async_storage,
                             true,
@@ -1301,6 +1309,7 @@ impl TemporalEngine {
                             shard_id,
                             shared_row_routing_bucket
                                 .expect("shared timestamp row has a routing bucket"),
+                            shared_row_object_id.expect("shared timestamp row has an object id"),
                             shard,
                             config.async_storage,
                             key,
@@ -1456,6 +1465,7 @@ impl TemporalEngine {
                                     shard_id,
                                     key,
                                     routing_bucket,
+                                    shared_row_object_id.expect("shared hash row has an object id"),
                                     std::iter::once(field.as_str()),
                                 ),
                                 None => crate::engine::storage_bucket_internals::sync_written_hash_fields(
@@ -1474,6 +1484,7 @@ impl TemporalEngine {
                                     shard_id,
                                     key,
                                     routing_bucket,
+                                    shared_row_object_id.expect("shared hash row has an object id"),
                                     entries.iter().map(|(field, _)| field.as_str()),
                                 ),
                                 None => crate::engine::storage_bucket_internals::sync_written_hash_fields(

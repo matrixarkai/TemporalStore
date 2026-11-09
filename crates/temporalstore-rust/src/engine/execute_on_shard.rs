@@ -718,13 +718,13 @@ fn write_packed_hash_entries(
     block_store: &BlockStore,
     shard_id: ShardId,
     routing_bucket: u32,
+    object_id: u64,
     shard: &mut ShardState,
     key: &str,
     async_storage: bool,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (bool, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = deduplicate_hash_entries(entries);
-    let object_id = stable_block_object_id(shard_id, "hash", key);
     let block_ordinal = packed_entries
         .iter()
         .find_map(|(field, _)| {
@@ -765,6 +765,7 @@ fn write_packed_hash_entries(
                     shard,
                     shard_id,
                     routing_bucket,
+                    object_id,
                     key,
                     Some(field.clone()),
                     field_handle,
@@ -795,11 +796,13 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    let object_id = stable_block_object_id(shard_id, "hash", &key);
     execute_hash_multi_set_reusing_metadata_at_bucket(
         cache,
         block_store,
         shard_id,
         routing_bucket,
+        object_id,
         shard,
         async_storage,
         pack_projection,
@@ -813,6 +816,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     block_store: &BlockStore,
     shard_id: ShardId,
     routing_bucket: u32,
+    object_id: u64,
     shard: &mut ShardState,
     async_storage: bool,
     pack_projection: bool,
@@ -821,8 +825,6 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
 ) -> (ExecuteOutcome, Command) {
     remove_if_expired(shard, &key);
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
-    let object_id = stable_block_object_id(shard_id, "hash", &key);
-
     // Shared feature-row batches carry one projection and read it back together, so one packed
     // block avoids repeating the block header and physical append for every field. The packed
     // projection reader fetches that shared address once on both storage modes. Generic hash
@@ -834,6 +836,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             block_store,
             shard_id,
             routing_bucket,
+            object_id,
             shard,
             &key,
             async_storage,
@@ -907,11 +910,13 @@ pub(super) fn execute_packed_conditional_hash_write(
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    let object_id = stable_block_object_id(shard_id, "hash", &key);
     execute_packed_conditional_hash_write_at_bucket(
         cache,
         block_store,
         shard_id,
         routing_bucket,
+        object_id,
         shard,
         async_storage,
         key,
@@ -927,6 +932,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     block_store: &BlockStore,
     shard_id: ShardId,
     routing_bucket: u32,
+    object_id: u64,
     shard: &mut ShardState,
     async_storage: bool,
     key: String,
@@ -986,6 +992,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         block_store,
         shard_id,
         routing_bucket,
+        object_id,
         shard,
         &key,
         async_storage,

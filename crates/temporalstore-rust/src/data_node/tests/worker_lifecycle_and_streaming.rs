@@ -339,6 +339,7 @@ fn wide_shared_field_hash_write_routes_each_row_once() {
         .collect();
 
     crate::engine::reset_routing_bucket_derivations();
+    crate::engine::hashing::reset_object_id_derivations();
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
         fields,
@@ -351,6 +352,14 @@ fn wide_shared_field_hash_write_routes_each_row_once() {
         crate::engine::routing_bucket_derivations(),
         (ROWS as u64, (ROWS * "entity-0".len()) as u64),
         "routing work must scale with rows rather than shared fields"
+    );
+    assert_eq!(
+        crate::engine::hashing::object_id_derivations(),
+        (
+            (ROWS * 2) as u64,
+            (ROWS * 2 * ("hash".len() + "entity-0".len())) as u64
+        ),
+        "storage and wire identity work must scale with rows rather than shared fields"
     );
 }
 
