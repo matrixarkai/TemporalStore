@@ -61,7 +61,7 @@ impl LocalRaftWal {
             delta: None,
         };
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        file.write_all(&wal_proto::encode_record_line(&envelope, true)?)?;
+        file.write_all(&wal_proto::encode_record_line(&envelope)?)?;
         crate::durability_metrics::record_barrier("raft_wal_append_unsegmented");
         file.sync_data()?;
         Ok(())
@@ -409,7 +409,7 @@ impl LocalRaftWal {
                     delta: None,
                 }
             };
-            wal_proto::encode_record_line(&envelope, true)
+            wal_proto::encode_record_line(&envelope)
         };
 
         let mut wrote_base = !delta_safe;
@@ -851,7 +851,7 @@ impl LocalRaftWal {
         // Rewriting the retained records writes them binary, as every append does. A reader
         // handles either, so a file that still holds text records loads until it is rewritten.
         for envelope in retained {
-            file.write_all(&wal_proto::encode_record_line(&envelope, true)?)?;
+            file.write_all(&wal_proto::encode_record_line(&envelope)?)?;
         }
         crate::durability_metrics::record_barrier("raft_wal_compact");
         file.sync_data()?;
@@ -894,14 +894,6 @@ impl LocalRaftWal {
             return Ok(RaftWalRecovery {
                 record: None,
                 valid_records: 0,
-                truncated_bytes: 0,
-                corrupt_tail: false,
-            });
-        }
-        if let Ok(record) = serde_json::from_slice::<RaftWalRecord>(&bytes) {
-            return Ok(RaftWalRecovery {
-                record: Some(record),
-                valid_records: 1,
                 truncated_bytes: 0,
                 corrupt_tail: false,
             });

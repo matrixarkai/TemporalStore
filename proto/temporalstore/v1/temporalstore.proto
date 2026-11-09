@@ -494,7 +494,9 @@ message WalCommand {
   oneof kind {
     StringSet string_set = 1;
     HashSet hash_set = 2;
-    bytes verbatim = 99;
+    // Every command the two arms above do not carry field by field, in the SDK's own protobuf
+    // encoding (a `Command` message).
+    bytes sdk_command = 99;
   }
 }
 
@@ -547,6 +549,132 @@ message WalInstalledSnapshot {
   WalStateImage state_image = 2;
 }
 
+message WalPipelineState {
+  uint64 match_index = 1;
+  uint64 next_index = 2;
+  uint64 append_requests = 3;
+  uint64 append_accepted = 4;
+  uint64 append_rejected = 5;
+  uint64 committed_overwrite_rejections = 6;
+  uint64 inflight_entries = 7;
+  uint64 inflight_bytes = 8;
+  uint64 append_queue_depth = 9;
+  uint64 last_accepted_append_ms = 10;
+  uint64 leader_reported_commit_index = 11;
+  uint64 apply_inflight_tasks = 12;
+  uint64 apply_queue_depth = 13;
+  uint64 apply_queue_max_depth = 14;
+  uint64 apply_backpressure_rejections = 15;
+  uint64 memory_backpressure_rejections = 16;
+  uint64 oversized_log_rejections = 17;
+  uint64 append_queue_max_depth = 18;
+  uint64 reorder_queue_depth = 19;
+  uint64 out_of_order_append_rejections = 20;
+  uint64 reorder_entries_accepted = 21;
+  uint64 reorder_entries_released = 22;
+  uint64 reorder_entries_rejected = 23;
+  uint64 reorder_entry_timeouts = 24;
+  uint64 reorder_dropped_packages = 25;
+  uint64 stale_term_rejections = 26;
+  uint64 append_send_failures = 27;
+  bool snapshot_sending = 28;
+  bool snapshot_installing = 29;
+  uint64 snapshot_installed_index = 30;
+  uint64 snapshot_send_attempts = 31;
+  uint64 snapshot_send_completed = 32;
+  uint64 snapshot_send_failed = 33;
+  uint64 snapshot_install_started = 34;
+  uint64 snapshot_install_completed = 35;
+  uint64 snapshot_install_rejected = 36;
+  uint64 snapshot_install_rolled_back = 37;
+  uint64 snapshot_install_received_chunks = 38;
+  uint64 snapshot_send_progress_mark = 39;
+  uint64 snapshot_install_total_chunks = 40;
+  uint64 snapshot_install_progress_per_mille = 41;
+  uint64 snapshot_retry_count = 42;
+  uint64 snapshot_chunk_retry_count = 43;
+  uint64 snapshot_backpressure_rejections = 44;
+  uint64 snapshot_rate_limit_rejections = 45;
+  optional uint64 snapshot_send_started_ms = 46;
+  uint64 snapshot_send_elapsed_ms = 47;
+  uint64 snapshot_send_timeouts = 48;
+  bool snapshot_during_membership_change = 49;
+  bool snapshot_rejoin_after_compacted_log = 50;
+  bool transfer_leader_target = 51;
+  uint64 transfer_leader_requests = 52;
+  uint64 transfer_leader_accepted = 53;
+  uint64 transfer_leader_rejected = 54;
+  uint64 transfer_leader_completed = 55;
+  optional uint64 transfer_leader_started_ms = 56;
+  uint64 transfer_leader_elapsed_ms = 57;
+  uint64 transfer_leader_timeouts = 58;
+  uint64 pre_vote_rejections = 59;
+  uint64 election_rejections = 60;
+  optional uint64 offline_since_ms = 61;
+  uint64 offline_elapsed_ms = 62;
+  bool offline_timeout_reached = 63;
+  uint64 offline_timeout_rejections = 64;
+  bool auto_promoted_from_learner = 65;
+}
+
+message WalReadSafetyState {
+  uint64 read_index_requests = 1;
+  uint64 read_index_accepted = 2;
+  uint64 read_index_rejected = 3;
+  uint64 lease_read_requests = 4;
+  uint64 lease_read_accepted = 5;
+  uint64 lease_read_rejected = 6;
+  uint64 pre_vote_requests = 7;
+  uint64 pre_vote_accepted = 8;
+  uint64 pre_vote_rejected = 9;
+  uint64 bounded_stale_read_requests = 10;
+  uint64 bounded_stale_read_accepted = 11;
+  uint64 bounded_stale_read_rejected = 12;
+  uint64 stale_leader_lease_rejected = 13;
+  uint64 lagging_follower_read_rejected = 14;
+  uint64 stale_follower_write_rejected = 15;
+  uint64 minority_partition_read_rejected = 16;
+  uint64 minority_partition_write_rejected = 17;
+  uint64 healed_follower_catchup_observed = 18;
+}
+
+message WalMembershipEvidence {
+  uint64 learner_add_count = 1;
+  uint64 learner_catchup_count = 2;
+  uint64 learner_promote_count = 3;
+  uint64 voter_remove_count = 4;
+  uint64 witness_add_count = 5;
+  uint64 auto_promote_count = 6;
+  uint64 leader_transfer_write_count = 7;
+  uint64 leader_transfer_exact_once_commit_count = 8;
+  repeated uint64 leader_transfer_exact_once_commit_ids = 9;
+  uint64 pending_joint_consensus_persist_count = 10;
+  uint64 pending_joint_consensus_restore_count = 11;
+}
+
+message WalJointMembership {
+  repeated uint64 old_voters = 1;
+  repeated uint64 new_voters = 2;
+}
+
+message WalExternalSnapshotRef {
+  string uri = 1;
+  string checksum = 2;
+  uint64 byte_size = 3;
+}
+
+// The record fields that sit at their default on nearly every record, so the message is
+// absent from a record that has none of them.
+message WalRecordRest {
+  // 0 voter, 1 learner, 2 witness.
+  uint32 replica_role = 1;
+  optional WalJointMembership joint_membership = 2;
+  optional WalExternalSnapshotRef latest_external_snapshot_ref = 3;
+  optional WalPipelineState pipeline_state = 4;
+  optional WalReadSafetyState read_safety_state = 5;
+  optional WalMembershipEvidence membership_evidence = 6;
+}
+
 message WalRecord {
   WalHardState hard_state = 1;
   WalMembership membership = 2;
@@ -556,8 +684,8 @@ message WalRecord {
   WalInstalledSnapshot installed_snapshot = 7;
   // The record's remaining fields -- replica role, joint membership, snapshot refs and
   // runtime telemetry -- which sit at their default on almost every record and are omitted
-  // entirely when they do. Carried in their existing encoding so none of them can be lost.
-  bytes rest = 6;
+  // entirely when they do.
+  WalRecordRest rest = 6;
 }
 
 message WalEnvelope {
