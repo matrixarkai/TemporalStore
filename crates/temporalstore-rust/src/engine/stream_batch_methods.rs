@@ -18,6 +18,9 @@ impl serde::Serialize for BinarySlice<'_> {
 
 impl ProjectedBatchHashMultiGetRow {
     fn encoded_capacity(&self) -> usize {
+        if let execute_on_shard::ProjectedHashValues::Missing(field_count) = &self.0 {
+            return field_count.saturating_add(5);
+        }
         (0..self.0.len()).fold(5usize, |capacity, index| {
             capacity.saturating_add(
                 self.0
@@ -870,7 +873,7 @@ impl TemporalEngine {
             Err(status) => {
                 errors.push(BatchHashMultiGetError { index, status });
                 rows.push(ProjectedBatchHashMultiGetRow(
-                    execute_on_shard::ProjectedHashValues::Owned(vec![None; field_count]),
+                    execute_on_shard::ProjectedHashValues::Missing(field_count),
                 ));
             }
         }) {

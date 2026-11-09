@@ -381,6 +381,64 @@ fn direct_compact_encoding_does_not_copy_each_feature_value_first() {
 
 #[test]
 #[cfg(feature = "alloc-probe")]
+fn absent_compact_rows_do_not_allocate_one_null_vector_per_entity() {
+    const ROWS: usize = 512;
+    const FIELDS: usize = 32;
+    const SAMPLES: usize = 3;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let request = || BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: (0..ROWS).map(|index| format!("missing-{index}")).collect(),
+        fields: (0..FIELDS).map(|index| format!("feature-{index}")).collect(),
+    };
+
+    let mut owned_best = u64::MAX;
+    let mut direct_best = u64::MAX;
+    let mut owned_body = Vec::new();
+    let mut direct_body = Vec::new();
+    for _ in 0..SAMPLES {
+        let owned_request = request();
+        let owned_probe = crate::alloc_probe::Probe::start();
+        let owned_response = runtime.batch_hash_multi_get_compact(owned_request);
+        let candidate_owned_body =
+            rmp_serde::to_vec_named(&owned_response).expect("encode owned absent response");
+        let owned_cost = owned_probe.stop();
+        if owned_cost.allocs < owned_best {
+            owned_best = owned_cost.allocs;
+            owned_body = candidate_owned_body;
+        }
+
+        let direct_request = request();
+        let direct_probe = crate::alloc_probe::Probe::start();
+        let candidate_direct_body = runtime.batch_hash_multi_get_compact_msgpack(direct_request);
+        let direct_cost = direct_probe.stop();
+        if direct_cost.allocs < direct_best {
+            direct_best = direct_cost.allocs;
+            direct_body = candidate_direct_body;
+        }
+    }
+
+    assert_eq!(direct_body, owned_body);
+    let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct_body)
+        .expect("decode absent compact response");
+    assert!(decoded.status.ok, "{decoded:?}");
+    assert_eq!(decoded.rows.len(), ROWS);
+    assert!(decoded
+        .rows
+        .iter()
+        .all(|row| row.0.iter().all(Option::is_none)));
+    assert!(
+        direct_best + ((ROWS / 2) as u64) < owned_best,
+        "direct={direct_best} owned={owned_best}"
+    );
+    std::hint::black_box((direct_body, owned_body));
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
 fn conditional_hash_stale_packed_writes_do_not_copy_the_frame() {
     const WRITES: usize = 32;
     const EMBEDDING_BYTES: usize = 8 * 1024;
