@@ -243,6 +243,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         except Exception:
             return table.name
 
+    def _is_versioned_read_supported(self) -> bool:
+        """Version tags are part of every feature and timestamp field name."""
+        return True
+
     @staticmethod
     def _entity_key_hex(config: RepoConfig, entity_key: EntityKeyProto) -> str:
         return serialize_entity_key(
@@ -738,11 +742,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         client = self._get_client(config)
         view_name = self._view_name(table, config)
 
-        feature_names = list(
+        requested_feature_names = list(
             requested_features
             if requested_features
             else [feature.name for feature in table.features]
         )
+        # The result is a dictionary, so repeated names cannot add another
+        # value. Collapse them before they enlarge the projection and trigger
+        # another protobuf parse for every entity in the batch.
+        feature_names = list(dict.fromkeys(requested_feature_names))
         ts_field = _ts_field(view_name)
         fields = [_feature_field(view_name, name) for name in feature_names] + [ts_field]
 
