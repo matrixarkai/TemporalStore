@@ -242,11 +242,34 @@ fn bytes_written_now() -> Option<u64> {
     None
 }
 
-/// Every file under `root`, by path, with its length and mtime.
+/// The directory under a store root that belongs to the block cache's own embedded database.
+///
+/// THE ONE DIRECTORY THIS TEST'S FILE ACCOUNTING DOES NOT LOOK AT. The cache database runs its own
+/// background threads, and its info log (`cache/rocksdb-cache-blocks/LOG`) gains a few KB whenever
+/// one of them flushes a memtable or dumps statistics. Measured with a per-file tree diff: in one
+/// run `LOG` went 30,611 -> 33,888 B inside a measured dump, which put 33,888 B of "changed file"
+/// into the books against bytes the measuring thread never wrote and failed the residual below
+/// with -33,888; the other arms of that run, and every arm of the runs beside it, had no `cache/`
+/// entry in the diff at all. Two earlier runs failed the same assertion with -33,523 and -33,524,
+/// the same size, and were not diffed.
+///
+/// Leaving it out does not weaken the residual, because the residual is
+/// `bytes THIS THREAD wrote - bytes in changed files`: a background thread's write is in neither
+/// side's honest total, and a byte the MEASURING thread wrote under here would appear on the kernel
+/// side with nothing to match it and fail the residual as a POSITIVE number. Both halves are
+/// pinned by `a_byte_the_measuring_thread_writes_under_the_cache_dir_is_still_a_residual`.
+const BACKGROUND_DB_DIR: &str = "cache";
+
+/// Every file under `root`, by path, with its length and mtime -- except the block cache's own
+/// database directory, see `BACKGROUND_DB_DIR`.
 fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, std::time::SystemTime)> {
     let mut out = BTreeMap::new();
+    let background_db = root.join(BACKGROUND_DB_DIR);
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if dir == background_db {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -2236,4 +2259,66 @@ fn every_production_dump_cadence_check_reads_the_store_for_its_threshold() {
             && PERSISTENCE.contains("crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR"),
         "engine/engine_persistence.rs no longer applies the relative term at all"
     );
+}
+
+/// THE EXCLUSION ABOVE MUST NOT HIDE A WRITE THE DUMP MAKES.
+///
+/// Two halves, because "left it out" can fail two ways. A background thread's write under
+/// `cache/` must reach NEITHER side of the residual -- not the files, not this thread's kernel
+/// count -- and a write by the MEASURING thread under `cache/` must reach the kernel side alone and
+/// so leave a residual equal to its size. The third case is the control that the residual still
+/// reads zero when this thread writes into a directory that IS accounted.
+#[test]
+fn a_byte_the_measuring_thread_writes_under_the_cache_dir_is_still_a_residual() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = dir.path().join(BACKGROUND_DB_DIR).join("rocksdb-cache-blocks");
+    let indexes = dir.path().join("indexes");
+    std::fs::create_dir_all(&cache).expect("cache dir");
+    std::fs::create_dir_all(&indexes).expect("indexes dir");
+
+    // Case 1: ANOTHER thread writes 3,000 B into the cache dir while the span is open.
+    let before = tree_snapshot(dir.path());
+    let wchar_before = bytes_written_now().expect("APPARATUS: no wchar line");
+    let background = cache.join("LOG");
+    std::thread::spawn(move || std::fs::write(background, vec![b'x'; 3_000]).expect("write"))
+        .join()
+        .expect("background writer");
+    let wchar_after = bytes_written_now().expect("APPARATUS: no wchar line");
+    let after = tree_snapshot(dir.path());
+    assert!(
+        changed_files(&before, &after).is_empty(),
+        "a file the cache database's thread wrote reached the books: {:?}",
+        changed_files(&before, &after)
+    );
+    assert_eq!(
+        wchar_after - wchar_before,
+        0,
+        "another thread's write reached this thread's kernel count"
+    );
+
+    // Case 2: THIS thread writes 5,000 B into the cache dir. The files do not see it; the kernel
+    // does; the residual is the whole write.
+    let before = tree_snapshot(dir.path());
+    let wchar_before = bytes_written_now().expect("APPARATUS: no wchar line");
+    std::fs::write(cache.join("written-by-the-dump"), vec![b'y'; 5_000]).expect("write");
+    let wchar_after = bytes_written_now().expect("APPARATUS: no wchar line");
+    let after = tree_snapshot(dir.path());
+    let attributed: u64 = changed_files(&before, &after).iter().map(|(_, len)| *len).sum();
+    assert_eq!(attributed, 0, "the cache dir is meant to be outside the file accounting");
+    assert_eq!(
+        (wchar_after - wchar_before) as i64 - attributed as i64,
+        5_000,
+        "a byte the measuring thread wrote under the cache dir must stay a residual, or the \
+         exclusion has hidden a write a dump could make"
+    );
+
+    // Case 3 (control): the same write into an ACCOUNTED directory leaves residual zero.
+    let before = tree_snapshot(dir.path());
+    let wchar_before = bytes_written_now().expect("APPARATUS: no wchar line");
+    std::fs::write(indexes.join("shard-1.index.json"), vec![b'z'; 5_000]).expect("write");
+    let wchar_after = bytes_written_now().expect("APPARATUS: no wchar line");
+    let after = tree_snapshot(dir.path());
+    let attributed: u64 = changed_files(&before, &after).iter().map(|(_, len)| *len).sum();
+    assert_eq!(attributed, 5_000, "denominator: an accounted write must be seen");
+    assert_eq!((wchar_after - wchar_before) as i64 - attributed as i64, 0);
 }
