@@ -322,3 +322,92 @@ fn a_counter_increment_for_the_profiler() {
         counter_span(&engine, 1_000_000, writes);
     });
 }
+
+/// Series after each of the first `steps` increments of one counter (index `j` is the series after
+/// `j` increments, so index 0 is empty), and whether each increment wrote a series block. The
+/// engine is dropped with no unload and its directory left in `dir`.
+fn drive_and_drop(dir: &std::path::Path, steps: usize) -> (Vec<BTreeMap<u64, i64>>, Vec<bool>) {
+    let engine = open(dir, None);
+    let mut states = vec![BTreeMap::new()];
+    let mut wrote_block = Vec::new();
+    let mut rng = Rng(3);
+    for _ in 0..steps {
+        let at = 1_000 + rng.next(400);
+        let before = engine.block_store().stats().bytes_written;
+        increment(&engine, at, 1 + rng.next(4) as i64);
+        wrote_block.push(engine.block_store().stats().bytes_written > before);
+        states.push(series(&engine));
+    }
+    (states, wrote_block)
+}
+
+/// Copy `from` to `to`, then cut the last `cut` bytes of the written log in `to`.
+fn copy_dir_cut_log(from: &std::path::Path, to: &std::path::Path, cut: usize) {
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    copy(from, to);
+    let path = to.join("indexes").join("wals").join("shard-1.wal.bin");
+    let mut bytes = std::fs::read(&path).expect("the log exists");
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    assert!(bytes.len() > cut, "the log is shorter than the cut");
+    bytes.truncate(bytes.len() - cut);
+    std::fs::write(&path, &bytes).expect("rewrite the log");
+}
+
+/// A TORN LOG TAIL DURING COUNTER RECOVERY serves the series of some whole prefix of the increments,
+/// never another series: cut in the middle of the last record after a first increment, after an
+/// increment that wrote no series block, and after one that did.
+#[test]
+fn a_counter_log_cut_mid_record_recovers_a_prefix_of_its_increments() {
+    // Find, once, a step that wrote no block and one that did, past the first sixteen.
+    let probe = tempfile::tempdir().unwrap();
+    let (_, wrote) = drive_and_drop(probe.path(), 120);
+    assert!(wrote[0], "the first increment of a key must write its block");
+    let quiet = (20..wrote.len()).find(|&step| !wrote[step]).expect("no increment skipped its block");
+    let due = (20..wrote.len()).find(|&step| wrote[step]).expect("no later increment wrote its block");
+    drop(probe);
+
+    for (label, step) in [("first increment", 0usize), ("increment without a block", quiet), ("increment with a block", due)] {
+        let steps = step + 1;
+        let dir = tempfile::tempdir().unwrap();
+        let (states, _) = drive_and_drop(dir.path(), steps);
+        let full = states.len() - 1;
+        let mut previous = full + 1;
+        for cut in [1usize, 7, 20, 60, 150, 400] {
+            let cutdir = tempfile::tempdir().unwrap();
+            let size = {
+                let log = dir.path().join("indexes").join("wals").join("shard-1.wal.bin");
+                let mut bytes = std::fs::read(log).unwrap();
+                while bytes.last() == Some(&0) {
+                    bytes.pop();
+                }
+                bytes.len()
+            };
+            if size <= cut {
+                continue;
+            }
+            copy_dir_cut_log(dir.path(), cutdir.path(), cut);
+            let got = recovered(cutdir.path(), None);
+            let prefix = states.iter().position(|state| *state == got);
+            eprintln!("  {label}: cut {cut:>3} B of {size} B -> prefix {prefix:?} of {full}");
+            let prefix = prefix.unwrap_or_else(|| {
+                panic!("{label}: a log cut by {cut} B recovered a series that is no prefix of the increments: {got:?}")
+            });
+            assert!(prefix < full, "{label}: a log cut by {cut} B still served the whole series");
+            assert!(prefix <= previous, "{label}: a larger cut recovered a later prefix ({prefix} after {previous})");
+            previous = prefix;
+        }
+    }
+}
