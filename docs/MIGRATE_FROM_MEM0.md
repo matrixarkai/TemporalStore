@@ -1,14 +1,14 @@
-# Migrating from mem0 to MatrixArk
+# Migrating from mem0 to TemporalStore
 
-MatrixArk accepts mem0's memory-identity conventions so an existing
-[`mem0`](https://github.com/mem0ai/mem0) codebase can point at a MatrixArk /
-TemporalStore deployment with a **one-line import swap** and no call-site
-rewrites.
+TemporalStore accepts mem0's memory-identity conventions so an existing
+[`mem0`](https://github.com/mem0ai/mem0) codebase can use a TemporalStore-backed
+memory gateway with a **one-line import swap** and no call-site rewrites.
 
 There are two pieces:
 
-1. A **drop-in `Memory` shim** (`tools/matrixark_mem0_compat.py`) with mem0's
-   `add()` / `search()` signatures.
+1. A **drop-in `Memory` client** (`tools/temporalstore_mem0.py`) with mem0's
+   memory-management signatures. The older `matrixark_mem0_compat` import remains
+   available as an alias.
 2. The ingest **envelope itself accepts mem0's top-level identity kwargs**
    (`user_id` / `agent_id` / `run_id`) directly on `POST /v1/ingest`, so even
    hand-rolled HTTP callers migrate cleanly.
@@ -21,7 +21,7 @@ There are two pieces:
 # before:
 # from mem0 import Memory
 # after:
-from matrixark_mem0_compat import Memory
+from temporalstore_mem0 import Memory
 
 m = Memory()   # base_url / api_key resolved from the environment (see below)
 
@@ -48,8 +48,8 @@ ingest client:
 
 | Setting    | Precedence                                                                        |
 | ---------- | --------------------------------------------------------------------------------- |
-| `base_url` | explicit arg › `$MATRIXARK_BASE_URL` › `$MATRIXARK_GATEWAY_URL` › `http://127.0.0.1:8080` |
-| `api_key`  | explicit arg › `$MATRIXARK_API_KEY` › anonymous (no `Authorization` header sent)  |
+| `base_url` | explicit arg › `$TEMPORALSTORE_BASE_URL` › `$TEMPORALSTORE_GATEWAY_URL` › legacy `$MATRIXARK_*` aliases › `http://127.0.0.1:8080` |
+| `api_key`  | explicit arg › `$TEMPORALSTORE_API_KEY` › legacy `$MATRIXARK_API_KEY` › anonymous (no `Authorization` header sent) |
 
 The shim is stdlib-only (`http.client` + `json`) and reuses
 `matrixark_ingest_client`'s connection helpers.

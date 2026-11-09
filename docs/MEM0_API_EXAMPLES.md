@@ -1,19 +1,16 @@
-# mem0-style Memory API — Examples (HTTP & Python)
+# mem0-style Memory API - Examples (HTTP & Python)
 
-MatrixArk exposes a **mem0-compatible** memory API for **ingestion** (writing memory from
+TemporalStore exposes a **mem0-compatible** memory client for **ingestion** (writing memory from
 conversation turns) and **retrieval** (semantic recall). Existing mem0 code works unchanged —
 same method names and result shapes — over two transports:
 
 - **HTTP API** (`/v1/...`) — any language, no install. In dev mode the API key is optional.
-- **Python SDK** — a drop-in `Memory()` (today `from matrixark_mem0_compat import Memory`; a
-  published `matrixark` pip package is coming) that calls the HTTP API under the hood.
+- **Python SDK** — a drop-in `Memory()` from `temporalstore_mem0` that calls the HTTP API.
 
 Runnable examples live next to this doc:
 | file | what it shows | needs a server? |
 |---|---|---|
-| [`examples/mem0/local_inprocess_example.py`](../examples/mem0/local_inprocess_example.py) | full lifecycle in-process | **no** — `python3 local_inprocess_example.py` |
 | [`examples/mem0/python_sdk_example.py`](../examples/mem0/python_sdk_example.py) | the Python SDK (over HTTP) | yes (a gateway) |
-| [`examples/mem0/http_curl_example.sh`](../examples/mem0/http_curl_example.sh) | raw HTTP via curl | yes (a gateway) |
 
 ---
 
