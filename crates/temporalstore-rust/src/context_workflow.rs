@@ -85,7 +85,10 @@ use self::resource::{
 };
 
 use crate::engine::TemporalEngine;
-use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
+use crate::http::{
+    post_json_streaming_with_options_and_headers, post_json_with_options_and_headers,
+    HttpRequestOptions,
+};
 use crate::llm_context::{
     score_prepared_embedding_candidates_exact, EmbeddingBatch, EmbeddingChannel, EmbeddingKey,
     EmbeddingVector, PreparedEmbeddingQuery,
