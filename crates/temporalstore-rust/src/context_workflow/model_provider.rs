@@ -3,9 +3,11 @@
 
 //! Context model-provider calls for summaries and embeddings across supported provider protocols.
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::OnceLock;
 
 use crate::llm_context::{BatchEmbedder, EmbeddingBatch, OllamaConfig, OllamaProvider};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::*;
 
@@ -108,6 +110,159 @@ pub(crate) struct OpenAiChatMessage<'a> {
 pub(crate) struct OpenAiEmbeddingRequest<'a> {
     model: &'a str,
     input: Vec<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingResponse {
+    data: FlatOpenAiEmbeddingData,
+}
+
+#[derive(Debug, Default)]
+struct FlatOpenAiEmbeddingData {
+    values: Vec<f32>,
+    row_ends: Vec<usize>,
+}
+
+impl<'de> Deserialize<'de> for FlatOpenAiEmbeddingData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DataVisitor;
+
+        impl<'de> Visitor<'de> for DataVisitor {
+            type Value = FlatOpenAiEmbeddingData;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an array of embedding response items")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut data = FlatOpenAiEmbeddingData {
+                    values: Vec::new(),
+                    row_ends: Vec::with_capacity(sequence.size_hint().unwrap_or(0)),
+                };
+                while sequence
+                    .next_element_seed(OpenAiEmbeddingItemSeed {
+                        values: &mut data.values,
+                    })?
+                    .is_some()
+                {
+                    data.row_ends.push(data.values.len());
+                }
+                Ok(data)
+            }
+        }
+
+        deserializer.deserialize_seq(DataVisitor)
+    }
+}
+
+struct OpenAiEmbeddingItemSeed<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+impl<'de, 'a> DeserializeSeed<'de> for OpenAiEmbeddingItemSeed<'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(OpenAiEmbeddingItemVisitor {
+            values: self.values,
+        })
+    }
+}
+
+struct OpenAiEmbeddingItemVisitor<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum OpenAiEmbeddingItemField {
+    Embedding,
+    #[serde(other)]
+    Other,
+}
+
+impl<'de, 'a> Visitor<'de> for OpenAiEmbeddingItemVisitor<'a> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an embedding response item")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut found_embedding = false;
+        while let Some(field) = map.next_key::<OpenAiEmbeddingItemField>()? {
+            match field {
+                OpenAiEmbeddingItemField::Embedding => {
+                    if found_embedding {
+                        return Err(serde::de::Error::duplicate_field("embedding"));
+                    }
+                    map.next_value_seed(OpenAiEmbeddingValuesSeed {
+                        values: self.values,
+                    })?;
+                    found_embedding = true;
+                }
+                OpenAiEmbeddingItemField::Other => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        if !found_embedding {
+            return Err(serde::de::Error::missing_field("embedding"));
+        }
+        Ok(())
+    }
+}
+
+struct OpenAiEmbeddingValuesSeed<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+impl<'de, 'a> DeserializeSeed<'de> for OpenAiEmbeddingValuesSeed<'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ValuesVisitor<'a> {
+            values: &'a mut Vec<f32>,
+        }
+
+        impl<'de, 'a> Visitor<'de> for ValuesVisitor<'a> {
+            type Value = ();
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an array of floating-point embedding values")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                self.values.reserve(sequence.size_hint().unwrap_or(0));
+                while let Some(value) = sequence.next_element::<f32>()? {
+                    self.values.push(value);
+                }
+                Ok(())
+            }
+        }
+
+        deserializer.deserialize_seq(ValuesVisitor {
+            values: self.values,
+        })
+    }
 }
 
 /// When set (`MATRIXARK_REQUIRE_MODEL_SUMMARIES=1`), context summaries must come from a
@@ -788,7 +943,7 @@ pub(crate) fn call_openai_compatible_embedding_provider(
         .map(|key| format!("Authorization: Bearer {key}\r\n"))
         .unwrap_or_default();
     let path = format!("{}/embeddings", path_prefix.trim_end_matches('/'));
-    let response: Value = post_json_with_options_and_headers(
+    let response: OpenAiEmbeddingResponse = post_json_with_options_and_headers(
         &addr,
         &path,
         &embedding_request,
@@ -808,30 +963,13 @@ pub(crate) fn call_openai_compatible_embedding_provider(
             ),
         )
     })?;
-    let data = response["data"].as_array().ok_or_else(|| {
-        Status::error(
-            "embedding_provider_bad_response",
-            format!(
-                "embedding provider {} response missing data",
-                provider.provider_name
-            ),
-        )
-    })?;
+    let data = response.data;
     let mut dimensions = 0usize;
-    let mut values = Vec::new();
-    for item in data {
-        let embedding = item["embedding"].as_array().ok_or_else(|| {
-            Status::error(
-                "embedding_provider_bad_response",
-                format!(
-                    "embedding provider {} response missing data[].embedding",
-                    provider.provider_name
-                ),
-            )
-        })?;
+    let mut row_start = 0usize;
+    for row_end in data.row_ends.iter().copied() {
+        let embedding = &data.values[row_start..row_end];
         if dimensions == 0 {
             dimensions = embedding.len();
-            values.reserve(data.len().saturating_mul(dimensions));
         } else if embedding.len() != dimensions {
             return Err(Status::error(
                 "embedding_provider_bad_response",
@@ -841,19 +979,21 @@ pub(crate) fn call_openai_compatible_embedding_provider(
                 ),
             ));
         }
-        for value in embedding {
-            values.push(value.as_f64().map(|value| value as f32).ok_or_else(|| {
-                Status::error(
-                    "embedding_provider_bad_response",
-                    format!(
-                        "embedding provider {} returned a non-float embedding value",
-                        provider.provider_name
-                    ),
-                )
-            })?);
+        if !embedding.iter().all(|value| value.is_finite()) {
+            return Err(Status::error(
+                "embedding_provider_bad_response",
+                format!(
+                    "embedding provider {} returned a non-finite embedding value",
+                    provider.provider_name
+                ),
+            ));
         }
+        row_start = row_end;
     }
-    Ok(EmbeddingBatch { dimensions, values })
+    Ok(EmbeddingBatch {
+        dimensions,
+        values: data.values,
+    })
 }
 
 pub(crate) fn call_openai_compatible_context_provider(
