@@ -439,3 +439,171 @@ fn an_order_bound_ledger_adopts_the_key_allocation_a_span_cannot_order() {
          keys arrive and the argument above does not describe this arena"
     );
 }
+
+/// WHERE A KEY WITH A DEADLINE IS HELD, AND WHICH OF THOSE HOLDERS ARE ORDERED.
+///
+/// # WHY THE PUBLISHED CORPUS CANNOT ANSWER THIS
+///
+/// `the_priced_holder_walk_cannot_see_the_slot_row_that_owns_the_key` counts holders on the
+/// amplification arm's own corpus, which is strings with NO deadline. That corpus never arms
+/// `expires_at_ms` or `expiry_by_deadline`, so every ordered structure in the arena's gate is empty
+/// there and reads as a map with nothing to share -- the unexercised-structure reading this file
+/// exists to refuse. This arm writes the same keys with a deadline and walks the same census.
+///
+/// # THE TWO ORDERED HOLDERS A DEADLINE ADDS
+///
+/// `set_expiry` files each key in TWO ordered maps and says so: `expires_at_ms`, a
+/// `BTreeMap<ModelKey, u64>`, and `expiry_by_deadline`, a `BTreeMap<(u64, Arc<str>), ()>` ordered by
+/// deadline and then by the key's characters -- the order an expiry sweep walks. A span orders by
+/// arena offset, so neither can hold one; and unlike the two adopting ledgers
+/// `an_order_bound_ledger_adopts_the_key_allocation_a_span_cannot_order` records, these are on the
+/// ordinary write path of every key given a TTL.
+///
+/// WHAT THIS DOES NOT CLAIM. It does not say the arena is refused: a key with no deadline holds
+/// neither map, and the published row is taken on such keys. It says the arena would need two key
+/// representations side by side, or the expiry indexes moved off key-ordered containers, and it
+/// measures how many allocations and holders a deadline key has so that cost is a number.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib engine::tests::the_holders_of_a_key_allocation::a_key_with_a_deadline_is_held_by_two_ordered_maps -- --exact --ignored --nocapture
+#[test]
+#[ignore = "seeds a corpus and dumps it through the production lifecycle; run by name"]
+fn a_key_with_a_deadline_is_held_by_two_ordered_maps() {
+    const KEYS: usize = 1_792;
+    const SHIPPED_END: u32 = 1023;
+    /// An hour: far past the test's own runtime, so no key expires under the measurement.
+    const TTL_MS: u64 = 3_600_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = holder_engine_on(dir.path(), SHIPPED_END);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: format!("amp-{index:06}"),
+                value: vec![b'v'; 256],
+                ttl_ms: TTL_MS,
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let candidates: Vec<u32> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.bucket_index.bucket_map.keys().copied().collect()
+    };
+    assert!(!candidates.is_empty(), "{KEYS} keys produced no bucket to dump");
+    let lifecycle =
+        engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_buckets: candidates.clone(),
+            max_dump_buckets_per_round: candidates.len(),
+            ..Default::default()
+        });
+    std::hint::black_box(&lifecycle);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    // --- THE FIXTURE FLOORS. A structure that was never populated contributes no holders, which
+    // --- is the direction that flatters the arena, so each ordered map is asserted POPULATED.
+    assert_eq!(KEYS, shard.strings().len(), "the string map does not hold the seeded corpus");
+    assert_eq!(
+        KEYS,
+        shard.expires_at_ms().len(),
+        "expires_at_ms holds {} of {KEYS} keys, so the deadline never armed and every ordered \
+         holder below is NOT EXERCISED rather than empty",
+        shard.expires_at_ms().len()
+    );
+    assert_eq!(
+        KEYS,
+        shard.expiry_by_deadline.len(),
+        "expiry_by_deadline holds {} of {KEYS} entries, so its holder row below is unexercised",
+        shard.expiry_by_deadline.len()
+    );
+
+    let mut holders: Counter<usize, Vec<&'static str>> = Counter::new();
+    for table in shard.bucket_index.objects.values() {
+        for key in table.keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("bucket_index.objects");
+        }
+    }
+    for key in shard.strings().keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("strings");
+    }
+    for key in shard.expires_at_ms().keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("expires_at_ms");
+    }
+    for (_deadline, key) in shard.expiry_by_deadline.keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("expiry_by_deadline");
+    }
+    for key in shard.control_state_uuid().keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("control_state_uuid");
+    }
+    for key in shard.context_compression_watermark().keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("context_compression_watermark");
+    }
+
+    let mut by_shape: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for who in holders.values() {
+        let mut names = who.clone();
+        names.sort_unstable();
+        *by_shape.entry(names.join(" + ")).or_insert(0) += 1;
+    }
+
+    println!();
+    println!("  {KEYS} keys written with a deadline, at the steady state");
+    println!();
+    println!("    {:<86} {:>12}", "which structures hold the allocation", "allocations");
+    for (shape, count) in &by_shape {
+        println!("    {shape:<86} {count:>12}");
+    }
+    println!();
+    println!("    distinct key allocations {}", holders.len());
+    println!(
+        "    strings {} / objects {} / expires_at_ms {} / expiry_by_deadline {}",
+        shard.strings().len(),
+        shard.bucket_index.objects.values().map(|t| t.len()).sum::<usize>(),
+        shard.expires_at_ms().len(),
+        shard.expiry_by_deadline.len()
+    );
+    println!("  MEASURED: one allocation, four holders, two of them ordered. A span cannot order,");
+    println!("  so a key given a deadline keeps its `Arc` for as long as either ordered map holds it,");
+    println!("  and the arena would hold a second copy of its characters instead of replacing them.");
+    println!();
+
+    // --- THE SHAPE, ASSERTED AS ITS PREMISES.
+    // One allocation per key: a deadline does not mint a copy of the key in either ordered map.
+    // If this read 2 per key, the ordered maps would own their own text and a span could replace
+    // the shared one -- the arena's gate would be a different gate.
+    assert_eq!(
+        KEYS,
+        holders.len(),
+        "{KEYS} keys with a deadline produced {} distinct key allocations. One each is the premise: \
+         `set_expiry` takes the handle the block index already holds, so the ordered maps share it. \
+         More means a deadline now mints its own copy of the key",
+        holders.len()
+    );
+    let expected: Vec<&str> =
+        vec!["bucket_index.objects", "expires_at_ms", "expiry_by_deadline", "strings"];
+    for who in holders.values() {
+        let mut names = who.clone();
+        names.sort_unstable();
+        assert_eq!(
+            expected, names,
+            "a key allocation is held by {names:?}, not by exactly {expected:?}. The two ordered \
+             maps are what stop a span replacing the allocation: if either has stopped holding \
+             it, a deadline key is no longer order-bound on that side and the arena's gate has \
+             moved -- re-price it rather than loosening this assertion"
+        );
+    }
+    // Neither adopting ledger is armed by this corpus, so they read empty here. That is stated
+    // rather than assumed: an empty ordered ledger is not evidence a key cannot be in one.
+    assert_eq!(0, shard.control_state_uuid().len(), "control_state_uuid is armed by this corpus");
+    assert_eq!(
+        0,
+        shard.context_compression_watermark().len(),
+        "context_compression_watermark is armed by this corpus"
+    );
+}
