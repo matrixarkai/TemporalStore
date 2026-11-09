@@ -3556,7 +3556,7 @@ fn scratch_engine_index_dir_dies_with_the_last_engine_clone() {
 }
 
 #[test]
-fn served_index_container_round_trips_and_still_reads_plain_json() {
+fn served_index_container_round_trips_and_refuses_plain_json() {
     use crate::engine::{decode_index_bytes, encode_index_bytes, encode_index_bytes_as_plain_json};
 
     let mut shard = ShardState::default();
@@ -3567,9 +3567,11 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     // Raw JSON, which is what an older binary wrote. Nothing in production produces this any
     // more, so the test names the shape it wants rather than setting a variable to select it.
     let plain = encode_index_bytes_as_plain_json(&shard);
-    assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
-    let decoded = decode_index_bytes(&plain).expect("json index decodes");
-    assert!(decoded.strings().contains_key("container-probe"));
+    assert_eq!(plain.first(), Some(&b'{'), "the plain shape is JSON");
+    // PLAIN JSON IS REFUSED, NOT READ: nothing writes it, and a reader for a shape no writer
+    // produces is a door a stale image can walk through. The refusal names what was wrong with it.
+    let refused = decode_index_bytes(&plain).expect_err("a plain-JSON index is not a served index");
+    assert!(refused.contains("not a container"), "unhelpful refusal: {refused}");
 
     // And what production writes: a magic-prefixed payload that decodes back to the same state.
     let wrapped = encode_index_bytes(&shard);
@@ -3670,23 +3672,20 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     let refused = decode_index_bytes(&wrong_version).expect_err("a foreign struct version refuses");
     assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
 
-    // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
+    // And every older on-disk shape is REFUSED, never guessed at: plain JSON, and the
+    // compressed-JSON payload (codec 1) that an older binary wrote. Neither has a writer or a
+    // reader left, and a reader for a shape no writer produces is a door a stale image can walk
+    // through.
     let plain = encode_index_bytes_as_plain_json(&shard);
-    assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
-    assert_eq!(
-        decode_index_bytes(&plain).expect("json decodes").strings().len(),
-        shard.strings().len()
-    );
+    assert_eq!(plain.first(), Some(&b'{'), "the plain shape is JSON");
+    let refused = decode_index_bytes(&plain).expect_err("plain json is refused");
+    assert!(refused.contains("not a container"), "unhelpful refusal: {refused}");
 
-    // The compressed-JSON payload has no writer left: it is built here the way an older binary
-    // built it, which is the only way to give the reader arm that still takes it a real input.
-    let compressed_json =
-        crate::engine::wrap_index_json(serde_json::to_vec(&shard).expect("shard serialises"));
-    assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
-    assert_eq!(
-        decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings().len(),
-        shard.strings().len()
-    );
+    let mut compressed_json = binary.clone();
+    compressed_json[6] = 1;
+    let refused =
+        decode_index_bytes(&compressed_json).expect_err("the compressed-json payload is refused");
+    assert!(refused.contains("cannot read"), "unhelpful refusal: {refused}");
 
     // The binary payload is the smaller one -- that is the whole point of adding it.
     assert!(

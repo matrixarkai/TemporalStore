@@ -1881,13 +1881,11 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     //     exist: `load_index_inner` answers `Ok(None)` for stale, undecodable and absent alike, so
     //     without them a stamp bump is invisible from outside.
     //
-    //     THE DESTRUCTURING ORDER BELOW IS (accepted, stale, absent, decode) AND IS NOT ARBITRARY.
-    //     `persistence::index_load_path_counts` returns (accepted, refused_stale, absent,
-    //     undecodable). An earlier version of this block read a counter of my own that returned the
-    //     SAME four u64s in a different order, and swapping one accessor for the other compiles
-    //     either way -- so getting it wrong would leave `stale_n` holding ACCEPTED, which is
-    //     non-zero here for unrelated reasons, and every assertion would pass while measuring
-    //     nothing. Bind by position against that signature, not by the order that reads nicely. ---
+    //     THE DESTRUCTURING ORDER BELOW IS (accepted, absent, decode) AND IS NOT ARBITRARY.
+    //     `persistence::index_load_path_counts` returns (accepted, absent, undecodable), all `u64`,
+    //     so swapping two compiles -- and getting it wrong would leave `decode_n` holding ACCEPTED,
+    //     which is non-zero here for unrelated reasons, and every assertion would pass while
+    //     measuring nothing. Bind by position against that signature. ---
     {
         use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_counts};
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1901,17 +1899,19 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         // ABSENT: no base index has ever been written for this shard.
         reset_index_load_path_counts();
         engine.load_shard(7);
-        let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
+        let (accepted_n, absent_n, decode_n) = index_load_path_counts();
         println!(
-            "  absent index -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
+            "  absent index -> decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
         );
         assert!(
             absent_n > 0,
-            "a shard with no base index must count as ABSENT; got stale {stale_n} decode              {decode_n} absent {absent_n} accepted {accepted_n}"
+            "a shard with no base index must count as ABSENT; got decode {decode_n} absent \
+             {absent_n} accepted {accepted_n}"
         );
         assert_eq!(
-            0, stale_n,
-            "an absent index must NOT be counted as a stale-stamp refusal, or the two cannot be              told apart and the counters say nothing"
+            0, decode_n,
+            "an absent index must NOT be counted as a refusal, or the two cannot be told apart and \
+             the counters say nothing"
         );
 
         // STALE: a base index written under an older stamp.
@@ -1928,16 +1928,27 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         // version of this test failed.
         let path = dir.path().join("indexes").join("shard-7.index.json");
         let bytes = std::fs::read(&path).expect("a flushed base index exists");
-        let mut restored = decode_index_bytes(&bytes).expect("the base index decodes");
+        let restored = decode_index_bytes(&bytes).expect("the base index decodes");
         assert_eq!(
             restored.index_format_version, SHARD_INDEX_FORMAT_VERSION,
-            "denominator: the index just written must carry the CURRENT stamp, or staling it below              changes nothing"
+            "denominator: the index just written must carry the CURRENT stamp, or staling it below \
+             changes nothing"
         );
-        restored.index_format_version = SHARD_INDEX_FORMAT_VERSION - 1;
-        // Plain JSON: the container's reader takes the stamp from its header, so only an encoding
-        // that stores the field can carry an old one.
-        std::fs::write(&path, crate::engine::encode_index_bytes_as_plain_json(&restored))
-            .expect("write");
+        // The same payload behind a header that names the previous struct version: the header is
+        // the stamp, and the reader compares it before it reads the payload.
+        let stale_bytes = crate::engine::encode_index_bytes_at_version(
+            &restored,
+            SHARD_INDEX_FORMAT_VERSION - 1,
+        );
+        let refusal = decode_index_bytes(&stale_bytes)
+            .err()
+            .expect("an image stamped one version back must be refused by the decode");
+        assert!(
+            refusal.contains("struct version")
+                && refusal.contains(&(SHARD_INDEX_FORMAT_VERSION - 1).to_string()),
+            "the stale image was refused, but not on its header's struct version: {refusal}"
+        );
+        std::fs::write(&path, &stale_bytes).expect("write");
 
         reset_index_load_path_counts();
         let reloaded = crate::engine::TemporalEngine::with_local_dirs(
@@ -1947,13 +1958,14 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
             dir.path().join("indexes"),
         );
         reloaded.load_shard(7);
-        let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
+        let (accepted_n, absent_n, decode_n) = index_load_path_counts();
         println!(
-            "  stale stamp  -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
+            "  stale stamp  -> decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
         );
         assert!(
-            stale_n > 0,
-            "an index stamped {} against a current {SHARD_INDEX_FORMAT_VERSION} must be counted as              a STALE-STAMP refusal; got stale {stale_n} decode {decode_n} absent {absent_n}              accepted {accepted_n}",
+            decode_n > 0,
+            "an index stamped {} against a current {SHARD_INDEX_FORMAT_VERSION} must be REFUSED and \
+             counted; got decode {decode_n} absent {absent_n} accepted {accepted_n}",
             SHARD_INDEX_FORMAT_VERSION - 1
         );
         assert_eq!(
@@ -1962,15 +1974,16 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         );
     }
 
+    // PLAIN JSON IS REFUSED TOO. An index carrying its stamp as a payload field -- the only way
+    // JSON could ever carry one -- is no longer a shape the decode takes: the stamp's one home is
+    // the container header, and a stale image has to be refused there and nowhere else.
     let mut stale = shard.clone();
     stale.index_format_version = 0;
     let stale_json = serde_json::to_vec(&stale).expect("a shard serializes as JSON");
     assert!(
-        decode_index_bytes(&stale_json).is_ok(),
-        "a JSON index carrying a stale in-payload version decodes at this layer -- which is the \
-         point: the field cannot guard the decode it lives inside, and `load_index_inner` is what \
-         refuses it. If this ever starts failing, the two stamps have been merged and the comment \
-         above is wrong."
+        decode_index_bytes(&stale_json).is_err(),
+        "a JSON index carrying a stale in-payload version decoded: the stamp has a second home, so \
+         an image can carry an old one past the header check"
     );
 }
 
@@ -2337,6 +2350,17 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
 pub(super) const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_version":8,"wal_resident_blocks":{},"expires_at_ms":{},"strings":{},"hashes":{"ungated/hash":{"f1":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"f0":{"a":0,"l":27,"pi":0,"oi":null,"g":0}}},"sets":{},"seen":{},"buckets":{},"zsets":{"ungated/zset":[[[109,48],[13830554455654793216,{"a":54,"l":34,"pi":0,"oi":null,"g":0}]]]},"lists":{},"features":{},"control_state":{},"control_state_blocks":{},"control_state_changes":{},"control_state_change_sketch":{},"control_state_selection":{},"control_state_uuid":{},"context_nodes":{},"context_event_timeline":{},"context_audits":{},"context_entities":{},"context_children":{},"context_summaries":{},"context_compressions":{},"slot_index":{"bucket_map":{"979707521":{"routing_slot":979707521,"layout":"SingleBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":1,"object_index":[3660521199139779587],"deleted_object_index":[],"block_index":{"zset:ungated/zset:6d30:0:54:34:0:0":{"object_key":"ungated/zset","model_id":"zset","component":"6d30","address":{"a":54,"l":34,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false}}},"3709665044":{"routing_slot":3709665044,"layout":"MultiBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":2,"object_index":[14105434925875933987],"deleted_object_index":[],"block_index":{"hash:ungated/hash:f0:0:0:27:0:0":{"object_key":"ungated/hash","model_id":"hash","component":"f0","address":{"a":0,"l":27,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false},"hash:ungated/hash:f1:0:27:27:1:1":{"object_key":"ungated/hash","model_id":"hash","component":"f1","address":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"dirty":true,"deleted":false}}}}},"applied_wal_sequence":3}
 "##;
 
+/// The golden's JSON read by the STRUCT'S OWN DESERIALIZER.
+///
+/// `decode_index_bytes` reads the msgpack container and nothing else, so a committed JSON image can
+/// no longer go through it. What these tests ask of the golden is how the struct's fields and the
+/// bucket node's readers treat a spelling, and that is the deserializer's to answer -- it is what the
+/// retired plain-JSON arm called.
+fn golden_state(json: &str) -> Result<crate::engine::state::ShardState, String> {
+    serde_json::from_str::<crate::engine::state::ShardState>(json)
+        .map_err(|error| error.to_string())
+}
+
 /// THE BUCKET NODE READER TAKES `block_index` AND NOT THE RETIRED SPELLINGS.
 ///
 /// The bucket node's block index is written under `block_index`. It used to be written under
@@ -2349,7 +2373,7 @@ pub(super) const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_versi
 /// that key, must not produce the same count.
 #[test]
 fn the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones() {
-    let canonical = crate::engine::decode_index_bytes(UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes())
+    let canonical = golden_state(UNGATED_STORE_INDEX_AT_STAMP_8)
         .expect("the committed bytes, spelling `block_index`, must decode");
     let canonical_blocks = super::blocks_with_identity(&canonical.bucket_index).len();
     assert!(
@@ -2365,7 +2389,7 @@ fn the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones(
         let swapped = UNGATED_STORE_INDEX_AT_STAMP_8
             .replace("\"block_index\":", &format!("\"{retired}\":"));
         assert_ne!(swapped, UNGATED_STORE_INDEX_AT_STAMP_8, "the swap to `{retired}` did not take");
-        let loaded = crate::engine::decode_index_bytes(swapped.as_bytes());
+        let loaded = golden_state(&swapped);
         let blocks = loaded
             .as_ref()
             .map(|index| super::blocks_with_identity(&index.bucket_index).len());
@@ -2386,7 +2410,7 @@ fn the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones(
     let with_ids = UNGATED_STORE_INDEX_AT_STAMP_8.replace("\"object_index\":", "\"object_ids\":");
     assert_ne!(with_ids, UNGATED_STORE_INDEX_AT_STAMP_8, "the swap to `object_ids` did not take");
     let canonical_json = serde_json::to_value(&canonical.bucket_index).unwrap();
-    let loaded = crate::engine::decode_index_bytes(with_ids.as_bytes());
+    let loaded = golden_state(&with_ids);
     assert!(
         loaded
             .as_ref()
@@ -2417,10 +2441,11 @@ fn the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones(
 fn an_ungated_store_is_refused_before_it_is_served() {
     use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_counts};
 
-    // --- ARM 1: THE DECODE SUCCEEDS, AND IT IS THE DECODE THAT LOSES THE NAMES. ---
-    let decoded = crate::engine::decode_index_bytes(UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes())
-        .expect("an index written by a pre-change binary must still DECODE -- the stamp refuses it \
-                 one layer up, and a decode that failed here would hide that");
+    // --- ARM 1: THE GOLDEN READS, AND IT IS THE READ THAT LOSES THE NAMES. ---
+    let decoded = golden_state(UNGATED_STORE_INDEX_AT_STAMP_8)
+        .expect("an index written by a pre-change binary must still be READABLE by the struct's \
+                 deserializer -- the header refuses it one layer up, and a read that failed here \
+                 would hide that");
     assert_eq!(
         8, decoded.index_format_version,
         "the golden's stamp is {} rather than 8, so it is not the pre-change store this guard is \
@@ -2483,11 +2508,21 @@ fn an_ungated_store_is_refused_before_it_is_served() {
     let dir = tempfile::tempdir().expect("tempdir");
     let indexes = dir.path().join("indexes");
     std::fs::create_dir_all(&indexes).expect("mkdir");
-    std::fs::write(
-        indexes.join("shard-7.index.json"),
-        UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes(),
-    )
-    .expect("plant the pre-change index");
+    // THE PRE-CHANGE STORE'S OWN STATE, in the container this binary reads, behind a header that
+    // names the struct version the golden carries. The header is the stamp: the reader compares it
+    // with the constant before it reads the payload, so what it must do with this image is decided
+    // by those four bytes alone.
+    let planted = crate::engine::encode_index_bytes_at_version(&decoded, 8);
+    let refusal = crate::engine::decode_index_bytes(&planted)
+        .err()
+        .expect("an image whose header says struct version 8 must be refused by the decode");
+    assert!(
+        refusal.contains("struct version 8")
+            && refusal.contains(&crate::engine::SHARD_INDEX_FORMAT_VERSION.to_string()),
+        "the planted image was refused, but not on its header's struct version: {refusal}"
+    );
+    std::fs::write(indexes.join("shard-7.index.json"), &planted)
+        .expect("plant the pre-change index");
     // AND THE ROUTING-RANGE STAMP BESIDE IT, WHICH A PRE-CHANGE STORE REALLY HAS.
     //
     // Without it this guard asserted nothing and did not say so: `decide_routing_range` refuses a
@@ -2517,28 +2552,20 @@ fn an_ungated_store_is_refused_before_it_is_served() {
     // ZERO -- not even `absent` -- which is what a load that never reached the index looks like.
     // A refusal arm that cannot tell "refused" from "never asked" asserts nothing.
     engine.load_shard(7);
-    let (accepted, stale, absent, undecodable) = index_load_path_counts();
-    println!(
-        "  load path -> accepted {accepted}, stale {stale}, absent {absent}, undecodable \
-         {undecodable}"
-    );
+    let (accepted, absent, undecodable) = index_load_path_counts();
+    println!("  load path -> accepted {accepted}, absent {absent}, undecodable {undecodable}");
     assert!(
-        stale > 0,
-        "a store stamped 8 against a current {} was NOT counted as a stale-stamp refusal: accepted \
-         {accepted}, stale {stale}, absent {absent}, undecodable {undecodable}. \
-         `persistence.rs` compares with `<`, so the direction that fails silently is a stamp that \
-         is too LOW -- and this is that direction",
+        undecodable > 0,
+        "a store stamped 8 against a current {} was NOT refused and counted: accepted \
+         {accepted}, absent {absent}, undecodable {undecodable}. The header's struct version is \
+         compared with `!=`, so the direction that fails silently is a stamp that is too LOW -- \
+         and this is that direction",
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
     assert_eq!(
         0, accepted,
-        "the load counted {accepted} ACCEPTED beside {stale} refused. Four independent counters \
+        "the load counted {accepted} ACCEPTED beside {undecodable} refused. Independent counters \
          mean a load can move both, and a refusal that is also an acceptance is an acceptance"
-    );
-    assert_eq!(
-        0, undecodable,
-        "the planted index was counted UNDECODABLE, so this guard is measuring a parse failure \
-         rather than the stamp -- and a parse failure would hide the silent key drop arm 1 asserts"
     );
 
     // AND NOTHING IS SERVED FROM IT. There is no write-ahead log beside the planted index, so a

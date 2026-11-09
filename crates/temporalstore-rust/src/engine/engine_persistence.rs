@@ -14,90 +14,51 @@ use super::*;
 /// which code ran, and a change that moves the index's MEANING cannot otherwise say whether the path
 /// it cares about was exercised at all.
 ///
-/// This change bumps `SHARD_INDEX_FORMAT_VERSION` from 3 to 5, so EVERY EXISTING STORE'S INDEX IS
-/// REFUSED ON ITS FIRST LOAD and rebuilt from the log. That is correct -- it is the whole purpose of
-/// the stamp -- and it is the largest operational consequence of this change, costing whatever a full
-/// replay costs on a large store. Before this counter nothing reported it: the refusal is a
-/// `return Ok(None)` that the caller cannot tell from an absent index.
-///
-/// `a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index` turns the counter into a
-/// proof, and asserts the membership is right on BOTH paths -- a counter saying "replayed" beside a
-/// wrong answer would be worse than no counter.
+/// A stamp bump makes EVERY EXISTING STORE'S INDEX UNREADABLE ON ITS FIRST LOAD: the container header
+/// names another struct version, `decode_index_bytes` refuses it, and the shard rebuilds from the
+/// log. That is correct -- it is the whole purpose of the stamp -- and it is the largest operational
+/// consequence of a bump, costing whatever a full replay costs on a large store. The refusal is a
+/// `return Ok(None)` that the caller cannot tell from an absent index, so it is COUNTED, as
+/// `Undecodable`, and `a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index` turns
+/// that counter into a proof and asserts the membership is right on BOTH paths -- a counter saying
+/// "replayed" beside a wrong answer would be worse than no counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexLoadPath {
     /// The file was there, decoded, and its stamp was current. The index was USED.
     Accepted,
-    /// The file was there and decoded and its stamp was OLD, so it was refused and the caller
-    /// replays. This is the arm the stamp exists for and the one nothing could see before.
-    RefusedStaleStamp,
     /// There is no index file. A crash before the first compaction looks like this.
     Absent,
-    /// The file was there and could not be decoded at all.
+    /// The file was there and was refused: it could not be decoded at all, or it carries another
+    /// struct version. The caller replays.
     Undecodable,
 }
 
 static INDEX_LOADS_ACCEPTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static INDEX_LOADS_REFUSED_STALE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 static INDEX_LOADS_ABSENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static INDEX_LOADS_UNDECODABLE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// IS THIS IMAGE'S STAMP TOO OLD TO TRUST? THE COMPARISON, WRITTEN ONCE.
+/// Count one load of the persisted index, by the way it went.
 ///
-/// `index_format_version` exists because a stale index decodes CLEANLY -- the types are
-/// unchanged -- while a field's MEANING has moved under it, so trusting it serves wrong data with
-/// no error anywhere. The constant is therefore a claim about every door that turns stored bytes
-/// into a `ShardState` somebody acts on, and it used to be enforced at exactly one of them.
-///
-/// MEASURED, which is why this exists: `decode_index_bytes` has six production callers and only
-/// `load_index_inner` read the stamp. A stamp-13 image installed through
-/// `install_bucket_dump_manifest` reached a live shard with all four counters below at ZERO -- it
-/// did not skip the refusal, it never entered the code the refusal lived in. See
-/// `engine::tests::the_stamp_refuses_a_legacy_sequence_map`.
-///
-/// Spelled as a predicate rather than copied inline at each door so the ORDER of the comparison
-/// cannot drift between them: `<` and not `!=`, because a FUTURE stamp is a different question
-/// (`decode_index_bytes`'s binary arm refuses that one on equality) and because the direction
-/// that fails silently is a stamp that is too LOW.
-pub(super) fn index_stamp_is_stale(shard: &ShardState) -> bool {
-    shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION
-}
-
-/// The same question at a door that INSTALLS state, which also counts the refusal.
-///
-/// Counted so a refusal is distinguishable from an absence: every door here answers its caller
-/// with the same "no usable index" it would give for a missing file, so without the counter
-/// nothing downstream can tell "refused because stale" from "there was nothing there". The
-/// report and plan paths deliberately use the bare predicate above instead -- they install
-/// nothing, and counting them would make the tally mean something other than "an image was
-/// refused on the way in".
-pub(super) fn refuse_stale_index_stamp(shard: &ShardState) -> bool {
-    if index_stamp_is_stale(shard) {
-        note_index_load(IndexLoadPath::RefusedStaleStamp);
-        return true;
-    }
-    false
-}
-
-fn note_index_load(path: IndexLoadPath) {
+/// Counted so a refusal is distinguishable from an absence: the doors that read an index answer
+/// their caller with the same "no usable index" they would give for a missing file, so without the
+/// counter nothing downstream can tell "refused" from "there was nothing there".
+pub(super) fn note_index_load(path: IndexLoadPath) {
     let counter = match path {
         IndexLoadPath::Accepted => &INDEX_LOADS_ACCEPTED,
-        IndexLoadPath::RefusedStaleStamp => &INDEX_LOADS_REFUSED_STALE,
         IndexLoadPath::Absent => &INDEX_LOADS_ABSENT,
         IndexLoadPath::Undecodable => &INDEX_LOADS_UNDECODABLE,
     };
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// (accepted, refused-stale, absent, undecodable) since the last reset.
+/// (accepted, absent, undecodable) since the last reset.
 ///
 /// A TUPLE AND NOT A SUM. A guard that only had the total could not tell a store that read its index
 /// from one that replayed, which is the entire distinction this exists to draw.
-pub fn index_load_path_counts() -> (u64, u64, u64, u64) {
+pub fn index_load_path_counts() -> (u64, u64, u64) {
     (
         INDEX_LOADS_ACCEPTED.load(std::sync::atomic::Ordering::Relaxed),
-        INDEX_LOADS_REFUSED_STALE.load(std::sync::atomic::Ordering::Relaxed),
         INDEX_LOADS_ABSENT.load(std::sync::atomic::Ordering::Relaxed),
         INDEX_LOADS_UNDECODABLE.load(std::sync::atomic::Ordering::Relaxed),
     )
@@ -106,7 +67,6 @@ pub fn index_load_path_counts() -> (u64, u64, u64, u64) {
 /// Forget the counts, so a test measures its own loads rather than the suite before it.
 pub fn reset_index_load_path_counts() {
     INDEX_LOADS_ACCEPTED.store(0, std::sync::atomic::Ordering::Relaxed);
-    INDEX_LOADS_REFUSED_STALE.store(0, std::sync::atomic::Ordering::Relaxed);
     INDEX_LOADS_ABSENT.store(0, std::sync::atomic::Ordering::Relaxed);
     INDEX_LOADS_UNDECODABLE.store(0, std::sync::atomic::Ordering::Relaxed);
 }
@@ -323,27 +283,22 @@ impl TemporalEngine {
         let mut shard = match read {
             Ok(bytes) => match crate::engine::decode_index_bytes(&bytes) {
                 Ok(shard) => {
-                    // Refuse an index written in an older on-disk shape. A stale index decodes
-                    // CLEANLY -- the types are unchanged -- while a field's meaning has moved
-                    // under it, so trusting it serves wrong data with no error anywhere. The
-                    // concrete case: before version 2, context_events was keyed by timeline_key;
-                    // it is keyed by event_id_hash now, so a v1 index yields timeline keys in the
-                    // event-id slot and an empty context_event_timeline, and every time-windowed
-                    // read silently returns nothing.
-                    //
-                    // Refusing is treated exactly like a corrupt or absent index: the caller
-                    // falls back to WAL replay, which rebuilds both maps correctly through
-                    // insert_context_event_views. Slower, and correct.
-                    //
-                    // COUNTED, because all three outcomes below return the same `Ok(None)` and a
-                    // caller cannot tell a refusal from an absence. See
-                    // `index_load_path_counts` just above.
-                    if refuse_stale_index_stamp(&shard) {
-                        return Ok(None);
-                    }
                     note_index_load(IndexLoadPath::Accepted);
                     shard
                 }
+                // AN INDEX WRITTEN IN AN OLDER ON-DISK SHAPE IS HERE TOO. A stale index decodes
+                // CLEANLY -- the types are unchanged -- while a field's meaning has moved under
+                // it, so trusting it serves wrong data with no error anywhere. The concrete case:
+                // before version 2, context_events was keyed by timeline_key; it is keyed by
+                // event_id_hash now, so a v1 index yields timeline keys in the event-id slot and
+                // every time-windowed read silently returns nothing. The container header names the
+                // struct version and `decode_index_bytes` refuses any that is not this binary's
+                // before it reads the payload, so a stale image never decodes at all.
+                //
+                // Refusing is treated exactly like a corrupt or absent index: the caller falls
+                // back to WAL replay, which rebuilds the maps correctly. Slower, and correct. It
+                // is COUNTED, because all three outcomes return the same `Ok(None)`-or-default and
+                // a caller cannot tell a refusal from an absence. See `index_load_path_counts`.
                 Err(_) => {
                     note_index_load(IndexLoadPath::Undecodable);
                     return Ok(None);

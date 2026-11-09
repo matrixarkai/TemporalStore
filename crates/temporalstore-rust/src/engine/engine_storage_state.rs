@@ -5158,11 +5158,10 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
 /// was nothing left to rebuild FROM. The conclusion below is unchanged -- it never rested on
 /// WHICH pass fills the field, only on the field not being written. An
 /// index stamped with the current `SHARD_INDEX_FORMAT_VERSION` cannot carry it, because the writer
-/// skips it; an index stamped lower is refused by `persistence`'s `<` comparison. So the wire
-/// shape below has no reader a stamp could protect. The one observable difference for a
-/// pre-version index that DOES carry the old shape is which counter it lands in --
-/// `IndexLoadPath::Undecodable` rather than `RefusedStaleStamp` -- and both return `Ok(None)` and
-/// fall back to WAL replay.
+/// skips it; an index stamped lower is refused by the container header's version check in
+/// `decode_index_bytes`, before any payload is read. So the wire shape below has no reader a stamp
+/// could protect. A pre-version index that DOES carry the old shape lands in
+/// `IndexLoadPath::Undecodable`, returns `Ok(None)` and falls back to WAL replay.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     from = "BTreeMap<String, BlockRefs>",
