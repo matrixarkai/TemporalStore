@@ -170,9 +170,15 @@ fn process_context_source_window(
                     summaries.l0.as_str()
                 };
                 let event_text = source.body.as_str();
-                let node_is_new = !unique_by_text.contains_key(node_embedding_text);
-                let event_is_new = event_text != node_embedding_text
-                    && !unique_by_text.contains_key(event_text);
+                let existing_node_row = unique_by_text.get(node_embedding_text).copied();
+                let existing_event_row = if event_text == node_embedding_text {
+                    existing_node_row
+                } else {
+                    unique_by_text.get(event_text).copied()
+                };
+                let node_is_new = existing_node_row.is_none();
+                let event_is_new =
+                    event_text != node_embedding_text && existing_event_row.is_none();
                 let new_count =
                     usize::from(node_is_new).saturating_add(usize::from(event_is_new));
                 let new_bytes = usize::from(node_is_new)
@@ -186,8 +192,8 @@ fn process_context_source_window(
                 {
                     break;
                 }
-                let node_row = if let Some(row) = unique_by_text.get(node_embedding_text) {
-                    *row
+                let node_row = if let Some(row) = existing_node_row {
+                    row
                 } else {
                     let row = unique_inputs.len();
                     unique_by_text.insert(node_embedding_text, row);
@@ -195,8 +201,10 @@ fn process_context_source_window(
                     row
                 };
                 input_rows.push(node_row);
-                let event_row = if let Some(row) = unique_by_text.get(event_text) {
-                    *row
+                let event_row = if event_text == node_embedding_text {
+                    node_row
+                } else if let Some(row) = existing_event_row {
+                    row
                 } else {
                     let row = unique_inputs.len();
                     unique_by_text.insert(event_text, row);
