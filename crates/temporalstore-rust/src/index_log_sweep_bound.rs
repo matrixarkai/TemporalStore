@@ -24,7 +24,7 @@
 //! onto `retained` -- the loop does not break. So the budget:
 //!
 //! - does NOT bound what the sweep READS (both loops read the piece being written to its end);
-//! - does NOT bound how long the sweep holds `inner`, which is the lock `append_json` takes;
+//! - does NOT bound how long the sweep holds `inner`, which is the lock `append_index_bytes` takes;
 //! - does bound what the sweep REMOVES, and therefore makes the rewrite COPY MORE, not less.
 //!
 //! That is the inversion the note on the parameter already describes at 40,000 records in

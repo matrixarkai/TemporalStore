@@ -369,6 +369,10 @@ pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
 /// what it recognised. Rows carry no names, and a map is not proof of shape either -- a whole-index
 /// record embeds a `serde_json::Value`, which is a map whatever the rows around it are. So the
 /// container says which it holds instead of the reader guessing.
+///
+/// WHOLE is RETIRED: nothing writes it and no reader of the log skips it. The byte stays reserved so
+/// the value 0 is never given another meaning, and tests that need a payload under an unassigned
+/// shape still name it.
 pub(crate) const INDEX_LOG_SHAPE_WHOLE: u8 = 0;
 pub(crate) const INDEX_LOG_SHAPE_DELTA: u8 = 1;
 
@@ -1484,18 +1488,13 @@ where
 
 /// Does this payload SAY it is a record the delta fold has nothing to do with?
 ///
-/// Two shapes qualify: the whole-index record, which nothing writes any more, and the ANCHOR, which
-/// every engine caller of `append_index_bytes` writes. The fold and the content test used to ask
-/// only about the first. An anchor is a four-slot row and an `IndexDeltaRecord` wants eleven, so a
-/// log holding one could not be folded, could not be rolled into pieces (sealing reads the piece to
-/// name it) and could not be swept -- each of them reading the anchor as a delta and refusing it
-/// as corruption. The tests that were meant to cover the mixed log built their "anchor" with
-/// `append_json`, which writes the other shape, so none of them ever held a real one.
+/// One shape qualifies: the ANCHOR, which every engine caller of `append_index_bytes` writes. An
+/// anchor is a four-slot row and an `IndexDeltaRecord` wants eleven, so a reader that took it for a
+/// delta could not fold, roll or sweep the log it sits in. The whole-index record this used to name
+/// as well has no writer left, so a payload that carries its shape byte is not skipped here: it goes
+/// to the decoder and is refused, which is the right answer for bytes nothing in this build wrote.
 pub(crate) fn payload_says_it_is_not_a_delta(payload: &[u8]) -> bool {
-    matches!(
-        index_payload_shape(payload),
-        Some(INDEX_LOG_SHAPE_WHOLE) | Some(INDEX_LOG_SHAPE_ANCHOR)
-    )
+    index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_ANCHOR)
 }
 
 /// Which shape a payload says it holds, if it says.
@@ -1505,8 +1504,8 @@ pub(crate) fn payload_says_it_is_not_a_delta(payload: &[u8]) -> bool {
 pub(crate) fn index_payload_shape(payload: &[u8]) -> Option<u8> {
     match payload.first() {
         Some(container) => Some(index_container_parts(*container).1),
-        // No container: written before there was one. Nothing writes that shape now -- even
-        // `append_json` wraps its record -- so a payload without a container says nothing about
+        // No container: written before there was one. Nothing writes that shape now -- every
+        // append wraps its record -- so a payload without a container says nothing about
         // which record it holds, and answering None hands it to the decoder. That serves both
         // cases it can be: a record from an older writer decodes, and a well-framed payload of
         // garbage is REPORTED rather than skipped, because a sweep that quietly skips what it
@@ -2859,90 +2858,6 @@ impl LocalIndexLogStore {
         }
     }
 
-    /// Append an index record, PARSING the bytes into a value first.
-    ///
-    /// Prefer [`append_index_bytes`](Self::append_index_bytes), which splices the already
-    /// serialized bytes into the record instead. This one parses the whole index into a
-    /// `serde_json::Value` and then re-encodes it, so a multi-megabyte index is walked twice
-    /// more per append -- measured at 2.31 MB for a 2,000-key shard. It remains for callers
-    /// that genuinely need the parsed record back; every engine caller writes an index it has
-    /// just serialized and discards the result, so they all take the splicing path.
-    pub fn append_json(
-        &self,
-        shard_id: ShardId,
-        index_bytes: &[u8],
-    ) -> Result<IndexLogRecord, IndexLogError> {
-        // Bulk backfill: skip the replay-log append entirely (deferred to a
-        // single flush of the served index). Removes the per-record fsync bomb.
-        if bulk_ingest_mode() || !indexlog_enabled() {
-            return Ok(IndexLogRecord {
-                shard_id,
-                sequence: 0,
-                index: serde_json::Value::Null,
-            });
-        }
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        inner.ensure_root()?;
-        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
-            Some(sequence) => sequence,
-            None => {
-                let sequence = last_sequence_at(&inner.root, shard_id)?;
-                inner.last_sequence_by_shard.insert(shard_id, sequence);
-                sequence
-            }
-        };
-        // Seal the piece being written if this record would take it past the rolling threshold,
-        // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
-        // stat; the piece is walked once per ROLL, never once per append -- re-reading the file
-        // to answer "is this piece full" on every write is the cost the write-ahead log had to
-        // take back out.
-        //
-        // AFTER the sequence probe above, not before it. That probe is what trims a tail a crash
-        // left half-written, and only the piece being written is ever trimmed -- so rolling first
-        // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
-        // end would be taken from the last record before them.
-        // ONE probe, for both questions. This resolves which file the shard's log is being
-        // written to and how long it is; the roll needs the length, the open needs the name,
-        // and asking separately is what made the append probe the same path twice per record.
-        let (mut active, active_len) = active_index_log(&inner.root, shard_id);
-        if roll_index_log_segment_at(&inner.root, shard_id, &active, active_len)? {
-            // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
-            // event that can change which name the next record belongs under -- so the answer is
-            // taken again exactly when it has been invalidated, and never cached past it. A roll
-            // is 1 append in 1,000 at the rolling default, so this costs nothing per record.
-            active = active_index_log(&inner.root, shard_id).0;
-        }
-        let next_sequence = last_sequence.saturating_add(1);
-        let record = IndexLogRecord {
-            shard_id,
-            sequence: next_sequence,
-            index: serde_json::from_slice(index_bytes)?,
-        };
-        // Frame the record with a length + SHA-256 digest (crate::log_framing) so a later
-        // value-preserving bit-flip in this committed line is detected on read.
-        let bytes =
-            crate::log_framing::encode_record(&encode_index_payload(&record, INDEX_LOG_SHAPE_WHOLE)?);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&active)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
-        // still written): the WAL is the durable recovery source and replay rebuilds the
-        // served index, so the replay-log checkpoint need not be crash-durable per write.
-        if !indexlog_wal_only_sync() {
-            file.sync_data()?;
-        }
-        inner.stats.writes += 1;
-        #[cfg(test)]
-        probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        inner.stats.bytes_written += bytes.len() as u64;
-        inner.stats.last_sequence = next_sequence;
-        inner.last_sequence_by_shard.insert(shard_id, next_sequence);
-        Ok(record)
-    }
-
     pub fn append_index_bytes(
         &self,
         shard_id: ShardId,
@@ -3004,8 +2919,7 @@ impl LocalIndexLogStore {
         // anchor suites changed nothing -- 77 tests, all still green.
         //
         // The digest keeps what the copy was actually good for: an anchor can still be checked
-        // against the index file it claims to describe. `append_json` still embeds the whole
-        // index for any caller that wants the record to carry it.
+        // against the index file it claims to describe.
         let digest = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
@@ -3045,8 +2959,8 @@ impl LocalIndexLogStore {
     }
 
     /// Append one O(delta) served-index record: the block/object items a single write
-    /// touched, optionally carrying a compaction anchor. Unlike `append_json`, this never
-    /// serializes the whole index -- the appended bytes are proportional to the change,
+    /// touched, optionally carrying a compaction anchor. Unlike an anchor, this
+    /// does not name the whole index -- the appended bytes are proportional to the change,
     /// which is what turns the per-write served-index persist cost from O(store) into
     /// O(delta). Returns the assigned monotonic sequence.
     ///
@@ -3795,7 +3709,7 @@ impl LocalIndexLogStore {
         #[cfg(test)]
         probe::SWEEP_ENTRIES_BUDGETED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Taken here and held to the end of the function -- past the walk, past the rewrite,
-        // past the barrier and the rename. It is the same lock `append_json` takes, so for as
+        // past the barrier and the rename. It is the same lock `append_index_bytes` takes, so for as
         // long as a sweep runs the shard's index log accepts no record. What bounds that hold is
         // therefore what bounds the sweep, and `max_entries_per_round` is not it: see the note
         // on the parameter above.
@@ -3956,7 +3870,7 @@ impl LocalIndexLogStore {
         #[cfg(test)]
         probe::SWEEP_ENTRIES_POST_DUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Held to the end of the function, exactly as the budgeted sweep holds it, and for the
-        // same reason: this is the lock `append_json` takes.
+        // same reason: this is the lock `append_index_bytes` takes.
         let inner = self.inner.lock().expect("index log lock poisoned");
         #[cfg(test)]
         let _lock_span = probe::SweepLockSpan::new();
@@ -4355,7 +4269,7 @@ pub const DEFAULT_INDEX_LOG_SEGMENT_BYTES: u64 = 64 * 1024;
 /// record is pushed onto `retained` and the loop CONTINUES, so the budget:
 ///
 /// - does not bound what the round READS -- both loops read the piece being written to its end;
-/// - does not bound how long the round holds `inner`, which is the lock `append_json` takes;
+/// - does not bound how long the round holds `inner`, which is the lock `append_index_bytes` takes;
 /// - bounds what the round REMOVES, and so makes the rewrite copy MORE, not less.
 ///
 /// Measured in counts in `index_log_sweep_bound::an_entry_budget_copies_more_and_reads_exactly_as_much`:
@@ -4824,9 +4738,8 @@ mod tests {
     /// re-encoding a multi-megabyte index on every append. That is only safe while the two
     /// produce identical bytes, which holds because `IndexLogRecord` declares its fields in
     /// exactly the order the splice writes them. This test fails if either side drifts.
-    /// The two appenders now differ ON PURPOSE: `append_index_bytes` writes a constant-size
-    /// anchor, `append_json` embeds the whole index for callers that want the record to carry
-    /// it. This pins that difference, so neither silently becomes the other.
+    /// An anchor is constant-size and the whole-index record it replaced embedded the index. This
+    /// pins that difference against a whole-index record built here, since nothing writes one now.
     #[test]
     fn the_anchor_appender_writes_far_less_than_the_embedding_one() {
         let anchor_dir = tempfile::tempdir().unwrap();
@@ -5492,10 +5405,63 @@ mod tests {
     /// A log that holds a REAL anchor -- the record every engine caller of `append_index_bytes`
     /// writes -- can still be folded, rolled into pieces and swept.
     ///
-    /// The tests that were meant to cover this built their anchor with `append_json`, which writes
-    /// a whole-index record, so the one record the engine actually puts between deltas was never in
+    /// The tests that were meant to cover this built their anchor with a writer of the whole-index
+    /// record, so the one record the engine actually puts between deltas was never in
     /// any of them. Read as a delta, an anchor failed the fold, the seal that names a piece and the
     /// sweep, each with an Encoding error.
+    /// THE WHOLE-INDEX RECORD HAS NO WRITER AND NO READER LEFT, and the code that says so is read
+    /// rather than driven: a function that was deleted cannot fail a test by being absent, and a
+    /// shape nobody writes cannot be produced to be refused.
+    ///
+    /// Reads the part of this file that is not tests, comments removed, and asserts that
+    /// `append_json` is not declared, that the shape constant is named once (its declaration), and
+    /// that the predicate the fold and the content test share names the anchor and not the retired
+    /// shape. The CONTROL is the text this replaced, verbatim: the scan is shown able to see all
+    /// three of those things, so a clean result is not the scan being blind.
+    #[test]
+    fn the_whole_index_record_has_no_writer_and_no_reader_in_the_index_log() {
+        fn uncommented(text: &str) -> String {
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let whole_file = include_str!("index_log.rs");
+        let production = &whole_file[..whole_file
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("the tests module is declared in this file")];
+        let code = uncommented(production);
+        assert!(code.len() > 10_000, "the scan found almost nothing: {} bytes", code.len());
+
+        assert!(
+            !code.contains("fn append_json"),
+            "the whole-index appender is declared again"
+        );
+        assert_eq!(
+            code.matches("INDEX_LOG_SHAPE_WHOLE").count(),
+            1,
+            "the retired shape is named somewhere other than its declaration: a writer or a reader \
+             of it is back"
+        );
+        let predicate_at = code
+            .find("pub(crate) fn payload_says_it_is_not_a_delta(")
+            .expect("the shared predicate is declared");
+        let predicate = &code[predicate_at..predicate_at + 200];
+        assert!(
+            predicate.contains("INDEX_LOG_SHAPE_ANCHOR") && !predicate.contains("INDEX_LOG_SHAPE_WHOLE"),
+            "the shared predicate no longer names the anchor alone: {predicate}"
+        );
+
+        // THE CONTROL: what was here before, verbatim.
+        let before = uncommented(
+            "pub(crate) const INDEX_LOG_SHAPE_WHOLE: u8 = 0;\npub fn append_json(\n    &self,\n) {\n    encode_index_payload(&record, INDEX_LOG_SHAPE_WHOLE)?;\n}\nmatches!(index_payload_shape(payload), Some(INDEX_LOG_SHAPE_WHOLE) | Some(INDEX_LOG_SHAPE_ANCHOR))\n",
+        );
+        assert!(
+            before.contains("fn append_json") && before.matches("INDEX_LOG_SHAPE_WHOLE").count() > 1,
+            "the control no longer shows the scan the old text"
+        );
+    }
+
     #[test]
     fn a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps() {
         let dir = tempfile::tempdir().unwrap();
@@ -10484,8 +10450,8 @@ flag exists to say",
     /// caller, including the two that pass no anchor at all and are supposed to read the log
     /// whole.
     ///
-    /// The fixture is the one that can express it: a log built from `append_json`, which writes
-    /// whole-index records that carry no anchor by construction. A fixture of anchored deltas
+    /// The fixture is the one that can express it: a log of anchors, which carry no WAL anchor by
+    /// construction. A fixture of anchored deltas
     /// names nothing 0 and cannot tell the guard from a constant.
     #[test]
     fn a_log_whose_pieces_name_anchor_zero_is_never_declined() {
