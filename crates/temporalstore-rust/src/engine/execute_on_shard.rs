@@ -169,6 +169,48 @@ fn stage_meta_outcome(
     });
 }
 
+/// A counter write's RESULT at one bucket, and the series block when it is due.
+///
+/// The result, not the delta: an outcome installed twice is the same value, which is what lets a
+/// record be replayed more than once. All five counter arms add into one bucket of one series and
+/// can state the total they left there, so all five stage it here and let
+/// `persist_control_state_block_after_increment` decide whether the whole series is rewritten.
+#[allow(clippy::too_many_arguments)]
+fn record_counter_result(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+    bucket_ms: u64,
+    resulting: i64,
+) -> bool {
+    stage_element_name_outcome(
+        shard_id,
+        "control_counter",
+        key,
+        Some(bucket_ms.to_string()),
+        block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+        None,
+        Some(resulting.to_le_bytes().to_vec()),
+    );
+    persist_control_state_block_after_increment(
+        cache,
+        block_store,
+        shard_id,
+        shard,
+        key,
+        start_routing_bucket,
+        end_routing_bucket,
+        async_storage,
+        bucket_ms,
+        resulting,
+    )
+}
+
 /// Read a node record back, by the same two lookups every node reader here uses.
 fn load_context_node(
     cache: &MultiLayerCache,
@@ -3582,16 +3624,7 @@ pub(crate) fn execute_on_shard(
             };
             // The RESULT, not the increment. An increment replayed twice counts twice; a count
             // installed twice is the same count, which is what makes a record idempotent.
-            stage_element_name_outcome(
-                shard_id,
-                "control_counter",
-                &key,
-                Some(timestamp_ms.to_string()),
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
-                None,
-                Some(resulting.to_le_bytes().to_vec()),
-            );
-            persist_control_state_block_after_increment(
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3621,13 +3654,17 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            *shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default()
-                .entry(bucket_ms)
-                .or_default() += amount;
-            persist_control_state_block(
+            let resulting = {
+                let counter = shard
+                    .control_state_mut()
+                    .entry(std::sync::Arc::from(&key[..]))
+                    .or_default()
+                    .entry(bucket_ms)
+                    .or_default();
+                *counter += amount;
+                *counter
+            };
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3636,6 +3673,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                bucket_ms,
+                resulting,
             );
             if let Some(ttl_ms) = ttl_ms {
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
@@ -3813,13 +3852,17 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let key = control_state_family_key(family, &key);
-            *shard
-                .control_state_mut()
-                .entry(std::sync::Arc::from(&key[..]))
-                .or_default()
-                .entry(timestamp_ms)
-                .or_default() += amount;
-            persist_control_state_block(
+            let resulting = {
+                let counter = shard
+                    .control_state_mut()
+                    .entry(std::sync::Arc::from(&key[..]))
+                    .or_default()
+                    .entry(timestamp_ms)
+                    .or_default();
+                *counter += amount;
+                *counter
+            };
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3828,6 +3871,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                timestamp_ms,
+                resulting,
             );
             if control_rollup_enabled {
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);
@@ -3847,12 +3892,16 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let key = control_state_family_key(family, &key);
             let series = shard.control_state_mut().entry(std::sync::Arc::from(&key[..])).or_default();
-            *series.entry(timestamp_ms).or_default() += amount;
+            let resulting = {
+                let counter = series.entry(timestamp_ms).or_default();
+                *counter += amount;
+                *counter
+            };
             let values = series
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(_, value)| *value)
                 .collect::<Vec<_>>();
-            persist_control_state_block(
+            record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3861,6 +3910,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                timestamp_ms,
+                resulting,
             );
             if control_rollup_enabled {
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);
@@ -3911,9 +3962,15 @@ pub(crate) fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             let series = shard.control_state_mut().entry(std::sync::Arc::from(&key[..])).or_default();
-            if !is_duplicate {
-                *series.entry(bucket_ms).or_default() += amount;
-            }
+            // A duplicate adds nothing and so has no result to state; it keeps writing the block,
+            // which is what makes the record one a replay installs.
+            let resulting = if is_duplicate {
+                None
+            } else {
+                let counter = series.entry(bucket_ms).or_default();
+                *counter += amount;
+                Some(*counter)
+            };
             let value = if is_control_state_change_aggregator(&aggregator) {
                 count_control_state_changes(shard, &key, start_ms, end_ms)
             } else {
@@ -3929,7 +3986,9 @@ pub(crate) fn execute_on_shard(
                     .unwrap_or_default();
                 aggregate_control_state_values(&values, &aggregator)
             };
-            persist_control_state_block(
+            match resulting {
+                Some(resulting) => {
+                    record_counter_result(
                 cache,
                 block_store,
                 shard_id,
@@ -3938,7 +3997,23 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                bucket_ms,
+                resulting,
             );
+                }
+                None => {
+                    persist_control_state_block(
+                        cache,
+                        block_store,
+                        shard_id,
+                        shard,
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        async_storage,
+                    );
+                }
+            }
             if let Some(ttl_ms) = ttl_ms {
                 // `key` is the family-prefixed key by this point, which is the key both the
                 // record and the sweep have to name. Same two requirements as every other

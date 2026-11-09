@@ -411,3 +411,305 @@ fn a_counter_log_cut_mid_record_recovers_a_prefix_of_its_increments() {
         }
     }
 }
+
+// ---- THE OTHER FOUR ARMS --------------------------------------------------------------------
+//
+// `ControlStateIncrementWithOptions`, `ControlStateSet`, `ControlStateSetAndGet` and
+// `ControlStateSetAndGetWithOptions` add into one bucket of one series exactly as an increment does
+// (`ControlStateSet` ADDS; it does not overwrite), so each can state the total it left in that
+// bucket. Replay installs that total with `insert`, which is the same value however many times it
+// runs, so the whole-series block is a copy for them too. The family arms write the series under
+// `control_state:h:<key>`, not under `<key>`.
+
+const FAMILY_KEY: &str = "control_state:h:c";
+
+fn series_of(engine: &TemporalEngine, key: &str) -> BTreeMap<u64, i64> {
+    match run(
+        engine,
+        Command::ControlStateDetail {
+            key: key.to_string(),
+            start_ms: 0,
+            end_ms: u64::MAX,
+            count: None,
+        },
+    ) {
+        CommandResponse::FeaturePoints { points } => points
+            .into_iter()
+            .map(|point| {
+                (
+                    point.timestamp_ms,
+                    String::from_utf8(point.value).unwrap().parse::<i64>().unwrap(),
+                )
+            })
+            .collect(),
+        other => panic!("expected FeaturePoints, got {other:?}"),
+    }
+}
+
+/// The series an arm writes: arm 0 is `IncrementWithOptions` on `c`, the rest are family arms.
+fn arm_key(arm: usize) -> &'static str {
+    if arm == 0 {
+        "c"
+    } else {
+        FAMILY_KEY
+    }
+}
+
+/// One write of `amount` at `at` through arm `arm` (0 `IncrementWithOptions`, 1 `Set`, 2 `SetAndGet`,
+/// 3 `SetAndGetWithOptions`), rounded to `precision_ms` where the arm takes one.
+fn arm_write(engine: &TemporalEngine, arm: usize, at: u64, amount: i64, precision_ms: Option<u64>, uuid: Option<String>) {
+    let key = "c".to_string();
+    let family = ControlStateFamily::Counter;
+    let command = match arm {
+        0 => Command::ControlStateIncrementWithOptions {
+            key,
+            timestamp_ms: at,
+            amount,
+            precision_ms,
+            ttl_ms: None,
+        },
+        1 => Command::ControlStateSet {
+            family,
+            key,
+            timestamp_ms: at,
+            amount,
+        },
+        2 => Command::ControlStateSetAndGet {
+            family,
+            key,
+            timestamp_ms: at,
+            amount,
+            start_ms: 0,
+            end_ms: u64::MAX,
+            aggregator: "sum".to_string(),
+        },
+        3 => Command::ControlStateSetAndGetWithOptions {
+            family,
+            key,
+            timestamp_ms: at,
+            amount,
+            start_ms: 0,
+            end_ms: u64::MAX,
+            aggregator: "sum".to_string(),
+            precision_ms,
+            ttl_ms: None,
+            uuid,
+        },
+        _ => unreachable!(),
+    };
+    run(engine, command);
+}
+
+fn bytes_per_arm_write(arm: usize, entries: usize, writes: usize, forced: bool) -> f64 {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path(), None);
+    with_every_block(forced, || {
+        for index in 0..entries as u64 {
+            arm_write(&engine, arm, 1_000 + index, 1, None, None);
+        }
+        let wal = engine.wal_store.raw_stats(1).bytes_written;
+        let blocks = engine.block_store().stats().bytes_written;
+        for index in 0..writes as u64 {
+            arm_write(&engine, arm, 1_000_000 + index, 1, None, None);
+        }
+        ((engine.wal_store.raw_stats(1).bytes_written - wal) + (engine.block_store().stats().bytes_written - blocks)) as f64
+            / writes as f64
+    })
+}
+
+#[test]
+fn every_counter_arm_writes_its_series_only_now_and_then() {
+    const WRITES: usize = 400;
+    for arm in 0..4usize {
+        let skipped = [200usize, 3200].map(|entries| bytes_per_arm_write(arm, entries, WRITES, false));
+        let forced = [200usize, 3200].map(|entries| bytes_per_arm_write(arm, entries, WRITES, true));
+        eprintln!(
+            "  arm {arm}: due-only {:>7.1} B at 200, {:>7.1} B at 3,200; every time {:>8.1} B at 200, {:>9.1} B at 3,200",
+            skipped[0], skipped[1], forced[0], forced[1]
+        );
+        assert!(
+            forced[1] > 4.0 * forced[0] && forced[1] - forced[0] > 8_000.0,
+            "arm {arm}: the forced arm did not grow with the series ({:.0} B, {:.0} B)",
+            forced[0],
+            forced[1]
+        );
+        assert!(
+            skipped[1] < 3.0 * skipped[0],
+            "arm {arm}: a write still costs the series' length: {:.0} B at 200, {:.0} B at 3,200",
+            skipped[0],
+            skipped[1]
+        );
+        assert!(
+            forced[1] > 10.0 * skipped[1],
+            "arm {arm}: due-only wrote {:.0} B at 3,200 entries against {:.0} B every time",
+            skipped[1],
+            forced[1]
+        );
+    }
+}
+
+/// A seeded history over every arm, `Increment` included, on the two series the arms write. Some
+/// writes repeat an earlier `uuid`, which add nothing and still write their block.
+fn history_every_arm(engine: &TemporalEngine, seed: u64, steps: usize) {
+    let mut rng = Rng(seed);
+    for step in 0..steps {
+        let at = 1_000 + rng.next(220);
+        let amount = 1 + rng.next(5) as i64;
+        let precision = if rng.next(2) == 0 { Some(10) } else { None };
+        match rng.next(5) {
+            4 => increment(engine, at, amount),
+            arm => {
+                let arm = arm as usize;
+                let uuid = if arm == 3 && rng.next(3) == 0 {
+                    // The same uuid twice in a row: the second adds nothing.
+                    let uuid = format!("u{step}");
+                    arm_write(engine, 3, at, amount, precision, Some(uuid.clone()));
+                    Some(uuid)
+                } else {
+                    None
+                };
+                arm_write(engine, arm, at, amount, precision, uuid);
+            }
+        }
+    }
+}
+
+fn both_series(engine: &TemporalEngine) -> (BTreeMap<u64, i64>, BTreeMap<u64, i64>) {
+    (series_of(engine, "c"), series_of(engine, FAMILY_KEY))
+}
+
+fn recovered_both(dir: &std::path::Path, bound: Option<usize>) -> (BTreeMap<u64, i64>, BTreeMap<u64, i64>) {
+    let engine = open(dir, bound);
+    both_series(&engine)
+}
+
+#[test]
+fn a_series_every_counter_arm_wrote_recovers_whether_or_not_its_block_was_written() {
+    for forced in [false, true] {
+        // No unload.
+        let dir = tempfile::tempdir().unwrap();
+        let live = with_every_block(forced, || {
+            let engine = open(dir.path(), None);
+            history_every_arm(&engine, 13, 800);
+            both_series(&engine)
+        });
+        assert!(live.0.len() > 30 && live.1.len() > 30, "the history left too few buckets to mean anything");
+        assert_eq!(recovered_both(dir.path(), None), live, "forced={forced}: recovery without an unload served another series");
+
+        // A compaction, a dump and a log reclaim, then more writes, then no unload.
+        let dir = tempfile::tempdir().unwrap();
+        let live = with_every_block(forced, || {
+            let engine = open(dir.path(), None);
+            history_every_arm(&engine, 31, 500);
+            assert!(engine.compact_shard_blocks(1).is_ok());
+            engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
+                ..crate::engine::reports::StorageLifecycleRequest::default()
+            });
+            let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+            assert!(engine.apply_storage_wal_reclaim(plan).wal_records_removed > 0, "forced={forced}: no log was reclaimed");
+            history_every_arm(&engine, 47, 300);
+            both_series(&engine)
+        });
+        assert_eq!(recovered_both(dir.path(), None), live, "forced={forced}: recovery after compaction, dump and reclaim served another series");
+
+        // A graceful reload.
+        let dir = tempfile::tempdir().unwrap();
+        let live = with_every_block(forced, || {
+            let engine = open(dir.path(), None);
+            history_every_arm(&engine, 71, 600);
+            let live = both_series(&engine);
+            engine.unload_shard(1);
+            live
+        });
+        assert_eq!(recovered_both(dir.path(), None), live, "forced={forced}: a graceful reload served another series");
+    }
+}
+
+#[test]
+fn a_series_every_counter_arm_trimmed_at_its_bound_recovers_as_it_did_before() {
+    const BOUND: usize = 40;
+    let serve = |forced: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        let live = with_every_block(forced, || {
+            let engine = open(dir.path(), Some(BOUND));
+            for step in 0..600u64 {
+                for arm in 0..4 {
+                    arm_write(&engine, arm, 1_000 + step * 3 + arm as u64 % 2, 1, None, None);
+                }
+            }
+            both_series(&engine)
+        });
+        (live, recovered_both(dir.path(), Some(BOUND)))
+    };
+    let (live_skipped, recovered_skipped) = serve(false);
+    let (live_forced, recovered_forced) = serve(true);
+    assert_eq!(live_skipped.0.len(), BOUND, "the bound did not hold the live series of the options arm");
+    assert_eq!(live_skipped.1.len(), BOUND, "the bound did not hold the live series of the family arms");
+    assert_eq!(live_skipped, live_forced, "the live series differ between the arms");
+    assert_eq!(
+        recovered_skipped, recovered_forced,
+        "a trimmed series recovers differently when its block is not written every time"
+    );
+}
+
+/// A torn log tail during recovery of a series any of the four arms wrote serves a whole prefix of
+/// that arm's writes: cut after the first write of the key, after a write without a block and
+/// after one with a block.
+#[test]
+fn a_log_cut_mid_record_recovers_a_prefix_of_the_writes_of_every_counter_arm() {
+    fn drive(dir: &std::path::Path, arm: usize, steps: usize) -> (Vec<BTreeMap<u64, i64>>, Vec<bool>) {
+        let engine = open(dir, None);
+        let mut states = vec![BTreeMap::new()];
+        let mut wrote_block = Vec::new();
+        let mut rng = Rng(5 + arm as u64);
+        for _ in 0..steps {
+            let at = 1_000 + rng.next(400);
+            let before = engine.block_store().stats().bytes_written;
+            arm_write(&engine, arm, at, 1 + rng.next(4) as i64, None, None);
+            wrote_block.push(engine.block_store().stats().bytes_written > before);
+            states.push(series_of(&engine, arm_key(arm)));
+        }
+        (states, wrote_block)
+    }
+    fn written_log_len(dir: &std::path::Path) -> usize {
+        let mut bytes = std::fs::read(dir.join("indexes").join("wals").join("shard-1.wal.bin")).unwrap();
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        bytes.len()
+    }
+    for arm in 0..4usize {
+        let probe = tempfile::tempdir().unwrap();
+        let (_, wrote) = drive(probe.path(), arm, 120);
+        assert!(wrote[0], "arm {arm}: the first write of a key must write its block");
+        let quiet = (20..wrote.len()).find(|&step| !wrote[step]).unwrap_or_else(|| panic!("arm {arm}: no write skipped its block"));
+        let due = (20..wrote.len()).find(|&step| wrote[step]).unwrap_or_else(|| panic!("arm {arm}: no later write wrote its block"));
+        drop(probe);
+        for (label, step) in [("first write", 0usize), ("write without a block", quiet), ("write with a block", due)] {
+            let dir = tempfile::tempdir().unwrap();
+            let (states, _) = drive(dir.path(), arm, step + 1);
+            let full = states.len() - 1;
+            let size = written_log_len(dir.path());
+            let mut previous = full + 1;
+            for cut in [1usize, 60, 400] {
+                if size <= cut {
+                    continue;
+                }
+                let cutdir = tempfile::tempdir().unwrap();
+                copy_dir_cut_log(dir.path(), cutdir.path(), cut);
+                let engine = open(cutdir.path(), None);
+                let got = series_of(&engine, arm_key(arm));
+                let prefix = states.iter().position(|state| *state == got).unwrap_or_else(|| {
+                    panic!("arm {arm}, {label}: a log cut by {cut} B recovered no prefix of the writes: {got:?}")
+                });
+                eprintln!("  arm {arm}, {label}: cut {cut:>3} B of {size} B -> prefix {prefix} of {full}");
+                assert!(prefix < full, "arm {arm}, {label}: a log cut by {cut} B still served the whole series");
+                assert!(prefix <= previous, "arm {arm}, {label}: a larger cut recovered a later prefix");
+                previous = prefix;
+            }
+        }
+    }
+}
