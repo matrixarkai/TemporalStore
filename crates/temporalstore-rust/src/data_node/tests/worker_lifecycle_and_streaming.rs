@@ -116,26 +116,32 @@ fn compact_batch_write_keeps_shared_wal_mirroring() {
 }
 
 #[test]
-fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
+fn shared_field_hash_batch_keeps_requested_order_duplicates_and_missing_values() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
-    let written = runtime.batch_write(BatchExecuteRequest {
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
-        commands: vec![Command::HashMultiSet {
-            key: "present".to_string(),
-            entries: vec![
-                ("a".to_string(), b"one".to_vec()),
-                ("b".to_string(), b"two".to_vec()),
+        fields: vec!["a".to_string(), "b".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "present".to_string(),
+            vec![
+                BatchHashMultiSetValue(b"one".to_vec()),
+                BatchHashMultiSetValue(b"two".to_vec()),
             ],
-        }],
+        )],
     });
     assert!(written.status.ok, "{written:?}");
 
     let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
     });
 
     assert!(read.status.ok, "{read:?}");
@@ -143,38 +149,73 @@ fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
     assert_eq!(
         read.responses[0].response,
         CommandResponse::Values {
-            values: vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+            values: vec![
+                Some(b"two".to_vec()),
+                None,
+                Some(b"one".to_vec()),
+                Some(b"two".to_vec()),
+            ]
         }
     );
     assert_eq!(
         read.responses[1].response,
         CommandResponse::Values {
-            values: vec![None, None]
+            values: vec![None, None, None, None]
         }
     );
 
     let compact = runtime.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
     });
     assert!(compact.status.ok, "{compact:?}");
     assert!(compact.errors.is_empty());
     assert_eq!(compact.rows.len(), 2);
     assert_eq!(
         compact.rows[0].0,
-        vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+        vec![
+            Some(b"two".to_vec()),
+            None,
+            Some(b"one".to_vec()),
+            Some(b"two".to_vec()),
+        ]
     );
-    assert_eq!(compact.rows[1].0, vec![None, None]);
+    assert_eq!(compact.rows[1].0, vec![None, None, None, None]);
 
-    let direct = runtime.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+    let direct_request = BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
+    };
+    let _ = runtime.batch_hash_multi_get_compact_msgpack(direct_request.clone());
+    crate::engine::reset_hash_field_binary_search_count_for_test();
+    let _ = runtime.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: direct_request.keys.clone(),
+        fields: Vec::new(),
     });
+    let fixed_searches = crate::engine::hash_field_binary_search_count_for_test();
+    crate::engine::reset_hash_field_binary_search_count_for_test();
+    let direct = runtime.batch_hash_multi_get_compact_msgpack(direct_request);
     let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct)
         .expect("direct compact response must retain the established wire shape");
     assert_eq!(decoded, compact);
+    assert_eq!(
+        crate::engine::hash_field_binary_search_count_for_test(),
+        fixed_searches,
+        "requested packed fields must not add field-map binary searches"
+    );
 }
 
 #[test]

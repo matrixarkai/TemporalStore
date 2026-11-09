@@ -117,6 +117,11 @@ mod block_in_wal;
 #[path = "engine/engine_storage_state.rs"]
 mod state;
 mod hash_field_map;
+#[cfg(test)]
+pub(crate) use hash_field_map::{
+    binary_search_count_for_test as hash_field_binary_search_count_for_test,
+    reset_binary_search_count_for_test as reset_hash_field_binary_search_count_for_test,
+};
 mod recorded_map;
 mod object_record;
 // `pub(crate)`: a replication payload names the range it carries, and those payloads live

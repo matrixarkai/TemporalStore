@@ -564,16 +564,28 @@ pub(super) fn execute_hash_multi_get_projected(
     // A packed row gives every present field the same address. Detect that common case
     // without allocating a per-command address map, fetch its frame once, and project all
     // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
-    // the established independent-read path.
+    // the established independent-read path. Both collections are sorted by field name, so
+    // merge them once and retain presence in reusable scratch instead of binary-searching the
+    // field map twice per requested slot.
     let mut shared: Option<(&ElementEntry, &str)> = None;
     let mut distinct_addresses = false;
+    projection_scratch.reset_index_presence(fields.len());
     if let Some(entries) = hash_fields {
-        for field in fields {
-            let Some(address) = entries.get(field) else {
-                continue;
+        let mut stored = entries.entries().peekable();
+        for &index in projection_plan.positions_by_name() {
+            let field = fields[index].as_str();
+            while stored.peek().is_some_and(|(name, _)| &name[..] < field) {
+                stored.next();
+            }
+            let Some(&(name, address)) = stored.peek() else {
+                break;
             };
+            if &name[..] != field {
+                continue;
+            }
+            projection_scratch.mark_present_in_index(index);
             match shared {
-                None => shared = Some((address, field.as_str())),
+                None => shared = Some((address, field)),
                 Some((held, _)) if held == address => {}
                 Some(_) => {
                     distinct_addresses = true;
@@ -601,9 +613,9 @@ pub(super) fn execute_hash_multi_get_projected(
                 projection_scratch,
             ) {
                 container_blocks::Utf8ContainerRangeProjection::Values(mut ranges) => {
-                    for (index, field) in fields.iter().enumerate() {
-                        if hash_fields.and_then(|entries| entries.get(field)).is_none() {
-                            ranges[index] = None;
+                    for (index, range) in ranges.iter_mut().enumerate() {
+                        if !projection_scratch.is_present_in_index(index) {
+                            *range = None;
                         }
                     }
                     ProjectedHashValues::Shared { frame, ranges }
@@ -617,10 +629,12 @@ pub(super) fn execute_hash_multi_get_projected(
                     ProjectedHashValues::Owned(
                         fields
                             .iter()
-                            .map(|field| {
-                                hash_fields
-                                    .and_then(|entries| entries.get(field))
-                                    .and_then(|_| select_container_value(frame.as_ref(), field))
+                            .enumerate()
+                            .map(|(index, field)| {
+                                projection_scratch
+                                    .is_present_in_index(index)
+                                    .then(|| select_container_value(frame.as_ref(), field))
+                                    .flatten()
                             })
                             .collect(),
                     )
