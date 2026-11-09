@@ -3600,9 +3600,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     );
     shard.applied_wal_sequence = Some(4242);
 
-    std::env::set_var("TS_INDEX_CODEC", "msgpack");
     let binary = encode_index_bytes(&shard);
-    std::env::remove_var("TS_INDEX_CODEC");
 
     assert!(binary.starts_with(b"TSIDX\x01"), "binary payload must ride the container");
     assert_eq!(binary[6], 2, "payload codec id");
@@ -3671,9 +3669,10 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
         shard.strings().len()
     );
 
-    std::env::set_var("TS_INDEX_CODEC", "zstd-json");
-    let compressed_json = encode_index_bytes(&shard);
-    std::env::remove_var("TS_INDEX_CODEC");
+    // The compressed-JSON payload is no longer selectable: it is built here the way the one
+    // remaining writer of it (`serialize_index`'s stale-version arm) builds it.
+    let compressed_json =
+        crate::engine::wrap_index_json(serde_json::to_vec(&shard).expect("shard serialises"));
     assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
     assert_eq!(
         decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings().len(),
