@@ -459,8 +459,12 @@ impl TemporalEngine {
             shard_id,
             wal_last_sequence: wal_stats.last_sequence,
             index_log_last_sequence: index_log_stats.last_sequence,
-            wal_bytes: wal_stats.bytes_written,
-            index_log_bytes: index_log_stats.bytes_written,
+            // What each log holds NOW, not what it has ever been handed. `bytes_written` is a
+            // lifetime counter that no reclaim lowers, so reading it here made both figures --
+            // and the pressure score they feed -- rise for ever on a shard whose logs are
+            // truncated every round.
+            wal_bytes: wal_stats.persistent_bytes,
+            index_log_bytes: self.index_log_store.log_len_bytes(shard_id),
         }
     }
 

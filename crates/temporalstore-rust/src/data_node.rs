@@ -1679,7 +1679,7 @@ pub struct StorageMetricsReapReport {
     /// durable.
     #[serde(default)]
     pub undumped_wal_records: u64,
-    /// Bytes the write-ahead log and the index log have written.
+    /// Bytes the write-ahead log and the index log hold now.
     #[serde(default)]
     pub wal_bytes: u64,
     #[serde(default)]

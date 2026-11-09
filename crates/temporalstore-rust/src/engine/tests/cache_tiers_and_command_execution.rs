@@ -3427,6 +3427,45 @@ fn counting_a_logs_records_agrees_with_scanning_it() {
 }
 
 #[test]
+fn the_log_pressure_gauges_fall_when_a_dump_reclaims_the_logs() {
+    // `wal_bytes` and `index_log_bytes` of the pressure report feed the pressure score and the
+    // metrics endpoint. They are what each log holds NOW: a reclaim that shrinks the files must
+    // shrink them. Read from the lifetime write counters they could only rise, so this asserts a
+    // value the counters cannot produce -- a fall -- and that the index figure is the log's
+    // on-disk length.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-p"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..60 {
+        write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
+    }
+    let before = engine.storage_log_pressure_report(1);
+    assert!(before.wal_bytes > 0 && before.index_log_bytes > 0, "{before:?}");
+    engine
+        .maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(1, 1, 0, 0, 0)
+        .expect("once it is due, the dump + reclaim must fire");
+    let after = engine.storage_log_pressure_report(1);
+    assert!(
+        after.index_log_bytes < before.index_log_bytes,
+        "index_log_bytes must fall with the log ({} -> {})",
+        before.index_log_bytes,
+        after.index_log_bytes
+    );
+    assert!(
+        after.wal_bytes < before.wal_bytes,
+        "wal_bytes must fall with the log ({} -> {})",
+        before.wal_bytes,
+        after.wal_bytes
+    );
+    assert_eq!(after.index_log_bytes, engine.index_log_store().log_len_bytes(1));
+}
+
+#[test]
 fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // Embedded-path log reclaim: once a threshold dump durably captures the shard, the
     // index-log records the base reflects and the WAL prefix below the anchor are redundant --
