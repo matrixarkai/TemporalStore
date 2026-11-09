@@ -61,6 +61,7 @@ class RecordingClient(TemporalStoreClient):
         self._shared_field_read_supported = False
         self._compact_shared_field_read_supported = False
         self._shared_field_write_supported = False
+        self._shared_field_ttl_write_supported = False
         self._conditional_shared_field_write_supported = False
         self._conditional_shared_field_ttl_write_supported = False
         self.sent = []
@@ -74,11 +75,11 @@ class RecordingClient(TemporalStoreClient):
         return super().batch_hash_multi_get(keys, fields)
 
     def batch_hash_multi_set(  # type: ignore[override]
-        self, fields, rows, request_upper_bound=None
+        self, fields, rows, request_upper_bound=None, ttl_ms=None
     ):
         self.shared_writes.append((list(fields), list(rows)))
         return super().batch_hash_multi_set(
-            fields, rows, request_upper_bound
+            fields, rows, request_upper_bound, ttl_ms
         )
 
     def _answer(self, path, document):
@@ -1136,6 +1137,46 @@ class OnlineStoreTest(unittest.TestCase):
         fields = dict(commands[0]["entries"])
         self.assertIn("_ts:stats", fields)
         self.assertIn("stats:trips", fields)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_ttl_rows_use_one_packed_write(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        class PackedTtlClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self._shared_field_ttl_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.sent.append((path, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["rows"]),
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = self._install(client=PackedTtlClient())
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [
+            (self._entity_key(i), {"trips": ValueProto(int64_val=i)}, now, None)
+            for i in range(3)
+        ]
+
+        self.store.online_write_batch(self.config, self.view, rows, None)
+
+        self.assertEqual(len(client.sent), 1)
+        path, document = client.sent[0]
+        self.assertEqual(path, "/batch_hash_multi_set_ttl_msgpack")
+        self.assertEqual(document["ttl_ms"], 90_000)
+        self.assertEqual(len(document["rows"]), 3)
 
     def test_mixed_feature_layouts_keep_the_regular_write_batch(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto

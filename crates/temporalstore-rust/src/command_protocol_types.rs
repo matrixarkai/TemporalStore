@@ -3143,6 +3143,8 @@ pub struct BatchHashMultiSetRequest {
     pub shard_id: ShardId,
     pub fields: Vec<String>,
     pub rows: Vec<BatchHashMultiSetRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
 }
 
 /// One row in a shared-field conditional hash write.
@@ -3289,6 +3291,7 @@ mod tests {
             shard_id: 1,
             fields: fields.clone(),
             rows: rows.clone(),
+            ttl_ms: None,
         };
         let expanded = BatchExecuteRequest {
             shard_id: 1,

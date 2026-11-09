@@ -90,6 +90,7 @@ enum BatchCommandSource<'a> {
     Commands(std::vec::IntoIter<Command>),
     SharedHashRows {
         entries: Vec<(String, Vec<u8>)>,
+        ttl_ms: Option<u64>,
         rows: std::vec::IntoIter<BatchHashMultiSetRow>,
         completed_keys: &'a mut Vec<String>,
     },
@@ -311,6 +312,13 @@ impl BatchCommandSource<'_> {
     fn recycles_commands(&self) -> bool {
         !matches!(self, Self::Commands(_))
     }
+
+    fn shared_hash_ttl_ms(&self) -> Option<u64> {
+        match self {
+            Self::SharedHashRows { ttl_ms, .. } => *ttl_ms,
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -326,6 +334,7 @@ mod shared_timestamp_source_tests {
                 ("score".to_owned(), Vec::new()),
                 ("embedding".to_owned(), Vec::new()),
             ],
+            ttl_ms: None,
             rows: vec![
                 BatchHashMultiSetRow(
                     "feature:1".to_owned(),
@@ -1076,6 +1085,7 @@ impl TemporalEngine {
             );
         }
         let mut completed_keys = Vec::with_capacity(request.rows.len());
+        let ttl_ms = request.ttl_ms;
         let response = self.batch_execute_inner(
             request.shard_id,
             BatchCommandSource::SharedHashRows {
@@ -1084,6 +1094,7 @@ impl TemporalEngine {
                     .into_iter()
                     .map(|field| (field, Vec::new()))
                     .collect(),
+                ttl_ms,
                 rows: request.rows.into_iter(),
                 completed_keys: &mut completed_keys,
             },
@@ -1489,6 +1500,25 @@ impl TemporalEngine {
                     None,
                 ),
             };
+            if outcome.mutated {
+                if let Some(ttl_ms) = command_source.shared_hash_ttl_ms() {
+                    let command = returned_post_write
+                        .as_ref()
+                        .expect("shared hash write returns its metadata");
+                    let Command::HashMultiSet { key, .. } = command else {
+                        unreachable!("only shared hash rows carry a shared expiry")
+                    };
+                    execute_on_shard::apply_hash_expiry(
+                        &self.cache,
+                        shard_id,
+                        shared_row_routing_bucket
+                            .expect("shared hash row has a routing bucket"),
+                        shard,
+                        key,
+                        ttl_ms,
+                    );
+                }
+            }
             let mut command_for_post_write = Some(
                 returned_post_write
                     .or(cloned_post_write)

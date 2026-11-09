@@ -2932,6 +2932,16 @@ impl DataNodeRuntime {
         }
         drop(shared_wal_sink);
 
+        if request.ttl_ms.is_some() {
+            return SharedWriteExecution::Expanded(BatchExecuteResponse {
+                status: Status::error(
+                    "compact_ttl_write_unavailable",
+                    "shared expiry writes require the packed data-only path",
+                ),
+                responses: Vec::new(),
+            });
+        }
+
         let fields = request.fields;
         SharedWriteExecution::Expanded(self.batch_execute_inner(BatchExecuteRequest {
             shard_id: request.shard_id,

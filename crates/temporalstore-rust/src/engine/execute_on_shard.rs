@@ -1063,23 +1063,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     );
     mutated |= packed_mutated;
     if let Some(ttl_ms) = ttl_ms {
-        let expires_at = resolve_now_ms().saturating_add(ttl_ms);
-        for record_key in associated_record_keys(&key) {
-            if record_exists_exact(shard, &record_key) {
-                crate::engine::set_expiry(shard, record_key, expires_at);
-            }
-        }
-        stage_meta_outcome(
-            shard_id,
-            "object",
-            &key,
-            routing_bucket,
-            routing_bucket,
-            None,
-            Some(expires_at),
-            false,
-        );
-        invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
+        apply_hash_expiry(cache, shard_id, routing_bucket, shard, &key, ttl_ms);
         mutated = true;
     }
     (
@@ -1096,6 +1080,33 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
             entries: metadata_entries,
         },
     )
+}
+
+pub(super) fn apply_hash_expiry(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    shard: &mut ShardState,
+    key: &str,
+    ttl_ms: u64,
+) {
+    let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+    for record_key in associated_record_keys(key) {
+        if record_exists_exact(shard, &record_key) {
+            crate::engine::set_expiry(shard, record_key, expires_at);
+        }
+    }
+    stage_meta_outcome(
+        shard_id,
+        "object",
+        key,
+        routing_bucket,
+        routing_bucket,
+        None,
+        Some(expires_at),
+        false,
+    );
+    invalidate_record_all(cache, shard_id, key, &CACHE_SWEEP_COUNTS);
 }
 
 #[cfg(test)]
