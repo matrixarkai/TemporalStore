@@ -359,6 +359,26 @@ jobs:
             engine::window_aggregate::tests::the_shared_doors_answer_what_the_bodies_they_replaced_answered \
             engine::window_aggregate::tests::a_name_is_known_or_refused_and_the_table_is_case_insensitive \
             engine::window_aggregate::tests::edge_answers_are_the_documented_ones \
+            engine::cell_rank::tests::each_score_orders_by_the_value_only_it_produces \
+            engine::cell_rank::tests::a_wilson_bound_is_the_hand_computed_number_and_rewards_volume \
+            engine::cell_rank::tests::an_undefined_score_is_counted_and_not_ranked \
+            engine::cell_rank::tests::each_window_kind_selects_the_snapshots_it_names \
+            engine::cell_rank::tests::a_window_that_cannot_hold_a_snapshot_is_refused \
+            engine::cell_rank::tests::ties_break_by_member_and_a_smaller_k_is_a_prefix_of_a_larger_one \
+            engine::cell_rank::tests::a_row_carries_its_reduced_lanes_its_newest_labels_and_its_newest_stamp \
+            engine::cell_rank::tests::a_projection_returns_the_named_columns_only \
+            engine::cell_rank::tests::every_filter_operator_selects_what_it_names \
+            engine::cell_rank::tests::a_predicate_cuts_before_the_reduction_not_after_it \
+            engine::cell_rank::tests::a_name_the_key_does_not_declare_is_refused_before_anything_is_read \
+            engine::cell_rank::tests::the_member_score_refuses_a_bytes_member_rather_than_ranking_it_somewhere \
+            engine::cell_rank::tests::nothing_to_rank_is_an_empty_answer_not_an_error \
+            engine::cell_rank::tests::snapshots_that_cannot_be_merged_are_refused_not_guessed \
+            engine::cell_rank::tests::a_reloaded_snapshot_ranks_as_the_snapshot_it_was_stored_from \
+            engine::cell_rank::tests::top_k_is_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::predicates_per_query_are_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
+            engine::cell_rank::tests::the_merge_answers_what_a_per_member_table_answers \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
             engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \
@@ -671,7 +691,7 @@ jobs:
             engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
             engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
             engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
-            engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
+            engine::cell_rank::tests::probe::a_ranked_read_allocates_the_same_over_a_hundred_members_and_over_twenty_thousand \n            engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log

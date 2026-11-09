@@ -32,6 +32,7 @@ mod packed_blocks;
 mod product_model;
 mod cell_merge_append;
 mod window_aggregate;
+mod cell_rank;
 // Merged cell sets: the key, the per-key header and the packed snapshot. The merge-reduce write
 // policy of the feature append is its caller.
 mod cell_set;

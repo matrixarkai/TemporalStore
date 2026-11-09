@@ -70,7 +70,7 @@ pub(crate) const HEADER_VERSION: u32 = 1;
 pub(crate) const ADDITIVE_FROM_VERSION: u32 = 1;
 
 /// The one place a bound is compared: `got` over `limit` is refused, `got == limit` is accepted.
-fn within(what: &str, got: usize, limit: usize) -> Result<(), String> {
+pub(crate) fn within(what: &str, got: usize, limit: usize) -> Result<(), String> {
     if got > limit {
         return Err(format!("{what} {got} is over the limit of {limit}"));
     }
