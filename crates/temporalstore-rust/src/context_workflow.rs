@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -85,10 +85,13 @@ use self::resource::{
 };
 
 use crate::engine::TemporalEngine;
-use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
+use crate::http::{
+    post_json_streaming_with_options_and_headers, post_json_with_options_and_headers,
+    HttpRequestOptions,
+};
 use crate::llm_context::{
-    score_embedding_candidates_exact, EmbeddingBatch, EmbeddingChannel, EmbeddingKey,
-    EmbeddingVector,
+    score_prepared_embedding_candidates_exact, EmbeddingBatch, EmbeddingChannel, EmbeddingKey,
+    EmbeddingVector, PreparedEmbeddingQuery,
 };
 use crate::types::{
     context_model_descriptors, context_node_summary_vector_enabled, BatchExecuteRequest, Command,
@@ -912,7 +915,6 @@ pub struct ContextResourceSkillIngestRequest {
 pub struct ContextResourceSkillModelFanoutReport {
     pub node_count: usize,
     pub event_count: usize,
-    #[serde(alias = "segment_count")]
     pub slab_count: usize,
     pub entity_count: usize,
     pub child_ref_count: usize,
@@ -1232,6 +1234,9 @@ pub struct ContextRetrieveRequest {
     pub current_agent_scope_key: String,
     #[serde(default)]
     pub provider: ContextModelProviderConfig,
+    /// Include candidate lineage and fanout details in the response.
+    #[serde(default)]
+    pub include_debug: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1240,9 +1245,9 @@ pub struct ContextRetrieveReport {
     pub blocks: Vec<ContextBlock>,
     pub node_count: usize,
     pub event_count: usize,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "context_query_debug_is_default")]
     pub query_understanding_debug: ContextQueryUnderstandingDebug,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "context_fanout_plan_is_default")]
     pub fanout_plan: ContextFanoutPlanReport,
     #[serde(default)]
     pub parity: ContextPipelineParityEvidence,
@@ -1321,6 +1326,14 @@ pub struct ContextQueryUnderstandingDebug {
     pub selected_refs: Vec<ContextSelectedRefDebug>,
     #[serde(default)]
     pub injection_ordering: Vec<ContextInjectionOrderingDebug>,
+}
+
+fn context_query_debug_is_default(value: &ContextQueryUnderstandingDebug) -> bool {
+    value == &ContextQueryUnderstandingDebug::default()
+}
+
+fn context_fanout_plan_is_default(value: &ContextFanoutPlanReport) -> bool {
+    value == &ContextFanoutPlanReport::default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1649,6 +1662,7 @@ pub(crate) enum ContextEmbeddingRows {
     Owned(EmbeddingBatch),
     Shared {
         batch: Arc<EmbeddingBatch>,
+        input_rows: Arc<[usize]>,
         row_offset: usize,
     },
 }
@@ -1657,7 +1671,13 @@ impl ContextEmbeddingRows {
     fn get_row(&self, index: usize) -> Option<&[f32]> {
         match self {
             Self::Owned(batch) => batch.get_row(index),
-            Self::Shared { batch, row_offset } => batch.get_row(row_offset.saturating_add(index)),
+            Self::Shared {
+                batch,
+                input_rows,
+                row_offset,
+            } => input_rows
+                .get(row_offset.saturating_add(index))
+                .and_then(|row| batch.get_row(*row)),
         }
     }
 }
@@ -1683,15 +1703,70 @@ impl ContextEmbeddingOutcome {
 
     pub(crate) fn shared(
         batch: Arc<EmbeddingBatch>,
+        input_rows: Arc<[usize]>,
         row_offset: usize,
         report: ContextEmbeddingGenerationReport,
         deferred: bool,
     ) -> Self {
         Self {
-            rows: ContextEmbeddingRows::Shared { batch, row_offset },
+            rows: ContextEmbeddingRows::Shared {
+                batch,
+                input_rows,
+                row_offset,
+            },
             report,
             deferred,
         }
+    }
+}
+
+pub(crate) struct ContextCompactEmbeddingOutcome {
+    rows: EmbeddingBatch,
+    input_rows: Vec<usize>,
+    report: ContextEmbeddingGenerationReport,
+    deferred: bool,
+}
+
+pub(crate) fn context_prepared_embeddings_with_fallback(
+    provider: &ContextModelProviderConfig,
+    unique_inputs: &[(&str, u64, u32, &str)],
+    input_rows: Vec<usize>,
+) -> ContextCompactEmbeddingOutcome {
+    let embed_outcome =
+        context_embeddings_for_prepared_unique(provider, unique_inputs, input_rows.len()).or_else(
+            |status| {
+                let Some(fallback) = provider.fallback_provider.as_deref() else {
+                    return Err(status);
+                };
+                let fallback = normalize_provider(fallback.clone());
+                context_embeddings_for_prepared_unique(
+                    &fallback,
+                    unique_inputs,
+                    input_rows.len(),
+                )
+                .map(|(vectors, mut report)| {
+                    report.fallback_used = true;
+                    report.provider_name = format!(
+                        "{}+fallback:{}",
+                        provider.provider_name, report.provider_name
+                    );
+                    (vectors, report)
+                })
+            },
+        );
+    match embed_outcome {
+        Ok((rows, report)) => ContextCompactEmbeddingOutcome {
+            rows,
+            input_rows,
+            report,
+            deferred: false,
+        },
+        Err(_) => ContextCompactEmbeddingOutcome {
+            rows: EmbeddingBatch::default(),
+            input_rows: Vec::new(),
+            report: ContextEmbeddingGenerationReport::default(),
+            deferred: true,
+        },
     }
 }
 
@@ -2022,11 +2097,8 @@ pub(crate) fn prepare_context_gated_prepared(
     //
     // When L1 is emitted, the string the node embeds is the string the level-2 summary embeds --
     // both are `l1`. It goes to the provider ONCE and the single vector that comes back is handed
-    // to every owner of it. Listing it twice made the batch carry the same text in two slots, and
-    // `context_embeddings_for_extract` maps inputs to vectors one for one with no dedupe, so a
-    // real OpenAI-compatible provider was asked to encode it twice on every rich ingest and billed
-    // for both. Embedding is the slowest part of an ingest; the second copy bought a vector that
-    // was already in hand.
+    // to every owner of it. Batch ingestion preserves that ownership with compact row mappings,
+    // so repeated source text also occupies one temporary vector instead of one copy per owner.
     //
     // So the batch is two texts whether or not L1 is emitted: the text the node is searched by,
     // and the event body.
@@ -2175,33 +2247,41 @@ pub(crate) fn prepare_context_gated_prepared(
 
 pub fn retrieve_context(
     engine: &TemporalEngine,
-    request: ContextRetrieveRequest,
+    mut request: ContextRetrieveRequest,
 ) -> ContextRetrieveReport {
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
     let mut event_count = 0usize;
     let query_plan = context_query_plan(&request.query);
-    let mut query_understanding_debug =
-        context_query_understanding_debug_for_plan(&request, &query_plan);
-    let mut fanout_plan = ContextFanoutPlanReport {
-        strategy: "hierarchical_summary_secondary_index_node_resource_colocation".to_string(),
-        current_agent_default_boost: if request.prefer_current_agent {
-            125
-        } else {
-            100
-        },
-        peer_agent_default_boost: 100,
-        prefer_current_agent_configured: request.prefer_current_agent,
-        peer_agent_demoted_by_default: false,
-        secondary_index_filter_group_count: query_understanding_debug
-            .filter_group_summary
-            .secondary_index_group_count,
-        ..ContextFanoutPlanReport::default()
+    let include_debug = request.include_debug;
+    let mut query_understanding_debug = if include_debug {
+        context_query_understanding_debug_for_plan(&request, &query_plan)
+    } else {
+        ContextQueryUnderstandingDebug::default()
+    };
+    let mut fanout_plan = if include_debug {
+        ContextFanoutPlanReport {
+            strategy: "hierarchical_summary_secondary_index_node_resource_colocation".to_string(),
+            current_agent_default_boost: if request.prefer_current_agent {
+                125
+            } else {
+                100
+            },
+            peer_agent_default_boost: 100,
+            prefer_current_agent_configured: request.prefer_current_agent,
+            peer_agent_demoted_by_default: false,
+            secondary_index_filter_group_count: query_understanding_debug
+                .filter_group_summary
+                .secondary_index_group_count,
+            ..ContextFanoutPlanReport::default()
+        }
+    } else {
+        ContextFanoutPlanReport::default()
     };
     let tiers = if request.tiers.is_empty() {
         default_tiers()
     } else {
-        request.tiers.clone()
+        std::mem::take(&mut request.tiers)
     };
     let include_l0 = tiers.contains(&ContextTier::L0);
     let include_l1 = tiers.contains(&ContextTier::L1);
@@ -2220,15 +2300,10 @@ pub fn retrieve_context(
             parity: context_pipeline_parity_evidence(),
         };
     } else {
-        request.node_hashes.clone()
+        std::mem::take(&mut request.node_hashes)
     };
-    // Candidate builders can reach the same node through more than one index. Preserve the
-    // first occurrence, but never fetch, quantize, score, or expand that node twice.
-    let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
-    node_hashes.retain(|node_hash| seen_node_hashes.insert(*node_hash));
-    drop(seen_node_hashes);
     let retrieval_provider = normalize_provider(request.provider.clone());
-    let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
+    let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query) {
         Ok(vector) => vector,
         Err(status) => {
             return ContextRetrieveReport {
@@ -2242,6 +2317,7 @@ pub fn retrieve_context(
             };
         }
     };
+    let prepared_query_embedding = PreparedEmbeddingQuery::new(&query_embedding).ok();
     // The encoder that produced the query vector, read from the RAW request rather than the
     // normalized provider: normalisation substitutes a mock sentinel for an absent
     // embedding_model, and hashing that would conflict with everything a real ingest wrote,
@@ -2249,6 +2325,10 @@ pub fn retrieve_context(
     // encoder is unknown, and unknown never conflicts.
     let active_embedding_model_hash =
         context_embedding_model_hash(request.provider.embedding_model.trim());
+    // Candidate builders can reach the same node through more than one index. Preserve the
+    // first occurrence, but never fetch, quantize, score, or expand that node twice.
+    let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
+    node_hashes.retain(|node_hash| seen_node_hashes.insert(*node_hash));
     // The durable recency index bounds cold storage reads. The compact hot index may know older
     // nodes that are stronger semantic matches, so let a small number re-enter as candidates.
     // Their cached scores are not final: the normal node fetch and rerank below still apply.
@@ -2260,26 +2340,28 @@ pub fn retrieve_context(
             .max(1)
             .saturating_mul(4)
             .min(128);
-        if let Ok(hits) = engine.search_context_embeddings(
-            EmbeddingChannel::Node,
-            request.tenant_hash,
-            active_embedding_model_hash,
-            &query_embedding,
-            hot_candidate_limit,
-        ) {
-            let mut seen = node_hashes.iter().copied().collect::<HashSet<_>>();
-            node_hashes.extend(
-                hits.into_iter()
-                    .map(|hit| hit.key.item_id)
-                    .filter(|node_hash| seen.insert(*node_hash)),
-            );
+        if let Some(prepared_query) = prepared_query_embedding {
+            if let Ok(hits) = engine.search_context_embeddings(
+                EmbeddingChannel::Node,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                prepared_query,
+                hot_candidate_limit,
+            ) {
+                node_hashes.extend(
+                    hits.into_iter()
+                        .map(|hit| hit.key.item_id)
+                        .filter(|node_hash| seen_node_hashes.insert(*node_hash)),
+                );
+            }
         }
     }
+    drop(seen_node_hashes);
     fanout_plan.namespace_node_candidates = node_hashes.len();
-    let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::new();
+    let mut summary_scores_by_node =
+        HashMap::<u64, (i64, usize)>::with_capacity(node_hashes.len());
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
-    let mut prefetched_nodes =
-        HashMap::<u64, ContextNode>::with_capacity(initial_candidate_capacity);
+    let mut prefetched_nodes = HashMap::<u64, ContextNode>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
     // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
@@ -2296,88 +2378,95 @@ pub fn retrieve_context(
     // Candidates whose summary vector the node fetch did NOT supply, and which therefore still
     // need the per-node summary lookup. Every candidate is on this list until its node carries a
     // copy, so a store written before the copy existed behaves exactly as it does today.
-    let mut summary_lookup_nodes = Vec::<u64>::with_capacity(initial_candidate_capacity);
+    let mut summary_lookup_nodes = Vec::<u64>::new();
     // A current-state query can use a fully warm pair directly. Historical queries still read
     // every row because the compact index deliberately carries no summary-validity timestamp.
     let cold_node_hashes = if request.end_time_ms == u64::MAX {
-        let mut cold = Vec::with_capacity(initial_candidate_capacity);
+        let mut cold = Vec::new();
         for candidate_chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
-            let summary_hits = engine
-                .score_context_embedding_candidates(
+            if let Some(prepared_query) = prepared_query_embedding {
+                let _ = engine.visit_context_embedding_candidate_ids(
                     EmbeddingChannel::Summary,
                     request.tenant_hash,
                     active_embedding_model_hash,
-                    &query_embedding,
-                    candidate_chunk,
-                )
-                .unwrap_or_default()
-                .into_iter()
-                .map(|hit| (hit.key.item_id, hit.score))
-                .collect::<HashMap<_, _>>();
-            let mut complete = HashSet::with_capacity(summary_hits.len());
-            if let Ok(node_hits) = engine.score_context_embedding_candidates(
-                EmbeddingChannel::Node,
-                request.tenant_hash,
-                active_embedding_model_hash,
-                &query_embedding,
-                candidate_chunk,
-            ) {
-                for node_hit in node_hits {
-                    let Some(summary_score) = summary_hits.get(&node_hit.key.item_id) else {
-                        continue;
-                    };
-                    let scores = summary_scores_by_node
-                        .entry(node_hit.key.item_id)
-                        .or_default();
-                    scores.0 = ((node_hit.score.max(*summary_score)) * 1_000_000.0) as i64;
-                    scores.1 = 2;
-                    complete.insert(node_hit.key.item_id);
+                    prepared_query,
+                    candidate_chunk.iter().copied(),
+                    |summary_hit| {
+                        // Count zero marks a summary-only warm hit until the node channel joins it.
+                        let scores = summary_scores_by_node
+                            .entry(summary_hit.key.item_id)
+                            .or_default();
+                        scores.0 = scores
+                            .0
+                            .max((summary_hit.score * 1_000_000.0) as i64);
+                    },
+                );
+                let _ = engine.visit_context_embedding_candidate_ids(
+                    EmbeddingChannel::Node,
+                    request.tenant_hash,
+                    active_embedding_model_hash,
+                    prepared_query,
+                    candidate_chunk.iter().copied(),
+                    |node_hit| {
+                        let Some(scores) = summary_scores_by_node.get_mut(&node_hit.key.item_id)
+                        else {
+                            return;
+                        };
+                        scores.0 = scores.0.max((node_hit.score * 1_000_000.0) as i64);
+                        scores.1 = 2;
+                    },
+                );
+            }
+            for node_hash in candidate_chunk {
+                let needs_storage = summary_scores_by_node
+                    .get(node_hash)
+                    .is_none_or(|(_, score_count)| *score_count < 2);
+                if needs_storage {
+                    // Do not let a partial warm hit inflate the durable-row score count below.
+                    summary_scores_by_node.remove(node_hash);
+                    if cold.is_empty() {
+                        cold.reserve(node_hashes.len());
+                    }
+                    cold.push(*node_hash);
                 }
             }
-            cold.extend(
-                candidate_chunk
-                    .iter()
-                    .copied()
-                    .filter(|node_hash| !complete.contains(node_hash)),
-            );
         }
         Some(cold)
     } else {
         None
     };
     let storage_candidates = cold_node_hashes.as_deref().unwrap_or(&node_hashes);
+    let mut lexical_fallback_nodes = Vec::new();
     for candidate_chunk in storage_candidates.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if candidate_chunk.is_empty() {
             continue;
         }
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
-            command: Command::ContextGetNodes {
+            command: Command::ContextQueryNodeVectorProjections {
                 tenant_hash: request.tenant_hash,
                 node_hashes: candidate_chunk.to_vec(),
             },
         });
-        let mut returned = HashSet::with_capacity(candidate_chunk.len());
-        if let CommandResponse::ContextNodes { nodes } = response.response {
-            let mut node_score_candidates = Vec::with_capacity(nodes.len());
-            let mut summary_score_candidates = Vec::with_capacity(nodes.len());
+        let projections = match response.response {
+            CommandResponse::ContextNodeVectorProjections { projections } => projections,
+            _ => Vec::new(),
+        };
+        {
             let mut node_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
             let mut summary_rows = BTreeMap::<(u64, usize), Vec<EmbeddingVector<'_>>>::new();
-            for node in &nodes {
-                returned.insert(node.node_hash);
-                // The node's own copy of its L1 summary vector, when it has one that covers this
-                // query's point in time. Taking it here is the whole saving: this fetch was going
-                // to happen anyway, and the second per-candidate pass below now has nothing to
-                // ask for. A node without a usable copy joins `summary_lookup_nodes` and is
-                // scored by that pass exactly as before.
-                match node.summary_vector_as_of(summary_as_of_ms) {
+            for projection in &projections {
+                // Use the node's compact L1 vector copy when it covers this query's point in
+                // time. A node without a usable copy joins `summary_lookup_nodes` and is scored
+                // by that pass exactly as before.
+                match projection.summary_vector_as_of(summary_as_of_ms) {
                     Some(summary_vector) => {
                         if context_embedding_width_conflicts(&query_embedding, summary_vector) {
                             // Same reasoning as everywhere else here: skip without recording, so
                             // the score count stays at zero and the lexical pass still owns it.
                             width_conflict_nodes = width_conflict_nodes.saturating_add(1);
                         } else if context_embedding_model_conflicts(
-                            node.summary_vector_model_hash,
+                            projection.summary_vector_model_hash,
                             active_embedding_model_hash,
                         ) {
                             // Declined here rather than sent to the lookup below. The lookup
@@ -2386,28 +2475,34 @@ pub fn retrieve_context(
                             // said.
                             model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                         } else {
-                            summary_score_candidates.push(node.node_hash);
                             summary_rows
-                                .entry((node.summary_vector_model_hash, summary_vector.len()))
+                                .entry((projection.summary_vector_model_hash, summary_vector.len()))
                                 .or_default()
                                 .push(EmbeddingVector {
                                     key: EmbeddingKey {
                                         tenant_id: request.tenant_hash,
-                                        item_id: node.node_hash,
+                                        item_id: projection.node_hash,
                                     },
                                     values: summary_vector,
                                 });
                         }
                     }
-                    None => summary_lookup_nodes.push(node.node_hash),
+                    None => {
+                        if summary_lookup_nodes.is_empty() {
+                            summary_lookup_nodes.reserve(initial_candidate_capacity);
+                        }
+                        summary_lookup_nodes.push(projection.node_hash);
+                    }
                 }
-                if node.vector.is_empty() {
+                if projection.vector.is_empty() {
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
-                } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
+                    lexical_fallback_nodes.push(projection.node_hash);
+                } else if context_embedding_width_conflicts(&query_embedding, &projection.vector) {
                     width_conflict_nodes = width_conflict_nodes.saturating_add(1);
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
+                    lexical_fallback_nodes.push(projection.node_hash);
                 } else if context_embedding_model_conflicts(
-                    node.embedding_model_hash,
+                    projection.embedding_model_hash,
                     active_embedding_model_hash,
                 ) {
                     // Same width, different encoder: no length mismatch and no error, so this
@@ -2420,67 +2515,89 @@ pub fn retrieve_context(
                     // bottom of the ranking with no second chance.
                     model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
+                    lexical_fallback_nodes.push(projection.node_hash);
                 } else {
-                    node_score_candidates.push(node.node_hash);
                     node_rows
-                        .entry((node.embedding_model_hash, node.vector.len()))
+                        .entry((projection.embedding_model_hash, projection.vector.len()))
                         .or_default()
                         .push(EmbeddingVector {
                             key: EmbeddingKey {
                                 tenant_id: request.tenant_hash,
-                                item_id: node.node_hash,
+                                item_id: projection.node_hash,
                             },
-                            values: &node.vector,
+                            values: &projection.vector,
                         });
                 }
             }
-            for ((model_hash, _), rows) in node_rows {
+            for ((model_hash, _), rows) in &node_rows {
                 let _ = engine.cache_missing_context_embeddings(
                     EmbeddingChannel::Node,
-                    model_hash,
-                    &rows,
+                    *model_hash,
+                    rows,
                 );
             }
-            for ((model_hash, _), rows) in summary_rows {
+            for ((model_hash, _), rows) in &summary_rows {
                 let _ = engine.cache_missing_context_embeddings(
                     EmbeddingChannel::Summary,
-                    model_hash,
-                    &rows,
+                    *model_hash,
+                    rows,
                 );
             }
-            for (channel, candidates) in [
-                (EmbeddingChannel::Node, node_score_candidates.as_slice()),
-                (
-                    EmbeddingChannel::Summary,
-                    summary_score_candidates.as_slice(),
-                ),
+            for (channel, rows_by_space) in [
+                (EmbeddingChannel::Node, &node_rows),
+                (EmbeddingChannel::Summary, &summary_rows),
             ] {
-                if let Ok(hits) = engine.score_context_embedding_candidates(
-                    channel,
-                    request.tenant_hash,
-                    active_embedding_model_hash,
-                    &query_embedding,
-                    candidates,
-                ) {
-                    for hit in hits {
-                        let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
-                        scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
-                        scores.1 = scores.1.saturating_add(1);
-                    }
+                if let Some(prepared_query) = prepared_query_embedding {
+                    let _ = engine.visit_context_embedding_candidate_ids(
+                        channel,
+                        request.tenant_hash,
+                        active_embedding_model_hash,
+                        prepared_query,
+                        rows_by_space.values().flatten().map(|row| row.key.item_id),
+                        |hit| {
+                            let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
+                            scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
+                            scores.1 = scores.1.saturating_add(1);
+                        },
+                    );
                 }
             }
-            for node in nodes {
-                prefetched_nodes.insert(node.node_hash, node);
-            }
         }
+        // The projection loader preserves request order while omitting missing nodes. Walk both
+        // ordered lists once instead of allocating a hash set and hashing every id twice.
+        let mut returned = projections.iter().map(|projection| projection.node_hash).peekable();
         // A node the engine did not return cannot carry a vector either.
         for node_hash in candidate_chunk {
-            if !returned.contains(node_hash) {
-                l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
-                // ...and it cannot have supplied a summary vector copy either, so it keeps the
-                // lookup it has always had. A node record can be missing while its summaries are
-                // not: the summary series lives in its own keyspace.
-                summary_lookup_nodes.push(*node_hash);
+            if returned
+                .peek()
+                .is_some_and(|returned_hash| *returned_hash == *node_hash)
+            {
+                returned.next();
+                continue;
+            }
+            l0_row_fallback_nodes = l0_row_fallback_nodes.saturating_add(1);
+            // ...and it cannot have supplied a summary vector copy either, so it keeps the
+            // lookup it has always had. A node record can be missing while its summaries are
+            // not: the summary series lives in its own keyspace.
+            if summary_lookup_nodes.is_empty() {
+                summary_lookup_nodes.reserve(initial_candidate_capacity);
+            }
+            summary_lookup_nodes.push(*node_hash);
+        }
+        debug_assert!(returned.next().is_none());
+    }
+    prefetched_nodes.reserve(lexical_fallback_nodes.len());
+    for chunk in lexical_fallback_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextGetNodes {
+                tenant_hash: request.tenant_hash,
+                node_hashes: chunk.to_vec(),
+            },
+        });
+        if let CommandResponse::ContextNodes { nodes } = response.response {
+            for node in nodes {
+                prefetched_nodes.insert(node.node_hash, node);
             }
         }
     }
@@ -2544,11 +2661,15 @@ pub fn retrieve_context(
             for ((model_hash, _), rows) in summary_rows {
                 // These durable rows are already decoded as f32 values. Score them once in that
                 // form for this query, then warm the compact cache for later retrievals.
-                if let Ok(hits) = score_embedding_candidates_exact(&query_embedding, &rows) {
-                    for hit in hits {
-                        let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
-                        scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
-                        scores.1 = scores.1.saturating_add(1);
+                if let Some(prepared_query) = prepared_query_embedding {
+                    if let Ok(hits) =
+                        score_prepared_embedding_candidates_exact(prepared_query, &rows)
+                    {
+                        for hit in hits {
+                            let scores = summary_scores_by_node.entry(hit.key.item_id).or_default();
+                            scores.0 = scores.0.max((hit.score * 1_000_000.0) as i64);
+                            scores.1 = scores.1.saturating_add(1);
+                        }
                     }
                 }
                 let _ = engine.cache_missing_context_embeddings(
@@ -2559,31 +2680,42 @@ pub fn retrieve_context(
             }
         }
     }
-    let mut ranked_embedding_nodes = summary_scores_by_node
-        .iter()
-        .map(|(node_hash, (score, _))| (*node_hash, *score))
-        .collect::<Vec<_>>();
-    ranked_embedding_nodes
-        .sort_unstable_by_key(|(node_hash, score)| (Reverse(*score), *node_hash));
+    let ranked_embedding_node_count = summary_scores_by_node.len();
     let rerank_limit = request
         .max_summary_nodes
         .max(1)
         .saturating_mul(4)
         .min(64)
-        .min(ranked_embedding_nodes.len());
+        .min(ranked_embedding_node_count);
     let metadata_prefetch_limit = request
         .max_summary_nodes
         .max(1)
         .saturating_mul(4)
         .max(rerank_limit)
-        .min(ranked_embedding_nodes.len());
+        .min(ranked_embedding_node_count);
+    let mut ranked_embedding_node_heap = BinaryHeap::with_capacity(metadata_prefetch_limit);
+    for (&node_hash, &(score, _)) in &summary_scores_by_node {
+        let candidate = (Reverse(score), node_hash);
+        if ranked_embedding_node_heap.len() < metadata_prefetch_limit {
+            ranked_embedding_node_heap.push(candidate);
+        } else if ranked_embedding_node_heap
+            .peek()
+            .is_some_and(|worst| candidate < *worst)
+        {
+            ranked_embedding_node_heap.pop();
+            ranked_embedding_node_heap.push(candidate);
+        }
+    }
+    let mut ranked_embedding_nodes = ranked_embedding_node_heap.into_vec();
+    ranked_embedding_nodes.sort_unstable();
     let missing_prefetch_nodes = ranked_embedding_nodes
         .iter()
         .take(metadata_prefetch_limit)
-        .filter_map(|(node_hash, _)| {
+        .filter_map(|(_, node_hash)| {
             (!prefetched_nodes.contains_key(node_hash)).then_some(*node_hash)
         })
         .collect::<Vec<_>>();
+    prefetched_nodes.reserve(missing_prefetch_nodes.len());
     for chunk in missing_prefetch_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
@@ -2601,7 +2733,7 @@ pub fn retrieve_context(
     let rerank_nodes = ranked_embedding_nodes
         .iter()
         .take(rerank_limit)
-        .map(|(node_hash, _)| *node_hash)
+        .map(|(_, node_hash)| *node_hash)
         .collect::<Vec<_>>();
     let mut exact_node_rows = Vec::with_capacity(rerank_nodes.len());
     let mut exact_summary_rows = Vec::with_capacity(rerank_nodes.len());
@@ -2643,11 +2775,13 @@ pub fn retrieve_context(
     }
     let mut exact_scores_by_node = HashMap::<u64, (i64, usize)>::new();
     for rows in [&exact_node_rows, &exact_summary_rows] {
-        if let Ok(hits) = score_embedding_candidates_exact(&query_embedding, rows) {
-            for hit in hits {
-                let score = exact_scores_by_node.entry(hit.key.item_id).or_default();
-                score.0 = score.0.max((hit.score * 1_000_000.0) as i64);
-                score.1 = score.1.saturating_add(1);
+        if let Some(prepared_query) = prepared_query_embedding {
+            if let Ok(hits) = score_prepared_embedding_candidates_exact(prepared_query, rows) {
+                for hit in hits {
+                    let score = exact_scores_by_node.entry(hit.key.item_id).or_default();
+                    score.0 = score.0.max((hit.score * 1_000_000.0) as i64);
+                    score.1 = score.1.saturating_add(1);
+                }
             }
         }
     }
@@ -2663,24 +2797,31 @@ pub fn retrieve_context(
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
     // bulk-loaded (un-embedded) store collapsed to recency order and lost focused
-    // recall. Instead, score those un-embedded candidates from the node records already retained
-    // by the vector pass, using query/text lexical overlap normalized into the same micros scale
-    // as cosine.
+    // recall. Instead, fetch only those un-embedded/conflicting candidates and score their text
+    // with lexical overlap normalized into the same micros scale as cosine.
     // Embedded nodes keep their cosine score untouched, so when every node is
     // embedded this pass does nothing and behavior is identical to before.
     // Every retrieve does this. `MATRIXARK_CONTEXT_HYBRID_LEXICAL` could skip it and
     // defaulted on; nothing set it, so a node with no stored summary embedding has
     // always been scored by lexical overlap rather than left at a flat 0.
     let mut scoring_text = String::new();
-    let mut summary_scores = Vec::with_capacity(node_hashes.len());
+    let summary_candidate_count = node_hashes.len();
+    let summary_node_limit = request
+        .max_summary_nodes
+        .max(1)
+        .min(summary_candidate_count.max(1));
+    let mut debug_summary_scores =
+        include_debug.then(|| Vec::with_capacity(summary_candidate_count));
+    let mut serving_summary_scores =
+        (!include_debug).then(|| BinaryHeap::with_capacity(summary_node_limit));
     for node_hash in &node_hashes {
         let (mut best_score, found) = summary_scores_by_node
             .get(node_hash)
             .copied()
             .unwrap_or_default();
         // Embedded node (found > 0): cosine score, exactly as before. Otherwise fall back to
-        // lexical overlap so un-embedded nodes remain rankable. Every candidate node was decoded
-        // above, and one reusable buffer avoids both another node read and one allocation per row.
+        // lexical overlap so un-embedded nodes remain rankable. One reusable buffer avoids an
+        // allocation per row.
         if found == 0 {
             if let Some(node) = prefetched_nodes.get(node_hash) {
                 scoring_text.clear();
@@ -2695,21 +2836,30 @@ pub fn retrieve_context(
                 ));
             }
         }
-        summary_scores.push((*node_hash, best_score, found, 0u32, 0u64));
-    }
-    summary_scores.sort_unstable_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
-        (
-            Reverse(*score),
-            Reverse(*found),
-            Reverse(*summary_score),
-            Reverse(*freshness_ms),
+        let candidate = (
+            Reverse(best_score),
+            Reverse(found),
+            Reverse(0u32),
+            Reverse(0u64),
             *node_hash,
-        )
-    });
-    let summary_node_limit = request
-        .max_summary_nodes
-        .max(1)
-        .min(summary_scores.len().max(1));
+        );
+        if let Some(summary_scores) = debug_summary_scores.as_mut() {
+            summary_scores.push(candidate);
+        } else if let Some(summary_scores) = serving_summary_scores.as_mut() {
+            if summary_scores.len() < summary_node_limit {
+                summary_scores.push(candidate);
+            } else if summary_scores
+                .peek()
+                .is_some_and(|worst| candidate < *worst)
+            {
+                summary_scores.pop();
+                summary_scores.push(candidate);
+            }
+        }
+    }
+    let mut summary_scores = debug_summary_scores
+        .unwrap_or_else(|| serving_summary_scores.unwrap_or_default().into_vec());
+    summary_scores.sort_unstable();
     let query_aware_event_limit = request.max_events.max(1);
     let event_node_limit = request
         .max_event_nodes
@@ -2721,7 +2871,7 @@ pub fn retrieve_context(
     // second decode, this keeps a concurrent update from mixing two node versions in one ranking.
     // The candidates are already the sorted prefix, so mutate that prefix directly instead of
     // allocating their hashes and searching the same vector once per candidate.
-    for (node_hash, score, _, summary_score_slot, freshness_slot) in
+    for (Reverse(score), _, Reverse(summary_score_slot), Reverse(freshness_slot), node_hash) in
         summary_scores.iter_mut().take(rerank_node_limit)
     {
         let Some(node) = prefetched_nodes.get(node_hash) else {
@@ -2748,97 +2898,97 @@ pub fn retrieve_context(
         *summary_score_slot = summary_score;
         *freshness_slot = freshness_ms;
     }
-    summary_scores.sort_unstable_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
-        (
-            Reverse(*score),
-            Reverse(*found),
-            Reverse(*summary_score),
-            Reverse(*freshness_ms),
-            *node_hash,
-        )
-    });
+    summary_scores.sort_unstable();
     node_hashes = summary_scores
         .iter()
         .take(summary_node_limit)
-        .map(|(node_hash, _, _, _, _)| *node_hash)
+        .map(|(_, _, _, _, node_hash)| *node_hash)
         .collect();
-    let event_node_hashes = node_hashes
-        .iter()
-        .copied()
-        .take(event_node_limit)
-        .collect::<Vec<_>>();
+    let event_node_count = event_node_limit.min(node_hashes.len());
     let event_pack_budget = request.max_events.max(1);
     let event_overfetch = std::env::var("MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(2);
-    let skipped_node_hashes = summary_scores
-        .iter()
-        .skip(event_node_limit)
-        .map(|(node_hash, _, _, _, _)| *node_hash)
-        .collect::<Vec<_>>();
-    fanout_plan.summary_candidate_nodes = summary_scores.len();
+    let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
+    fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
-    fanout_plan.event_expanded_nodes = event_node_hashes.len();
-    fanout_plan.skipped_node_count = skipped_node_hashes.len();
-    fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
+    fanout_plan.event_expanded_nodes = event_node_count;
+    fanout_plan.skipped_node_count = skipped_node_count;
+    fanout_plan.summary_lookup_batches = usize::from(summary_candidate_count > 0);
     fanout_plan.event_query_budget = if include_l2 { event_pack_budget } else { 0 };
-    fanout_plan.event_query_node_count = event_node_hashes.len();
-    fanout_plan.selected_node_hashes = node_hashes.clone();
-    fanout_plan.skipped_node_hashes = skipped_node_hashes;
-    fanout_plan.locality_keys = event_node_hashes
-        .iter()
-        .map(|node_hash| format!("tenant:{}:node:{node_hash}", request.tenant_hash))
-        .collect();
+    fanout_plan.event_query_node_count = event_node_count;
+    if include_debug {
+        fanout_plan.selected_node_hashes = node_hashes.clone();
+        fanout_plan.skipped_node_hashes = summary_scores
+            .iter()
+            .skip(event_node_limit)
+            .map(|(_, _, _, _, node_hash)| *node_hash)
+            .collect();
+        fanout_plan.locality_keys = node_hashes
+            .iter()
+            .take(event_node_count)
+            .map(|node_hash| format!("tenant:{}:node:{node_hash}", request.tenant_hash))
+            .collect();
+    }
     fanout_plan.fanout_reduced =
         fanout_plan.event_expanded_nodes < fanout_plan.namespace_node_candidates;
-    query_understanding_debug.tree_traversal_summary.enabled = true;
-    query_understanding_debug
-        .tree_traversal_summary
-        .fallback_to_flat = false;
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embedding_candidate_count = summary_scores.len();
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embedding_selected_count = summary_scores
-        .iter()
-        .filter(|(_, _, found, _, _)| *found > 0)
-        .count();
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embedding_lookup_batches = usize::from(!summary_scores.is_empty());
-    query_understanding_debug
-        .tree_traversal_summary
-        .query_embedding_dimension = query_embedding.len();
-    query_understanding_debug
-        .tree_traversal_summary
-        .query_embedding_provider = retrieval_provider.provider_name.clone();
-    query_understanding_debug
-        .tree_traversal_summary
-        .namespace_node_candidates = fanout_plan.namespace_node_candidates;
-    query_understanding_debug
-        .tree_traversal_summary
-        .event_expanded_node_count = fanout_plan.event_expanded_nodes;
-    query_understanding_debug
-        .tree_traversal_summary
-        .skipped_node_count = fanout_plan.skipped_node_count;
-    query_understanding_debug
-        .tree_traversal_summary
-        .summary_embeddings = summary_scores
-        .iter()
-        .map(|(node_hash, score, found, summary_score, freshness_ms)| {
-            format!(
-                "node:{node_hash}:score:{score}:refs:{found}:summary_score:{summary_score}:last_event:{freshness_ms}"
+    if include_debug {
+        query_understanding_debug.tree_traversal_summary.enabled = true;
+        query_understanding_debug
+            .tree_traversal_summary
+            .fallback_to_flat = false;
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_candidate_count = summary_candidate_count;
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_selected_count = summary_scores
+            .iter()
+            .filter(|(_, Reverse(found), _, _, _)| *found > 0)
+            .count();
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_lookup_batches = usize::from(summary_candidate_count > 0);
+        query_understanding_debug
+            .tree_traversal_summary
+            .query_embedding_dimension = query_embedding.len();
+        query_understanding_debug
+            .tree_traversal_summary
+            .query_embedding_provider = retrieval_provider.provider_name.clone();
+        query_understanding_debug
+            .tree_traversal_summary
+            .namespace_node_candidates = fanout_plan.namespace_node_candidates;
+        query_understanding_debug
+            .tree_traversal_summary
+            .event_expanded_node_count = fanout_plan.event_expanded_nodes;
+        query_understanding_debug
+            .tree_traversal_summary
+            .skipped_node_count = fanout_plan.skipped_node_count;
+        query_understanding_debug
+            .tree_traversal_summary
+            .summary_embeddings = summary_scores
+            .iter()
+            .map(
+                |(
+                    Reverse(score),
+                    Reverse(found),
+                    Reverse(summary_score),
+                    Reverse(freshness_ms),
+                    node_hash,
+                )| {
+                    format!(
+                        "node:{node_hash}:score:{score}:refs:{found}:summary_score:{summary_score}:last_event:{freshness_ms}"
+                    )
+                },
             )
-        })
-        .collect();
+            .collect();
+    }
 
-    let event_node_set = event_node_hashes.iter().copied().collect::<HashSet<_>>();
     let mut event_query_returned_count = 0usize;
     let mut event_node_index = 0usize;
-    for node_hash in node_hashes.iter().copied() {
+    for (selected_node_index, node_hash) in node_hashes.iter().copied().enumerate() {
         let mut node_source_ref = String::new();
         let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
             let node_response = engine.execute(ExecuteRequest {
@@ -2882,10 +3032,9 @@ pub fn retrieve_context(
             }
         }
 
-        if include_l2 && event_count < event_pack_budget && event_node_set.contains(&node_hash) {
+        if include_l2 && event_count < event_pack_budget && selected_node_index < event_node_count {
             let remaining_budget = event_pack_budget.saturating_sub(event_count).max(1);
-            let remaining_nodes = event_node_hashes
-                .len()
+            let remaining_nodes = event_node_count
                 .saturating_sub(event_node_index)
                 .max(1);
             event_node_index = event_node_index.saturating_add(1);
@@ -2924,13 +3073,15 @@ pub fn retrieve_context(
                         break;
                     }
                     let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
-                    context_query_debug_record_candidate(
-                        &mut query_understanding_debug,
-                        request.tenant_hash,
-                        node_hash,
-                        &event,
-                        passes_prefilter,
-                    );
+                    if include_debug {
+                        context_query_debug_record_candidate(
+                            &mut query_understanding_debug,
+                            request.tenant_hash,
+                            node_hash,
+                            &event,
+                            passes_prefilter,
+                        );
+                    }
                     if !passes_prefilter {
                         continue;
                     }
@@ -2964,13 +3115,17 @@ pub fn retrieve_context(
         )
     });
     dedupe_context_blocks_by_source_ref(&mut blocks);
-    context_query_debug_finalize(
-        &mut query_understanding_debug,
-        &query_plan,
-        &blocks,
-        node_count,
-        tiers.as_slice(),
-    );
+    if include_debug {
+        context_query_debug_finalize(
+            &mut query_understanding_debug,
+            &query_plan,
+            &blocks,
+            node_count,
+            tiers.as_slice(),
+        );
+    } else {
+        fanout_plan = ContextFanoutPlanReport::default();
+    }
     ContextRetrieveReport {
         status: Status::ok(),
         blocks,
@@ -3132,11 +3287,14 @@ fn normalize_provider(mut provider: ContextModelProviderConfig) -> ContextModelP
     provider
 }
 
-fn context_sentences(body: &str) -> Vec<&str> {
+fn context_sentence_iter(body: &str) -> impl Iterator<Item = &str> {
     body.split(['.', '\n', '!', '?'])
         .map(str::trim)
         .filter(|sentence| !sentence.is_empty())
-        .collect()
+}
+
+fn context_sentences(body: &str) -> Vec<&str> {
+    context_sentence_iter(body).collect()
 }
 
 /// Whether a source carries enough to justify the (more expensive) richer L1
@@ -3144,7 +3302,8 @@ fn context_sentences(body: &str) -> Vec<&str> {
 /// internal `node_l1_generation_policy` (>=3 events / >=180 tokens); at
 /// extract time sentences stand in for events.
 pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
-    context_sentences(body).len() >= 3 || body.split_whitespace().count() >= 180
+    context_sentence_iter(body).take(3).count() >= 3
+        || body.split_whitespace().nth(179).is_some()
 }
 
 /// L0: the short routing/preview summary (the required
@@ -3152,8 +3311,7 @@ pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
 /// just enough to route and recall. L1 is a strict superset that carries more
 /// content; raw event evidence lives in the separate L2 tier.
 fn summarize_l0(title: &str, body: &str) -> String {
-    let lead = context_sentences(body)
-        .into_iter()
+    let lead = context_sentence_iter(body)
         .next()
         .unwrap_or_else(|| body.trim());
     truncate_words(&format!("{title}: {lead}"), 18)
@@ -3161,8 +3319,16 @@ fn summarize_l0(title: &str, body: &str) -> String {
 
 /// Rank a sentence by how much concrete detail it carries: figures, proper
 /// nouns, and temporal/correction markers are what queries actually target.
+fn contains_ascii_case_insensitive(value: &str, marker: &str) -> bool {
+    if marker.is_empty() {
+        return true;
+    }
+    value.as_bytes().windows(marker.len()).any(|candidate| {
+        candidate.eq_ignore_ascii_case(marker.as_bytes())
+    })
+}
+
 fn context_fact_score(sentence: &str) -> i32 {
-    let lower = sentence.to_ascii_lowercase();
     let mut score = 0;
     if sentence.chars().any(|ch| ch.is_ascii_digit()) {
         score += 3;
@@ -3192,7 +3358,7 @@ fn context_fact_score(sentence: &str) -> i32 {
         "after",
         "before",
     ] {
-        if lower.contains(marker) {
+        if contains_ascii_case_insensitive(sentence, marker) {
             score += 2;
         }
     }
@@ -3229,13 +3395,33 @@ fn summarize_l1(kind: ContextSourceKind, title: &str, body: &str) -> String {
 }
 
 fn truncate_words(value: &str, limit: usize) -> String {
-    let words = value.split_whitespace().take(limit).collect::<Vec<_>>();
-    words.join(" ")
+    let words = value.split_whitespace().take(limit);
+    let (word_bytes, word_count) = words.clone().fold((0usize, 0usize), |totals, word| {
+        (
+            totals.0.saturating_add(word.len()),
+            totals.1.saturating_add(1),
+        )
+    });
+    if word_count == 0 {
+        return String::new();
+    }
+    let mut truncated = String::with_capacity(
+        word_bytes.saturating_add(word_count.saturating_sub(1)),
+    );
+    for (index, word) in words.enumerate() {
+        if index > 0 {
+            truncated.push(' ');
+        }
+        truncated.push_str(word);
+    }
+    truncated
 }
 
 fn context_importance(body: &str) -> f32 {
-    let lower = body.to_ascii_lowercase();
-    if lower.contains("incident") || lower.contains("customer") || lower.contains("risk") {
+    if ["incident", "customer", "risk"]
+        .iter()
+        .any(|marker| contains_ascii_case_insensitive(body, marker))
+    {
         0.9
     } else {
         0.5

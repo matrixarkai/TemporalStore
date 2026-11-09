@@ -18,8 +18,7 @@
 //!
 //! What is pinned, and why each is a different surface:
 //!
-//!   * the WAL record as JSON, written from BOTH the short keys a current record carries and the
-//!     long key an older record still carries, which must write the same bytes;
+//!   * the WAL record as JSON, written from the short keys a record carries;
 //!   * the same record through the protobuf framer, where the name rides tag 11 of an item and
 //!     tag 4 of a staged block, and a name that is a number rides `timestamp_ms` instead;
 //!   * the key a block is filed under in the index log, where the name is a slot of a colon
@@ -48,26 +47,19 @@ const WAL_JSON: &str = "{\"s\":1,\"q\":9,\"p\":[{\"object_id\":7,\"k\":\"f0\",\"
 const WAL_JSON_AFTER_THE_FRAMER: &str = "{\"s\":1,\"q\":9,\"p\":[{\"object_id\":7,\"k\":\"f0\",\"bytes\":\"AQID\"}],\"t\":[{\"k\":\"hash\",\"o\":\"user:1\",\"c\":\"f0\",\"i\":7,\"b\":3},{\"k\":\"feature\",\"o\":\"series\",\"c\":\"7\",\"i\":8,\"b\":3},{\"k\":\"string\",\"o\":\"plain\",\"i\":9,\"b\":3}]}";
 const WAL_PROTO_HEX: &str = "b8080110092a1a1a06757365723a312907000000000000005a02663078039801022a191a0673657269657329080000000000000078038001079801062a151a05706c61696e29090000000000000078039801013212090700000000000000120301020322026630";
 const BLOCK_REF_KEY: &str = "hash:user:1:f0:1:2:3:4:5|string:plain::1:2:3:4:5";
-const TOMBSTONE_ROW_JSON: &str = "{\"object_key\":\"user:1\",\"model_id\":\"hash\",\"component\":\"f0\",\"block\":[1,2,3]}";
-const BLOCK_INDEX_REPORT_JSON: &str = "{\"object_key\":\"user:1\",\"model_id\":\"hash\",\"component\":\"f0\",\"routing_slot\":3,\"block_segment_id\":1,\"offset\":2,\"length\":3,\"dirty\":false,\"deleted\":false,\"log_backed\":false,\"native_packed_block_index_len\":0,\"native_packed_block_index_hex\":\"\"}";
+const TOMBSTONE_ROW_JSON: &str = "{\"object_key\":\"user:1\",\"model_id\":\"hash\",\"element_name\":\"f0\",\"block\":[1,2,3]}";
+const BLOCK_INDEX_REPORT_JSON: &str = "{\"object_key\":\"user:1\",\"model_id\":\"hash\",\"element_name\":\"f0\",\"routing_slot\":3,\"block_segment_id\":1,\"offset\":2,\"length\":3,\"dirty\":false,\"deleted\":false,\"log_backed\":false,\"native_packed_block_index_len\":0,\"native_packed_block_index_hex\":\"\"}";
 
-/// A current record (short keys) and an older one (the long key) write the SAME JSON, and it is the
-/// short key. This is the assertion that fails for a field renamed with an alias and no `rename`.
+/// A record read from its short keys writes the short keys, and never the long spelling. This is the
+/// assertion that fails for a field renamed with an alias and no `rename`.
 #[test]
-fn the_short_key_and_the_long_key_write_one_wal_json() {
+fn the_short_key_writes_the_wal_json() {
     let current = record_from(r#""c""#, r#""k""#);
-    let older = record_from(r#""component""#, r#""component""#);
-    let from_current = serde_json::to_string(&current).expect("serializes");
-    let from_older = serde_json::to_string(&older).expect("serializes");
-    assert_eq!(
-        from_current, from_older,
-        "a record read from the long key must write the key a current record writes"
-    );
-    assert_eq!(from_current, WAL_JSON);
-    // And the long spelling is never WRITTEN: a reader of an older build sees only the short keys.
+    let written = serde_json::to_string(&current).expect("serializes");
+    assert_eq!(written, WAL_JSON);
     assert!(
-        !from_current.contains("component") && !from_current.contains("element_name"),
-        "the key a record writes is `c` for an outcome and `k` for a block: {from_current}"
+        !written.contains("component") && !written.contains("element_name"),
+        "the key a record writes is `c` for an outcome and `k` for a block: {written}"
     );
 }
 
@@ -93,14 +85,14 @@ fn the_key_a_block_is_filed_under_spells_the_name_in_its_third_slot() {
     assert_eq!(format!("{named}|{whole}"), BLOCK_REF_KEY);
 }
 
-/// A tombstone row of the index dump, read from the key the old build wrote and written back under
-/// it. The struct has NO `rename`, so the key it writes is the field's own name.
+/// A tombstone row of the index dump, read and written back under the field's own name: the struct
+/// has NO `rename`.
 #[test]
 fn the_tombstone_row_keeps_its_key() {
     let tombstone: crate::engine::state::TombstoneElement = serde_json::from_str(
-        r#"{"object_key":"user:1","model_id":"hash","component":"f0","block":[1,2,3]}"#,
+        r#"{"object_key":"user:1","model_id":"hash","element_name":"f0","block":[1,2,3]}"#,
     )
-    .expect("a tombstone row written by the old build must still decode");
+    .expect("a tombstone row must decode");
     assert_eq!(
         serde_json::to_string(&tombstone).expect("serializes"),
         TOMBSTONE_ROW_JSON
@@ -111,7 +103,7 @@ fn the_tombstone_row_keeps_its_key() {
 #[test]
 fn the_report_row_keeps_its_key() {
     let report: crate::engine::reports::StoragePhysicalBlockIndex = serde_json::from_str(
-        r#"{"object_key":"user:1","model_id":"hash","component":"f0","routing_slot":3,"block_segment_id":1,"offset":2,"length":3,"dirty":false,"deleted":false,"log_backed":false,"native_packed_block_index_len":0,"native_packed_block_index_hex":""}"#,
+        r#"{"object_key":"user:1","model_id":"hash","element_name":"f0","routing_slot":3,"block_segment_id":1,"offset":2,"length":3,"dirty":false,"deleted":false,"log_backed":false,"native_packed_block_index_len":0,"native_packed_block_index_hex":""}"#,
     )
     .expect("a report row must decode");
     assert_eq!(

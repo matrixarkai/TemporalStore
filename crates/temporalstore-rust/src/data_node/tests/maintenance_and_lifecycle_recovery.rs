@@ -492,8 +492,11 @@ fn the_running_scheduler_reaches_every_phase() {
     // this test makes. The claim is that the LOOP reaches every phase, so the fixture names a
     // trigger it can reach. That the field is still read on the shipped path is pinned separately,
     // by `the_shipped_dump_gate_decides_on_bytes_and_the_record_trigger_is_still_configurable`.
+    // THE CACHE BOUND, PUT BACK EXPLICITLY, for the same reason: the cache-drop phase ships OFF and
+    // waits for an operator to set a bound, so a fixture that wants the loop to reach it names one.
     let options = StorageManagerOptions {
         min_undumped_wal_records: 1_000,
+        cache_memory_bytes_pressure: 1,
         ..StorageManagerOptions::default()
     };
     // Pressure of several kinds, so a phase that declines for want of work is distinguishable
@@ -745,7 +748,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
         generation: 800,
     });
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.tokens.len(), 1);
     assert!(saved.transitions.is_empty());
     let report = runtime.lifecycle_persistence_report();
@@ -767,7 +770,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     });
     assert!(load.status.ok, "{load:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.transitions[0].operation, "load");
     assert_eq!(saved.transitions[0].state, "serving");
     assert_eq!(saved.transitions[0].scheduler_task_id, Some(31));
@@ -808,7 +811,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     });
     assert!(reload.status.ok, "{reload:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.transitions[0].operation, "reload");
     assert_eq!(saved.transitions[0].state, "readonly");
     assert_eq!(saved.transitions[0].scheduler_task_id, Some(32));
@@ -823,7 +826,7 @@ fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
     let unload = restored.unload_shard_with(crate::control::UnloadShardRequest { shard_id: 8 });
     assert!(unload.status.ok, "{unload:?}");
     let saved: DataNodeLifecycleSnapshot =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        crate::data_node::decode_lifecycle_snapshot_file(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.tokens.len(), 3);
     assert_eq!(saved.transitions[0].operation, "unload");
     assert_eq!(saved.transitions[0].state, "unloaded");

@@ -9,7 +9,7 @@ use crate::block_store::ElementEntry;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEntity,
     ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
-    ContextPackAudit, ContextSummary, ContextTraversedNode, ContextWire,
+    ContextNodeVectorProjection, ContextPackAudit, ContextSummary, ContextTraversedNode, ContextWire,
     FeaturePoint, InternalContextIndex, ShardId, Status,
 };
 use matrixcache::MultiLayerCache;
@@ -17,7 +17,7 @@ use matrixcache::MultiLayerCache;
 use super::packed_blocks::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
 use super::hashing::BlockIdentity;
 use super::timestamped_series::TimestampedSeries;
-use super::{read_block_bytes, stable_object_hash, ShardState};
+use super::{read_blocks_shared, stable_object_hash, SharedBlockRead, ShardState};
 /// `prefix` then two decimal parts, joined by colons, in one allocation.
 ///
 /// `format!` would take two: the String it returns, plus one inside the formatting machinery.
@@ -951,6 +951,72 @@ pub(super) fn load_context_node_vector(
             )
                 .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
         })
+}
+
+pub(super) fn load_context_node_vector_projections(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+) -> Vec<ContextNodeVectorProjection> {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let mut resolved_hashes = Vec::with_capacity(node_hashes.len());
+    let mut reads = Vec::with_capacity(node_hashes.len());
+
+    for node_hash in node_hashes.iter().copied() {
+        let object_key = context_node_key(tenant_hash, node_hash);
+        let routing_bucket = Some(crate::engine::hashing::block_routing_bucket(
+            &object_key,
+            start_routing_bucket,
+            end_routing_bucket,
+        ));
+        let resolved = shard
+            .bucket_index
+            .hashes
+            .get(&object_key)
+            .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+            .map(|address| {
+                (
+                    address,
+                    BlockIdentity::of(
+                        shard_id,
+                        "hash",
+                        &object_key,
+                        Some(super::constants::CONTEXT_NODE_FIELD),
+                    ),
+                )
+            })
+            .or_else(|| {
+                shard.context_nodes().get(object_key.as_str()).map(|address| {
+                    (
+                        address,
+                        BlockIdentity::of(shard_id, "context_node", &object_key, None),
+                    )
+                })
+            });
+        let Some((address, identity)) = resolved else {
+            continue;
+        };
+        resolved_hashes.push(node_hash);
+        reads.push(SharedBlockRead {
+            address,
+            identity,
+            routing_bucket,
+        });
+    }
+
+    resolved_hashes
+        .into_iter()
+        .zip(read_blocks_shared(cache, block_store, shard_id, &reads))
+        .filter_map(|(node_hash, bytes)| {
+            let mut projection =
+                crate::types::decode_context_node_vector_projection(&bytes?)?;
+            projection.node_hash = node_hash;
+            Some(projection)
+        })
+        .collect()
 }
 
 pub(super) fn load_context_node(

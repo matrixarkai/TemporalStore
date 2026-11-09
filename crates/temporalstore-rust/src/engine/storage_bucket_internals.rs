@@ -2958,20 +2958,21 @@ pub(super) fn sync_blocks_for_written_element_names(
 /// Returns false if any field's address is not in the hash; the caller then runs the whole-object
 /// sync exactly as before, so a shape this does not model costs a fallback rather than a stale
 /// index.
-pub(super) fn sync_written_hash_fields(
+pub(super) fn sync_written_hash_fields<'a>(
     shard: &mut ShardState,
     shard_id: ShardId,
     object_key: &str,
-    fields: &[&str],
+    fields: impl IntoIterator<Item = &'a str>,
 ) -> bool {
-    if fields.is_empty() {
+    let mut fields = fields.into_iter().peekable();
+    if fields.peek().is_none() {
         return false;
     }
     for field in fields {
         let address = shard
             .bucket_index.hashes
             .get(object_key)
-            .and_then(|held| held.get(*field))
+            .and_then(|held| held.get(field))
             .cloned();
         let Some(address) = address else {
             return false;
@@ -2984,7 +2985,7 @@ pub(super) fn sync_written_hash_fields(
             shard_id,
             "hash",
             object_key,
-            Some((*field).to_string()),
+            Some(field.to_string()),
             address,
             true,
             false,
@@ -4631,6 +4632,43 @@ pub(super) fn insert_container_tombstone_entry(
 /// would then install the same block twice under two kinds. `stage: false` says "file this block in
 /// the index; the record already knows about it".
 #[allow(clippy::too_many_arguments)]
+thread_local! {
+    /// Blocks THIS THREAD filed into a bucket index through `upsert_bucket_index_block_with`. Per
+    /// thread, so a probe counts its own writes and not a neighbouring test's.
+    static BLOCK_UPSERTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Test switch: take the whole-object sync for a hash delete, as it did before the narrow one.
+    #[cfg(test)]
+    pub(super) static WHOLE_OBJECT_HASH_DELETE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// How many blocks this thread has filed through `upsert_bucket_index_block_with`.
+pub fn bucket_block_upserts() -> u64 {
+    BLOCK_UPSERTS.with(std::cell::Cell::get)
+}
+
+/// A HASH DELETE FILES NOTHING, AND THE ANSWER IT GIVES DOES NOT DEPEND ON WHAT THE HASH HOLDS.
+///
+/// The delete has already marked its field's block deleted in the index. What the whole-object sync
+/// did afterwards was walk every field the hash still held, ask whether each was filed -- through a
+/// lookup that resolves no named element, so the answer was always no -- and file every one again,
+/// each filing shifting the object's block vector: 534 KB per delete at 200 fields and 47 MB at
+/// 3,200, 88x between the two.
+///
+/// This used to answer "does the hash still hold a field", the question the whole-object sync
+/// answered, and fall back to that sync when the hash was empty. The question is dead: a `false`
+/// takes the rebuild only for a command that does not update the bucket index directly, and
+/// `command_updates_bucket_index_directly` names `HashDelete`; and the fallback sync on an empty
+/// hash files nothing. A plant that answered `true` for an emptied hash was not caught by the
+/// equivalence guard for that reason, and no history separates the two answers.
+pub(super) fn hash_delete_maintained() -> bool {
+    #[cfg(test)]
+    if WHOLE_OBJECT_HASH_DELETE.with(std::cell::Cell::get) {
+        return false;
+    }
+    true
+}
+
 pub(super) fn upsert_bucket_index_block_with(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -4641,6 +4679,7 @@ pub(super) fn upsert_bucket_index_block_with(
     dirty: bool,
     stage: bool,
 ) {
+    BLOCK_UPSERTS.with(|cell| cell.set(cell.get().saturating_add(1)));
     upsert_bucket_index_block_with_value(
         shard,
         shard_id,
@@ -7080,8 +7119,15 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                         );
                         warm_batch.push((key, bytes.clone()));
                     }
-                    if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
-                        control_state.insert(std::sync::Arc::from(&entry.object_key[..]), series);
+                    // An unreadable block is COUNTED: this used to be an `if let Ok` that left the
+                    // series absent without a word. It is still left absent, because a zero series
+                    // would be a plausible wrong answer.
+                    match decode_control_state_block(&bytes) {
+                        Ok(series) => {
+                            control_state
+                                .insert(std::sync::Arc::from(&entry.object_key[..]), series);
+                        }
+                        Err(reason) => note_unreadable_control_state_block(&entry.object_key, &reason),
                     }
                 }
                 control_state_blocks.insert(entry.object_key.as_ref().into(), entry.address);

@@ -373,7 +373,7 @@ pub(super) struct ShardState {
     // inner types already derive Serialize, so carrying it costs only a `default` so
     // that dumps written before this still decode.
     #[serde(default)]
-    #[serde(rename = "object_block_layouts", alias = "object_page_layouts")]
+    #[serde(rename = "object_block_layouts")]
     pub(super) object_block_layouts: super::object_record::BlockLayoutStore,
     /// Per `(key, bucket)` distinct-count state, in whichever representation the bucket holds.
     ///
@@ -1404,6 +1404,23 @@ pub(super) struct BlockKeysByPosition<'a> {
     /// block's identity and its address, so two blocks share one only by being the same block --
     /// which is the same assumption `BlockIndexMap` already keys on.
     by_handle: std::collections::HashMap<u64, (&'a str, &'a Arc<str>)>,
+    /// WHETHER THIS NAMES ONLY THE OBJECTS IT WAS ASKED ABOUT ([`Self::from_parts_for_keys`]).
+    ///
+    /// A restricted inversion answers `None` for a live block of any other object, which is the
+    /// right answer for its callers and would be a defect in a whole-shard one -- so the one check
+    /// that reads "nothing is named" as "the lookup is not established" has to know which it holds.
+    restricted: bool,
+}
+
+thread_local! {
+    /// Times THIS THREAD built a block-identity inversion restricted to named keys. Per thread, so
+    /// a probe counts its own writes and not a neighbouring test's.
+    static KEYED_INVERSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many keyed inversions this thread has built.
+pub fn keyed_block_inversions() -> u64 {
+    KEYED_INVERSIONS.with(std::cell::Cell::get)
 }
 
 impl<'a> BlockKeysByPosition<'a> {
@@ -1467,6 +1484,51 @@ impl<'a> BlockKeysByPosition<'a> {
         keys
     }
 
+    /// THE RESTRICTED INVERSION OVER ALL THREE HOMES: [`Self::from_parts_for_keys`] plus the rows of
+    /// the four container maps, for the same named objects and nothing else.
+    ///
+    /// The restriction is what makes it cheap and the row home is what makes it right: a caller that
+    /// asks only about a hash's blocks and is handed an inversion without the row home reads "no
+    /// block of this object" for an object whose every ref sits on its row.
+    pub(super) fn from_homes_for_keys<'k, H, S, Z, L>(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        hashes: &'a super::recorded_map::RecordedMap<H>,
+        sets: &'a super::recorded_map::RecordedMap<S>,
+        zsets: &'a super::recorded_map::RecordedMap<Z>,
+        lists: &'a super::recorded_map::RecordedMap<L>,
+        keys: impl IntoIterator<Item = &'k str>,
+    ) -> Self
+    where
+        H: super::recorded_map::RecordedKind,
+        S: super::recorded_map::RecordedKind,
+        Z: super::recorded_map::RecordedKind,
+        L: super::recorded_map::RecordedKind,
+    {
+        // Walked twice -- once by the keyed whole-index inversion, once for the rows -- so the keys
+        // are held; there are as many as the command touched and no more.
+        let keys: Vec<&'k str> = keys.into_iter().collect();
+        let mut inversion = Self::from_parts_for_keys(objects, lookup, keys.iter().copied());
+        for key in keys {
+            if let Some((object_key, refs)) = hashes.refs_with_key(key) {
+                inversion.file_identity(H::KIND, object_key, refs);
+            }
+            if let Some((object_key, refs)) = sets.refs_with_key(key) {
+                inversion.file_identity(S::KIND, object_key, refs);
+            }
+            if let Some((object_key, refs)) = zsets.refs_with_key(key) {
+                inversion.file_identity(Z::KIND, object_key, refs);
+            }
+            if let Some((object_key, refs)) = lists.refs_with_key(key) {
+                inversion.file_identity(L::KIND, object_key, refs);
+            }
+        }
+        inversion
+    }
+
     /// FILE ONE OBJECT'S REFS INTO THE INVERSION, so a home outside `CoreIndex` can be walked in.
     ///
     /// `from_parts` walks the two homes it can see. This is how the third — a `RecordedMap` row,
@@ -1522,6 +1584,71 @@ impl<'a> BlockKeysByPosition<'a> {
         Self {
             by_position,
             by_handle,
+            restricted: false,
+        }
+    }
+
+    /// THE SAME INVERSION, FOR THE BLOCKS OF THE NAMED OBJECTS ONLY.
+    ///
+    /// [`Self::from_parts`] walks every ref of every object in the shard, so a caller that wants to
+    /// know which of the blocks in a bucket belong to ONE object (or to the few a command touched)
+    /// paid for the whole shard: two hash maps grown to the shard's block count, built and dropped
+    /// once per write. Measured at 2,000 objects of four elements, a single set removal allocated
+    /// 2.4 MB, against 80 KB at 100 objects, and nothing in the write depended on the other objects.
+    ///
+    /// This asks each stored kind for each named object instead -- a few lookups by key, bounded by
+    /// the kind count and the number of keys, never by the shard. An object found under several
+    /// kinds contributes all of them, exactly as the whole-shard walk would have.
+    ///
+    /// WHAT IT ANSWERS IS THE WHOLE-SHARD ANSWER RESTRICTED TO THE NAMED OBJECTS, and what a caller
+    /// may rely on is exactly that: for a live block of a named object the pair is the same; for a
+    /// live block of any OTHER object there is no answer, so a caller must be one that discards
+    /// blocks of objects it did not name. Every caller of this is: each compares the identity
+    /// beside a block with the key(s) it is acting on and leaves the block alone otherwise.
+    ///
+    /// DELETED BLOCKS ARE UNAFFECTED. They were never in either map -- the lookup holds no deleted
+    /// block -- and are named by the tombstone row the removal filed in the bucket, which
+    /// [`Self::identity_of`] reads from the node. Restricting the inversion cannot change what
+    /// those answer.
+    pub(super) fn from_parts_for_keys<'k>(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        keys: impl IntoIterator<Item = &'k str>,
+    ) -> Self {
+        KEYED_INVERSIONS.with(|cell| cell.set(cell.get().saturating_add(1)));
+        let mut by_position = std::collections::HashMap::new();
+        let mut by_handle = std::collections::HashMap::new();
+        let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
+            for block_ref in refs.iter() {
+                by_position.insert(
+                    (block_ref.routing_bucket, block_ref.block_ref_key),
+                    (model_id, object_key),
+                );
+                by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
+            }
+        };
+        for key in keys {
+            // THE SLOT HOME FIRST, then the lookup, as in the whole-shard walk.
+            for (kind, table) in objects {
+                if let Some((object_key, slot)) = table.get_key_value(key) {
+                    if let Some(refs) = slot.refs() {
+                        file(kind.as_str(), object_key, refs);
+                    }
+                }
+            }
+            for (model_id, objects) in &lookup.by_model {
+                if let Some((object_key, refs)) = objects.get_key_value(key) {
+                    file(model_id.as_ref(), object_key, refs);
+                }
+            }
+        }
+        Self {
+            by_position,
+            by_handle,
+            restricted: true,
         }
     }
 
@@ -1576,7 +1703,10 @@ impl<'a> BlockKeysByPosition<'a> {
     /// NAME, and the check below refuses a missing source unless this is true -- which is the
     /// difference between a skip with a reason and a skip that hides the one case that matters.
     pub(super) fn names_no_position(&self) -> bool {
-        self.by_position.is_empty()
+        // A RESTRICTED INVERSION NAMES ONLY SOME OBJECTS, so a live block it cannot name is a
+        // block of another object and not evidence of an unestablished lookup. It therefore never
+        // claims the window, which keeps the skip it licenses from being refused.
+        self.restricted || self.by_position.is_empty()
     }
 
     /// THE OBJECT A BLOCK BELONGS TO, WHEREVER IT IS FILED -- FOR ONE CALLER AND ONE REASON.
@@ -1821,6 +1951,21 @@ impl BucketMap {
 
     pub(super) fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// The buckets after `after`, in routing order, or all of them when `after` is `None`.
+    ///
+    /// What a bounded, resumable sweep walks: it starts where the last one stopped and does not
+    /// visit the buckets before it.
+    pub(super) fn range_after(
+        &self,
+        after: Option<u32>,
+    ) -> std::collections::btree_map::Range<'_, u32, BucketNode> {
+        use std::ops::Bound;
+        match after {
+            Some(bucket) => self.nodes.range((Bound::Excluded(bucket), Bound::Unbounded)),
+            None => self.nodes.range(..),
+        }
     }
 
     pub(super) fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, BucketNode> {
@@ -6391,11 +6536,8 @@ pub(super) struct BucketNode {
 pub(super) struct TombstoneElement {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    /// Stored under the key `component`: this row is written into the index dump, and a dump an
-    /// earlier build wrote must still read. The Rust field is the element name; the key stays.
-    #[serde(rename = "component")]
     pub(super) element_name: Arc<str>,
-    #[serde(rename = "block", alias = "page")]
+    #[serde(rename = "block")]
     pub(super) block: (u64, u64, u64),
 }
 
@@ -6812,9 +6954,10 @@ impl BucketNode {
 ///     engine writes does not carry it, and an index this engine writes has to load. An index
 ///     THIS engine writes will not load in an engine older than this change, which is the whole
 ///     of the break and is why it is stated here rather than discovered;
-///   * `object_ids`, `deleted_object_ids` and `page_refs` are still accepted as aliases, which is
-///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_page_field_names`
-///     holds that spelling and an alias dropped from here is a store that stops loading;
+///   * each field has ONE accepted spelling. `object_ids`, `deleted_object_ids`, `page_index` and
+///     `page_refs` are not read: a key nothing declares falls to `Ignore`, so a document that
+///     spells one loads with that field empty, which `the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones`
+///     asserts;
 ///   * the fields that had `#[serde(default)]` still default when the key is absent, and the ones
 ///     that did not still REFUSE a node that omits them. Presence comes from the wire.
 ///
@@ -6929,13 +7072,7 @@ const BUCKET_NODE_FIELDS: &[&str] = &[
     "last_dump_sequence",
     "object_index",
     "deleted_object_index",
-    // THE CANONICAL SPELLING FIRST, THE TWO OLDER ONES AFTER IT. The reader has to accept the
-    // name a converged writer will write BEFORE that writer exists, or landing the reader first
-    // buys nothing: a reader that accepts only what it would write rejects its own future as
-    // surely as one that accepts only the past rejects its history. Until this entry existed the
-    // accepted set held two RETIRED spellings and not the current one.
     "block_index",
-    "page_index",
     "tombstone_elements",
 ];
 
@@ -6968,12 +7105,12 @@ impl<'de> Deserialize<'de> for BucketNodeField {
                     "ttl_ms" => BucketNodeField::TtlMs,
                     "dirty_generation" => BucketNodeField::DirtyGeneration,
                     "last_dump_sequence" => BucketNodeField::LastDumpSequence,
-                    // The three older spellings, each alongside the one that replaced it.
-                    "object_index" | "object_ids" => BucketNodeField::ObjectIndex,
-                    "deleted_object_index" | "deleted_object_ids" => {
-                        BucketNodeField::DeletedObjectIndex
-                    }
-                    "block_index" | "page_index" | "page_refs" => BucketNodeField::BlockIndex,
+                    // One spelling each. The older ones (`object_ids`, `deleted_object_ids`,
+                    // `page_index`, `page_refs`) are not accepted: the first release carries no
+                    // installed base, and an unrecognised key falls to `Ignore` below.
+                    "object_index" => BucketNodeField::ObjectIndex,
+                    "deleted_object_index" => BucketNodeField::DeletedObjectIndex,
+                    "block_index" => BucketNodeField::BlockIndex,
                     "tombstone_elements" => BucketNodeField::TombstoneElements,
                     _ => BucketNodeField::Ignore,
                 })

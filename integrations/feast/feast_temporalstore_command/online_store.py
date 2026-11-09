@@ -373,9 +373,12 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 tracked_keys.append(hash_key)
             written += 1
 
-        hash_rows: List[Tuple[str, List[Tuple[str, bytes]]]] = []
+        prepared_rows: List[Tuple[str, int, int, List[bytes]]] = []
+        prepared_row_shape_bytes: List[int] = []
+        row_layouts: List[Tuple[str, ...]] = []
         shared_fields: Optional[Tuple[str, ...]] = None
         shared_layout = True
+        layouts: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
         for hash_key, proto_ts in latest_timestamps.items():
             serialized_values = latest_serialized_values.get(hash_key)
             if serialized_values is None:
@@ -383,13 +386,25 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     (feature_name, value, value.SerializeToString())
                     for feature_name, value in latest_values[hash_key].items()
                 ]
-            entries = [(ts_field, proto_ts.SerializeToString())]
-            entries.extend(
-                (_feature_field(view_name, feature_name), serialized_value)
-                for feature_name, _value, serialized_value in serialized_values
+            feature_names = tuple(item[0] for item in serialized_values)
+            row_fields = layouts.get(feature_names)
+            if row_fields is None:
+                row_fields = (ts_field,) + tuple(
+                    _feature_field(view_name, feature_name)
+                    for feature_name in feature_names
+                )
+                layouts[feature_names] = row_fields
+            values = [proto_ts.SerializeToString()]
+            values.extend(item[2] for item in serialized_values)
+            prepared_rows.append(
+                (hash_key, proto_ts.seconds, proto_ts.nanos, values)
             )
-            hash_rows.append((hash_key, entries))
-            row_fields = tuple(field for field, _value in entries)
+            prepared_row_shape_bytes.append(
+                4 * len(hash_key)
+                + 5 * len(values)
+                + sum(map(len, values))
+            )
+            row_layouts.append(row_fields)
             if shared_fields is None:
                 shared_fields = row_fields
             elif row_fields != shared_fields:
@@ -430,23 +445,22 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             conditional_result = client.batch_hash_timestamp_set(
                 list(shared_fields),
                 ts_field,
-                [
-                    (
-                        hash_key,
-                        latest_timestamps[hash_key].seconds,
-                        latest_timestamps[hash_key].nanos,
-                        [value for _field, value in entries],
-                    )
-                    for hash_key, entries in hash_rows
-                ],
+                prepared_rows,
+                128
+                + 4 * len(ts_field)
+                + 5
+                + 4 * sum(map(len, shared_fields))
+                + 5 * len(shared_fields)
+                + sum(prepared_row_shape_bytes)
+                + 33 * len(prepared_rows),
             )
             if conditional_result is not None:
                 conditional_handled = True
                 skipped += conditional_result[1]
 
         if not conditional_handled:
-            if defer_stored_dedup and hash_rows:
-                unique_hash_keys = [hash_key for hash_key, _entries in hash_rows]
+            if defer_stored_dedup and prepared_rows:
+                unique_hash_keys = [row[0] for row in prepared_rows]
                 reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
                 for key, values in zip(unique_hash_keys, reads):
                     raw = decode_bytes(values[0]) if values else None
@@ -456,29 +470,48 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         stored_nanos[key] = (
                             stored.seconds * 1_000_000_000 + stored.nanos
                         )
-                retained_rows: List[Tuple[str, List[Tuple[str, bytes]]]] = []
-                for hash_key, entries in hash_rows:
-                    timestamp = latest_timestamps[hash_key]
-                    event_nanos = timestamp.seconds * 1_000_000_000 + timestamp.nanos
+                retained_rows: List[Tuple[str, int, int, List[bytes]]] = []
+                retained_layouts: List[Tuple[str, ...]] = []
+                retained_row_shape_bytes: List[int] = []
+                for row, layout, row_shape_bytes in zip(
+                    prepared_rows,
+                    row_layouts,
+                    prepared_row_shape_bytes,
+                ):
+                    hash_key, seconds, nanos, _values = row
+                    event_nanos = seconds * 1_000_000_000 + nanos
                     if event_nanos <= stored_nanos.get(hash_key, 0):
                         skipped += 1
                     else:
-                        retained_rows.append((hash_key, entries))
-                hash_rows = retained_rows
+                        retained_rows.append(row)
+                        retained_layouts.append(layout)
+                        retained_row_shape_bytes.append(row_shape_bytes)
+                prepared_rows = retained_rows
+                row_layouts = retained_layouts
+                prepared_row_shape_bytes = retained_row_shape_bytes
 
             if shared_fields is not None and shared_layout and not commands:
                 client.batch_hash_multi_set(
                     list(shared_fields),
                     [
-                        (hash_key, [value for _field, value in entries])
-                        for hash_key, entries in hash_rows
+                        (hash_key, values)
+                        for hash_key, _seconds, _nanos, values in prepared_rows
                     ],
+                    128
+                    + 4 * sum(map(len, shared_fields))
+                    + 5 * len(shared_fields)
+                    + sum(prepared_row_shape_bytes)
+                    + 15 * len(prepared_rows),
                 )
-            elif hash_rows or commands:
+            elif prepared_rows or commands:
                 client.batch_write(
                     [
-                        {"kind": "hash_multi_set", "key": key, "entries": entries}
-                        for key, entries in hash_rows
+                        {
+                            "kind": "hash_multi_set",
+                            "key": row[0],
+                            "entries": list(zip(layout, row[3])),
+                        }
+                        for row, layout in zip(prepared_rows, row_layouts)
                     ]
                     + commands
                 )

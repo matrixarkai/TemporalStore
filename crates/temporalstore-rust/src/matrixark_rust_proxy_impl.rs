@@ -2415,8 +2415,8 @@ fn scope_index_ready_key(record_hash_key: &str) -> String {
 }
 
 /// Bumped when the bucket layout changes; a store whose marker holds an older value re-walks
-/// once and rebuilds. Version 2 = the type-partitioned scopeless bucket.
-const SCOPE_INDEX_LAYOUT_VERSION: &str = "2";
+/// once and rebuilds. Version 3 adds session buckets beside the user buckets.
+const SCOPE_INDEX_LAYOUT_VERSION: &str = "3";
 
 /// The scope buckets a record files its field under, from its OWN scope_key -- the same source
 /// the scope matcher reads.
@@ -2428,53 +2428,62 @@ const SCOPE_INDEX_LAYOUT_VERSION: &str = "2";
 /// "none" (for untyped queries) AND "none:{record_type}" (so a typed query only drags in
 /// scopeless records of the types it asked for). "partial" = a scope_key lacking a tenant or
 /// user part: the matcher rejects those against any pinned query, so nothing fetches the bucket.
-fn record_scope_buckets(record: &Value) -> Vec<String> {
-    let scope_key = candidate_scope_key(record);
+fn scope_buckets(scope_key: &str, record_type: &str) -> Vec<String> {
     if scope_key.is_empty() {
-        let record_type = record
-            .get("record_type")
-            .and_then(Value::as_str)
-            .unwrap_or("");
         return vec!["none".to_string(), format!("none:{record_type}")];
     }
-    let parts = parse_scope_key(&scope_key);
+    let parts = parse_scope_key(scope_key);
     match (parts.get("t"), parts.get("u")) {
         (Some(tenant), Some(user)) if *tenant != 0 && *user != 0 => {
-            vec![format!("t={tenant}|u={user}")]
+            let mut buckets = vec![format!("t={tenant}|u={user}")];
+            if let Some(session) = parts.get("s").filter(|session| **session != 0) {
+                buckets.push(format!("t={tenant}|u={user}|s={session}"));
+            }
+            buckets
         }
         _ => vec!["partial".to_string()],
     }
+}
+
+fn record_scope_buckets(record: &Value) -> Vec<String> {
+    let scope_key = candidate_scope_key(record);
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    scope_buckets(&scope_key, record_type)
 }
 
 /// `record_scope_buckets` over the borrowed parse. Must agree with it bucket-for-bucket, since
 /// the two run against the same store: a record filed under a different bucket by one path than
 /// the other is a record an index-served scan cannot find.
 fn facts_scope_buckets(fact: &IndexFacts<'_>) -> Vec<String> {
-    let scope_key = fact.scope_key();
-    if scope_key.is_empty() {
-        let record_type = fact.record_type.unwrap_or("");
-        return vec!["none".to_string(), format!("none:{record_type}")];
-    }
-    let parts = parse_scope_key(scope_key);
-    match (parts.get("t"), parts.get("u")) {
-        (Some(tenant), Some(user)) if *tenant != 0 && *user != 0 => {
-            vec![format!("t={tenant}|u={user}")]
-        }
-        _ => vec!["partial".to_string()],
-    }
+    scope_buckets(fact.scope_key(), fact.record_type.unwrap_or(""))
 }
 
 /// The bucket a query pins, or None when the query is not pinned enough for the scope index.
 ///
-/// Pinned = non-zero tenant and user hashes with the user marked explicit. A tenant-wide query
-/// would need every user's bucket, and a session-mode refinement is applied by the shared filter
-/// loop after the fetch -- the index only has to be a superset.
+/// Pinned = non-zero tenant and user hashes with the user marked explicit. A strict session query
+/// selects its own narrower bucket; ordinary and cross-session queries retain the user bucket.
+/// A tenant-wide query would need every user's bucket and therefore takes the walk.
 fn query_scope_bucket(query_scope: Option<&Value>) -> Option<String> {
     let query = query_scope.filter(|value| value.is_object())?;
-    let tenant = query.get("tenant_hash").and_then(Value::as_u64).unwrap_or(0);
+    let tenant = query
+        .get("tenant_hash")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let user = query.get("user_hash").and_then(Value::as_u64).unwrap_or(0);
     if tenant == 0 || user == 0 || !scope_key_explicit(query, "user_id") {
         return None;
+    }
+    if scope_key_explicit(query, "session_id") && session_scope_mode(query) == "only" {
+        let session = query
+            .get("session_hash")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if session != 0 {
+            return Some(format!("t={tenant}|u={user}|s={session}"));
+        }
     }
     Some(format!("t={tenant}|u={user}"))
 }

@@ -3,6 +3,76 @@
 
 //! Stream read/scan + batch execute + index snapshot publish methods for TemporalEngine, split from engine.rs.
 use super::*;
+use crate::types::{BatchConditionalWriteResponse, BatchWriteError};
+use serde::ser::SerializeSeq;
+
+struct ProjectedBatchHashMultiGetRow(execute_on_shard::ProjectedHashValues);
+
+struct BinarySlice<'a>(&'a [u8]);
+
+impl serde::Serialize for BinarySlice<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(self.0)
+    }
+}
+
+impl ProjectedBatchHashMultiGetRow {
+    fn encoded_capacity(&self) -> usize {
+        if let execute_on_shard::ProjectedHashValues::Missing(field_count) = &self.0 {
+            return field_count.saturating_add(5);
+        }
+        (0..self.0.len()).fold(5usize, |capacity, index| {
+            capacity.saturating_add(
+                self.0
+                    .value_at(index)
+                    .map_or(1, |value| value.len().saturating_add(5)),
+            )
+        })
+    }
+}
+
+impl serde::Serialize for ProjectedBatchHashMultiGetRow {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for index in 0..self.0.len() {
+            match self.0.value_at(index) {
+                Some(value) => seq.serialize_element(&Some(BinarySlice(value)))?,
+                None => seq.serialize_element(&Option::<BinarySlice<'_>>::None)?,
+            }
+        }
+        seq.end()
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ProjectedBatchHashMultiGetResponse {
+    status: Status,
+    rows: Vec<ProjectedBatchHashMultiGetRow>,
+    errors: Vec<BatchHashMultiGetError>,
+}
+
+fn encode_projected_hash_multi_get_response(
+    response: ProjectedBatchHashMultiGetResponse,
+) -> Vec<u8> {
+    let capacity = response
+        .rows
+        .iter()
+        .map(ProjectedBatchHashMultiGetRow::encoded_capacity)
+        .sum::<usize>()
+        .saturating_add(response.errors.len().saturating_mul(128))
+        .saturating_add(128);
+    let mut body = Vec::with_capacity(capacity);
+    let mut serializer = rmp_serde::Serializer::new(&mut body).with_struct_map();
+    if serde::Serialize::serialize(&response, &mut serializer).is_ok() {
+        return body;
+    }
+    rmp_serde::to_vec_named(&BatchHashMultiGetResponse {
+        status: Status::error("response_encoding_failed", "could not encode compact hash rows"),
+        rows: Vec::new(),
+        errors: Vec::new(),
+    })
+    .unwrap_or_default()
+}
 
 enum BatchCommandSource<'a> {
     Commands(std::vec::IntoIter<Command>),
@@ -17,6 +87,116 @@ enum BatchCommandSource<'a> {
         rows: std::vec::IntoIter<BatchHashTimestampSetRow>,
         completed_keys: &'a mut Vec<String>,
     },
+}
+
+struct BatchExecutionResult {
+    status: Status,
+    responses: Vec<ExecuteResponse>,
+    applied: usize,
+    skipped: usize,
+    errors: Vec<BatchWriteError>,
+}
+
+struct BatchResultCollector {
+    conditional_counts: Option<bool>,
+    responses: Vec<ExecuteResponse>,
+    applied: usize,
+    skipped: usize,
+    errors: Vec<BatchWriteError>,
+    next_index: usize,
+}
+
+impl BatchResultCollector {
+    fn new(command_count: usize, conditional_counts: Option<bool>) -> Self {
+        Self {
+            conditional_counts,
+            responses: if conditional_counts.is_none() {
+                Vec::with_capacity(command_count)
+            } else {
+                Vec::new()
+            },
+            applied: 0,
+            skipped: 0,
+            errors: Vec::new(),
+            next_index: 0,
+        }
+    }
+
+    fn push_success(&mut self, response: CommandResponse) {
+        let index = self.next_index;
+        self.next_index += 1;
+        let Some(conditional) = self.conditional_counts else {
+            self.responses.push(ExecuteResponse {
+                status: Status::ok(),
+                response,
+            });
+            return;
+        };
+        if !conditional {
+            self.applied += 1;
+            return;
+        }
+        match response {
+            CommandResponse::Integer { value: 1 } => self.applied += 1,
+            CommandResponse::Integer { value: 0 } => self.skipped += 1,
+            _ => self.errors.push(BatchWriteError {
+                index,
+                status: Status::error(
+                    "unexpected_write_response",
+                    "conditional hash write returned an invalid response",
+                ),
+            }),
+        }
+    }
+
+    fn push_error(&mut self, status: Status) {
+        let index = self.next_index;
+        self.next_index += 1;
+        if self.conditional_counts.is_none() {
+            self.responses.push(ExecuteResponse {
+                status,
+                response: CommandResponse::Empty,
+            });
+        } else {
+            self.errors.push(BatchWriteError { index, status });
+        }
+    }
+
+    fn finish(self, status: Status) -> BatchExecutionResult {
+        BatchExecutionResult {
+            status,
+            responses: self.responses,
+            applied: self.applied,
+            skipped: self.skipped,
+            errors: self.errors,
+        }
+    }
+}
+
+impl BatchExecutionResult {
+    fn into_full(self) -> BatchExecuteResponse {
+        BatchExecuteResponse {
+            status: self.status,
+            responses: self.responses,
+        }
+    }
+
+    fn into_compact(self) -> BatchConditionalWriteResponse {
+        if !self.status.ok {
+            return BatchConditionalWriteResponse {
+                status: self.status,
+                applied: 0,
+                skipped: 0,
+                errors: Vec::new(),
+            };
+        }
+        BatchConditionalWriteResponse {
+            status: self.status,
+            applied: self.applied,
+            skipped: self.skipped,
+            errors: self.errors,
+        }
+    }
 }
 
 impl BatchCommandSource<'_> {
@@ -71,7 +251,7 @@ impl BatchCommandSource<'_> {
         }
     }
 
-    fn recycle(&mut self, command: Command) {
+    fn recycle(&mut self, command: Command, mutated: bool) {
         match self {
             Self::Commands(_) => {}
             Self::SharedHashRows {
@@ -84,7 +264,9 @@ impl BatchCommandSource<'_> {
                 };
                 debug_assert!(shared_entries.is_empty());
                 *shared_entries = entries;
-                completed_keys.push(key);
+                if mutated {
+                    completed_keys.push(key);
+                }
             }
             Self::SharedTimestampRows {
                 entries: shared_entries,
@@ -104,7 +286,9 @@ impl BatchCommandSource<'_> {
                 debug_assert!(shared_entries.is_empty());
                 *shared_entries = entries;
                 *timestamp_field = Some(returned_timestamp_field);
-                completed_keys.push(key);
+                if mutated {
+                    completed_keys.push(key);
+                }
             }
         }
     }
@@ -157,7 +341,7 @@ mod shared_timestamp_source_tests {
             .map(|(field, _)| field.as_ptr())
             .collect::<Vec<_>>();
         let entries_ptr = entries.as_ptr();
-        source.recycle(first);
+        source.recycle(first, true);
 
         let second = source.next_command().expect("second row");
         let Command::HashMultiSet { key, entries } = &second else {
@@ -172,7 +356,7 @@ mod shared_timestamp_source_tests {
             field_ptrs
         );
         assert_eq!(entries.as_ptr(), entries_ptr);
-        source.recycle(second);
+        source.recycle(second, true);
         drop(source);
         assert_eq!(completed_keys[0].as_ptr(), first_key_ptr);
         assert_eq!(completed_keys[1].as_ptr(), second_key_ptr);
@@ -228,7 +412,7 @@ mod shared_timestamp_source_tests {
             .iter()
             .map(|(field, _)| field.as_ptr())
             .collect::<Vec<_>>();
-        source.recycle(first);
+        source.recycle(first, true);
 
         let second = source.next_command().expect("second row");
         let Command::HashMultiSetIfTimestampOlder {
@@ -250,10 +434,59 @@ mod shared_timestamp_source_tests {
                 .collect::<Vec<_>>(),
             field_ptrs
         );
-        source.recycle(second);
+        source.recycle(second, true);
         drop(source);
         assert_eq!(completed_keys[0].as_ptr(), first_key_ptr);
         assert_eq!(completed_keys[1].as_ptr(), second_key_ptr);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    fn compact_write_results_do_not_allocate_a_success_vector() {
+        const ROWS: usize = 4096;
+
+        let full_probe = crate::alloc_probe::Probe::start();
+        let mut full = BatchResultCollector::new(ROWS, None);
+        for _ in 0..ROWS {
+            full.push_success(CommandResponse::Empty);
+        }
+        let full = full.finish(Status::ok());
+        let full_cost = full_probe.stop();
+
+        let compact_probe = crate::alloc_probe::Probe::start();
+        let mut compact = BatchResultCollector::new(ROWS, Some(false));
+        for _ in 0..ROWS {
+            compact.push_success(CommandResponse::Empty);
+        }
+        let compact = compact.finish(Status::ok());
+        let compact_cost = compact_probe.stop();
+
+        assert_eq!(full.responses.len(), ROWS);
+        assert_eq!(compact.applied, ROWS);
+        assert!(compact.responses.is_empty());
+        assert!(compact.errors.is_empty());
+        assert_eq!(compact_cost.allocs, 1, "compact={compact_cost:?}");
+        assert!(compact_cost.alloc_bytes <= 8, "compact={compact_cost:?}");
+        assert!(
+            full_cost.allocs >= (ROWS + 1) as u64,
+            "full={full_cost:?}"
+        );
+        assert!(
+            full_cost.alloc_bytes
+                >= (ROWS * std::mem::size_of::<ExecuteResponse>()) as u64,
+            "full={full_cost:?}"
+        );
+
+        let mut failed = BatchResultCollector::new(ROWS, Some(false));
+        failed.push_success(CommandResponse::Empty);
+        let failed = failed
+            .finish(Status::error("wal_commit_failed", "not durable"))
+            .into_compact();
+        assert!(!failed.status.ok);
+        assert_eq!(failed.applied, 0);
+        assert_eq!(failed.skipped, 0);
+        assert!(failed.errors.is_empty());
+        std::hint::black_box((full, compact));
     }
 }
 
@@ -425,7 +658,10 @@ impl TemporalEngine {
     fn visit_batch_hash_multi_get(
         &self,
         request: BatchHashMultiGetRequest,
-        mut visit: impl FnMut(usize, Result<Vec<Option<Vec<u8>>>, Status>),
+        mut visit: impl FnMut(
+            usize,
+            Result<execute_on_shard::ProjectedHashValues, Status>,
+        ),
     ) -> Result<(), Status> {
         let BatchHashMultiGetRequest {
             shard_id,
@@ -483,7 +719,10 @@ impl TemporalEngine {
                     continue;
                 }
                 match item.response {
-                    CommandResponse::Values { values } => visit(index, Ok(values)),
+                    CommandResponse::Values { values } => visit(
+                        index,
+                        Ok(execute_on_shard::ProjectedHashValues::Owned(values)),
+                    ),
                     _ => visit(
                         index,
                         Err(Status::error(
@@ -514,15 +753,22 @@ impl TemporalEngine {
             }
         }
 
+        let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
+        let read_admission_enabled =
+            !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
+        let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+        let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
         for (index, key) in keys.iter().enumerate() {
-            let rejected = if !raft_applying() && !replaying_wal() {
-                if !self.charge_quota(shard_id, quota::QuotaKind::Read) {
+            let rejected = if enforce_foreground_limits
+                && (quota_checks_enabled || read_admission_enabled)
+            {
+                if quota_checks_enabled && !self.charge_quota(shard_id, quota::QuotaKind::Read) {
                     Some(Status::error(
                         "quota_exhausted",
                         format!("shard {shard_id} is over its read rate limit"),
                     ))
-                } else {
+                } else if read_admission_enabled {
                     self.check_admission(
                         shard_id,
                         false,
@@ -530,6 +776,8 @@ impl TemporalEngine {
                         info.table_name.as_deref(),
                     )
                     .err()
+                } else {
+                    None
                 }
             } else {
                 None
@@ -539,7 +787,7 @@ impl TemporalEngine {
                 continue;
             }
 
-            let outcome = execute_on_shard::execute_hash_multi_get(
+            let values = execute_on_shard::execute_hash_multi_get_projected(
                 &self.cache,
                 &self.block_store,
                 shard_id,
@@ -549,24 +797,15 @@ impl TemporalEngine {
                 key,
                 &fields,
                 &projection_plan,
+                &mut projection_scratch,
             );
-            debug_assert!(!outcome.mutated, "TTL state must use the generic batch path");
             let now = now_ms();
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                 let routing_bucket =
                     block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
                 shard.bucket_recency.insert(routing_bucket, now);
             });
-            match outcome.response {
-                CommandResponse::Values { values } => visit(index, Ok(values)),
-                _ => visit(
-                    index,
-                    Err(Status::error(
-                        "unexpected_read_response",
-                        "hash multi-get returned a non-values response",
-                    )),
-                ),
-            }
+            visit(index, Ok(values));
         }
         Ok(())
     }
@@ -580,7 +819,7 @@ impl TemporalEngine {
             responses.push(match result {
                 Ok(values) => ExecuteResponse {
                     status: Status::ok(),
-                    response: CommandResponse::Values { values },
+                    response: CommandResponse::Values { values: values.into_owned() },
                 },
                 Err(status) => ExecuteResponse {
                     status,
@@ -603,7 +842,9 @@ impl TemporalEngine {
         let mut rows = Vec::with_capacity(request.keys.len());
         let mut errors = Vec::new();
         let status = match self.visit_batch_hash_multi_get(request, |index, result| match result {
-            Ok(values) => rows.push(BatchHashMultiGetRow(values)),
+            Ok(values) => {
+                rows.push(BatchHashMultiGetRow(values.into_owned()));
+            }
             Err(status) => {
                 errors.push(BatchHashMultiGetError { index, status });
                 rows.push(BatchHashMultiGetRow(vec![None; field_count]));
@@ -619,13 +860,42 @@ impl TemporalEngine {
         }
     }
 
+    /// Encode compact shared-field rows directly from retained packed frames.
+    pub fn batch_hash_multi_get_compact_msgpack(
+        &self,
+        request: BatchHashMultiGetRequest,
+    ) -> Vec<u8> {
+        let field_count = request.fields.len();
+        let mut rows = Vec::with_capacity(request.keys.len());
+        let mut errors = Vec::new();
+        let status = match self.visit_batch_hash_multi_get(request, |index, result| match result {
+            Ok(values) => rows.push(ProjectedBatchHashMultiGetRow(values)),
+            Err(status) => {
+                errors.push(BatchHashMultiGetError { index, status });
+                rows.push(ProjectedBatchHashMultiGetRow(
+                    execute_on_shard::ProjectedHashValues::Missing(field_count),
+                ));
+            }
+        }) {
+            Ok(()) => Status::ok(),
+            Err(status) => status,
+        };
+        encode_projected_hash_multi_get_response(ProjectedBatchHashMultiGetResponse {
+            status,
+            rows,
+            errors,
+        })
+    }
+
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.batch_execute_inner(
             request.shard_id,
             BatchCommandSource::Commands(request.commands.into_iter()),
             false,
             None,
+            None,
         )
+        .into_full()
     }
 
     /// Execute a batch with synchronous storage regardless of the shard's async setting.
@@ -638,21 +908,25 @@ impl TemporalEngine {
             BatchCommandSource::Commands(request.commands.into_iter()),
             false,
             Some(false),
+            None,
         )
+        .into_full()
     }
 
     pub(crate) fn batch_execute_shared_hash_rows(
         &self,
         request: BatchHashMultiSetRequest,
-    ) -> (BatchExecuteResponse, Vec<String>) {
+    ) -> (BatchConditionalWriteResponse, Vec<String>) {
         if !crate::wal::wal_data_only_enabled() {
             return (
-                BatchExecuteResponse {
+                BatchConditionalWriteResponse {
                     status: Status::error(
                         "data_only_wal_required",
                         "shared hash rows require the data-only WAL",
                     ),
-                    responses: Vec::new(),
+                    applied: 0,
+                    skipped: 0,
+                    errors: Vec::new(),
                 },
                 Vec::new(),
             );
@@ -671,7 +945,9 @@ impl TemporalEngine {
             },
             true,
             None,
-        );
+            Some(false),
+        )
+        .into_compact();
         (response, completed_keys)
     }
 
@@ -682,15 +958,17 @@ impl TemporalEngine {
     pub(crate) fn batch_execute_packed_hash_rows(
         &self,
         request: BatchHashTimestampSetRequest,
-    ) -> (BatchExecuteResponse, Vec<String>) {
+    ) -> (BatchConditionalWriteResponse, Vec<String>) {
         if !crate::wal::wal_data_only_enabled() {
             return (
-                BatchExecuteResponse {
+                BatchConditionalWriteResponse {
                     status: Status::error(
                         "data_only_wal_required",
                         "shared timestamp rows require the data-only WAL",
                     ),
-                    responses: Vec::new(),
+                    applied: 0,
+                    skipped: 0,
+                    errors: Vec::new(),
                 },
                 Vec::new(),
             );
@@ -710,7 +988,9 @@ impl TemporalEngine {
             },
             true,
             None,
-        );
+            Some(true),
+        )
+        .into_compact();
         (response, completed_keys)
     }
 
@@ -720,7 +1000,8 @@ impl TemporalEngine {
         mut command_source: BatchCommandSource<'_>,
         reuse_hash_command_metadata: bool,
         async_storage_override: Option<bool>,
-    ) -> BatchExecuteResponse {
+        compact_conditional: Option<bool>,
+    ) -> BatchExecutionResult {
         let reuse_hash_command_metadata =
             reuse_hash_command_metadata && crate::wal::wal_data_only_enabled();
         // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
@@ -741,12 +1022,9 @@ impl TemporalEngine {
         }
         let _drain_staged = DrainStagedOnExit;
         let command_count = command_source.command_count();
-        let mut responses = Vec::with_capacity(command_count);
+        let mut results = BatchResultCollector::new(command_count, compact_conditional);
         if command_count == 0 {
-            return BatchExecuteResponse {
-                status: Status::ok(),
-                responses,
-            };
+            return results.finish(Status::ok());
         }
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
@@ -757,10 +1035,10 @@ impl TemporalEngine {
             // (client/client_retry.rs status_is_topology_retryable) and refreshes + retries -- but it
             // keys on the batch-level status, which the old ok+N-errors shape left ok, so the
             // client never refreshed and kept hitting the wrong node. Return it batch-level.
-            return BatchExecuteResponse {
-                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
-                responses: Vec::new(),
-            };
+            return results.finish(Status::error(
+                "shard_not_loaded",
+                "shard is not loaded on this server",
+            ));
         };
         let mut config = self
             .configs
@@ -778,6 +1056,12 @@ impl TemporalEngine {
             .or_else(|| config.table_write_qps.filter(|limit| *limit > 0))
             .is_some();
         let info = self.request_shard_info(shard_id, table_admission_enabled);
+        let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
+        let read_admission_enabled =
+            !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
+        let write_admission_enabled =
+            !admission_limits(shard_id, true, &config, info.table_name.as_deref()).is_empty();
+        let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
         // but not yet serving. Reject the whole batch with a retryable status so batch writes
         // cannot interleave with replay (anchor regression / double-apply) -- the batch path
@@ -787,13 +1071,10 @@ impl TemporalEngine {
             // Batch-level topology-retryable error with empty responses, as above (returns a
             // partition-level error here, not a per-command one), so the client refreshes topology
             // and retries rather than seeing an ok batch of failed commands.
-            return BatchExecuteResponse {
-                status: Status::error(
+            return results.finish(Status::error(
                     "shard_not_loaded",
                     "shard is recovering (WAL replay in progress)",
-                ),
-                responses: Vec::new(),
-            };
+                ));
         }
         let readonly = info.readonly;
         let start_routing_bucket = info.start_routing_bucket;
@@ -835,6 +1116,10 @@ impl TemporalEngine {
         let mut wal_commands = Vec::new();
         let mut wal_payloads_elided = false;
         let mut context_embedding_commands = Vec::new();
+        // Async and bulk writes defer served-index persistence, so they do not consume the
+        // per-key delta metadata below. Building it anyway clones every touched hash key and
+        // field, then drops the complete batch without writing it.
+        let persist_index_delta = !config.async_storage && !bulk_ingest_mode();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
@@ -854,11 +1139,11 @@ impl TemporalEngine {
         while let Some(command) = command_source.next_command() {
             let write_command = is_write_command(&command);
             if readonly && write_command {
-                responses.push(ExecuteResponse {
-                    status: Status::error("readonly_shard", "readonly shard rejects write command"),
-                    response: CommandResponse::Empty,
-                });
-                command_source.recycle(command);
+                results.push_error(Status::error(
+                    "readonly_shard",
+                    "readonly shard rejects write command",
+                ));
+                command_source.recycle(command, false);
                 continue;
             }
             // Exempt under raft apply and under replay, as the single-command path is: a
@@ -872,7 +1157,14 @@ impl TemporalEngine {
             // does route here would otherwise arrive at an ungated limit, and the failure it
             // produces (a follower quietly skipping a committed entry) is not one that shows up
             // as an error anywhere.
-            if !raft_applying() && !replaying_wal() {
+            if enforce_foreground_limits
+                && (quota_checks_enabled
+                    || if write_command {
+                        write_admission_enabled
+                    } else {
+                        read_admission_enabled
+                    })
+            {
                 // Charged per COMMAND, not per batch. The single-command path spends one token a
                 // command, and a batch is not one unit of work -- a limit that counted it as one
                 // would be escaped by batching, which is how most traffic arrives here.
@@ -881,9 +1173,8 @@ impl TemporalEngine {
                 } else {
                     quota::QuotaKind::Read
                 };
-                if !self.charge_quota(shard_id, kind) {
-                    responses.push(ExecuteResponse {
-                        status: Status::error(
+                if quota_checks_enabled && !self.charge_quota(shard_id, kind) {
+                    results.push_error(Status::error(
                             "quota_exhausted",
                             format!(
                                 "shard {} is over its {} rate limit",
@@ -893,32 +1184,32 @@ impl TemporalEngine {
                                     quota::QuotaKind::Read => "read",
                                 }
                             ),
-                        ),
-                        response: CommandResponse::Empty,
-                    });
-                    command_source.recycle(command);
+                        ));
+                    command_source.recycle(command, false);
                     continue;
                 }
-                if let Err(status) = self.check_admission(
-                    shard_id,
-                    write_command,
-                    &config,
-                    info.table_name.as_deref(),
-                )
-                {
-                    responses.push(ExecuteResponse {
-                        status,
-                        response: CommandResponse::Empty,
-                    });
-                    command_source.recycle(command);
-                    continue;
+                let admission_enabled = if write_command {
+                    write_admission_enabled
+                } else {
+                    read_admission_enabled
+                };
+                if admission_enabled {
+                    if let Err(status) = self.check_admission(
+                        shard_id,
+                        write_command,
+                        &config,
+                        info.table_name.as_deref(),
+                    ) {
+                        results.push_error(status);
+                        command_source.recycle(command, false);
+                        continue;
+                    }
                 }
             }
             // Exempt under raft apply and under replay, as the single-command path is and for
             // the same reason. Symmetry here, on the same footing as the admission guard above:
             // neither reaches this function today.
-            if !raft_applying()
-                && !replaying_wal()
+            if enforce_foreground_limits
                 && write_command
                 && config
                     .maxmemory_bytes
@@ -927,14 +1218,11 @@ impl TemporalEngine {
                     .map(|limit| self.block_store.slab_summary().total_known_physical_bytes >= limit)
                     .unwrap_or(false)
             {
-                responses.push(ExecuteResponse {
-                    status: Status::error(
+                results.push_error(Status::error(
                         "storage_quota_exceeded",
                         "shard maxmemory_bytes limit has been reached",
-                    ),
-                    response: CommandResponse::Empty,
-                });
-                command_source.recycle(command);
+                    ));
+                command_source.recycle(command, false);
                 continue;
             }
             if let Err(status) = validate_command_preconditions(
@@ -944,34 +1232,36 @@ impl TemporalEngine {
                 shard,
                 &command,
             ) {
-                responses.push(ExecuteResponse {
-                    status,
-                    response: CommandResponse::Empty,
-                });
-                command_source.recycle(command);
+                results.push_error(status);
+                command_source.recycle(command, false);
                 continue;
             }
-            let object_keys = command_object_keys(&command);
-            // What the touched keys held before this command, so the capture below can be
-            // skipped when nothing was removed. Sizes only -- no allocation.
-            let membership_before: Vec<(usize, Option<u64>)> = object_keys
-                .iter()
-                .map(|key| {
-                    let size = key_membership_size(shard, key);
-                    let deadline = shard.expires_at_ms().get(key.as_str()).copied();
-                    (size, deadline)
-                })
-                .collect();
-            let feature_trimmed_membership = command_will_trim_feature_membership(
-                &command,
-                shard,
-                config.feature_max_size,
-            );
             let reuse_consumed_metadata = reuse_hash_command_metadata
                 && matches!(
                     &command,
                     Command::HashMultiSet { .. }
                         | Command::HashMultiSetIfTimestampOlder { .. }
+                );
+            // Shared async hash rows return the consumed command as their post-write metadata.
+            // Borrow its key below instead of cloning the same String into a one-element Vec.
+            let defer_object_key_clone = reuse_consumed_metadata && !persist_index_delta;
+            let mut owned_object_keys =
+                (!defer_object_key_clone).then(|| command_object_keys(&command));
+            // Only a persisted served-index delta consumes this state. Async and bulk writes
+            // defer that delta, so avoid even the map probes on their per-row path.
+            let membership_before = persist_index_delta.then(|| {
+                key_state_before(
+                    shard,
+                    owned_object_keys
+                        .as_deref()
+                        .expect("persisted index delta owns command keys"),
+                )
+            });
+            let feature_trimmed_membership = persist_index_delta
+                && command_will_trim_feature_membership(
+                    &command,
+                    shard,
+                    config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
             let (outcome, returned_post_write) = match command {
@@ -985,6 +1275,7 @@ impl TemporalEngine {
                             end_routing_bucket,
                             shard,
                             config.async_storage,
+                            true,
                             key,
                             entries,
                         );
@@ -1005,6 +1296,7 @@ impl TemporalEngine {
                             start_routing_bucket,
                             end_routing_bucket,
                             shard,
+                            config.async_storage,
                             key,
                             timestamp_field,
                             timestamp_seconds,
@@ -1042,6 +1334,16 @@ impl TemporalEngine {
             let command_for_post_write_ref = command_for_post_write
                 .as_ref()
                 .expect("post-write command remains available until WAL or recycle");
+            let object_keys: &[String] = match owned_object_keys.as_deref() {
+                Some(keys) => keys,
+                None => match command_for_post_write_ref {
+                    Command::HashMultiSet { key, .. }
+                    | Command::HashMultiSetIfTimestampOlder { key, .. } => {
+                        std::slice::from_ref(key)
+                    }
+                    _ => unreachable!("only shared hash rows defer their key clone"),
+                },
+            };
             let payload_elided = reuse_consumed_metadata;
             if Self::command_updates_context_embedding(command_for_post_write_ref) {
                 context_embedding_commands.push(command_for_post_write_ref.clone());
@@ -1053,7 +1355,7 @@ impl TemporalEngine {
                 crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                     for_each_precomputed_touched_key(
                         command_for_post_write_ref,
-                        &object_keys,
+                        object_keys,
                         |key| {
                             let recency_bucket = block_routing_bucket(
                                 key,
@@ -1070,20 +1372,33 @@ impl TemporalEngine {
                 // Same question as the single-command path, through the SAME function: a
                 // membership shrink OR a deadline change. Two spellings of this test is how
                 // one of them keeps a bug the other fixed, so there is only one.
-                if !batch_membership_shrank {
+                if persist_index_delta && !batch_membership_shrank {
                     batch_membership_shrank = feature_trimmed_membership
                         || delta_key_state_change(
                             shard,
-                            &object_keys,
-                            &membership_before,
+                            object_keys,
+                            membership_before
+                                .as_ref()
+                                .expect("persisted index delta captured pre-write state")
+                                .as_slice(),
                         );
                 }
-                let written_element_names =
-                    command_upsert_element_names(command_for_post_write_ref, shard);
-                batch_touched_container_elements.extend(command_touched_container_elements(
+                let hash_command = matches!(
                     command_for_post_write_ref,
-                    shard,
-                ));
+                    Command::HashSet { .. }
+                        | Command::HashMultiSet { .. }
+                        | Command::HashMultiSetIfTimestampOlder { .. }
+                        | Command::HashIncrBy { .. }
+                );
+                let written_element_names = (!hash_command || persist_index_delta)
+                    .then(|| command_upsert_element_names(command_for_post_write_ref, shard))
+                    .flatten();
+                if persist_index_delta {
+                    batch_touched_container_elements.extend(command_touched_container_elements(
+                        command_for_post_write_ref,
+                        shard,
+                    ));
+                }
                 if object_keys.is_empty() {
                     rebuild_bucket_block_ownership(
                         shard_id,
@@ -1092,7 +1407,7 @@ impl TemporalEngine {
                         end_routing_bucket,
                     );
                 } else {
-                    for object_key in &object_keys {
+                    for object_key in object_keys {
                         // `mark_object_dirty` records the key together with the
                         // routing bucket it computes on the next line. Inserting it here as well
                         // was redundant when the set was flat and is wrong now: this site does
@@ -1116,21 +1431,44 @@ impl TemporalEngine {
                 let maintained_bucket_index = if shard.bucket_index.bucket_map.is_empty() {
                     false
                 } else {
+                    let narrow_hash = match command_for_post_write_ref {
+                        Command::HashSet { key, field, .. }
+                        | Command::HashIncrBy { key, field, .. } => {
+                            crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                shard,
+                                shard_id,
+                                key,
+                                std::iter::once(field.as_str()),
+                            )
+                        }
+                        Command::HashMultiSet { key, entries }
+                        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
+                            crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                shard,
+                                shard_id,
+                                key,
+                                entries.iter().map(|(field, _)| field.as_str()),
+                            )
+                        }
+                        _ => false,
+                    };
                     // Prefer the element names this command actually wrote. The whole-object sync
                     // below re-upserts every field the object holds, which is quadratic in that
                     // count; this is one upsert per written element name. It reports false when it
                     // cannot model the write, and the whole-object sync then runs.
-                    let narrow = match written_element_names.as_deref() {
-                        Some(element_names) => {
-                            crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
-                                shard,
-                                shard_id,
-                                element_names,
-                            )
-                        }
-                        None => false,
-                    };
-                    narrow
+                    let narrow = !hash_command
+                        && match written_element_names.as_deref() {
+                            Some(element_names) => {
+                                crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
+                                    shard,
+                                    shard_id,
+                                    element_names,
+                                )
+                            }
+                            None => false,
+                        };
+                    narrow_hash
+                        || narrow
                         || (!object_keys.is_empty()
                             && object_keys.iter().all(|object_key| {
                                 crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
@@ -1140,13 +1478,21 @@ impl TemporalEngine {
                                 )
                             }))
                 };
-                match (&mut batch_upsert_element_names, written_element_names) {
-                    (Some(collected), Some(element_names)) => collected.extend(element_names),
-                    (state, _) => *state = None,
+                if persist_index_delta {
+                    match (&mut batch_upsert_element_names, written_element_names) {
+                        (Some(collected), Some(element_names)) => collected.extend(element_names),
+                        (state, _) => *state = None,
+                    }
                 }
                 // Every per-command consumer above borrows these keys. The batch delta keeps
                 // them beyond this iteration, so transfer ownership only after maintenance.
-                delta_command_keys.extend(object_keys);
+                if persist_index_delta {
+                    delta_command_keys.extend(
+                        owned_object_keys
+                            .take()
+                            .expect("persisted index delta owns command keys"),
+                    );
+                }
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
                     // A command that writes no block cannot have changed the block index, so a
@@ -1180,12 +1526,9 @@ impl TemporalEngine {
                 }
             }
             if let Some(command) = command_for_post_write.take() {
-                command_source.recycle(command);
+                command_source.recycle(command, outcome.mutated);
             }
-            responses.push(ExecuteResponse {
-                status: Status::ok(),
-                response: outcome.response,
-            });
+            results.push_success(outcome.response);
         }
         if mutated_any {
             if rebuilt_bucket_index {
@@ -1229,13 +1572,10 @@ impl TemporalEngine {
             let use_data_only =
                 crate::wal::wal_data_only_enabled() && !staged_outcomes.is_empty() && recoverable;
             if wal_payloads_elided && !use_data_only {
-                return BatchExecuteResponse {
-                    status: Status::error(
+                return results.finish(Status::error(
                         "wal_commit_failed",
                         "packed hash outcomes were not recoverable from the data-only WAL",
-                    ),
-                    responses,
-                };
+                    ));
             }
             let batch_result = if use_data_only {
                 self.wal_store
@@ -1255,13 +1595,10 @@ impl TemporalEngine {
                 if sync {
                     // A durable batch commit that failed is not durable; surface it rather than
                     // acking undurable writes (mirrors the single-command execute path).
-                    return BatchExecuteResponse {
-                        status: Status::error(
+                    return results.finish(Status::error(
                             "wal_commit_failed",
                             format!("durable WAL batch commit failed: {err}"),
-                        ),
-                        responses,
-                    };
+                        ));
                 } else {
                     tracing::error!(
                         shard_id,
@@ -1273,7 +1610,7 @@ impl TemporalEngine {
             }
             // Block/index materialization stays deferred to the background dump in
             // async and bulk modes (index_log/persist already no-op under bulk).
-            if !config.async_storage && !bulk_ingest_mode() {
+            if persist_index_delta {
                 // Anchor the served index to the WAL sequence it reflects (see the
                 // single-command path) so shard load replays only records after it. Under
                 // flat append read the O(1) cached last sequence instead of `stats()` (which
@@ -1395,10 +1732,7 @@ impl TemporalEngine {
         }
         drop(shards);
         self.publish_context_embedding_commands(&context_embedding_commands);
-        BatchExecuteResponse {
-            status: Status::ok(),
-            responses,
-        }
+        results.finish(Status::ok())
     }
 
     pub fn batch_execute_replicated(

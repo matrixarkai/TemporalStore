@@ -115,8 +115,9 @@ fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Optio
 
 pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
     let payload = crate::log_framing::decode_line(line)?;
-    // Which encoding a payload is in is a property of the payload, never of configuration: a log
-    // written across a flag change still reads end to end.
+    // Which protobuf shape a payload is in is a property of the payload, never of configuration: a
+    // log written across a flag change still reads end to end. A payload that names none of them is
+    // refused, because there is no other encoding of a record.
     if payload.first() == Some(&crate::wal_proto::BINARY_PAYLOAD_MARKER)
         || payload.first() == Some(&crate::wal_proto::RAW_PAYLOAD_MARKER)
         || payload.first() == Some(&crate::wal_proto::COMPRESSED_RAW_PAYLOAD_MARKER)
@@ -126,69 +127,10 @@ pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLog
             WriteAheadLogError::Corruption(format!("engine wal record decode failed: {err}"))
         });
     }
-    let (document, carried) = split_carried_payloads(payload)?;
-    if carried.is_empty() {
-        return Ok(serde_json::from_slice::<WriteAheadLogRecord>(document)?);
-    }
-    crate::bytes_serde::with_payloads(carried, || {
-        serde_json::from_slice::<WriteAheadLogRecord>(document)
-    })
-    .map_err(WriteAheadLogError::from)
-}
-
-/// Separates the document from the payloads carried beside it.
-///
-/// A serde_json document never contains a literal 0x1f -- control bytes are escaped -- so this can
-/// only be the separator this writer put there. A record written without carried payloads has none
-/// and is returned whole.
-const CARRIED_SEPARATOR: u8 = 0x1f;
-
-fn split_carried_payloads(payload: &[u8]) -> Result<(&[u8], Vec<Vec<u8>>), WriteAheadLogError> {
-    let Some(document_end) = payload.iter().position(|byte| *byte == CARRIED_SEPARATOR) else {
-        return Ok((payload, Vec::new()));
-    };
-    let document = &payload[..document_end];
-    let rest = &payload[document_end + 1..];
-    let lengths_end = rest
-        .iter()
-        .position(|byte| *byte == CARRIED_SEPARATOR)
-        .ok_or_else(|| {
-            WriteAheadLogError::Corruption(
-                "record carries payloads but does not say how long they are".to_string(),
-            )
-        })?;
-    let lengths = std::str::from_utf8(&rest[..lengths_end])
-        .map_err(|_| {
-            WriteAheadLogError::Corruption("payload lengths are not readable".to_string())
-        })?
-        .split(',')
-        .map(|length| {
-            length.parse::<usize>().map_err(|_| {
-                WriteAheadLogError::Corruption(format!("payload length is not a number: {length}"))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut carried = Vec::with_capacity(lengths.len());
-    let mut at = lengths_end + 1;
-    for length in lengths {
-        let end = at.checked_add(length).filter(|end| *end <= rest.len()).ok_or_else(|| {
-            WriteAheadLogError::Corruption(
-                "record claims more carried payload than it holds".to_string(),
-            )
-        })?;
-        carried.push(
-            crate::bytes_serde::unescape_payload(&rest[at..end])
-                .map_err(WriteAheadLogError::Corruption)?,
-        );
-        at = end;
-    }
-    if at != rest.len() {
-        return Err(WriteAheadLogError::Corruption(
-            "record holds more carried payload than it claims".to_string(),
-        ));
-    }
-    Ok((document, carried))
+    Err(WriteAheadLogError::Corruption(format!(
+        "engine wal record names no known encoding: first byte {:?}",
+        payload.first()
+    )))
 }
 
 /// Encode a record. Protobuf, always.
@@ -199,9 +141,8 @@ fn split_carried_payloads(payload: &[u8]) -> Result<(&[u8], Vec<Vec<u8>>), Write
 /// on every value. A live store that turned it off wrote 8,756 bytes per record; the same traffic
 /// through this path writes 1,774.
 ///
-/// READING json is a different question and is still supported: a payload says what it is by its
-/// first byte, and logs already written -- here and in every fork and deployment of this project --
-/// hold JSON records that must keep loading. See `decode_wal_line`, which is where that lives now.
+/// There is no other encoding of a record: `decode_wal_line` refuses a payload that does not
+/// name a protobuf shape.
 fn encode_wal_payload(record: &WriteAheadLogRecord) -> Result<Vec<u8>, WriteAheadLogError> {
     crate::wal_proto::encode(record).map_err(|err| {
         WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
@@ -230,9 +171,9 @@ pub struct WriteAheadLogRecord {
     // The names below are deliberately short. They are repeated in every record for the life of
     // the log, and on a small write they cost more than the data does; the alias on each keeps
     // every record already written readable.
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     /// The operation this write performed, for a record that cannot say what it DID.
     ///
@@ -242,14 +183,12 @@ pub struct WriteAheadLogRecord {
     /// and on any write that still records nothing, so both replay exactly as they always did.
     #[serde(
         rename = "c",
-        alias = "command",
         default,
         skip_serializing_if = "Option::is_none"
     )]
     pub command: Option<Command>,
     #[serde(
         rename = "m",
-        alias = "metadata",
         default,
         skip_serializing_if = "Option::is_none"
     )]
@@ -272,7 +211,6 @@ pub struct WriteAheadLogRecord {
     /// `tests/what_an_ack_promises.rs` walks all eight write shapes and prints the column.
     #[serde(
         rename = "p",
-        alias = "staged_blocks",
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
@@ -300,7 +238,6 @@ pub struct WriteAheadLogRecord {
     /// record from a build that had no such field.
     #[serde(
         rename = "t",
-        alias = "outcomes",
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
@@ -671,9 +608,9 @@ mod outcome_address_serde {
 /// replay does not need to know -- that is the entire point.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WalOutcomeItem {
-    #[serde(rename = "k", alias = "kind")]
+    #[serde(rename = "k")]
     pub kind: String,
-    #[serde(rename = "o", alias = "object_key")]
+    #[serde(rename = "o")]
     pub object_key: String,
     /// WHICH ELEMENT OF THAT OBJECT, FOR EVERY KEYED KIND THAT HAS NO BLOCK TO ASK.
     ///
@@ -759,20 +696,18 @@ pub struct WalOutcomeItem {
     /// encoder, not the type.
     #[serde(
         rename = "c",
-        alias = "component",
         default,
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
     )]
     pub element_name: Option<String>,
-    #[serde(rename = "i", alias = "object_id")]
+    #[serde(rename = "i")]
     pub object_id: u64,
-    #[serde(rename = "b", alias = "routing_bucket")]
+    #[serde(rename = "b")]
     pub routing_bucket: u32,
     /// Where the block went. `None` for state that no block backs -- the seen-sets and token
     /// buckets persist with the index snapshot and have no address to name.
     #[serde(
         rename = "a",
-        alias = "address",
         default,
         with = "outcome_address_serde",
         skip_serializing_if = "Option::is_none"
@@ -787,7 +722,6 @@ pub struct WalOutcomeItem {
     /// `value` beside its `page`, and a `meta_log` flag to tell them apart.
     #[serde(
         rename = "v",
-        alias = "value",
         default,
         skip_serializing_if = "Option::is_none",
         with = "outcome_value_serde"
@@ -796,7 +730,6 @@ pub struct WalOutcomeItem {
     /// The deadline this outcome set, if it set one.
     #[serde(
         rename = "x",
-        alias = "ttl",
         default,
         skip_serializing_if = "Option::is_none"
     )]
@@ -804,7 +737,6 @@ pub struct WalOutcomeItem {
     /// The object is gone.
     #[serde(
         rename = "d",
-        alias = "deleted",
         default,
         skip_serializing_if = "outcome_not_deleted"
     )]
@@ -812,7 +744,6 @@ pub struct WalOutcomeItem {
     /// This item states metadata rather than a block image -- their `meta_log`.
     #[serde(
         rename = "m",
-        alias = "meta",
         default,
         skip_serializing_if = "outcome_not_deleted"
     )]
@@ -876,9 +807,8 @@ pub struct StagedBlock {
     /// whole-object block is byte-identical to one written before this field existed.
     #[serde(
         rename = "k",
-        alias = "component",
         default,
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none",
     )]
     pub element_name: Option<std::sync::Arc<str>>,
     /// The block contents.
@@ -896,27 +826,12 @@ pub struct WriteAheadLogRecordMetadata {
     /// and saying so in every record costs more than the statement is worth.
     #[serde(
         rename = "v",
-        alias = "version",
         default = "current_write_ahead_log_format_version",
         skip_serializing_if = "is_current_write_ahead_log_format_version"
     )]
     pub version: u32,
-    #[serde(rename = "t", alias = "timestamp_ms")]
+    #[serde(rename = "t")]
     pub timestamp_ms: u64,
-    /// Per-item description of the write.
-    ///
-    /// Every field is derived from the command in the same record, so this is a convenience
-    /// rather than a source of truth -- see [`WriteAheadLogItemMetadata::from_command`], which
-    /// reconstructs it. New records leave it empty and skip it entirely rather than spend 147
-    /// bytes per write on data the record already contains; records written before that still
-    /// carry theirs and still load.
-    #[serde(
-        rename = "i",
-        alias = "items",
-        default,
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub items: Vec<WriteAheadLogItemMetadata>,
     // Atomic-batch framing (all three set together, or all absent for a standalone write). A
     // batch of N commands is written as N contiguously-sequenced records sharing one `batch_id`,
     // buffered and made durable by a SINGLE barrier after the last record. `batch_index` is
@@ -933,119 +848,16 @@ pub struct WriteAheadLogRecordMetadata {
 }
 
 impl WriteAheadLogRecordMetadata {
-    /// Metadata for a record carrying one command, without the per-item description.
-    ///
-    /// That description is derived entirely from the command this record already carries, and
-    /// read by nothing, so writing it costs 147 fsynced bytes per record to say what the record
-    /// says twice. `WriteAheadLogItemMetadata::from_command` reconstructs it for any caller that
-    /// wants it, and `single_command_with_items` writes it for one that cannot.
-    pub fn single_command(command: &Command) -> Self {
-        Self::for_command(command, false)
-    }
-
-    /// The same, carrying the per-item description, for a consumer that reads records directly
-    /// and has not moved to deriving it.
-    ///
-    /// `TS_WAL_ITEM_METADATA` used to select this for every writer in the process. Nothing set
-    /// it, and the cost it added was per write, so restoring the description is a call rather
-    /// than an export -- made by whoever knows the consumer that needs it.
-    pub fn single_command_with_items(command: &Command) -> Self {
-        Self::for_command(command, true)
-    }
-
-    fn for_command(command: &Command, with_items: bool) -> Self {
+    /// Metadata for a record carrying one command.
+    pub fn single_command(_command: &Command) -> Self {
         Self {
             version: WRITE_AHEAD_LOG_FORMAT_VERSION,
             timestamp_ms: current_time_ms(),
-            items: if with_items {
-                vec![WriteAheadLogItemMetadata::from_command(command)]
-            } else {
-                Vec::new()
-            },
             batch_id: None,
             batch_size: None,
             batch_index: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WriteAheadLogItemMetadata {
-    pub item_kind: WriteAheadLogItemKind,
-    pub model: WriteAheadLogModel,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub object_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "slot_id")]
-    pub bucket_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub object_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub block_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ttl_ms: Option<u64>,
-    #[serde(default)]
-    pub deleted: bool,
-    #[serde(default)]
-    pub meta_log: bool,
-    #[serde(default)]
-    pub block_log: bool,
-}
-
-impl WriteAheadLogItemMetadata {
-    pub fn from_command(command: &Command) -> Self {
-        let object_key = command_object_key(command);
-        let bucket_id = object_key.as_deref().map(command_bucket_id);
-        let item_kind = command_item_kind(command);
-        Self {
-            item_kind,
-            model: command_model(command),
-            object_key,
-            bucket_id,
-            object_id: None,
-            block_id: None,
-            ttl_ms: command_ttl_ms(command),
-            deleted: matches!(
-                command,
-                Command::CommonDelete { .. }
-                    | Command::StringDelete { .. }
-                    | Command::HashDelete { .. }
-                    | Command::SetRemove { .. }
-                    | Command::FeatureDelete { .. }
-            ),
-            meta_log: matches!(
-                command,
-                Command::CommonExpire { .. } | Command::CommonTtl { .. }
-            ),
-            block_log: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WriteAheadLogItemKind {
-    Kv,
-    Block,
-    Ttl,
-    DeleteObject,
-    Query,
-    Admin,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WriteAheadLogModel {
-    Common,
-    String,
-    Hash,
-    Set,
-    Feature,
-    Sequence,
-    ControlState,
-    Context,
-    Admin,
-    Unknown,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5722,105 +5534,6 @@ fn current_time_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn command_variant_name(command: &Command) -> Option<String> {
-    let value = serde_json::to_value(command).ok()?;
-    let object = value.as_object()?;
-    object
-        .get("kind")
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string)
-}
-
-fn command_payload(command: &Command) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let value = serde_json::to_value(command).ok()?;
-    let object = value.as_object()?;
-    let mut payload = object.clone();
-    payload.remove("kind");
-    Some(payload)
-}
-
-fn command_object_key(command: &Command) -> Option<String> {
-    let payload = command_payload(command)?;
-    if let Some(key) = payload.get("key").and_then(|value| value.as_str()) {
-        return Some(key.to_string());
-    }
-    let tenant = payload.get("tenant_hash").and_then(|value| value.as_u64());
-    let node = payload
-        .get("node_hash")
-        .or_else(|| payload.get("parent_hash"))
-        .or_else(|| payload.get("start_node_hash"))
-        .and_then(|value| value.as_u64());
-    match (tenant, node) {
-        (Some(tenant), Some(node)) => Some(format!("context:{tenant}:{node}")),
-        (Some(tenant), None) => Some(format!("context:{tenant}")),
-        _ => None,
-    }
-}
-
-fn command_ttl_ms(command: &Command) -> Option<u64> {
-    let payload = command_payload(command)?;
-    payload.get("ttl_ms").and_then(|value| value.as_u64())
-}
-
-fn command_bucket_id(key: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut hash = FNV_OFFSET;
-    for byte in key.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash & 0x3fff
-}
-
-fn command_model(command: &Command) -> WriteAheadLogModel {
-    let Some(name) = command_variant_name(command) else {
-        return WriteAheadLogModel::Unknown;
-    };
-    if name.starts_with("common_") {
-        WriteAheadLogModel::Common
-    } else if name.starts_with("string_") {
-        WriteAheadLogModel::String
-    } else if name.starts_with("hash_") {
-        WriteAheadLogModel::Hash
-    } else if name.starts_with("set_") {
-        WriteAheadLogModel::Set
-    } else if name.starts_with("feature_") {
-        WriteAheadLogModel::Feature
-    } else if name.starts_with("sequence_") {
-        WriteAheadLogModel::Sequence
-    } else if name.starts_with("control_state_") {
-        WriteAheadLogModel::ControlState
-    } else if name.starts_with("context_") {
-        WriteAheadLogModel::Context
-    } else {
-        WriteAheadLogModel::Unknown
-    }
-}
-
-fn command_item_kind(command: &Command) -> WriteAheadLogItemKind {
-    let Some(name) = command_variant_name(command) else {
-        return WriteAheadLogItemKind::Admin;
-    };
-    if name.contains("delete") || name.contains("remove") {
-        WriteAheadLogItemKind::DeleteObject
-    } else if name.contains("expire") || name.ends_with("ttl") {
-        WriteAheadLogItemKind::Ttl
-    } else if name.contains("get")
-        || name.contains("query")
-        || name.contains("count")
-        || name.contains("stat")
-        || name.contains("debug")
-        || name.contains("manager")
-        || name.contains("members")
-        || name.contains("exists")
-    {
-        WriteAheadLogItemKind::Query
-    } else {
-        WriteAheadLogItemKind::Kv
-    }
-}
-
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
@@ -5926,7 +5639,6 @@ mod tests {
                 metadata: Some(WriteAheadLogRecordMetadata {
                     version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                     timestamp_ms: 1_787_270_070_192,
-                    items: Vec::new(),
                     batch_id: Some(9),
                     batch_size: Some(8),
                     batch_index: Some(index as u32 + 1),
@@ -5945,7 +5657,6 @@ mod tests {
             metadata: Some(WriteAheadLogRecordMetadata {
                 version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                 timestamp_ms: 1_787_270_070_192,
-                items: Vec::new(),
                 batch_id: None,
                 batch_size: None,
                 batch_index: None,
@@ -6688,7 +6399,6 @@ mod tests {
                 metadata: Some(WriteAheadLogRecordMetadata {
                     version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                     timestamp_ms: 1_787_270_070_192,
-                    items: Vec::new(),
                     batch_id: None,
                     batch_size: None,
                     batch_index: None,
@@ -7179,7 +6889,6 @@ mod tests {
                     metadata: Some(WriteAheadLogRecordMetadata {
                         version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                         timestamp_ms: 1_787_270_070_192,
-                        items: Vec::new(),
                         batch_id: None,
                         batch_size: None,
                         batch_index: None,
@@ -7665,84 +7374,6 @@ mod tests {
         }
     }
 
-    /// A record that ENDS inside a block's footer slot, in a log written without footers.
-    ///
-    /// Reading is documented to tolerate such a log -- "records occupying what would be the
-    /// footer slots" -- and the two transition tests above cover a record that STARTS in a slot.
-    /// Neither covers one that ends there, and that is the case the tail walk got wrong: it
-    /// skipped to the next block on POSITION alone, without checking whether the slot held a
-    /// footer at all, discarding up to 128 bytes of record and resuming mid-record. On a real
-    /// store that skipped 92 bytes holding the start of a record and resumed on `"key":...`,
-    /// which the decoder reported as `invalid type: string "key" ... at line 1 column 5` --
-    /// refusing to open a store whose bytes were entirely intact.
-    #[test]
-    fn a_record_that_ends_inside_a_footer_slot_is_not_skipped() {
-        // Rolling off: these assertions are about blocks within one piece.
-        set_wal_segment_bytes_for_test(Some(0));
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_ahead_log_path(dir.path(), 1);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-
-        // Frames of a fixed size, laid end to end with nothing reserved -- a log as a writer
-        // that predates footers left it. 250 divides into the first block so that record 524
-        // ends at 131_000, which is inside the slot that starts at 130_944.
-        const FRAME: usize = 250;
-        let framed = |sequence: u64| -> Vec<u8> {
-            let mut pad = 8usize;
-            loop {
-                let payload = format!(
-                    "{{\"shard_id\":1,\"sequence\":{sequence},\"command\":{{\"kind\":\"string_set\",\"key\":\"{}\",\"value\":[118]}}}}",
-                    "k".repeat(pad)
-                );
-                let line = crate::log_framing::encode_line(payload.as_bytes());
-                match line.len().cmp(&FRAME) {
-                    std::cmp::Ordering::Equal => return line,
-                    std::cmp::Ordering::Less => pad += FRAME - line.len(),
-                    std::cmp::Ordering::Greater => {
-                        pad = pad
-                            .checked_sub(line.len() - FRAME)
-                            .expect("a frame of this size must be reachable by padding the key");
-                    }
-                }
-            }
-        };
-
-        let records = (WAL_BLOCK_BYTES as usize / FRAME) + 40;
-        let mut bytes = Vec::with_capacity(records * FRAME);
-        for sequence in 1..=records as u64 {
-            bytes.extend_from_slice(&framed(sequence));
-        }
-        std::fs::write(&path, &bytes).unwrap();
-
-        // The precondition this test exists for: some record must END inside a footer slot.
-        // Without it the test would pass on any reader and prove nothing.
-        let slot_start = block_data_end(0);
-        let ends_in_slot = (1..=records as u64)
-            .map(|n| n * FRAME as u64)
-            .filter(|end| *end >= slot_start && *end < WAL_BLOCK_BYTES)
-            .count();
-        assert!(
-            ends_in_slot > 0,
-            "no record ends inside the footer slot, so this test would not exercise the skip"
-        );
-
-        let store = LocalWriteAheadLogStore::new(dir.path());
-        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
-        assert_eq!(
-            scanned.len(),
-            records,
-            "every record must survive the block boundary in a log written without footers"
-        );
-        for (_, line) in &scanned {
-            decode_wal_line(line).expect("every record must still decode");
-        }
-        let (last, _) = last_wal_sequence_in(&path).unwrap();
-        assert_eq!(
-            last, records as u64,
-            "the tail walk must reach the last record rather than stopping at a slot"
-        );
-    }
-
     /// What the footer actually buys, on equivalent logs. Ignored: a measurement, not a gate.
     ///
     // The footer-on / footer-off benchmark that lived here cannot run any more: there is no way
@@ -8205,7 +7836,6 @@ mod tests {
                 metadata: Some(WriteAheadLogRecordMetadata {
                     version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                     timestamp_ms: 1_787_270_070_192,
-                    items: Vec::new(),
                     batch_id: None,
                     batch_size: None,
                     batch_index: None,
@@ -8372,6 +8002,7 @@ mod tests {
         ("ControlStateManager", std::mem::size_of::<(String, Option<String>, Vec<(String, String)>, String, String, bool)>()),
         ("ControlStateDebug", std::mem::size_of::<(String, u64, u64)>()),
         ("ContextQueryNodeEmbeddings", std::mem::size_of::<(u64, Vec<u64>)>()),
+        ("ContextQueryNodeVectorProjections", std::mem::size_of::<(u64, Vec<u64>)>()),
         ("ContextResourceBlobBegin", std::mem::size_of::<(u64)>()),
         ("ContextResourceBlobAppend", std::mem::size_of::<(u64, String, String)>()),
         ("ContextResourceBlobCommit", std::mem::size_of::<(u64, String)>()),
@@ -9540,51 +9171,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn legacy_unframed_wal_still_loads_after_upgrade() {
-        let dir = tempfile::tempdir().unwrap();
-        // Simulate a pre-upgrade on-disk WAL: raw single-line JSON records, no framing.
-        let path = write_ahead_log_path(dir.path(), 3);
-        let make = |sequence: u64, key: &str| WriteAheadLogRecord {
-            shard_id: 3,
-            sequence,
-            command: Some(Command::StringSet {
-                key: key.to_string(),
-                value: b"v".to_vec(),
-            }),
-            metadata: None,
-            staged_blocks: Vec::new(),
-            outcomes: Vec::new(),
-        };
-        let mut raw = serde_json::to_vec(&make(1, "k1")).unwrap();
-        raw.push(b'\n');
-        raw.extend_from_slice(&serde_json::to_vec(&make(2, "k2")).unwrap());
-        raw.push(b'\n');
-        std::fs::write(&path, &raw).unwrap();
-
-        let store = LocalWriteAheadLogStore::new(dir.path());
-        // The legacy (unframed) records still load: sequence tail + scan see both.
-        assert_eq!(store.stats(3).last_sequence, 2);
-        let rows = store.scan(3, 0, u64::MAX, u64::MAX).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(decode_wal_line(&rows[0].1).unwrap().sequence, 1);
-        assert_eq!(decode_wal_line(&rows[1].1).unwrap().sequence, 2);
-        // A new append is framed and continues the sequence; the mixed file still loads.
-        let appended = store
-            .append(
-                3,
-                Command::StringSet {
-                    key: "k3".to_string(),
-                    value: b"v".to_vec(),
-                },
-            )
-            .unwrap();
-        assert_eq!(appended.sequence, 3);
-        let reopened = LocalWriteAheadLogStore::new(dir.path());
-        assert_eq!(reopened.scan(3, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
-        assert_eq!(reopened.stats(3).last_sequence, 3);
-    }
-
     // rust-internal: verifies Rust WAL alias exports remain wired to the local mutation log API.
     #[test]
     fn wal_aliases_cover_local_mutation_log_api() {
@@ -9687,43 +9273,6 @@ mod tests {
             .unwrap();
         assert_eq!(record.sequence, 3);
         assert_eq!(reopened.scan(7, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
-    }
-
-    // shared-corpus: storage_wal_structure_api_flush_parity
-    #[test]
-    fn wal_record_metadata_tracks_style_log_item_shape() {
-        // The derivation is the contract: anything that wants the per-item description can
-        // rebuild it from the command, which is why the record no longer stores it.
-        let command = Command::StringSet {
-            key: "k".to_string(),
-            value: b"v".to_vec(),
-        };
-        let item = WriteAheadLogItemMetadata::from_command(&command);
-        assert_eq!(item.item_kind, WriteAheadLogItemKind::Kv);
-        assert_eq!(item.model, WriteAheadLogModel::String);
-        assert_eq!(item.object_key.as_deref(), Some("k"));
-        assert!(!item.deleted);
-        assert!(!item.meta_log);
-        assert!(!item.block_log);
-
-        // The record does not carry it -- 147 fsynced bytes per write saying what the record
-        // already says.
-        let lean = WriteAheadLogRecordMetadata::single_command(&command);
-        assert!(
-            lean.items.is_empty(),
-            "the derived description should not be written by default"
-        );
-        let encoded = serde_json::to_string(&lean).unwrap();
-        assert!(
-            !encoded.contains("items"),
-            "an empty description must be skipped entirely, got {encoded}"
-        );
-
-        // The other constructor restores it for a consumer reading records directly. It is
-        // named rather than selected, so no environment can point the live path at it.
-        let full = WriteAheadLogRecordMetadata::single_command_with_items(&command);
-        assert_eq!(full.items.len(), 1);
-        assert_eq!(full.items[0].object_key.as_deref(), Some("k"));
     }
 
     // shared-corpus: storage_wal_structure_api_flush_parity
@@ -11061,7 +10610,7 @@ mod tests {
             }],
             outcomes: Vec::new(),
         };
-        let encoded = serde_json::to_vec(&record).unwrap();
+        let encoded = crate::wal_proto::encode(&record).unwrap();
         let overhead = encoded.len() as f64 / block.len() as f64;
         assert!(
             overhead < 1.6,
@@ -11071,39 +10620,8 @@ mod tests {
         );
 
         // And it round-trips.
-        let decoded: WriteAheadLogRecord = serde_json::from_slice(&encoded).unwrap();
+        let decoded = crate::wal_proto::decode(&encoded).unwrap();
         assert_eq!(decoded.staged_blocks[0].bytes, block);
-    }
-
-    #[test]
-    fn a_record_written_with_the_array_shape_still_loads() {
-        // The long field name and the array-shaped bytes must both still load: the compact
-        // key is what gets written, and the long spelling is what the alias accepts.
-        let json = br#"{"shard_id":1,"sequence":2,"command":{"kind":"string_set","key":"k","value":[]},"staged_blocks":[{"object_id":9,"bytes":[104,105]}]}"#;
-        let decoded: WriteAheadLogRecord = serde_json::from_slice(json).unwrap();
-        assert_eq!(decoded.staged_blocks[0].object_id, 9);
-        assert_eq!(decoded.staged_blocks[0].bytes, b"hi".to_vec());
-    }
-
-    #[test]
-    fn a_record_with_no_staged_block_is_unchanged_on_disk() {
-        // The gate-off path must serialize exactly as it did before staging existed.
-        let record = WriteAheadLogRecord {
-            shard_id: 1,
-            sequence: 3,
-            command: Some(Command::StringSet {
-                key: "k".to_string(),
-                value: b"v".to_vec(),
-            }),
-            metadata: None,
-            staged_blocks: Vec::new(),
-            outcomes: Vec::new(),
-        };
-        let encoded = String::from_utf8(serde_json::to_vec(&record).unwrap()).unwrap();
-        assert!(
-            !encoded.contains("staged_pages"),
-            "an empty staged list must be skipped entirely, got {encoded}"
-        );
     }
 
     /// A pass that must rewrite a large log to free a sliver of it is declined.
@@ -11154,107 +10672,10 @@ mod tests {
         assert!(reclaim_is_worth_rewriting(25 * MB, retained, floor, 25));
     }
 
-    /// What is left in a small record once the payload stops being the problem.
-    ///
-    /// Prints one real record's bytes and attributes them, so the next decision about the format
-    /// is made against a breakdown rather than an impression.
+
+    /// A written record reads back unchanged.
     #[test]
-    fn small_record_byte_breakdown() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalWriteAheadLogStore::new(dir.path());
-        store
-            .append_with_sync(
-                1,
-                Command::StringSet {
-                    key: "bench-key-00000000".to_string(),
-                    value: vec![118u8; 64],
-                },
-                false,
-            )
-            .unwrap();
-        let raw = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
-        let line = String::from_utf8_lossy(&raw);
-        let line = line.trim_end();
-        println!("  whole record ({} B):", line.len() + 1);
-        println!("    {line}");
-
-        let payload_start = line
-            .match_indices(' ')
-            .nth(2)
-            .map(|(index, _)| index + 1)
-            .unwrap_or(0);
-        let frame = payload_start + 1; // + the newline
-        let payload = &line[payload_start..];
-        let value_chars = payload
-            .split("\"value\":\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .map(str::len)
-            .unwrap_or(0);
-        let metadata = payload
-            .find("\"m\":")
-            .map(|start| payload[start..].len() - 1)
-            .unwrap_or(0);
-        let key_chars = "bench-key-00000000".len();
-        let structure = payload.len() - value_chars - metadata - key_chars;
-
-        println!("    frame + newline : {frame:>4} B");
-        println!("    field names etc : {structure:>4} B");
-        println!("    the key         : {key_chars:>4} B");
-        println!("    the value       : {value_chars:>4} B  (64 B of data)");
-        println!("    metadata block  : {metadata:>4} B");
-        println!("    total           : {:>4} B for 64 B of user data", line.len() + 1);
-    }
-
-
-    /// A record written with the long field names still loads.
-    ///
-    /// The rename is only safe because every field keeps an alias for what it was called, and
-    /// nothing rewrites logs already on disk. This is that promise, in the shape the previous code
-    /// actually wrote -- including the format version, which new records leave out.
-    #[test]
-    fn a_record_with_the_long_field_names_still_loads() {
-        let written_before = concat!(
-            r#"{"shard_id":1,"sequence":7,"command":{"kind":"string_set","key":"k","#,
-            r#""value":[104,105]},"metadata":{"version":1,"timestamp_ms":1787429651961}}"#
-        );
-        let record: WriteAheadLogRecord =
-            serde_json::from_str(written_before).expect("the long field names must still load");
-
-        assert_eq!(record.shard_id, 1);
-        assert_eq!(record.sequence, 7);
-        assert_eq!(
-            record.command,
-            Some(Command::StringSet {
-                key: "k".to_string(),
-                value: b"hi".to_vec(),
-            })
-        );
-        let metadata = record.metadata.expect("the metadata block should load");
-        assert_eq!(metadata.version, WRITE_AHEAD_LOG_FORMAT_VERSION);
-        assert_eq!(metadata.timestamp_ms, 1_787_429_651_961);
-    }
-
-    /// A record that omits the version is read as the current one.
-    ///
-    /// New records leave it out precisely because that is what its absence means; if the default
-    /// were zero instead, every new record would read back claiming an unknown format.
-    #[test]
-    fn an_omitted_version_reads_as_the_current_one() {
-        let record: WriteAheadLogRecord = serde_json::from_str(
-            r#"{"s":1,"q":2,"c":{"kind":"string_get","key":"k"},"m":{"t":17}}"#,
-        )
-        .expect("a record without a version must load");
-        assert_eq!(
-            record.metadata.expect("metadata").version,
-            WRITE_AHEAD_LOG_FORMAT_VERSION,
-            "a record that does not name a version is the current one"
-        );
-    }
-
-    /// The short names really are what gets written, and a written record reads back unchanged.
-    #[test]
-    fn a_written_record_round_trips_through_the_short_names() {
+    fn a_written_record_round_trips_through_protobuf() {
         let record = WriteAheadLogRecord {
             shard_id: 3,
             sequence: 11,
@@ -11265,7 +10686,6 @@ mod tests {
             metadata: Some(WriteAheadLogRecordMetadata {
                 version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                 timestamp_ms: 42,
-                items: Vec::new(),
                 batch_id: None,
                 batch_size: None,
                 batch_index: None,
@@ -11273,16 +10693,8 @@ mod tests {
             staged_blocks: Vec::new(),
             outcomes: Vec::new(),
         };
-        let encoded = serde_json::to_string(&record).unwrap();
-        assert!(
-            !encoded.contains("shard_id") && !encoded.contains("timestamp_ms"),
-            "the long names should not be written any more, got {encoded}"
-        );
-        assert!(
-            !encoded.contains("version"),
-            "the current version should be left out, got {encoded}"
-        );
-        let decoded: WriteAheadLogRecord = serde_json::from_str(&encoded).unwrap();
+        let encoded = crate::wal_proto::encode(&record).unwrap();
+        let decoded = crate::wal_proto::decode(&encoded).unwrap();
         assert_eq!(decoded, record, "a record must survive its own encoding");
     }
 
@@ -11640,48 +11052,6 @@ mod tests {
         };
         let framed = crate::log_framing::encode_line(&encode_wal_payload(&record).unwrap());
         assert_eq!(decode_wal_line(&framed).unwrap(), record);
-    }
-
-    /// A payload that escaping would grow stays encoded, so the record never gets bigger.
-    #[test]
-    fn a_payload_that_escaping_would_grow_stays_encoded() {
-        let newlines = vec![b'\n'; 2048];
-        let record = WriteAheadLogRecord {
-            shard_id: 1,
-            sequence: 4,
-            command: Some(Command::StringSet {
-                key: "k".to_string(),
-                value: newlines.clone(),
-            }),
-            metadata: None,
-            staged_blocks: Vec::new(),
-            outcomes: Vec::new(),
-        };
-        let payload = encode_wal_payload(&record).unwrap();
-        assert!(
-            !payload.contains(&0x1f),
-            "a payload that would grow should have been left in the document"
-        );
-        let framed = crate::log_framing::encode_line(&payload);
-        assert_eq!(decode_wal_line(&framed).unwrap(), record);
-    }
-
-    /// Records written before payloads were carried still load.
-    #[test]
-    fn a_record_written_before_payloads_were_carried_still_loads() {
-        let written_before = concat!(
-            r#"{"s":1,"q":7,"c":{"kind":"string_set","key":"k","value":"aGk="},"#,
-            r#""m":{"t":1787429651961}}"#
-        );
-        let framed = crate::log_framing::encode_line(written_before.as_bytes());
-        let decoded = decode_wal_line(&framed).unwrap();
-        assert_eq!(
-            decoded.command,
-            Some(Command::StringSet {
-                key: "k".to_string(),
-                value: b"hi".to_vec(),
-            })
-        );
     }
 
     /// A truncated payload section is corruption, not a record with fewer bytes in it.

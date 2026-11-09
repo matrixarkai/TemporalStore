@@ -72,9 +72,13 @@ class RecordingClient(TemporalStoreClient):
         self.shared_reads.append((list(keys), list(fields)))
         return super().batch_hash_multi_get(keys, fields)
 
-    def batch_hash_multi_set(self, fields, rows):  # type: ignore[override]
+    def batch_hash_multi_set(  # type: ignore[override]
+        self, fields, rows, request_upper_bound=None
+    ):
         self.shared_writes.append((list(fields), list(rows)))
-        return super().batch_hash_multi_set(fields, rows)
+        return super().batch_hash_multi_set(
+            fields, rows, request_upper_bound
+        )
 
     def _answer(self, path, document):
         self.sent.append((path, document))
@@ -422,6 +426,87 @@ class ClientProtocolTest(unittest.TestCase):
             [key for document in documents for key in document["keys"]], keys
         )
         self.assertTrue(all(document["fields"] == fields for document in documents))
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_bounded_shared_batches_encode_the_whole_request_once(self):
+        client = TemporalStoreClient()
+        fields = ["timestamp", "feature"]
+        rows = [("entity", [b"stamp", b"value"])]
+        timestamp_rows = [("entity", 20, 3, [b"stamp", b"value"])]
+
+        with mock.patch(
+            "feast_temporalstore_command.client.msgpack.Packer",
+            wraps=msgpack.Packer,
+        ) as packer:
+            read_batches = list(
+                client._shared_field_read_batches(["entity"], fields)
+            )
+            write_batches = list(
+                client._shared_field_write_batches(
+                    fields,
+                    rows,
+                    1024,
+                )
+            )
+            timestamp_batches = list(
+                client._shared_timestamp_write_batches(
+                    fields,
+                    "timestamp",
+                    timestamp_rows,
+                    1024,
+                )
+            )
+
+        self.assertFalse(
+            any(call.kwargs.get("autoreset") is False for call in packer.call_args_list)
+        )
+        self.assertEqual(len(read_batches), 1)
+        self.assertEqual(len(write_batches), 1)
+        self.assertEqual(len(timestamp_batches), 1)
+        self.assertEqual(
+            msgpack.unpackb(read_batches[0][1], raw=False),
+            {"shard_id": 1, "keys": ["entity"], "fields": fields},
+        )
+        self.assertEqual(
+            msgpack.unpackb(write_batches[0][1], raw=False)["rows"],
+            [["entity", [b"stamp", b"value"]]],
+        )
+        self.assertEqual(
+            msgpack.unpackb(timestamp_batches[0][1], raw=False)["rows"],
+            [["entity", 20, 3, [b"stamp", b"value"]]],
+        )
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_shared_batch_fast_path_keeps_the_encoded_byte_limit(self):
+        client = TemporalStoreClient(
+            max_batch_commands=4,
+            max_write_batch_commands=4,
+            max_batch_request_bytes=120,
+        )
+        keys = [f"entity-{index}-" + "k" * 36 for index in range(4)]
+        rows = [(f"entity-{index}", [b"x" * 48]) for index in range(4)]
+
+        read_batches = list(client._shared_field_read_batches(keys, ["feature"]))
+        write_batches = list(
+            client._shared_field_write_batches(
+                ["feature"],
+                rows,
+                0,
+            )
+        )
+
+        self.assertGreater(len(read_batches), 1)
+        self.assertGreater(len(write_batches), 1)
+        self.assertTrue(all(len(body) <= 120 for _chunk, body in read_batches))
+        self.assertTrue(all(len(body) <= 120 for _chunk, body in write_batches))
+        self.assertEqual(
+            [key for chunk, _body in read_batches for key in chunk],
+            keys,
+        )
+        self.assertEqual(
+            [row[0] for chunk, _body in write_batches for row in chunk],
+            [row[0] for row in rows],
+        )
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_shared_field_endpoint_falls_back_once(self):
@@ -1174,6 +1259,53 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(path, "/batch_hash_timestamp_set_msgpack")
         self.assertEqual(document["timestamp_field"], "_ts:stats")
         self.assertEqual(len(document["rows"]), 1)
+
+    def test_default_write_prepares_each_feature_field_once_per_batch(self):
+        from unittest import mock
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        import feast_temporalstore_command.online_store as online_store_module
+
+        class ConditionalRowsClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self.rows = None
+                self.fields = None
+
+            def batch_hash_timestamp_set(  # type: ignore[override]
+                self, fields, timestamp_field, rows, request_upper_bound=None
+            ):
+                self.fields = list(fields)
+                self.rows = list(rows)
+                return len(rows), 0
+
+        client = self._install(client=ConditionalRowsClient())
+        self.config.online_store.skip_dedup = False
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [
+            (
+                self._entity_key(index),
+                {
+                    "trips": ValueProto(int64_val=index),
+                    "fares": ValueProto(int64_val=index * 2),
+                },
+                now,
+                None,
+            )
+            for index in range(64)
+        ]
+
+        with mock.patch.object(
+            online_store_module,
+            "_feature_field",
+            wraps=online_store_module._feature_field,
+        ) as feature_field:
+            self.store.online_write_batch(self.config, self.view, rows, None)
+
+        self.assertEqual(feature_field.call_count, 2)
+        self.assertEqual(client.fields, ["_ts:stats", "stats:trips", "stats:fares"])
+        self.assertEqual(len(client.rows), len(rows))
+        self.assertTrue(all(len(row[3]) == 3 for row in client.rows))
 
     def test_repeated_entity_writes_share_one_timestamp_read(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto

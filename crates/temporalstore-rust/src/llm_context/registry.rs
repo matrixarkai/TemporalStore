@@ -5,7 +5,7 @@ use std::collections::{HashMap, VecDeque};
 
 use super::{
     EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError, EmbeddingKey,
-    EmbeddingVector, EmbeddingWriteReport,
+    EmbeddingVector, EmbeddingWriteReport, PreparedEmbeddingQuery,
 };
 
 const DEFAULT_MAX_CACHED_ENTRIES: usize = 1_000_000;
@@ -274,26 +274,107 @@ impl EmbeddingIndexRegistry {
         query: &[f32],
         candidate_item_ids: &[u64],
     ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.score_candidate_ids(
+            channel,
+            tenant_id,
+            model_hash,
+            query,
+            candidate_item_ids.iter().copied(),
+            candidate_item_ids.len(),
+        )
+    }
+
+    pub(crate) fn score_candidate_ids(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query: &[f32],
+        candidate_item_ids: impl Clone + Iterator<Item = u64>,
+        candidate_count: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.score_candidate_ids_with(
+            channel,
+            model_hash,
+            query.len(),
+            candidate_item_ids,
+            |index, candidate_item_ids| {
+                index.score_candidate_ids(
+                    tenant_id,
+                    query,
+                    candidate_item_ids,
+                    candidate_count,
+                )
+            },
+        )
+    }
+
+    /// Streams scores from every compatible embedding space without retaining a hit buffer.
+    ///
+    /// An item can be emitted more than once when both an unknown-model space and the active
+    /// model space contain it. Callers combine those scores while folding them into their own
+    /// result state.
+    pub(crate) fn visit_prepared_candidate_ids<I, F>(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        candidate_item_ids: I,
+        mut visit: F,
+    ) -> Result<usize, EmbeddingIndexError>
+    where
+        I: Clone + Iterator<Item = u64>,
+        F: FnMut(EmbeddingHit),
+    {
+        let mut visited = 0usize;
+        for (_, index) in self.spaces.iter().filter(|(space, _)| {
+            space.channel == channel
+                && space.dimensions == query.dimensions()
+                && (model_hash == 0 || space.model_hash == 0 || space.model_hash == model_hash)
+        }) {
+            visited = visited.saturating_add(index.visit_prepared_candidate_ids(
+                tenant_id,
+                query,
+                candidate_item_ids.clone(),
+                &mut visit,
+            )?);
+        }
+        Ok(visited)
+    }
+
+    fn score_candidate_ids_with<I, F>(
+        &self,
+        channel: EmbeddingChannel,
+        model_hash: u64,
+        query_dimensions: usize,
+        candidate_item_ids: I,
+        mut score: F,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError>
+    where
+        I: Clone + Iterator<Item = u64>,
+        F: FnMut(&EmbeddingIndex, I) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError>,
+    {
         let mut matching = self.spaces.iter().filter(|(space, _)| {
             space.channel == channel
-                && space.dimensions == query.len()
+                && space.dimensions == query_dimensions
                 && (model_hash == 0 || space.model_hash == 0 || space.model_hash == model_hash)
         });
         let Some((_, first)) = matching.next() else {
             return Ok(Vec::new());
         };
         let Some(second) = matching.next() else {
-            return first.score_candidates(tenant_id, query, candidate_item_ids);
+            return score(first, candidate_item_ids);
         };
 
-        let mut hits = first.score_candidates(tenant_id, query, candidate_item_ids)?;
+        let mut hits = score(first, candidate_item_ids.clone())?;
         let mut positions = hits
             .iter()
             .enumerate()
             .map(|(position, hit)| (hit.key.item_id, position))
             .collect::<HashMap<_, _>>();
         for (_, index) in std::iter::once(second).chain(matching) {
-            for hit in index.score_candidates(tenant_id, query, candidate_item_ids)? {
+            for hit in score(index, candidate_item_ids.clone())? {
                 if let Some(&position) = positions.get(&hit.key.item_id) {
                     let existing: &mut EmbeddingHit = &mut hits[position];
                     existing.score = existing.score.max(hit.score);
@@ -318,9 +399,47 @@ impl EmbeddingIndexRegistry {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        self.search_with(channel, tenant_id, model_hash, query.len(), limit, |index| {
+            index.search(tenant_id, query, limit)
+        })
+    }
+
+    pub(crate) fn search_prepared(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        self.search_with(
+            channel,
+            tenant_id,
+            model_hash,
+            query.dimensions(),
+            limit,
+            |index| index.search_prepared(tenant_id, query, limit),
+        )
+    }
+
+    fn search_with<F>(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query_dimensions: usize,
+        limit: usize,
+        mut search: F,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError>
+    where
+        F: FnMut(&EmbeddingIndex) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError>,
+    {
         let mut matching = self.spaces.iter().filter(|(space, _)| {
             space.channel == channel
-                && space.dimensions == query.len()
+                && space.dimensions == query_dimensions
                 && (model_hash == 0 || space.model_hash == 0 || space.model_hash == model_hash)
         });
         let Some((_, first)) = matching.next() else {
@@ -329,7 +448,7 @@ impl EmbeddingIndexRegistry {
         let Some((_, second)) = matching.next() else {
             // The index result is already top-k sorted; the normal one-space case needs no
             // merge map, rebuilt hit vector, or second sort.
-            return first.search(tenant_id, query, limit);
+            return search(first);
         };
 
         let mut best_by_item = HashMap::<u64, f32>::new();
@@ -337,7 +456,7 @@ impl EmbeddingIndexRegistry {
             .chain(std::iter::once(second))
             .chain(matching.map(|(_, index)| index))
         {
-            for hit in index.search(tenant_id, query, limit)? {
+            for hit in search(index)? {
                 best_by_item
                     .entry(hit.key.item_id)
                     .and_modify(|score| *score = score.max(hit.score))
@@ -512,6 +631,34 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].key.item_id, 9);
+
+        registry
+            .upsert_batch(
+                EmbeddingChannel::Summary,
+                17,
+                &[EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 3,
+                        item_id: 10,
+                    },
+                    values: &x,
+                }],
+            )
+            .unwrap();
+        let mut streamed = Vec::new();
+        let visited = registry
+            .visit_prepared_candidate_ids(
+                EmbeddingChannel::Summary,
+                3,
+                17,
+                PreparedEmbeddingQuery::new(&x).unwrap(),
+                [9, 10].into_iter(),
+                |hit| streamed.push(hit.key.item_id),
+            )
+            .unwrap();
+        streamed.sort_unstable();
+        assert_eq!(visited, 2);
+        assert_eq!(streamed, vec![9, 10]);
     }
 
     #[test]

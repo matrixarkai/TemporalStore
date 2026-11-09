@@ -874,17 +874,15 @@ message ControlStateSelectionSet {
 }
 
 // ===========================================================================================
-// DURABLE SHARED-STORE OBJECTS, BINARY SHAPE.
+// DURABLE SHARED-STORE OBJECTS.
 //
-// These are the small scalar objects the shared object store keeps beside a shard: the
-// single-writer lease, the replay cursor, and the routing range stamped next to a published
-// index. They are written as JSON today; every reader accepts BOTH shapes, and the writer takes
-// the binary arm only when asked. See `SHARED_OBJECT_CONTAINER_PROTOBUF` in `shared_store.rs`
-// for why one leading byte is enough to tell the two apart.
+// The small objects the shared object store keeps beside a shard: the single-writer lease, the
+// replay cursor, the routing range stamped next to a published index, and the checkpoint
+// manifest. Each is one protobuf message behind a one-byte container marker
+// (`SHARED_OBJECT_CONTAINER_PROTOBUF` in `shared_store.rs`); there is no JSON form of any of them.
 //
-// The two manifests and the WAL entry envelope are NOT here yet. The manifests carry nested
-// report structures, and the WAL envelope carries a `Command`, which cannot be modelled while
-// the command roster still names writes the proto does not describe.
+// The bucket-dump manifest has its own codec, and the WAL entry carries a `Command` that the WAL
+// frame codec owns, so neither is described here.
 // ===========================================================================================
 
 message SharedStoreShardLease {
@@ -901,6 +899,36 @@ message SharedStoreReplayCursorObject {
 message SharedStoreRoutingRangeStamp {
   uint32 start_routing_bucket = 1;
   uint32 end_routing_bucket = 2;
+}
+
+// One block slab a checkpoint names, with the sealed-slab metadata a lazy restore installs before
+// the first fetch. The optional fields keep "unknown" distinct from zero.
+message SharedStoreBlockSlabRef {
+  uint64 block_slab_id = 1;
+  string key = 2;
+  uint64 byte_size = 3;
+  string sha256 = 4;
+  uint64 logical_bytes = 5;
+  optional uint64 first_block_id = 6;
+  optional uint64 last_block_id = 7;
+  optional uint64 created_unix_ms = 8;
+  optional uint64 updated_unix_ms = 9;
+}
+
+// Which index and which slabs make up one durable checkpoint of a shard. `routing_range` is absent
+// when none was stamped; a zero `next_block_id` means none was recorded.
+message SharedStoreCheckpointManifest {
+  string cluster_id = 1;
+  uint64 shard_id = 2;
+  string checkpoint_id = 3;
+  uint64 checkpoint_wal_index = 4;
+  uint64 created_at_ms = 5;
+  string index_key = 6;
+  uint64 index_byte_size = 7;
+  string index_sha256 = 8;
+  repeated SharedStoreBlockSlabRef block_slabs = 9;
+  uint64 next_block_id = 10;
+  SharedStoreRoutingRangeStamp routing_range = 11;
 }
 
 // ===========================================================================================
@@ -1389,7 +1417,7 @@ message ContextWritePackAudit {
 //
 // NOTHING ASSERTS THE FILENAME. `state.json` appears exactly once in the crate, as a
 // `root.join("state.json")` construction with no test or doc pinning it, so the spelling is
-// not a durable contract the way `slab_manifest.json` is. The name stays regardless: the
+// not a durable contract the way `slab_manifest.pb` is. The name stays regardless: the
 // writer retires either way, and renaming a path that is already on disk is a separate,
 // riskier decision.
 // ===========================================================================================
@@ -1525,12 +1553,11 @@ message DurableIngestionState {
 // DURABLE BUCKET-DUMP MANIFEST AND INSTALL MARKER, BINARY SHAPE.
 //
 // A dump manifest is the durable reclaim watermark plus the recovery index for the data it
-// covers; the install marker is the roll-forward record of an install in flight. Both used to be
-// JSON files. A reader decides the shape per file from the first byte (see
-// `BUCKET_DUMP_CONTAINER_PROTOBUF` in `engine/bucket_dump_codec.rs`), never from a setting.
+// covers; the install marker is the roll-forward record of an install in flight. Each file is one
+// bare message of the type below (see `engine/bucket_dump_codec.rs`).
 //
 // NO `map` FIELD, ON PURPOSE. The manifest carries a checksum, and for a binary manifest that
-// checksum is a SHA-256 over THIS message's own encoding (`checksum_version` 1). A protobuf `map`
+// checksum is a SHA-256 over THIS message's own encoding. A protobuf `map`
 // has no defined iteration order, so a digest over one would depend on the encoder. Every
 // collection below is a `repeated` field, which encodes in the order the writer gave it.
 //
@@ -1602,10 +1629,7 @@ message DurableBucketDumpManifest {
   // Absent means the all-zero report, which is what a manifest without one has always meant.
   optional DurableStorageObjectLifecycle object_lifecycle = 19;
   string index_sha256 = 20;
-  // Which derivation `checksum` was computed with. 0 is a manifest written before this field
-  // existed: its checksum is a SHA-256 over the manifest's canonical JSON. 1 is a SHA-256 over
-  // this message's own encoding with `checksum` empty. Any other value is refused, never guessed.
-  uint32 checksum_version = 21;
+  // Field 21 is not used.
   // The whole-shard index image. Second-highest tag: see the note above.
   bytes index_bytes = 22;
   // Highest tag, and EMPTY while the digest is computed.
@@ -1706,4 +1730,21 @@ message DurableDataNodeLifecycleSnapshot {
   // the order given.
   repeated DurableShardLifecycleState transitions = 2;
   repeated DurableSchedulerLifecycleToken tokens = 3;
+}
+
+// ===========================================================================================
+// DURABLE CONTROL STATE COUNTER SERIES BLOCK, PACKED SHAPE.
+//
+// The block a Control State counter writes: the whole series, `timestamp_ms -> value`. Two PARALLEL
+// PACKED arrays rather than a repeated pair message, so a point costs its two varints and no tag or
+// length. The arrays are the same length and the timestamps are strictly ascending (the writer
+// iterates a `BTreeMap`); a reader refuses anything else rather than keep one of two values for a
+// repeated timestamp. The container byte in front of this message is 0x01; 0x02 is reserved for a
+// delta-coded shape and is refused by this build, see `engine/control_state_block.rs`.
+// ===========================================================================================
+
+message DurableControlStateSeries {
+  repeated uint64 timestamps_ms = 1;
+  // `sint64`: zigzag, so a small negative amount is one byte and not ten.
+  repeated sint64 values = 2;
 }

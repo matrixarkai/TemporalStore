@@ -5,6 +5,49 @@
 use super::*;
 
 impl TemporalEngine {
+    /// A BOUNDED, RESUMABLE SWEEP OF PER-BUCKET GAUGES: at most `max` buckets after `after`, in
+    /// routing order, each with how many objects and blocks it holds and how many bytes those
+    /// blocks are.
+    ///
+    /// Cost is the buckets read, not the shard: the sweep stops after `max` and says where to
+    /// resume, so a loop that calls it every round pays a fixed amount however large the shard is.
+    pub fn bucket_gauge_sweep(
+        &self,
+        shard_id: ShardId,
+        after: Option<u32>,
+        max: usize,
+    ) -> BucketGaugeSweep {
+        let shards = self.shards.read().expect("shards lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return BucketGaugeSweep::default();
+        };
+        let buckets = &shard.bucket_index.bucket_map;
+        let mut sweep = BucketGaugeSweep {
+            buckets_total: buckets.len(),
+            ..BucketGaugeSweep::default()
+        };
+        let mut remaining = buckets.range_after(after);
+        for (routing_bucket, node) in remaining.by_ref().take(max) {
+            sweep.gauges.push(BucketGauge {
+                routing_bucket: *routing_bucket,
+                object_count: node.object_index.object_count() as u64,
+                block_count: node.block_index.len() as u64,
+                block_bytes: node
+                    .block_index
+                    .values()
+                    .map(|block| block.address.length())
+                    .sum::<u64>(),
+            });
+        }
+        // Resume after the last bucket read, unless that was the end.
+        sweep.next_after = if remaining.next().is_some() {
+            sweep.gauges.last().map(|gauge| gauge.routing_bucket)
+        } else {
+            None
+        };
+        sweep
+    }
+
 
     /// WHAT THE SERVED HASH READ HAS SEEN OF ITS TWO SOURCES, read off the counters the read
     /// path keeps.
@@ -408,8 +451,10 @@ impl TemporalEngine {
     /// Taken from the same `stats()` calls as the full report, so the two cannot drift about what
     /// the log holds.
     pub fn storage_log_pressure_report(&self, shard_id: ShardId) -> StorageLogPressureReport {
-        let wal_stats = self.wal_store.stats(shard_id);
-        let index_log_stats = self.index_log_store.stats(shard_id);
+        // Not `stats`: that reads the active piece of each log back, record by record, to learn a
+        // sequence the appenders already keep. This report is taken at the top of every round.
+        let wal_stats = self.wal_store.stats_without_rescan(shard_id);
+        let index_log_stats = self.index_log_store.stats_without_rescan(shard_id);
         StorageLogPressureReport {
             shard_id,
             wal_last_sequence: wal_stats.last_sequence,

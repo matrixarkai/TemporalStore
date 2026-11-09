@@ -195,6 +195,20 @@ impl OllamaProvider {
         }
     }
 
+    pub(crate) fn bounded_prompt_capacity(
+        &self,
+        system_prompt_bytes: usize,
+        estimated_prompt_bytes: usize,
+    ) -> usize {
+        estimated_prompt_bytes
+            .min(self.config.max_input_bytes)
+            .min(
+                self.config
+                    .max_request_bytes
+                    .saturating_sub(system_prompt_bytes),
+            )
+    }
+
     fn endpoint(&self, suffix: &str) -> String {
         if self.path_prefix.is_empty() {
             suffix.to_string()
@@ -245,7 +259,17 @@ impl OllamaProvider {
             .len()
             .min(start.saturating_add(self.config.max_batch_items));
         let mut end = start;
-        let mut prompt = Vec::with_capacity(2);
+        let estimated_prompt_bytes = messages[start..max_end]
+            .iter()
+            .fold(2usize, |bytes, message| {
+                bytes
+                    .saturating_add(message.text.len())
+                    .saturating_add(64)
+            });
+        let mut prompt = Vec::with_capacity(self.bounded_prompt_capacity(
+            EXTRACTION_SYSTEM_PROMPT.len(),
+            estimated_prompt_bytes,
+        ));
         prompt.push(b'[');
 
         while end < max_end {
@@ -382,10 +406,10 @@ impl OllamaProvider {
         user_prompt: &str,
         schema: &Value,
     ) -> Result<Value, OllamaError> {
-        self.generate_structured(system_prompt, user_prompt, schema)
+        self.generate_structured_output(system_prompt, user_prompt, schema)
     }
 
-    fn generate_structured<T: DeserializeOwned>(
+    pub(crate) fn generate_structured_output<T: DeserializeOwned>(
         &self,
         system_prompt: &str,
         user_prompt: &str,
@@ -444,7 +468,7 @@ impl OllamaProvider {
         let mut messages_by_id = HashMap::with_capacity(messages.len());
         for (message_index, message) in messages.iter().enumerate() {
             if messages_by_id
-                .insert(message.message_id, (message_index, message))
+                .insert(message.message_id, message_index)
                 .is_some()
             {
                 return Err(OllamaError::DuplicateMessageId(message.message_id));
@@ -455,29 +479,30 @@ impl OllamaProvider {
         let mut start = 0usize;
         while start < messages.len() {
             let (end, prompt) = self.extraction_batch_prompt(messages, start)?;
-            let output: OllamaExtractionOutput = self.generate_structured(
+            let output: OllamaExtractionOutput = self.generate_structured_output(
                 EXTRACTION_SYSTEM_PROMPT,
                 &prompt,
                 extraction_schema(),
             )?;
             for item in output.items {
-                let (source_index, source) = messages_by_id
+                let source_index = messages_by_id
                     .get(&item.source_message_id)
                     .copied()
                     .ok_or(OllamaError::UnknownSourceMessage(item.source_message_id))?;
                 if !(start..end).contains(&source_index) {
                     return Err(OllamaError::UnknownSourceMessage(item.source_message_id));
                 }
-                let text = item.text.trim();
+                let source = &messages[source_index];
+                let text = trim_owned(item.text);
                 if text.is_empty() {
                     return Err(OllamaError::EmptyContext);
                 }
                 extracted.push(ExtractedContext {
                     tenant_id: source.tenant_id,
-                    context_id: context_id(source.tenant_id, source.message_id, text),
+                    context_id: context_id(source.tenant_id, source.message_id, &text),
                     source_message_id: source.message_id,
                     event_time_ms: source.event_time_ms,
-                    text: text.to_string(),
+                    text,
                 });
             }
             start = end;
@@ -531,6 +556,18 @@ fn context_id(tenant_id: u64, source_message_id: u64, text: &str) -> u64 {
         .try_into()
         .expect("fixed digest prefix");
     u64::from_le_bytes(bytes)
+}
+
+fn trim_owned(mut text: String) -> String {
+    let start = text.len().saturating_sub(text.trim_start().len());
+    let end = start.saturating_add(text.trim().len());
+    if end < text.len() {
+        text.truncate(end);
+    }
+    if start > 0 {
+        drop(text.drain(..start));
+    }
+    text
 }
 
 fn extraction_schema() -> &'static Value {

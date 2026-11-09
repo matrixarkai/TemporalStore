@@ -123,6 +123,24 @@ mod cache_invalidation_cost;
 mod cache_read_cost;
 #[path = "tests/a_hash_write_files_only_what_it_wrote.rs"]
 mod a_hash_write_files_only_what_it_wrote;
+#[path = "tests/a_write_names_only_the_blocks_of_the_objects_it_touched.rs"]
+mod a_write_names_only_the_blocks_of_the_objects_it_touched;
+#[path = "tests/a_plan_learns_a_log_tail_from_its_appenders.rs"]
+mod a_plan_learns_a_log_tail_from_its_appenders;
+#[path = "tests/a_removal_states_no_block_rows.rs"]
+mod a_removal_states_no_block_rows;
+#[path = "tests/a_hash_delete_files_nothing.rs"]
+mod a_hash_delete_files_nothing;
+#[path = "tests/a_sequence_write_states_the_rows_it_wrote.rs"]
+mod a_sequence_write_states_the_rows_it_wrote;
+#[path = "tests/a_compaction_does_not_lose_a_dirty_objects_dump.rs"]
+mod a_compaction_does_not_lose_a_dirty_objects_dump;
+#[path = "tests/a_manifest_is_fingerprinted_once_not_once_per_plan.rs"]
+mod a_manifest_is_fingerprinted_once_not_once_per_plan;
+#[path = "tests/a_hash_get_all_shares_its_page_keys.rs"]
+mod a_hash_get_all_shares_its_page_keys;
+#[path = "tests/a_feature_sum_reads_each_point_in_place.rs"]
+mod a_feature_sum_reads_each_point_in_place;
 #[path = "tests/warm_read_decomposition.rs"]
 mod warm_read_decomposition;
 #[path = "tests/wal_reclaim_frame_boundary.rs"]
@@ -161,6 +179,8 @@ mod bucket_node_container_header;
 mod bucket_flag_masks;
 #[path = "tests/the_dirty_buckets_are_a_set_the_map_keeps.rs"]
 mod the_dirty_buckets_are_a_set_the_map_keeps;
+#[path = "tests/a_dump_clear_asks_only_the_buckets_it_names.rs"]
+mod a_dump_clear_asks_only_the_buckets_it_names;
 #[path = "tests/inline_arm_trade.rs"]
 mod inline_arm_trade;
 #[path = "tests/layout_arm_selection.rs"]
@@ -470,7 +490,11 @@ mod bucket_dump_binary_shape;
 mod what_an_element_name_writes_to_disk_and_the_wire;
 #[path = "tests/routing_range_stamp_binary.rs"]
 mod routing_range_stamp_binary;
-#[path = "tests/the_config_log_in_either_shape.rs"]
-mod the_config_log_in_either_shape;
+#[path = "tests/the_config_log_is_framed_only.rs"]
+mod the_config_log_is_framed_only;
 #[path = "tests/the_served_index_encoder_has_no_json_fallback.rs"]
 mod the_served_index_encoder_has_no_json_fallback;
+#[path = "tests/the_control_state_block_is_protobuf_only.rs"]
+mod the_control_state_block_is_protobuf_only;
+#[path = "tests/the_sequence_row_is_protobuf_only.rs"]
+mod the_sequence_row_is_protobuf_only;

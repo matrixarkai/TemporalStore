@@ -654,7 +654,7 @@ fn the_precomputed_touched_key_visitor_yields_what_the_collecting_form_yielded()
         let expected: Vec<String> = if object_keys.is_empty() {
             command_read_key(command).map(str::to_string).into_iter().collect()
         } else {
-            object_keys.clone()
+            object_keys.iter().cloned().collect()
         };
 
         let mut visited: Vec<String> = Vec::new();

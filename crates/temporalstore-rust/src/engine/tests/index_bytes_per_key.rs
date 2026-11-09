@@ -11954,7 +11954,16 @@ fn how_many_holders_a_key_allocation_has_by_kind() {
 
     // Holders of one key allocation, by DATA pointer -- the identity `arc_str_bytes` uses, so
     // "the same allocation" means here what it means in the published row.
+    //
+    // THE SLOT ROW IS WALKED TOO, for the reason
+    // `every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for` states: it
+    // is where the canonical handle lives, so a walk without it reports the adopters alone.
     let mut holders: Counter<usize, Vec<&'static str>> = Counter::new();
+    for table in shard.bucket_index.objects.values() {
+        for key in table.keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("bucket_index.objects");
+        }
+    }
     for (_model_id, object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
         holders.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
     }
@@ -12053,20 +12062,26 @@ fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_fo
 
     const KEYS: usize = 1_792;
     const SHIPPED_END: u32 = 1023;
-    /// HOW MANY HOLDERS A KEY ALLOCATION ACTUALLY HAS, AND IT USED TO BE TWO.
+    /// HOW MANY HOLDERS A KEY ALLOCATION ACTUALLY HAS, ON A WALK THAT REACHES THE CANONICAL ONE.
     ///
-    /// This read 2 when `object_block_lookup` was the second holder of a string key's
-    /// allocation, and at two holders the refcount header is exactly paid for: one shared
-    /// allocation replaces two owned ones. The block-refs fold moved each object's refs into
-    /// its `ObjectSlot` and the lookup stopped holding the string key, so the count is now ONE
-    /// -- and `how_many_holders_a_key_allocation_has_by_kind` shows it is one for EVERY kind,
-    /// not only for strings.
+    /// TWO. `strings` holds the key, and so does the object's own slot row in
+    /// `bucket_index.objects` -- which is where `CoreIndex::any_shared_object_key` reads the
+    /// canonical handle, and so the holder every other `ModelKey`-keyed map adopts FROM through
+    /// `adopt_object_key_allocations`.
     ///
-    /// An `Arc` whose allocation has a single owner pays sixteen bytes of strong and weak count
-    /// for sharing that never happens. So the refusal this number used to support has expired:
-    /// a header-free handle takes those bytes out with no arena, no new dependency and
-    /// `Borrow<str>` intact. The price is in that arm; this is the premise it rests on.
-    const PRICED_FOR: usize = 1;
+    /// THIS READ ONE UNTIL THE WALK BELOW REACHED THAT ROW, and the number was load-bearing: at
+    /// one holder an `Arc` pays sixteen bytes of strong and weak count for sharing that never
+    /// happens, so this arm's own doc concluded the `Box<str>` refusal had expired. It had not.
+    /// The walk omitted the slot row -- the same omission that once made the key-character census
+    /// read 0.0 B/key while every key was still allocated and held. `walk_bucket_index_strings`
+    /// carries that note: the census was fixed by adding this walk, and the HOLDER arms were not.
+    ///
+    /// At TWO holders one shared allocation replaces two owned ones: a WASH on the published model
+    /// (`32` against `16` twice) and a LOSS of 16 B/key on what the allocator sets aside, because
+    /// glibc serves nothing under a 32-byte chunk. So the header is paid for and the header-free
+    /// lever is CLOSED, not expired. `the_holders_of_a_key_allocation` measures the blind walk and
+    /// this one side by side on one corpus, so the correction is a measurement and not a re-reading.
+    const PRICED_FOR: usize = 2;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = probe_engine_on(dir.path(), SHIPPED_END);
@@ -12103,7 +12118,16 @@ fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_fo
 
     // Holders of one key allocation, by DATA pointer -- the same identity `arc_str_bytes` uses, so
     // "the same allocation" means here what it means in the published row.
+    //
+    // THE SLOT ROW IS WALKED FIRST BECAUSE IT IS THE HOLDER THE OTHERS ADOPT FROM, and leaving it
+    // out is what made this arm report one holder. `any_shared_object_key` resolves the canonical
+    // handle out of `objects`, so a walk that skips it counts the adopters and not the owner.
     let mut holders: Counter<usize, Vec<&'static str>> = Counter::new();
+    for table in shard.bucket_index.objects.values() {
+        for key in table.keys() {
+            holders.entry(key.as_ptr() as usize).or_default().push("bucket_index.objects");
+        }
+    }
     for (_model_id, object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
         holders.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
     }
@@ -12142,13 +12166,15 @@ fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_fo
     assert_eq!(
         vec![(PRICED_FOR, KEYS)],
         spread,
-        "the holder spread is not `{PRICED_FOR} holder for every one of {KEYS} allocations`. \
-         ONE holder is what makes the refcount header removable: an `Arc` with a single owner \
-         pays sixteen bytes for sharing that never happens, so a header-free handle takes them \
-         out for nothing. If this now reads TWO, something has become a second holder of the \
-         key allocation again, the header is paid for once more, and the lever is CLOSED -- \
-         re-price it and say so. If it reads more than two the header is better than paid for. \
-         Either way re-price rather than loosening this assertion."
+        "the holder spread is not `{PRICED_FOR} holders for every one of {KEYS} allocations`. \
+         TWO is what makes the refcount header PAID FOR: one shared allocation replaces two \
+         owned ones, a wash on the published model and a 16 B/key loss on what the allocator \
+         sets aside. If this now reads ONE, a structure has stopped holding the key allocation \
+         -- check the slot row walked above is still populated before concluding it, because an \
+         empty structure contributes no holders and reads exactly like a map with nothing to \
+         share. At one holder an `Arc` pays sixteen bytes for sharing that never happens and the \
+         header-free handle opens: re-price it and say so. If it reads more, the header is better \
+         than paid for. Either way re-price rather than loosening this assertion."
     );
 }
 

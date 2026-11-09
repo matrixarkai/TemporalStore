@@ -466,6 +466,47 @@ pub fn reset_tombstone_append_failure_count() {
     TOMBSTONE_APPEND_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub(super) enum ProjectedHashValues {
+    Missing(usize),
+    Owned(Vec<Option<Vec<u8>>>),
+    Shared {
+        frame: std::sync::Arc<[u8]>,
+        ranges: Vec<Option<std::ops::Range<usize>>>,
+    },
+}
+
+impl ProjectedHashValues {
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::Missing(field_count) => *field_count,
+            Self::Owned(values) => values.len(),
+            Self::Shared { ranges, .. } => ranges.len(),
+        }
+    }
+
+    pub(super) fn value_at(&self, index: usize) -> Option<&[u8]> {
+        match self {
+            Self::Missing(_) => None,
+            Self::Owned(values) => values.get(index).and_then(|value| value.as_deref()),
+            Self::Shared { frame, ranges } => ranges
+                .get(index)
+                .and_then(|range| range.as_ref())
+                .map(|range| &frame[range.clone()]),
+        }
+    }
+
+    pub(super) fn into_owned(self) -> Vec<Option<Vec<u8>>> {
+        match self {
+            Self::Missing(field_count) => vec![None; field_count],
+            Self::Owned(values) => values,
+            Self::Shared { frame, ranges } => ranges
+                .into_iter()
+                .map(|range| range.map(|range| frame[range].to_vec()))
+                .collect(),
+        }
+    }
+}
+
 pub(super) fn execute_hash_multi_get(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -476,6 +517,7 @@ pub(super) fn execute_hash_multi_get(
     key: &str,
     fields: &[String],
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
+    projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ExecuteOutcome {
     if remove_if_expired(shard, key) {
         let _ = cache.invalidate_record(shard_id, "hash", key);
@@ -486,21 +528,64 @@ pub(super) fn execute_hash_multi_get(
             mutated: true,
         };
     }
+    let values = execute_hash_multi_get_projected(
+        cache,
+        block_store,
+        shard_id,
+        start_routing_bucket,
+        end_routing_bucket,
+        shard,
+        key,
+        fields,
+        projection_plan,
+        projection_scratch,
+    )
+    .into_owned();
+    ExecuteOutcome {
+        response: CommandResponse::Values { values },
+        mutated: false,
+    }
+}
+
+pub(super) fn execute_hash_multi_get_projected(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    shard: &mut ShardState,
+    key: &str,
+    fields: &[String],
+    projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
+    projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
+) -> ProjectedHashValues {
     let hash_fields = shard.bucket_index.hashes.get(key);
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     // A packed row gives every present field the same address. Detect that common case
     // without allocating a per-command address map, fetch its frame once, and project all
     // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
-    // the established independent-read path.
+    // the established independent-read path. Both collections are sorted by field name, so
+    // merge them once and retain presence in reusable scratch instead of binary-searching the
+    // field map twice per requested slot.
     let mut shared: Option<(&ElementEntry, &str)> = None;
     let mut distinct_addresses = false;
+    projection_scratch.reset_index_presence(fields.len());
     if let Some(entries) = hash_fields {
-        for field in fields {
-            let Some(address) = entries.get(field) else {
-                continue;
+        let mut stored = entries.entries().peekable();
+        for &index in projection_plan.positions_by_name() {
+            let field = fields[index].as_str();
+            while stored.peek().is_some_and(|(name, _)| &name[..] < field) {
+                stored.next();
+            }
+            let Some(&(name, address)) = stored.peek() else {
+                break;
             };
+            if &name[..] != field {
+                continue;
+            }
+            projection_scratch.mark_present_in_index(index);
             match shared {
-                None => shared = Some((address, field.as_str())),
+                None => shared = Some((address, field)),
                 Some((held, _)) if held == address => {}
                 Some(_) => {
                     distinct_addresses = true;
@@ -509,9 +594,9 @@ pub(super) fn execute_hash_multi_get(
             }
         }
     }
-    let values = if !distinct_addresses {
+    if !distinct_addresses {
         if let Some((address, first_field)) = shared {
-            let frame = read_block_frame_bytes(
+            let frame = read_block_frame_shared(
                 cache,
                 block_store,
                 shard_id,
@@ -519,61 +604,65 @@ pub(super) fn execute_hash_multi_get(
                 BlockIdentity::of(shard_id, "hash", key, Some(first_field)),
                 Some(routing_bucket),
             );
-            match frame.as_deref().map(|bytes| {
-                container_blocks::project_utf8_container_elements_with_plan(
-                    bytes,
-                    projection_plan,
-                )
-            }) {
-                Some(container_blocks::Utf8ContainerProjection::Values(mut values)) => {
-                    for (index, field) in fields.iter().enumerate() {
-                        if hash_fields.and_then(|entries| entries.get(field)).is_none() {
-                            values[index] = None;
+            let Some(frame) = frame else {
+                return ProjectedHashValues::Missing(fields.len());
+            };
+            match container_blocks::project_utf8_container_element_ranges_with_plan(
+                frame.as_ref(),
+                projection_plan,
+                projection_scratch,
+            ) {
+                container_blocks::Utf8ContainerRangeProjection::Values(mut ranges) => {
+                    for (index, range) in ranges.iter_mut().enumerate() {
+                        if !projection_scratch.is_present_in_index(index) {
+                            *range = None;
                         }
                     }
-                    values
+                    ProjectedHashValues::Shared { frame, ranges }
                 }
-                Some(container_blocks::Utf8ContainerProjection::Corrupt(_)) => {
+                container_blocks::Utf8ContainerRangeProjection::Corrupt(_) => {
                     note_corrupt_container_block();
-                    vec![None; fields.len()]
+                    ProjectedHashValues::Missing(fields.len())
                 }
-                Some(container_blocks::Utf8ContainerProjection::NotFramed)
-                | Some(container_blocks::Utf8ContainerProjection::OtherSpelling) => fields
-                    .iter()
-                    .map(|field| {
-                        hash_fields
-                            .and_then(|entries| entries.get(field))
-                            .and_then(|_| frame.as_deref())
-                            .and_then(|bytes| select_container_value(bytes, field))
-                    })
-                    .collect(),
-                None => vec![None; fields.len()],
+                container_blocks::Utf8ContainerRangeProjection::NotFramed
+                | container_blocks::Utf8ContainerRangeProjection::OtherSpelling => {
+                    ProjectedHashValues::Owned(
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(index, field)| {
+                                projection_scratch
+                                    .is_present_in_index(index)
+                                    .then(|| select_container_value(frame.as_ref(), field))
+                                    .flatten()
+                            })
+                            .collect(),
+                    )
+                }
             }
         } else {
-            vec![None; fields.len()]
+            ProjectedHashValues::Missing(fields.len())
         }
     } else {
-        fields
-            .iter()
-            .map(|field| {
-                hash_fields
-                    .and_then(|entries| entries.get(field))
-                    .and_then(|address| {
-                        read_block_bytes(
-                            cache,
-                            block_store,
-                            shard_id,
-                            address,
-                            BlockIdentity::of(shard_id, "hash", key, Some(field.as_str())),
-                            Some(routing_bucket),
-                        )
-                    })
-            })
-            .collect()
-    };
-    ExecuteOutcome {
-        response: CommandResponse::Values { values },
-        mutated: false,
+        ProjectedHashValues::Owned(
+            fields
+                .iter()
+                .map(|field| {
+                    hash_fields
+                        .and_then(|entries| entries.get(field))
+                        .and_then(|address| {
+                            read_block_bytes(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                BlockIdentity::of(shard_id, "hash", key, Some(field.as_str())),
+                                Some(routing_bucket),
+                            )
+                        })
+                })
+                .collect(),
+        )
     }
 }
 
@@ -634,6 +723,7 @@ fn write_packed_hash_entries(
     end_routing_bucket: u32,
     shard: &mut ShardState,
     key: &str,
+    async_storage: bool,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (bool, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = deduplicate_hash_entries(entries);
@@ -659,15 +749,17 @@ fn write_packed_hash_entries(
         .and_then(|ordinal| u32::try_from(ordinal).ok())
         .unwrap_or(0);
     let block = crate::engine::container_blocks::encode_utf8_container_block(&packed_entries);
-    block_in_wal::stage(object_id, None, &block);
-    let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
-        block_store.append_block_of_object(
-            &block,
-            Some(object_id),
-            Some(routing_bucket),
-            block_ordinal,
-        )
-    });
+    let address = append_value_of_object(
+        cache,
+        block_store,
+        shard_id,
+        &block,
+        Some(object_id),
+        None,
+        Some(routing_bucket),
+        async_storage,
+        block_ordinal,
+    );
     let mutated = match address {
         Ok(address) => {
             for (field, _) in &packed_entries {
@@ -701,6 +793,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     end_routing_bucket: u32,
     shard: &mut ShardState,
     async_storage: bool,
+    pack_projection: bool,
     key: String,
     mut entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
@@ -709,9 +802,12 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
 
-    // A large feature and its small scalar fields stay readable as one object under cache
-    // pressure. Generic small hash writes retain their per-field representation.
-    let mutated = if contains_large_value {
+    // Shared feature-row batches carry one projection and read it back together, so one packed
+    // block avoids repeating the block header and physical append for every field. The packed
+    // projection reader fetches that shared address once on both storage modes. Generic hash
+    // writes retain their per-field representation; a large value still selects the packed
+    // layout on every path so its scalar siblings stay with it under pressure.
+    let mutated = if pack_projection || contains_large_value {
         let (mutated, returned_entries) = write_packed_hash_entries(
             cache,
             block_store,
@@ -720,6 +816,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
             end_routing_bucket,
             shard,
             &key,
+            async_storage,
             entries,
         );
         entries = returned_entries;
@@ -782,6 +879,7 @@ pub(super) fn execute_packed_conditional_hash_write(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     shard: &mut ShardState,
+    async_storage: bool,
     key: String,
     timestamp_field: String,
     timestamp_seconds: i64,
@@ -789,12 +887,16 @@ pub(super) fn execute_packed_conditional_hash_write(
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let stored_timestamp = shard
         .bucket_index.hashes
         .get(&key)
         .and_then(|fields| fields.get(&timestamp_field))
         .and_then(|address| {
-            read_block_bytes(
+            // Keep the cached packed row shared while selecting its tiny timestamp. Copying the
+            // whole frame here makes every stale embedding write pay for its payload a second
+            // time before it can be rejected.
+            read_block_frame_shared(
                 cache,
                 block_store,
                 shard_id,
@@ -805,14 +907,13 @@ pub(super) fn execute_packed_conditional_hash_write(
                     &key,
                     Some(timestamp_field.as_str()),
                 ),
-                Some(block_routing_bucket(
-                    &key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                )),
+                Some(routing_bucket),
             )
         })
-        .and_then(|bytes| <HashTimestamp as prost::Message>::decode(bytes.as_slice()).ok())
+        .and_then(|frame| select_container_value(&frame, &timestamp_field))
+        .and_then(|timestamp| {
+            <HashTimestamp as prost::Message>::decode(timestamp.as_slice()).ok()
+        })
         .map(|timestamp| (timestamp.seconds, timestamp.nanos));
     if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
         let mut metadata_entries = entries;
@@ -840,6 +941,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         end_routing_bucket,
         shard,
         &key,
+        async_storage,
         entries,
     );
     mutated |= packed_mutated;
@@ -936,6 +1038,7 @@ pub(crate) fn execute_on_shard(
             start_routing_bucket,
             end_routing_bucket,
             shard,
+            async_storage,
             key,
             timestamp_field,
             timestamp_seconds,
@@ -1482,6 +1585,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashMultiGet { key, fields } => {
             let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+            let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
             return execute_hash_multi_get(
                 cache,
                 block_store,
@@ -1492,6 +1596,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &fields,
                 &projection_plan,
+                &mut projection_scratch,
             );
         }
         Command::HashMultiSet { key, entries } => {
@@ -1503,6 +1608,7 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 shard,
                 async_storage,
+                false,
                 key,
                 entries,
             )
@@ -1715,21 +1821,22 @@ pub(crate) fn execute_on_shard(
                 }
             }
 
+            // The routing bucket is the object's, so it is one value for every field; and the
+            // fields of one hash sit in few slabs, so the page keys share their record key.
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let mut page_keys = crate::engine::PageKeys::new();
             let entries = resolved
                 .into_iter()
                 .filter_map(|(name, element_name, address)| {
-                    read_block_bytes(
+                    let cache_key = page_keys.key(shard_id, &address, Some(routing_bucket));
+                    read_block_bytes_keyed(
                         cache,
                         block_store,
                         shard_id,
                         &address,
                         // The element the whole-object door handed back beside this address.
                         BlockIdentity::of(shard_id, "hash", &key, element_name.as_deref()),
-                        Some(block_routing_bucket(
-                            &key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        )),
+                        cache_key,
                     )
                     .map(|value| (name, value))
                 })
@@ -3040,7 +3147,7 @@ pub(crate) fn execute_on_shard(
                                 )),
                             )
                             .and_then(|point| {
-                                let row = SequenceFeatureRow::decode_feature_proto_value(
+                                let row = crate::engine::decode_or_count_sequence_row(
                                     point.timestamp_ms,
                                     &point.value,
                                 )?;
@@ -3191,6 +3298,10 @@ pub(crate) fn execute_on_shard(
                     .map(|values| values.len() != feature_len)
                     .unwrap_or(feature_len > 0);
                 if stale {
+                    // Each value is read IN PLACE and parsed where it sits: a point's number is
+                    // `parse_i64` of its bytes, or 0 when it is not a number, which is what summing
+                    // the one-element slice came to. No `FeaturePoint` or value copy is built.
+                    let mut page_keys = crate::engine::PageKeys::new();
                     let decoded: BTreeMap<u64, i64> = shard
                         .features()
                         .get(&key[..])
@@ -3198,7 +3309,7 @@ pub(crate) fn execute_on_shard(
                             series
                                 .points()
                                 .filter_map(|(timestamp_ms, address)| {
-                                    read_feature_point(
+                                    read_feature_value_with(
                                         cache,
                                         block_store,
                                         shard_id,
@@ -3210,13 +3321,10 @@ pub(crate) fn execute_on_shard(
                                             start_routing_bucket,
                                             end_routing_bucket,
                                         )),
+                                        &mut page_keys,
+                                        |value| parse_i64_slice(value).unwrap_or(0),
                                     )
-                                    .map(|point| {
-                                        (
-                                            timestamp_ms,
-                                            aggregate_feature_values(&[point.value], "sum"),
-                                        )
-                                    })
+                                    .map(|number| (timestamp_ms, number))
                                 })
                                 .collect()
                         })
@@ -3231,6 +3339,41 @@ pub(crate) fn execute_on_shard(
                 CommandResponse::Aggregate {
                     value: control_rollup::feature_windowed_sum(shard, &key, start_ms, end_ms),
                 }
+            } else if aggregator.eq_ignore_ascii_case("sum") {
+                // THE SUM KEEPS A NUMBER PER POINT, so it reads each value in place and adds it
+                // up instead of collecting every value into a `Vec<Vec<u8>>` first. The same
+                // iterator shape as `aggregate_feature_values`'s "sum" arm (parse, drop what is not
+                // a number, `sum`), over the same points in the same order.
+                let mut page_keys = crate::engine::PageKeys::new();
+                let value = shard
+                    .features()
+                    .get(&key[..])
+                    .map(|series| {
+                        series
+                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                            .take(count.unwrap_or(feature_max_size))
+                            .filter_map(|(timestamp_ms, address)| {
+                                read_feature_value_with(
+                                    cache,
+                                    block_store,
+                                    shard_id,
+                                    timestamp_ms,
+                                    address,
+                                    BlockIdentity::of(shard_id, "feature", &key, None),
+                                    Some(block_routing_bucket(
+                                        &key,
+                                        start_routing_bucket,
+                                        end_routing_bucket,
+                                    )),
+                                    &mut page_keys,
+                                    parse_i64_slice,
+                                )
+                                .flatten()
+                            })
+                            .sum::<i64>()
+                    })
+                    .unwrap_or_default();
+                CommandResponse::Aggregate { value }
             } else {
                 let values = shard
                     .features()
@@ -3279,13 +3422,13 @@ pub(crate) fn execute_on_shard(
                 &key,
             );
             let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
+            // PROTOBUF ONLY: the same wire form `FeatureAppend` rows hold, so both read paths decode
+            // it. There is no JSON encode path here; see `sequence_row_value`.
             let points = rows
                 .into_iter()
-                .filter_map(|row| {
-                    serde_json::to_vec(&row).ok().map(|value| FeaturePoint {
-                        timestamp_ms: row.timestamp_ms,
-                        value,
-                    })
+                .map(|row| FeaturePoint {
+                    timestamp_ms: row.timestamp_ms,
+                    value: row.encode_feature_proto_value(),
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
@@ -4078,9 +4221,9 @@ pub(crate) fn execute_on_shard(
                     &context_node_key(tenant_hash, node_hash),
                 );
             }
-            // One node read per hash, and the vector comes back with it -- where the separate
-            // record meant a second lookup per node on top of the node read retrieval does
-            // anyway.
+            // One node read per hash. Decode only the vector: this command feeds embedding
+            // backfill and scoring, so allocating node text and the cached summary vector would
+            // create short-lived work proportional to the batch without changing the response.
             // Every id asked about is answered for. A limit belongs on a query that searches,
             // where the caller cannot know how many results exist; this batch is a list of ids the
             // caller already holds, so truncating it drops nodes the caller named, with nothing in
@@ -4089,44 +4232,44 @@ pub(crate) fn execute_on_shard(
             let embeddings = node_hashes
                 .into_iter()
                 .filter_map(|node_hash| {
-                    let object_key = context_node_key(tenant_hash, node_hash);
-                    let node = shard
-                        .bucket_index.hashes
-                        .get(&object_key)
-                        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-                        .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
-                        .or_else(|| {
-                                // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
-                                // hash. `model_map_block_address` spells it `("context_node", None)` and is the
-                                // authority; one element named for both arms is wrong for whichever arm it does
-                                // not describe, and this chain named the field for both.
-                                shard
-                                    .context_nodes()
-                                    .get(object_key.as_str())
-                                    .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &object_key, None)))
-                        })
-                        .and_then(|(address, identity)| {
-                            read_block_shared(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                identity,
-                                Some(block_routing_bucket(
-                                    &object_key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
-                            )
-                            .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
-                        })?;
-                    if node.vector.is_empty() {
+                    let vector = load_context_node_vector(
+                        cache,
+                        block_store,
+                        shard_id,
+                        shard,
+                        tenant_hash,
+                        node_hash,
+                    )?;
+                    if vector.is_empty() {
                         return None;
                     }
-                    Some((node_hash, node.vector))
+                    Some((node_hash, vector))
                 })
                 .collect();
             CommandResponse::ContextNodeEmbeddings { embeddings }
+        }
+        Command::ContextQueryNodeVectorProjections {
+            tenant_hash,
+            node_hashes,
+        } => {
+            let node_hashes = dedupe_nonzero_u64_preserve_order(node_hashes);
+            for node_hash in node_hashes.iter().copied() {
+                mutated |= drop_if_expired(
+                    cache,
+                    shard_id,
+                    shard,
+                    &context_node_key(tenant_hash, node_hash),
+                );
+            }
+            let projections = load_context_node_vector_projections(
+                cache,
+                block_store,
+                shard_id,
+                shard,
+                tenant_hash,
+                &node_hashes,
+            );
+            CommandResponse::ContextNodeVectorProjections { projections }
         }
         Command::ContextSetNodeEmbedding {
             tenant_hash,

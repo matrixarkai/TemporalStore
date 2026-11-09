@@ -298,6 +298,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // is not what these touch. If either ever gains the power to add or drop a key, it belongs
         // on the exception list below with a reason, not here.
         "refs",
+        // A READ: the row's own key allocation beside its refs, for the keyed inversion.
+        "refs_with_key",
         "set_refs",
         // THE FILER'S DOOR ONTO A ROW, same ground: it answers `None` when there is no row rather
         // than creating one, and the first ref of a row is built into it.

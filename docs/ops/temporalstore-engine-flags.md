@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 309 of them, read by 98 functions.
+There are 308 of them, read by 97 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,7 +60,7 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 311 |
+| total | 310 |
 | booleans whose default this could read off the source | 53 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 7 |
@@ -208,14 +208,13 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_RESIDENT_PAGES` | — | test | 1 | — |
 | `TS_WAL_SEGMENT_BYTES` | 262144 | nothing | 1 | — |
 
-## format (6)
+## format (5)
 
 The shape of what is written. Readers generally accept both shapes, which is what makes these safe to flip and hard to retire.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `MATRIXARK_LANE_CODEC` | off | nothing | 1 | — |
-| `TS_INDEX_CODEC` | — | test | 1 | — |
 | `TS_NODE_SUMMARY_VECTOR` | on | test, portal | 1 | — |
 | `TS_PROXY_BINARY_VERSION` | — | nothing | 1 | — |
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |

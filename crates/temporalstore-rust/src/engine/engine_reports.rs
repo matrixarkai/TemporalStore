@@ -88,10 +88,10 @@ pub struct ObjectIndexDivergenceReport {
     pub reconstructs: u64,
     /// A live block named an object its bucket's list did not hold. The list gains it; nothing
     /// already filed moves.
-    #[serde(rename = "blocks_named_an_object_the_list_lacked", alias = "pages_named_an_object_the_list_lacked")]
+    #[serde(rename = "blocks_named_an_object_the_list_lacked")]
     pub blocks_named_an_object_the_list_lacked: u64,
     /// The list held an object no live block names. The list drops it, leaving a placeholder.
-    #[serde(rename = "list_held_an_object_no_block_names", alias = "list_held_an_object_no_page_names")]
+    #[serde(rename = "list_held_an_object_no_block_names")]
     pub list_held_an_object_no_block_names: u64,
     /// How many of those reached the log, which is rate-limited, so a quiet log cannot be mistaken
     /// for a zero count.
@@ -329,7 +329,6 @@ pub struct ShardExpirySweepRequest {
 pub struct RustStorageObservation {
     pub shard_id: ShardId,
     pub cache: CacheStats,
-    #[serde(alias = "page_store")]
     pub block_store: BlockStoreStats,
     pub observed_memory_hit: bool,
     pub observed_block_cache_hit: bool,
@@ -379,7 +378,7 @@ pub struct StorageRecoveryReport {
     /// call, which starts at the beginning and reads everything.
     #[serde(default)]
     pub readable_probe_cursor: usize,
-    #[serde(alias = "unreadable_page_refs", default)]
+    #[serde(default)]
     pub unreadable_block_refs: Vec<StorageRecoveryBlockError>,
     #[serde(default)]
     pub owner_mismatch_block_refs: Vec<StorageRecoveryBlockOwnerMismatch>,
@@ -391,7 +390,6 @@ pub struct StorageRecoveryReport {
     #[serde(default)]
     pub boundary: StorageRecoveryBoundaryReport,
     #[serde(default)]
-    #[serde(alias = "segment_integrity")]
     pub slab_integrity: StorageSlabIntegrityReport,
     #[serde(rename = "feature_block_layout", default)]
     pub feature_block_layout: StorageFeatureBlockLayoutReport,
@@ -399,7 +397,7 @@ pub struct StorageRecoveryReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryBlockError {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -409,7 +407,7 @@ pub struct StorageRecoveryBlockError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryBlockOwnerMismatch {
     pub object_key: String,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub expected_object_id: u64,
@@ -475,7 +473,7 @@ pub struct StorageFeatureBlockError {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub key: String,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -488,7 +486,7 @@ pub struct StorageFeatureBlockTimestampMismatch {
     pub kind: String,
     pub key: String,
     pub timestamp_ms: u64,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -519,7 +517,7 @@ impl StorageObjectLifecycleReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoverySlabLiveReport {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -729,21 +727,20 @@ impl serde::Serialize for SummaryNamed<'_> {
 pub struct StoragePhysicalBlockIndex {
     pub object_key: String,
     pub model_id: String,
-    /// Published under the key `component`, which is what every consumer of this report reads. The
-    /// Rust field is the element name; the key is the contract and does not move with it.
-    #[serde(rename = "component", default, skip_serializing_if = "Option::is_none")]
+    /// The name of the container element this block belongs to, when it belongs to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub element_name: Option<String>,
     #[serde(rename = "routing_slot")]
     pub routing_bucket: u32,
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
-    #[serde(default, alias = "page_id", skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
-    #[serde(alias = "zone_id", alias = "band", alias = "extent_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stored_slab_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
@@ -885,24 +882,7 @@ pub struct BucketDumpManifest {
     pub index_bytes: Vec<u8>,
     #[serde(default)]
     pub index_sha256: String,
-    /// WHICH DERIVATION `checksum` WAS COMPUTED WITH.
-    ///
-    /// 0 (absent in the JSON) is every manifest written before this field existed: the checksum
-    /// is a SHA-256 over this struct's canonical JSON with `checksum` emptied. 1 is a SHA-256 over
-    /// the manifest's deterministic protobuf encoding with `checksum` empty -- see
-    /// `engine/bucket_dump_codec.rs`. Any other value is refused by the verifier rather than
-    /// guessed at, so a manifest from a build that knows a third derivation is dropped from the
-    /// listing instead of being verified against the wrong bytes.
-    ///
-    /// Skipped when 0 so a legacy manifest serialises to exactly the bytes its checksum was taken
-    /// over: the field must not change the one derivation that already exists.
-    #[serde(default, skip_serializing_if = "is_legacy_checksum_version")]
-    pub checksum_version: u32,
     pub checksum: String,
-}
-
-fn is_legacy_checksum_version(version: &u32) -> bool {
-    *version == 0
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1115,7 +1095,6 @@ pub struct StorageLifecyclePlan {
     /// `dirty_buckets` nearly empty, and no field would say why.
     #[serde(default)]
     pub full_dump_forced_by_item_amplification: bool,
-    #[serde(alias = "dirty_slots")]
     pub dirty_buckets: Vec<u32>,
     pub selected_dump_buckets: Vec<u32>,
     #[serde(rename = "undumped_wal_records", default)]
@@ -1151,7 +1130,6 @@ pub struct StorageLifecyclePlan {
     pub stale_block_slab_ids: Vec<u64>,
     #[serde(default)]
     pub reclaim_candidates: Vec<StorageReclaimCandidate>,
-    #[serde(alias = "delayed_destroy_page_segment_ids")]
     pub delayed_destroy_block_slab_ids: Vec<u64>,
     pub reclaimable_physical_bytes: u64,
     pub reasons: Vec<String>,
@@ -1159,7 +1137,7 @@ pub struct StorageLifecyclePlan {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageReclaimCandidate {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub live_physical_bytes: u64,
@@ -1204,7 +1182,7 @@ pub struct StorageBlockGcReplayCursor {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBlockGcDependencyBlock {
-    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
+    #[serde(rename = "block_segment_id")]
     pub block_slab_id: u64,
     pub dependency: String,
     #[serde(default)]
@@ -1257,7 +1235,6 @@ pub struct PublicStorageContract {
     pub object_index_entry: String,
     pub storage_zone: String,
     pub stream: String,
-    #[serde(alias = "segment")]
     pub slab: String,
     /// NOT folded into [`Self::slab`], deliberately.
     ///
@@ -1266,7 +1243,6 @@ pub struct PublicStorageContract {
     /// published entry rather than rename a field -- a wire change wearing a rename's clothes.
     /// Everywhere else in the crate a band is spelled slab; here the older name is the payload.
     pub band: String,
-    #[serde(alias = "slot")]
     pub bucket: String,
     pub append_watermark: String,
     pub compaction_watermark: String,
@@ -1321,11 +1297,9 @@ pub struct PublicStorageFeatureShapes {
     pub object_index_entry_fields: Vec<String>,
     pub storage_zone_fields: Vec<String>,
     pub stream_fields: Vec<String>,
-    #[serde(alias = "segment_fields")]
     pub slab_fields: Vec<String>,
     /// NOT folded into [`Self::slab_fields`], for the reason on [`PublicStorageContract::band`].
     pub band_fields: Vec<String>,
-    #[serde(alias = "slot_fields")]
     pub bucket_fields: Vec<String>,
     pub append_watermark_fields: Vec<String>,
     pub compaction_watermark_fields: Vec<String>,
@@ -1500,7 +1474,6 @@ pub struct StorageLifecycleReport {
     pub cache_warmup_block_refs: usize,
     #[serde(default)]
     pub cache_warmup: StorageCacheWarmupReport,
-    #[serde(alias = "delayed_destroy_purged_segments")]
     pub delayed_destroy_purged_slabs: Vec<u64>,
     pub delayed_destroy_purged_bytes: u64,
     /// Slabs the purge's last-chance re-check found LIVE and put back in the store.
@@ -2051,7 +2024,6 @@ pub fn default_storage_safety_snapshot() -> StorageSafetySnapshot {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageAppendWatermarkSample {
     pub shard_id: ShardId,
-    #[serde(alias = "slot_id")]
     pub bucket_id: u32,
     pub log_index: u64,
     pub timestamp_ms: u64,
@@ -2210,11 +2182,8 @@ pub fn default_storage_gc_snapshot() -> StorageGcSnapshot {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoragePageAddressSample {
     pub shard_id: u64,
-    #[serde(alias = "zone_id", alias = "band", alias = "extent_id")]
     pub stored_slab_id: u64,
-    #[serde(alias = "segment_id")]
     pub slab_id: u64,
-    #[serde(alias = "page_id")]
     pub block_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -2224,7 +2193,6 @@ pub struct StoragePageAddressSample {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBlockAddressSample {
     pub shard_id: u64,
-    #[serde(alias = "zone_id", alias = "band", alias = "extent_id")]
     pub stored_slab_id: u64,
     pub block_id: u64,
     pub offset: u64,
@@ -2236,7 +2204,6 @@ pub struct StorageBlockAddressSample {
 pub struct StoragePageIndexEntrySample {
     pub logical_key: String,
     pub timestamp_range: Option<(u64, u64)>,
-    #[serde(alias = "page_addresses")]
     pub block_addresses: Vec<StoragePageAddressSample>,
     pub append_watermark: u64,
     pub generation: u64,
@@ -2246,7 +2213,6 @@ pub struct StoragePageIndexEntrySample {
 pub struct StorageBlockIndexEntrySample {
     pub page_address: StoragePageAddressSample,
     pub block_address: StorageBlockAddressSample,
-    #[serde(alias = "band", alias = "zone_id", alias = "extent_id")]
     pub stored_slab_id: u64,
     pub checksum: String,
     pub generation: u64,
@@ -2257,7 +2223,6 @@ pub struct StorageObjectIndexEntrySample {
     pub model: String,
     pub table: String,
     pub object_key: String,
-    #[serde(alias = "page_chain")]
     pub block_chain: Vec<StoragePageAddressSample>,
     #[serde(rename = "tombstone")]
     pub delete_marker: bool,
@@ -2269,15 +2234,10 @@ pub struct StorageIndexSnapshot {
     pub page_index_entry_count: u64,
     pub block_index_entry_count: u64,
     pub object_index_entry_count: u64,
-    #[serde(alias = "slot_index_entry_count")]
     pub bucket_index_entry_count: u64,
-    #[serde(alias = "slot_object_ref_count")]
     pub bucket_object_ref_count: u64,
-    #[serde(alias = "slot_page_ref_count")]
     pub bucket_block_ref_count: u64,
-    #[serde(alias = "page_address_count")]
     pub block_address_count: u64,
-    #[serde(alias = "unreadable_page_refs")]
     pub unreadable_block_refs: u64,
     pub checksum_mismatches: u64,
     pub missing_owner_ref_count: u64,
@@ -2326,33 +2286,27 @@ pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
 /// slab's block range and reclaim state. Two shapes over one entity, not two levels -- "zone"
 /// and "band" were both older names for a slab, and the wire still uses them.
 pub struct StorageSlabUsageSample {
-    #[serde(alias = "zone_id", alias = "band", alias = "extent_id")]
     pub stored_slab_id: u64,
     pub total_bytes: u64,
     pub used_bytes: u64,
     pub stale_bytes: u64,
-    #[serde(alias = "segments")]
     pub slabs: Vec<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageStreamSample {
     pub stream_id: String,
-    #[serde(alias = "segments")]
     pub slabs: Vec<u64>,
     pub rollover_count: u64,
-    #[serde(alias = "sealed_segment_count")]
     pub sealed_slab_count: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageSlabSample {
-    #[serde(alias = "segment_id")]
     pub slab_id: u64,
     /// The same number as [`Self::slab_id`], always -- see
     /// [`crate::block_store::BlockStoreSlabDescriptor::stored_slab_id`]. Kept because it
     /// serializes, under the older key, and the compat corpora carry it.
-    #[serde(alias = "band", alias = "zone_id", alias = "extent_id")]
     pub stored_slab_id: u64,
     pub start_offset: u64,
     pub sealed: bool,
@@ -2361,7 +2315,6 @@ pub struct StorageSlabSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageSlabSlabSample {
-    #[serde(alias = "band", alias = "zone_id", alias = "extent_id")]
     pub stored_slab_id: u64,
     pub block_range: Vec<u64>,
     pub reclaim_state: String,
@@ -2370,11 +2323,9 @@ pub struct StorageSlabSlabSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBucketSample {
-    #[serde(alias = "slot_id")]
     pub bucket_id: u32,
     pub dirty_generation: u64,
     pub object_refs: Vec<u64>,
-    #[serde(alias = "page_refs")]
     pub block_refs: Vec<StoragePageAddressSample>,
     #[serde(rename = "tombstones")]
     pub delete_markers: Vec<String>,
@@ -2383,39 +2334,27 @@ pub struct StorageBucketSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTopologySnapshot {
-    #[serde(alias = "storage_zone_count")]
     pub storage_slab_count: u64,
-    #[serde(alias = "active_storage_zones")]
     pub active_storage_slabs: u64,
-    #[serde(alias = "sealed_storage_zones")]
     pub sealed_storage_slabs: u64,
-    #[serde(alias = "stream_segment_count")]
     pub stream_slab_count: u64,
-    #[serde(alias = "segment_open_count")]
     pub slab_open_count: u64,
-    #[serde(alias = "segment_sealed_count")]
     pub slab_sealed_count: u64,
     pub delayed_destroy_backlog: u64,
-    #[serde(alias = "storage_zone_total_bytes")]
     pub storage_slab_total_bytes: u64,
-    #[serde(alias = "storage_zone_used_bytes")]
     pub storage_slab_used_bytes: u64,
-    #[serde(alias = "storage_zone_stale_bytes")]
     pub storage_slab_stale_bytes: u64,
     pub append_log_replay_records: u64,
     pub append_log_reclaimed_records: u64,
     #[serde(default)]
-    #[serde(alias = "storage_zone_samples", alias = "storage_extent_samples")]
     pub storage_slab_usage_samples: Vec<StorageSlabUsageSample>,
     #[serde(default)]
     pub stream_samples: Vec<StorageStreamSample>,
     #[serde(default)]
-    #[serde(alias = "segment_samples")]
     pub slab_samples: Vec<StorageSlabSample>,
     #[serde(default)]
     pub slab_range_samples: Vec<StorageSlabSlabSample>,
     #[serde(default)]
-    #[serde(alias = "slot_samples")]
     pub bucket_samples: Vec<StorageBucketSample>,
 }
 
@@ -3070,6 +3009,27 @@ pub struct StorageWalReclaimPlan {
     pub blocker_reasons: Vec<String>,
 }
 
+/// One bucket's gauges: how many objects and blocks it holds and how many bytes those blocks are.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketGauge {
+    pub routing_bucket: u32,
+    pub object_count: u64,
+    pub block_count: u64,
+    pub block_bytes: u64,
+}
+
+/// What one bounded sweep over a shard's buckets read.
+///
+/// `next_after` is where the next sweep resumes, or `None` once this one reached the last bucket,
+/// so the sweep after that starts again from the first. A gauge is a sample, not a census: a bucket
+/// that appears or vanishes between two sweeps is seen or missed once.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketGaugeSweep {
+    pub gauges: Vec<BucketGauge>,
+    pub next_after: Option<u32>,
+    pub buckets_total: usize,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageWalReclaimReport {
     pub plan: StorageWalReclaimPlan,
@@ -3271,7 +3231,6 @@ pub struct StorageMergedDumpLoadPolicyReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageCacheWarmupReport {
     pub shard_id: ShardId,
-    #[serde(alias = "selected_slots")]
     pub selected_buckets: Vec<u32>,
     pub considered_block_refs: usize,
     pub skipped_block_refs: usize,
@@ -3869,7 +3828,6 @@ pub struct StorageManagerStageReport {
     #[serde(default)]
     pub stale_bytes: u64,
     #[serde(default)]
-    #[serde(alias = "selected_slots")]
     pub selected_buckets: Vec<u32>,
     #[serde(default)]
     pub selected_block_slab_ids: Vec<u64>,
@@ -4001,7 +3959,6 @@ pub struct StorageManagerPressureSignals {
     #[serde(default)]
     pub live_block_summaries_measured: bool,
     pub expired_bucket_object_scan_debt: usize,
-    #[serde(alias = "delayed_destroy_segment_count")]
     pub delayed_destroy_slab_count: usize,
     pub delayed_destroy_bytes: u64,
     pub follower_cursor_retention_blockers: usize,
@@ -4061,7 +4018,6 @@ pub struct StorageDataStructureApiParityReport {
     pub bucket_store_layout_api_ready: bool,
     pub object_manager_runtime_api_ready: bool,
     pub block_address_api_ready: bool,
-    #[serde(alias = "block_store_segment_api_ready")]
     pub block_store_slab_api_ready: bool,
     pub stream_backed_slab_api_ready: bool,
     pub legacy_block_slab_aliases_ready: bool,
@@ -4085,7 +4041,7 @@ pub struct StorageManagerLoopRequest {
     pub apply: bool,
     #[serde(default)]
     pub expire_records: bool,
-    #[serde(alias = "compact_pages", default)]
+    #[serde(default)]
     pub compact_blocks: bool,
     #[serde(default)]
     pub lifecycle: StorageLifecycleRequest,
@@ -4169,7 +4125,6 @@ pub struct StorageProductionReadinessReport {
     pub boundary: StorageRecoveryBoundaryReport,
     pub object_lifecycle: StorageObjectLifecycleReport,
     #[serde(default)]
-    #[serde(alias = "segment_integrity")]
     pub slab_integrity: StorageSlabIntegrityReport,
     #[serde(default)]
     pub log_compatibility: StorageLogCompatibilityReport,

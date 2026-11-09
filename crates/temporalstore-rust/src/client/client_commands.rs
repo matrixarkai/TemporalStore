@@ -123,6 +123,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryChildren { .. }
         | Command::ContextSetNodeEmbedding { .. }
         | Command::ContextQueryNodeEmbeddings { .. }
+        | Command::ContextQueryNodeVectorProjections { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }

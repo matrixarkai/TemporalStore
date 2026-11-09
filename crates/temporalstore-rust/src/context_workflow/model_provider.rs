@@ -3,9 +3,11 @@
 
 //! Context model-provider calls for summaries and embeddings across supported provider protocols.
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::OnceLock;
 
 use crate::llm_context::{BatchEmbedder, EmbeddingBatch, OllamaConfig, OllamaProvider};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::*;
 
@@ -34,6 +36,14 @@ struct ContextSummaryBatchItem {
     source_index: usize,
     l0: String,
     l1: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ContextSummaryOutput {
+    #[serde(default)]
+    l0: Value,
+    #[serde(default)]
+    l1: Value,
 }
 
 #[derive(Serialize)]
@@ -102,6 +112,159 @@ pub(crate) struct OpenAiEmbeddingRequest<'a> {
     input: Vec<&'a str>,
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingResponse {
+    data: FlatOpenAiEmbeddingData,
+}
+
+#[derive(Debug, Default)]
+struct FlatOpenAiEmbeddingData {
+    values: Vec<f32>,
+    row_ends: Vec<usize>,
+}
+
+impl<'de> Deserialize<'de> for FlatOpenAiEmbeddingData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DataVisitor;
+
+        impl<'de> Visitor<'de> for DataVisitor {
+            type Value = FlatOpenAiEmbeddingData;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an array of embedding response items")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut data = FlatOpenAiEmbeddingData {
+                    values: Vec::new(),
+                    row_ends: Vec::with_capacity(sequence.size_hint().unwrap_or(0)),
+                };
+                while sequence
+                    .next_element_seed(OpenAiEmbeddingItemSeed {
+                        values: &mut data.values,
+                    })?
+                    .is_some()
+                {
+                    data.row_ends.push(data.values.len());
+                }
+                Ok(data)
+            }
+        }
+
+        deserializer.deserialize_seq(DataVisitor)
+    }
+}
+
+struct OpenAiEmbeddingItemSeed<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+impl<'de, 'a> DeserializeSeed<'de> for OpenAiEmbeddingItemSeed<'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(OpenAiEmbeddingItemVisitor {
+            values: self.values,
+        })
+    }
+}
+
+struct OpenAiEmbeddingItemVisitor<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum OpenAiEmbeddingItemField {
+    Embedding,
+    #[serde(other)]
+    Other,
+}
+
+impl<'de, 'a> Visitor<'de> for OpenAiEmbeddingItemVisitor<'a> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an embedding response item")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut found_embedding = false;
+        while let Some(field) = map.next_key::<OpenAiEmbeddingItemField>()? {
+            match field {
+                OpenAiEmbeddingItemField::Embedding => {
+                    if found_embedding {
+                        return Err(serde::de::Error::duplicate_field("embedding"));
+                    }
+                    map.next_value_seed(OpenAiEmbeddingValuesSeed {
+                        values: self.values,
+                    })?;
+                    found_embedding = true;
+                }
+                OpenAiEmbeddingItemField::Other => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        if !found_embedding {
+            return Err(serde::de::Error::missing_field("embedding"));
+        }
+        Ok(())
+    }
+}
+
+struct OpenAiEmbeddingValuesSeed<'a> {
+    values: &'a mut Vec<f32>,
+}
+
+impl<'de, 'a> DeserializeSeed<'de> for OpenAiEmbeddingValuesSeed<'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ValuesVisitor<'a> {
+            values: &'a mut Vec<f32>,
+        }
+
+        impl<'de, 'a> Visitor<'de> for ValuesVisitor<'a> {
+            type Value = ();
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an array of floating-point embedding values")
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                self.values.reserve(sequence.size_hint().unwrap_or(0));
+                while let Some(value) = sequence.next_element::<f32>()? {
+                    self.values.push(value);
+                }
+                Ok(())
+            }
+        }
+
+        deserializer.deserialize_seq(ValuesVisitor {
+            values: self.values,
+        })
+    }
+}
+
 /// When set (`MATRIXARK_REQUIRE_MODEL_SUMMARIES=1`), context summaries must come from a
 /// real model: mock/deterministic providers are rejected loudly and, if the model omits
 /// l0/l1, the model's own output is used rather than the title/body string heuristic.
@@ -152,8 +315,8 @@ pub(crate) fn context_summaries_for_extract(
             })
         }
         ContextProviderKind::Ollama => {
-            let content = call_ollama_context_provider(&provider, request)?;
-            let (l0, l1) = parse_provider_summary_content(&content, request);
+            let output = call_ollama_context_provider(&provider, request)?;
+            let (l0, l1) = normalize_ollama_summary(output, request);
             let l2_ref = format!(
                 "tsctx://tenant/{}/model/{}/source/{}",
                 request.tenant_hash, provider.provider_name, request.source_id
@@ -198,8 +361,8 @@ pub(crate) fn context_summaries_for_extract_batch(
     while start < requests.len() {
         let (end, prompt) = ollama_summary_batch_prompt(&client, requests, start);
         let chunk = &requests[start..end];
-        let output = client
-            .generate_structured_json(
+        let output: Result<ContextSummaryBatchOutput, Status> = client
+            .generate_structured_output(
                 CONTEXT_SUMMARY_SYSTEM_PROMPT,
                 &prompt,
                 context_summary_batch_schema(),
@@ -212,17 +375,6 @@ pub(crate) fn context_summaries_for_extract_batch(
                         provider.provider_name
                     ),
                 )
-            })
-            .and_then(|value| {
-                serde_json::from_value::<ContextSummaryBatchOutput>(value).map_err(|err| {
-                    Status::error(
-                        "model_provider_bad_response",
-                        format!(
-                            "context provider {} returned invalid summary JSON: {err}",
-                            provider.provider_name
-                        ),
-                    )
-                })
             });
 
         if let Ok(output) = output {
@@ -380,9 +532,31 @@ pub(crate) fn context_embeddings_for_extract(
     provider: &ContextModelProviderConfig,
     inputs: &[(&str, u64, u32, &str)],
 ) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    let (unique_batch, input_rows, report) =
+        context_embeddings_for_extract_compact(provider, inputs)?;
+    if unique_batch.rows() == inputs.len() {
+        return Ok((unique_batch, report));
+    }
+
+    let dimensions = unique_batch.dimensions;
+    let mut values = Vec::with_capacity(inputs.len().saturating_mul(dimensions));
+    for row in input_rows {
+        let start = row.saturating_mul(dimensions);
+        values.extend_from_slice(&unique_batch.values[start..start + dimensions]);
+    }
+    Ok((EmbeddingBatch { dimensions, values }, report))
+}
+
+/// Encodes each distinct text once and returns the logical input-to-vector row map separately.
+/// Batch ingestion uses this form so duplicate source text never expands back into copied vectors.
+pub(crate) fn context_embeddings_for_extract_compact(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<(EmbeddingBatch, Vec<usize>, ContextEmbeddingGenerationReport), Status> {
     let provider = normalize_provider(provider.clone());
     if inputs.is_empty() {
-        return context_embeddings_for_extract_one_batch(&provider, inputs);
+        let (batch, report) = context_embeddings_for_extract_one_batch(&provider, inputs)?;
+        return Ok((batch, Vec::new(), report));
     }
 
     // Encoder output depends on the configured model and text, not the caller's label or object
@@ -405,19 +579,22 @@ pub(crate) fn context_embeddings_for_extract(
 
     let (unique_batch, mut report) =
         context_embeddings_for_unique_inputs(&provider, &unique_inputs)?;
-    if unique_inputs.len() == inputs.len() {
-        return Ok((unique_batch, report));
-    }
-
-    let dimensions = unique_batch.dimensions;
-    let mut values = Vec::with_capacity(inputs.len().saturating_mul(dimensions));
-    for row in input_rows {
-        let start = row.saturating_mul(dimensions);
-        values.extend_from_slice(&unique_batch.values[start..start + dimensions]);
-    }
     report.requested_vector_count = inputs.len();
     report.generated_vector_count = inputs.len();
-    Ok((EmbeddingBatch { dimensions, values }, report))
+    Ok((unique_batch, input_rows, report))
+}
+
+/// Encode an already deduplicated input plan while reporting its logical row count.
+pub(crate) fn context_embeddings_for_prepared_unique(
+    provider: &ContextModelProviderConfig,
+    unique_inputs: &[(&str, u64, u32, &str)],
+    logical_input_count: usize,
+) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
+    let provider = normalize_provider(provider.clone());
+    let (batch, mut report) = context_embeddings_for_unique_inputs(&provider, unique_inputs)?;
+    report.requested_vector_count = logical_input_count;
+    report.generated_vector_count = logical_input_count;
+    Ok((batch, report))
 }
 
 fn context_embeddings_for_unique_inputs(
@@ -425,6 +602,9 @@ fn context_embeddings_for_unique_inputs(
     inputs: &[(&str, u64, u32, &str)],
 ) -> Result<(EmbeddingBatch, ContextEmbeddingGenerationReport), Status> {
     if inputs.is_empty() {
+        return context_embeddings_for_extract_one_batch(provider, inputs);
+    }
+    if context_embedding_batch_end(provider, inputs, 0) == inputs.len() {
         return context_embeddings_for_extract_one_batch(provider, inputs);
     }
 
@@ -683,16 +863,15 @@ fn call_ollama_embedding_provider(
 fn call_ollama_context_provider(
     provider: &ContextModelProviderConfig,
     request: &ContextExtractRequest,
-) -> Result<String, Status> {
+) -> Result<ContextSummaryOutput, Status> {
     let client = ollama_provider(provider)?;
     let prompt = context_summary_prompt(request);
     client
-        .generate_structured_json(
+        .generate_structured_output(
             CONTEXT_SUMMARY_SYSTEM_PROMPT,
             &prompt,
             context_summary_schema(),
         )
-        .map(|value| value.to_string())
         .map_err(|err| {
             Status::error(
                 "model_provider_request_failed",
@@ -702,6 +881,39 @@ fn call_ollama_context_provider(
                 ),
             )
         })
+}
+
+fn normalize_ollama_summary(
+    output: ContextSummaryOutput,
+    request: &ContextExtractRequest,
+) -> (String, String) {
+    let l0 = output.l0.as_str().filter(|value| !value.trim().is_empty());
+    let l1 = output.l1.as_str().filter(|value| !value.trim().is_empty());
+    let require_model = context_require_model_summaries();
+    let raw = if require_model && (l0.is_none() || l1.is_none()) {
+        serde_json::to_string(&output).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let l0 = l0
+        .map(|value| truncate_words(value, 32))
+        .unwrap_or_else(|| {
+            if require_model {
+                truncate_words(&raw, 32)
+            } else {
+                summarize_l0(&request.title, &request.body)
+            }
+        });
+    let l1 = l1
+        .map(|value| truncate_words(value, 96))
+        .unwrap_or_else(|| {
+            if require_model {
+                truncate_words(&raw, 96)
+            } else {
+                summarize_l1(request.source_kind, &request.title, &request.body)
+            }
+        });
+    (l0, l1)
 }
 
 pub(crate) fn call_openai_compatible_embedding_provider(
@@ -731,7 +943,7 @@ pub(crate) fn call_openai_compatible_embedding_provider(
         .map(|key| format!("Authorization: Bearer {key}\r\n"))
         .unwrap_or_default();
     let path = format!("{}/embeddings", path_prefix.trim_end_matches('/'));
-    let response: Value = post_json_with_options_and_headers(
+    let response: OpenAiEmbeddingResponse = post_json_streaming_with_options_and_headers(
         &addr,
         &path,
         &embedding_request,
@@ -751,30 +963,13 @@ pub(crate) fn call_openai_compatible_embedding_provider(
             ),
         )
     })?;
-    let data = response["data"].as_array().ok_or_else(|| {
-        Status::error(
-            "embedding_provider_bad_response",
-            format!(
-                "embedding provider {} response missing data",
-                provider.provider_name
-            ),
-        )
-    })?;
+    let data = response.data;
     let mut dimensions = 0usize;
-    let mut values = Vec::new();
-    for item in data {
-        let embedding = item["embedding"].as_array().ok_or_else(|| {
-            Status::error(
-                "embedding_provider_bad_response",
-                format!(
-                    "embedding provider {} response missing data[].embedding",
-                    provider.provider_name
-                ),
-            )
-        })?;
+    let mut row_start = 0usize;
+    for row_end in data.row_ends.iter().copied() {
+        let embedding = &data.values[row_start..row_end];
         if dimensions == 0 {
             dimensions = embedding.len();
-            values.reserve(data.len().saturating_mul(dimensions));
         } else if embedding.len() != dimensions {
             return Err(Status::error(
                 "embedding_provider_bad_response",
@@ -784,19 +979,21 @@ pub(crate) fn call_openai_compatible_embedding_provider(
                 ),
             ));
         }
-        for value in embedding {
-            values.push(value.as_f64().map(|value| value as f32).ok_or_else(|| {
-                Status::error(
-                    "embedding_provider_bad_response",
-                    format!(
-                        "embedding provider {} returned a non-float embedding value",
-                        provider.provider_name
-                    ),
-                )
-            })?);
+        if !embedding.iter().all(|value| value.is_finite()) {
+            return Err(Status::error(
+                "embedding_provider_bad_response",
+                format!(
+                    "embedding provider {} returned a non-finite embedding value",
+                    provider.provider_name
+                ),
+            ));
         }
+        row_start = row_end;
     }
-    Ok(EmbeddingBatch { dimensions, values })
+    Ok(EmbeddingBatch {
+        dimensions,
+        values: data.values,
+    })
 }
 
 pub(crate) fn call_openai_compatible_context_provider(
@@ -900,7 +1097,20 @@ fn ollama_summary_batch_prompt(
         .len()
         .min(start.saturating_add(config.max_batch_items));
     let mut end = start;
-    let mut prompt = Vec::with_capacity(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2);
+    let estimated_prompt_bytes = requests[start..max_end].iter().fold(
+        CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.len() + 2,
+        |bytes, request| {
+            bytes
+                .saturating_add(request.source_id.len())
+                .saturating_add(request.title.len())
+                .saturating_add(request.body.len())
+                .saturating_add(128)
+        },
+    );
+    let mut prompt = Vec::with_capacity(client.bounded_prompt_capacity(
+        CONTEXT_SUMMARY_SYSTEM_PROMPT.len(),
+        estimated_prompt_bytes,
+    ));
     prompt.extend_from_slice(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.as_bytes());
     prompt.push(b'[');
     while end < max_end {

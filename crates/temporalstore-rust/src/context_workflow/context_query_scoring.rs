@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
+
+use sha2::{Digest, Sha256};
+
 use crate::types::{ContextEvent, Status};
 
 use super::{
-    context_embeddings_for_extract, normalize_provider, truncate_words, ContextBlock,
-    ContextFilterGroupCandidateDecisionDebug, ContextInjectionOrderingDebug,
-    ContextModelProviderConfig, ContextPrefilterCandidateDebug, ContextQueryFilterGroupDebug,
-    ContextQueryFilterGroupSummaryDebug, ContextQueryUnderstandingDebug, ContextRetrieveRequest,
-    ContextSelectedRefDebug, ContextTier, ContextTreeTraversalDebug,
+    contains_ascii_case_insensitive, context_embeddings_for_extract, normalize_provider,
+    truncate_words, ContextBlock, ContextFilterGroupCandidateDecisionDebug,
+    ContextInjectionOrderingDebug, ContextModelProviderConfig, ContextPrefilterCandidateDebug,
+    ContextQueryFilterGroupDebug, ContextQueryFilterGroupSummaryDebug,
+    ContextQueryUnderstandingDebug, ContextRetrieveRequest, ContextSelectedRefDebug, ContextTier,
+    ContextTreeTraversalDebug,
 };
 pub(super) fn tier_rank(tier: ContextTier) -> u8 {
     match tier {
@@ -66,10 +74,9 @@ pub(super) fn context_query_matches(query: &str, text: &str) -> bool {
 }
 
 pub(super) fn context_query_matches_plan(plan: &ContextQueryPlan, text: &str) -> bool {
-    let text_lower = text.to_ascii_lowercase();
-    let text_normalized = context_normalize_for_match(text);
+    let text = ContextTextMatcher::new(text);
     if let Some(topic_phrase) = plan.topic_phrase.as_ref() {
-        if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
+        if text.matches(topic_phrase.as_str()) {
             return true;
         }
     }
@@ -79,11 +86,7 @@ pub(super) fn context_query_matches_plan(plan: &ContextQueryPlan, text: &str) ->
     let matched_groups = plan
         .term_groups
         .iter()
-        .filter(|group| {
-            group
-                .iter()
-                .any(|term| context_text_matches_term(&text_lower, &text_normalized, term))
-        })
+        .filter(|group| group.iter().any(|term| text.matches(term)))
         .count();
     matched_groups > 0
 }
@@ -455,15 +458,13 @@ fn context_debug_filter_group_matched_terms(
     candidate_terms: &[String],
     text: &str,
 ) -> Vec<String> {
-    let text_lower = text.to_ascii_lowercase();
-    let text_normalized = context_normalize_for_match(text);
+    let text_matcher = ContextTextMatcher::new(text);
     group
         .terms
         .iter()
         .filter(|term| {
             if let Some(query_term) = term.strip_prefix("query_term:") {
-                query_term == "*"
-                    || context_text_matches_term(&text_lower, &text_normalized, query_term)
+                query_term == "*" || text_matcher.matches(query_term)
             } else if let Some(source_term) = term.strip_prefix("source_ref:") {
                 candidate_terms.iter().any(|candidate| {
                     candidate
@@ -471,10 +472,10 @@ fn context_debug_filter_group_matched_terms(
                         .map_or(false, |candidate_source| {
                             candidate_source.contains(source_term)
                         })
-                }) || text_lower.contains(source_term)
+                }) || contains_ascii_case_insensitive(text, source_term)
             } else {
                 candidate_terms.iter().any(|candidate| candidate == *term)
-                    || text_lower.contains(term.as_str())
+                    || contains_ascii_case_insensitive(text, term)
             }
         })
         .cloned()
@@ -573,11 +574,10 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     if plan.term_groups.is_empty() {
         return 0;
     }
-    let text_lower = text.to_ascii_lowercase();
-    let text_normalized = context_normalize_for_match(text);
+    let text = ContextTextMatcher::new(text);
     let mut score = 0u32;
     if let Some(topic_phrase) = plan.topic_phrase.as_ref() {
-        if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
+        if text.matches(topic_phrase.as_str()) {
             score = score.saturating_add(1_000);
         }
     }
@@ -585,7 +585,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     for group in &plan.term_groups {
         let best_match = group
             .iter()
-            .filter(|term| context_text_matches_term(&text_lower, &text_normalized, term))
+            .filter(|term| text.matches(term))
             .map(|term| term.len() as u32)
             .max()
             .unwrap_or_default();
@@ -600,14 +600,13 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
         score = score.saturating_add(matched_groups.saturating_mul(12));
     }
     for phrase in &plan.adjacent_phrases {
-        if context_text_matches_term(&text_lower, &text_normalized, phrase.as_str()) {
+        if text.matches(phrase.as_str()) {
             score = score.saturating_add(50);
         }
     }
     if plan.requests_latest
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "latest", "recent", "current", "updated", "changed", "replaced",
             ],
@@ -617,8 +616,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_temporal_reasoning
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "timeline", "temporal", "history", "sequence", "before", "after", "during",
             ],
@@ -628,34 +626,28 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_after {
         if context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "after", "later", "latest", "new", "current", "update", "moved to",
             ],
         ) {
             score = score.saturating_add(65);
         }
-        if context_text_matches_any(&text_lower, &text_normalized, &["before", "earlier", "old"]) {
+        if context_text_matches_any(&text, &["before", "earlier", "old"]) {
             score = score.saturating_sub(25);
         }
     }
     if plan.requests_before {
-        if context_text_matches_any(&text_lower, &text_normalized, &["before", "earlier", "old"]) {
+        if context_text_matches_any(&text, &["before", "earlier", "old"]) {
             score = score.saturating_add(65);
         }
-        if context_text_matches_any(
-            &text_lower,
-            &text_normalized,
-            &["after", "later", "latest", "new", "current"],
-        ) {
+        if context_text_matches_any(&text, &["after", "later", "latest", "new", "current"]) {
             score = score.saturating_sub(25);
         }
     }
     if plan.requests_correction
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "correction",
                 "corrected",
@@ -670,8 +662,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_reminder
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &["remember", "reminder", "mentioned", "said", "told", "note"],
         )
     {
@@ -679,8 +670,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_contrastive_update
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "switched",
                 "switch",
@@ -696,8 +686,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_social_link
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "recommended",
                 "suggested",
@@ -712,8 +701,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_schedule_detail
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "rescheduled",
                 "scheduled",
@@ -729,10 +717,9 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
         score = score.saturating_add(80);
     }
     if plan.requests_quantity_detail
-        && (text_lower.chars().any(|ch| ch.is_ascii_digit())
+        && (text.text.chars().any(|ch| ch.is_ascii_digit())
             || context_text_matches_any(
-                &text_lower,
-                &text_normalized,
+                &text,
                 &["count", "total", "number", "score", "amount", "quantity"],
             ))
     {
@@ -740,8 +727,7 @@ pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) 
     }
     if plan.requests_alias_detail
         && context_text_matches_any(
-            &text_lower,
-            &text_normalized,
+            &text,
             &[
                 "roommate", "manager", "owner", "named", "called", "pet", "dog", "cat",
             ],
@@ -887,41 +873,60 @@ pub(super) fn context_query_stem(term: &str) -> Option<String> {
 }
 
 pub(super) fn context_normalize_for_match(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
+    let mut normalized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        normalized.push(if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            ' '
+        });
+    }
+    normalized
+}
+
+pub(super) struct ContextTextMatcher<'a> {
+    text: &'a str,
+    normalized: OnceCell<String>,
+}
+
+impl<'a> ContextTextMatcher<'a> {
+    pub(super) fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            normalized: OnceCell::new(),
+        }
+    }
+
+    pub(super) fn matches(&self, term: &str) -> bool {
+        if term.is_empty() {
+            return true;
+        }
+
+        let normalized_term_storage;
+        let normalized_term = if term
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b' ')
+        {
+            term.trim()
+        } else {
+            if contains_ascii_case_insensitive(self.text, term) {
+                return true;
             }
-        })
-        .collect::<String>()
+            normalized_term_storage = context_normalize_for_match(term);
+            normalized_term_storage.trim()
+        };
+        if normalized_term.is_empty() {
+            return false;
+        }
+
+        self.normalized
+            .get_or_init(|| context_normalize_for_match(self.text))
+            .contains(normalized_term)
+    }
 }
 
-pub(super) fn context_text_matches_term(
-    text_lower: &str,
-    text_normalized: &str,
-    term: &str,
-) -> bool {
-    if text_lower.contains(term) {
-        return true;
-    }
-    let normalized_term = context_normalize_for_match(term);
-    if normalized_term.trim().is_empty() {
-        return false;
-    }
-    text_normalized.contains(normalized_term.trim())
-}
-
-pub(super) fn context_text_matches_any(
-    text_lower: &str,
-    text_normalized: &str,
-    terms: &[&str],
-) -> bool {
-    terms
-        .iter()
-        .any(|term| context_text_matches_term(text_lower, text_normalized, term))
+pub(super) fn context_text_matches_any(text: &ContextTextMatcher<'_>, terms: &[&str]) -> bool {
+    terms.iter().any(|term| text.matches(term))
 }
 
 pub(super) fn context_query_requests_latest(terms: &[String]) -> bool {
@@ -1174,17 +1179,282 @@ pub(super) fn deterministic_context_embedding(model: &str, text: &str) -> Vec<f3
     vector
 }
 
+const DEFAULT_QUERY_EMBEDDING_CACHE_ENTRIES: usize = 256;
+const DEFAULT_QUERY_EMBEDDING_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_QUERY_EMBEDDING_CACHE_TTL_MS: u64 = 5 * 60 * 1_000;
+const QUERY_EMBEDDING_CACHE_ENTRIES_ENV: &str = "TS_CONTEXT_QUERY_EMBEDDING_CACHE_ENTRIES";
+const QUERY_EMBEDDING_CACHE_BYTES_ENV: &str = "TS_CONTEXT_QUERY_EMBEDDING_CACHE_BYTES";
+const QUERY_EMBEDDING_CACHE_TTL_MS_ENV: &str = "TS_CONTEXT_QUERY_EMBEDDING_CACHE_TTL_MS";
+
+// Fixed-size digests keep raw prompts out of the cache. Each miss still retains a cell long enough
+// to coalesce concurrent calls, while entry, byte, and age limits bound steady-state memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ContextQueryEmbeddingCacheKey {
+    provider_digest: [u8; 32],
+    query_digest: [u8; 32],
+}
+
+#[derive(Debug, Default)]
+struct ContextQueryEmbeddingCell {
+    result: Mutex<Option<Result<Arc<[f32]>, Status>>>,
+    ready: Condvar,
+}
+
+#[derive(Debug)]
+struct ContextQueryEmbeddingCacheEntry {
+    cell: Arc<ContextQueryEmbeddingCell>,
+    inserted_at: Instant,
+    last_used: u64,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+struct ContextQueryEmbeddingCache {
+    entries: HashMap<ContextQueryEmbeddingCacheKey, ContextQueryEmbeddingCacheEntry>,
+    max_entries: usize,
+    max_bytes: usize,
+    ttl: Duration,
+    total_bytes: usize,
+    clock: u64,
+}
+
+impl ContextQueryEmbeddingCache {
+    fn from_env() -> Self {
+        Self {
+            entries: HashMap::new(),
+            max_entries: query_embedding_cache_usize(
+                QUERY_EMBEDDING_CACHE_ENTRIES_ENV,
+                DEFAULT_QUERY_EMBEDDING_CACHE_ENTRIES,
+            ),
+            max_bytes: query_embedding_cache_usize(
+                QUERY_EMBEDDING_CACHE_BYTES_ENV,
+                DEFAULT_QUERY_EMBEDDING_CACHE_BYTES,
+            ),
+            ttl: Duration::from_millis(query_embedding_cache_u64(
+                QUERY_EMBEDDING_CACHE_TTL_MS_ENV,
+                DEFAULT_QUERY_EMBEDDING_CACHE_TTL_MS,
+            )),
+            total_bytes: 0,
+            clock: 0,
+        }
+    }
+
+    fn remove(&mut self, key: &ContextQueryEmbeddingCacheKey) {
+        if let Some(entry) = self.entries.remove(key) {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
+        }
+    }
+
+    fn evict_to_budget(&mut self) {
+        while self.entries.len() > self.max_entries || self.total_bytes > self.max_bytes {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.remove(&oldest);
+        }
+    }
+
+    fn acquire(
+        &mut self,
+        key: ContextQueryEmbeddingCacheKey,
+    ) -> (Arc<ContextQueryEmbeddingCell>, bool) {
+        let now = Instant::now();
+        let expired = self
+            .entries
+            .get(&key)
+            .is_some_and(|entry| now.duration_since(entry.inserted_at) >= self.ttl);
+        if expired {
+            self.remove(&key);
+        }
+        self.clock = self.clock.wrapping_add(1);
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.last_used = self.clock;
+            return (Arc::clone(&entry.cell), false);
+        }
+
+        let cell = Arc::new(ContextQueryEmbeddingCell::default());
+        let bytes = std::mem::size_of::<ContextQueryEmbeddingCacheKey>()
+            .saturating_add(std::mem::size_of::<ContextQueryEmbeddingCacheEntry>())
+            .saturating_add(std::mem::size_of::<ContextQueryEmbeddingCell>());
+        if bytes <= self.max_bytes {
+            self.total_bytes = self.total_bytes.saturating_add(bytes);
+            self.entries.insert(
+                key,
+                ContextQueryEmbeddingCacheEntry {
+                    cell: Arc::clone(&cell),
+                    inserted_at: now,
+                    last_used: self.clock,
+                    bytes,
+                },
+            );
+            self.evict_to_budget();
+        }
+        (cell, true)
+    }
+
+    fn finish(
+        &mut self,
+        key: &ContextQueryEmbeddingCacheKey,
+        cell: &Arc<ContextQueryEmbeddingCell>,
+        result: &Result<Arc<[f32]>, Status>,
+    ) {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return;
+        };
+        if !Arc::ptr_eq(&entry.cell, cell) {
+            return;
+        }
+        match result {
+            Ok(vector) => {
+                let vector_bytes = vector
+                    .len()
+                    .saturating_mul(std::mem::size_of::<f32>())
+                    .saturating_add(2 * std::mem::size_of::<usize>());
+                entry.bytes = entry.bytes.saturating_add(vector_bytes);
+                self.total_bytes = self.total_bytes.saturating_add(vector_bytes);
+                self.evict_to_budget();
+            }
+            Err(_) => self.remove(key),
+        }
+    }
+}
+
+fn query_embedding_cache_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn query_embedding_cache_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn context_query_embedding_cache_key(
+    provider: &ContextModelProviderConfig,
+    query: &str,
+) -> ContextQueryEmbeddingCacheKey {
+    fn hash_string(hasher: &mut Sha256, value: &str) {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+
+    fn hash_provider(hasher: &mut Sha256, provider: &ContextModelProviderConfig) {
+        hasher.update([match provider.provider_kind {
+            super::ContextProviderKind::Mock => 0,
+            super::ContextProviderKind::OpenAiCompatible => 1,
+            super::ContextProviderKind::Ollama => 2,
+        }]);
+        hash_string(hasher, &provider.provider_name);
+        hash_string(hasher, &provider.base_url);
+        hash_string(hasher, &provider.api_key_env);
+        hash_string(hasher, &provider.model);
+        hash_string(hasher, &provider.embedding_model);
+        hash_string(hasher, &provider.vlm_model);
+        hasher.update(provider.timeout_ms.to_le_bytes());
+        hasher.update((provider.max_retries as u64).to_le_bytes());
+        hasher.update([u8::from(provider.mock_mode)]);
+        if let Some(fallback) = provider.fallback_provider.as_deref() {
+            hasher.update([1]);
+            hash_provider(hasher, fallback);
+        } else {
+            hasher.update([0]);
+        }
+    }
+
+    let mut provider_hasher = Sha256::new();
+    hash_provider(&mut provider_hasher, provider);
+    ContextQueryEmbeddingCacheKey {
+        provider_digest: provider_hasher.finalize().into(),
+        query_digest: Sha256::digest(query.as_bytes()).into(),
+    }
+}
+
+fn context_query_embedding_cache() -> &'static Mutex<ContextQueryEmbeddingCache> {
+    static CACHE: OnceLock<Mutex<ContextQueryEmbeddingCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ContextQueryEmbeddingCache::from_env()))
+}
+
+fn query_embedding_cache_lock() -> MutexGuard<'static, ContextQueryEmbeddingCache> {
+    context_query_embedding_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(super) fn context_query_embedding_shared(
+    provider: &ContextModelProviderConfig,
+    query: &str,
+) -> Result<Arc<[f32]>, Status> {
+    let key = context_query_embedding_cache_key(provider, query);
+    let (cell, leader) = query_embedding_cache_lock().acquire(key);
+    if !leader {
+        let mut result = cell
+            .result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while result.is_none() {
+            result = cell
+                .ready
+                .wait(result)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        return result
+            .as_ref()
+            .expect("query embedding cell is ready")
+            .clone();
+    }
+
+    let uncached = context_query_embedding_uncached(provider, query);
+    let cacheable = uncached
+        .as_ref()
+        .map(|(_, cacheable)| *cacheable)
+        .unwrap_or(false);
+    let result = uncached.map(|(vector, _)| Arc::<[f32]>::from(vector.into_boxed_slice()));
+    {
+        let mut cell_result = cell
+            .result
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *cell_result = Some(result.clone());
+        cell.ready.notify_all();
+    }
+    if cacheable {
+        query_embedding_cache_lock().finish(&key, &cell, &result);
+    } else {
+        query_embedding_cache_lock().remove(&key);
+    }
+    result
+}
+
+#[cfg(test)]
 pub(super) fn context_query_embedding(
     provider: &ContextModelProviderConfig,
     query: &str,
 ) -> Result<Vec<f32>, Status> {
+    context_query_embedding_shared(provider, query).map(|vector| vector.to_vec())
+}
+
+fn context_query_embedding_uncached(
+    provider: &ContextModelProviderConfig,
+    query: &str,
+) -> Result<(Vec<f32>, bool), Status> {
     let inputs = [("query", stable_hash64(query), 0_u32, query)];
     match context_embeddings_for_extract(provider, &inputs) {
-        Ok((batch, _)) => Ok(batch.values),
+        Ok((batch, _)) => Ok((batch.values, true)),
         Err(status) => {
             if let Some(fallback) = provider.fallback_provider.as_deref() {
                 context_embeddings_for_extract(&normalize_provider(fallback.clone()), &inputs)
-                    .map(|(batch, _)| batch.values)
+                    .map(|(batch, _)| (batch.values, false))
             } else {
                 Err(status)
             }

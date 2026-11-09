@@ -1810,7 +1810,7 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
 
 #[test]
 fn torn_manifest_does_not_hide_valid_manifests() {
-    // Crash-consistency: a torn/corrupt manifest .json (from a crash mid-write, now
+    // Crash-consistency: a torn/corrupt manifest file (from a crash mid-write, now
     // prevented by the atomic write) must not fail the whole manifest listing and
     // silently drop all dumped state on load. list_bucket_dump_manifests skips the bad
     // file and keeps the valid one.
@@ -1834,7 +1834,7 @@ fn torn_manifest_does_not_hide_valid_manifests() {
         .create_bucket_dump_manifest(1, Vec::<u32>::new())
         .unwrap();
     let manifest_dir = index_dir.join("slot-dumps").join("shard-1");
-    std::fs::write(manifest_dir.join("torn-9999.json"), b"{ not valid json").unwrap();
+    std::fs::write(manifest_dir.join("torn-9999.manifest"), b"{ not valid json").unwrap();
     let listed = engine.list_bucket_dump_manifests(1);
     assert!(
         listed
@@ -18948,7 +18948,7 @@ fn a_compaction_round_stops_at_the_block_ref_budget() {
 }
 
 #[test]
-fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() {
+fn the_slab_usage_sample_emits_the_canonical_name_and_reads_no_retired_one() {
     // `zone` was the older name for a slab, and `zones` is keyed by `band_id`
     // (storage_bucket_internals.rs) -- so the aggregate is the SLAB level reported under an old
     // name, not a separate level. The Rust identifiers moved to slab; the WIRE must not.
@@ -19001,11 +19001,15 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
         "and not under the retired one as well: {encoded}"
     );
 
-    // Reading back what the old name produced must still work, which is what a stored corpus is.
-    let decoded: crate::engine::reports::StorageSlabUsageSample =
-        serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
-            .expect("an old-name payload must still decode");
-    assert_eq!(decoded.stored_slab_id, 9);
+    // The retired names are NOT read. A payload spelling the slab id `zone_id` has no
+    // `stored_slab_id`, which is required, so it is refused rather than read as slab 9.
+    let decoded = serde_json::from_str::<crate::engine::reports::StorageSlabUsageSample>(
+        r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#,
+    );
+    assert!(
+        decoded.as_ref().map_or(true, |sample| sample.stored_slab_id != 9),
+        "a payload spelling the slab id `zone_id` was read as slab 9: the retired name is accepted"
+    );
 
     // AND THE CANONICAL NAME MUST DECODE TOO, which is the whole point of widening the readers
     // and was the one thing here that nothing asserted. Found by PLANTING: dropping one
@@ -19028,11 +19032,13 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
     // of those. This report type never did -- it takes `zone_id`/`stored_slab_id` for the id and
     // `slabs`/`segments` for the collection, and nothing else. Two types in one rename chain do
     // not share an accepted set, so each one's is asserted against ITS OWN declaration.
-    let retired_collection: crate::engine::reports::StorageSlabUsageSample = serde_json::from_str(
-        r#"{"zone_id":5,"total_bytes":0,"used_bytes":0,"stale_bytes":0,"segments":[7]}"#,
-    )
-    .expect("the collection's retired `segments` spelling must still decode");
-    assert_eq!(retired_collection.slabs, vec![7]);
+    let retired_collection = serde_json::from_str::<crate::engine::reports::StorageSlabUsageSample>(
+        r#"{"stored_slab_id":5,"total_bytes":0,"used_bytes":0,"stale_bytes":0,"segments":[7]}"#,
+    );
+    assert!(
+        retired_collection.as_ref().map_or(true, |sample| sample.slabs != vec![7]),
+        "the collection's retired `segments` spelling was read as the slabs: the retired name is accepted"
+    );
 
     // THE PREMISE, EXECUTED -- AND IT IS NOW THE OPPOSITE PREMISE.
     //
@@ -19078,6 +19084,42 @@ fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() 
          the emitted name could not break a stored-bytes comparison. Decide the emitted name \
          deliberately rather than inheriting this assertion."
     );
+}
+
+/// THE SHORT NAMES A BUCKET SUMMARY WRITES ARE THE ONES ITS READER ACCEPTS.
+///
+/// `BucketStorageSummary` has a hand-written `Serialize` that emits `rs`, `oc`, `prc`, `lb`, `pb`,
+/// `doc`, `dg`, `lds`, `psi` and `lcz`, and a derived `Deserialize` that reads them back through
+/// `alias` items. Those aliases are NOT retired spellings: they are the names the writer produces,
+/// so deleting them would make a summary unreadable by the build that wrote it. This is the test
+/// that holds them, written once with the short names and once with the long ones, and asserting
+/// each reads back equal.
+#[test]
+fn a_bucket_summary_reads_back_the_names_it_writes() {
+    use crate::engine::reports::{BucketStorageSummary, SummaryNamed};
+    let summary = BucketStorageSummary {
+        routing_bucket: 9,
+        object_count: 8,
+        block_ref_count: 7,
+        logical_bytes: 6,
+        physical_bytes: 5,
+        dirty_object_count: 4,
+        dirty_generation: 3,
+        last_dump_sequence: 2,
+        block_slab_ids: vec![1],
+        last_compacted_slab: Some(0),
+    };
+    let short = serde_json::to_value(SummaryNamed(&summary, true)).expect("serialize short");
+    for key in ["rs", "oc", "prc", "lb", "pb", "doc", "dg", "lds", "psi", "lcz"] {
+        assert!(short.get(key).is_some(), "the short spelling does not write `{key}`: {short}");
+    }
+    let long = serde_json::to_value(SummaryNamed(&summary, false)).expect("serialize long");
+    assert!(long.get("rs").is_none() && long.get("routing_slot").is_some(), "{long}");
+    for (what, document) in [("short", short), ("long", long)] {
+        let back: BucketStorageSummary = serde_json::from_value(document)
+            .unwrap_or_else(|error| panic!("the {what} spelling does not read back: {error}"));
+        assert_eq!(back, summary, "the {what} spelling read back as a different summary");
+    }
 }
 
 #[test]

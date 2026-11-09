@@ -5,6 +5,7 @@
 #![allow(clippy::all)]
 use super::*;
 use super::helpers::*;
+use crate::{Config, SetConfigRequest};
 use crate::types::{
     BatchHashMultiSetRow, BatchHashMultiSetValue, BatchHashTimestampSetRequest,
     BatchHashTimestampSetRow,
@@ -115,26 +116,32 @@ fn compact_batch_write_keeps_shared_wal_mirroring() {
 }
 
 #[test]
-fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
+fn shared_field_hash_batch_keeps_requested_order_duplicates_and_missing_values() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
-    let written = runtime.batch_write(BatchExecuteRequest {
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
-        commands: vec![Command::HashMultiSet {
-            key: "present".to_string(),
-            entries: vec![
-                ("a".to_string(), b"one".to_vec()),
-                ("b".to_string(), b"two".to_vec()),
+        fields: vec!["a".to_string(), "b".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "present".to_string(),
+            vec![
+                BatchHashMultiSetValue(b"one".to_vec()),
+                BatchHashMultiSetValue(b"two".to_vec()),
             ],
-        }],
+        )],
     });
     assert!(written.status.ok, "{written:?}");
 
     let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
     });
 
     assert!(read.status.ok, "{read:?}");
@@ -142,29 +149,73 @@ fn shared_field_hash_batch_keeps_key_order_and_missing_values() {
     assert_eq!(
         read.responses[0].response,
         CommandResponse::Values {
-            values: vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+            values: vec![
+                Some(b"two".to_vec()),
+                None,
+                Some(b"one".to_vec()),
+                Some(b"two".to_vec()),
+            ]
         }
     );
     assert_eq!(
         read.responses[1].response,
         CommandResponse::Values {
-            values: vec![None, None]
+            values: vec![None, None, None, None]
         }
     );
 
     let compact = runtime.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
         shard_id: 1,
         keys: vec!["present".to_string(), "missing".to_string()],
-        fields: vec!["b".to_string(), "a".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
     });
     assert!(compact.status.ok, "{compact:?}");
     assert!(compact.errors.is_empty());
     assert_eq!(compact.rows.len(), 2);
     assert_eq!(
         compact.rows[0].0,
-        vec![Some(b"two".to_vec()), Some(b"one".to_vec())]
+        vec![
+            Some(b"two".to_vec()),
+            None,
+            Some(b"one".to_vec()),
+            Some(b"two".to_vec()),
+        ]
     );
-    assert_eq!(compact.rows[1].0, vec![None, None]);
+    assert_eq!(compact.rows[1].0, vec![None, None, None, None]);
+
+    let direct_request = BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["present".to_string(), "missing".to_string()],
+        fields: vec![
+            "b".to_string(),
+            "absent".to_string(),
+            "a".to_string(),
+            "b".to_string(),
+        ],
+    };
+    let _ = runtime.batch_hash_multi_get_compact_msgpack(direct_request.clone());
+    crate::engine::reset_hash_field_binary_search_count_for_test();
+    let _ = runtime.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: direct_request.keys.clone(),
+        fields: Vec::new(),
+    });
+    let fixed_searches = crate::engine::hash_field_binary_search_count_for_test();
+    crate::engine::reset_hash_field_binary_search_count_for_test();
+    let direct = runtime.batch_hash_multi_get_compact_msgpack(direct_request);
+    let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct)
+        .expect("direct compact response must retain the established wire shape");
+    assert_eq!(decoded, compact);
+    assert_eq!(
+        crate::engine::hash_field_binary_search_count_for_test(),
+        fixed_searches,
+        "requested packed fields must not add field-map binary searches"
+    );
 }
 
 #[test]
@@ -257,6 +308,324 @@ fn shared_field_hash_write_keeps_large_and_small_fields_readable() {
         read.responses[0].response,
         CommandResponse::Values {
             values: vec![Some(b"0.75".to_vec()), Some(embedding)]
+        }
+    );
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn warm_packed_projection_does_not_copy_the_frame_from_cache() {
+    const READS: usize = 32;
+    const EMBEDDING_BYTES: usize = 8 * 1024;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let embedding = vec![7; EMBEDDING_BYTES];
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["embedding".to_string(), "score".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![
+                BatchHashMultiSetValue(embedding),
+                BatchHashMultiSetValue(b"0.75".to_vec()),
+            ],
+        )],
+    });
+    assert!(written.status.ok, "{written:?}");
+
+    let request = BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["entity".to_string()],
+        fields: vec!["score".to_string(), "embedding".to_string()],
+    };
+    let warm = runtime.batch_hash_multi_get_compact(request.clone());
+    assert!(warm.status.ok, "{warm:?}");
+
+    let span = crate::alloc_probe::ClassSpan::open();
+    for _ in 0..READS {
+        std::hint::black_box(runtime.batch_hash_multi_get_compact(request.clone()));
+    }
+    let counted = span.close().expect("the counting allocator must be installed");
+    let cache_read = counted
+        .classes
+        .row(crate::alloc_probe::AllocClass::CacheRead);
+
+    assert!(
+        cache_read.alloc_bytes < (READS * 2 * 1024) as u64,
+        "warm packed projections allocated {} cache-read bytes across {READS} reads; \
+         copying each {EMBEDDING_BYTES}-byte frame would allocate at least {} bytes",
+        cache_read.alloc_bytes,
+        READS * EMBEDDING_BYTES,
+    );
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn direct_compact_encoding_does_not_copy_each_feature_value_first() {
+    const ROWS: usize = 32;
+    const VALUE_BYTES: usize = 8 * 1024;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let value = vec![b'x'; VALUE_BYTES];
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["embedding".to_string()],
+        rows: (0..ROWS)
+            .map(|index| {
+                BatchHashMultiSetRow(
+                    format!("entity-{index:02}"),
+                    vec![BatchHashMultiSetValue(value.clone())],
+                )
+            })
+            .collect(),
+    });
+    assert!(written.status.ok, "{written:?}");
+
+    let request = BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: (0..ROWS).map(|index| format!("entity-{index:02}")).collect(),
+        fields: vec!["embedding".to_string()],
+    };
+    let warm = runtime.batch_hash_multi_get_compact_msgpack(request.clone());
+    assert_eq!(
+        rmp_serde::from_slice::<BatchHashMultiGetResponse>(&warm)
+            .expect("warm direct response")
+            .rows
+            .len(),
+        ROWS
+    );
+
+    let control_probe = crate::alloc_probe::Probe::start();
+    let control_response = runtime.batch_hash_multi_get_compact(request.clone());
+    let control_body = rmp_serde::to_vec_named(&control_response).expect("encode owned response");
+    let control = control_probe.stop();
+
+    let direct_probe = crate::alloc_probe::Probe::start();
+    let direct_body = runtime.batch_hash_multi_get_compact_msgpack(request);
+    let direct = direct_probe.stop();
+
+    assert_eq!(direct_body, control_body);
+    assert!(
+        direct.allocs + ((ROWS / 2) as u64) < control.allocs,
+        "direct={direct:?} control={control:?}"
+    );
+    assert!(
+        direct.alloc_bytes + ((ROWS * VALUE_BYTES / 2) as u64) < control.alloc_bytes,
+        "direct={direct:?} control={control:?}"
+    );
+    std::hint::black_box((direct_body, control_body));
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn absent_compact_rows_do_not_allocate_one_null_vector_per_entity() {
+    const ROWS: usize = 512;
+    const FIELDS: usize = 32;
+    const SAMPLES: usize = 3;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let request = || BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: (0..ROWS).map(|index| format!("missing-{index}")).collect(),
+        fields: (0..FIELDS).map(|index| format!("feature-{index}")).collect(),
+    };
+
+    let mut owned_best = u64::MAX;
+    let mut direct_best = u64::MAX;
+    let mut owned_body = Vec::new();
+    let mut direct_body = Vec::new();
+    for _ in 0..SAMPLES {
+        let owned_request = request();
+        let owned_probe = crate::alloc_probe::Probe::start();
+        let owned_response = runtime.batch_hash_multi_get_compact(owned_request);
+        let candidate_owned_body =
+            rmp_serde::to_vec_named(&owned_response).expect("encode owned absent response");
+        let owned_cost = owned_probe.stop();
+        if owned_cost.allocs < owned_best {
+            owned_best = owned_cost.allocs;
+            owned_body = candidate_owned_body;
+        }
+
+        let direct_request = request();
+        let direct_probe = crate::alloc_probe::Probe::start();
+        let candidate_direct_body = runtime.batch_hash_multi_get_compact_msgpack(direct_request);
+        let direct_cost = direct_probe.stop();
+        if direct_cost.allocs < direct_best {
+            direct_best = direct_cost.allocs;
+            direct_body = candidate_direct_body;
+        }
+    }
+
+    assert_eq!(direct_body, owned_body);
+    let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct_body)
+        .expect("decode absent compact response");
+    assert!(decoded.status.ok, "{decoded:?}");
+    assert_eq!(decoded.rows.len(), ROWS);
+    assert!(decoded
+        .rows
+        .iter()
+        .all(|row| row.0.iter().all(Option::is_none)));
+    assert!(
+        direct_best + ((ROWS / 2) as u64) < owned_best,
+        "direct={direct_best} owned={owned_best}"
+    );
+    std::hint::black_box((direct_body, owned_body));
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn conditional_hash_stale_packed_writes_do_not_copy_the_frame() {
+    const WRITES: usize = 32;
+    const EMBEDDING_BYTES: usize = 8 * 1024;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let encode_timestamp = |seconds| {
+        <TestTimestamp as prost::Message>::encode_to_vec(&TestTimestamp {
+            seconds,
+            nanos: 0,
+        })
+    };
+    let fields = vec![
+        "timestamp".to_string(),
+        "embedding".to_string(),
+        "score".to_string(),
+    ];
+    let initial = runtime.batch_hash_timestamp_set(BatchHashTimestampSetRequest {
+        shard_id: 1,
+        fields: fields.clone(),
+        timestamp_field: "timestamp".to_string(),
+        rows: vec![BatchHashTimestampSetRow(
+            "entity".to_string(),
+            20,
+            0,
+            vec![
+                BatchHashMultiSetValue(encode_timestamp(20)),
+                BatchHashMultiSetValue(vec![7; EMBEDDING_BYTES]),
+                BatchHashMultiSetValue(b"0.75".to_vec()),
+            ],
+        )],
+    });
+    assert!(initial.status.ok, "{initial:?}");
+    assert_eq!(initial.applied, 1);
+
+    let stale = BatchHashTimestampSetRequest {
+        shard_id: 1,
+        fields,
+        timestamp_field: "timestamp".to_string(),
+        rows: vec![BatchHashTimestampSetRow(
+            "entity".to_string(),
+            10,
+            0,
+            vec![
+                BatchHashMultiSetValue(encode_timestamp(10)),
+                BatchHashMultiSetValue(vec![9; EMBEDDING_BYTES]),
+                BatchHashMultiSetValue(b"0.25".to_vec()),
+            ],
+        )],
+    };
+
+    let warm = runtime.batch_hash_timestamp_set(stale.clone());
+    assert!(warm.status.ok, "{warm:?}");
+    assert_eq!(warm.applied, 0);
+    assert_eq!(warm.skipped, 1);
+
+    let span = crate::alloc_probe::ClassSpan::open();
+    for _ in 0..WRITES {
+        let response = runtime.batch_hash_timestamp_set(stale.clone());
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(response.applied, 0);
+        assert_eq!(response.skipped, 1);
+    }
+    let counted = span.close().expect("the counting allocator must be installed");
+    let cache_read = counted
+        .classes
+        .row(crate::alloc_probe::AllocClass::CacheRead);
+
+    assert!(
+        cache_read.alloc_bytes < (WRITES * 2 * 1024) as u64,
+        "stale packed writes allocated {} cache-read bytes across {WRITES} timestamp checks; \
+         copying each {EMBEDDING_BYTES}-byte frame would allocate at least {} bytes",
+        cache_read.alloc_bytes,
+        WRITES * EMBEDDING_BYTES,
+    );
+}
+
+#[test]
+fn async_shared_field_hash_write_packs_a_small_projection() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec![
+            "timestamp".to_string(),
+            "f0".to_string(),
+            "f1".to_string(),
+            "f2".to_string(),
+        ],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![
+                BatchHashMultiSetValue(b"stamp".to_vec()),
+                BatchHashMultiSetValue(b"one".to_vec()),
+                BatchHashMultiSetValue(b"two".to_vec()),
+                BatchHashMultiSetValue(b"three".to_vec()),
+            ],
+        )],
+    });
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 1);
+    let carried_blocks = runtime
+        .engine()
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(&line).ok())
+        .map(|record| record.staged_blocks.len())
+        .sum::<usize>();
+    assert_eq!(
+        carried_blocks, 1,
+        "one shared projection must carry one packed WAL block"
+    );
+    assert_eq!(
+        runtime.engine().block_store().stats().writes,
+        0,
+        "async storage must defer the packed block rather than append it synchronously"
+    );
+
+    let read = runtime.batch_hash_multi_get(BatchHashMultiGetRequest {
+        shard_id: 1,
+        keys: vec!["entity".to_string()],
+        fields: vec!["f2".to_string(), "f0".to_string(), "f1".to_string()],
+    });
+    assert_eq!(
+        read.responses[0].response,
+        CommandResponse::Values {
+            values: vec![
+                Some(b"three".to_vec()),
+                Some(b"one".to_vec()),
+                Some(b"two".to_vec()),
+            ]
         }
     );
 }

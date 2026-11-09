@@ -778,6 +778,16 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.entries.get(object_key)?.refs.as_ref()
     }
 
+    /// THE ROW'S OWN KEY AND ITS REFS, for an inversion that names the object by the allocation the
+    /// map already holds rather than by a copy of its text.
+    pub(super) fn refs_with_key(
+        &self,
+        object_key: &str,
+    ) -> Option<(&ModelKey, &crate::engine::state::BlockRefs)> {
+        let (key, row) = self.entries.get_key_value(object_key)?;
+        row.refs.as_ref().map(|refs| (key, refs))
+    }
+
     /// Put this object's refs on its row, and answer whether there was a row to put them on.
     ///
     /// FALSE IS A REAL ANSWER AND NOT A FAILURE. A first write files its block BEFORE the element

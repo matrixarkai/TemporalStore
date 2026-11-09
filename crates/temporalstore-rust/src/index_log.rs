@@ -664,9 +664,9 @@ impl From<crate::log_framing::FramingError> for IndexLogError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexLogRecord {
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     // Default so a delta-record line (which carries `items`/`meta` but no `index`) still
     // parses as an IndexLogRecord for the sequence-tail scan (`last_sequence_at`), which
@@ -682,7 +682,7 @@ pub struct IndexLogRecord {
 /// TTL-only or whole-object tombstone), and a META item carries the compaction anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexItemKind {
-    #[serde(rename = "block", alias = "page")]
+    #[serde(rename = "block")]
     Block,
     #[serde(rename = "object")]
     Object,
@@ -707,13 +707,12 @@ impl Default for IndexItemKind {
 pub struct IndexItem {
     #[serde(
         rename = "k",
-        alias = "kind",
         default,
         serialize_with = "item_kind_as_number",
         deserialize_with = "item_kind_either_shape"
     )]
     pub kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
+    #[serde(rename = "rb", default)]
     pub routing_bucket: u32,
     /// The block handle. A `String` in this struct, a NUMBER on the wire whenever it holds one.
     ///
@@ -734,25 +733,23 @@ pub struct IndexItem {
     /// file's encoder comment claimed struct-as-map while calling the array form.)
     #[serde(
         rename = "pk",
-        alias = "page_ref_key",
         default,
         deserialize_with = "block_ref_key_either_shape",
-        serialize_with = "block_ref_key_as_number_when_it_is_one"
+        serialize_with = "block_ref_key_as_number_when_it_is_one",
     )]
     pub block_ref_key: String,
     /// SHARED WITH THE RESIDENT ENTRY, which holds this same text as an `Arc<str>`. A
     /// `String` spends a capacity word on a value that is never grown in place.
-    #[serde(rename = "ok", alias = "object_key", default)]
+    #[serde(rename = "ok", default)]
     pub object_key: std::sync::Arc<str>,
     #[serde(
         rename = "mi",
-        alias = "model_id",
         default,
         serialize_with = "model_id_as_number_when_it_is_known",
         deserialize_with = "model_id_either_shape"
     )]
     pub model_id: String,
-    #[serde(rename = "oi", alias = "object_id", default)]
+    #[serde(rename = "oi", default)]
     pub object_id: u64,
     /// WHERE THE ELEMENT LIVES -- the SHARED payload, the same struct the resident model map
     /// holds as its level-2 value.
@@ -815,7 +812,7 @@ pub struct IndexItem {
     /// correction's own conclusion is restated above rather than deleted, for the same reason.
     #[serde(skip)]
     pub entry: Option<ElementEntry>,
-    #[serde(rename = "d", alias = "deleted", default)]
+    #[serde(rename = "d", default)]
     pub deleted: bool,
 }
 
@@ -851,40 +848,37 @@ pub struct IndexItem {
 struct IndexItemWire {
     #[serde(
         rename = "k",
-        alias = "kind",
         default,
         deserialize_with = "item_kind_either_shape"
     )]
     kind: IndexItemKind,
-    #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
+    #[serde(rename = "rb", default)]
     routing_bucket: u32,
     #[serde(
         rename = "pk",
-        alias = "page_ref_key",
         default,
-        deserialize_with = "block_ref_key_either_shape"
+        deserialize_with = "block_ref_key_either_shape",
     )]
     block_ref_key: String,
-    #[serde(rename = "ok", alias = "object_key", default)]
+    #[serde(rename = "ok", default)]
     object_key: std::sync::Arc<str>,
     #[serde(
         rename = "mi",
-        alias = "model_id",
         default,
         deserialize_with = "model_id_either_shape"
     )]
     model_id: String,
-    #[serde(rename = "oi", alias = "object_id", default)]
+    #[serde(rename = "oi", default)]
     object_id: u64,
-    #[serde(rename = "pi", alias = "page_id", default)]
+    #[serde(rename = "pi", default)]
     block_id: u64,
-    #[serde(rename = "a", alias = "address", default)]
+    #[serde(rename = "a", default)]
     address: Option<ElementEntry>,
-    #[serde(rename = "sz", alias = "size", default)]
+    #[serde(rename = "sz", default)]
     size: u64,
-    #[serde(rename = "il", alias = "in_log", default)]
+    #[serde(rename = "il", default)]
     in_log: bool,
-    #[serde(rename = "d", alias = "deleted", default)]
+    #[serde(rename = "d", default)]
     deleted: bool,
 }
 
@@ -1451,14 +1445,10 @@ where
 
         fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<IndexItemKind, E> {
             match value {
-                // BOTH SPELLINGS, AND THIS IS A SECOND DECODER FOR THE SAME TOKEN. The enum's own
-                // serde `rename`/`alias` does not reach this visitor: the row writes the kind
-                // through `item_kind_as_number` and reads it back here, so widening the enum left
-                // this arm single-form. A log written before the number encoding spells the kind
-                // `page`, and anything that serializes the enum directly now spells it `block`;
-                // both have to land on the same variant or an index-log replay refuses a row it
-                // wrote itself.
-                "block" | "page" => Ok(IndexItemKind::Block),
+                // THE ONLY SPELLING of the block kind. The enum's own serde `rename` does not reach
+                // this visitor: the row writes the kind through `item_kind_as_number` and reads it
+                // back here. The retired `page` spelling is not accepted by either decoder.
+                "block" => Ok(IndexItemKind::Block),
                 "object" => Ok(IndexItemKind::Object),
                 "meta" => Ok(IndexItemKind::Meta),
                 other => Err(E::custom(format!("unknown item kind {other}"))),
@@ -1490,6 +1480,22 @@ where
     }
 
     deserializer.deserialize_any(EitherShape)
+}
+
+/// Does this payload SAY it is a record the delta fold has nothing to do with?
+///
+/// Two shapes qualify: the whole-index record, which nothing writes any more, and the ANCHOR, which
+/// every engine caller of `append_index_bytes` writes. The fold and the content test used to ask
+/// only about the first. An anchor is a four-slot row and an `IndexDeltaRecord` wants eleven, so a
+/// log holding one could not be folded, could not be rolled into pieces (sealing reads the piece to
+/// name it) and could not be swept -- each of them reading the anchor as a delta and refusing it
+/// as corruption. The tests that were meant to cover the mixed log built their "anchor" with
+/// `append_json`, which writes the other shape, so none of them ever held a real one.
+pub(crate) fn payload_says_it_is_not_a_delta(payload: &[u8]) -> bool {
+    matches!(
+        index_payload_shape(payload),
+        Some(INDEX_LOG_SHAPE_WHOLE) | Some(INDEX_LOG_SHAPE_ANCHOR)
+    )
 }
 
 /// Which shape a payload says it holds, if it says.
@@ -1908,11 +1914,8 @@ pub enum SlabCatalogState {
 /// are not persisted. So this is the lossless durable projection of a slab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabCatalogEntry {
-    #[serde(alias = "zone_id")]
-    #[serde(alias = "page_slab_id")]
     pub block_slab_id: u64,
     pub state: SlabCatalogState,
-    #[serde(alias = "total_bytes")]
     pub physical_bytes: u64,
     #[serde(default)]
     pub logical_bytes: u64,
@@ -1920,9 +1923,9 @@ pub struct SlabCatalogEntry {
     pub created_unix_ms: Option<u64>,
     #[serde(default)]
     pub updated_unix_ms: Option<u64>,
-    #[serde(rename = "first_block_id", alias = "first_page_id", default)]
+    #[serde(rename = "first_block_id", default)]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_block_id", alias = "last_page_id", default)]
+    #[serde(rename = "last_block_id", default)]
     pub last_block_id: Option<u64>,
     #[serde(default)]
     pub version: u64,
@@ -1952,9 +1955,9 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(rename = "zones", alias = "slabs", alias = "extents", alias = "bands", default)]
+    #[serde(rename = "zones", default)]
     pub slabs: Vec<SlabCatalogEntry>,
-    #[serde(alias = "zone_version", default)]
+    #[serde(default)]
     pub slab_version: u64,
 }
 
@@ -1964,9 +1967,9 @@ pub struct MetaItem {
 /// `items`/`meta` fields, so legacy whole-index records replay untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexDeltaRecord {
-    #[serde(rename = "s", alias = "shard_id")]
+    #[serde(rename = "s")]
     pub shard_id: ShardId,
-    #[serde(rename = "q", alias = "sequence")]
+    #[serde(rename = "q")]
     pub sequence: u64,
     #[serde(default)]
     pub items: Vec<IndexItem>,
@@ -1977,7 +1980,7 @@ pub struct IndexDeltaRecord {
     /// folded into the base and are skipped; folding the rest advances the reconstructed
     /// anchor so WAL replay re-executes only the uncaptured tail (never relocating the
     /// blocks the deltas already pin at their original addresses).
-    #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+    #[serde(rename = "aw", default)]
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact blocks the write produced: replay replaces
     /// each item's (kind, object, element name) predecessor and inserts, WITHOUT the covered-key
@@ -1986,7 +1989,7 @@ pub struct IndexDeltaRecord {
     /// object's whole block set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
     /// every block of each of them, every time.
-    #[serde(rename = "u", alias = "upsert", default)]
+    #[serde(rename = "u", default)]
     pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
@@ -1995,7 +1998,7 @@ pub struct IndexDeltaRecord {
     /// nodes). Opaque here so the index-log layer stays decoupled from `ShardState`; the
     /// engine builds and applies them. Replaying these on load pins the exact membership a
     /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
-    #[serde(rename = "ks", alias = "key_states", default)]
+    #[serde(rename = "ks", default)]
     pub key_states: Vec<serde_json::Value>,
     /// The one object key every item carries, when at least two items carry the same one.
     ///
@@ -2038,7 +2041,7 @@ pub struct IndexDeltaRecord {
     /// here. So the rule is a property of the field, not of the version: HOIST ONLY WHEN THE
     /// SENTINEL IS OUTSIDE THE FIELD'S LEGAL DOMAIN, and when it is not, the field stays on the
     /// item however much it repeats.
-    #[serde(rename = "sk", alias = "shared_object_key", default)]
+    #[serde(rename = "sk", default)]
     pub shared_object_key: Option<String>,
 }
 
@@ -3441,7 +3444,7 @@ impl LocalIndexLogStore {
                 // unrecognised shape, a truncated container -- goes to the decoder and is
                 // reported, because a sweep that quietly skips what it cannot read is how
                 // committed corruption becomes silent data loss.
-                if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+                if payload_says_it_is_not_a_delta(payload) {
                     continue;
                 }
                 let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
@@ -4096,8 +4099,48 @@ impl LocalIndexLogStore {
 
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
         let inner = self.inner.lock().expect("index log lock poisoned");
+        TAIL_SCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
         IndexLogStats {
             last_sequence: last_sequence_at(&inner.root, shard_id).unwrap_or_default(),
+            ..inner.stats
+        }
+    }
+
+    /// `stats`, WITHOUT reading the active piece back to learn its last sequence.
+    ///
+    /// `stats` answers `last_sequence` with `last_sequence_at`, which opens the piece being written
+    /// and decodes the head of EVERY record in it -- work proportional to the piece, and bounded
+    /// only by the rolling threshold. A maintenance round asks three or four times, and the plans
+    /// that ask are on a timer.
+    ///
+    /// THE CACHED SEQUENCE IS ALREADY THE ONE EVERY APPEND TRUSTS. The three append paths read
+    /// `last_sequence_by_shard` and scan only on a miss, then write the sequence they assigned back,
+    /// so a value good enough to number the next record is good enough to report. A store that has
+    /// neither appended nor scanned for this shard has no cached value, and answering 0 there would
+    /// under-report after a cold load, so a miss scans -- and keeps what it found, once per shard
+    /// per process instead of once per read. A scan that FAILS is not kept: the failure is the
+    /// answer `stats` gives (0), and remembering it would make a damaged log read as empty for good.
+    ///
+    /// The scan also trims a torn tail. That repair still happens on the first read of a shard and
+    /// on the first append, which is where a tail can have been torn; nothing tears it afterwards
+    /// without a restart, and a restart starts with an empty cache.
+    pub fn stats_without_rescan(&self, shard_id: ShardId) -> IndexLogStats {
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
+            Some(sequence) => sequence,
+            None => {
+                TAIL_SCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
+                match last_sequence_at(&inner.root, shard_id) {
+                    Ok(sequence) => {
+                        inner.last_sequence_by_shard.insert(shard_id, sequence);
+                        sequence
+                    }
+                    Err(_) => 0,
+                }
+            }
+        };
+        IndexLogStats {
+            last_sequence,
             ..inner.stats
         }
     }
@@ -4173,6 +4216,17 @@ fn active_index_log(root: &Path, shard_id: ShardId) -> (PathBuf, u64) {
         return (legacy, metadata.len());
     }
     (renamed, 0)
+}
+
+thread_local! {
+    /// Times THIS THREAD asked `stats` or `stats_without_rescan` to read a piece back for its last
+    /// sequence. Per thread, so a probe counts its own reads and not a neighbouring test's.
+    static TAIL_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has had a stats read decode the active index-log piece.
+pub fn index_log_tail_scans() -> u64 {
+    TAIL_SCANS.with(std::cell::Cell::get)
 }
 
 fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {
@@ -4711,10 +4765,10 @@ fn drop_reflected_index_segments(
 /// sequence` is deliberately NOT one of the terms here: the only caller asks this question of a
 /// record that has none, so testing it would be a clause that can never fire.
 ///
-/// A payload that SAYS it is a whole-index record is answered without decoding it -- no load path
-/// reads one, which is the whole reason the sweep may remove it.
+/// A payload that SAYS it is a whole-index record or an anchor is answered without decoding it --
+/// no load path reads either as a delta, which is the whole reason the sweep may remove it.
 fn delta_record_carries_content(payload: &[u8]) -> Result<bool, IndexLogError> {
-    if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+    if payload_says_it_is_not_a_delta(payload) {
         return Ok(false);
     }
     // A legacy whole-index line carries no container to say so, and decodes here into an
@@ -5254,26 +5308,47 @@ mod tests {
         );
     }
 
+    /// A delta record written with a long field name is not read as the same record.
+    ///
+    /// The record-level names are short, and the long spellings (`shard_id`, `sequence`,
+    /// `applied_wal_sequence`, `upsert`, `key_states`) are not accepted: the first release carries
+    /// no installed base. `items` and `meta` are NOT short names; whole-index and delta records are
+    /// told apart on read by the presence of those two keys. Each long name is swapped in alone for
+    /// its short name against the control that the unmodified document loads, so one alias coming
+    /// back is caught and not only all of them.
     #[test]
-    fn a_delta_record_written_with_the_old_field_names_still_loads() {
-        // The record-level names are short now. `items` and `meta` are NOT among them: whole-index
-        // and delta records are told apart on read by the PRESENCE of those two keys, so renaming
-        // them breaks record-type detection rather than just the labels.
-        let legacy = serde_json::json!({
-            "shard_id": 7,
-            "sequence": 3,
-            "items": [],
-            "applied_wal_sequence": 11,
-            "upsert": true,
-            "key_states": [{"key": "m:0"}]
-        });
-        let record: IndexDeltaRecord =
-            serde_json::from_value(legacy).expect("a legacy delta record must load");
-        assert_eq!(record.shard_id, 7);
-        assert_eq!(record.sequence, 3);
-        assert_eq!(record.applied_wal_sequence, Some(11));
-        assert!(record.upsert);
-        assert_eq!(record.key_states.len(), 1);
+    fn a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record() {
+        let current = r#"{"s":7,"q":3,"items":[],"aw":11,"u":true,"ks":[{"key":"m:0"}]}"#;
+        let original: IndexDeltaRecord =
+            serde_json::from_str(current).expect("the control, in the written names, must load");
+        assert_eq!(original.shard_id, 7);
+        assert_eq!(original.sequence, 3);
+        assert_eq!(original.applied_wal_sequence, Some(11));
+        assert!(original.upsert);
+        assert_eq!(original.key_states.len(), 1);
+        for (short, long) in [
+            ("s", "shard_id"),
+            ("q", "sequence"),
+            ("aw", "applied_wal_sequence"),
+            ("u", "upsert"),
+            ("ks", "key_states"),
+        ] {
+            let swapped = current.replacen(&format!("\"{short}\":"), &format!("\"{long}\":"), 1);
+            assert_ne!(swapped, current, "the swap of `{short}` did not take");
+            let loaded = serde_json::from_str::<IndexDeltaRecord>(&swapped);
+            assert!(
+                loaded.as_ref().map_or(true, |record| {
+                    (
+                        record.shard_id,
+                        record.sequence,
+                        record.applied_wal_sequence,
+                        record.upsert,
+                        record.key_states.len(),
+                    ) != (7, 3, Some(11), true, 1)
+                }),
+                "a delta record with `{short}` spelled `{long}` loaded as the same record: the alias is back"
+            );
+        }
     }
 
     #[test]
@@ -5399,6 +5474,63 @@ mod tests {
             store.latest_slab_catalog(5).unwrap().is_none(),
             "a meta carrying no slabs is not a catalog"
         );
+    }
+
+    /// A log that holds a REAL anchor -- the record every engine caller of `append_index_bytes`
+    /// writes -- can still be folded, rolled into pieces and swept.
+    ///
+    /// The tests that were meant to cover this built their anchor with `append_json`, which writes
+    /// a whole-index record, so the one record the engine actually puts between deltas was never in
+    /// any of them. Read as a delta, an anchor failed the fold, the seal that names a piece and the
+    /// sweep, each with an Encoding error.
+    #[test]
+    fn a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(9, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, false, true)
+            .unwrap();
+        // A real anchor: digest and length of an index, in the shape the engine writes.
+        let anchor_seq = store.append_index_bytes(9, b"TSIDX\x01\x02anchor").unwrap();
+        store
+            .append_delta(9, vec![block_item(1, "b", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        // DENOMINATOR: the log really holds the anchor, between the two deltas.
+        let mut reader = std::io::BufReader::new(
+            std::fs::File::open(index_log_path(dir.path(), 9)).unwrap(),
+        );
+        let mut shapes = Vec::new();
+        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
+            shapes.push(index_payload_shape(&payload));
+        }
+        assert_eq!(
+            shapes,
+            vec![
+                Some(INDEX_LOG_SHAPE_DELTA),
+                Some(INDEX_LOG_SHAPE_ANCHOR),
+                Some(INDEX_LOG_SHAPE_DELTA)
+            ],
+            "the fixture must put an anchor between two deltas"
+        );
+        assert_eq!(anchor_seq, 2);
+
+        // The fold reads the two deltas and passes over the anchor.
+        let folded = store.read_delta_records(9, 0).unwrap();
+        assert_eq!(folded.len(), 2, "the anchor must be skipped, not refused: {folded:?}");
+
+        // A roll must read the piece to name it, anchor included.
+        let _rolling = roll_at(1);
+        store
+            .append_delta(9, vec![block_item(1, "c", false)], Vec::new(), Some(3), None, false, true)
+            .expect("the append that rolls a piece holding an anchor must land");
+        assert!(store.piece_count(9) >= 2, "denominator: the piece must have rolled");
+        assert_eq!(store.read_delta_records(9, 0).unwrap().len(), 3);
+
+        // The sweep walks the same records.
+        let report = store
+            .gc_reflected_before_anchor(9, 3, 4, 0)
+            .expect("a sweep over a log holding an anchor must not refuse it");
+        assert!(report.records_before >= 3, "denominator: {report:?}");
     }
 
     #[test]
@@ -6335,81 +6467,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_index_item_written_with_the_old_field_names_still_loads() {
-        // The names are short now because they repeat once per ITEM for the life of the log.
-        // Every record already on disk spells them out, so each short name keeps its old
-        // spelling as an alias -- including `routing_slot`, which was itself a rename.
-        let legacy = serde_json::json!({
-            "kind": "page",
-            "routing_slot": 545210715_u32,
-            "page_ref_key": "string:m:0::0:0:126:0:0",
-            "object_key": "m:0",
-            "model_id": "string",
-            "object_id": 122110326161599232_u64,
-            "page_id": 0,
-            "size": 126,
-            "in_log": false,
-            "deleted": false
-        });
-        // THE SLOT, read where it now lives. `size` is not a field any more -- it is derived
-        // from the address -- so the alias this test exists for is asserted on the wire struct
-        // the conversion reads. That observes the stored value directly, where the old form
-        // could have been satisfied by a derivation that happened to agree.
-        let wire: IndexItemWire =
-            serde_json::from_value(legacy.clone()).expect("a legacy item must load as a wire row");
-        assert_eq!(wire.size, 126, "the legacy `size` key must still reach the wire row");
-
-        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
-        assert_eq!(item.routing_bucket, 545210715);
-        assert_eq!(item.object_key.as_ref(), "m:0");
-        assert_eq!(item.object_id, 122110326161599232);
-        // The row carries no address, so there is no payload to derive a size from -- which is
-        // the state this legacy row describes rather than a loss.
-        assert!(item.entry.is_none(), "a legacy row with no address has no payload");
-        assert!(!item.deleted);
-    }
-
-    /// The old `page_id` key must still land in the renamed `block_id` field.
+    /// AN INDEX ITEM SPELLED WITH A RETIRED NAME IS NOT READ AS THE SAME ITEM.
     ///
-    /// The guard above spells `page_id` in its fixture, but it writes 0 there and never reads
-    /// the field back -- and every field here carries `serde(default)`, so it fills in the same
-    /// 0 whether the alias survives or not. Dropping `alias = "page_id"` leaves that guard
-    /// passing. This one asserts a value that is NOT the default, so the alias is what makes it
-    /// pass, which is the property the rename to `block_id` now rests on.
+    /// The first release carries no installed base, so the long names an older log used
+    /// (`routing_slot`, `page_ref_key`) and the retired kind token `page` are not accepted. Each
+    /// is swapped in alone for the short name the writer produces, against a control that the
+    /// unmodified item loads with those values populated.
     #[test]
-    fn the_old_page_id_key_still_loads_into_the_renamed_block_id_field() {
-        let legacy = serde_json::json!({
-            "kind": "page",
-            "routing_slot": 545210715_u32,
-            "page_ref_key": "string:m:0::0:0:126:0:0",
-            "object_key": "m:0",
-            "model_id": "string",
-            "object_id": 122110326161599232_u64,
-            "page_id": 4242,
-            "size": 126,
-            "in_log": false,
-            "deleted": false
-        });
-        assert_ne!(
-            4242, u64::default(),
-            "the fixture value must not be the serde default, or this cannot fail"
-        );
-        // READ AT THE WIRE, because the renamed field is no longer a field: `block_id` is
-        // derived from the address now. The subject of this test is the KEY MAPPING, and the
-        // wire row is where that mapping lands, so this asserts it without a conversion in
-        // between.
-        let wire: IndexItemWire =
-            serde_json::from_value(legacy.clone()).expect("a legacy item must load as a wire row");
-        assert_eq!(
-            wire.block_id, 4242,
-            "the old `page_id` key must still reach the renamed `block_id` slot"
-        );
-        // And the conversion still accepts the row.
-        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
+    fn an_index_item_spelled_with_a_retired_name_is_not_read_as_the_same_item() {
+        const CURRENT: &str = r#"{"k":"block","rb":545210715,"pk":"string:m:0::0:0:126:0:0","ok":"m:0","mi":"string","oi":122110326161599232,"pi":4242,"sz":126,"il":false,"d":false}"#;
+        let original: IndexItem = serde_json::from_str(CURRENT).expect("the control loads");
+        assert_eq!(original.routing_bucket, 545210715);
+        assert_eq!(original.block_ref_key, "string:m:0::0:0:126:0:0");
+        assert_eq!(original.kind, IndexItemKind::Block);
+
+        let by_slot = CURRENT.replace("\"rb\":", "\"routing_slot\":");
+        assert_ne!(by_slot, CURRENT, "the swap of `rb` did not take");
+        let loaded = serde_json::from_str::<IndexItem>(&by_slot);
         assert!(
-            item.entry.is_none(),
-            "this legacy row carries no address, so it has no payload"
+            loaded.as_ref().map_or(true, |item| item.routing_bucket != 545210715),
+            "`routing_slot` was read as the routing bucket: the retired name is accepted"
+        );
+
+        let by_page_key = CURRENT.replace("\"pk\":", "\"page_ref_key\":");
+        assert_ne!(by_page_key, CURRENT, "the swap of `pk` did not take");
+        let loaded = serde_json::from_str::<IndexItem>(&by_page_key);
+        assert!(
+            loaded.as_ref().map_or(true, |item| item.block_ref_key != original.block_ref_key),
+            "`page_ref_key` was read as the block ref key: the retired name is accepted"
+        );
+
+        let by_page_kind = CURRENT.replace("\"k\":\"block\"", "\"k\":\"page\"");
+        assert_ne!(by_page_kind, CURRENT, "the swap of the kind token did not take");
+        assert!(
+            serde_json::from_str::<IndexItem>(&by_page_kind).is_err(),
+            "the retired kind token `page` was read: the retired name is accepted"
         );
     }
 
@@ -7466,7 +7558,7 @@ mod tests {
     #[test]
     fn what_is_left_to_gain_from_a_binary_index_record() {
         // One block item plus a key-state blob: the common delta the ingest path appends.
-        let line = r#"{"s":1,"q":1,"items":[{"k":"page","rb":545210715,
+        let line = r#"{"s":1,"q":1,"items":[{"k":"block","rb":545210715,
             "pk":"string:m:0::0:0:126:0:0","ok":"m:0","mi":"string",
             "oi":122110326161599232,"pi":0,
             "a":{"a":0,"l":126,"pi":0,"oi":122110326161599232,
@@ -7511,9 +7603,9 @@ mod tests {
         // because GC retains raw payloads and never re-encodes them.
         #[derive(serde::Deserialize)]
         struct AnchorProbe {
-            #[serde(rename = "q", alias = "sequence")]
+            #[serde(rename = "q")]
             sequence: u64,
-            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            #[serde(rename = "aw", default)]
             applied_wal_sequence: Option<u64>,
         }
         let probe: AnchorProbe = rmp_serde::from_slice(&packed).unwrap();
@@ -7586,9 +7678,9 @@ mod tests {
     fn the_anchor_probe_reads_a_binary_record_without_decoding_the_rest() {
         #[derive(serde::Deserialize)]
         struct AnchorProbe {
-            #[serde(rename = "q", alias = "sequence")]
+            #[serde(rename = "q")]
             sequence: u64,
-            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            #[serde(rename = "aw", default)]
             applied_wal_sequence: Option<u64>,
         }
 
@@ -8340,13 +8432,7 @@ mod tests {
         // `serialize_seq(Some(INDEX_ITEM_SLOTS))`, so it ignores `with_struct_map()` -- an item encoded
         // "as a map" still comes out a sequence. The row is therefore only ever WRITTEN
         // positionally, and the named shape exists only on the READ side, for rows an older
-        // binary wrote through a derived `Serialize`.
-        //
-        // That read side is covered by name elsewhere in this module:
-        // `an_index_item_written_with_the_old_field_names_still_loads` and
-        // `the_old_page_id_key_still_loads_into_the_renamed_block_id_field` address the slots by
-        // their STORED NAMES, so a rename breaks them. Which is the division of labour: a
-        // rename is caught there, and order and arity -- which no named test can see -- here.
+        // binary wrote through a derived `Serialize`. Order and arity are what this test holds.
         let as_map = encode_as_map(&item, INDEX_LOG_SHAPE_DELTA);
         let still_a_sequence: Result<std::collections::BTreeMap<String, serde_json::Value>, _> =
             decode_index_payload(&as_map);
@@ -10840,7 +10926,7 @@ flag exists to say",
         // THE TOLERANT PATH, UNTOUCHED. The NAMED shape is deliberately missing-key tolerant and
         // the compatibility arms in this file depend on it. A map has no tail to be short at.
         let named = serde_json::json!({
-            "k": "page",
+            "k": "block",
             "rb": 8539,
             "ok": "ungated/hash",
             "mi": "hash",

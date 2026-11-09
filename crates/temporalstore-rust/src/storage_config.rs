@@ -121,7 +121,6 @@ pub const DEFAULT_INDEX_GC_MIN_RECLAIMABLE_BYTES: u64 = 768 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTuningConfig {
     pub context_block_target_bytes: usize,
-    #[serde(alias = "block_segment_target_bytes")]
     pub block_slab_target_bytes: u64,
     pub stream_max_blob_size: u64,
     pub compaction_watermark_bytes: u64,

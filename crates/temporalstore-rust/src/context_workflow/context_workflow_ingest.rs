@@ -142,8 +142,17 @@ fn process_context_source_window(
         let mut chunk_start = 0usize;
         while chunk_start < source_indexes.len() {
             let mut chunk_end = chunk_start;
-            let mut input_count = 0usize;
-            let mut input_bytes = 0usize;
+            // Provider limits apply to distinct encoder inputs, not the number of source owners.
+            let remaining_inputs = source_indexes
+                .len()
+                .saturating_sub(chunk_start)
+                .saturating_mul(2)
+                .min(limits.max_items);
+            let mut unique_by_text =
+                std::collections::HashMap::<&str, usize>::with_capacity(remaining_inputs);
+            let mut unique_inputs = Vec::with_capacity(remaining_inputs);
+            let mut input_rows = Vec::with_capacity(remaining_inputs);
+            let mut unique_input_bytes = 0usize;
             while chunk_end < source_indexes.len() {
                 let (source, summaries) = &prepared_sources[source_indexes[chunk_end]];
                 let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
@@ -152,61 +161,78 @@ fn process_context_source_window(
                 } else {
                     summaries.l0.as_str()
                 };
-                let pair_bytes = node_embedding_text.len().saturating_add(source.body.len());
-                let candidate_count = input_count.saturating_add(2);
-                let candidate_bytes = input_bytes.saturating_add(pair_bytes);
+                let event_text = source.body.as_str();
+                let node_is_new = !unique_by_text.contains_key(node_embedding_text);
+                let event_is_new = event_text != node_embedding_text
+                    && !unique_by_text.contains_key(event_text);
+                let new_count =
+                    usize::from(node_is_new).saturating_add(usize::from(event_is_new));
+                let new_bytes = usize::from(node_is_new)
+                    .saturating_mul(node_embedding_text.len())
+                    .saturating_add(usize::from(event_is_new).saturating_mul(event_text.len()));
+                let candidate_count = unique_by_text.len().saturating_add(new_count);
+                let candidate_bytes = unique_input_bytes.saturating_add(new_bytes);
                 if chunk_end > chunk_start
                     && (candidate_count > limits.max_items
                         || candidate_bytes > limits.max_request_bytes)
                 {
                     break;
                 }
-                input_count = candidate_count;
-                input_bytes = candidate_bytes;
+                let node_row = if let Some(row) = unique_by_text.get(node_embedding_text) {
+                    *row
+                } else {
+                    let row = unique_inputs.len();
+                    let node_hash = stable_hash64(&format!(
+                        "{}:{}:{}",
+                        source.tenant_hash, source.source_kind as u8, source.source_id
+                    ));
+                    unique_by_text.insert(node_embedding_text, row);
+                    unique_inputs.push(("node_text", node_hash, 1, node_embedding_text));
+                    row
+                };
+                input_rows.push(node_row);
+                let event_row = if let Some(row) = unique_by_text.get(event_text) {
+                    *row
+                } else {
+                    let row = unique_inputs.len();
+                    let event_id_hash =
+                        stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
+                    unique_by_text.insert(event_text, row);
+                    unique_inputs.push(("event_text", event_id_hash, 3, event_text));
+                    row
+                };
+                input_rows.push(event_row);
+                unique_input_bytes = candidate_bytes;
                 chunk_end += 1;
                 if node_embedding_text.len() > limits.max_input_bytes
                     || source.body.len() > limits.max_input_bytes
-                    || input_count > limits.max_items
-                    || input_bytes > limits.max_request_bytes
+                    || unique_by_text.len() > limits.max_items
+                    || unique_input_bytes > limits.max_request_bytes
                 {
                     break;
                 }
             }
 
             let chunk_indexes = &source_indexes[chunk_start..chunk_end];
-            let mut embedding_inputs = Vec::with_capacity(chunk_indexes.len().saturating_mul(2));
-            for source_index in chunk_indexes {
-                let (source, summaries) = &prepared_sources[*source_index];
-                let node_hash = stable_hash64(&format!(
-                    "{}:{}:{}",
-                    source.tenant_hash, source.source_kind as u8, source.source_id
-                ));
-                let event_id_hash =
-                    stable_hash64(&format!("event:{}:{}", source.source_id, source.body));
-                let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
-                let node_embedding_text = if emit_l1 {
-                    summaries.l1.as_str()
-                } else {
-                    summaries.l0.as_str()
-                };
-                embedding_inputs.push(("node_text", node_hash, 1, node_embedding_text));
-                embedding_inputs.push(("event_text", event_id_hash, 3, source.body.as_str()));
-            }
-            let ContextEmbeddingOutcome {
-                rows,
+            let ContextCompactEmbeddingOutcome {
+                rows: batch,
+                input_rows,
                 report,
                 deferred,
-            } = context_embeddings_with_fallback(&provider, &embedding_inputs);
-            let batch = match rows {
-                ContextEmbeddingRows::Owned(batch) => Arc::new(batch),
-                ContextEmbeddingRows::Shared { batch, .. } => batch,
-            };
+            } = context_prepared_embeddings_with_fallback(
+                &provider,
+                &unique_inputs,
+                input_rows,
+            );
+            let batch = Arc::new(batch);
+            let input_rows = Arc::<[usize]>::from(input_rows);
             for (chunk_offset, source_index) in chunk_indexes.iter().copied().enumerate() {
                 let mut source_report = report.clone();
                 source_report.requested_vector_count = 2;
                 source_report.generated_vector_count = if deferred { 0 } else { 2 };
                 embedding_outcomes[source_index] = Some(ContextEmbeddingOutcome::shared(
                     Arc::clone(&batch),
+                    Arc::clone(&input_rows),
                     chunk_offset.saturating_mul(2),
                     source_report,
                     deferred,
@@ -381,6 +407,7 @@ pub fn ingest_extract_context_with_l1_gate(
         prefer_current_agent: false,
         current_agent_scope_key: default_current_agent_scope_key(),
         provider: request.provider,
+        include_debug: false,
     };
     let summary = ContextIngestExtractSummary {
         source_count,
@@ -432,24 +459,28 @@ pub fn ingest_resource_skill_context(
         // parsing, so the synthesized external URI on the report is real and fetchable --
         // chunks stay searchable in records while the original attachment lives beside the
         // engine, one TemporalStore holding everything.
-        let oversized_payload = if resource_request.text.as_bytes().len()
+        let oversized_blob = if resource_request.text.as_bytes().len()
             > default_context_resource_max_inline_bytes()
         {
-            Some(resource_request.text.clone())
+            Some(engine.resource_blob_put(request.tenant_hash, resource_request.text.as_bytes()))
         } else {
             None
         };
         let mut resource = parse_context_resource(resource_request);
-        if let Some(payload) = oversized_payload {
-            match engine.resource_blob_put(request.tenant_hash, payload.as_bytes()) {
+        if let Some(result) = oversized_blob {
+            match result {
                 Ok((uri, _size, _hash)) => resource.external_object_uri = uri,
                 Err(err) => resource
                     .parser_warnings
                     .push(format!("resource blob store put failed: {err}")),
             }
         }
+        resources.push(resource);
+    }
+
+    for resource in &resources {
         for chunk in &resource.chunks {
-            resource_ref_by_source.insert(chunk.source_ref.clone(), resource.raw_uri.clone());
+            resource_ref_by_source.insert(chunk.source_ref.as_str(), resource.raw_uri.as_str());
             sources.push(ContextExtractRequest {
                 shard_id: request.shard_id,
                 tenant_hash: request.tenant_hash,
@@ -466,14 +497,17 @@ pub fn ingest_resource_skill_context(
             });
             timestamp_ms = timestamp_ms.saturating_add(1);
         }
-        resources.push(resource);
     }
 
     for skill_input in request.skills {
         let skill = parse_context_skill_markdown(skill_input.raw_uri, skill_input.text);
+        skills.push(skill);
+    }
+
+    for skill in &skills {
         if skill.enabled {
             for chunk in &skill.resource.chunks {
-                skill_ref_by_source.insert(chunk.source_ref.clone(), skill.skill_name.clone());
+                skill_ref_by_source.insert(chunk.source_ref.as_str(), skill.skill_name.as_str());
                 sources.push(ContextExtractRequest {
                     shard_id: request.shard_id,
                     tenant_hash: request.tenant_hash,
@@ -487,7 +521,6 @@ pub fn ingest_resource_skill_context(
                 timestamp_ms = timestamp_ms.saturating_add(1);
             }
         }
-        skills.push(skill);
     }
     let skill_registry = context_skill_registry_from_parsed(&skills, request.start_time_ms);
     let skill_selection = if skill_registry.entries.is_empty() {
@@ -566,11 +599,11 @@ pub fn ingest_resource_skill_context(
         for summary_ref in &extract.summary_refs {
             index_writes.push(("summary_ref".to_string(), summary_ref.clone()));
         }
-        if let Some(resource_ref) = resource_ref_by_source.get(&extract.source_ref) {
-            index_writes.push(("resource_ref".to_string(), resource_ref.clone()));
+        if let Some(resource_ref) = resource_ref_by_source.get(extract.source_ref.as_str()) {
+            index_writes.push(("resource_ref".to_string(), (*resource_ref).to_string()));
         }
-        if let Some(skill_ref) = skill_ref_by_source.get(&extract.source_ref) {
-            index_writes.push(("skill_ref".to_string(), skill_ref.clone()));
+        if let Some(skill_ref) = skill_ref_by_source.get(extract.source_ref.as_str()) {
+            index_writes.push(("skill_ref".to_string(), (*skill_ref).to_string()));
         }
 
         let commands = vec![

@@ -324,10 +324,23 @@ pub(super) enum Utf8ContainerProjection {
     Corrupt(String),
 }
 
+/// Byte ranges for requested UTF-8 fields in one retained packed frame.
+pub(super) enum Utf8ContainerRangeProjection {
+    /// No container magic; the caller retains legacy bare-value behavior.
+    NotFramed,
+    /// The frame uses another container spelling; the caller retains the generic selector.
+    OtherSpelling,
+    /// One positional value range per requested element name.
+    Values(Vec<Option<std::ops::Range<usize>>>),
+    /// The frame could not be walked.
+    Corrupt(String),
+}
+
 /// The requested-name index shared by every row in one hash projection batch.
 pub(super) struct Utf8ProjectionPlan<'a> {
     element_names: &'a [String],
     first_position: std::collections::HashMap<&'a [u8], usize>,
+    positions_by_name: Vec<usize>,
 }
 
 impl<'a> Utf8ProjectionPlan<'a> {
@@ -337,10 +350,54 @@ impl<'a> Utf8ProjectionPlan<'a> {
         for (index, element_name) in element_names.iter().enumerate() {
             first_position.entry(element_name.as_bytes()).or_insert(index);
         }
+        let mut positions_by_name = (0..element_names.len()).collect::<Vec<_>>();
+        positions_by_name.sort_unstable_by(|left, right| {
+            element_names[*left]
+                .cmp(&element_names[*right])
+                .then_with(|| left.cmp(right))
+        });
         Self {
             element_names,
             first_position,
+            positions_by_name,
         }
+    }
+
+    pub(super) fn positions_by_name(&self) -> &[usize] {
+        &self.positions_by_name
+    }
+}
+
+/// Reusable per-row state for one shared-field projection batch.
+pub(super) struct Utf8ProjectionScratch {
+    found: Vec<bool>,
+    present_in_index: Vec<bool>,
+}
+
+impl Utf8ProjectionScratch {
+    pub(super) fn new() -> Self {
+        Self {
+            found: Vec::new(),
+            present_in_index: Vec::new(),
+        }
+    }
+
+    fn reset(&mut self, field_count: usize) {
+        self.found.resize(field_count, false);
+        self.found.fill(false);
+    }
+
+    pub(super) fn reset_index_presence(&mut self, field_count: usize) {
+        self.present_in_index.resize(field_count, false);
+        self.present_in_index.fill(false);
+    }
+
+    pub(super) fn mark_present_in_index(&mut self, index: usize) {
+        self.present_in_index[index] = true;
+    }
+
+    pub(super) fn is_present_in_index(&self, index: usize) -> bool {
+        self.present_in_index[index]
     }
 }
 
@@ -774,33 +831,53 @@ pub(super) fn project_utf8_container_elements(
     element_names: &[String],
 ) -> Utf8ContainerProjection {
     let plan = Utf8ProjectionPlan::new(element_names);
-    project_utf8_container_elements_with_plan(bytes, &plan)
+    let mut scratch = Utf8ProjectionScratch::new();
+    project_utf8_container_elements_with_plan(bytes, &plan, &mut scratch)
 }
 
 pub(super) fn project_utf8_container_elements_with_plan(
     bytes: &[u8],
     plan: &Utf8ProjectionPlan<'_>,
+    scratch: &mut Utf8ProjectionScratch,
 ) -> Utf8ContainerProjection {
+    match project_utf8_container_element_ranges_with_plan(bytes, plan, scratch) {
+        Utf8ContainerRangeProjection::NotFramed => Utf8ContainerProjection::NotFramed,
+        Utf8ContainerRangeProjection::OtherSpelling => Utf8ContainerProjection::OtherSpelling,
+        Utf8ContainerRangeProjection::Corrupt(error) => Utf8ContainerProjection::Corrupt(error),
+        Utf8ContainerRangeProjection::Values(ranges) => Utf8ContainerProjection::Values(
+            ranges
+                .into_iter()
+                .map(|range| range.map(|range| bytes[range].to_vec()))
+                .collect(),
+        ),
+    }
+}
+
+pub(super) fn project_utf8_container_element_ranges_with_plan(
+    bytes: &[u8],
+    plan: &Utf8ProjectionPlan<'_>,
+    scratch: &mut Utf8ProjectionScratch,
+) -> Utf8ContainerRangeProjection {
     let Some(header) = frame_header(bytes) else {
-        return Utf8ContainerProjection::NotFramed;
+        return Utf8ContainerRangeProjection::NotFramed;
     };
     let (shape, spelling) = match header {
         Ok(header) => header,
-        Err(error) => return Utf8ContainerProjection::Corrupt(error),
+        Err(error) => return Utf8ContainerRangeProjection::Corrupt(error),
     };
     if spelling != ElementKeySpelling::Utf8 {
-        return Utf8ContainerProjection::OtherSpelling;
+        return Utf8ContainerRangeProjection::OtherSpelling;
     }
 
+    scratch.reset(plan.element_names.len());
     let mut values = vec![None; plan.element_names.len()];
-    let mut found = vec![false; plan.element_names.len()];
     let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
         Ok(count) => count,
-        Err(error) => return Utf8ContainerProjection::Corrupt(error),
+        Err(error) => return Utf8ContainerRangeProjection::Corrupt(error),
     };
     if count > bytes.len() as u64 {
-        return Utf8ContainerProjection::Corrupt(format!(
+        return Utf8ContainerRangeProjection::Corrupt(format!(
             "container block claims {count} items in {} bytes",
             bytes.len()
         ));
@@ -808,25 +885,26 @@ pub(super) fn project_utf8_container_elements_with_plan(
     for index in 0..count {
         let (key, value, deleted) = match take_item_bytes(bytes, &mut cursor, index, shape) {
             Ok(item) => item,
-            Err(error) => return Utf8ContainerProjection::Corrupt(error),
+            Err(error) => return Utf8ContainerRangeProjection::Corrupt(error),
         };
         let Some(&position) = plan.first_position.get(key) else {
             continue;
         };
-        if !found[position] {
-            found[position] = true;
+        if !scratch.found[position] {
+            scratch.found[position] = true;
             if !deleted {
-                values[position] = Some(value.to_vec());
+                let start = value.as_ptr() as usize - bytes.as_ptr() as usize;
+                values[position] = Some(start..start + value.len());
             }
         }
     }
     for (index, element_name) in plan.element_names.iter().enumerate() {
         let first = plan.first_position[element_name.as_bytes()];
-        if index != first && found[first] {
+        if index != first && scratch.found[first] {
             values[index] = values[first].clone();
         }
     }
-    Utf8ContainerProjection::Values(values)
+    Utf8ContainerRangeProjection::Values(values)
 }
 
 /// Spell a container member as an index element name, without doubling it.
@@ -1105,6 +1183,37 @@ mod member_element_name_tests {
         assert_eq!(
             encode_utf8_container_block(&owned),
             encode_container_block(ElementKeySpelling::Utf8, &borrowed),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    fn warm_projection_reuses_its_match_bitmap() {
+        let fields = (0..64)
+            .map(|index| format!("wanted-{index}"))
+            .collect::<Vec<_>>();
+        let rows = vec![("other".to_string(), b"value".to_vec())];
+        let block = encode_utf8_container_block(&rows);
+        let plan = Utf8ProjectionPlan::new(&fields);
+        let mut scratch = Utf8ProjectionScratch::new();
+
+        let warm = project_utf8_container_elements_with_plan(&block, &plan, &mut scratch);
+        assert_eq!(
+            warm,
+            Utf8ContainerProjection::Values(vec![None; fields.len()])
+        );
+
+        let probe = crate::alloc_probe::Probe::start();
+        let projected = project_utf8_container_elements_with_plan(&block, &plan, &mut scratch);
+        let counted = probe.stop();
+
+        assert_eq!(
+            projected,
+            Utf8ContainerProjection::Values(vec![None; fields.len()])
+        );
+        assert_eq!(
+            counted.allocs, 1,
+            "a warm projection should allocate only its returned value slots: {counted:?}"
         );
     }
 

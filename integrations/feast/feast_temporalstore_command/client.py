@@ -430,11 +430,40 @@ class TemporalStoreClient:
             )
         return rows
 
+    def _pack_bounded_shared_request(
+        self, document: Dict[str, Any], encoded_upper_bound: int
+    ) -> Optional[bytes]:
+        # The common single-chunk path should not retain both a row-only
+        # Packer buffer and a second assembled request of the same size.
+        if encoded_upper_bound > self.max_batch_request_bytes:
+            return None
+        body = msgpack.packb(document, use_bin_type=True)
+        return body if len(body) <= self.max_batch_request_bytes else None
+
     def _shared_field_read_batches(
         self, keys: List[str], fields: List[str]
     ) -> Iterator[Tuple[List[str], bytes]]:
         if msgpack is None:
             return
+        if len(keys) <= self.max_batch_commands:
+            encoded_upper_bound = (
+                128
+                + 4 * sum(map(len, keys))
+                + 5 * len(keys)
+                + 4 * sum(map(len, fields))
+                + 5 * len(fields)
+            )
+            body = self._pack_bounded_shared_request(
+                {
+                    "shard_id": self.shard_id,
+                    "keys": keys,
+                    "fields": fields,
+                },
+                encoded_upper_bound,
+            )
+            if body is not None:
+                yield keys, body
+                return
         prefix = (
             b"\x83"
             + msgpack.packb("shard_id", use_bin_type=True)
@@ -534,20 +563,27 @@ class TemporalStoreClient:
             yield chunk, body_for(len(chunk))
 
     def batch_hash_multi_set(
-        self, fields: List[str], rows: List[Tuple[str, List[bytes]]]
+        self,
+        fields: List[str],
+        rows: List[Tuple[str, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
     ) -> None:
         """Write one field projection to many hashes with shared wire metadata.
 
         Nodes without the compact route fall back once to the regular write
         batch. A transport failure after any compact chunk is never retried:
         the server may already have applied that chunk.
+        The request size hint lets a row producer reuse size work it already
+        performed and encode a bounded single chunk directly.
         """
         if not rows:
             return
         if msgpack is not None and self._shared_field_write_supported is not False:
             applied_any = False
             try:
-                for chunk, body in self._shared_field_write_batches(fields, rows):
+                for chunk, body in self._shared_field_write_batches(
+                    fields, rows, request_upper_bound
+                ):
                     raw = self._request_encoded(
                         "/batch_hash_multi_set_msgpack",
                         body,
@@ -584,12 +620,15 @@ class TemporalStoreClient:
         fields: List[str],
         timestamp_field: str,
         rows: List[Tuple[str, int, int, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
     ) -> Optional[Tuple[int, int]]:
         """Atomically write rows whose stored timestamp is older.
 
         ``None`` means the node does not expose the route and no row was
         attempted. Once any chunk receives a response, later failures are
         surfaced because retrying could overwrite rows twice.
+        The request size hint enables direct encoding when the producer has
+        already bounded the complete request.
         """
         if not rows:
             return (0, 0)
@@ -601,7 +640,7 @@ class TemporalStoreClient:
         skipped = 0
         try:
             for chunk, body in self._shared_timestamp_write_batches(
-                fields, timestamp_field, rows
+                fields, timestamp_field, rows, request_upper_bound
             ):
                 raw = self._request_encoded(
                     "/batch_hash_timestamp_set_msgpack",
@@ -652,9 +691,26 @@ class TemporalStoreClient:
         fields: List[str],
         timestamp_field: str,
         rows: List[Tuple[str, int, int, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
     ) -> Iterator[Tuple[List[Tuple[str, int, int, List[bytes]]], bytes]]:
         if msgpack is None:
             return
+        if (
+            request_upper_bound is not None
+            and len(rows) <= self.max_write_batch_commands
+        ):
+            body = self._pack_bounded_shared_request(
+                {
+                    "shard_id": self.shard_id,
+                    "fields": fields,
+                    "timestamp_field": timestamp_field,
+                    "rows": rows,
+                },
+                request_upper_bound,
+            )
+            if body is not None:
+                yield rows, body
+                return
         prefix = (
             b"\x84"
             + msgpack.packb("shard_id", use_bin_type=True)
@@ -702,10 +758,28 @@ class TemporalStoreClient:
             yield chunk, body_for(len(chunk))
 
     def _shared_field_write_batches(
-        self, fields: List[str], rows: List[Tuple[str, List[bytes]]]
+        self,
+        fields: List[str],
+        rows: List[Tuple[str, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
     ) -> Iterator[Tuple[List[Tuple[str, List[bytes]]], bytes]]:
         if msgpack is None:
             return
+        if (
+            request_upper_bound is not None
+            and len(rows) <= self.max_write_batch_commands
+        ):
+            body = self._pack_bounded_shared_request(
+                {
+                    "shard_id": self.shard_id,
+                    "fields": fields,
+                    "rows": rows,
+                },
+                request_upper_bound,
+            )
+            if body is not None:
+                yield rows, body
+                return
         prefix = (
             b"\x83"
             + msgpack.packb("shard_id", use_bin_type=True)

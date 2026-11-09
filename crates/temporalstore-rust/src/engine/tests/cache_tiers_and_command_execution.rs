@@ -1767,7 +1767,6 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
             metadata: Some(WriteAheadLogRecordMetadata {
                 version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
                 timestamp_ms: stamp_ms,
-                items: Vec::new(),
                 batch_id: None,
                 batch_size: None,
                 batch_index: None,
@@ -3573,7 +3572,7 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
     drop(engine);
     // Delete the slab-manifest file: the catalog must come back from the index-log fold, not the
     // per-write file.
-    let manifest = block_dir.join("block_extent_manifest.json");
+    let manifest = block_dir.join("slab_manifest.pb");
     // Unconditional, and it has to have been there. `if exists { remove }` skips in silence
     // when the file is renamed out from under it, and the test would then prove the catalog
     // comes back from the index-log fold while the per-write file it meant to delete was

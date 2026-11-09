@@ -180,10 +180,9 @@ impl TemporalEngine {
     ) -> Result<(), std::io::Error> {
         let path =
             bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
-        // Binary: one container byte and a protobuf body. This document carries one summary per
-        // bucket -- thousands of them -- and the whole-shard index image, and it is machine-read on
-        // load and on install preflight. Readers decide the shape per file from the first byte
-        // (`decode_bucket_dump_manifest`), so a directory holding both shapes loads end to end.
+        // A bare protobuf body. This document carries one summary per bucket -- thousands of
+        // them -- and the whole-shard index image, and it is machine-read on load and on install
+        // preflight (`decode_bucket_dump_manifest`).
         let bytes = encode_bucket_dump_manifest(manifest);
         note_manifest_file_write(bytes.len());
         // The manifest is the durable reclaim watermark (wal_sequence) + recovery

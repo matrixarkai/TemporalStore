@@ -377,6 +377,17 @@ fn context_query_plan_matches_legacy_match_and_score_helpers() {
 }
 
 #[test]
+fn context_text_matcher_preserves_case_and_separator_matching() {
+    let text = ContextTextMatcher::new("Latest PAYMENT-error: manager update complete.");
+
+    assert!(text.matches("latest"));
+    assert!(text.matches("payment-error"));
+    assert!(text.matches("payment error"));
+    assert!(text.matches("PAYMENT ERROR"));
+    assert!(!text.matches("refund"));
+}
+
+#[test]
 fn context_extract_gates_l1_for_thin_sources() {
     let engine = test_engine();
     // Thin single-sentence source: L1 is gated -> L0 only, 2 embeddings.
@@ -702,6 +713,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok);
@@ -790,6 +802,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 prefer_current_agent: false,
                 current_agent_scope_key: "agent:codex".to_string(),
                 provider: ContextModelProviderConfig::default(),
+                include_debug: true,
             },
             prompt: "Explain current risk.".to_string(),
             session_hash: 7,
@@ -857,6 +870,7 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -992,6 +1006,7 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -1087,6 +1102,7 @@ fn context_benchmark_injection_uses_entity_slab_l0_l1_and_secondary_index() {
         prefer_current_agent: false,
         current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
+        include_debug: true,
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
     assert!(retrieved.status.ok, "{:?}", retrieved.status);
@@ -1779,6 +1795,7 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         prefer_current_agent: false,
         current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
+        include_debug: true,
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
     assert!(retrieved.status.ok, "{:?}", retrieved.status);
@@ -1854,11 +1871,10 @@ fn context_reference_reasoning_vlm_cases_cover_required_gaps() {
             "{} did not outrank stale memory",
             case.case_name
         );
+        let text = ContextTextMatcher::new(&case.positive_memory);
         for term in case.expected_terms {
-            let text_lower = case.positive_memory.to_ascii_lowercase();
-            let text_normalized = context_normalize_for_match(&case.positive_memory);
             assert!(
-                context_text_matches_term(&text_lower, &text_normalized, &term),
+                text.matches(&term),
                 "{} positive memory did not expose expected term {term}",
                 case.case_name
             );
@@ -1895,6 +1911,7 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
         prompt: "one two three four five".to_string(),
         session_hash: 7,
@@ -1981,10 +1998,15 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                     inputs[0], inputs[1],
                     "no text may appear twice in one embedding batch: {inputs:?}"
                 );
+                let mut first = vec![0.0; 1024];
+                first[0] = 1.0;
+                let mut second = vec![0.0; 1024];
+                second[1] = 1.0;
                 serde_json::json!({
+                    "object": "list",
                     "data": [
-                        {"embedding": [1.0, 0.0, 0.0, 0.0]},
-                        {"embedding": [0.0, 1.0, 0.0, 0.0]}
+                        {"object": "embedding", "index": 0, "embedding": first},
+                        {"object": "embedding", "index": 1, "embedding": second}
                     ]
                 })
                 .to_string()
@@ -2032,7 +2054,7 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
         report.embedding_generation.embedding_model,
         "context-embedding-live-test"
     );
-    assert_eq!(report.embedding_generation.vector_dimension, 4);
+    assert_eq!(report.embedding_generation.vector_dimension, 1024);
     assert_eq!(report.embedding_generation.requested_vector_count, 2);
     assert_eq!(report.embedding_generation.generated_vector_count, 2);
     assert_eq!(report.embedding_generation.batch_count, 1);
@@ -2126,7 +2148,7 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
             source_kind: ContextSourceKind::Chat,
             source_id: "local-chat".to_string(),
             title: "checkout".to_string(),
-            body: "Checkout failed during payment. Risk increased and support paused the account."
+            body: "Checkout failed during payment. Risk increased and support paused the account. Customers could not complete purchases."
                 .to_string(),
             timestamp_ms: 17,
             provider: ContextModelProviderConfig {
@@ -2241,6 +2263,7 @@ fn retrieve_top_node(engine: &TemporalEngine, tenant_hash: u64, node_hashes: Vec
             prefer_current_agent: false,
             current_agent_scope_key: String::new(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -2336,6 +2359,7 @@ fn hybrid_mixed_store_keeps_both_embedded_and_unembedded_rankable() {
             prefer_current_agent: false,
             current_agent_scope_key: String::new(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -2392,6 +2416,7 @@ fn extraction_prewarms_and_retrieval_rebuilds_the_compact_vector_index() {
             prefer_current_agent: false,
             current_agent_scope_key: String::new(),
             provider: ContextModelProviderConfig::default(),
+            include_debug: true,
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
@@ -2474,6 +2499,57 @@ fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
                 == Some("object_ref_json")
             && chunk.metadata.get("external_object_uri") == Some(&report.external_object_uri)
     }));
+}
+
+#[test]
+fn oversized_resource_ingest_keeps_original_blob_fetchable() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let payload = format!("# Large resource\n\n{}", "payload line\n".repeat(90_000));
+    let report = ingest_resource_skill_context(
+        &engine,
+        ContextResourceSkillIngestRequest {
+            shard_id: 1,
+            tenant_hash: 7,
+            resources: vec![ContextResourceParseRequest {
+                raw_uri: "large-resource.md".to_string(),
+                resource_type: Some("md".to_string()),
+                text: payload.clone(),
+                max_chunk_chars: 262_144,
+                overlap_chars: 0,
+                chunk_hash_base: None,
+                owner_scope: "user".to_string(),
+                version: "v1".to_string(),
+                watch_interval_minutes: 0,
+                parser_name: "unit-test-parser".to_string(),
+            }],
+            skills: Vec::new(),
+            query: "large resource".to_string(),
+            start_time_ms: 1,
+            end_time_ms: 2,
+            max_events: 8,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+
+    let resource = &report.resources[0];
+    assert!(!resource.inline_payload);
+    let (_, content_hash) = crate::engine::resource_blobs::parse_resource_blob_uri(
+        &resource.external_object_uri,
+    )
+    .expect("resource blob URI");
+    let (stored, total, eof) = engine
+        .resource_blob_fetch(7, content_hash, 0, 0)
+        .expect("fetch resource blob");
+    assert_eq!(stored, payload.as_bytes());
+    assert_eq!(total as usize, payload.len());
+    assert!(eof);
 }
 
 // shared-corpus: context_resource_skill_parser_reference_parity
@@ -3297,6 +3373,7 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -3420,6 +3497,7 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4147,6 +4225,7 @@ fn what_a_retrieve_allocates() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider: provider.clone(),
+            include_debug: false,
         };
         // Warm first: the first call through any path allocates one-off structures that are not
         // part of a steady-state retrieve, and counting those would flatter or damn the result
@@ -4591,6 +4670,7 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4758,6 +4838,7 @@ fn a_summary_vector_from_another_encoder_is_declined_and_counted() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4837,6 +4918,7 @@ fn a_summary_vector_with_no_recorded_encoder_is_still_scored() {
             prefer_current_agent: false,
             current_agent_scope_key: "agent:test".to_string(),
             provider,
+            include_debug: true,
         },
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -4943,6 +5025,7 @@ fn scoring_request(
         prefer_current_agent: false,
         current_agent_scope_key: "agent:test".to_string(),
         provider: ContextModelProviderConfig::default(),
+        include_debug: true,
     }
 }
 
