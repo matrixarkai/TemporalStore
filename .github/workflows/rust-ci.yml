@@ -330,7 +330,17 @@ jobs:
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file \
             engine::window_aggregate::tests::the_shared_doors_answer_what_the_bodies_they_replaced_answered \
             engine::window_aggregate::tests::a_name_is_known_or_refused_and_the_table_is_case_insensitive \
-            engine::window_aggregate::tests::edge_answers_are_the_documented_ones ; do
+            engine::window_aggregate::tests::edge_answers_are_the_documented_ones \
+            engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
+            engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
+            engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \
+            engine::window_aggregate::algorithm_tests::overflow_saturates_and_a_sum_is_exact_until_it_is_read \
+            engine::window_aggregate::algorithm_tests::ratio_wilson_rate_and_weights_edge_cases \
+            engine::window_aggregate::algorithm_tests::bad_parameters_and_names_are_refused_naming_the_field \
+            engine::window_aggregate::algorithm_tests::mergeability_is_declared_and_matches_what_merge_can_do \
+            engine::window_aggregate::algorithm_tests::merging_partial_results_equals_reducing_the_concatenation \
+            engine::window_aggregate::algorithm_tests::first_and_last_merge_only_in_stream_order \
+            engine::window_aggregate::algorithm_tests::parsed_reducer_names_map_to_the_declared_reducers ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
@@ -595,7 +605,8 @@ jobs:
             engine::tests::a_hash_write_files_only_what_it_wrote::probe::a_hash_field_write_does_not_pay_for_the_fields_it_already_has \
             engine::tests::a_write_names_only_the_blocks_of_the_objects_it_touched::probe::a_write_does_not_pay_for_the_objects_it_did_not_touch \
             engine::tests::a_feature_sum_reads_each_point_in_place::probe::a_feature_sum_does_not_allocate_per_point \
-            engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key ; do
+            engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
+            engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
