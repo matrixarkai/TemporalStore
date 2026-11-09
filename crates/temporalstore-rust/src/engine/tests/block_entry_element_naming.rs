@@ -504,9 +504,15 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
         object.len()
     );
 
+    // UNDER `slot_index` SINCE `SHARD_INDEX_FORMAT_VERSION` 31: the maps are fields of the core index
+    // now, which is where the encoder can reach every block's refs.
+    let index = object
+        .get("slot_index")
+        .and_then(serde_json::Value::as_object)
+        .expect("a shard state writes its core index under `slot_index`");
     for durable in ["sets", "zsets", "lists", "hashes"] {
         assert!(
-            object.contains_key(durable),
+            index.contains_key(durable),
             "`{durable}` is not in the written shard index, so this kind has no durable map and \
              the table in this module's header is wrong"
         );

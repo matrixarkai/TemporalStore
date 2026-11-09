@@ -1092,7 +1092,7 @@ fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumula
         let is_established = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            !shard.bucket_index.object_block_lookup.is_empty()
+            !shard.bucket_index.names_no_object_blocks()
         };
         println!("=== lookup established = {is_established} (wanted {established}) ===");
         if established {

@@ -7976,6 +7976,13 @@ impl CoreIndex {
             self.slot_refs_mut(block.model_id().as_str(), object_key.as_ref())
                 .map(|slot| slot.file_ref(value))
                 .unwrap_or(false)
+        } else if let Some(added) =
+            self.file_row_ref(block.model_id().as_str(), object_key.as_ref(), value.clone())
+        {
+            // A CONTAINER OBJECT WITH A ROW FILES ON THE ROW, so it never has refs in two homes. A
+            // second home would be read first-found and hide the other's refs -- the object would
+            // name one block of eight.
+            added
         } else {
             // The lookup is keyed by the kind's SHARED name, and the block no longer carries one --
             // it carries the one-byte spelling. `kind_pool` is where that shared name already
@@ -8177,7 +8184,10 @@ impl CoreIndex {
     /// names a block -- the decode-then-rebuild window -- and there is nothing there to walk fast.
     pub(super) fn names_no_object_blocks(&self) -> bool {
         self.object_block_lookup.is_empty()
-            && self.row_ref_objects() == 0
+            && !(self.hashes.any_row_holds_refs()
+                || self.sets.any_row_holds_refs()
+                || self.zsets.any_row_holds_refs()
+                || self.lists.any_row_holds_refs())
             && self
                 .objects
                 .values()
@@ -8561,6 +8571,7 @@ impl CoreIndex {
     pub(super) fn every_object_with_refs(
         &self,
     ) -> impl Iterator<Item = (&str, &str, &BlockRefs)> + '_ {
+        use super::recorded_map::RecordedKind;
         self.objects
             .iter()
             .flat_map(|(kind, table)| {
@@ -8574,6 +8585,27 @@ impl CoreIndex {
                     .map(|(model_id, object_key, refs)| {
                         (model_id.as_ref(), object_key.as_ref(), refs)
                     }),
+            )
+            // THE THIRD HOME: the rows of the four container maps.
+            .chain(
+                self.hashes
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::HashKind::KIND, &**key, refs)),
+            )
+            .chain(
+                self.sets
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::SetKind::KIND, &**key, refs)),
+            )
+            .chain(
+                self.zsets
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::ZSetKind::KIND, &**key, refs)),
+            )
+            .chain(
+                self.lists
+                    .rows_holding_refs()
+                    .map(|(key, refs)| (super::recorded_map::ListKind::KIND, &**key, refs)),
             )
     }
 
@@ -8615,6 +8647,23 @@ impl CoreIndex {
         row_refs_of(&self.hashes, &self.sets, &self.zsets, &self.lists, kind, object_key)
     }
 
+    /// File one ref on the object's row, whichever of the four kinds it is; `None` when the kind
+    /// is not one of them or the object has no row yet.
+    fn file_row_ref(&mut self, kind: &str, object_key: &str, value: BlockLookupRef) -> Option<bool> {
+        use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
+        if kind == HashKind::KIND {
+            self.hashes.file_ref(object_key, value)
+        } else if kind == SetKind::KIND {
+            self.sets.file_ref(object_key, value)
+        } else if kind == ZSetKind::KIND {
+            self.zsets.file_ref(object_key, value)
+        } else if kind == ListKind::KIND {
+            self.lists.file_ref(object_key, value)
+        } else {
+            None
+        }
+    }
+
     /// Drop one ref from the object's row, whichever of the four kinds it is.
     fn remove_row_ref(&mut self, kind: &str, object_key: &str, block_ref: &BlockLookupRef) -> bool {
         use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
@@ -8632,19 +8681,22 @@ impl CoreIndex {
     }
 
     /// Drop the object's whole ref set from its row; the row's refs go to `None`, not to empty.
-    fn clear_row_refs(&mut self, kind: &str, object_key: &str) -> bool {
+    ///
+    /// Answers HOW MANY refs went, because the maintained ref total is advanced from that answer.
+    fn clear_row_refs(&mut self, kind: &str, object_key: &str) -> usize {
         use super::recorded_map::{HashKind, ListKind, RecordedKind, SetKind, ZSetKind};
-        if kind == HashKind::KIND {
-            self.hashes.take_refs(object_key).is_some()
+        let taken = if kind == HashKind::KIND {
+            self.hashes.take_refs(object_key)
         } else if kind == SetKind::KIND {
-            self.sets.take_refs(object_key).is_some()
+            self.sets.take_refs(object_key)
         } else if kind == ZSetKind::KIND {
-            self.zsets.take_refs(object_key).is_some()
+            self.zsets.take_refs(object_key)
         } else if kind == ListKind::KIND {
-            self.lists.take_refs(object_key).is_some()
+            self.lists.take_refs(object_key)
         } else {
-            false
-        }
+            None
+        };
+        taken.map_or(0, |refs| refs.len())
     }
 
     /// Every block ref of this object, whatever its element name.
@@ -8698,14 +8750,14 @@ impl CoreIndex {
             .remove(model_id, object_key)
             // By value, so the closure form: `remove` hands back an owned `BlockRefs`.
             .map_or(0, |refs| refs.len());
-        let removed = from_slot + from_lookup;
+        // The row home too: a deleter must span the homes the reader does.
+        let from_row = self.clear_row_refs(model_id, object_key);
+        let removed = from_slot + from_lookup + from_row;
         if removed > 0 {
             if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
             }
         }
-        // The row home too: a deleter must span the homes the reader does.
-        self.clear_row_refs(model_id, object_key);
     }
 
     /// Drop ONE ref an object holds under one element name, leaving that element name's other refs and
@@ -8788,6 +8840,11 @@ impl CoreIndex {
         }
         // Asked too, not short-circuited: a double-homed ref is cleaned here, not hidden.
         let from_row = self.remove_row_ref(model_id, object_key, block_ref);
+        if from_row && !removed {
+            if let Some(total) = self.object_element_name_block_refs.as_mut() {
+                *total = total.saturating_sub(1);
+            }
+        }
         removed || from_row
     }
 
@@ -8816,7 +8873,8 @@ impl CoreIndex {
             .object_block_lookup
             .remove(model_id, object_key)
             .map_or(0, |refs| refs.len());
-        let removed = from_slot + from_lookup;
+        let from_row = self.clear_row_refs(model_id, object_key);
+        let removed = from_slot + from_lookup + from_row;
         if removed > 0 {
             if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);

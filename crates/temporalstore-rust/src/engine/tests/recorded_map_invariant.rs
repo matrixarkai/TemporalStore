@@ -299,6 +299,9 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // on the exception list below with a reason, not here.
         "refs",
         "set_refs",
+        // THE FILER'S DOOR ONTO A ROW, same ground: it answers `None` when there is no row rather
+        // than creating one, and the first ref of a row is built into it.
+        "file_ref",
         "take_refs",
         // ALSO MUTATES WITHOUT A RECORD, on the same ground as `set_refs` and `take_refs`:
         // derived state, no durable statement to be consistent with, and it cannot add or drop a
@@ -307,6 +310,10 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // merge: an overwrite can have filed a block into the row already, so assigning would drop
         // it, and that is one block of an object going missing with nothing raised.
         "merge_refs",
+        // NOTE ON "CANNOT DROP A KEY" FOR THE REF DELETERS: they may remove a row, but only one
+        // that is VACANT -- no elements -- and holds no refs once they have run. Such a row is not a
+        // key by any existence reader (`get`, `contains_key`, `len`, `iter` skip it), so what they
+        // drop is the husk of an object that no longer exists, never an object.
         // THE TWO PER-MAP DELETERS the sweeps above are built from. Same ground again: derived
         // state, no key added or dropped. Both clear a row's refs to `None` rather than to an
         // empty set, which is the rule the slot home states at its own removal -- an empty `Some`
@@ -321,6 +328,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // cannot add or drop a key: the rows and their elements stay where they are.
         "rows_holding_refs",
         "take_every_refs",
+        // A READ that stops at the first row carrying refs -- the cheap form of the census question.
+        "any_row_holds_refs",
         "rows_with_refs",
         // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
         // CLONE of an address the map already holds -- the block an element is moving off, which the

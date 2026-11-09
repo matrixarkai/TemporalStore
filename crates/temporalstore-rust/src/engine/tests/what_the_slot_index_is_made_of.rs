@@ -931,28 +931,44 @@ fn walk(reading: &Reading) -> Walked {
     tally.add("slot_index/open_brace", 1, 0);
 
     let core = slot_index.as_object().expect("the core index writes an object");
+    const CONTAINER_MAPS: [&str; 4] = ["hashes", "sets", "zsets", "lists"];
     for name in core.keys() {
         assert!(
-            name == "bucket_map" || name == "objects",
+            name == "bucket_map" || name == "objects" || CONTAINER_MAPS.contains(&name.as_str()),
             "[CLAUSE no-unclassified] the core index writes the key `{name}`, which this \
              decomposition does not name"
         );
     }
     assert_eq!(
         core.len(),
-        2,
+        6,
         "[CLAUSE no-unclassified] the core index writes {} key(s); this walk charges the \
-         punctuation of exactly two -- `bucket_map` and `objects`, the latter since \
-         `SHARD_INDEX_FORMAT_VERSION` 30 moved the consolidated object map in from the top level",
+         punctuation of exactly six -- `bucket_map`, `objects` (moved in from the top level at \
+         `SHARD_INDEX_FORMAT_VERSION` 30) and the four container maps (moved in at 31)",
         core.len()
     );
     // THE OBJECT ROWS, AS ONE SUBTREE. See the term table on why this is charged whole.
     let objects = core
         .get("objects")
         .expect("the core index writes `objects`");
-    tally.add("objects/field_name", klen("objects") + 1, klen("objects") + 1);
-    tally.add("objects/field_tail", 1, 0);
-    tally.add("objects/subtree", jlen(objects), 0);
+    // THE FOUR CONTAINER MAPS ARE ROW SUBTREES OF THE SAME KIND, so they are charged to the same
+    // terms -- a name, a tail, and the whole subtree -- SUMMED INTO ONE CHARGE PER TERM, because a
+    // term's instance count is part of what the scale clause reads: `objects/field_name` is a
+    // per-shard term and must be charged once, not once per map.
+    let mut name_bytes = klen("objects") + 1;
+    let mut tails = 1usize;
+    let mut subtree_bytes = jlen(objects);
+    for name in CONTAINER_MAPS {
+        let map = core
+            .get(name)
+            .unwrap_or_else(|| panic!("the core index writes `{name}`"));
+        name_bytes += klen(name) + 1;
+        tails += 1;
+        subtree_bytes += jlen(map);
+    }
+    tally.add("objects/field_name", name_bytes, name_bytes);
+    tally.add("objects/field_tail", tails, 0);
+    tally.add("objects/subtree", subtree_bytes, 0);
     tally.add("bucket_map/field_name", klen("bucket_map") + 1, klen("bucket_map") + 1);
     tally.add("bucket_map/field_tail", 1, 0);
 

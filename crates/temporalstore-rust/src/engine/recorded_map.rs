@@ -87,7 +87,7 @@ pub(super) trait RecordedKind: Sized + 'static {
     /// Nothing is tightened in practice: all four concrete element maps already satisfy these, and
     /// a kind added later that does not would have failed on the derive anyway -- it would just
     /// have failed somewhere less obvious than the line that states the requirement.
-    type Elements: ElementMap + std::fmt::Debug + Clone + PartialEq + Eq;
+    type Elements: ElementMap + RemovableElementMap + std::fmt::Debug + Clone + PartialEq + Eq;
 
     /// The model kind as the bucket index spells it. Spelled ONCE per kind here, so no arm can
     /// misspell it and no two arms can disagree.
@@ -211,6 +211,22 @@ impl<K: RecordedKind> Default for RecordedRow<K> {
             elements: K::Elements::default(),
             refs: None,
         }
+    }
+}
+
+impl<K: RecordedKind> RecordedRow<K> {
+    /// NO ELEMENTS, SO NOT AN OBJECT. Such a row survives only while its refs do: the blocks of an
+    /// object outlive its last element until the deletion that follows clears them, and those blocks
+    /// are found through these refs. The slot a row sits in is the one place they are kept, so the
+    /// row is not dropped while it holds any -- and is not an object either, which is what every
+    /// existence reader of the map asks this for.
+    fn is_vacant(&self) -> bool {
+        self.elements.is_empty_map()
+    }
+
+    /// Whether nothing at all is left to keep this row for.
+    fn is_spent(&self) -> bool {
+        self.refs.is_none() && self.is_vacant()
     }
 }
 
@@ -695,8 +711,14 @@ impl<K: RecordedKind> RecordedMap<K> {
         }
     }
 
+    /// THE ELEMENTS OF A LIVE OBJECT. A row with no elements is not an object: it exists only to
+    /// carry the refs of blocks that outlive the last element, and every existence answer below
+    /// skips it, so the row changes no answer this engine gives about a key.
     pub(super) fn get(&self, object_key: &str) -> Option<&K::Elements> {
-        self.entries.get(object_key).map(|row| &row.elements)
+        self.entries
+            .get(object_key)
+            .filter(|row| !row.is_vacant())
+            .map(|row| &row.elements)
     }
 
     /// Point every ELEMENT name in every entry at the pool's copy, and answer how many moved.
@@ -719,27 +741,32 @@ impl<K: RecordedKind> RecordedMap<K> {
     }
 
     pub(super) fn contains_key(&self, object_key: &str) -> bool {
-        self.entries.contains_key(object_key)
+        self.entries
+            .get(object_key)
+            .is_some_and(|row| !row.is_vacant())
     }
 
     pub(super) fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.values().filter(|row| !row.is_vacant()).count()
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.values().all(RecordedRow::is_vacant)
     }
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &ModelKey> {
-        self.entries.keys()
+        self.iter().map(|(key, _)| key)
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &K::Elements> {
-        self.entries.values().map(|row| &row.elements)
+        self.iter().map(|(_, elements)| elements)
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&ModelKey, &K::Elements)> {
-        self.entries.iter().map(|(key, row)| (key, &row.elements))
+        self.entries
+            .iter()
+            .filter(|(_, row)| !row.is_vacant())
+            .map(|(key, row)| (key, &row.elements))
     }
 
     /// THE BLOCKS ONE OBJECT'S DATA LIVES IN, read from the row the object is already filed under.
@@ -771,12 +798,36 @@ impl<K: RecordedKind> RecordedMap<K> {
         }
     }
 
+    /// FILE ONE REF ON THIS OBJECT'S ROW, answering whether it was new, or `None` when the object
+    /// has no row yet -- in which case the caller keeps the ref where it kept it before, and the
+    /// install that creates the row adopts it. A row with no refs yet takes its first one built
+    /// into it, so there is no empty state in between.
+    pub(super) fn file_ref(
+        &mut self,
+        object_key: &str,
+        value: crate::engine::state::BlockLookupRef,
+    ) -> Option<bool> {
+        let row = self.entries.get_mut(object_key)?;
+        Some(match row.refs.as_mut() {
+            Some(refs) => refs.insert(value),
+            None => {
+                row.refs = Some(crate::engine::state::BlockRefs::One(value));
+                true
+            }
+        })
+    }
+
     /// Take this object's refs off its row, leaving the row and its elements in place.
     pub(super) fn take_refs(
         &mut self,
         object_key: &str,
     ) -> Option<crate::engine::state::BlockRefs> {
-        self.entries.get_mut(object_key)?.refs.take()
+        let row = self.entries.get_mut(object_key)?;
+        let taken = row.refs.take();
+        if row.is_spent() {
+            self.entries.remove(object_key);
+        }
+        taken
     }
 
     /// MERGE refs onto this object's row, or install them when it carries none.
@@ -836,6 +887,7 @@ impl<K: RecordedKind> RecordedMap<K> {
                 row.refs = None;
             }
         }
+        self.entries.retain(|_, row| !row.is_spent());
         dropped
     }
 
@@ -857,6 +909,9 @@ impl<K: RecordedKind> RecordedMap<K> {
         let removed = refs.remove(block_ref);
         if refs.is_empty() {
             row.refs = None;
+        }
+        if row.is_spent() {
+            self.entries.remove(object_key);
         }
         removed
     }
@@ -880,6 +935,13 @@ impl<K: RecordedKind> RecordedMap<K> {
         for row in self.entries.values_mut() {
             row.refs = None;
         }
+        self.entries.retain(|_, row| !row.is_spent());
+    }
+
+    /// WHETHER ANY ROW CARRIES REFS, stopping at the first that does -- the question the per-write
+    /// census asks, which must not cost a walk of every row the way a count does.
+    pub(super) fn any_row_holds_refs(&self) -> bool {
+        self.entries.values().any(|row| row.refs.is_some())
     }
 
     /// HOW MANY ROWS CARRY REFS, which is what a probe needs to tell a populated row apart from a
@@ -957,11 +1019,14 @@ impl<'a, K: RecordedKind> Iterator for RowElements<'a, K> {
     type Item = (&'a ModelKey, &'a K::Elements);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(key, row)| (key, &row.elements))
+        self.inner
+            .by_ref()
+            .find(|(_, row)| !row.is_vacant())
+            .map(|(key, row)| (key, &row.elements))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
+        (0, self.inner.size_hint().1)
     }
 }
 
@@ -1046,25 +1111,37 @@ impl<K: RecordedKind> RecordedMap<K> {
             return false;
         };
         let removed = row.elements.remove_element(&element);
-        if row.elements.is_empty_map() {
-            // THE WHOLE ROW GOES, REFS INCLUDED, and the row must not be kept alive to preserve
-            // them. A row with no elements is an object that does not exist, so its refs name
-            // blocks nothing holds -- and keeping it would make `contains_key` answer true for a
+        if row.is_spent() {
+            // THE ROW GOES WHEN NOTHING IS LEFT TO KEEP IT FOR: no elements and no refs. A row that
+            // still holds refs stays, because those refs name blocks that outlive the last element
+            // and are found through them; it is VACANT, which every existence reader skips. A row
+            // kept alive WITHOUT that skip would make `contains_key` answer true for a
             // key every listing reports empty, which is exactly the defect the key removal here
             // exists to prevent: `record_exists_exact` ORs this map's `contains_key` into its
             // answer, and `CommonExpire` gates on that, so such a key accepted a deadline and
             // `ttl_ms` then reported it instead of the -2 of a missing key.
             //
-            // So a row's lifetime is its ELEMENTS' lifetime. That is what keeps every existence
-            // answer in this engine unchanged by the row, and it is why `set_refs` answering
-            // `false` before the first element lands is honest rather than a hole.
+            // So a row's lifetime is its ELEMENTS' OR ITS REFS' lifetime, whichever is longer, and
+            // existence is answered by the elements alone. That keeps every existence answer in
+            // this engine unchanged by the row.
             self.entries.remove(&object_key[..]);
         }
         removed
     }
 
+    /// Empty an object's element map, keeping the row while it still holds refs (see
+    /// [`RecordedRow::is_vacant`]). Answers whether there WAS an object to drop.
     fn remove_object(&mut self, recorded: RecordedObjectRemoval<K>) -> bool {
-        self.entries.remove(&recorded.object_key[..]).is_some()
+        let key = &recorded.object_key[..];
+        let Some(row) = self.entries.get_mut(key) else {
+            return false;
+        };
+        let was_live = !row.is_vacant();
+        row.elements = K::Elements::default();
+        if row.is_spent() {
+            self.entries.remove(key);
+        }
+        was_live
     }
 }
 
@@ -1132,8 +1209,8 @@ impl<K: RecordedKind> RecordedMap<K> {
         //
         // Dropping them would be sound only if this ran at load alone, where a refile follows. It
         // is not worth resting a whole shard's block refs on that being true, so they are set aside
-        // by key and re-attached to whichever rows survive the merge. A key the merge drops takes
-        // its refs with it, which is correct: the object is gone.
+        // by key and re-attached to whichever rows survive the merge. A key the merge drops keeps
+        // its refs on a vacant row (below): the object is gone, its blocks are not.
         let mut carried_refs: HashMap<ModelKey, crate::engine::state::BlockRefs> = self
             .entries
             .iter_mut()
@@ -1159,6 +1236,17 @@ impl<K: RecordedKind> RecordedMap<K> {
             (key, RecordedRow { elements, refs })
         })
         .collect();
+        // A KEY THE MERGE DROPPED KEEPS ITS REFS, on a vacant row: the object has no elements but
+        // its blocks are still resident, and the refs are how a later deletion finds them.
+        for (key, refs) in carried_refs {
+            self.entries.insert(
+                key,
+                RecordedRow {
+                    elements: K::Elements::default(),
+                    refs: Some(refs),
+                },
+            );
+        }
     }
 
     /// SHARED EXCEPTION 3 -- THE DELTA FOLD, where the carried blob IS the record.
@@ -1184,8 +1272,10 @@ impl<K: RecordedKind> RecordedMap<K> {
         // returns more than the key it was handed.
         let mut lent: HashMap<ModelKey, K::Elements> = HashMap::new();
         let mut held_refs = None;
+        let mut held_key = None;
         if let Some((key, row)) = self.entries.remove_entry(object_key) {
             held_refs = row.refs;
+            held_key = Some(std::sync::Arc::clone(&key));
             lent.insert(key, row.elements);
         }
         super::merge_container_elements(&mut lent, object_key, carried, live, skipped);
@@ -1195,6 +1285,16 @@ impl<K: RecordedKind> RecordedMap<K> {
                 RecordedRow {
                     elements,
                     refs: held_refs.take(),
+                },
+            );
+        }
+        // A MERGE THAT LEFT NO ELEMENTS STILL LEAVES THE BLOCKS: the refs ride a vacant row.
+        if let (Some(key), Some(refs)) = (held_key, held_refs) {
+            self.entries.insert(
+                key,
+                RecordedRow {
+                    elements: K::Elements::default(),
+                    refs: Some(refs),
                 },
             );
         }
@@ -1729,9 +1829,11 @@ where
     S: serde::Serializer,
 {
     use serde::ser::SerializeMap;
-    let mut out = serializer.serialize_map(Some(map.rows().len()))?;
+    let mut out = serializer.serialize_map(Some(map.len()))?;
     for (key, row) in map.rows() {
-        out.serialize_entry(key, &row.elements)?;
+        if !row.is_vacant() {
+            out.serialize_entry(key, &row.elements)?;
+        }
     }
     out.end()
 }
@@ -1774,15 +1876,15 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// private to this module, so a test fixture that spoke in rows would leak it -- and more to the
     /// point, no existing arm should have to be rewritten to say the same thing. The refs a row
     /// carries are not a fixture's business: they are installed by the write path and re-filed by
-    /// the load path, so a test that builds elements gets a row with `None` refs, which is the state
-    /// a decode produces too.
+    /// the load path, so replacing a row's ELEMENTS keeps whatever refs it already had -- a row
+    /// whose elements were all removed still names the blocks they were in, and a stale snapshot
+    /// merged back over it brings elements back without changing which blocks exist. A key with no
+    /// row gets `None` refs, which is the state a decode produces too.
     pub(super) fn insert_elements_for_test(&mut self, object_key: &str, elements: K::Elements) {
+        let refs = self.entries.get(object_key).and_then(|row| row.refs.clone());
         self.entries.insert(
             std::sync::Arc::from(object_key),
-            RecordedRow {
-                elements,
-                refs: None,
-            },
+            RecordedRow { elements, refs },
         );
     }
 
