@@ -717,15 +717,13 @@ fn write_packed_hash_entries(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    start_routing_bucket: u32,
-    end_routing_bucket: u32,
+    routing_bucket: u32,
     shard: &mut ShardState,
     key: &str,
     async_storage: bool,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (bool, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = deduplicate_hash_entries(entries);
-    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     let object_id = stable_block_object_id(shard_id, "hash", key);
     let block_ordinal = packed_entries
         .iter()
@@ -763,9 +761,10 @@ fn write_packed_hash_entries(
             for (field, _) in &packed_entries {
                 let field_handle =
                     super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
-                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                super::recorded_map::install_element_at_bucket::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
+                    routing_bucket,
                     key,
                     Some(field.clone()),
                     field_handle,
@@ -793,10 +792,34 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     async_storage: bool,
     pack_projection: bool,
     key: String,
+    entries: Vec<(String, Vec<u8>)>,
+) -> (ExecuteOutcome, Command) {
+    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    execute_hash_multi_set_reusing_metadata_at_bucket(
+        cache,
+        block_store,
+        shard_id,
+        routing_bucket,
+        shard,
+        async_storage,
+        pack_projection,
+        key,
+        entries,
+    )
+}
+
+pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    shard: &mut ShardState,
+    async_storage: bool,
+    pack_projection: bool,
+    key: String,
     mut entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     remove_if_expired(shard, &key);
-    let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
 
@@ -810,8 +833,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
             cache,
             block_store,
             shard_id,
-            start_routing_bucket,
-            end_routing_bucket,
+            routing_bucket,
             shard,
             &key,
             async_storage,
@@ -884,8 +906,36 @@ pub(super) fn execute_packed_conditional_hash_write(
     timestamp_nanos: i32,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
-    let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+    execute_packed_conditional_hash_write_at_bucket(
+        cache,
+        block_store,
+        shard_id,
+        routing_bucket,
+        shard,
+        async_storage,
+        key,
+        timestamp_field,
+        timestamp_seconds,
+        timestamp_nanos,
+        entries,
+    )
+}
+
+pub(super) fn execute_packed_conditional_hash_write_at_bucket(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    shard: &mut ShardState,
+    async_storage: bool,
+    key: String,
+    timestamp_field: String,
+    timestamp_seconds: i64,
+    timestamp_nanos: i32,
+    entries: Vec<(String, Vec<u8>)>,
+) -> (ExecuteOutcome, Command) {
+    let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
         .bucket_index.hashes
         .get(&key)
@@ -935,8 +985,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         cache,
         block_store,
         shard_id,
-        start_routing_bucket,
-        end_routing_bucket,
+        routing_bucket,
         shard,
         &key,
         async_storage,

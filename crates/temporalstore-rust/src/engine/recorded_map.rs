@@ -290,6 +290,39 @@ pub(super) fn install_element<K: RecordedKind>(
 ) where
     K::Elements: AddressedElementMap,
 {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = super::hashing::block_routing_bucket(
+        object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    );
+    install_element_at_bucket::<K>(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_key,
+        element_name,
+        element,
+        value,
+        dirty,
+        address,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn install_element_at_bucket<K: RecordedKind>(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_key: &str,
+    element_name: Option<String>,
+    element: <K::Elements as ElementMap>::Element,
+    value: <K::Elements as ElementMap>::Value,
+    dirty: bool,
+    address: ElementEntry,
+) where
+    K::Elements: AddressedElementMap,
+{
     // COMPUTED BEFORE `value` MOVES INTO THE RECORD BELOW. The only producer of a `Some` today is
     // `ZSetKind`, whose score has nowhere else to ride now that the element name does not spell it.
     let outcome_value = K::outcome_value(&value);
@@ -310,9 +343,10 @@ pub(super) fn install_element<K: RecordedKind>(
     };
     // THE RECORD FIRST. The proof below cannot be built without the witness this returns, so
     // deleting this call is a compile error rather than a silent unrecorded write.
-    let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed(
+    let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed_at_bucket(
         shard,
         shard_id,
+        routing_bucket,
         K::KIND,
         object_key,
         element_name,
