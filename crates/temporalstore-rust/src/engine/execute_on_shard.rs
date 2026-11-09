@@ -3228,6 +3228,18 @@ pub(crate) fn execute_on_shard(
                 None,
                 true,
             );
+            // THE BLOCKS ARE MARKED DELETED BEFORE THE SERIES IS REMOVED, not after, and `StringDelete`
+            // above has the same two lines in this order for the same reason.
+            //
+            // `mark_bucket_index_object_deleted` finds an object's blocks by NAMING each one through
+            // the object's row and the block lookup, and keeps any block it cannot name. Removing the
+            // series first took the row the names come from, so the marker named nothing, kept every
+            // block, and left them LIVE in `bucket_map` with no object naming them: the index writer
+            // then refuses the shard ("holds a block whose stored key would name no object"), and
+            // that is an error in a release build too, not an assertion. Every
+            // `FeatureDelete` in the conformance sequences that leave the index unwritable is this
+            // one; no other command is.
+            mutated |= mark_bucket_index_object_deleted(shard, &key);
             mutated |= shard.features_mut().remove(&key[..]).is_some();
             // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
             // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
@@ -3237,7 +3249,6 @@ pub(crate) fn execute_on_shard(
             // not when the key is re-created with the same number of points, which then answers
             // with the sums of the DELETED series.
             control_rollup::feature_forget(shard, &key);
-            mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }

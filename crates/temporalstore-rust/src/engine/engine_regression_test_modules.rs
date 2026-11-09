@@ -161,6 +161,8 @@ mod element_ordinal_reuse;
 mod block_entry_names;
 #[path = "tests/block_entry_handles.rs"]
 mod block_entry_handles;
+#[path = "tests/a_feature_point_with_an_empty_value_is_filed_like_any_other.rs"]
+mod a_feature_point_with_an_empty_value_is_filed_like_any_other;
 #[path = "tests/bucket_sequence_budget.rs"]
 mod bucket_sequence_budget;
 #[path = "tests/bucket_node_arms.rs"]

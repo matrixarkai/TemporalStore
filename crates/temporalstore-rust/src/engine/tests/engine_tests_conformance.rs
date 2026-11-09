@@ -252,6 +252,7 @@ fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
 
     let mut rng = Rng::new(seed);
     let op_count = 20 + rng.below(50);
+    SEQUENCE_TRACE.with(|trace| trace.borrow_mut().clear());
     for _ in 0..op_count {
         // Maintenance ops (real dump/compaction work) are expensive, so they are OFF by default
         // (fast suite run) and enabled for deep hunts via CONFORMANCE_MAINTENANCE=1.
@@ -260,6 +261,7 @@ fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
             // clear-dirty / reclaim / compaction paths against reload fidelity (the CP4 / watermark
             // / dump-scheduling bug class) -- not only command execution.
             0 => {
+                note_step("apply_storage_lifecycle".to_string());
                 let _ = engine.apply_storage_lifecycle(StorageLifecycleRequest {
                     shard_id: 1,
                     purge_delayed_destroy: true,
@@ -267,10 +269,12 @@ fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
                 });
             }
             1 => {
+                note_step("compact_shard_blocks".to_string());
                 let _ = engine.compact_shard_blocks(1);
             }
             _ => {
                 let command = gen_command(&mut rng);
+                note_step(format!("{command:?}"));
                 // A returned error status is fine (e.g. not-an-integer HINCRBY); a PANIC is not --
                 // caught by catch_unwind in the caller as a no-panic-invariant violation.
                 let _ = engine.execute(ExecuteRequest {
@@ -805,8 +809,10 @@ fn run_one_oracle_sequence(seed: u64) -> Result<(), String> {
     let mut model = RefModel::default();
     let mut rng = Rng::new(seed);
     let op_count = 20 + rng.below(60);
+    SEQUENCE_TRACE.with(|trace| trace.borrow_mut().clear());
     for _ in 0..op_count {
         let command = gen_oracle_command(&mut rng);
+        note_step(format!("{command:?}"));
         model.apply(&command);
         let _ = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -826,12 +832,11 @@ fn conformance_oracle_matches_reference_model() {
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    let outcome = (start..start.saturating_add(count))
-        .map(|seed| match run_one_oracle_sequence(seed) {
-            Ok(()) => Ok(()),
-            Err(msg) => Err(format!("seed {seed}: {msg}")),
-        })
-        .find(Result::is_err);
+    let outcome = with_recording_hook(|| {
+        (start..start.saturating_add(count))
+            .map(|seed| run_reporting_panics(seed, || run_one_oracle_sequence(seed)))
+            .find(Result::is_err)
+    });
     if let Some(Err(failure)) = outcome {
         panic!("oracle found an engine-vs-reference-model mismatch: {failure}");
     }
@@ -887,12 +892,84 @@ fn debug_minimize_seed() {
     println!("no break found across {} prefixes", commands.len());
 }
 
+/// The message and location of the panic the hook below last saw.
+///
+/// The hook is silenced so a deliberately-provoked panic does not spam stderr, and that left a
+/// failure reading only "PANICKED" with the seed: the one fact that says WHAT panicked, and where,
+/// was thrown away by the line that silenced it. The hook now keeps it, and the failure quotes it.
+/// Sequences run one at a time inside `find`, which stops at the first failure, so the last panic
+/// recorded belongs to the seed being reported.
+///
+/// Kept per thread, because the hook runs on the thread that panicked and two tests in this file
+/// install it: a global would let one test report the other's panic.
+thread_local! {
+    static LAST_PANIC: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    static SEQUENCE_TRACE: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Held while a test has the panic hook swapped, so two tests running at once cannot each take the
+/// other's hook as "the previous one" and leave the silenced hook installed for the whole process.
+static HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Every step the sequence being run has taken, oldest first, so a panic names what led to it.
+///
+/// A panic location says where the engine gave up and not which command put it in the state it gave
+/// up in. The failure quotes the tail of this: the last few steps are the ones that matter.
+fn note_step(step: String) {
+    SEQUENCE_TRACE.with(|trace| trace.borrow_mut().push(step));
+}
+
+fn recent_steps(count: usize) -> String {
+    SEQUENCE_TRACE.with(|trace| {
+        let trace = trace.borrow();
+        let from = trace.len().saturating_sub(count);
+        trace[from..]
+            .iter()
+            .enumerate()
+            .map(|(offset, step)| {
+                let shown: String = step.chars().take(240).collect();
+                format!("\n    step {}: {shown}", from + offset + 1)
+            })
+            .collect::<String>()
+    })
+}
+
+/// Run `body` with the default panic hook replaced by one that keeps what panicked and where.
+///
+/// The hook is silenced so a deliberately-provoked panic does not spam stderr; the keeping is what
+/// lets the failure say what it was.
+fn with_recording_hook<R>(body: impl FnOnce() -> R) -> R {
+    let _held = HOOK_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|info| {
+        LAST_PANIC.with(|last| *last.borrow_mut() = info.to_string());
+    }));
+    let result = body();
+    std::panic::set_hook(previous_hook);
+    result
+}
+
+/// One seeded sequence, with a panic turned into a failure that quotes the panic and the steps
+/// that led to it.
+fn run_reporting_panics(
+    seed: u64,
+    sequence: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(sequence)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(format!("seed {seed}: {msg}")),
+        Err(_) => Err(format!(
+            "seed {seed}: PANICKED (no-panic invariant violated): {}\n  the last steps before \
+             it:{}",
+            LAST_PANIC.with(|last| last.borrow().clone()),
+            recent_steps(12),
+        )),
+    }
+}
+
 #[test]
 fn conformance_random_sequences_never_panic_and_survive_reload() {
-    // Silence the default panic hook for the duration so a deliberately-provoked panic (if any bug
-    // exists) does not spam stderr; catch_unwind still reports it with the reproducing seed.
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     // Default 128 seeds in the suite; a deep hunt can widen without recompiling via
     // CONFORMANCE_SEEDS / CONFORMANCE_START (e.g. CONFORMANCE_SEEDS=4000 cargo test ...).
     let count = std::env::var("CONFORMANCE_SEEDS")
@@ -904,20 +981,94 @@ fn conformance_random_sequences_never_panic_and_survive_reload() {
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
     let maintenance = std::env::var("CONFORMANCE_MAINTENANCE").is_ok();
-    let outcome = (start..start.saturating_add(count))
-        .map(|seed| {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_one_sequence(seed, maintenance)
-            }));
-            match result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(msg)) => Err(format!("seed {seed}: {msg}")),
-                Err(_) => Err(format!("seed {seed}: PANICKED (no-panic invariant violated)")),
-            }
-        })
-        .find(Result::is_err);
-    std::panic::set_hook(previous_hook);
+    let outcome = with_recording_hook(|| {
+        (start..start.saturating_add(count))
+            .map(|seed| run_reporting_panics(seed, || run_one_sequence(seed, maintenance)))
+            .find(Result::is_err)
+    });
     if let Some(Err(failure)) = outcome {
         panic!("conformance harness found a repro: {failure}");
     }
+}
+
+/// After EVERY command of a seeded sequence, can the shard index still be written?
+///
+/// `run_one_sequence` only finds out at the end -- or when something persists the index and
+/// panics -- so a command that leaves the index unwritable is reported many steps after it ran, as
+/// a panic in a persist path. This asks after each command and names the first one that does.
+/// Mirrors `run_one_sequence`'s generator exactly (the same selector draw, then `gen_command`) so
+/// a seed means the same sequence in both.
+fn first_step_that_leaves_the_index_unwritable(seed: u64) -> Option<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let mut rng = Rng::new(seed);
+    let op_count = 20 + rng.below(50);
+    let mut shown_so_far: Vec<String> = Vec::new();
+    for step in 1..=op_count {
+        let _selector = 2 + rng.below(10);
+        let command = gen_command(&mut rng);
+        shown_so_far.push(format!("{command:?}"));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command,
+            });
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard 1");
+            serde_json::to_value(shard)
+                .map(|_| ())
+                .map_err(|err| err.to_string())
+        }));
+        let last = shown_so_far.last().cloned().unwrap_or_default();
+        let last: String = last.chars().take(300).collect();
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Some(format!(
+                    "step {step}: {last}\n  the shard index cannot be written after it: {err}"
+                ));
+            }
+            Err(_) => {
+                return Some(format!(
+                    "step {step}: {last}\n  it PANICKED: {}",
+                    LAST_PANIC.with(|panic| panic.borrow().clone())
+                ));
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn no_command_leaves_the_shard_index_unwritable() {
+    let count = std::env::var("CONFORMANCE_SEEDS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(64);
+    let start = std::env::var("CONFORMANCE_START")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    // Every seed is run and every failure is listed, so the commands that do it can be compared:
+    // one failing seed names a command, several name a family.
+    let failures: Vec<String> = with_recording_hook(|| {
+        (start..start.saturating_add(count))
+            .filter_map(|seed| {
+                first_step_that_leaves_the_index_unwritable(seed)
+                    .map(|failure| format!("seed {seed}, {failure}"))
+            })
+            .collect()
+    });
+    assert!(
+        failures.is_empty(),
+        "{} of {count} seeds leave the shard index unwritable after a command:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
