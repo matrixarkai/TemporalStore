@@ -500,3 +500,5 @@ mod the_served_index_encoder_has_no_json_fallback;
 mod the_control_state_block_is_protobuf_only;
 #[path = "tests/the_sequence_row_is_protobuf_only.rs"]
 mod the_sequence_row_is_protobuf_only;
+#[path = "tests/a_plan_lists_the_shards_blocks_once.rs"]
+mod a_plan_lists_the_shards_blocks_once;

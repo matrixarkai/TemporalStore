@@ -755,3 +755,59 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
         }
     }
 }
+
+/// A DIRTY ROUND READS THE LIVE BLOCKS OF THE SHARD NO MORE THAN `DIRTY_ROUND_WALK_BOUND` TIMES.
+///
+/// A shard that takes writes between rounds is dirty at every round, and the round then builds its
+/// plans from a listing of every live block. The WAL reclaim plan needs the bucket summaries and the
+/// live digests; those come off ONE listing, so each plan build lists the shard once instead of twice
+/// and the round totals 20 listings of the shard. Counted in live-block entries visited, not timed, because a stopwatch on a shared box
+/// measures the other tenants.
+///
+/// THE BOUND IS EXACT, so a plan that lists the shard once more fails it. The bound is on the TOTAL
+/// of the round and not on one stage: dropping one stage's walks has moved them to a later stage
+/// before. The control is that the walk is large enough to mean something and that the round did
+/// dump (a round that did nothing would pass a bound trivially).
+const DIRTY_ROUND_WALK_BOUND: u64 = 20;
+
+#[test]
+fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
+    let keys = 300usize;
+    let writes = 20usize;
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), keys);
+    let options = StorageManagerOptions::default();
+    for _ in 0..6 {
+        runtime.run_storage_manager_once(1, options.clone());
+    }
+    let engine = runtime.engine();
+    let mut checked = 0;
+    for round in 0..4usize {
+        for write in 0..writes {
+            let index = (round * writes + write) % keys;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("loop-{index:06}"),
+                    value: vec![b'w'; 96],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let walked: u64 = report.stage_spans.iter().map(|s| s.walk.live_block_entries).sum();
+        eprintln!("dirty round {round}: walk_entries={walked} ({:.1} listings)", walked as f64 / keys as f64);
+        // The first dirty round also settles the writes of the warm-up; the bound is for the rest.
+        if round == 0 {
+            continue;
+        }
+        assert!(walked >= keys as u64 * 10, "the round listed only {walked} entries");
+        assert!(
+            walked <= DIRTY_ROUND_WALK_BOUND * keys as u64,
+            "a dirty round listed {walked} entries = {:.1} listings of {keys} keys, bound {DIRTY_ROUND_WALK_BOUND}",
+            walked as f64 / keys as f64
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}
