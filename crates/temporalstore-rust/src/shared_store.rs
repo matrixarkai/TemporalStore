@@ -5108,6 +5108,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             timestamp_field,
             timestamp_seconds,
             timestamp_nanos,
+            ttl_ms,
             entries,
         } => v1::command::Kind::HashMultiSetIfTimestampOlder(
             v1::HashMultiSetIfTimestampOlder {
@@ -5115,6 +5116,7 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 timestamp_field: timestamp_field.clone(),
                 timestamp_seconds: *timestamp_seconds,
                 timestamp_nanos: *timestamp_nanos,
+                ttl_ms: *ttl_ms,
                 entries: entries
                     .iter()
                     .map(|(field, value)| v1::HashEntry {
@@ -13663,6 +13665,7 @@ fn a_timestamp_conditioned_hash_write_round_trips_through_the_wal() {
         timestamp_field: "_ts:view".into(),
         timestamp_seconds: 1_700_000_000,
         timestamp_nanos: 123_456_789,
+        ttl_ms: Some(60_000),
         entries: vec![
             ("_ts:view".into(), vec![8, 1]),
             ("view:score".into(), vec![8, 42]),

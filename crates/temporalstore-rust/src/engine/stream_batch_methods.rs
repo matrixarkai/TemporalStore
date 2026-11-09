@@ -96,6 +96,7 @@ enum BatchCommandSource<'a> {
     SharedTimestampRows {
         entries: Vec<(String, Vec<u8>)>,
         timestamp_field: Option<String>,
+        ttl_ms: Option<u64>,
         rows: std::vec::IntoIter<BatchHashTimestampSetRow>,
         completed_keys: &'a mut Vec<String>,
     },
@@ -237,6 +238,7 @@ impl BatchCommandSource<'_> {
             Self::SharedTimestampRows {
                 entries,
                 timestamp_field,
+                ttl_ms,
                 rows,
                 ..
             } => {
@@ -257,6 +259,7 @@ impl BatchCommandSource<'_> {
                         .expect("shared timestamp field returned after every row"),
                     timestamp_seconds,
                     timestamp_nanos,
+                    ttl_ms: *ttl_ms,
                     entries: std::mem::take(entries),
                 })
             }
@@ -383,6 +386,7 @@ mod shared_timestamp_source_tests {
                 ("score".to_owned(), Vec::new()),
             ],
             timestamp_field: Some("event_time".to_owned()),
+            ttl_ms: None,
             rows: vec![
                 BatchHashTimestampSetRow(
                     "feature:1".to_owned(),
@@ -1123,6 +1127,7 @@ impl TemporalEngine {
                     .map(|field| (field, Vec::new()))
                     .collect(),
                 timestamp_field: Some(request.timestamp_field),
+                ttl_ms: request.ttl_ms,
                 rows: request.rows.into_iter(),
                 completed_keys: &mut completed_keys,
             },
@@ -1441,6 +1446,7 @@ impl TemporalEngine {
                     timestamp_field,
                     timestamp_seconds,
                     timestamp_nanos,
+                    ttl_ms,
                     entries,
                 } if reuse_consumed_metadata => {
                     let (outcome, metadata) =
@@ -1457,6 +1463,7 @@ impl TemporalEngine {
                             timestamp_field,
                             timestamp_seconds,
                             timestamp_nanos,
+                            ttl_ms,
                             entries,
                         );
                     (outcome, Some(metadata))

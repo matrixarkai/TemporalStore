@@ -111,11 +111,17 @@ empty values.
 ## Writes
 
 `online_write_batch` sends the common latest-value batch through
-`/batch_hash_multi_set_msgpack`: field names are encoded once, followed by
-ordered `(entity key, values)` rows. Mixed feature layouts and writes augmented
-with history, expiry, or teardown tracking use bounded binary
-`/batch_write_msgpack` command batches. A batched timestamp read runs first
-unless `skip_dedup` is set. That timestamp projection also uses
+the packed timestamp-set routes: field names are encoded once, followed by
+ordered `(entity key, timestamp, values)` rows. TTL writes use a distinct route
+so older nodes can reject the capability and trigger the compatible fallback
+instead of ignoring expiry metadata. The server compares timestamps,
+writes accepted rows, and arms their optional key expiry under one shard guard;
+stale rows neither write data nor refresh their expiry. This removes the
+timestamp-read round trip and a separate expiry command from the common TTL
+materialization path. Mixed feature layouts and writes augmented with history
+or teardown tracking use bounded binary `/batch_write_msgpack` command batches.
+A batched timestamp read runs first only when stale-write suppression is
+requested and the atomic route is unavailable. That timestamp projection also uses
 the compact shared-field read route, so `_ts` crosses the wire once per batch.
 Reads retain the 512-command response bound while writes
 default to 4,096 commands and remain capped at 4 MiB of encoded request data.

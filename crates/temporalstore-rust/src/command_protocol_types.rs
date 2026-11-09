@@ -1419,6 +1419,8 @@ pub enum Command {
         timestamp_field: String,
         timestamp_seconds: i64,
         timestamp_nanos: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
         #[serde(with = "crate::bytes_serde::pairs")]
         entries: Vec<(String, Vec<u8>)>,
     },
@@ -3071,6 +3073,8 @@ pub struct BatchHashTimestampSetRequest {
     pub shard_id: ShardId,
     pub fields: Vec<String>,
     pub timestamp_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
     pub rows: Vec<BatchHashTimestampSetRow>,
 }
 

@@ -371,6 +371,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 timestamp_field: command.timestamp_field,
                 timestamp_seconds: command.timestamp_seconds,
                 timestamp_nanos: command.timestamp_nanos,
+                ttl_ms: command.ttl_ms,
                 entries: command
                     .entries
                     .into_iter()

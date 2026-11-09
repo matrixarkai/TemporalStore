@@ -966,6 +966,7 @@ pub(super) fn execute_packed_conditional_hash_write(
     timestamp_field: String,
     timestamp_seconds: i64,
     timestamp_nanos: i32,
+    ttl_ms: Option<u64>,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -982,6 +983,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         timestamp_field,
         timestamp_seconds,
         timestamp_nanos,
+        ttl_ms,
         entries,
     )
 }
@@ -998,6 +1000,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     timestamp_field: String,
     timestamp_seconds: i64,
     timestamp_nanos: i32,
+    ttl_ms: Option<u64>,
     entries: Vec<(String, Vec<u8>)>,
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
@@ -1041,6 +1044,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
                 timestamp_field,
                 timestamp_seconds,
                 timestamp_nanos,
+                ttl_ms,
                 entries: metadata_entries,
             },
         );
@@ -1058,6 +1062,26 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         entries,
     );
     mutated |= packed_mutated;
+    if let Some(ttl_ms) = ttl_ms {
+        let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+        for record_key in associated_record_keys(&key) {
+            if record_exists_exact(shard, &record_key) {
+                crate::engine::set_expiry(shard, record_key, expires_at);
+            }
+        }
+        stage_meta_outcome(
+            shard_id,
+            "object",
+            &key,
+            routing_bucket,
+            routing_bucket,
+            None,
+            Some(expires_at),
+            false,
+        );
+        invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
+        mutated = true;
+    }
     (
         ExecuteOutcome {
             response: CommandResponse::Integer { value: 1 },
@@ -1068,6 +1092,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
             timestamp_field,
             timestamp_seconds,
             timestamp_nanos,
+            ttl_ms,
             entries: metadata_entries,
         },
     )
@@ -1143,6 +1168,7 @@ pub(crate) fn execute_on_shard(
             timestamp_field,
             timestamp_seconds,
             timestamp_nanos,
+            ttl_ms,
             entries,
         } => return execute_packed_conditional_hash_write(
             cache,
@@ -1156,6 +1182,7 @@ pub(crate) fn execute_on_shard(
             timestamp_field,
             timestamp_seconds,
             timestamp_nanos,
+            ttl_ms,
             entries,
         ).0,
         command => command,

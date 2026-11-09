@@ -62,6 +62,7 @@ class RecordingClient(TemporalStoreClient):
         self._compact_shared_field_read_supported = False
         self._shared_field_write_supported = False
         self._conditional_shared_field_write_supported = False
+        self._conditional_shared_field_ttl_write_supported = False
         self.sent = []
         self.shared_reads = []
         self.shared_writes = []
@@ -783,13 +784,15 @@ class ClientProtocolTest(unittest.TestCase):
                 ("a", 20, 3, [b"timestamp-a", b"one"]),
                 ("b", 10, 2, [b"timestamp-b", b"two"]),
             ],
+            ttl_ms=60_000,
         )
 
         self.assertEqual(result, (1, 1))
         path, document = client.documents[0]
-        self.assertEqual(path, "/batch_hash_timestamp_set_msgpack")
+        self.assertEqual(path, "/batch_hash_timestamp_set_ttl_msgpack")
         self.assertEqual(document["fields"], ["ts", "feature"])
         self.assertEqual(document["timestamp_field"], "ts")
+        self.assertEqual(document["ttl_ms"], 60_000)
         self.assertEqual(document["rows"][0], ["a", 20, 3, [b"timestamp-a", b"one"]])
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
@@ -808,6 +811,17 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertIsNone(client.batch_hash_timestamp_set(["ts", "f"], "ts", rows))
         self.assertIsNone(client.batch_hash_timestamp_set(["ts", "f"], "ts", rows))
         self.assertEqual(client.attempts, 1)
+        self.assertIsNone(
+            client.batch_hash_timestamp_set(
+                ["ts", "f"], "ts", rows, ttl_ms=60_000
+            )
+        )
+        self.assertIsNone(
+            client.batch_hash_timestamp_set(
+                ["ts", "f"], "ts", rows, ttl_ms=60_000
+            )
+        )
+        self.assertEqual(client.attempts, 2)
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_shared_field_write_endpoint_falls_back_once(self):
@@ -1219,6 +1233,41 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(read_commands[0]["fields"], ["_ts:stats"])
         self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
 
+    def test_ttl_write_falls_back_to_timestamp_read_and_expire(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [ok({"kind": "values", "values": [None]})],
+                },
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "applied": 2,
+                    "errors": [],
+                },
+            ]
+        )
+        self.config.online_store.skip_dedup = False
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None)],
+            None,
+        )
+
+        self.assertEqual(len(client.sent), 2)
+        self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
+        self.assertEqual(
+            [command["kind"] for command in client.sent[1][1]["commands"]],
+            ["hash_multi_set", "common_expire"],
+        )
+        self.assertEqual(client.sent[1][1]["commands"][1]["ttl_ms"], 90_000)
+
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_default_write_uses_one_atomic_timestamp_request(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
@@ -1227,6 +1276,7 @@ class OnlineStoreTest(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self._conditional_shared_field_write_supported = None
+                self._conditional_shared_field_ttl_write_supported = None
 
             def _request_encoded(  # type: ignore[override]
                 self, path, body, content_type="application/json"
@@ -1258,6 +1308,49 @@ class OnlineStoreTest(unittest.TestCase):
         path, document = client.sent[0]
         self.assertEqual(path, "/batch_hash_timestamp_set_msgpack")
         self.assertEqual(document["timestamp_field"], "_ts:stats")
+        self.assertEqual(len(document["rows"]), 1)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_ttl_write_uses_one_atomic_timestamp_request(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        class ConditionalRecordingClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self._conditional_shared_field_write_supported = None
+                self._conditional_shared_field_ttl_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.sent.append((path, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["rows"]),
+                        "skipped": 0,
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = self._install(client=ConditionalRecordingClient())
+        self.config.online_store.skip_dedup = False
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None)],
+            None,
+        )
+
+        self.assertEqual(client.shared_reads, [])
+        self.assertEqual(len(client.sent), 1)
+        path, document = client.sent[0]
+        self.assertEqual(path, "/batch_hash_timestamp_set_ttl_msgpack")
+        self.assertEqual(document["ttl_ms"], 90_000)
         self.assertEqual(len(document["rows"]), 1)
 
     def test_default_write_prepares_each_feature_field_once_per_batch(self):
