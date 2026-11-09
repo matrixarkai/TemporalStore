@@ -240,7 +240,9 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
          proves nothing"
     );
     image.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION - 1;
-    manifest.index_bytes = crate::engine::encode_index_bytes(&image);
+    // Plain JSON, for the reason `plant_in_base_index` writes it: the container's reader takes the
+    // stamp from its header, so only an encoding that stores the field can carry an old one.
+    manifest.index_bytes = crate::engine::encode_index_bytes_as_plain_json(&image);
     manifest.index_sha256 = super::super::sha256_hex_bytes(&manifest.index_bytes);
     // AND THE GENERATION ID, WHICH THE PRODUCER DERIVES FROM THE INDEX CHECKSUM, in the producer's
     // own order: id over the manifest fields including `index_sha256`, THEN the checksum over the
