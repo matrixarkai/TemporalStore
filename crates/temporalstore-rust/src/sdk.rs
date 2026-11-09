@@ -1142,6 +1142,7 @@ pub(crate) fn feature_write_policy_to_proto(
         types::FeatureWritePolicy::InsertIfAbsent => v1::FeatureWritePolicy::InsertIfAbsent,
         types::FeatureWritePolicy::ReplaceExisting => v1::FeatureWritePolicy::ReplaceExisting,
         types::FeatureWritePolicy::Block => v1::FeatureWritePolicy::Block,
+        types::FeatureWritePolicy::MergeReduce => v1::FeatureWritePolicy::MergeReduce,
     }
 }
 
@@ -1159,6 +1160,7 @@ pub(crate) fn feature_write_policy_from_proto(
             Ok(types::FeatureWritePolicy::ReplaceExisting)
         }
         Ok(v1::FeatureWritePolicy::Block) => Ok(types::FeatureWritePolicy::Block),
+        Ok(v1::FeatureWritePolicy::MergeReduce) => Ok(types::FeatureWritePolicy::MergeReduce),
         Ok(v1::FeatureWritePolicy::Unspecified) | Err(_) => {
             Err(TonicStatus::invalid_argument(format!(
                 "feature write policy {policy} is not one this build can apply"
@@ -1313,6 +1315,17 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
         types::CommandResponse::Integer { value } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: value.max(0) as u64,
+            ..Default::default()
+        },
+        types::CommandResponse::CellMergeReceipt {
+            snapshots_written,
+            cells_created,
+            cells_merged,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: snapshots_written,
+            cells_created,
+            cells_merged,
             ..Default::default()
         },
         types::CommandResponse::Members { members } => v1::CommandResponse {

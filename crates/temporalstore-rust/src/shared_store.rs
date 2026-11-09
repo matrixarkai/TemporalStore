@@ -14885,6 +14885,14 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
             },
         ),
         (
+            "FeatureAppendWithPolicy (MergeReduce)",
+            Command::FeatureAppendWithPolicy {
+                key: "k".into(),
+                points: vec![point(4, &[0x0a, 0xff, 0x00])],
+                policy: FeatureWritePolicy::MergeReduce,
+            },
+        ),
+        (
             "SeenCheck",
             Command::SeenCheck {
                 key: "k".into(),
@@ -14917,9 +14925,9 @@ fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip()
             },
         ),
     ];
-    // DENOMINATOR FIRST: ten cases over the eight commands this batch mapped -- two of them
-    // appear twice because their enum tag and their presence rules are what could break.
-    assert_eq!(cases.len(), 10, "ten cases over the eight commands this batch mapped");
+    // DENOMINATOR FIRST: eleven cases over the eight commands this batch mapped -- three of them
+    // appear more than once because their enum tag and their presence rules are what could break.
+    assert_eq!(cases.len(), 11, "eleven cases over the eight commands this batch mapped");
 
     for (name, command) in cases {
         assert!(
@@ -14985,6 +14993,7 @@ fn an_unknown_condition_or_policy_tag_is_refused_rather_than_defaulted() {
         (2, FeatureWritePolicy::InsertIfAbsent),
         (3, FeatureWritePolicy::ReplaceExisting),
         (4, FeatureWritePolicy::Block),
+        (5, FeatureWritePolicy::MergeReduce),
     ] {
         assert_eq!(
             sdk::feature_write_policy_from_proto(number).expect("a known policy must decode"),

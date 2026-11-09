@@ -22,6 +22,22 @@ pub enum FeatureWritePolicy {
     Block = 1,
     First = 2,
     Update = 3,
+    /// Merge the cells each point carries into the snapshot stored at its timestamp. The value
+    /// is a cell-set request (header followed by cells). The in-process door cannot carry it:
+    /// its C string argument is lossy for binary values, so that door refuses this policy.
+    MergeReduce = 4,
+}
+
+/// What a merge-reduce append landed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
+pub struct CellMergeReceipt {
+    /// Snapshots written: one per distinct timestamp in the request.
+    pub snapshots_written: u64,
+    /// Cells that did not exist at their timestamp before.
+    pub cells_created: u64,
+    /// Cells folded into a member already stored, or repeated within the request.
+    pub cells_merged: u64,
 }
 
 #[derive(Clone, Debug)]

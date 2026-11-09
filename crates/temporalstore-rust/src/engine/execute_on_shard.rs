@@ -3005,6 +3005,43 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // MERGE-REDUCE: the request's cells are merged into what is stored BEFORE the series
+            // is borrowed for writing, and what is appended below is the merged snapshot at each
+            // timestamp -- an ordinary upsert of it. See `cell_merge_append` for where a violation
+            // is refused (validation) and why this plan cannot fail here for a validated command.
+            let mut merge_receipt = None;
+            let points = if policy == FeatureWritePolicy::MergeReduce {
+                match crate::engine::cell_merge_append::plan_cell_merge(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard.features().get(&key[..]),
+                    &key,
+                    routing_bucket,
+                    &points,
+                ) {
+                    Ok(plan) => {
+                        merge_receipt = Some((
+                            plan.points.len() as u64,
+                            plan.cells_created,
+                            plan.cells_merged,
+                        ));
+                        plan.points
+                    }
+                    Err(_) => {
+                        return ExecuteOutcome {
+                            response: CommandResponse::CellMergeReceipt {
+                                snapshots_written: 0,
+                                cells_created: 0,
+                                cells_merged: 0,
+                            },
+                            mutated,
+                        };
+                    }
+                }
+            } else {
+                points
+            };
             // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
             // `ShardState` where `&mut shard.features` borrowed one field, so this read of
             // `shard.bucket_index` can no longer sit inside the append call below -- the
@@ -3035,6 +3072,8 @@ pub(crate) fn execute_on_shard(
                     FeatureWritePolicy::InsertIfAbsent => !exists,
                     FeatureWritePolicy::ReplaceExisting => exists,
                     FeatureWritePolicy::Block => false,
+                    // The point is already the merged snapshot: an upsert of it.
+                    FeatureWritePolicy::MergeReduce => true,
                 };
                 if should_write {
                     accepted_timestamps.insert(point.timestamp_ms);
@@ -3096,8 +3135,23 @@ pub(crate) fn execute_on_shard(
                 );
             }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
-            CommandResponse::Integer {
-                value: if mutated { 1 } else { 0 },
+            match merge_receipt {
+                // A plan that was never appended reports nothing landed.
+                Some((snapshots_written, cells_created, cells_merged)) if mutated => {
+                    CommandResponse::CellMergeReceipt {
+                        snapshots_written,
+                        cells_created,
+                        cells_merged,
+                    }
+                }
+                Some(_) => CommandResponse::CellMergeReceipt {
+                    snapshots_written: 0,
+                    cells_created: 0,
+                    cells_merged: 0,
+                },
+                None => CommandResponse::Integer {
+                    value: if mutated { 1 } else { 0 },
+                },
             }
         }
         Command::FeatureQuery {
@@ -3403,7 +3457,7 @@ pub(crate) fn execute_on_shard(
                     .features()
                     .get(&key[..])
                     .map(|series| {
-                        series
+                        crate::engine::window_aggregate::sum_legacy(series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                             .take(count.unwrap_or(feature_max_size))
                             .filter_map(|(timestamp_ms, address)| {
@@ -3423,8 +3477,7 @@ pub(crate) fn execute_on_shard(
                                     parse_i64_slice,
                                 )
                                 .flatten()
-                            })
-                            .sum::<i64>()
+                            }))
                     })
                     .unwrap_or_default();
                 CommandResponse::Aggregate { value }
@@ -3786,10 +3839,11 @@ pub(crate) fn execute_on_shard(
                     .control_state()
                     .get(&key[..])
                     .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(_, value)| *value)
-                            .sum()
+                        crate::engine::window_aggregate::sum_legacy(
+                            series
+                                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                                .map(|(_, value)| *value),
+                        )
                     })
                     .unwrap_or_default()
             };
@@ -4216,7 +4270,9 @@ pub(crate) fn execute_on_shard(
                 ));
                 entries.push((
                     format!("{name}_sum"),
-                    all_values.iter().sum::<i64>().to_string().into_bytes(),
+                    crate::engine::window_aggregate::sum_legacy(all_values.iter().copied())
+                        .to_string()
+                        .into_bytes(),
                 ));
                 entries.push((
                     format!("{name}_window_events"),
@@ -4224,12 +4280,11 @@ pub(crate) fn execute_on_shard(
                 ));
                 entries.push((
                     format!("{name}_window_sum"),
-                    window
-                        .iter()
-                        .map(|(_, value)| *value)
-                        .sum::<i64>()
-                        .to_string()
-                        .into_bytes(),
+                    crate::engine::window_aggregate::sum_legacy(
+                        window.iter().map(|(_, value)| *value),
+                    )
+                    .to_string()
+                    .into_bytes(),
                 ));
                 entries.push((
                     format!("{name}_window_first_timestamp_ms"),

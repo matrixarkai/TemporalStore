@@ -55,6 +55,26 @@ fn direct_client_exposes_c_abi_parity_methods() {
 
 #[cfg(feature = "proxy")]
 #[test]
+fn proxy_client_exposes_the_merge_reduce_append_and_its_receipt() {
+    let _: fn(&ProxyClient, &str, &[crate::FeaturePoint]) -> crate::Result<crate::CellMergeReceipt> =
+        ProxyClient::feature_merge_cells;
+    // The policy serialises to the engine's spelling, and the receipt reads the engine's fields.
+    assert_eq!(
+        "\"merge_reduce\"",
+        serde_json::to_string(&crate::FeatureWritePolicy::MergeReduce).unwrap()
+    );
+    let landed: crate::CellMergeReceipt = serde_json::from_value(serde_json::json!({
+        "kind": "cell_merge_receipt",
+        "snapshots_written": 2,
+        "cells_created": 3,
+        "cells_merged": 1
+    }))
+    .unwrap();
+    assert_eq!((2, 3, 1), (landed.snapshots_written, landed.cells_created, landed.cells_merged));
+}
+
+#[cfg(feature = "proxy")]
+#[test]
 fn proxy_client_exposes_proxy_parity_methods() {
     let _: fn(&ProxyClient, &str, &[crate::FeaturePoint]) -> crate::Result<()> =
         ProxyClient::feature_add;

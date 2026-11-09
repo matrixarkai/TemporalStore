@@ -255,6 +255,7 @@ jobs:
             shared_store::tests::the_resource_blob_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_condition_or_policy_tag_is_refused_rather_than_defaulted \
+            redis::response_helpers::merge_reduce_policy_tests::the_text_door_spells_the_merge_reduce_policy_two_ways_and_refuses_a_guess \
             types::tests::a_blob_record_written_in_the_old_shape_still_decodes_to_the_same_bytes \
             meta::tests::a_framed_record_is_consumed_by_its_length_not_by_a_newline \
             meta::tests::the_log_reads_lines_and_framed_records_from_one_file \
@@ -337,6 +338,19 @@ jobs:
             engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_policy_append_at_the_ceiling_is_accepted \
             engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_replace_past_the_ceiling_is_refused_before_it_writes \
             engine::tests::the_two_other_feature_arms_hold_the_ceiling::a_replace_at_the_ceiling_is_accepted \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::every_reducer_on_every_lane_matches_an_independent_fold \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_count_lane_counts_writes_and_ignores_the_value_it_carries \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::write_order_changes_first_and_last_and_nothing_else_and_one_request_equals_three \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_receipt_says_what_landed \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_merged_snapshot_survives_a_cold_reload_and_keeps_merging \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_request_that_disagrees_with_the_stored_header_is_refused_naming_the_field_and_writes_nothing \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_key_that_does_not_fit_its_spec_a_junk_value_a_plain_value_and_an_empty_request_are_refused \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::cells_per_request_and_per_snapshot_refuse_one_past_and_accept_the_limit \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_feature_ceiling_holds_for_a_merge_reduce_append \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_trim_keeps_the_newest_snapshots_and_each_still_carries_its_header \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_key_past_its_deadline_merges_as_a_new_key \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::a_sequence_add_still_stores_exactly_the_bytes_it_always_did \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::the_policy_has_a_wire_number_a_text_spelling_and_survives_the_proto_round_trip \
             engine::tests::does_the_durable_map_answer_what_the_fold_answers::the_durable_map_answers_what_the_fold_answers_on_every_scenario_that_could_diverge \
             engine::tests::gated_listing_folds_the_blocks::a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone \
             engine::tests::gated_listing_folds_the_blocks::an_unframed_block_makes_the_fold_decline_rather_than_answer_short \
@@ -656,6 +670,7 @@ jobs:
             engine::tests::a_hash_get_all_shares_its_page_keys::probe::a_whole_hash_read_does_not_pay_three_allocations_a_field_for_its_key \
             engine::window_aggregate::probe::the_reducers_do_not_allocate_per_point \
             engine::cell_set::tests::probe::a_cell_set_key_costs_one_allocation_whatever_its_size \
+            engine::tests::a_feature_append_merges_cells_by_lane_reducer::probe::a_merge_does_not_allocate_more_for_a_longer_key \
             engine::cell_set::tests::probe::a_cell_costs_the_same_allocations_at_any_member_size ; do
             echo "--- $t (ignored, alloc-probe) ---"
             cargo test --release --features alloc-probe -p temporalstore-rust --lib "$t" \

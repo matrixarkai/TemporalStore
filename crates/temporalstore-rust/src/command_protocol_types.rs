@@ -125,6 +125,13 @@ pub enum FeatureWritePolicy {
     ReplaceExisting,
     #[serde(alias = "BLOCK", alias = "block")]
     Block,
+    /// Merge each point's cells into the snapshot already stored at its timestamp, lane by lane
+    /// under the reducers the point's own header declares. The point's VALUE is the request: it
+    /// carries the key spec, the label and lane names and the per-lane reducers followed by the
+    /// cells (`engine::cell_set::encode_value`), so the command shape does not change. Every
+    /// violation is refused at validation, before anything is written, exactly as `Block` is.
+    #[serde(alias = "MERGE_REDUCE", alias = "merge")]
+    MergeReduce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2725,6 +2732,14 @@ pub enum CommandResponse {
     },
     Aggregate {
         value: i64,
+    },
+    /// What a merge-reduce append landed: snapshots written (one per distinct timestamp in the
+    /// request), cells created, cells merged into a member already stored (or repeated within
+    /// the request), and the cells the newest written snapshot holds afterwards.
+    CellMergeReceipt {
+        snapshots_written: u64,
+        cells_created: u64,
+        cells_merged: u64,
     },
     SequenceRows {
         rows: Vec<SequenceFeatureRow>,

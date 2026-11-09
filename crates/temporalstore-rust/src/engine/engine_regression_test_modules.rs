@@ -504,3 +504,5 @@ mod the_control_state_block_is_protobuf_only;
 mod the_sequence_row_is_protobuf_only;
 #[path = "tests/a_plan_lists_the_shards_blocks_once.rs"]
 mod a_plan_lists_the_shards_blocks_once;
+#[path = "tests/a_feature_append_merges_cells_by_lane_reducer.rs"]
+mod a_feature_append_merges_cells_by_lane_reducer;

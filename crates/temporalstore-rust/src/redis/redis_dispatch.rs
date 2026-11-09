@@ -1273,14 +1273,28 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::FeatureAppendWithPolicy {
+            let result = execute(Command::FeatureAppendWithPolicy {
                 key: name_arg(&args[1]),
                 points: vec![FeaturePoint {
                     timestamp_ms,
                     value: args[3].clone(),
                 }],
                 policy,
-            }))
+            });
+            // A merge-reduce append answers with what landed rather than a changed/unchanged flag:
+            // [snapshots written, cells created, cells merged].
+            match result {
+                Ok(CommandResponse::CellMergeReceipt {
+                    snapshots_written,
+                    cells_created,
+                    cells_merged,
+                }) => RespValue::Array(vec![
+                    RespValue::Integer(snapshots_written as i64),
+                    RespValue::Integer(cells_created as i64),
+                    RespValue::Integer(cells_merged as i64),
+                ]),
+                other => integer_response(other),
+            }
         }
         "FQUERY" if args.len() == 4 || args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {

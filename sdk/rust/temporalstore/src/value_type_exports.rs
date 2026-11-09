@@ -6,5 +6,5 @@ pub use crate::control_state_types::{
     ControlStateWindowUnit,
 };
 pub use crate::feature_types::{
-    FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, SequenceFeatureRow,
+    CellMergeReceipt, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, SequenceFeatureRow,
 };
