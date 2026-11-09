@@ -1999,9 +1999,10 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                     "no text may appear twice in one embedding batch: {inputs:?}"
                 );
                 serde_json::json!({
+                    "object": "list",
                     "data": [
-                        {"embedding": [1.0, 0.0, 0.0, 0.0]},
-                        {"embedding": [0.0, 1.0, 0.0, 0.0]}
+                        {"object": "embedding", "index": 0, "embedding": [1.0, 0.0, 0.0, 0.0]},
+                        {"object": "embedding", "index": 1, "embedding": [0.0, 1.0, 0.0, 0.0]}
                     ]
                 })
                 .to_string()
