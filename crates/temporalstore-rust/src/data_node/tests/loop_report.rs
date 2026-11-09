@@ -760,15 +760,15 @@ fn what_a_dirty_loop_round_walks_by_call_site() {
 ///
 /// A shard that takes writes between rounds is dirty at every round, and the round then builds its
 /// plans from a listing of every live block. The WAL reclaim plan needs the bucket summaries and the
-/// live digests; those come off ONE listing, so the round's total is 21 listings of the shard rather
-/// than 23. Counted in live-block entries visited, not timed, because a stopwatch on a shared box
+/// live digests; those come off ONE listing, so each plan build lists the shard once instead of twice
+/// and the round totals 20 listings of the shard. Counted in live-block entries visited, not timed, because a stopwatch on a shared box
 /// measures the other tenants.
 ///
 /// THE BOUND IS EXACT, so a plan that lists the shard once more fails it. The bound is on the TOTAL
 /// of the round and not on one stage: dropping one stage's walks has moved them to a later stage
 /// before. The control is that the walk is large enough to mean something and that the round did
 /// dump (a round that did nothing would pass a bound trivially).
-const DIRTY_ROUND_WALK_BOUND: u64 = 21;
+const DIRTY_ROUND_WALK_BOUND: u64 = 20;
 
 #[test]
 fn a_dirty_round_lists_the_shards_live_blocks_no_more_than_the_bound() {
