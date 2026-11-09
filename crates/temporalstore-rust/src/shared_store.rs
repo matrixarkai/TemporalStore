@@ -4522,6 +4522,21 @@ fn wal_command_from_payload(
     }
 }
 
+/// A command in its protobuf encoding, for the logs outside this file that carry commands.
+///
+/// The same mapping the shared WAL publishes with: a command that has none is refused, never
+/// written as JSON.
+pub(crate) fn command_protobuf_bytes(command: &Command) -> std::io::Result<Vec<u8>> {
+    wal_command_payload(command).map_err(std::io::Error::other)
+}
+
+/// The command a payload written by [`command_protobuf_bytes`] carries.
+pub(crate) fn command_from_protobuf_bytes(payload: &[u8]) -> std::io::Result<Command> {
+    wal_command_from_payload(payload, WAL_COMMAND_ENCODING_SDK_PROTO, false)
+        .map_err(std::io::Error::other)?
+        .ok_or_else(|| std::io::Error::other("a protobuf command payload carried no command"))
+}
+
 /// Assemble a record from the parts a frame and a container entry both carry.
 ///
 /// Extracted for the same reason as [`wal_command_from_payload`]: the implied-length rule and the
@@ -5069,6 +5084,10 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             value: value.clone(),
             ttl_ms: 0,
         }),
+        // A zero TTL on `StringSetEx` means "expires now", and the protobuf `StringSet` cannot say
+        // that: its zero TTL reads back as a write with NO expiry at all. There is no mapping, so
+        // the command is refused instead of being quietly turned into a different one.
+        Command::StringSetEx { ttl_ms: 0, .. } => return None,
         Command::StringSetEx { key, value, ttl_ms } => {
             v1::command::Kind::StringSet(v1::StringSet {
                 key: key.clone(),

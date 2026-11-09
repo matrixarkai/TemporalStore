@@ -273,7 +273,7 @@ jobs:
             engine::tests::bucket_dump_binary_shape::a_manifest_is_listed_a_json_one_is_not_and_a_changed_field_is_not_trusted \
             engine::tests::bucket_dump_binary_shape::an_install_marker_is_protobuf_only \
             engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
-            raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
+            raft::wal_proto::tests::every_command_the_raft_wal_carries_is_protobuf \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
