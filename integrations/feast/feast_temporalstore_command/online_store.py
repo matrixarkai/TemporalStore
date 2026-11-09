@@ -1012,6 +1012,92 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             self.online_write_batch, config, table, data, progress
         )
 
+    # -- precomputed feature-service rows ------------------------------------
+
+    @staticmethod
+    def _precomputed_field(feature_service_name: str) -> str:
+        return _feature_field(
+            f"__precomputed__{feature_service_name}", "vector"
+        )
+
+    @classmethod
+    def _precomputed_hash_key(
+        cls, config: RepoConfig, project: str, entity_key: EntityKeyProto
+    ) -> str:
+        return f"{cls._entity_key_hex(config, entity_key)}:{project}"
+
+    def write_precomputed_vector(
+        self,
+        config: RepoConfig,
+        feature_service_name: str,
+        project: str,
+        entity_key: EntityKeyProto,
+        vector_bytes: bytes,
+    ) -> None:
+        """Write one precomputed FeatureService row without a synthetic timestamp."""
+        client = self._get_client(config)
+        field = self._precomputed_field(feature_service_name)
+        key = self._precomputed_hash_key(config, project, entity_key)
+        encoded = ValueProto(bytes_val=vector_bytes).SerializeToString()
+        online_config = config.online_store
+        assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
+        if online_config.key_ttl_seconds:
+            client.batch_write(
+                [
+                    {
+                        "kind": "hash_multi_set",
+                        "key": key,
+                        "entries": [(field, encoded)],
+                    },
+                    {
+                        "kind": "common_expire",
+                        "key": key,
+                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
+                    },
+                ]
+            )
+            return
+        client.batch_hash_multi_set(
+            [field],
+            [(key, [encoded])],
+            160 + 4 * (len(field) + len(key)) + len(encoded),
+        )
+
+    def read_precomputed_vectors(
+        self,
+        config: RepoConfig,
+        feature_service_name: str,
+        project: str,
+        entity_keys: List[EntityKeyProto],
+    ) -> List[Optional[bytes]]:
+        """Read aligned precomputed rows through one compact shared projection."""
+        if not entity_keys:
+            return []
+        unique_keys: List[str] = []
+        index_by_key: Dict[str, int] = {}
+        response_indexes: List[int] = []
+        for entity_key in entity_keys:
+            key = self._precomputed_hash_key(config, project, entity_key)
+            index = index_by_key.get(key)
+            if index is None:
+                index = len(unique_keys)
+                index_by_key[key] = index
+                unique_keys.append(key)
+            response_indexes.append(index)
+
+        field = self._precomputed_field(feature_service_name)
+        rows = self._get_client(config).batch_hash_multi_get(unique_keys, [field])
+        decoded: List[Optional[bytes]] = []
+        for row in rows:
+            raw = decode_bytes(row[0]) if row else None
+            if raw is None:
+                decoded.append(None)
+                continue
+            value = ValueProto()
+            value.ParseFromString(raw)
+            decoded.append(value.bytes_val if value.HasField("bytes_val") else None)
+        return [decoded[index] for index in response_indexes]
+
     # -- vector retrieval, refused by name -------------------------------------
 
     def retrieve_online_documents(

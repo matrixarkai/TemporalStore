@@ -1307,6 +1307,56 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(len(client.rows), len(rows))
         self.assertTrue(all(len(row[3]) == 3 for row in client.rows))
 
+    def test_precomputed_vector_write_omits_the_unused_timestamp(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        class PrecomputedWriteClient(RecordingClient):
+            def batch_hash_multi_set(  # type: ignore[override]
+                self, fields, rows, request_upper_bound=None
+            ):
+                self.shared_writes.append((list(fields), list(rows)))
+                self.request_upper_bound = request_upper_bound
+
+        client = self._install(client=PrecomputedWriteClient())
+        entity_key = self._entity_key(7)
+        self.store.write_precomputed_vector(
+            self.config, "ranking", "serving", entity_key, b"packed-features"
+        )
+
+        self.assertEqual(len(client.shared_writes), 1)
+        fields, rows = client.shared_writes[0]
+        self.assertEqual(fields, ["__precomputed__ranking:vector"])
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0][0].endswith(":serving"))
+        value = ValueProto()
+        value.ParseFromString(rows[0][1][0])
+        self.assertEqual(value.bytes_val, b"packed-features")
+        self.assertGreater(client.request_upper_bound, len(rows[0][1][0]))
+
+    def test_precomputed_vector_read_deduplicates_entities_and_skips_row_decode(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        first = ValueProto(bytes_val=b"first").SerializeToString()
+
+        class PrecomputedReadClient(RecordingClient):
+            def batch_hash_multi_get(self, keys, fields):  # type: ignore[override]
+                self.shared_reads.append((list(keys), list(fields)))
+                return [[first], [None]]
+
+        client = self._install(client=PrecomputedReadClient())
+        one = self._entity_key(1)
+        two = self._entity_key(2)
+        values = self.store.read_precomputed_vectors(
+            self.config, "ranking", "serving", [one, two, one]
+        )
+
+        self.assertEqual(values, [b"first", None, b"first"])
+        self.assertEqual(len(client.shared_reads), 1)
+        keys, fields = client.shared_reads[0]
+        self.assertEqual(len(keys), 2)
+        self.assertTrue(all(key.endswith(":serving") for key in keys))
+        self.assertEqual(fields, ["__precomputed__ranking:vector"])
+
     def test_repeated_entity_writes_share_one_timestamp_read(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
