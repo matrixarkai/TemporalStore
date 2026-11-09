@@ -1896,6 +1896,23 @@ fn expiry_scan_budget(limit: usize) -> usize {
             }),
             &mut rewrite_stats,
         )?;
+            // THE WALK FINISHED, AND THE ROUND IS STILL A FAILURE if any block would not read.
+            //
+            // An unreadable block used to end the walk where it stood, so every key after it in
+            // walk order was never reached -- and since blocks already moved are skipped, the next
+            // round arrived at the same block first and stopped there again. Now the block is left
+            // where it is and the walk continues, so the blocks behind it still move. The error is
+            // raised HERE, after the walk, so the failure stays loud and the handler below still
+            // commits the consistent partial index and keeps the round open.
+            if rewrite_stats.skipped_unreadable > 0 {
+                return Err(Status::error(
+                    "block_compaction_failed",
+                    format!(
+                        "{} block(s) could not be read during compaction and were left in place",
+                        rewrite_stats.skipped_unreadable
+                    ),
+                ));
+            }
             Ok(())
         })();
         if let Err(err) = relocation_result {
@@ -2118,8 +2135,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             compacted_block_slab_id: target_block_slab_id,
             blocks_left_by_budget: rewrite_stats.skipped_by_budget,
             bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
-            blocks_left_off_drain_set: rewrite_stats.skipped_off_drain_set,
-            rewritten_block_refs: rewrite_stats.rewritten_block_refs,
+            blocks_left_off_drain_set: rewrite_stats.skipped_off_drain_set,            rewritten_block_refs: rewrite_stats.rewritten_block_refs,
             relocated_bytes: rewrite_stats.relocated_bytes,
             cold_block_rewrite_refs: rewrite_stats.cold_block_rewrite_refs,
             object_block_pack_group_count: before

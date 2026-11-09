@@ -10891,3 +10891,67 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
         "a round that finished its work must close, so the next round rolls a fresh slab",
     );
 }
+
+/// AN UNREADABLE BLOCK STOPS ITSELF, NOT THE BLOCKS BEHIND IT.
+///
+/// One read in the middle of the walk fails and every other read succeeds. The round must still
+/// FAIL -- an incomplete round stays loud and commits its partial index -- but it must have walked
+/// past the bad block first. Blocks already moved are skipped by the next round, so a round that
+/// stopped AT the bad block would arrive at it first again and never reach anything after it.
+///
+/// Two numbers, asserted separately: the failed round's message names the one block it left, and the
+/// round after it moves exactly that one block and nothing else. A round that stopped at the bad
+/// block would leave every block behind it, so the second round would move all of those too.
+#[test]
+fn a_round_walks_past_one_unreadable_block_and_still_fails() {
+    const RECORDS: usize = 32;
+    const UNREADABLE_READ: usize = 2;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("unreadable-{index:04}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let live_blocks: usize = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.block_ref_count as usize)
+        .sum();
+    assert!(
+        live_blocks > UNREADABLE_READ + 1,
+        "{live_blocks} live block refs leaves nothing behind the unreadable one"
+    );
+
+    crate::engine::compaction::fail_only_compaction_block_read_at_for_test(Some(UNREADABLE_READ));
+    let first_round = engine.compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX);
+    crate::engine::compaction::fail_only_compaction_block_read_at_for_test(None);
+    let failure = first_round.expect_err("a round that left a block unread must not report success");
+    assert_eq!(failure.code, "block_compaction_failed", "{failure:?}");
+    assert!(
+        failure.message.contains("1 block(s)"),
+        "the failure should name the one block it left: {failure:?}"
+    );
+
+    let second_round = engine
+        .compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX)
+        .expect("round two reads every block");
+    assert_eq!(
+        second_round.rewritten_block_refs, 1,
+        "round two moved {} blocks; the failed round should have moved all but the one it could \
+         not read ({live_blocks} live), and moving more means it stopped at the bad block",
+        second_round.rewritten_block_refs,
+    );
+}
