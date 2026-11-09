@@ -3875,6 +3875,7 @@ fn collect_upsert_index_items(
     end_routing_bucket: u32,
 ) -> Vec<crate::index_log::IndexItem> {
     let mut items = Vec::with_capacity(element_names.len());
+    let mut previous_placement: Option<(&str, &str, u32, u64)> = None;
     for (kind, object_key, element_name) in element_names {
         let address = match (*kind, element_name) {
             ("hash", Some(field)) => shard
@@ -3946,9 +3947,19 @@ fn collect_upsert_index_items(
             _ => None,
         };
         let Some(address) = address else { continue };
-        let routing_bucket =
-            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-        let object_id = stable_block_object_id(shard_id, kind, object_key);
+        let (routing_bucket, object_id) = previous_placement
+            .and_then(|(previous_kind, previous_key, routing_bucket, object_id)| {
+                (previous_kind == *kind && previous_key == object_key.as_str())
+                    .then_some((routing_bucket, object_id))
+            })
+            .unwrap_or_else(|| {
+                let placement = (
+                    block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
+                    stable_block_object_id(shard_id, kind, object_key),
+                );
+                previous_placement = Some((kind, object_key.as_str(), placement.0, placement.1));
+                placement
+            });
         // THE AUTHORITY, CALLED RATHER THAN COPIED. `block_ref_key_from_parts` says of itself:
         // "One definition, called from the block index's serialization and from the replay log, so
         // the two cannot drift into different spellings of the same page." This site was a hand

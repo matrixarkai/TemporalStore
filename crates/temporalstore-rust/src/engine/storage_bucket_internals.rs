@@ -5422,16 +5422,16 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // upsert: this site PLACES. What it REMOVES is decided by `object_block_refs` and by the
     // bucket map itself -- where the blocks actually are -- so narrowing this cannot drop one.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let mut placement_routing_bucket = None;
+    let mut placement_object_id = None;
     // Same reason as `upsert_bucket_index_block_with`: publish into a released bucket and the node
     // is left half-resident. Reload every bucket these addresses land in first.
     if !shard.bucket_index.released_buckets.is_empty() {
         // One bucket, not a set gathered from the addresses: every address published here belongs
         // to ONE object key, so they all land in the key's bucket. The set was a set of one.
-        let landing = [block_routing_bucket(
-            object_key,
-            start_routing_bucket,
-            end_routing_bucket,
-        )];
+        let landing = [*placement_routing_bucket.get_or_insert_with(|| {
+            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+        })];
         for routing_bucket in landing {
             reload_released_bucket(shard, shard_id, routing_bucket);
         }
@@ -5604,9 +5604,11 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         .unwrap_or_else(|| Arc::from(object_key));
     let entry_kind = stored_model_kind(kind);
     for address in unique_addresses.into_values() {
-        let routing_bucket =
-            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-        let object_id = stable_block_object_id(shard_id, kind, object_key);
+        let routing_bucket = *placement_routing_bucket.get_or_insert_with(|| {
+            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+        });
+        let object_id = *placement_object_id
+            .get_or_insert_with(|| stable_block_object_id(shard_id, kind, object_key));
         let entry = LiveBlockEntry {
             object_key: Arc::clone(&object_key_arc),
             kind: entry_kind,
