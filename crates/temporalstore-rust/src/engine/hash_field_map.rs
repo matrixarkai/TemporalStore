@@ -63,6 +63,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::block_store::ElementEntry;
 
+#[cfg(test)]
+thread_local! {
+    static BINARY_SEARCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_binary_search_count_for_test() {
+    BINARY_SEARCHES.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn binary_search_count_for_test() -> u64 {
+    BINARY_SEARCHES.with(std::cell::Cell::get)
+}
+
 /// The field name as this map holds it: a SHARED handle, not an owned copy.
 ///
 /// Measured in `what_the_one_constant_field_name_costs_at_the_shape_the_product_writes`: the
@@ -98,6 +113,8 @@ pub(super) struct HashFieldMap {
 impl HashFieldMap {
     /// Where `field` is, or where it would go.
     fn slot(&self, field: &str) -> Result<usize, usize> {
+        #[cfg(test)]
+        BINARY_SEARCHES.with(|count| count.set(count.get().saturating_add(1)));
         self.entries
             .binary_search_by(|(name, _)| name[..].cmp(field))
     }

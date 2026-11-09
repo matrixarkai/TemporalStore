@@ -340,6 +340,7 @@ pub(super) enum Utf8ContainerRangeProjection {
 pub(super) struct Utf8ProjectionPlan<'a> {
     element_names: &'a [String],
     first_position: std::collections::HashMap<&'a [u8], usize>,
+    positions_by_name: Vec<usize>,
 }
 
 impl<'a> Utf8ProjectionPlan<'a> {
@@ -349,26 +350,54 @@ impl<'a> Utf8ProjectionPlan<'a> {
         for (index, element_name) in element_names.iter().enumerate() {
             first_position.entry(element_name.as_bytes()).or_insert(index);
         }
+        let mut positions_by_name = (0..element_names.len()).collect::<Vec<_>>();
+        positions_by_name.sort_unstable_by(|left, right| {
+            element_names[*left]
+                .cmp(&element_names[*right])
+                .then_with(|| left.cmp(right))
+        });
         Self {
             element_names,
             first_position,
+            positions_by_name,
         }
+    }
+
+    pub(super) fn positions_by_name(&self) -> &[usize] {
+        &self.positions_by_name
     }
 }
 
 /// Reusable per-row state for one shared-field projection batch.
 pub(super) struct Utf8ProjectionScratch {
     found: Vec<bool>,
+    present_in_index: Vec<bool>,
 }
 
 impl Utf8ProjectionScratch {
     pub(super) fn new() -> Self {
-        Self { found: Vec::new() }
+        Self {
+            found: Vec::new(),
+            present_in_index: Vec::new(),
+        }
     }
 
     fn reset(&mut self, field_count: usize) {
         self.found.resize(field_count, false);
         self.found.fill(false);
+    }
+
+    pub(super) fn reset_index_presence(&mut self, field_count: usize) {
+        self.present_in_index.resize(field_count, false);
+        self.present_in_index.fill(false);
+    }
+
+    pub(super) fn mark_present_in_index(&mut self, index: usize) {
+        self.present_in_index[index] = true;
+    }
+
+    pub(super) fn is_present_in_index(&self, index: usize) -> bool {
+        self.present_in_index[index]
     }
 }
 
