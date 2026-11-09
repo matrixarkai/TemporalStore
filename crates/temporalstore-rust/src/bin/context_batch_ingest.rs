@@ -41,12 +41,11 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    context_scope_all_nodes, context_scope_nodes, context_scopes,
-    ingest_extract_context_with_l1_gate,
-    remember_context_scope, remember_context_scope_node, BatchExecuteRequest, Command,
-    CommandResponse, ContextEvent, ContextExtractRequest, ContextIndexRef,
-    ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode, ContextSourceKind,
-    ExecuteRequest, TemporalEngine,
+    context_provider_from_env, context_scope_all_nodes, context_scope_nodes, context_scopes,
+    ingest_extract_context_with_l1_gate, remember_context_scope, remember_context_scope_node,
+    BatchExecuteRequest, Command, CommandResponse, ContextEvent, ContextExtractRequest,
+    ContextIndexRef, ContextIngestExtractRequest, ContextNode, ContextSourceKind, ExecuteRequest,
+    TemporalEngine,
 };
 
 // Reason code stamped on embedding-dirty markers written by the raw-first bulk
@@ -137,6 +136,7 @@ fn main() {
         engine.warm_cache_in_background_on_load();
     }
     engine.load_shard(1);
+    let provider = context_provider_from_env();
     let load_seconds = load_started.elapsed().as_secs_f64();
     let catalog_hash = stable_hash64(&format!("{}:{}:{}", account_id, tenant_id, user_id));
     let index_path = session_index_path(&root, &agent_name);
@@ -303,7 +303,7 @@ fn main() {
             title: format!("{} {} {}", agent_name, event, sid),
             body: body.clone(),
             timestamp_ms: ts_ms,
-            provider: ContextModelProviderConfig::default(),
+            provider: provider.clone(),
         };
         groups
             .entry(session_id.clone())
@@ -380,7 +380,7 @@ fn main() {
                         start_time_ms: 0,
                         end_time_ms,
                         max_events: 1,
-                        provider: ContextModelProviderConfig::default(),
+                        provider: provider.clone(),
                     },
                     true,
                 );
