@@ -122,6 +122,13 @@ pub(crate) use hash_field_map::{
     binary_search_count_for_test as hash_field_binary_search_count_for_test,
     reset_binary_search_count_for_test as reset_hash_field_binary_search_count_for_test,
 };
+#[cfg(test)]
+pub(crate) use container_blocks::{
+    index_presence_reset_count_for_test,
+    reset_index_presence_reset_count_for_test,
+};
+#[cfg(test)]
+pub(crate) use hashing::{reset_routing_bucket_derivations, routing_bucket_derivations};
 mod recorded_map;
 mod object_record;
 // `pub(crate)`: a replication payload names the range it carries, and those payloads live

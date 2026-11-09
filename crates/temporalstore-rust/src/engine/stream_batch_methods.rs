@@ -759,6 +759,7 @@ impl TemporalEngine {
         let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
         let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
+        let recency_now = now_ms();
         for (index, key) in keys.iter().enumerate() {
             let rejected = if enforce_foreground_limits
                 && (quota_checks_enabled || read_admission_enabled)
@@ -787,23 +788,21 @@ impl TemporalEngine {
                 continue;
             }
 
+            let routing_bucket =
+                block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
             let values = execute_on_shard::execute_hash_multi_get_projected(
                 &self.cache,
                 &self.block_store,
                 shard_id,
-                start_routing_bucket,
-                end_routing_bucket,
+                routing_bucket,
                 shard,
                 key,
                 &fields,
                 &projection_plan,
                 &mut projection_scratch,
             );
-            let now = now_ms();
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                let routing_bucket =
-                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                shard.bucket_recency.insert(routing_bucket, now);
+                shard.bucket_recency.insert(routing_bucket, recency_now);
             });
             visit(index, Ok(values));
         }

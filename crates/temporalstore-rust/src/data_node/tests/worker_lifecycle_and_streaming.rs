@@ -207,6 +207,8 @@ fn shared_field_hash_batch_keeps_requested_order_duplicates_and_missing_values()
     });
     let fixed_searches = crate::engine::hash_field_binary_search_count_for_test();
     crate::engine::reset_hash_field_binary_search_count_for_test();
+    crate::engine::reset_routing_bucket_derivations();
+    crate::engine::reset_index_presence_reset_count_for_test();
     let direct = runtime.batch_hash_multi_get_compact_msgpack(direct_request);
     let decoded = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&direct)
         .expect("direct compact response must retain the established wire shape");
@@ -215,6 +217,16 @@ fn shared_field_hash_batch_keeps_requested_order_duplicates_and_missing_values()
         crate::engine::hash_field_binary_search_count_for_test(),
         fixed_searches,
         "requested packed fields must not add field-map binary searches"
+    );
+    assert_eq!(
+        crate::engine::routing_bucket_derivations(),
+        (2, ("present".len() + "missing".len()) as u64),
+        "each entity key must be routed once per compact batch"
+    );
+    assert_eq!(
+        crate::engine::index_presence_reset_count_for_test(),
+        1,
+        "an absent entity must not clear field-projection scratch"
     );
 }
 
