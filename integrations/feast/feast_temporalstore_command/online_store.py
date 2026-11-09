@@ -782,6 +782,109 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 results.append((event_timestamp, self._copy_online_row(row)))
         return results
 
+    def _read_features_per_fv(
+        self,
+        config: RepoConfig,
+        grouped_refs: List[Any],
+        join_key_values: Dict[str, Any],
+        entity_name_to_join_key_map: Dict[str, str],
+        online_features_response: Any,
+        full_feature_names: bool,
+        include_feature_view_version_metadata: bool,
+    ) -> None:
+        """Read feature views sharing an entity set in one compact projection."""
+        if not grouped_refs:
+            return
+        groups: Dict[Tuple[bytes, ...], List[Tuple[Any, ...]]] = {}
+        for table, requested_features in grouped_refs:
+            entity_values, row_indexes, output_len = utils._get_unique_entities(
+                table, join_key_values, entity_name_to_join_key_map
+            )
+            entity_keys = utils._get_entity_key_protos(entity_values)
+            identity = tuple(
+                key.SerializeToString(deterministic=True) for key in entity_keys
+            )
+            groups.setdefault(identity, []).append(
+                (
+                    table,
+                    list(requested_features),
+                    row_indexes,
+                    output_len,
+                    entity_keys,
+                )
+            )
+
+        client = self._get_client(config)
+        for specs in groups.values():
+            entity_keys = specs[0][4]
+            hash_keys = [self._entity_hash_key(config, key) for key in entity_keys]
+            projection: List[str] = []
+            projection_index: Dict[str, int] = {}
+            layouts: List[Tuple[List[str], List[str], List[int]]] = []
+            for table, requested_features, *_rest in specs:
+                view_name = self._view_name(table, config)
+                fields = [
+                    _feature_field(view_name, name) for name in requested_features
+                ] + [_ts_field(view_name)]
+                positions = []
+                for field in fields:
+                    position = projection_index.get(field)
+                    if position is None:
+                        position = len(projection)
+                        projection_index[field] = position
+                        projection.append(field)
+                    positions.append(position)
+                layouts.append((requested_features, fields, positions))
+
+            rows = client.batch_hash_multi_get(hash_keys, projection)
+            for spec, layout in zip(specs, layouts):
+                table, requested_features, row_indexes, output_len, _keys = spec
+                feature_names, fields, positions = layout
+                decoded_rows = [
+                    self._decode_online_response(
+                        [
+                            row[position] if position < len(row) else None
+                            for position in positions
+                        ],
+                        fields,
+                        feature_names,
+                    )
+                    for row in rows
+                ]
+                utils._populate_response_from_feature_data(
+                    requested_features,
+                    decoded_rows,
+                    row_indexes,
+                    online_features_response,
+                    full_feature_names,
+                    table,
+                    output_len,
+                    include_feature_view_version_metadata,
+                )
+
+    async def _read_features_per_fv_async(
+        self,
+        config: RepoConfig,
+        grouped_refs: List[Any],
+        join_key_values: Dict[str, Any],
+        entity_name_to_join_key_map: Dict[str, str],
+        online_features_response: Any,
+        full_feature_names: bool,
+        include_feature_view_version_metadata: bool,
+    ) -> None:
+        import asyncio
+
+        await asyncio.to_thread(
+            self._read_features_per_fv,
+            config,
+            grouped_refs,
+            join_key_values,
+            entity_name_to_join_key_map,
+            online_features_response,
+            full_feature_names,
+            include_feature_view_version_metadata,
+        )
+
     # -- lifecycle -----------------------------------------------------------
 
     def update(

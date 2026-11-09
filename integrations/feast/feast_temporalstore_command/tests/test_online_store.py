@@ -1574,6 +1574,69 @@ class OnlineStoreTest(unittest.TestCase):
             "repeated positions must not share mutable protobuf messages",
         )
 
+    def test_feature_views_with_the_same_entities_share_one_projection(self):
+        from feast import FeatureView, Field
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        from feast.types import Int64
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        fares = FeatureView(
+            name="fares",
+            entities=[self.entity],
+            schema=[Field(name="amount", dtype=Int64)],
+            source=self.view.batch_source,
+        )
+        entity_keys = [self._entity_key(1), self._entity_key(2)]
+        stamp = Timestamp()
+        stamp.FromDatetime(self.datetime(2026, 1, 1, tzinfo=self.timezone.utc))
+        stamp_bytes = stamp.SerializeToString()
+
+        class MultiViewClient(RecordingClient):
+            def batch_hash_multi_get(self, keys, fields):  # type: ignore[override]
+                self.shared_reads.append((list(keys), list(fields)))
+                return [
+                    [
+                        ValueProto(int64_val=number).SerializeToString(),
+                        stamp_bytes,
+                        ValueProto(int64_val=number * 10).SerializeToString(),
+                        stamp_bytes,
+                    ]
+                    for number in (1, 2)
+                ]
+
+        client = self._install(client=MultiViewClient())
+        populated = []
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], [[0], [1]], 2),
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            return_value=entity_keys,
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._populate_response_from_feature_data",
+            side_effect=lambda features, rows, *_args: populated.append((features, rows)),
+        ):
+            self.store._read_features_per_fv(
+                self.config,
+                [(self.view, ["trips"]), (fares, ["amount"])],
+                {},
+                {},
+                object(),
+                False,
+                False,
+            )
+
+        self.assertEqual(len(client.shared_reads), 1)
+        keys, fields = client.shared_reads[0]
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(
+            fields,
+            ["stats:trips", "_ts:stats", "fares:amount", "_ts:fares"],
+        )
+        self.assertEqual([item[0] for item in populated], [["trips"], ["amount"]])
+        self.assertEqual(populated[0][1][1][1]["trips"].int64_val, 2)
+        self.assertEqual(populated[1][1][1][1]["amount"].int64_val, 20)
+
     def test_a_short_field_answer_does_not_shift_values_onto_other_features(self):
         # A node that answers with fewer slots than fields requested must not
         # silently align `trips` to the timestamp slot.
