@@ -1935,6 +1935,19 @@ impl TemporalEngine {
         let block = self.elements_the_outcome_block_holds(item, carried);
         let live = block.element_names(item, false);
         let removed = block.element_names(item, true);
+        // THE BOUND IN FORCE AT THIS RECORD, for a counter point. The replay loop installs the
+        // config entry in force at each record's frontier before it installs the record, so this
+        // is the bound the write that produced the point trimmed to. A bound of 0 is unbounded.
+        let counter_bound = if item.kind == "control_counter" {
+            self.configs
+                .read()
+                .expect("config lock poisoned")
+                .get(&shard_id)
+                .map(|config| config.control_state_max_size())
+                .unwrap_or_else(|| crate::control::Config::default().control_state_max_size())
+        } else {
+            0
+        };
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return false;
@@ -2553,6 +2566,15 @@ impl TemporalEngine {
                     .entry(std::sync::Arc::from(&item.object_key[..]))
                     .or_default()
                     .insert(bucket_ms, total);
+                // THE TRIM THE WRITE RAN AFTER ADDING THIS POINT. An outcome carries the point and
+                // not the trim that followed it, and no removal is recorded for the points that
+                // trim dropped, so installing without it brought every one of them back: a series
+                // recovered with no unload held the live points plus every point the bound had
+                // trimmed since the log began (10,500 points against a bound of 10,000 after 10,500
+                // increments). The same function, in the same order, as the write path ran, so the
+                // series converges on the one the write path held, whatever order the buckets
+                // arrived in.
+                super::trim_control_state_series(shard, &item.object_key, counter_bound);
                 true
             }
             // A distinct member. Installed through the write path's own producer so the exact-set
