@@ -220,9 +220,17 @@ pub fn drain_embedding_dirty_once(
     }
 
     let max_input_bytes = context_embedding_batch_limits(&config.provider).max_input_bytes;
-    let mut pending: Vec<Pending> = Vec::with_capacity(nodes.len());
+    let batch_size = config.batch_size.max(1);
+    let mut pending: Vec<Pending> = Vec::with_capacity(batch_size);
     let mut clear_targets = Vec::<Target>::with_capacity(nodes.len());
-    for target_chunk in targets.chunks(config.batch_size.max(1)) {
+    let model_hash = context_embedding_model_hash(&config.provider.embedding_model);
+    let updated_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(1)
+        .max(1);
+    for target_chunk in targets.chunks(batch_size) {
+        pending.clear();
         let commands = target_chunk
             .iter()
             .map(|target| Command::ContextQueryEvents {
@@ -270,28 +278,22 @@ pub fn drain_embedding_dirty_once(
             }
         }
         report.failed += target_chunk.len().saturating_sub(returned);
-    }
 
-    // 3) Batch-embed and durably publish each vector chunk. Marker clearing is deferred until
-    //    every model chunk finishes, then coalesced into one durable batch containing only
-    //    successful writes and textless nodes.
-    let model_hash = context_embedding_model_hash(&config.provider.embedding_model);
-    let updated_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(1)
-        .max(1);
-    for chunk in pending.chunks(config.batch_size.max(1)) {
-        let texts: Vec<&str> = chunk.iter().map(|item| item.text.as_str()).collect();
+        // Embed and publish before fetching another event batch. This bounds retained source text
+        // and naturally applies model and durable-write backpressure to the dirty-node scan.
+        if pending.is_empty() {
+            continue;
+        }
+        let texts: Vec<&str> = pending.iter().map(|item| item.text.as_str()).collect();
         let vectors = match context_backfill_embeddings(&config.provider, &texts) {
-            Ok(vectors) if vectors.len() == chunk.len() => vectors,
+            Ok(vectors) if vectors.len() == pending.len() => vectors,
             _ => {
-                // Leave this chunk dirty for a later pass.
-                report.failed += chunk.len();
+                // Leave this batch dirty for a later pass.
+                report.failed += pending.len();
                 continue;
             }
         };
-        let commands: Vec<Command> = chunk
+        let commands: Vec<Command> = pending
             .iter()
             .zip(vectors.into_iter())
             .map(|(item, vector)| Command::ContextSetNodeEmbedding {
@@ -307,10 +309,10 @@ pub fn drain_embedding_dirty_once(
             commands,
         });
         if !response.status.ok {
-            report.failed += chunk.len();
+            report.failed += pending.len();
             continue;
         }
-        for (index, item) in chunk.iter().enumerate() {
+        for (index, item) in pending.iter().enumerate() {
             if response
                 .responses
                 .get(index)
@@ -615,7 +617,7 @@ mod tests {
         assert_eq!(count_pending(&engine), 5);
 
         let config = EmbedDrainerConfig {
-            batch_size: 64,
+            batch_size: 2,
             ..EmbedDrainerConfig::default()
         };
         let report = drain_embedding_dirty_once(&engine, &config);
