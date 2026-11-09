@@ -201,10 +201,10 @@ const AFFINE_MODEL_BAND: f64 = 0.03;
 /// it measured -0.37% and 1.0035x on clean main before this change, outside both bands. The bands
 /// described a regime production was not in.
 ///
-/// WHAT A DUMP COSTS NOW, over 5 complete runs on this tree: one msgpack image of the store,
-/// 38.51..38.52 B per record held, with a fixed term of -3,335..-3,714 B, which is
-/// -0.362%..-0.403% of what a dump costs at SMALL; the proportional arm climbs 1.0035..1.0038x;
-/// the held-out model error is 0.517..0.538%. That is a cost PROPORTIONAL to the store, with a
+/// WHAT A DUMP COSTS NOW, over 10 complete runs on this tree: one msgpack image of the store,
+/// 38.51..38.52 B per record held, with a fixed term of -3,178..-3,714 B, which is
+/// -0.345%..-0.403% of what a dump costs at SMALL; the proportional arm climbs 1.0033..1.0038x;
+/// the held-out model error is 0.517..0.542%. That is a cost PROPORTIONAL to the store, with a
 /// drift of about a third of a percent upward across a ten-fold corpus. There is no fixed term to
 /// amortise any more, and the claim "the cost is affine with a positive fixed term" cannot be made
 /// about it.
@@ -226,7 +226,7 @@ const AFFINE_MODEL_BAND: f64 = 0.03;
 const FIXED_TERM_SHARE_FLOOR: f64 = -0.02;
 const FIXED_TERM_SHARE_CEILING: f64 = 0.02;
 /// Band on the PROPORTIONAL arm's written-per-byte-released, large over small. Measured
-/// 1.0035..1.0038x over 5 runs; see the note above for what each edge refuses.
+/// 1.0033..1.0038x over 10 runs; see the note above for what each edge refuses.
 const PROPORTIONAL_DECLINE_FLOOR: f64 = 0.99;
 const PROPORTIONAL_DECLINE_CEILING: f64 = 1.02;
 
