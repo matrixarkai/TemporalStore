@@ -2424,9 +2424,6 @@ pub fn retrieve_context(
                 if needs_storage {
                     // Do not let a partial warm hit inflate the durable-row score count below.
                     summary_scores_by_node.remove(node_hash);
-                    if cold.is_empty() {
-                        cold.reserve(node_hashes.len());
-                    }
                     cold.push(*node_hash);
                 }
             }
