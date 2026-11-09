@@ -1998,11 +1998,15 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                     inputs[0], inputs[1],
                     "no text may appear twice in one embedding batch: {inputs:?}"
                 );
+                let mut first = vec![0.0; 1024];
+                first[0] = 1.0;
+                let mut second = vec![0.0; 1024];
+                second[1] = 1.0;
                 serde_json::json!({
                     "object": "list",
                     "data": [
-                        {"object": "embedding", "index": 0, "embedding": [1.0, 0.0, 0.0, 0.0]},
-                        {"object": "embedding", "index": 1, "embedding": [0.0, 1.0, 0.0, 0.0]}
+                        {"object": "embedding", "index": 0, "embedding": first},
+                        {"object": "embedding", "index": 1, "embedding": second}
                     ]
                 })
                 .to_string()
@@ -2050,7 +2054,7 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
         report.embedding_generation.embedding_model,
         "context-embedding-live-test"
     );
-    assert_eq!(report.embedding_generation.vector_dimension, 4);
+    assert_eq!(report.embedding_generation.vector_dimension, 1024);
     assert_eq!(report.embedding_generation.requested_vector_count, 2);
     assert_eq!(report.embedding_generation.generated_vector_count, 2);
     assert_eq!(report.embedding_generation.batch_count, 1);

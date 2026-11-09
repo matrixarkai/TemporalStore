@@ -943,7 +943,7 @@ pub(crate) fn call_openai_compatible_embedding_provider(
         .map(|key| format!("Authorization: Bearer {key}\r\n"))
         .unwrap_or_default();
     let path = format!("{}/embeddings", path_prefix.trim_end_matches('/'));
-    let response: OpenAiEmbeddingResponse = post_json_with_options_and_headers(
+    let response: OpenAiEmbeddingResponse = post_json_streaming_with_options_and_headers(
         &addr,
         &path,
         &embedding_request,
