@@ -1934,7 +1934,10 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
             "denominator: the index just written must carry the CURRENT stamp, or staling it below              changes nothing"
         );
         restored.index_format_version = SHARD_INDEX_FORMAT_VERSION - 1;
-        std::fs::write(&path, crate::engine::encode_index_bytes(&restored)).expect("write");
+        // Plain JSON: the container's reader takes the stamp from its header, so only an encoding
+        // that stores the field can carry an old one.
+        std::fs::write(&path, crate::engine::encode_index_bytes_as_plain_json(&restored))
+            .expect("write");
 
         reset_index_load_path_counts();
         let reloaded = crate::engine::TemporalEngine::with_local_dirs(
