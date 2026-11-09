@@ -2942,6 +2942,11 @@ pub fn retrieve_context(
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(2);
+    let event_scan_cap = std::env::var("MATRIXARK_CONTEXT_EVENT_SCAN_CAP")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(64);
     let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
     fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
@@ -3038,7 +3043,9 @@ pub fn retrieve_context(
         });
         if let Some(node) = cached_node {
             node_count += 1;
-            node_source_ref = node.raw_metadata_ref.clone();
+            if include_l2 {
+                node_source_ref = node.raw_metadata_ref.clone();
+            }
             if include_l0 {
                 blocks.push(ContextBlock {
                     uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
@@ -3074,11 +3081,6 @@ pub fn retrieve_context(
                 .max(1)
                 .saturating_mul(event_overfetch)
                 .min(event_pack_budget);
-            let event_scan_cap = std::env::var("MATRIXARK_CONTEXT_EVENT_SCAN_CAP")
-                .ok()
-                .and_then(|value| value.trim().parse::<usize>().ok())
-                .filter(|value| *value > 0)
-                .unwrap_or(64);
             let events_response = engine.execute(ExecuteRequest {
                 shard_id: request.shard_id,
                 command: Command::ContextQueryEvents {
@@ -3120,7 +3122,7 @@ pub fn retrieve_context(
                     let source_ref = if event.source_ref.is_empty() {
                         node_source_ref.clone()
                     } else {
-                        event.source_ref.clone()
+                        event.source_ref
                     };
                     blocks.push(ContextBlock {
                         uri: context_event_uri(request.tenant_hash, node_hash, event.event_time_ms),
