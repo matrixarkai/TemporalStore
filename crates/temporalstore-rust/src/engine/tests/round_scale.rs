@@ -132,7 +132,14 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// is to run the test and read the sites it prints, then name the ENCLOSING FUNCTION of each.
 /// Matching the printed line numbers against an older table instead has already produced a wrong
 /// answer about this constant, because the files were renamed wholesale underneath it.
-const WALKS_PER_ROUND: u64 = 12;
+///
+/// # 12 -> 11 WHEN THE RECLAIM PLAN LISTED THE SHARD ONCE FOR TWO FOLDS
+///
+/// The plan's bucket summaries and its live digests used to list every live block separately; they
+/// now come off one listing (`a_plan_lists_the_shards_blocks_once`). The round's census loses
+/// exactly one pass: measured 22,000 entries over 2,000
+/// records = 11x. The two older tables above state 12 for the tree before that change.
+const WALKS_PER_ROUND: u64 = 11;
 
 /// The same, once the dirty set has drained.
 ///
@@ -148,7 +155,8 @@ const WALKS_PER_ROUND: u64 = 12;
 /// and the drain round that wrote the manifest is the one that computes them. Measured on this
 /// tree, the idle round materialises 24,000 live-block entries over 2,000 records, which is 12x --
 /// the same as the steady round, so the manifest no longer makes an idle shard dearer.
-const WALKS_PER_IDLE_ROUND: u64 = 12;
+/// 12 -> 11 FOR THE SAME REASON AS `WALKS_PER_ROUND`, and it was measured: the idle round also loses one pass.
+const WALKS_PER_IDLE_ROUND: u64 = 11;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
