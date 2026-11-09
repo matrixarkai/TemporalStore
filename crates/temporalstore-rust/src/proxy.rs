@@ -880,6 +880,14 @@ pub struct ProxySequenceQueryCommandRequest {
     pub filters: Vec<FeatureFilter>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyCellRankQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub spec: crate::types::CellRankSpec,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyControlStateIncrementCommandRequest {
     pub namespace: String,

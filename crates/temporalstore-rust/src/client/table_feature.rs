@@ -211,6 +211,27 @@ impl TemporalStoreTable {
         }
     }
 
+    /// The ranked windowed read over the cell snapshots stored under `key`. A read the key could
+    /// not serve (an unknown name, a window over the bound) is an error naming why; a key with
+    /// nothing to rank is an empty answer.
+    pub fn cell_rank_query(
+        &self,
+        key: impl Into<String>,
+        spec: crate::types::CellRankSpec,
+    ) -> Result<crate::types::RankedCells, ClientError> {
+        match self
+            .execute(Command::CellRankQuery { key: key.into(), spec })?
+            .response
+        {
+            CommandResponse::CellRanking { ranked } if ranked.refused.is_empty() => Ok(ranked),
+            CommandResponse::CellRanking { ranked } => Err(ClientError::Status(ranked.refused)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "cell_rank_query",
+                response,
+            }),
+        }
+    }
+
     pub fn sequence_batch_query(
         &self,
         queries: Vec<SequenceQuerySpec>,

@@ -563,6 +563,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::FeatureAggQuery { .. }
             | Command::SequenceQuery { .. }
             | Command::SequenceBatchQuery { .. }
+            | Command::CellRankQuery { .. }
             | Command::ControlStateCount { .. }
             | Command::ControlStateQuery { .. }
             | Command::ControlStateDetail { .. }

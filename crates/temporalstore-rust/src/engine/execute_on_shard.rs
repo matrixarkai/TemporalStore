@@ -3773,6 +3773,29 @@ pub(crate) fn execute_on_shard(
                 .collect();
             CommandResponse::SequenceRowGroups { groups }
         }
+        Command::CellRankQuery { key, spec } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "feature", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::CellRanking { ranked: crate::types::RankedCells::default() },
+                    mutated,
+                };
+            }
+            CommandResponse::CellRanking {
+                ranked: cell_rank_read::serve(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    &key,
+                    &spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    resolve_now_ms(),
+                ),
+            }
+        }
         Command::ControlStateIncrement {
             key,
             timestamp_ms,

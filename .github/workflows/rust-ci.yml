@@ -379,6 +379,12 @@ jobs:
             engine::cell_rank::tests::lanes_in_a_weighted_score_are_bounded_at_exactly_the_limit \
             engine::cell_rank::tests::snapshots_in_a_window_are_bounded_at_exactly_the_limit \
             engine::cell_rank::tests::the_merge_answers_what_a_per_member_table_answers \
+            engine::tests::a_ranked_cell_read_is_a_command::a_ranked_read_answers_from_what_was_stored_live_and_after_a_restart \
+            engine::tests::a_ranked_cell_read_is_a_command::an_absent_key_and_an_expired_key_rank_nothing \
+            engine::tests::a_ranked_cell_read_is_a_command::a_read_the_key_cannot_serve_is_refused_with_its_reason \
+            engine::tests::a_ranked_cell_read_is_a_command::a_bound_is_refused_at_admission_and_accepted_at_exactly_the_limit \
+            engine::tests::a_ranked_cell_read_is_a_command::a_window_over_the_bound_is_refused_after_a_bounded_read_and_one_at_the_bound_is_served \
+            engine::tests::a_ranked_cell_read_is_a_command::a_lane_added_later_reads_as_zero_in_the_snapshots_written_before_it \
             engine::window_aggregate::algorithm_tests::each_reducer_answers_the_value_only_that_reducer_produces \
             engine::window_aggregate::algorithm_tests::the_three_roundings_differ_on_a_fraction \
             engine::window_aggregate::algorithm_tests::an_empty_window_answers_what_the_notes_say \

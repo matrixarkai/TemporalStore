@@ -36,8 +36,6 @@
 //!
 //! The module is pure: it reads decoded [`Cell`]s and a clock value and touches no engine state.
 
-#![allow(dead_code)]
-
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
@@ -155,23 +153,49 @@ fn lane_named(header: &CellHeader, name: &str) -> Result<usize, String> {
     }
 }
 
+/// The checks that need no header: bounds, ranges and parameters. A command runs this at
+/// admission, before any snapshot is read; [`Plan::compile`] runs it again so a plan can never be
+/// built from a spec that skipped it.
+pub(crate) fn validate_spec(spec: &CellRankSpec) -> Result<(), String> {
+    validate_top_k(spec.top_k)?;
+    within("predicates per query", spec.filters.len(), MAX_PREDICATES)?;
+    match &spec.window {
+        CellWindow::Between { start_ms, end_ms } if start_ms > end_ms => {
+            return Err(format!("window starts at {start_ms}, after it ends at {end_ms}"))
+        }
+        CellWindow::LastN { n } => {
+            if *n == 0 {
+                return Err("window of the last 0 snapshots is empty".to_string());
+            }
+            within("snapshots in the window", *n, MAX_WINDOW_SNAPSHOTS)?;
+        }
+        _ => {}
+    }
+    match &spec.score {
+        CellScore::Wilson { z, .. } if !z.is_finite() || *z < 0.0 => {
+            return Err(format!("wilson z must be finite and not negative, got {z}"))
+        }
+        CellScore::Weighted { lanes, weights } => {
+            if lanes.is_empty() {
+                return Err("a weighted score needs at least one lane".to_string());
+            }
+            within("lanes in a weighted score", lanes.len(), MAX_WEIGHTED_LANES)?;
+            if lanes.len() != weights.len() {
+                return Err(format!("a weighted score has {} lanes and {} weights", lanes.len(), weights.len()));
+            }
+            if let Some(bad) = weights.iter().find(|w| !w.is_finite()) {
+                return Err(format!("weight {bad} is not finite"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 impl Plan {
     /// Checks `spec` against `header`. Every refusal names what was wrong; nothing is read.
     pub(crate) fn compile(header: &CellHeader, spec: &CellRankSpec) -> Result<Plan, String> {
-        validate_top_k(spec.top_k)?;
-        within("predicates per query", spec.filters.len(), MAX_PREDICATES)?;
-        match &spec.window {
-            CellWindow::Between { start_ms, end_ms } if start_ms > end_ms => {
-                return Err(format!("window starts at {start_ms}, after it ends at {end_ms}"))
-            }
-            CellWindow::LastN { n } => {
-                if *n == 0 {
-                    return Err("window of the last 0 snapshots is empty".to_string());
-                }
-                within("snapshots in the window", *n, MAX_WINDOW_SNAPSHOTS)?;
-            }
-            _ => {}
-        }
+        validate_spec(spec)?;
 
         let mut predicates = Vec::with_capacity(spec.filters.len());
         for FeatureFilter { field, op, value } in &spec.filters {
@@ -184,28 +208,11 @@ impl Plan {
                 Scorer::Ratio(lane_named(header, numerator)?, lane_named(header, denominator)?)
             }
             CellScore::Wilson { successes, trials, z } => {
-                if !z.is_finite() || *z < 0.0 {
-                    return Err(format!("wilson z must be finite and not negative, got {z}"));
-                }
                 Scorer::Wilson(lane_named(header, successes)?, lane_named(header, trials)?, *z)
             }
             CellScore::Member => Scorer::Member,
             CellScore::Time => Scorer::Time,
             CellScore::Weighted { lanes, weights } => {
-                if lanes.is_empty() {
-                    return Err("a weighted score needs at least one lane".to_string());
-                }
-                within("lanes in a weighted score", lanes.len(), MAX_WEIGHTED_LANES)?;
-                if lanes.len() != weights.len() {
-                    return Err(format!(
-                        "a weighted score has {} lanes and {} weights",
-                        lanes.len(),
-                        weights.len()
-                    ));
-                }
-                if let Some(bad) = weights.iter().find(|w| !w.is_finite()) {
-                    return Err(format!("weight {bad} is not finite"));
-                }
                 let indexes = lanes.iter().map(|name| lane_named(header, name)).collect::<Result<Vec<_>, _>>()?;
                 Scorer::Weighted(indexes, weights.clone())
             }
@@ -241,11 +248,6 @@ impl Plan {
             labels_out,
             lanes_out,
         })
-    }
-
-    /// The window this plan reads, for a caller that fetches snapshots itself.
-    pub(crate) fn window(&self) -> &CellWindow {
-        &self.window
     }
 }
 
@@ -537,6 +539,7 @@ impl Plan {
             snapshots: chosen.len(),
             unscored,
             rows,
+            refused: String::new(),
         })
     }
 }
