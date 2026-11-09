@@ -88,13 +88,19 @@ pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &Feature
         "author_id" => row.author_id,
         _ => return false,
     };
-    match filter.op {
-        FeatureFilterOp::Equal => lhs == filter.value,
-        FeatureFilterOp::NotEqual => lhs != filter.value,
-        FeatureFilterOp::GreaterThan => lhs > filter.value,
-        FeatureFilterOp::GreaterOrEqual => lhs >= filter.value,
-        FeatureFilterOp::LessThan => lhs < filter.value,
-        FeatureFilterOp::LessOrEqual => lhs <= filter.value,
+    filter_op_holds(&filter.op, lhs, filter.value)
+}
+
+/// Whether `lhs <op> rhs` holds: the one place the six filter operators are spelled, shared by
+/// the sequence filter and the ranked cell read.
+pub(super) fn filter_op_holds<T: PartialOrd>(op: &FeatureFilterOp, lhs: T, rhs: T) -> bool {
+    match op {
+        FeatureFilterOp::Equal => lhs == rhs,
+        FeatureFilterOp::NotEqual => lhs != rhs,
+        FeatureFilterOp::GreaterThan => lhs > rhs,
+        FeatureFilterOp::GreaterOrEqual => lhs >= rhs,
+        FeatureFilterOp::LessThan => lhs < rhs,
+        FeatureFilterOp::LessOrEqual => lhs <= rhs,
     }
 }
 

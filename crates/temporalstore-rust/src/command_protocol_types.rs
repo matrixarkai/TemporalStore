@@ -210,6 +210,93 @@ pub struct SequenceQuerySpec {
     pub filters: Vec<FeatureFilter>,
 }
 
+/// Which snapshots of a cell-set key a ranked read looks at. Every bound is inclusive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CellWindow {
+    /// Snapshots stamped in `[start_ms, end_ms]`.
+    Between { start_ms: u64, end_ms: u64 },
+    /// Snapshots stamped in the last `duration_ms` up to the instant the read runs.
+    Last { duration_ms: u64 },
+    /// Snapshots stamped at or after `start_ms`.
+    Since { start_ms: u64 },
+    /// The `n` newest snapshots.
+    LastN { n: usize },
+}
+
+/// What a ranked read orders members by. Lanes are named, never numbered, and an unknown name is
+/// refused.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CellScore {
+    /// The member's reduced value of one lane.
+    Lane { lane: String },
+    /// `numerator / denominator` of two reduced lanes; a member whose denominator is `0` is not
+    /// ranked.
+    Ratio { numerator: String, denominator: String },
+    /// The lower bound of the Wilson score interval for `successes` out of `trials` at `z`
+    /// standard deviations (1.96 is 95%). A member with no trials, a negative lane, or more
+    /// successes than trials is not ranked.
+    Wilson { successes: String, trials: String, z: f64 },
+    /// The member's own value (`u64` members only).
+    Member,
+    /// The stamp of the member's newest snapshot in the window.
+    Time,
+    /// `sum(lane[i] * weights[i])` over reduced lanes.
+    Weighted { lanes: Vec<String>, weights: Vec<f64> },
+}
+
+/// A ranked windowed read: `window -> select -> reduce per member -> score -> top-k -> project`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CellRankSpec {
+    pub window: CellWindow,
+    /// Named predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`) over a label, a lane or `member`, ANDed.
+    /// Each is tested on a cell as one snapshot stores it, before that member's snapshots are
+    /// reduced together. A name the key does not declare is refused.
+    #[serde(default)]
+    pub filters: Vec<FeatureFilter>,
+    pub score: CellScore,
+    pub top_k: usize,
+    /// Label and lane names to return. Empty returns every label and every lane.
+    #[serde(default)]
+    pub project: Vec<String>,
+}
+
+/// A member as a read returns it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CellMemberId {
+    U64(u64),
+    Bytes(#[serde(with = "crate::bytes_serde")] Vec<u8>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RankedCellRow {
+    pub member: CellMemberId,
+    /// The ordering value, as a float. Integer scores above 2^53 lose their low bits here only;
+    /// the ordering itself is exact.
+    pub score: f64,
+    /// The stamp of the member's newest snapshot in the window.
+    pub last_ms: u64,
+    /// Labels as the newest snapshot holding the member carries them, in `label_columns` order.
+    pub labels: Vec<u64>,
+    /// Reduced lane values, in `lane_columns` order.
+    pub lanes: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RankedCells {
+    pub label_columns: Vec<String>,
+    pub lane_columns: Vec<String>,
+    /// Snapshots the window selected.
+    pub snapshots: usize,
+    /// Members the selection kept whose score is undefined (a zero denominator, no trials): they
+    /// are counted here and left out of `rows`.
+    pub unscored: u64,
+    /// Best first; equal scores order by member, smaller first.
+    pub rows: Vec<RankedCellRow>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlStateFamily {
