@@ -113,43 +113,11 @@ pub(super) fn sequence_rows_in_range(
 }
 
 pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
-    match aggregator.to_ascii_lowercase().as_str() {
-        "sum" => values.iter().filter_map(parse_i64).sum(),
-        "avg" | "average" => {
-            let numeric = values.iter().filter_map(parse_i64).collect::<Vec<_>>();
-            if numeric.is_empty() {
-                0
-            } else {
-                numeric.iter().sum::<i64>() / numeric.len() as i64
-            }
-        }
-        "min" => values
-            .iter()
-            .filter_map(parse_i64)
-            .min()
-            .unwrap_or_default(),
-        "max" => values
-            .iter()
-            .filter_map(parse_i64)
-            .max()
-            .unwrap_or_default(),
-        "first" => values.first().and_then(parse_i64).unwrap_or_default(),
-        "last" => values.last().and_then(parse_i64).unwrap_or_default(),
-        "count" | "events" | "" => values.len() as i64,
-        _ => values.len() as i64,
-    }
+    super::window_aggregate::feature_legacy(aggregator, values.iter().map(parse_i64), values.len())
 }
 
 pub(super) fn aggregate_control_state_values(values: &[i64], aggregator: &str) -> i64 {
-    match aggregator.to_ascii_lowercase().as_str() {
-        "sum" | "count" | "" => values.iter().sum(),
-        "events" | "len" => values.len() as i64,
-        "min" => values.iter().copied().min().unwrap_or_default(),
-        "max" => values.iter().copied().max().unwrap_or_default(),
-        "first" => values.first().copied().unwrap_or_default(),
-        "last" => values.last().copied().unwrap_or_default(),
-        _ => values.iter().sum(),
-    }
+    super::window_aggregate::counter_legacy(aggregator, values)
 }
 
 pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {
