@@ -162,14 +162,14 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
                 && !line.contains("&HashMap")
                 && (line.contains("pub(super)") || line.trim_start().starts_with("entries:"))
                 && (line.contains("HashMap<ModelKey, BTreeMap<")
-                    || line.contains("HashMap<ModelKey, K::Elements>"))
+                    || line.contains("HashMap<ModelKey, RecordedRow<K>>"))
         })
         .map(|line| line.trim())
         .collect();
     // AND THE CONTAINER SIDE MUST ACTUALLY CONTRIBUTE, or this is a `engine_storage_state.rs` scan wearing a
     // wider name and the floor would start drifting down again silently.
     assert!(
-        container_declarations.contains("entries: HashMap<ModelKey, K::Elements>"),
+        container_declarations.contains("entries: HashMap<ModelKey, RecordedRow<K>>"),
         "the container inner declaration is not findable, so the ordered count below is really an engine_storage_state.rs-only count and its floor no longer means what it says"
     );
 
@@ -256,7 +256,12 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
     // declarations are exactly two:
     //
     //   engine_storage_state.rs  pub(super) context_event_timeline: HashMap<ModelKey, BTreeMap<..>>
-    //   recorded_map.rs          entries: HashMap<ModelKey, K::Elements>
+    //   recorded_map.rs          entries: HashMap<ModelKey, RecordedRow<K>>
+    //
+    // THE SECOND MOVED WHEN THE VALUE BECAME A ROW, and the claim did not: a `RecordedRow` is the
+    // same level-two element map plus the object's block refs, so the map is still ONE ordered
+    // inner container per kind and still not a hashed table. The guard followed the declaration
+    // rather than losing the line from its count.
     //
     // So the floor is two, and both are ALSO named below. The count catches a declaration
     // appearing or vanishing; the named checks catch one of these two being renamed out from under
@@ -270,7 +275,7 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
 
     for expected in [
         "pub(super) context_event_timeline: HashMap<ModelKey, BTreeMap<u64, u64>>,",
-        "entries: HashMap<ModelKey, K::Elements>,",
+        "entries: HashMap<ModelKey, RecordedRow<K>>,",
     ] {
         assert!(
             ordered_inner.iter().any(|line| *line == expected),

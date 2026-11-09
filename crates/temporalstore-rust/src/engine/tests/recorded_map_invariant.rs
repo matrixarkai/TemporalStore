@@ -304,6 +304,10 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // THE FILER'S DOOR ONTO A ROW, same ground: it answers `None` when there is no row rather
         // than creating one, and the first ref of a row is built into it.
         "file_ref",
+        // MAKES A VACANT ROW, NOT AN OBJECT: no elements, so `get`, `contains_key`, `len` and `iter`
+        // all skip it and no existence answer changes. It exists so a first write has a row to file
+        // its ref on; it records nothing because there is no durable statement in an empty row.
+        "ensure_row",
         "take_refs",
         // ALSO MUTATES WITHOUT A RECORD, on the same ground as `set_refs` and `take_refs`:
         // derived state, no durable statement to be consistent with, and it cannot add or drop a

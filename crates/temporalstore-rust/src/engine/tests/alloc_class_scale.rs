@@ -781,3 +781,90 @@ fn what_a_stored_record_allocates_by_class_at_two_corpus_sizes() {
          a 10x corpus, so there is a sink outside every class that grows with the store"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// What a CONTAINER object keeps resident, measured as what is still allocated when the span ends.
+// ---------------------------------------------------------------------------------------------
+
+/// Ingest `objects` hashes of `fields` fields each, and report what the span left allocated.
+///
+/// THE SPAN TOTAL AND NOT A CLASS ROW, because a free is charged to whichever class is in scope when
+/// it happens and the ref home is exactly the kind of structure that is allocated in one place and
+/// released in another. The independent counter has no such attribution to get wrong.
+#[cfg(feature = "alloc-probe")]
+fn ingest_hashes(objects: usize, fields: usize) -> (i64, i64) {
+    use crate::alloc_probe::ClassSpan;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(crate::types::ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "warm".to_string(),
+            field: "f".to_string(),
+            value: incompressible(64, u64::MAX),
+        },
+    });
+    let mut batches: Vec<Vec<Command>> = Vec::new();
+    let mut commands = Vec::with_capacity(BATCH);
+    for object in 0..objects {
+        for field in 0..fields {
+            commands.push(Command::HashSet {
+                key: format!("h-{object:08}"),
+                field: format!("f{field:02}"),
+                value: incompressible(64, (object * fields + field) as u64),
+            });
+            if commands.len() == BATCH {
+                batches.push(std::mem::take(&mut commands));
+            }
+        }
+    }
+    if !commands.is_empty() {
+        batches.push(commands);
+    }
+    let span = ClassSpan::open();
+    for commands in batches.drain(..) {
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands,
+        });
+        assert!(response.status.ok, "ingest failed: {:?}", response.status);
+    }
+    let counts = span.close().expect("built with `alloc-probe`");
+    let net_allocs = counts.total.allocs as i64 - counts.total.frees as i64;
+    let net_bytes = counts.total.alloc_bytes as i64 - counts.total.free_bytes as i64;
+    drop(engine);
+    (net_allocs, net_bytes)
+}
+
+/// How many allocations and bytes one stored hash object leaves behind, at two sizes.
+///
+/// Run on two builds that differ only in where a container's block refs live, the difference is
+/// what that choice costs per object.
+#[cfg(feature = "alloc-probe")]
+#[test]
+#[ignore = "builds two corpora; run with --features alloc-probe --ignored --nocapture"]
+fn what_a_stored_hash_object_leaves_allocated_at_rest() {
+    const FIELDS: usize = 8;
+    let (a_small, b_small) = ingest_hashes(500, FIELDS);
+    let (a_large, b_large) = ingest_hashes(2_000, FIELDS);
+    println!(
+        "HASHREST objects=500 fields={FIELDS} net_allocs_per_object={:.3} net_bytes_per_object={:.1}",
+        a_small as f64 / 500.0,
+        b_small as f64 / 500.0
+    );
+    println!(
+        "HASHREST objects=2000 fields={FIELDS} net_allocs_per_object={:.3} net_bytes_per_object={:.1}",
+        a_large as f64 / 2_000.0,
+        b_large as f64 / 2_000.0
+    );
+    assert!(
+        a_small > 0 && a_large > 0,
+        "nothing was left allocated, so nothing was counting"
+    );
+}

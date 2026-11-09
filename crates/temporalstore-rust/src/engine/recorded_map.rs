@@ -500,6 +500,8 @@ pub(super) fn install_element<K: RecordedKind>(
     } else {
         None
     };
+    // THE ROW BEFORE THE FILING, so the first block's ref lands on it and not in a staging home.
+    K::resident(shard).ensure_row(object_key);
     // THE RECORD FIRST. The proof below cannot be built without the witness this returns, so
     // deleting this call is a compile error rather than a silent unrecorded write.
     let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed(
@@ -825,6 +827,20 @@ impl<K: RecordedKind> RecordedMap<K> {
                 true
             }
         })
+    }
+
+    /// GIVE AN OBJECT A ROW BEFORE ITS FIRST BLOCK IS FILED, so the filer has somewhere to put the
+    /// ref and no object ever has refs anywhere but its row.
+    ///
+    /// The row it makes is VACANT -- no elements -- and so is not an object by any existence reader;
+    /// the install that follows in the same call fills it. That is what lets the staging home go
+    /// away: a first write used to file before its row existed, so the ref waited in the lookup for
+    /// an adoption to move it.
+    pub(super) fn ensure_row(&mut self, object_key: &str) {
+        if !self.entries.contains_key(object_key) {
+            self.entries
+                .insert(std::sync::Arc::from(object_key), RecordedRow::default());
+        }
     }
 
     /// Take this object's refs off its row, leaving the row and its elements in place.

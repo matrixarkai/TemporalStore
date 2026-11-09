@@ -99,13 +99,20 @@ fn check(engine: &TemporalEngine, all: &[String], tally: &mut Tally) {
     let shard = shards.get(&1).expect("shard is loaded");
     let index = &shard.bucket_index;
     assert!(!index.bucket_map.is_empty(), "no bucket index was built");
-    let full = BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+    // THE ALL-HOMES FORMS ON BOTH SIDES: the slot, the lookup and the four container rows. Comparing
+    // two inversions that leave the rows out would pass for every container object whatever the
+    // restricted one did with them.
+    let full = index.block_identities();
 
     for subset in subsets(all) {
         let wanted: BTreeSet<&str> = subset.iter().map(String::as_str).collect();
-        let restricted = BlockKeysByPosition::from_parts_for_keys(
+        let restricted = BlockKeysByPosition::from_homes_for_keys(
             &index.objects,
             &index.object_block_lookup,
+            &index.hashes,
+            &index.sets,
+            &index.zsets,
+            &index.lists,
             wanted.iter().copied(),
         );
         for (_, node) in index.bucket_map.iter() {
@@ -340,7 +347,7 @@ mod probe {
         let shard = shards.get(&1).expect("shard is loaded");
         let index = &shard.bucket_index;
         let probe = Probe::start();
-        let keys = BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+        let keys = index.block_identities();
         let counts = probe.stop();
         assert!(!keys.names_no_position());
         (counts.allocs, counts.alloc_bytes)
