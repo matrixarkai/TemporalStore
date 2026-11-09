@@ -340,7 +340,7 @@ pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, Multi
 pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
-    SharedStoreWalEntry, SharedStoreWalObject, SharedStoreBlockSlab, SharedStoreReplayCursor,
+    SharedStoreWalEntry, SharedStoreBlockSlab, SharedStoreReplayCursor,
     SharedStoreCollectionReport, SharedStoreCursorAbandonPolicy, SharedStoreAbandonedCursor,
     MatrixObjectSlabSource, SharedPathSlabSource, SharedStoreReplicationError, SharedStoreReplicator,
     SharedStoreRetryPolicy, SharedStoreWalAppendMode,

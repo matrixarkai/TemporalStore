@@ -215,7 +215,7 @@ jobs:
             raft::tests::part5::only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers \
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
-            shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_and_older_json \
+            shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_beside_a_per_key_object \
             shared_store::tests::a_default_replicator_publishes_a_batch_as_one_container_and_replays_it \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
@@ -257,32 +257,20 @@ jobs:
             ingestion::tests::the_ingestion_state_reader_accepts_both_shapes \
             ingestion::tests::an_unknown_flink_tag_or_an_absent_ingestion_source_is_refused_rather_than_defaulted \
             ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart \
-            shared_store::tests::the_widened_object_readers_accept_both_shapes \
-            shared_store::tests::the_object_writers_are_binary_and_planted_json_objects_are_still_read \
-            shared_store::tests::a_checkpoint_manifest_survives_the_binary_round_trip \
-            shared_store::tests::a_json_checkpoint_manifest_still_decodes_and_matches_the_binary_one \
-            shared_store::tests::a_truncated_binary_checkpoint_manifest_is_an_error_not_a_shorter_manifest \
-            shared_store::tests::the_checkpoint_manifest_field_numbers_do_not_move \
-            shared_store::tests::list_checkpoints_reads_a_binary_manifest_and_a_json_one_alike \
-            engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_still_read \
+            engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_refused \
             engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
-            shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
             shared_store::tests::restore_reads_a_published_dump_manifest_and_refuses_a_planted_json_one \
             engine::tests::bucket_dump_binary_shape::the_manifest_codec_reads_protobuf_refuses_everything_else_and_the_digest_payload_is_the_encoding \
             engine::tests::bucket_dump_binary_shape::a_manifest_verifies_under_the_one_digest_and_a_changed_field_does_not \
             engine::tests::bucket_dump_binary_shape::a_manifest_is_listed_a_json_one_is_not_and_a_changed_field_is_not_trusted \
             engine::tests::bucket_dump_binary_shape::an_install_marker_is_protobuf_only \
             engine::tests::bucket_dump_binary_shape::no_json_path_is_left_for_a_manifest_or_a_marker \
-            shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
             shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
             shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
             shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             shared_store::tests::a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_json \
             shared_store::tests::no_json_encode_arm_is_left_in_the_wal_command_encoders \
-            shared_store::tests::a_per_key_wal_object_is_read_in_either_shape \
-            shared_store::tests::the_per_key_wal_writer_is_binary_and_a_planted_json_object_is_still_replayed \
-            shared_store::tests::no_json_encode_path_is_left_in_the_per_key_wal_publish \
             index_log::tests::a_record_the_binary_encoder_cannot_pack_is_refused_not_written_as_unreadable_json \
             index_log::tests::no_json_encode_arm_is_left_in_the_index_log_payload_encoders \
             engine::tests::the_control_state_block_is_protobuf_only::a_series_block_codec_reads_protobuf_and_refuses_everything_else \
@@ -311,6 +299,13 @@ jobs:
             engine::tests::the_config_log_is_framed_only::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
             engine::tests::the_config_log_is_framed_only::no_json_path_is_left_in_the_config_log_code \
             shared_store::tests::shared_store_rejects_corrupt_wal_checksum \
+            shared_store::tests::a_checkpoint_manifest_survives_the_round_trip \
+            shared_store::tests::a_truncated_checkpoint_manifest_is_an_error_not_a_shorter_manifest \
+            shared_store::tests::the_checkpoint_manifest_field_numbers_do_not_move \
+            shared_store::tests::list_checkpoints_reads_the_manifest_the_publisher_wrote \
+            shared_store::tests::every_object_writer_writes_the_marker_and_reads_back \
+            shared_store::tests::a_foreign_first_byte_is_refused_and_never_read_as_json \
+            shared_store::tests::no_shared_store_object_codec_reaches_for_json \
             engine::tests::recorded_map_invariant::the_four_kind_encodings_are_byte_for_byte_what_they_were \
             block_store::tests::a_written_manifest_is_the_binary_shape_and_reopens \
             block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab \

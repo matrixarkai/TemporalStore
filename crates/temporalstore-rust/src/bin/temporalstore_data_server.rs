@@ -3185,7 +3185,14 @@ mod tests {
         engine.load_shard(1);
 
         let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = Arc::new(SharedStoreReplicator::new("cluster-a", store.clone()));
+        // PER-KEY LAYOUT, on purpose. The default is one append blob, which has no object per WAL
+        // index, so a hole in the MIDDLE of the log cannot be made by deleting one -- this fixture
+        // named a key the default layout never wrote, and the test was red for that reason alone.
+        let replicator = Arc::new(
+            SharedStoreReplicator::new("cluster-a", store.clone()).with_wal_append_mode(
+                temporalstore_rust::shared_store::SharedStoreWalAppendMode::PerKeyObject,
+            ),
+        );
         let rt = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
@@ -3209,7 +3216,7 @@ mod tests {
         }
 
         let prefix = "cluster-a/shards/1/shared/wal/";
-        let doomed = format!("{prefix}wal_00000000000000000002.json");
+        let doomed = format!("{prefix}wal_00000000000000000002.protobuf.blob");
 
         // REGIME: the key names a real object, so the deletion below is not a no-op.
         assert!(
@@ -3230,13 +3237,13 @@ mod tests {
         assert!(
             after
                 .iter()
-                .any(|key| key.ends_with("wal_00000000000000000001.json")),
+                .any(|key| key.ends_with("wal_00000000000000000001.protobuf.blob")),
             "the entry below the hole went too, so this is a collected prefix"
         );
         assert!(
             after
                 .iter()
-                .any(|key| key.ends_with("wal_00000000000000000003.json")),
+                .any(|key| key.ends_with("wal_00000000000000000003.protobuf.blob")),
             "the entry above the hole went too, so the log is merely short"
         );
 

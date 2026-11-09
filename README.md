@@ -653,5 +653,5 @@ Readers accept older per-key JSON records alongside the protobuf append log.
 A shared-store backend must implement real `append_blob` semantics for this
 default. The base trait returns an unsupported error instead of replacing earlier
 log bytes. Existing put-only integrations can explicitly select
-`SharedStoreWalAppendMode::JsonPerKey` during migration; there is no automatic
+`SharedStoreWalAppendMode::PerKeyObject` during migration; there is no automatic
 fallback to JSON after an append failure.
