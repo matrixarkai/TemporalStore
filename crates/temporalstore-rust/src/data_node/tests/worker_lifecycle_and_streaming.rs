@@ -587,6 +587,7 @@ fn conditional_hash_stale_packed_writes_do_not_copy_the_frame() {
         shard_id: 1,
         fields: fields.clone(),
         timestamp_field: "timestamp".to_string(),
+        ttl_ms: None,
         rows: vec![BatchHashTimestampSetRow(
             "entity".to_string(),
             20,
@@ -605,6 +606,7 @@ fn conditional_hash_stale_packed_writes_do_not_copy_the_frame() {
         shard_id: 1,
         fields,
         timestamp_field: "timestamp".to_string(),
+        ttl_ms: None,
         rows: vec![BatchHashTimestampSetRow(
             "entity".to_string(),
             10,
@@ -641,6 +643,62 @@ fn conditional_hash_stale_packed_writes_do_not_copy_the_frame() {
         cache_read.alloc_bytes,
         WRITES * EMBEDDING_BYTES,
     );
+}
+
+#[test]
+fn conditional_hash_ttl_is_applied_only_with_a_fresh_row() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let encode_timestamp = |seconds| {
+        <TestTimestamp as prost::Message>::encode_to_vec(&TestTimestamp {
+            seconds,
+            nanos: 0,
+        })
+    };
+    let request = |seconds, ttl_ms| BatchHashTimestampSetRequest {
+        shard_id: 1,
+        fields: vec!["timestamp".to_string(), "score".to_string()],
+        timestamp_field: "timestamp".to_string(),
+        ttl_ms: Some(ttl_ms),
+        rows: vec![BatchHashTimestampSetRow(
+            "entity".to_string(),
+            seconds,
+            0,
+            vec![
+                BatchHashMultiSetValue(encode_timestamp(seconds)),
+                BatchHashMultiSetValue(seconds.to_string().into_bytes()),
+            ],
+        )],
+    };
+
+    let fresh = runtime.batch_hash_timestamp_set(request(20, 60_000));
+    assert!(fresh.status.ok, "{fresh:?}");
+    assert_eq!((fresh.applied, fresh.skipped), (1, 0));
+    let first_ttl = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl {
+            key: "entity".to_string(),
+        },
+    });
+    let CommandResponse::Integer { value: first_ttl } = first_ttl.response else {
+        panic!("conditional write did not arm an expiry");
+    };
+
+    let stale = runtime.batch_hash_timestamp_set(request(10, 120_000));
+    assert!(stale.status.ok, "{stale:?}");
+    assert_eq!((stale.applied, stale.skipped), (0, 1));
+    let second_ttl = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl {
+            key: "entity".to_string(),
+        },
+    });
+    let CommandResponse::Integer { value: second_ttl } = second_ttl.response else {
+        panic!("conditional write lost its expiry");
+    };
+    assert!(first_ttl > 0);
+    assert!(second_ttl <= first_ttl);
 }
 
 #[test]
@@ -737,6 +795,7 @@ fn conditional_hash_batch_keeps_only_newer_rows() {
             "f3".to_string(),
         ],
         timestamp_field: "timestamp".to_string(),
+        ttl_ms: None,
         rows: vec![
             BatchHashTimestampSetRow(
                 "entity".to_string(),

@@ -42,8 +42,9 @@ event timestamp are one key's worth of work:
 
 Reads use bounded binary ``/batch_hash_multi_get_compact_msgpack`` requests
 with one shared field projection and one top-level status per batch.
-The common latest-value write uses ``/batch_hash_timestamp_set_msgpack`` to
-compare and replace each row atomically in one request. Augmented or
+The common latest-value write uses the packed timestamp-set routes to compare
+and replace each row atomically in one request, including optional key expiry
+on accepted rows. Augmented or
 mixed-layout writes use bounded ``/batch_write_msgpack`` command batches.
 The latest-value path falls back once to the read-then-write routes for older
 nodes, so serving still groups entities instead of issuing one request per
@@ -285,7 +286,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         defer_stored_dedup = (
             not online_config.skip_dedup
             and not online_config.write_feature_history
-            and not online_config.key_ttl_seconds
             and not online_config.track_keys_for_teardown
         )
         stored_nanos: Dict[str, int] = {}
@@ -422,14 +422,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             {"kind": "feature_append", "key": key, "points": points}
             for key, points in numeric_points.items()
         )
-        commands.extend(
-            {
-                "kind": "common_expire",
-                "key": key,
-                "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-            }
-            for key in expiry_keys
-        )
+        if not defer_stored_dedup:
+            commands.extend(
+                {
+                    "kind": "common_expire",
+                    "key": key,
+                    "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
+                }
+                for key in expiry_keys
+            )
         for key in dict.fromkeys(tracked_keys):
             commands.append(
                 {
@@ -446,23 +447,49 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             and shared_layout
             and not commands
         ):
-            conditional_result = client.batch_hash_timestamp_set(
-                list(shared_fields),
-                ts_field,
-                prepared_rows,
-                128
+            request_upper_bound = (
+                160
                 + 4 * len(ts_field)
                 + 5
                 + 4 * sum(map(len, shared_fields))
                 + 5 * len(shared_fields)
                 + sum(prepared_row_shape_bytes)
-                + 33 * len(prepared_rows),
+                + 33 * len(prepared_rows)
             )
+            ttl_ms = (
+                int(online_config.key_ttl_seconds) * 1000
+                if online_config.key_ttl_seconds
+                else None
+            )
+            if ttl_ms is None:
+                conditional_result = client.batch_hash_timestamp_set(
+                    list(shared_fields),
+                    ts_field,
+                    prepared_rows,
+                    request_upper_bound,
+                )
+            else:
+                conditional_result = client.batch_hash_timestamp_set(
+                    list(shared_fields),
+                    ts_field,
+                    prepared_rows,
+                    request_upper_bound,
+                    ttl_ms,
+                )
             if conditional_result is not None:
                 conditional_handled = True
                 skipped += conditional_result[1]
 
         if not conditional_handled:
+            if defer_stored_dedup:
+                commands.extend(
+                    {
+                        "kind": "common_expire",
+                        "key": key,
+                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
+                    }
+                    for key in expiry_keys
+                )
             if defer_stored_dedup and prepared_rows:
                 unique_hash_keys = [row[0] for row in prepared_rows]
                 reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])

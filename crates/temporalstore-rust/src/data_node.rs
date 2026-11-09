@@ -2827,6 +2827,7 @@ impl DataNodeRuntime {
             timestamp_field: String::new(),
             timestamp_seconds: 0,
             timestamp_nanos: 0,
+            ttl_ms: None,
             entries: Vec::new(),
         };
         if let Err(status) = validate_foreground_write_allowed_inner(
@@ -2866,6 +2867,7 @@ impl DataNodeRuntime {
 
         let fields = request.fields;
         let timestamp_field = request.timestamp_field;
+        let ttl_ms = request.ttl_ms;
         SharedWriteExecution::Expanded(self.batch_execute_inner(BatchExecuteRequest {
             shard_id: request.shard_id,
             commands: request
@@ -2876,6 +2878,7 @@ impl DataNodeRuntime {
                     timestamp_field: timestamp_field.clone(),
                     timestamp_seconds: row.1,
                     timestamp_nanos: row.2,
+                    ttl_ms,
                     entries: fields
                         .iter()
                         .cloned()

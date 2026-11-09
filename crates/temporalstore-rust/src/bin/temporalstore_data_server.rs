@@ -1105,7 +1105,8 @@ fn main() {
                     ),
                 }
             }
-            ("POST", "/batch_hash_timestamp_set_msgpack") => {
+            ("POST", "/batch_hash_timestamp_set_msgpack")
+            | ("POST", "/batch_hash_timestamp_set_ttl_msgpack") => {
                 match parse_msgpack::<BatchHashTimestampSetRequest>(&request.body) {
                     Ok(req)
                         if req.rows.len() <= 4096
