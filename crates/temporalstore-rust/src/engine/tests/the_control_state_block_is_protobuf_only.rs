@@ -144,8 +144,10 @@ fn the_load_path_reads_a_protobuf_block_and_counts_the_unreadable() {
 
 /// A REAL COUNTER WRITE STORES A BLOCK A FRACTION OF THE JSON SIZE, AND A RESTART READS IT.
 ///
-/// Through the real counter path in the default (synchronous) mode, which rewrites the whole series
-/// into a block on every write. After 1,000 points at one-second spacing from a current-era
+/// Through the real counter path in the default (synchronous) mode, with the series block forced on
+/// every increment (an increment otherwise writes it only when due, see
+/// `a_counter_increment_writes_its_series_when_due`, so the newest block is then a stale copy and
+/// this test could not say it is the encoding of the whole series). After 1,000 points at one-second spacing from a current-era
 /// millisecond timestamp, with small signed amounts, the newest block is read back out of the block
 /// store: it is exactly the encoding of the in-memory series, is not JSON, and is compared with what
 /// the JSON object for the same series would have been.
@@ -163,6 +165,7 @@ fn a_counter_write_stores_a_block_a_fraction_of_the_json_size_and_a_restart_read
     let first_ms = 1_700_000_000_000u64;
     let points = 1_000u64;
     let mut expected_total = 0i64;
+    crate::engine::ALWAYS_WRITE_COUNTER_BLOCK.with(|flag| flag.set(true));
     for i in 0..points {
         let amount = (i % 7) as i64 - 3;
         expected_total += amount;
@@ -176,6 +179,7 @@ fn a_counter_write_stores_a_block_a_fraction_of_the_json_size_and_a_restart_read
         });
         assert!(response.status.ok, "{response:?}");
     }
+    crate::engine::ALWAYS_WRITE_COUNTER_BLOCK.with(|flag| flag.set(false));
 
     let (in_memory, stored) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
