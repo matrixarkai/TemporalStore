@@ -497,6 +497,10 @@ pub fn ingest_resource_skill_context(
             None
         };
         let mut resource = parse_context_resource(resource_request);
+        super::resource::set_context_resource_embedding_model(
+            &mut resource,
+            &provider.embedding_model,
+        );
         if let Some(result) = oversized_blob {
             match result {
                 Ok((uri, _size, _hash)) => resource.external_object_uri = uri,
@@ -515,7 +519,11 @@ pub fn ingest_resource_skill_context(
     }
 
     for skill_input in request.skills {
-        let skill = parse_context_skill_markdown(skill_input.raw_uri, skill_input.text);
+        let mut skill = parse_context_skill_markdown(skill_input.raw_uri, skill_input.text);
+        super::resource::set_context_resource_embedding_model(
+            &mut skill.resource,
+            &provider.embedding_model,
+        );
         skills.push(skill);
     }
 

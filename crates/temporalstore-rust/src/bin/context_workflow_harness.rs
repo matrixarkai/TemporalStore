@@ -309,6 +309,25 @@ fn main() {
         root.join("indexes"),
     );
     engine.load_shard(1);
+    let scale_only = temporalstore_rust::env_flag::env_bool(
+        "TEMPORALSTORE_CONTEXT_BENCHMARK_SCALE_ONLY",
+        false,
+    );
+    if scale_only {
+        let report = run_context_pipeline_benchmark_sweep(
+            &engine,
+            local_context_harness_sweep_request(),
+        );
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .expect("context benchmark sweep should serialize")
+        );
+        if !report.status.ok {
+            std::process::exit(1);
+        }
+        return;
+    }
     let external_only = temporalstore_rust::env_flag::env_bool(
         "TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY",
         false,
@@ -570,38 +589,7 @@ fn main() {
         && benchmark.per_query.len() == benchmark.query_count;
     let benchmark_sweep = run_context_pipeline_benchmark_sweep(
         &engine,
-        ContextPipelineBenchmarkSweepRequest {
-            shard_id: 1,
-            tenant_hash: 20260618,
-            profiles: vec![
-                ContextPipelineBenchmarkSweepProfile {
-                    profile: "reference_harness_sweep_small".to_string(),
-                    source_count: 16,
-                    query_count: 2,
-                    max_events: 6,
-                },
-                ContextPipelineBenchmarkSweepProfile {
-                    profile: "reference_harness_sweep_medium".to_string(),
-                    source_count: 32,
-                    query_count: 4,
-                    max_events: 8,
-                },
-                ContextPipelineBenchmarkSweepProfile {
-                    profile: "locomo_style_conversation_memory".to_string(),
-                    source_count: 60,
-                    query_count: 6,
-                    max_events: 12,
-                },
-                ContextPipelineBenchmarkSweepProfile {
-                    profile: "longmemeval_s_style_long_context".to_string(),
-                    source_count: 96,
-                    query_count: 8,
-                    max_events: 16,
-                },
-            ],
-            provider: ContextModelProviderConfig::default(),
-            thresholds: local_context_harness_sweep_thresholds(),
-        },
+        local_context_harness_sweep_request(),
     );
     let benchmark_sweep_ready = benchmark_sweep.status.ok
         && benchmark_sweep.all_profiles_ready
@@ -1132,6 +1120,41 @@ fn local_context_harness_sweep_thresholds() -> ContextPipelineBenchmarkThreshold
         min_retrieve_queries_per_sec: 0.5,
         min_inject_queries_per_sec: 0.5,
         ..ContextPipelineBenchmarkThresholds::default()
+    }
+}
+
+fn local_context_harness_sweep_request() -> ContextPipelineBenchmarkSweepRequest {
+    ContextPipelineBenchmarkSweepRequest {
+        shard_id: 1,
+        tenant_hash: 20260618,
+        profiles: vec![
+            ContextPipelineBenchmarkSweepProfile {
+                profile: "reference_harness_sweep_small".to_string(),
+                source_count: 16,
+                query_count: 2,
+                max_events: 6,
+            },
+            ContextPipelineBenchmarkSweepProfile {
+                profile: "reference_harness_sweep_medium".to_string(),
+                source_count: 32,
+                query_count: 4,
+                max_events: 8,
+            },
+            ContextPipelineBenchmarkSweepProfile {
+                profile: "locomo_style_conversation_memory".to_string(),
+                source_count: 60,
+                query_count: 6,
+                max_events: 12,
+            },
+            ContextPipelineBenchmarkSweepProfile {
+                profile: "longmemeval_s_style_long_context".to_string(),
+                source_count: 96,
+                query_count: 8,
+                max_events: 16,
+            },
+        ],
+        provider: ContextModelProviderConfig::default(),
+        thresholds: local_context_harness_sweep_thresholds(),
     }
 }
 

@@ -92,6 +92,38 @@ fn context_relevance_ranks_qa_synonyms_and_phrases() {
             > context_relevance_score("service timeline outage", distractor)
     );
     assert!(context_relevance_score("payment fraud score", relevant) >= 100);
+    assert_eq!(
+        context_query_terms("topic 4 in v2"),
+        vec!["topic".to_string(), "4".to_string()]
+    );
+    assert!(context_query_secondary_index_filter_groups(&context_query_terms(
+        "latest payment status topic 4"
+    ))
+    .iter()
+    .any(|group| group == &["query_term:4".to_string()]));
+    assert!(
+        context_relevance_score("latest payment status topic 4", "latest payment status topic 4")
+            > context_relevance_score(
+                "latest payment status topic 4",
+                "latest payment status topic 0",
+            )
+    );
+    let query_embedding = deterministic_context_embedding("mock", "latest payment status topic 4");
+    assert!(
+        context_embedding_similarity_micros(
+            &query_embedding,
+            &deterministic_context_embedding(
+                "mock",
+                "latest memory update for topic 4 payment fraud status",
+            ),
+        ) > context_embedding_similarity_micros(
+            &query_embedding,
+            &deterministic_context_embedding(
+                "mock",
+                "support ticket follow up for topic 3",
+            ),
+        )
+    );
 
     let updated_memory = benchmark_context_body(7, 2, 4);
     let stale_memory = benchmark_context_body(1, 2, 1);
@@ -1684,7 +1716,8 @@ fn context_reference_blocks_and_provider_model_switches_are_reported() {
                 matches!(
                     vectors.response,
                     CommandResponse::ContextSummaryVectors { ref vectors }
-                        if vectors.len() == 1 && vectors[0].vector.len() == 16
+                        if vectors.len() == 1
+                            && vectors[0].vector.len() == DETERMINISTIC_EMBEDDING_DIMENSIONS
                 ),
                 "level {level} summary must carry its vector"
             );
@@ -1712,7 +1745,7 @@ fn context_reference_blocks_and_provider_model_switches_are_reported() {
                 if events
                     .iter()
                     .any(|event| event.event_id_hash == extract.event.event_id_hash
-                        && event.vector.len() == 16)
+                        && event.vector.len() == DETERMINISTIC_EMBEDDING_DIMENSIONS)
         ));
 
         // The node itself must carry its L0 vector off the same ingest -- the traversal scores
@@ -1728,7 +1761,7 @@ fn context_reference_blocks_and_provider_model_switches_are_reported() {
         assert!(matches!(
             node.response,
             CommandResponse::ContextNode { node: Some(ref node), .. }
-                if node.vector.len() == 16
+                if node.vector.len() == DETERMINISTIC_EMBEDDING_DIMENSIONS
                     && node.embedding_model_hash != 0
                     && node.embedding_updated_at_ms == extract.event.event_time_ms
         ));
@@ -3001,7 +3034,9 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
         nodes.response,
         CommandResponse::ContextNodes { ref nodes }
             if nodes.len() == extract_node_hashes.len()
-                && nodes.iter().all(|node| node.vector.len() == 16)
+                && nodes
+                    .iter()
+                    .all(|node| node.vector.len() == DETERMINISTIC_EMBEDDING_DIMENSIONS)
     ));
 }
 

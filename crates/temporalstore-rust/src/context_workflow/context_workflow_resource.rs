@@ -238,6 +238,29 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     }
 }
 
+pub(super) fn set_context_resource_embedding_model(
+    report: &mut ContextResourceParseReport,
+    embedding_model: &str,
+) {
+    let embedding_model = embedding_model.trim();
+    if embedding_model.is_empty() || report.embedding_model == embedding_model {
+        return;
+    }
+    report.embedding_model.clear();
+    report.embedding_model.push_str(embedding_model);
+    for chunk in &mut report.chunks {
+        let chunk_hash = chunk.chunk_hash.to_string();
+        chunk.embedding_ref_hash = stable_hash64_parts(&[
+            "resource_chunk_embedding:",
+            &report.raw_uri,
+            ":",
+            &chunk_hash,
+            ":",
+            embedding_model,
+        ]);
+    }
+}
+
 pub fn update_context_resource_lifecycle(
     mut resources: Vec<ContextResourceLifecycleRecord>,
     updates: Vec<ContextResourceLifecycleUpdate>,
@@ -463,9 +486,28 @@ fn context_resource_units(
 ) -> Vec<BTreeMap<String, String>> {
     if matches!(resource_type, "md" | "markdown" | "skill") {
         markdown_resource_units(text)
+    } else if resource_type == "pdf" {
+        pdf_resource_units(text)
     } else {
         paragraph_resource_units(text, raw_uri)
     }
+}
+
+fn pdf_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
+    let mut units = Vec::new();
+    for (page_index, page) in text.split('\u{000c}').enumerate() {
+        for (paragraph_index, paragraph) in split_paragraphs(page).into_iter().enumerate() {
+            let mut unit = BTreeMap::new();
+            let line_count = paragraph.lines().count().max(1);
+            unit.insert("text".to_string(), paragraph);
+            unit.insert("page".to_string(), (page_index + 1).to_string());
+            unit.insert("paragraph_index".to_string(), paragraph_index.to_string());
+            unit.insert("line_start".to_string(), "1".to_string());
+            unit.insert("line_end".to_string(), line_count.to_string());
+            units.push(unit);
+        }
+    }
+    units
 }
 
 fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
@@ -870,6 +912,47 @@ mod resource_chunk_tests {
             vec!["alpha\nbeta".to_string(), "gamma\ndelta".to_string()]
         );
     }
+
+    #[test]
+    fn pdf_text_keeps_page_and_paragraph_chunk_identity() {
+        let mut report = parse_context_resource(ContextResourceParseRequest {
+            raw_uri: "manual.pdf".to_string(),
+            resource_type: Some("pdf".to_string()),
+            text: "Page one first.\n\nPage one second.\u{000c}Page two.".to_string(),
+            max_chunk_chars: 1_400,
+            overlap_chars: 120,
+            chunk_hash_base: None,
+            owner_scope: "user".to_string(),
+            version: "v1".to_string(),
+            watch_interval_minutes: 0,
+            parser_name: "pdf-text".to_string(),
+        });
+
+        assert_eq!(report.chunks.len(), 3);
+        assert_eq!(report.chunks[0].source_ref, "manual.pdf#page=1&paragraph=0");
+        assert_eq!(report.chunks[1].source_ref, "manual.pdf#page=1&paragraph=1");
+        assert_eq!(report.chunks[2].source_ref, "manual.pdf#page=2&paragraph=0");
+        assert_eq!(
+            report.chunks[0].metadata.get("page").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            report.chunks[2].metadata.get("page").map(String::as_str),
+            Some("2")
+        );
+
+        set_context_resource_embedding_model(&mut report, "nomic-embed-text");
+        assert_eq!(report.embedding_model, "nomic-embed-text");
+        for chunk in &report.chunks {
+            assert_eq!(
+                chunk.embedding_ref_hash,
+                stable_hash64(&format!(
+                    "resource_chunk_embedding:manual.pdf:{}:nomic-embed-text",
+                    chunk.chunk_hash
+                ))
+            );
+        }
+    }
 }
 
 fn floor_char_boundary(value: &str, mut index: usize) -> usize {
@@ -890,7 +973,12 @@ fn ceil_char_boundary(value: &str, mut index: usize) -> usize {
 
 fn context_resource_source_ref(raw_uri: &str, metadata: &BTreeMap<String, String>) -> String {
     let mut suffix = if let Some(block) = metadata.get("page") {
-        format!("block={block}")
+        let mut suffix = format!("page={block}");
+        if let Some(paragraph) = metadata.get("paragraph_index") {
+            suffix.push_str("&paragraph=");
+            suffix.push_str(paragraph);
+        }
+        suffix
     } else if let Some(heading_slug) = metadata.get("heading_slug") {
         format!("heading={heading_slug}")
     } else if let Some(paragraph_index) = metadata.get("paragraph_index") {
