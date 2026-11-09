@@ -191,7 +191,7 @@ Partial is written as partial below. Nothing here is rounded up.
 | `initialize` | optional, base is `pass` | inherited; nothing to initialise |
 | `retrieve_online_documents`, `retrieve_online_documents_v2` | optional, **base raises** | **not implemented — vector search is not supported by this provider** |
 | `read_precomputed_vectors`, `write_precomputed_vector` | optional, base has generic feature-row implementations | **implemented** — writes the compatible synthetic feature field without an unused timestamp and reads repeated entities through one deduplicated compact projection |
-| `get_online_features`, `get_online_features_async` | provided by Feast | inherited and exercised — these are what the conformance tests call |
+| `get_online_features`, `get_online_features_async` | provided by Feast | inherited and exercised, with compatible feature views coalesced into one compact projection per entity set |
 
 ### Against Feast's own process for a new online store
 
