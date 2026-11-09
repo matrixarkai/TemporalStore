@@ -6,6 +6,21 @@ use super::*;
 use crate::types::{BatchConditionalWriteResponse, BatchWriteError};
 use serde::ser::SerializeSeq;
 
+#[cfg(test)]
+thread_local! {
+    static HASH_BATCH_EXPANSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_hash_batch_expansions() {
+    HASH_BATCH_EXPANSIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn hash_batch_expansions() -> u64 {
+    HASH_BATCH_EXPANSIONS.with(std::cell::Cell::get)
+}
+
 struct ProjectedBatchHashMultiGetRow(execute_on_shard::ProjectedHashValues);
 
 struct BinarySlice<'a>(&'a [u8]);
@@ -488,6 +503,60 @@ mod shared_timestamp_source_tests {
         assert!(failed.errors.is_empty());
         std::hint::black_box((full, compact));
     }
+
+    #[test]
+    fn live_ttl_rows_keep_the_compact_projection_path() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for key in ["live", "expired"] {
+            let stored = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashMultiSet {
+                    key: key.to_string(),
+                    entries: vec![("value".to_string(), key.as_bytes().to_vec())],
+                },
+            });
+            assert!(stored.status.ok, "{stored:?}");
+        }
+        let live_ttl = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: "live".to_string(),
+                ttl_ms: 60_000,
+            },
+        });
+        assert!(live_ttl.status.ok, "{live_ttl:?}");
+        let expired_ttl = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: "expired".to_string(),
+                ttl_ms: 0,
+            },
+        });
+        assert!(expired_ttl.status.ok, "{expired_ttl:?}");
+
+        reset_hash_batch_expansions();
+        let live = engine.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+            shard_id: 1,
+            keys: vec!["live".to_string()],
+            fields: vec!["value".to_string()],
+        });
+        let live = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&live).unwrap();
+        assert!(live.status.ok, "{live:?}");
+        assert_eq!(live.rows[0].0, vec![Some(b"live".to_vec())]);
+        assert_eq!(hash_batch_expansions(), 0);
+
+        reset_hash_batch_expansions();
+        let expired = engine.batch_hash_multi_get_compact_msgpack(BatchHashMultiGetRequest {
+            shard_id: 1,
+            keys: vec!["expired".to_string()],
+            fields: vec!["value".to_string()],
+        });
+        let expired = rmp_serde::from_slice::<BatchHashMultiGetResponse>(&expired).unwrap();
+        assert!(expired.status.ok, "{expired:?}");
+        assert_eq!(expired.rows[0].0, vec![None]);
+        assert_eq!(hash_batch_expansions(), 1);
+    }
 }
 
 impl TemporalEngine {
@@ -697,8 +766,23 @@ impl TemporalEngine {
             ));
         }
 
-        // Lazy expiry is a mutating read and retains the generic batch's WAL/index handling.
-        if !shard.expires_at_ms().is_empty() {
+        // Lazy expiry is a mutating read and retains the generic batch's WAL/index handling. A
+        // live deadline does not mutate anything, so it stays on the projection path instead of
+        // expanding every row into an owned command and cloning the shared fields per entity.
+        let requested_key_expired = if shard.expires_at_ms().is_empty() {
+            false
+        } else {
+            let now = resolve_now_ms();
+            keys.iter().any(|key| {
+                shard
+                    .expires_at_ms()
+                    .get(key.as_str())
+                    .is_some_and(|expires_at| *expires_at <= now)
+            })
+        };
+        if requested_key_expired {
+            #[cfg(test)]
+            HASH_BATCH_EXPANSIONS.with(|count| count.set(count.get().saturating_add(1)));
             drop(shards);
             let response = self.batch_execute(BatchExecuteRequest {
                 shard_id,
