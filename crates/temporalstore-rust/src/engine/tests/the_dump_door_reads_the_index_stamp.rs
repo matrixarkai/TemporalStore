@@ -176,11 +176,9 @@ fn persisted_index_exists(index_dir: &std::path::Path, shard: ShardId) -> bool {
 ///
 /// A first version of this probe asked whether the index FILE spelled the key, and read `false`
 /// for data that had demonstrably survived. The index is not stored as text: `serialize_index`
-/// wraps it in a `TSIDX` container, and WHICH codec sits inside depends on the shard -- a
-/// current-stamped shard takes `encode_index_bytes`, which uses the compressed MessagePack codec
-/// (2), while a stale-stamped one takes `wrap_index_json`, which uses the compressed JSON codec
-/// (1). So a text search answers "absent" for a present key under codec 1, and cannot be run at
-/// all under codec 2.
+/// wraps it in a `TSIDX` container with the compressed MessagePack codec (2). It used to depend on
+/// the shard: a stale-stamped one took a compressed JSON codec (1) and a text search answered
+/// "absent" for a present key there, and it cannot be run at all under codec 2.
 ///
 /// The first version of that mistake was caught by a positive control reading `false` for data
 /// that had survived. The second was caught by the probe's own codec assertion firing instead of

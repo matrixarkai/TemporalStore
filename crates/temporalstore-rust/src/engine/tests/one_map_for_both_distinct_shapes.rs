@@ -118,7 +118,11 @@ fn a_pre_bump_index_is_refused_rather_than_read() {
          changes nothing"
     );
     restored.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION - 1;
-    std::fs::write(&path, crate::engine::encode_index_bytes(&restored)).expect("write");
+    // PLAIN JSON, NOT THE CONTAINER: the container's reader takes the stamp from its header, so a
+    // msgpack image written from a down-stamped shard would decode as current. The plain-JSON
+    // reader stores and returns the field, which is what a stale-stamp image has to be.
+    std::fs::write(&path, crate::engine::encode_index_bytes_as_plain_json(&restored))
+        .expect("write");
 
     reset_index_load_path_counts();
     let reloaded = engine_at(dir.path());

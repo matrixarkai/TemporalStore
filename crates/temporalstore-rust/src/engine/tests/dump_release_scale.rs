@@ -189,27 +189,46 @@ const SHIPPED_GAP_BYTES: u64 = 1024 * 1024;
 /// fitted intercept 35,292 B against 35,291 B -- one byte, the small-arm drift arriving in the
 /// fit.
 const AFFINE_MODEL_BAND: f64 = 0.03;
-/// Band on the fitted FIXED term, as a share of what a dump costs at SMALL. Measured 3.764%
-/// (about 35,291 B of 937,638 B).
+/// RE-DERIVED when the stale-version JSON arm of `serialize_index` was deleted (the served index is
+/// always msgpack now), and the claim changed with it. Read this before moving either band.
 ///
-/// This is the term that makes the cost affine rather than proportional, so the FLOOR is what
-/// refuses a cost that has become proportional and the CEILING refuses a fixed term big enough to
-/// mean the dump had stopped writing the whole store. It is the same claim as the decline band
-/// below, counted once at the cost and once at the ratio: a 1% fixed term declines 0.9912x over
-/// this corpus step and a 10% one declines 0.9102x. The 0.28% drift on the large arm moves this
-/// share by about 0.30 of a percentage point, so the floor clears that by 9x and the ceiling by
-/// 21x.
-const FIXED_TERM_SHARE_FLOOR: f64 = 0.01;
-const FIXED_TERM_SHARE_CEILING: f64 = 0.10;
-/// Band on the PROPORTIONAL arm's written-per-byte-released, large over small. Measured 0.9663x.
+/// WHAT THE OLD BANDS WERE FITTED TO. They were measured on a store that had just been loaded and
+/// not yet stamped, which `serialize_index` answered by writing compressed JSON. That image is
+/// SUBLINEAR in the store -- the compressor finds more to share the more it is given -- so the dump
+/// cost had a large positive fixed term (7.757% of a dump at SMALL) and the proportional arm
+/// declined 0.9304x, and a band of 1%..10% and 0.90..0.995 was the right size for it. The same
+/// fixture on a STAMPED shard (what production has after its first flush) never saw that image:
+/// it measured -0.37% and 1.0035x on clean main before this change, outside both bands. The bands
+/// described a regime production was not in.
 ///
-/// This arm was asserted FLAT to within 1% until 2026-10-06, which is false about a correct
-/// store: an affine cost over a proportional release DECLINES as the fixed term is amortised. The
-/// CEILING is therefore the live edge here -- it is what refuses flatness -- and the FLOOR refuses
-/// a climb, which is the control's original job. Only the large arm's numerator moves this ratio,
-/// at 0.28%, and the measured value sits 2.87% below the ceiling -- about 10.6x that drift.
-const PROPORTIONAL_DECLINE_FLOOR: f64 = 0.90;
-const PROPORTIONAL_DECLINE_CEILING: f64 = 0.995;
+/// WHAT A DUMP COSTS NOW, over 10 complete runs on this tree: one msgpack image of the store,
+/// 38.51..38.52 B per record held, with a fixed term of -3,178..-3,714 B, which is
+/// -0.345%..-0.403% of what a dump costs at SMALL; the proportional arm climbs 1.0033..1.0038x;
+/// the held-out model error is 0.517..0.542%. That is a cost PROPORTIONAL to the store, with a
+/// drift of about a third of a percent upward across a ten-fold corpus. There is no fixed term to
+/// amortise any more, and the claim "the cost is affine with a positive fixed term" cannot be made
+/// about it.
+///
+/// WHAT THE BANDS CLAIM NOW. That a dump's cost is still a per-record term plus nothing much:
+/// within +-2% of a dump at SMALL as a fixed term, and a proportional arm that moves by no more than
+/// -1%..+2% over the corpus step. Each edge refuses a different change. A fixed term ABOVE the
+/// ceiling is a per-dump overhead that was not there (a second copy of something, a header that
+/// grew); one BELOW the floor, and a proportional arm above its ceiling, are a cost per record that
+/// rises with the size of the store -- the early shape of a quadratic. A proportional arm BELOW its
+/// floor is a fixed term big enough to be amortised, the shape this guard used to require.
+///
+/// WHAT IT NO LONGER CLAIMS. It does not claim the dump amortises anything. The #2121 intent --
+/// refuse a dump whose cost is proportional to the store -- is not something this guard can hold
+/// for a whole-image msgpack dump, because that cost IS proportional; what is held instead is that
+/// it is not WORSE than proportional beyond the margin above. The margin is about 5x the values
+/// measured and 6x the 0.30-point drift a large arm has been seen to add, so it is not tight: a
+/// super-proportional term under about 2% over this step passes.
+const FIXED_TERM_SHARE_FLOOR: f64 = -0.02;
+const FIXED_TERM_SHARE_CEILING: f64 = 0.02;
+/// Band on the PROPORTIONAL arm's written-per-byte-released, large over small. Measured
+/// 1.0033..1.0038x over 10 runs; see the note above for what each edge refuses.
+const PROPORTIONAL_DECLINE_FLOOR: f64 = 0.99;
+const PROPORTIONAL_DECLINE_CEILING: f64 = 1.02;
 
 /// Set the rolling threshold for THIS THREAD and put it back on drop, panic included.
 struct RollingThreshold;
@@ -855,9 +874,10 @@ fn what_a_dump_costs_and_releases_at_two_corpus_sizes() {
     assert!(
         fixed_term_share > FIXED_TERM_SHARE_FLOOR && fixed_term_share < FIXED_TERM_SHARE_CEILING,
         "AFFINE: the fitted fixed term is {fixed_term:.0} B, {:.3}% of the {} B a dump costs at \
-         {:.0} records held, outside {:.1}%..{:.1}%. This is the term that makes the cost AFFINE \
-         rather than proportional: at zero the control arm below would be exactly FLAT, and the \
-         only reason it declines is that this term is being amortised over a larger release",
+         {:.0} records held, outside {:.1}%..{:.1}%. A dump writes one msgpack image of the store, \
+         so this term is expected near zero (measured -0.36%..-0.40%). Above the ceiling a dump \
+         has gained a per-dump overhead; below the floor its cost per record is rising with the \
+         size of the store",
         fixed_term_share * 100.0,
         small_proportional.kernel_bytes_written,
         records_held(small_proportional),
@@ -865,21 +885,14 @@ fn what_a_dump_costs_and_releases_at_two_corpus_sizes() {
         FIXED_TERM_SHARE_CEILING * 100.0
     );
 
-    // CONTROL ARM, restated 2026-10-06. It asserted this arm was FLAT to within 1%, which is
-    // false about a correct store, and it was the only failure left in this suite.
+    // CONTROL ARM, re-derived with the bands above. With the release grown in proportion to the
+    // store, a dump that costs a per-record term and nothing else writes the same number of bytes
+    // per byte released at both sizes: the ratio is ~1. It was 0.9304x while a dump carried a large
+    // positive fixed term that a larger release amortised, and that term went with the JSON image.
     //
-    // An AFFINE cost over a PROPORTIONAL release is not flat. The per-record term cancels against
-    // the release and what is left is the fixed term divided by a release ten times larger, so
-    // the ratio FALLS a little as that term is amortised -- by the amount the fitted share above
-    // accounts for, 0.9663x measured against 0.9912x at a 1% fixed term and 0.9102x at a 10% one.
-    // The band and the share band are one claim counted twice, once at the cost and once here.
-    //
-    // The control still does the job it was written for. The SUBJECT climbs 8.242x and this arm
-    // does not climb at all, and that contrast is what makes the climb the CADENCE rather than
-    // this test's apparatus: if BOTH arms climbed, the measurement would be saying something
-    // about the fixture. Both edges are load-bearing -- the CEILING refuses a flat arm, which is
-    // what a cost proportional to the store with no fixed term would produce, and the FLOOR
-    // refuses a climb.
+    // The control still does the job it was written for. The SUBJECT arm climbs 8.57x and this arm
+    // does not climb: that contrast is what makes the climb the CADENCE rather than this test's
+    // apparatus. If BOTH arms climbed, the measurement would be saying something about the fixture.
     let proportional_decline = proportional_ratio_large / proportional_ratio_small;
     assert!(
         proportional_decline > PROPORTIONAL_DECLINE_FLOOR
@@ -887,9 +900,9 @@ fn what_a_dump_costs_and_releases_at_two_corpus_sizes() {
         "CONTROL: with the release grown in proportion to the store, a dump wrote \
          {proportional_ratio_small:.4} bytes per byte released at {} records and \
          {proportional_ratio_large:.4} at {} -- {proportional_decline:.4}x, outside {:.3}..{:.3}. \
-         Above the ceiling this arm has gone FLAT, which would say a dump's cost had become \
-         proportional to the store with no fixed term left to amortise; below the floor it is \
-         moving with the corpus, and the fixed arm's climb is then not the cadence",
+         Above the ceiling a dump's cost per record is rising with the size of the store; below the \
+         floor a fixed term large enough to be amortised has come back, and the fixed arm's climb \
+         is then no longer only the cadence",
         small_proportional.corpus,
         large_proportional.corpus,
         PROPORTIONAL_DECLINE_FLOOR,

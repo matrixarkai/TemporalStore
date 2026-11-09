@@ -3101,21 +3101,6 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
 pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 31;
 
-/// Serialize a shard index, stamping the current format version.
-///
-/// Stamped here rather than held on the struct so ShardState keeps its derived Default: an
-/// in-memory shard would otherwise default the field to 0 and write itself out looking legacy.
-pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Value {
-    let mut value = serde_json::to_value(shard).expect("shard index should serialize");
-    if let Some(map) = value.as_object_mut() {
-        map.insert(
-            "index_format_version".to_string(),
-            serde_json::Value::from(SHARD_INDEX_FORMAT_VERSION),
-        );
-    }
-    value
-}
-
 /// What the serving read fast path decided to serve: chosen under the shard-table read guard,
 /// read off the block store after it drops.
 ///
@@ -3429,13 +3414,10 @@ impl Drop for MarkedShardReadGuard<'_> {
     }
 }
 
-/// Serialize a shard whose stamp is already current, straight to bytes.
+/// Stamp the shard with the current format version and serialize it.
 ///
-/// The stamping path builds an entire intermediate `serde_json::Value` tree of the whole index
-/// before encoding it -- serializing a multi-megabyte structure twice, once into a tree of
-/// allocations and once into bytes, on every snapshot. A shard whose version field is already
-/// correct needs none of that; one whose field is stale still takes the stamping path, so the
-/// bytes are identical either way.
+/// The bytes are those `serialize_index` writes; the only difference is that the shard's own field
+/// is set first, for the snapshot callers that keep the shard and want it to read as current.
 pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
     shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
     let bytes = encode_index_bytes(shard);
@@ -3443,15 +3425,19 @@ pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
     bytes
 }
 
+/// The served index of a shard, as bytes. Always the msgpack container, whatever the shard's own
+/// `index_format_version` field says.
+///
+/// THE STAMP THAT MATTERS IS IN THE HEADER, NOT IN THE FIELD. A shard that was just loaded, or built
+/// in a test, carries 0 in its own `index_format_version` until something stamps it, and this used
+/// to answer that with a different WRITER: a stale shard was written as compressed JSON with the
+/// field patched to the current constant, so the same shard produced a different payload, a
+/// different size and a different cost depending on whether a flush had happened to stamp it first.
+/// The container header already carries the struct version, and `decode_index_bytes` now sets the
+/// field from it, so a reader gets the current stamp from either shard and the writer has nothing
+/// left to choose.
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
-    let bytes = if shard.index_format_version == SHARD_INDEX_FORMAT_VERSION {
-        encode_index_bytes(shard)
-    } else {
-        wrap_index_json(
-            serde_json::to_vec(&stamp_index_format_version(shard))
-                .expect("shard index should serialize"),
-        )
-    };
+    let bytes = encode_index_bytes(shard);
     // Counted at the two production entry points rather than inside `encode_index_bytes`, so the
     // tally is one per served-index encode whichever branch produced it -- and so the handful of
     // tests that call the encoder directly to check a container shape do not register as engine
@@ -3575,15 +3561,16 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
     // MSGPACK ONLY, AND NO FALLBACK. There is no setting that selects another payload, and this
     // does not fall through to JSON when the binary encode returns `None`: a `ShardState` that
-    // msgpack refuses and JSON accepts is not a shape any type in it can produce. The one JSON
-    // write left in this file is `serialize_index`'s stale-version arm, which is a separate
-    // decision.
+    // msgpack refuses and JSON accepts is not a shape any type in it can produce. No JSON write
+    // is left in this file outside the test-only fixture producers.
     encode_index_msgpack(shard).expect("shard index should serialize")
 }
 
-/// Put already-serialized index JSON into the container. Separate from `encode_index_bytes`
-/// because the version-stamping path serializes a patched `Value` rather than the struct, and both
-/// must produce the same on-disk shape.
+/// Put index JSON into the zstd-json container, the way an older binary wrote it.
+///
+/// Test-only. Nothing in production writes this payload any more, but the reader arm for it is still
+/// kept, and a claim about what a reader accepts is worth only as much as the bytes used to test it.
+#[cfg(test)]
 fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
     match zstd::stream::encode_all(json.as_slice(), INDEX_ZSTD_LEVEL) {
         Ok(payload) => {
@@ -3682,7 +3669,15 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
             }
             let decoded = zstd::stream::decode_all(body)
                 .map_err(|error| format!("served index payload did not decompress: {error}"))?;
-            rmp_serde::from_slice::<ShardState>(&decoded).map_err(|error| error.to_string())
+            let mut state = rmp_serde::from_slice::<ShardState>(&decoded)
+                .map_err(|error| error.to_string())?;
+            // THE HEADER IS THE STAMP. The field inside the payload is whatever the writing shard
+            // happened to carry -- 0 for one that was never stamped -- and the header is what was
+            // checked against `SHARD_INDEX_FORMAT_VERSION` above, so it is the one value here that
+            // is both known and meaningful. Without this a fresh shard's image decodes back as
+            // stale and every door that reads the stamp refuses it.
+            state.index_format_version = version;
+            Ok(state)
         }
         other => Err(format!(
             "served index uses payload codec {other}, which this binary cannot read"
