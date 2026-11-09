@@ -2,7 +2,6 @@
 // Copyright 2026 MatrixArkAI
 
 use super::*;
-use std::borrow::Cow;
 
 pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextResourceParseReport {
     let resource_type =
@@ -49,7 +48,7 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
             .filter(|slug| !slug.is_empty())
             .map(|slug| format!("{}#heading={slug}", request.raw_uri));
         for (split_index, piece) in
-            split_context_resource_text(&text, max_chunk_chars, overlap_chars)
+            split_context_resource_text(text, max_chunk_chars, overlap_chars)
                 .into_iter()
                 .enumerate()
         {
@@ -464,7 +463,7 @@ fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
     let mut current_path = vec!["document".to_string()];
     let mut current_heading_slug = "document".to_string();
     let mut parent_heading_slug = String::new();
-    let mut buffer = Vec::new();
+    let mut buffer = String::new();
     let mut start_line = 1_usize;
     let mut heading_stack: Vec<(usize, String, String)> = Vec::new();
     let mut active_code_language: Option<String> = None;
@@ -472,7 +471,7 @@ fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
 
     fn flush(
         units: &mut Vec<BTreeMap<String, String>>,
-        buffer: &mut Vec<String>,
+        buffer: &mut String,
         heading: &str,
         level: usize,
         path: &[String],
@@ -482,11 +481,11 @@ fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
         end_line: usize,
         code_language: Option<&str>,
     ) {
-        let content = buffer.join("\n").trim().to_string();
-        if content.is_empty() {
-            buffer.clear();
+        trim_owned_context_text(buffer);
+        if buffer.is_empty() {
             return;
         }
+        let content = std::mem::take(buffer);
         let mut unit = BTreeMap::new();
         unit.insert("text".to_string(), content);
         unit.insert("heading".to_string(), heading.to_string());
@@ -505,7 +504,13 @@ fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
             unit.insert("code_language".to_string(), language.to_string());
         }
         units.push(unit);
-        buffer.clear();
+    }
+
+    fn push_line(buffer: &mut String, line: &str) {
+        if !buffer.is_empty() {
+            buffer.push('\n');
+        }
+        buffer.push_str(line);
     }
 
     for (line_index, line) in text.lines().enumerate() {
@@ -561,12 +566,12 @@ fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
             start_line = line_number;
             active_code_language = None;
             section_code_language = None;
-            buffer.push(trimmed.to_string());
+            push_line(&mut buffer, trimmed);
         } else {
             if let Some(language) = active_code_language.as_deref() {
                 section_code_language.get_or_insert_with(|| language.to_string());
             }
-            buffer.push(line.trim_end().to_string());
+            push_line(&mut buffer, line.trim_end());
         }
     }
     let end_line = text.lines().count().max(1);
@@ -631,21 +636,42 @@ fn paragraph_resource_units(text: &str, raw_uri: &str) -> Vec<BTreeMap<String, S
 
 pub(super) fn split_paragraphs(text: &str) -> Vec<String> {
     let mut paragraphs = Vec::new();
-    let mut current = Vec::new();
-    for line in text.lines() {
+    let mut paragraph_start = None;
+    let mut paragraph_end = 0usize;
+    let mut offset = 0usize;
+    for segment in text.split_inclusive('\n') {
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
+        let line = line.strip_suffix('\r').unwrap_or(line);
         if line.trim().is_empty() {
-            if !current.is_empty() {
-                paragraphs.push(current.join("\n").trim().to_string());
-                current.clear();
+            if let Some(start) = paragraph_start.take() {
+                paragraphs.push(owned_context_paragraph(&text[start..paragraph_end]));
             }
         } else {
-            current.push(line.trim_end().to_string());
+            paragraph_start.get_or_insert(offset);
+            paragraph_end = offset.saturating_add(segment.len());
         }
+        offset = offset.saturating_add(segment.len());
     }
-    if !current.is_empty() {
-        paragraphs.push(current.join("\n").trim().to_string());
+    if let Some(start) = paragraph_start {
+        paragraphs.push(owned_context_paragraph(&text[start..paragraph_end]));
     }
     paragraphs
+}
+
+fn owned_context_paragraph(paragraph: &str) -> String {
+    let trimmed = paragraph.trim();
+    if !trimmed.contains('\r') && trimmed.lines().all(|line| line == line.trim_end()) {
+        return trimmed.to_string();
+    }
+
+    let mut normalized = String::with_capacity(trimmed.len());
+    for line in trimmed.lines() {
+        if !normalized.is_empty() {
+            normalized.push('\n');
+        }
+        normalized.push_str(line.trim_end());
+    }
+    normalized
 }
 
 pub(super) fn extract_markdown_link_refs(text: &str) -> Vec<String> {
@@ -678,15 +704,14 @@ pub(super) fn extract_markdown_link_refs(text: &str) -> Vec<String> {
 }
 
 fn split_context_resource_text(
-    text: &str,
+    text: String,
     max_chunk_chars: usize,
     overlap_chars: usize,
 ) -> Vec<String> {
     let normalized = normalize_context_resource_text(text);
     if normalized.len() <= max_chunk_chars {
-        return vec![normalized.into_owned()];
+        return vec![normalized];
     }
-    let normalized = normalized.as_ref();
     let mut pieces = Vec::new();
     let mut start = 0;
     while start < normalized.len() {
@@ -721,26 +746,34 @@ fn split_context_resource_text(
     pieces
 }
 
-fn normalize_context_resource_text(text: &str) -> Cow<'_, str> {
-    let trimmed = text.trim();
-    if !trimmed.contains("\n\n\n") {
-        return Cow::Borrowed(trimmed);
+fn normalize_context_resource_text(mut text: String) -> String {
+    trim_owned_context_text(&mut text);
+    if !text.contains("\n\n\n") {
+        return text;
     }
 
-    let mut normalized = String::with_capacity(trimmed.len());
     let mut newline_run = 0usize;
-    for ch in trimmed.chars() {
+    text.retain(|ch| {
         if ch == '\n' {
             newline_run += 1;
-            if newline_run <= 2 {
-                normalized.push(ch);
-            }
+            newline_run <= 2
         } else {
             newline_run = 0;
-            normalized.push(ch);
+            true
         }
+    });
+    text
+}
+
+fn trim_owned_context_text(text: &mut String) {
+    let start = text.len().saturating_sub(text.trim_start().len());
+    let end = start.saturating_add(text.trim().len());
+    if end < text.len() {
+        text.truncate(end);
     }
-    Cow::Owned(normalized)
+    if start > 0 {
+        drop(text.drain(..start));
+    }
 }
 
 #[cfg(test)]
@@ -751,7 +784,7 @@ mod resource_chunk_tests {
     fn resource_text_normalization_collapses_blank_line_runs_once() {
         let text = "  alpha\n\n\n\nβeta\r\n\r\n\r\ngamma  ";
         assert_eq!(
-            normalize_context_resource_text(text),
+            normalize_context_resource_text(text.to_string()),
             "alpha\n\nβeta\r\n\r\n\r\ngamma"
         );
     }
@@ -759,13 +792,21 @@ mod resource_chunk_tests {
     #[test]
     fn resource_text_chunking_preserves_long_utf8_boundaries() {
         let text = format!("  {}  ", "段落内容。".repeat(1_024));
-        let chunks = split_context_resource_text(&text, 257, 31);
+        let chunks = split_context_resource_text(text.clone(), 257, 31);
 
         assert!(chunks.len() > 20);
         assert!(chunks.iter().all(|chunk| !chunk.is_empty()));
         assert!(chunks.iter().all(|chunk| chunk.len() <= 257));
         assert_eq!(chunks.first().unwrap(), &text.trim()[..255]);
         assert_eq!(chunks.last().unwrap().chars().last(), Some('。'));
+    }
+
+    #[test]
+    fn paragraph_split_normalizes_line_endings_and_trailing_space() {
+        assert_eq!(
+            split_paragraphs("  alpha  \r\nbeta \r\n\r\n gamma\ndelta  \n"),
+            vec!["alpha\nbeta".to_string(), "gamma\ndelta".to_string()]
+        );
     }
 }
 
