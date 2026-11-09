@@ -1482,6 +1482,22 @@ where
     deserializer.deserialize_any(EitherShape)
 }
 
+/// Does this payload SAY it is a record the delta fold has nothing to do with?
+///
+/// Two shapes qualify: the whole-index record, which nothing writes any more, and the ANCHOR, which
+/// every engine caller of `append_index_bytes` writes. The fold and the content test used to ask
+/// only about the first. An anchor is a four-slot row and an `IndexDeltaRecord` wants eleven, so a
+/// log holding one could not be folded, could not be rolled into pieces (sealing reads the piece to
+/// name it) and could not be swept -- each of them reading the anchor as a delta and refusing it
+/// as corruption. The tests that were meant to cover the mixed log built their "anchor" with
+/// `append_json`, which writes the other shape, so none of them ever held a real one.
+pub(crate) fn payload_says_it_is_not_a_delta(payload: &[u8]) -> bool {
+    matches!(
+        index_payload_shape(payload),
+        Some(INDEX_LOG_SHAPE_WHOLE) | Some(INDEX_LOG_SHAPE_ANCHOR)
+    )
+}
+
 /// Which shape a payload says it holds, if it says.
 ///
 /// A payload with no container magic is the JSON fallback, which only the whole-index path ever
@@ -3428,7 +3444,7 @@ impl LocalIndexLogStore {
                 // unrecognised shape, a truncated container -- goes to the decoder and is
                 // reported, because a sweep that quietly skips what it cannot read is how
                 // committed corruption becomes silent data loss.
-                if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+                if payload_says_it_is_not_a_delta(payload) {
                     continue;
                 }
                 let mut record: IndexDeltaRecord = decode_index_payload(payload)?;
@@ -4749,10 +4765,10 @@ fn drop_reflected_index_segments(
 /// sequence` is deliberately NOT one of the terms here: the only caller asks this question of a
 /// record that has none, so testing it would be a clause that can never fire.
 ///
-/// A payload that SAYS it is a whole-index record is answered without decoding it -- no load path
-/// reads one, which is the whole reason the sweep may remove it.
+/// A payload that SAYS it is a whole-index record or an anchor is answered without decoding it --
+/// no load path reads either as a delta, which is the whole reason the sweep may remove it.
 fn delta_record_carries_content(payload: &[u8]) -> Result<bool, IndexLogError> {
-    if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+    if payload_says_it_is_not_a_delta(payload) {
         return Ok(false);
     }
     // A legacy whole-index line carries no container to say so, and decodes here into an
@@ -5458,6 +5474,63 @@ mod tests {
             store.latest_slab_catalog(5).unwrap().is_none(),
             "a meta carrying no slabs is not a catalog"
         );
+    }
+
+    /// A log that holds a REAL anchor -- the record every engine caller of `append_index_bytes`
+    /// writes -- can still be folded, rolled into pieces and swept.
+    ///
+    /// The tests that were meant to cover this built their anchor with `append_json`, which writes
+    /// a whole-index record, so the one record the engine actually puts between deltas was never in
+    /// any of them. Read as a delta, an anchor failed the fold, the seal that names a piece and the
+    /// sweep, each with an Encoding error.
+    #[test]
+    fn a_log_holding_a_real_anchor_still_folds_rolls_and_sweeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(9, vec![block_item(1, "a", false)], Vec::new(), Some(1), None, false, true)
+            .unwrap();
+        // A real anchor: digest and length of an index, in the shape the engine writes.
+        let anchor_seq = store.append_index_bytes(9, b"TSIDX\x01\x02anchor").unwrap();
+        store
+            .append_delta(9, vec![block_item(1, "b", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        // DENOMINATOR: the log really holds the anchor, between the two deltas.
+        let mut reader = std::io::BufReader::new(
+            std::fs::File::open(index_log_path(dir.path(), 9)).unwrap(),
+        );
+        let mut shapes = Vec::new();
+        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
+            shapes.push(index_payload_shape(&payload));
+        }
+        assert_eq!(
+            shapes,
+            vec![
+                Some(INDEX_LOG_SHAPE_DELTA),
+                Some(INDEX_LOG_SHAPE_ANCHOR),
+                Some(INDEX_LOG_SHAPE_DELTA)
+            ],
+            "the fixture must put an anchor between two deltas"
+        );
+        assert_eq!(anchor_seq, 2);
+
+        // The fold reads the two deltas and passes over the anchor.
+        let folded = store.read_delta_records(9, 0).unwrap();
+        assert_eq!(folded.len(), 2, "the anchor must be skipped, not refused: {folded:?}");
+
+        // A roll must read the piece to name it, anchor included.
+        let _rolling = roll_at(1);
+        store
+            .append_delta(9, vec![block_item(1, "c", false)], Vec::new(), Some(3), None, false, true)
+            .expect("the append that rolls a piece holding an anchor must land");
+        assert!(store.piece_count(9) >= 2, "denominator: the piece must have rolled");
+        assert_eq!(store.read_delta_records(9, 0).unwrap().len(), 3);
+
+        // The sweep walks the same records.
+        let report = store
+            .gc_reflected_before_anchor(9, 3, 4, 0)
+            .expect("a sweep over a log holding an anchor must not refuse it");
+        assert!(report.records_before >= 3, "denominator: {report:?}");
     }
 
     #[test]
