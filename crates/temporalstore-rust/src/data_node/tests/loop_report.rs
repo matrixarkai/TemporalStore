@@ -606,3 +606,77 @@ fn the_metrics_reap_sweeps_every_bucket_in_bounded_slices_and_wraps() {
     assert!(reap.bucket_gauges.is_empty());
     assert_eq!(reap.buckets_total, 0);
 }
+
+/// A WARM CACHE SURVIVES A ROUND UNLESS AN OPERATOR SET A BOUND, AND A BOUND STILL INVALIDATES IT.
+///
+/// The `reclaim_memory` stage drops every cached block of the shard. Its gate used to open at one
+/// cached byte, so a shard that had served a single read lost its cache on the next round and every
+/// round after, and readers paid cold reads each time. The expire and evict stages are what relieve
+/// memory pressure; this stage is a blanket invalidation, so by default it waits for a bound.
+///
+/// BOTH ARMS ARE ASSERTED. The default arm alone would pass a stage that had stopped working, so the
+/// second arm sets a one-byte bound and requires the same warm cache to be dropped.
+#[test]
+fn a_warm_cache_survives_a_default_round_and_an_explicit_bound_still_drops_it() {
+    fn warm(engine: &TemporalEngine) {
+        for index in 0..50 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("loop-{index:06}"),
+                },
+            });
+            assert!(response.status.ok, "read {index}: {:?}", response.status);
+        }
+    }
+    fn cached(runtime: &DataNodeRuntime, options: &StorageManagerOptions) -> u64 {
+        runtime
+            .storage_manager_pressure_snapshot(1, options)
+            .0
+            .cache_memory_bytes
+    }
+
+    // DEFAULT: the cache stays.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let shipped = StorageManagerOptions::default();
+    let engine = runtime.engine();
+    warm(&engine);
+    let before = cached(&runtime, &shipped);
+    assert!(
+        before > 0,
+        "the fixture never warmed the cache, so the arms below prove nothing"
+    );
+    let report = runtime.run_storage_manager_once(1, shipped.clone());
+    assert!(
+        !report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "a default round ran the blanket invalidation: {:?}",
+        report.executed_stages
+    );
+    assert!(
+        cached(&runtime, &shipped) > 0,
+        "a default round dropped a warm cache ({before} bytes before)"
+    );
+
+    // CONTROL: an explicit one-byte bound still invalidates.
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), 200);
+    let bounded = StorageManagerOptions {
+        cache_memory_bytes_pressure: 1,
+        ..StorageManagerOptions::default()
+    };
+    let engine = runtime.engine();
+    warm(&engine);
+    assert!(cached(&runtime, &bounded) > 0, "the control fixture never warmed");
+    let report = runtime.run_storage_manager_once(1, bounded.clone());
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "reclaim_memory"),
+        "an explicit bound did not run the stage: {:?}",
+        report.executed_stages
+    );
+    assert_eq!(
+        cached(&runtime, &bounded),
+        0,
+        "an explicit bound ran the stage but the cache is still warm"
+    );
+}
