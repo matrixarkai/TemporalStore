@@ -638,6 +638,14 @@ impl EmbeddingIndex {
         &mut self,
         batch: &CompactEmbeddingBatch,
     ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
+        self.upsert_compact_batch_inner(batch, false)
+    }
+
+    fn upsert_compact_batch_inner(
+        &mut self,
+        batch: &CompactEmbeddingBatch,
+        all_missing: bool,
+    ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
         if batch.dimensions != self.config.dimensions {
             return Err(EmbeddingIndexError::DimensionMismatch {
                 key: batch.keys.first().copied().unwrap_or(EmbeddingKey {
@@ -656,10 +664,11 @@ impl EmbeddingIndex {
         }
         let mut new_entries_by_tenant = HashMap::<u64, usize>::new();
         for key in &batch.keys {
-            if !self
-                .tenants
-                .get(&key.tenant_id)
-                .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
+            if all_missing
+                || !self
+                    .tenants
+                    .get(&key.tenant_id)
+                    .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
             {
                 *new_entries_by_tenant.entry(key.tenant_id).or_default() += 1;
             }
@@ -689,26 +698,28 @@ impl EmbeddingIndex {
             let scale = batch.scale(row);
             let vector = batch.vector(row);
             let rows = self.tenants.entry(key.tenant_id).or_default();
-            if let Some(&position) = rows.positions.get(&key.item_id) {
-                let old_signature = rows.signature_at(self.config.dimensions, position);
-                rows.scales[position] = scale;
-                let start = position * self.config.dimensions;
-                rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
-                rows.refresh_signature_routing(
-                    self.config.dimensions,
-                    position,
-                    old_signature,
-                );
-                updated += 1;
-            } else {
-                let position = rows.item_ids.len();
-                rows.item_ids.push(key.item_id);
-                rows.positions.insert(key.item_id, position);
-                rows.scales.push(scale);
-                rows.vectors.extend_from_slice(vector);
-                rows.refresh_signature_routing(self.config.dimensions, position, None);
-                inserted += 1;
+            if !all_missing {
+                if let Some(&position) = rows.positions.get(&key.item_id) {
+                    let old_signature = rows.signature_at(self.config.dimensions, position);
+                    rows.scales[position] = scale;
+                    let start = position * self.config.dimensions;
+                    rows.vectors[start..start + self.config.dimensions].copy_from_slice(vector);
+                    rows.refresh_signature_routing(
+                        self.config.dimensions,
+                        position,
+                        old_signature,
+                    );
+                    updated += 1;
+                    continue;
+                }
             }
+            let position = rows.item_ids.len();
+            rows.item_ids.push(key.item_id);
+            rows.positions.insert(key.item_id, position);
+            rows.scales.push(scale);
+            rows.vectors.extend_from_slice(vector);
+            rows.refresh_signature_routing(self.config.dimensions, position, None);
+            inserted += 1;
         }
         self.total_entries += inserted;
 
@@ -726,6 +737,8 @@ impl EmbeddingIndex {
     pub(crate) fn upsert_compact_batch_bounded(
         &mut self,
         batch: &CompactEmbeddingBatch,
+        all_missing: bool,
+        protected: Option<&HashSet<EmbeddingKey>>,
     ) -> Result<EmbeddingWriteReport, EmbeddingIndexError> {
         if batch.len() > self.config.max_entries {
             return Err(EmbeddingIndexError::CapacityExceeded {
@@ -733,10 +746,19 @@ impl EmbeddingIndex {
                 requested: batch.len(),
             });
         }
-        let protected = (0..batch.len())
-            .map(|row| batch.key(row))
-            .collect::<HashSet<_>>();
-        let new_entries = protected.iter().filter(|key| !self.contains(**key)).count();
+        let owned_protected = protected.is_none().then(|| {
+            (0..batch.len())
+                .map(|row| batch.key(row))
+                .collect::<HashSet<_>>()
+        });
+        let protected = protected
+            .or(owned_protected.as_ref())
+            .expect("bounded insert always has protected keys");
+        let new_entries = if all_missing {
+            batch.len()
+        } else {
+            protected.iter().filter(|key| !self.contains(**key)).count()
+        };
         let evict = self
             .len()
             .saturating_add(new_entries)
@@ -764,7 +786,7 @@ impl EmbeddingIndex {
                 self.remove(key);
             }
         }
-        self.upsert_compact_batch(batch)
+        self.upsert_compact_batch_inner(batch, all_missing)
     }
 
     pub fn remove(&mut self, key: EmbeddingKey) -> bool {
