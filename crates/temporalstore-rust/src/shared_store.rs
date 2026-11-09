@@ -565,7 +565,7 @@ struct SharedStoreWalBatchEntryProto {
     ///
     /// # WHY PLUS ONE, WHICH LOOKS LIKE A TRICK AND IS NOT
     ///
-    /// [`WAL_COMMAND_ENCODING_JSON_SERDE`] is zero and is a legitimate encoding, so zero cannot
+    /// [`WAL_COMMAND_ENCODING_NO_COMMAND`] is zero and is a legitimate encoding, so zero cannot
     /// mean "absent" as it stands. This is the same obstruction the sidecar's `shard_id` ran into
     /// -- shard zero is a real shard, so omitting the field needs a marker the sidecar has no
     /// room for, and [`WAL_FRAME_FORMAT_NO_SIZE`] records that as a decline. The difference here
@@ -3985,7 +3985,9 @@ fn verify_checksum(
     Ok(())
 }
 
-const WAL_COMMAND_ENCODING_JSON_SERDE: u32 = 0;
+/// Tag zero: the entry carries no command, only results. Its payload is empty. There is no
+/// encoding of a command under this tag.
+const WAL_COMMAND_ENCODING_NO_COMMAND: u32 = 0;
 const WAL_COMMAND_ENCODING_SDK_PROTO: u32 = 1;
 
 /// The original log frame: the command digest written as 64 hex characters in tag 5.
@@ -4127,13 +4129,11 @@ fn digest_text_to_bytes(digest: &str) -> Option<Vec<u8>> {
 /// useful answer to either is an error at publish time that says which command, not a record that
 /// replays on one build and is unreadable on the next.
 ///
-/// THE DECODER IS NOT SYMMETRIC WITH THIS, ON PURPOSE. `wal_command_from_payload` keeps its JSON
-/// arm for ever: a log written before this change can hold JSON command payloads, and the hold is
-/// on what is on disk. An encoder nobody should reach is deleted; a decoder for what already exists
-/// stays.
+/// THE DECODER IS PROTOBUF ONLY TOO: `wal_command_from_payload` refuses every encoding tag it does
+/// not know, including the one that used to mean JSON.
 ///
 /// NOT TO BE CONFUSED WITH AN OUTCOME-ONLY RECORD. An entry with no command at all is written as an
-/// EMPTY payload under the tag that is also JSON's (zero), with no JSON in it; that is `None` of
+/// EMPTY payload under tag zero; that is `None` of
 /// `entry.command`, handled by the callers before they get here, and it needs no encoding.
 fn wal_command_payload(command: &Command) -> Result<Vec<u8>, SharedStoreReplicationError> {
     match command_to_sdk_proto(command) {
@@ -4186,7 +4186,7 @@ fn wal_command_metadata(
     let Some(command) = command else {
         return Ok(WalCommandMetadata {
             byte_size: 0,
-            encoding: WAL_COMMAND_ENCODING_JSON_SERDE,
+            encoding: WAL_COMMAND_ENCODING_NO_COMMAND,
         });
     };
     let command_payload = wal_command_payload(command)?;
@@ -4202,7 +4202,7 @@ fn encode_wal_proto_frame(
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
     let (command_payload, command_encoding) = match entry.command.as_ref() {
         // No operation to carry: the entry states results instead.
-        None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
+        None => (Vec::new(), WAL_COMMAND_ENCODING_NO_COMMAND),
         Some(command) => (wal_command_payload(command)?, WAL_COMMAND_ENCODING_SDK_PROTO),
     };
     // The same rule the log frame follows: a carried block states the length its address
@@ -4509,7 +4509,7 @@ fn wal_command_from_payload(
     match command_encoding {
         // Outcome-only records deliberately carry no command. Keep empty command records
         // invalid unless results are present, and still reject unknown encoding tags.
-        WAL_COMMAND_ENCODING_JSON_SERDE if command_payload.is_empty() && has_items => Ok(None),
+        WAL_COMMAND_ENCODING_NO_COMMAND if command_payload.is_empty() && has_items => Ok(None),
         WAL_COMMAND_ENCODING_SDK_PROTO => {
             let command = v1::Command::decode(command_payload)?;
             Ok(Some(sdk::sdk_command_to_types(command).map_err(
@@ -4521,7 +4521,6 @@ fn wal_command_from_payload(
                 },
             )?))
         }
-        WAL_COMMAND_ENCODING_JSON_SERDE => Ok(Some(serde_json::from_slice(command_payload)?)),
         other => Err(SharedStoreReplicationError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("unsupported protobuf WAL command encoding {other}"),
@@ -4651,7 +4650,7 @@ fn encode_wal_batch_container(
     for (position, entry) in entries.iter().enumerate() {
         let (command_payload, command_encoding) = match entry.command.as_ref() {
             // No operation to carry: the entry states results instead.
-            None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
+            None => (Vec::new(), WAL_COMMAND_ENCODING_NO_COMMAND),
             Some(command) => (wal_command_payload(command)?, WAL_COMMAND_ENCODING_SDK_PROTO),
         };
         // The first entry's encoding becomes the header's; any entry that differs states its own.
@@ -6193,39 +6192,6 @@ mod tests {
                 decode_wal_batch_container_entry_exact(&blob, "test", 0).expect("index zero reads"),
                 record(7, 0, moved_command),
                 "index zero must be addressable, which is the whole reason the override is biased"
-            );
-        }
-
-        /// An entry encoded differently from its batch says so, and the shared encoding is the
-        /// default for the rest.
-        #[test]
-        fn an_entry_that_differs_in_encoding_carries_its_own_encoding() {
-            let (shared, shared_command) = batch_entry("key-a", b"v");
-            let odd_command = Command::StringSet {
-                key: "key-b".to_string(),
-                value: b"v".to_vec(),
-            };
-            let odd_payload =
-                serde_json::to_vec(&odd_command).expect("a command serialises as json");
-            let odd = SharedStoreWalBatchEntryProto {
-                command_crc32c: crate::checksum::crc32c(&odd_payload),
-                command_payload: odd_payload,
-                // JSON is encoding ZERO, so an unbiased override could not express it either.
-                command_encoding_plus_one: WAL_COMMAND_ENCODING_JSON_SERDE + 1,
-                wal_index_plus_one: 0,
-                staged_blocks: Vec::new(),
-                items: Vec::new(),
-            };
-            let blob = container_bytes(&container_of(7, 100, vec![shared, odd]));
-
-            assert_eq!(
-                decode_wal_proto_blob(&blob).expect("a mixed-encoding container replays"),
-                vec![
-                    record(7, 100, shared_command),
-                    record(7, 101, odd_command),
-                ],
-                "the header encoding must apply to the entries that omit one, and the override to \
-                 the entry that carries one"
             );
         }
 
@@ -10700,10 +10666,11 @@ mod tests {
                 .join("\n")
         }
         assert!(
-            body_of(source, "fn wal_command_from_payload(").contains("serde_json"),
-            "the positive control no longer calls serde_json, so this scan has lost its eyes"
+            body_of("fn a() { serde_json::to_vec(&x) }\nfn b() {}", "fn a(").contains("serde_json"),
+            "the positive control no longer sees serde_json, so this scan has lost its eyes"
         );
         for declaration in [
+            "fn wal_command_from_payload(",
             "fn decode_shard_lease(",
             "fn encode_shard_lease(",
             "fn decode_replay_cursor(",
@@ -13917,37 +13884,6 @@ fn the_last_context_record_writes_are_framed_as_protobuf_and_round_trip() {
             "{name} did not survive the round trip"
         );
 
-        // ---- CLAUSE 5: THE DURABLE JSON TAGGING, PER COMMAND ----
-        //
-        // `Command` is `#[serde(tag = "kind", rename_all = "snake_case")]`, so a record an older
-        // build wrote is ONE FLAT OBJECT with a discriminator beside the variant's own fields, not
-        // `{"ContextUpsertEntity": {..}}`. The JSON arm is still the reader for every record
-        // written before this change, so it is driven on that shape here.
-        let json = serde_json::to_value(command).expect("the command must serialize");
-        let object = json
-            .as_object()
-            .expect("a durable record is ONE flat object, not a map from variant name to body");
-        assert_eq!(
-            object.get("kind").and_then(|kind| kind.as_str()),
-            Some(*tag),
-            "{name}'s durable discriminator is not `kind: {tag}`: {json}"
-        );
-        assert!(
-            object.contains_key("tenant_hash") && !object.contains_key(*name),
-            "{name}'s variant fields are not SIBLINGS of the `kind` discriminator: {json}"
-        );
-        let through_json: Command = serde_json::from_value(json.clone()).unwrap_or_else(|err| {
-            panic!(
-                "a {name} record written by an older build must still decode through the JSON \
-                 arm: {err}"
-            )
-        });
-        assert_eq!(
-            &through_json, command,
-            "{name} did not survive the JSON round trip either. None of its fields is \
-             `skip_serializing`, so unlike `ContextEvent` this one loses nothing through JSON, and \
-             a difference here means the durable JSON shape has moved"
-        );
     }
 
     // ---- CLAUSE 4: THE AUDIT'S TWO REF LISTS DID NOT CROSS ----
@@ -14493,80 +14429,6 @@ fn the_covered_context_event_writes_are_framed_as_protobuf_and_round_trip() {
         );
     }
 
-    // ---- CLAUSE 4: THE DURABLE JSON RECORD'S TAGGING, PINNED ----
-    //
-    // `Command` is `#[serde(tag = "kind", rename_all = "snake_case")]`, so a record an older build
-    // wrote is ONE FLAT OBJECT with a discriminator beside the variant's own fields. It is not
-    // `{"ContextWriteEvent": {..}}`, and a reader test built on that shape fails for reasons that
-    // have nothing to do with the format.
-    let (_, command) = &cases[0];
-    let json = serde_json::to_value(command).expect("the command must serialize");
-    let object = json
-        .as_object()
-        .expect("a durable record is ONE flat object, not a map from variant name to body");
-    assert_eq!(
-        object.get("kind").and_then(|kind| kind.as_str()),
-        Some("context_write_event"),
-        "the durable record's discriminator is not `kind: context_write_event`: {json}"
-    );
-    for sibling in ["tenant_hash", "node_hash", "event", "first_write_only", "cold_storage"] {
-        assert!(
-            object.contains_key(sibling),
-            "`{sibling}` is not a SIBLING of the `kind` discriminator, so the record is not \
-             internally tagged after all: {json}"
-        );
-    }
-    assert!(
-        !object.contains_key("ContextWriteEvent"),
-        "the record is externally tagged, which this enum is not: {json}"
-    );
-    // And an older build's record still decodes, because the frame declares its encoding and the
-    // JSON arm is the reader for every record written before this change.
-    let through_json: Command = serde_json::from_value(json.clone()).unwrap_or_else(|err| {
-        panic!("a record written by an older build must still decode through the JSON arm: {err}")
-    });
-
-    // ---- CLAUSE 5: THE JSON FORM DROPS SEVEN FIELDS, AND THIS RECORD DOES NOT ----
-    let fixture = a_fully_populated_context_event();
-    #[allow(deprecated)]
-    let every_dropped_field_is_set = fixture.kind != 0
-        && fixture.actor_hash != 0
-        && fixture.status != 0
-        && fixture.valid_until_ms != 0
-        && !fixture.source_ref.is_empty()
-        && !fixture.related_node_hashes.is_empty()
-        && !fixture.compact_attrs.is_empty();
-    assert!(
-        every_dropped_field_is_set,
-        "the fixture leaves one of the seven `skip_serializing` fields at its default, so the \
-         clause below would hold whether or not the JSON form dropped it"
-    );
-    let event_json = object
-        .get("event")
-        .and_then(|event| event.as_object())
-        .expect("the event must serialize as an object");
-    for dropped in [
-        "kind",
-        "actor_hash",
-        "status",
-        "valid_until_ms",
-        "source_ref",
-        "related_node_hashes",
-        "compact_attrs",
-    ] {
-        assert!(
-            !event_json.contains_key(dropped),
-            "`{dropped}` is `skip_serializing` on `ContextEvent` and the JSON form emitted it \
-             anyway. The premise of this clause has moved, so re-read it rather than deleting it"
-        );
-    }
-    assert_ne!(
-        &through_json, command,
-        "a JSON round trip returned the command UNCHANGED, so the seven `skip_serializing` fields \
-         survived it. Either the JSON form started writing them or the fixture stopped setting \
-         them -- and until one of those is true, this record carrying all fifteen is strictly more \
-         faithful than the bytes it replaces rather than merely different"
-    );
 }
 
 /// AN ABSENT EVENT RECORD IS REFUSED BY NAME; AN ABSENT INDEX BLOCK IS DEFAULTED; AND AN UNKNOWN
@@ -15837,9 +15699,8 @@ async fn a_command_with_no_protobuf_encoding_is_refused_and_never_written_as_jso
 ///
 /// The test above drives them; this sees an arm nobody reaches YET. The scan reads each function's
 /// own code with comment lines removed, anchored on its declaration up to the closing brace at
-/// column zero. Its POSITIVE CONTROL is `wal_command_from_payload`, which still calls
-/// `serde_json::from_slice` (the permanent decode arm for logs written before this change): a scan
-/// that could not see that call would pass over any encoder.
+/// column zero. Its POSITIVE CONTROL is a synthetic body that does call `serde_json`: a scan that
+/// could not see that call would pass over any encoder.
 #[test]
 fn no_json_encode_arm_is_left_in_the_wal_command_encoders() {
     let source = include_str!("shared_store.rs");
@@ -15876,9 +15737,16 @@ fn no_json_encode_arm_is_left_in_the_wal_command_encoders() {
         );
     }
     assert!(
-        body(source, "fn wal_command_from_payload(").contains("serde_json::from_slice"),
-        "the control no longer sees the permanent JSON decode arm, so this scan could pass over \
-         an encoder it cannot see"
+        !body(source, "fn wal_command_from_payload(").contains("serde_json"),
+        "the command decoder reaches for serde_json: a JSON decode arm survives"
+    );
+    let planted = body(
+        Box::leak("fn a() { serde_json::to_vec(&x) }\n}\n".to_string().into_boxed_str()),
+        "fn a(",
+    );
+    assert!(
+        planted.contains("serde_json"),
+        "the control no longer sees serde_json, so this scan could pass over an encoder it cannot see"
     );
 }
 
