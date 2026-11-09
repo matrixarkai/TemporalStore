@@ -681,6 +681,47 @@ struct SharedStoreWalOffsetMetadataProto {
     wal_blob_first_physical_offset: Option<u64>,
 }
 
+/// The top bit of a sidecar frame's length. An entry frame never sets it (a frame is a few dozen
+/// bytes), so a frame that does is a container frame and its length is the low 31 bits.
+const WAL_OFFSET_CONTAINER_FLAG: u32 = 0x8000_0000;
+
+/// ONE sidecar frame for a whole container.
+///
+/// Every entry of a container addresses the same span of the same object, so N per-entry frames
+/// restate the shard, the key, the offsets and the object facts N times. This states them once and
+/// carries only what differs by entry -- the command size and encoding -- as two packed lists. The
+/// entry's log index is `base_wal_index + position`, which is why the frame is written only for a
+/// batch whose indices are consecutive. The decoder expands it into the same per-entry map a run of
+/// entry frames produces, so nothing that reads the map changes.
+#[derive(Clone, PartialEq, Message)]
+struct SharedStoreWalOffsetContainerProto {
+    #[prost(uint64, tag = "1")]
+    shard_id: u64,
+    #[prost(uint64, tag = "2")]
+    base_wal_index: u64,
+    /// Empty when it is the key the shard derives, as in the entry frame.
+    #[prost(string, tag = "3")]
+    wal_blob_key: String,
+    #[prost(uint64, tag = "4")]
+    wal_blob_start_offset: u64,
+    #[prost(uint64, tag = "5")]
+    wal_blob_end_offset: u64,
+    /// Kept beside the offsets for the same reason the entry frame keeps it: the agreement between
+    /// the two is the only integrity check this record has.
+    #[prost(uint64, tag = "6")]
+    wal_blob_bytes_written: u64,
+    #[prost(uint64, tag = "7")]
+    wal_blob_object_length: u64,
+    #[prost(uint64, tag = "8")]
+    wal_blob_physical_slab_count: u64,
+    #[prost(uint64, optional, tag = "9")]
+    wal_blob_first_physical_offset: Option<u64>,
+    #[prost(uint64, repeated, packed = "true", tag = "10")]
+    command_byte_sizes: Vec<u64>,
+    #[prost(uint32, repeated, packed = "true", tag = "11")]
+    command_encodings: Vec<u32>,
+}
+
 #[derive(Debug)]
 pub struct SharedStoreStorageWriter<O> {
     replicator: SharedStoreReplicator<O>,
@@ -1138,7 +1179,7 @@ where
 
         // Derive each entry's [start, end) from the batch receipt and build the concatenated
         // offset-index payload, then make it durable in a single append.
-        let mut offset_payload: Vec<u8> = Vec::new();
+        let mut offset_metadatas = Vec::with_capacity(entries.len());
         let mut reports = Vec::with_capacity(entries.len());
         for ((entry, (span_from, span_to)), metadata) in entries
             .iter()
@@ -1160,10 +1201,7 @@ where
                 command_byte_size: metadata.byte_size,
                 command_encoding: metadata.encoding,
             };
-            offset_payload.extend_from_slice(&encode_wal_offset_metadata_frame(
-                &offset_metadata,
-                &wal_blob_key,
-            ));
+            offset_metadatas.push(offset_metadata);
             reports.push(SharedStoreWriteReport {
                 wal_index: entry.wal_index,
                 published: true,
@@ -1174,6 +1212,21 @@ where
                 wal_blob_object_length: Some(receipt.object_length),
             });
         }
+        // One frame for a container, whose entries all share a span; entry frames otherwise.
+        let offset_payload = match encode_wal_offset_container_frame(&offset_metadatas, &wal_blob_key)
+        {
+            Some(frame) => frame,
+            None => {
+                let mut payload: Vec<u8> = Vec::new();
+                for metadata in &offset_metadatas {
+                    payload.extend_from_slice(&encode_wal_offset_metadata_frame(
+                        metadata,
+                        &wal_blob_key,
+                    ));
+                }
+                payload
+            }
+        };
         self.append_blob_with_retry(
             &self.wal_offset_index_blob_key(shard_id),
             Bytes::from(offset_payload),
@@ -4372,6 +4425,62 @@ fn encode_wal_offset_metadata_frame(
     out
 }
 
+/// One container frame for a batch whose entries share a span, or `None` when the batch is not
+/// that shape and must be written as entry frames.
+///
+/// THE SHAPE IS CHECKED ON THE METADATA, NOT ASSUMED FROM THE CALLER. The frame states the span
+/// once, so it is correct only if every entry really has that span, the same shard, the same key,
+/// and log indices that run `base, base + 1, ...`. A batch that fails any of those keeps its entry
+/// frames, which state each entry's own facts.
+fn encode_wal_offset_container_frame(
+    entries: &[SharedStoreWalOffsetMetadata],
+    derived_blob_key: &str,
+) -> Option<Vec<u8>> {
+    let first = entries.first()?;
+    if entries.len() < 2 {
+        return None;
+    }
+    let uniform = entries.iter().enumerate().all(|(position, entry)| {
+        entry.shard_id == first.shard_id
+            && entry.wal_index == first.wal_index.wrapping_add(position as u64)
+            && entry.wal_blob_key == first.wal_blob_key
+            && entry.wal_blob_start_offset == first.wal_blob_start_offset
+            && entry.wal_blob_end_offset == first.wal_blob_end_offset
+            && entry.wal_blob_bytes_written == first.wal_blob_bytes_written
+            && entry.wal_blob_object_length == first.wal_blob_object_length
+            && entry.wal_blob_physical_slab_count == first.wal_blob_physical_slab_count
+            && entry.wal_blob_first_physical_offset == first.wal_blob_first_physical_offset
+    });
+    if !uniform {
+        return None;
+    }
+    let proto = SharedStoreWalOffsetContainerProto {
+        shard_id: first.shard_id,
+        base_wal_index: first.wal_index,
+        wal_blob_key: if first.wal_blob_key == derived_blob_key {
+            String::new()
+        } else {
+            first.wal_blob_key.clone()
+        },
+        wal_blob_start_offset: first.wal_blob_start_offset,
+        wal_blob_end_offset: first.wal_blob_end_offset,
+        wal_blob_bytes_written: first.wal_blob_bytes_written,
+        wal_blob_object_length: first.wal_blob_object_length,
+        wal_blob_physical_slab_count: first.wal_blob_physical_slab_count,
+        wal_blob_first_physical_offset: first.wal_blob_first_physical_offset,
+        command_byte_sizes: entries.iter().map(|entry| entry.command_byte_size).collect(),
+        command_encodings: entries.iter().map(|entry| entry.command_encoding).collect(),
+    };
+    let mut encoded = proto.encode_to_vec();
+    if encoded.len() >= WAL_OFFSET_CONTAINER_FLAG as usize {
+        return None;
+    }
+    let mut out = Vec::with_capacity(4 + encoded.len());
+    out.extend_from_slice(&((encoded.len() as u32) | WAL_OFFSET_CONTAINER_FLAG).to_be_bytes());
+    out.append(&mut encoded);
+    Some(out)
+}
+
 fn decode_wal_proto_frame_exact(
     bytes: &[u8],
     checksum_source: &str,
@@ -4914,17 +5023,59 @@ fn decode_wal_offset_metadata_blob(
                 "truncated protobuf WAL offset metadata frame length",
             )));
         }
-        let len = u32::from_be_bytes(
+        let raw_len = u32::from_be_bytes(
             bytes[cursor..cursor + 4]
                 .try_into()
                 .expect("length slice is exactly 4 bytes"),
-        ) as usize;
+        );
+        let is_container = raw_len & WAL_OFFSET_CONTAINER_FLAG != 0;
+        let len = (raw_len & !WAL_OFFSET_CONTAINER_FLAG) as usize;
         cursor += 4;
         if bytes.len().saturating_sub(cursor) < len {
             return Err(SharedStoreReplicationError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "truncated protobuf WAL offset metadata frame payload",
             )));
+        }
+        if is_container {
+            let frame = SharedStoreWalOffsetContainerProto::decode(&bytes[cursor..cursor + len])?;
+            cursor += len;
+            if frame.command_byte_sizes.len() != frame.command_encodings.len() {
+                return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "WAL offset container frame lists a different number of command sizes and encodings",
+                )));
+            }
+            let key = if frame.wal_blob_key.is_empty() {
+                derived_blob_key.to_string()
+            } else {
+                frame.wal_blob_key.clone()
+            };
+            for (position, (size, encoding)) in frame
+                .command_byte_sizes
+                .iter()
+                .zip(frame.command_encodings.iter())
+                .enumerate()
+            {
+                let wal_index = frame.base_wal_index.wrapping_add(position as u64);
+                entries.insert(
+                    wal_index,
+                    SharedStoreWalOffsetMetadata {
+                        shard_id: frame.shard_id,
+                        wal_index,
+                        wal_blob_key: key.clone(),
+                        wal_blob_start_offset: frame.wal_blob_start_offset,
+                        wal_blob_end_offset: frame.wal_blob_end_offset,
+                        wal_blob_bytes_written: frame.wal_blob_bytes_written,
+                        wal_blob_object_length: frame.wal_blob_object_length,
+                        wal_blob_physical_slab_count: frame.wal_blob_physical_slab_count,
+                        wal_blob_first_physical_offset: frame.wal_blob_first_physical_offset,
+                        command_byte_size: *size,
+                        command_encoding: *encoding,
+                    },
+                );
+            }
+            continue;
         }
         let frame = SharedStoreWalOffsetMetadataProto::decode(&bytes[cursor..cursor + len])?;
         cursor += len;
@@ -6306,6 +6457,159 @@ mod tests {
                     && text.contains("a-log-key"),
                 "the refusal must say WHY the length is unusable, and where: {text}"
             );
+        }
+    }
+
+    /// ONE SIDECAR FRAME FOR A CONTAINER. Every entry of a container addresses the same span, so the
+    /// writer states the span once. What these pin: the container frame decodes to exactly the map
+    /// the entry frames decode to, it is a fraction of their size, it is refused for any batch that
+    /// is not one span with consecutive indices, and a damaged one is an error and not a short map.
+    mod one_offset_frame_per_container {
+        use super::*;
+
+        const KEY: &str = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
+
+        fn entry(index: u64, size: u64) -> SharedStoreWalOffsetMetadata {
+            SharedStoreWalOffsetMetadata {
+                shard_id: 1,
+                wal_index: index,
+                wal_blob_key: KEY.to_string(),
+                wal_blob_start_offset: 4096,
+                wal_blob_end_offset: 4896,
+                wal_blob_bytes_written: 800,
+                wal_blob_object_length: 4896,
+                wal_blob_physical_slab_count: 1,
+                wal_blob_first_physical_offset: Some(4096),
+                command_byte_size: size,
+                command_encoding: WAL_COMMAND_ENCODING_SDK_PROTO,
+            }
+        }
+
+        fn batch(count: u64) -> Vec<SharedStoreWalOffsetMetadata> {
+            (0..count).map(|position| entry(10 + position, 15 + position)).collect()
+        }
+
+        fn entry_frames(entries: &[SharedStoreWalOffsetMetadata]) -> Vec<u8> {
+            entries
+                .iter()
+                .flat_map(|metadata| encode_wal_offset_metadata_frame(metadata, KEY))
+                .collect()
+        }
+
+        fn shown(map: &BTreeMap<u64, SharedStoreWalOffsetMetadata>) -> String {
+            format!("{map:?}")
+        }
+
+        #[test]
+        fn a_container_frame_decodes_to_the_map_its_entry_frames_decode_to() {
+            for count in [2u64, 3, 16, 64] {
+                let entries = batch(count);
+                let container = encode_wal_offset_container_frame(&entries, KEY)
+                    .expect("a uniform consecutive batch gets a container frame");
+                let from_container = decode_wal_offset_metadata_blob(&container, KEY).unwrap();
+                let from_entries =
+                    decode_wal_offset_metadata_blob(&entry_frames(&entries), KEY).unwrap();
+                assert_eq!(from_container.len(), count as usize);
+                assert_eq!(
+                    shown(&from_container),
+                    shown(&from_entries),
+                    "batch of {count}: the two shapes must decode to the same map"
+                );
+            }
+        }
+
+        #[test]
+        fn the_container_frame_is_a_fraction_of_the_entry_frames() {
+            let entries = batch(16);
+            let container = encode_wal_offset_container_frame(&entries, KEY).unwrap().len();
+            let per_entry = entry_frames(&entries).len();
+            assert!(
+                container * 4 < per_entry,
+                "a batch of 16 costs {container} B as one frame against {per_entry} B as entry frames"
+            );
+        }
+
+        #[test]
+        fn a_batch_that_is_not_one_span_keeps_its_entry_frames() {
+            assert!(encode_wal_offset_container_frame(&[], KEY).is_none(), "empty");
+            assert!(encode_wal_offset_container_frame(&batch(1), KEY).is_none(), "one entry");
+
+            let mut skipped_index = batch(4);
+            skipped_index[2].wal_index += 1;
+            assert!(
+                encode_wal_offset_container_frame(&skipped_index, KEY).is_none(),
+                "an index the base cannot imply"
+            );
+
+            let mut other_span = batch(4);
+            other_span[3].wal_blob_end_offset += 1;
+            assert!(
+                encode_wal_offset_container_frame(&other_span, KEY).is_none(),
+                "an entry with a different span"
+            );
+
+            let mut other_shard = batch(4);
+            other_shard[1].shard_id = 2;
+            assert!(
+                encode_wal_offset_container_frame(&other_shard, KEY).is_none(),
+                "an entry of another shard"
+            );
+
+            let mut other_key = batch(4);
+            other_key[1].wal_blob_key = "elsewhere".to_string();
+            assert!(
+                encode_wal_offset_container_frame(&other_key, KEY).is_none(),
+                "an entry in another object"
+            );
+        }
+
+        #[test]
+        fn entry_frames_and_container_frames_share_one_stream_in_order() {
+            let mut stream = encode_wal_offset_metadata_frame(&entry(1, 9), KEY);
+            stream.extend(encode_wal_offset_container_frame(&batch(3), KEY).unwrap());
+            stream.extend(encode_wal_offset_metadata_frame(&entry(99, 7), KEY));
+            let map = decode_wal_offset_metadata_blob(&stream, KEY).unwrap();
+            assert_eq!(map.keys().copied().collect::<Vec<_>>(), vec![1, 10, 11, 12, 99]);
+            assert_eq!(map[&11].command_byte_size, 16, "per-entry facts survive the container");
+            assert_eq!(map[&99].command_byte_size, 7);
+        }
+
+        #[test]
+        fn a_damaged_container_frame_is_an_error_not_a_short_map() {
+            let whole = encode_wal_offset_container_frame(&batch(8), KEY).unwrap();
+            for cut in [1usize, 2, 3, 4, whole.len() - 1] {
+                assert!(
+                    decode_wal_offset_metadata_blob(&whole[..whole.len() - cut], KEY).is_err()
+                        || cut == whole.len(),
+                    "a container frame cut by {cut} B decoded as if complete"
+                );
+            }
+            // The control: the whole frame decodes, so the cuts above prove something.
+            assert_eq!(decode_wal_offset_metadata_blob(&whole, KEY).unwrap().len(), 8);
+
+            // Two sizes and one encoding is not a batch of anything.
+            let lopsided = SharedStoreWalOffsetContainerProto {
+                shard_id: 1,
+                base_wal_index: 1,
+                command_byte_sizes: vec![1, 2],
+                command_encodings: vec![0],
+                ..Default::default()
+            };
+            let body = lopsided.encode_to_vec();
+            let mut frame = ((body.len() as u32) | WAL_OFFSET_CONTAINER_FLAG)
+                .to_be_bytes()
+                .to_vec();
+            frame.extend(body);
+            let err = decode_wal_offset_metadata_blob(&frame, KEY)
+                .expect_err("mismatched lists must be refused");
+            assert!(err.to_string().contains("different number"), "{err}");
+        }
+
+        #[test]
+        fn an_entry_frame_never_sets_the_container_flag() {
+            let frame = encode_wal_offset_metadata_frame(&entry(1, 9), KEY);
+            let prefix = u32::from_be_bytes(frame[..4].try_into().unwrap());
+            assert_eq!(prefix & WAL_OFFSET_CONTAINER_FLAG, 0);
         }
     }
 

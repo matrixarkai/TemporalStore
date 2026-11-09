@@ -217,6 +217,12 @@ jobs:
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
             shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_and_older_json \
             shared_store::tests::a_default_replicator_publishes_a_batch_as_one_container_and_replays_it \
+            shared_store::tests::one_offset_frame_per_container::a_container_frame_decodes_to_the_map_its_entry_frames_decode_to \
+            shared_store::tests::one_offset_frame_per_container::the_container_frame_is_a_fraction_of_the_entry_frames \
+            shared_store::tests::one_offset_frame_per_container::a_batch_that_is_not_one_span_keeps_its_entry_frames \
+            shared_store::tests::one_offset_frame_per_container::entry_frames_and_container_frames_share_one_stream_in_order \
+            shared_store::tests::one_offset_frame_per_container::a_damaged_container_frame_is_an_error_not_a_short_map \
+            shared_store::tests::one_offset_frame_per_container::an_entry_frame_never_sets_the_container_flag \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_element_name \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
