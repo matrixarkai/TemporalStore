@@ -3593,7 +3593,7 @@ pub(crate) fn execute_on_shard(
                 None,
                 Some(resulting.to_le_bytes().to_vec()),
             );
-            persist_control_state_block(
+            persist_control_state_block_after_increment(
                 cache,
                 block_store,
                 shard_id,
@@ -3602,6 +3602,8 @@ pub(crate) fn execute_on_shard(
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
+                timestamp_ms,
+                resulting,
             );
             if control_rollup_enabled {
                 control_rollup::record_increment(shard, &key, timestamp_ms, amount);

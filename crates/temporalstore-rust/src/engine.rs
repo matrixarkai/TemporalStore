@@ -7251,6 +7251,83 @@ fn trim_control_state_series(shard: &mut ShardState, key: &str, max_size: usize)
     !victims.is_empty()
 }
 
+thread_local! {
+    /// Test switch: write the whole-series block on every increment, as every increment did before.
+    #[cfg(test)]
+    static ALWAYS_WRITE_COUNTER_BLOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this increment is one whose series block is written.
+///
+/// THE BLOCK IS A COPY, AND FOR AN INCREMENT IT IS ALREADY COVERED. `ControlStateIncrement` stages
+/// a `control_counter` outcome -- the RESULTING value at one bucket, idempotent when replayed --
+/// before it persists the block, so the log record already carries the increment, and the series
+/// itself is durable in the served index (a dump or a flush), which a load keeps in preference to
+/// the block-derived one (`the serialized i64 series is authoritative`). Rewriting the whole
+/// series into the log and the block store on every increment bought nothing a recovery used, and
+/// cost the series' length every time: 1.7 B per entry written to each of the log and the block
+/// store, and about 4,100 instructions per entry, per increment. At the default cap of 30,000
+/// points that is roughly 120 million instructions for one increment.
+///
+/// The block is still written on the first increment of a key, which anchors the object in the
+/// bucket index, and on a deterministic share of the rest: one in `len / 16` (at least 16), chosen
+/// by a hash of the key, the timestamp and the result so a replay picks the same ones. The cost of an
+/// increment is then about sixteen entries' worth whatever the series holds, in expectation.
+/// The other four arms stage no outcome, so their block IS their only record and they keep writing
+/// it every time.
+fn control_state_block_is_due(key: &str, timestamp_ms: u64, resulting: i64, len: usize) -> bool {
+    #[cfg(test)]
+    if ALWAYS_WRITE_COUNTER_BLOCK.with(std::cell::Cell::get) {
+        return true;
+    }
+    let interval = (len as u64 / 16).max(16);
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in key
+        .bytes()
+        .chain(timestamp_ms.to_le_bytes())
+        .chain(resulting.to_le_bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (hash >> 24) % interval == 0
+}
+
+fn persist_control_state_block_after_increment(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+    timestamp_ms: u64,
+    resulting: i64,
+) -> bool {
+    // The same bound, BEFORE the decision: a write that skips the block still trims the series.
+    trim_control_state_series(shard, key, shard.control_state_max_size);
+    let len = shard.control_state().get(key).map_or(0, BTreeMap::len);
+    let anchored = shard
+        .bucket_index
+        .objects
+        .get(&storage_bucket_internals::StoredModelKind::ControlState)
+        .is_some_and(|table| table.contains_key(key));
+    if anchored && len > 0 && !control_state_block_is_due(key, timestamp_ms, resulting, len) {
+        return true;
+    }
+    persist_control_state_block(
+        cache,
+        block_store,
+        shard_id,
+        shard,
+        key,
+        start_routing_bucket,
+        end_routing_bucket,
+        async_storage,
+    )
+}
+
 fn persist_control_state_block(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
