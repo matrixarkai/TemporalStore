@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{
     EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError, EmbeddingKey,
@@ -134,12 +134,19 @@ impl EmbeddingIndexRegistry {
         let rows = if !only_missing {
             batch
         } else if let Some(index) = self.spaces.get(&space) {
-            if batch.iter().all(|row| !index.contains(row.key)) {
+            if let Some(first_existing) = batch.iter().position(|row| index.contains(row.key)) {
+                missing.reserve(batch.len().saturating_sub(1));
+                missing.extend_from_slice(&batch[..first_existing]);
+                missing.extend(
+                    batch[first_existing + 1..]
+                        .iter()
+                        .copied()
+                        .filter(|row| !index.contains(row.key)),
+                );
+                missing.as_slice()
+            } else {
                 // A cold chunk can be quantized directly from the caller's borrowed rows.
                 batch
-            } else {
-                missing.extend(batch.iter().copied().filter(|row| !index.contains(row.key)));
-                missing.as_slice()
             }
         } else {
             batch
@@ -187,7 +194,9 @@ impl EmbeddingIndexRegistry {
             );
         }
 
-        let new_entries = {
+        let new_entries = if only_missing {
+            compact.len()
+        } else {
             let index = self.spaces.get(&space).expect("embedding space exists");
             (0..compact.len())
                 .filter(|row| !index.contains(compact.key(*row)))
@@ -211,11 +220,17 @@ impl EmbeddingIndexRegistry {
                 break;
             }
         }
+        let protected = only_missing.then(|| {
+            batch
+                .iter()
+                .map(|row| row.key)
+                .collect::<HashSet<EmbeddingKey>>()
+        });
         let report = self
             .spaces
             .get_mut(&space)
             .expect("embedding space exists")
-            .upsert_compact_batch_bounded(&compact)?;
+            .upsert_compact_batch_bounded(&compact, only_missing, protected.as_ref())?;
         self.touch_space(space);
         Ok(Some(report))
     }
@@ -606,6 +621,67 @@ mod tests {
                 .item_id,
             9
         );
+    }
+
+    #[test]
+    fn a_missing_batch_keeps_existing_rows_and_appends_new_rows() {
+        let mut registry = EmbeddingIndexRegistry::new(2);
+        let x = [1.0, 0.0];
+        let y = [0.0, 1.0];
+        let key = |item_id| EmbeddingKey {
+            tenant_id: 3,
+            item_id,
+        };
+        registry
+            .upsert_batch(
+                EmbeddingChannel::Node,
+                7,
+                &[
+                    EmbeddingVector {
+                        key: key(1),
+                        values: &x,
+                    },
+                    EmbeddingVector {
+                        key: key(3),
+                        values: &x,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let report = registry
+            .upsert_missing_batch(
+                EmbeddingChannel::Node,
+                7,
+                &[
+                    EmbeddingVector {
+                        key: key(1),
+                        values: &y,
+                    },
+                    EmbeddingVector {
+                        key: key(2),
+                        values: &y,
+                    },
+                ],
+            )
+            .unwrap()
+            .expect("one row is missing");
+        assert_eq!(report.inserted, 1);
+        assert_eq!(report.updated, 0);
+        assert_eq!(report.total_entries, 2);
+
+        let existing = registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &x, &[1])
+            .unwrap();
+        assert!(existing[0].score > 0.99);
+        let inserted = registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &y, &[2])
+            .unwrap();
+        assert!(inserted[0].score > 0.99);
+        assert!(registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &x, &[3])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
