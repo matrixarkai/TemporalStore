@@ -114,30 +114,31 @@ fn one_legacy_series_as_json() -> serde_json::Value {
 /// series shape since the feature series moved into `objects`; see `payload_for`. Which
 /// is what makes the pair an attribution control rather than two unrelated fixtures.
 fn index_image_carrying(field: &str, stamp: u32) -> Vec<u8> {
-    let mut state = ShardState::default();
-    state.index_format_version = stamp;
-    let mut value = serde_json::to_value(&state).expect("a ShardState serializes");
-    let object = value
-        .as_object_mut()
-        .expect("a serialized ShardState is a JSON object");
-    let previous = object.insert(field.to_string(), payload_for(field));
+    let state = ShardState::default();
+    let value = serde_json::to_value(&state).expect("a ShardState serializes");
+    let on_the_wire = value
+        .as_object()
+        .expect("a serialized ShardState is a JSON object")
+        .contains_key(field);
     if field == "sequences" {
-        // THE INSERT'S RETURN IS A GUARD: `None` means this binary really has no `sequences`
-        // field, so the image is the legacy-only shape these arms are about. A `Some` would mean
-        // the field came back and every refusal arm below is measuring nothing.
+        // THE KEY'S ABSENCE IS A GUARD: it means this binary really has no `sequences` field, so
+        // the image is the legacy-only shape these arms are about. Present would mean the field
+        // came back and every refusal arm below is measuring nothing.
         assert!(
-            previous.is_none(),
+            !on_the_wire,
             "this binary still serializes a `sequences` field, so the fixture is not the \
              legacy-only shape these guards are about"
         );
     } else {
         assert!(
-            previous.is_some(),
+            on_the_wire,
             "`{field}` was not already on the wire, so this control is not the pair of the \
              refusal arm beside it"
         );
     }
-    serde_json::to_vec(&value).expect("the image serializes")
+    // The container, with the series written beside the struct's own fields and the STAMP in the
+    // header -- the one place the reader looks for it.
+    crate::engine::encode_index_bytes_with_extra_field(&state, field, &payload_for(field), stamp)
 }
 
 fn engine_over_dirs(dir: &std::path::Path, index_subdir: &str) -> (TemporalEngine, std::path::PathBuf) {
@@ -161,17 +162,21 @@ fn engine_over_dirs(dir: &std::path::Path, index_subdir: &str) -> (TemporalEngin
 fn door_one_the_base_index_refuses_a_stale_stamp_carrying_the_retired_map() {
     let stale = SHARD_INDEX_FORMAT_VERSION - 1;
     let image = index_image_carrying("sequences", stale);
+    // THE IMAGE IS REFUSED ON ITS HEADER -- so the refusal below is the stamp and not a parse
+    // failure -- and the same payload under the CURRENT header decodes cleanly, which is what makes
+    // the stamp the only thing standing between a reader and the dropped series.
+    let refusal = crate::engine::decode_index_bytes(&image)
+        .err()
+        .expect("a stale-stamped image must be refused by the decode");
     assert!(
-        String::from_utf8_lossy(&image).contains("\"sequences\""),
-        "the fixture does not spell `sequences`, so this arm is about nothing"
+        refusal.contains("struct version") && refusal.contains(&stale.to_string()),
+        "the stale image was refused, but not on its header's struct version: {refusal}"
     );
-    // IT DECODES -- so the refusal below is the stamp and not a parse failure, and it is the clean
-    // decode that makes the stamp the only thing standing between a reader and the dropped series.
-    let decoded = crate::engine::decode_index_bytes(&image).expect(
-        "a pre-fold index must still DECODE -- `ShardState` sets no `deny_unknown_fields`, which \
-         is precisely why a GATE has to be what stops it",
+    let at_current = index_image_carrying("sequences", SHARD_INDEX_FORMAT_VERSION);
+    let decoded = crate::engine::decode_index_bytes(&at_current).expect(
+        "a pre-fold index at the current stamp must still DECODE -- `ShardState` sets no \
+         `deny_unknown_fields`, which is precisely why a GATE has to be what stops a stale one",
     );
-    assert_eq!(stale, decoded.index_format_version);
     assert!(
         decoded.features().is_empty(),
         "the decode folded the retired map into `features` by itself, so this fixture cannot tell \
@@ -185,18 +190,17 @@ fn door_one_the_base_index_refuses_a_stale_stamp_carrying_the_retired_map() {
     let loaded = engine
         .load_index_checked(SHARD, false)
         .expect("a refusal is Ok(None), not Err");
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
     println!(
-        "\n=== DOOR 1, stamp {stale} ===\n  accepted {accepted}, refused-stale {refused_stale}, \
-         absent {absent}, undecodable {undecodable}"
+        "\n=== DOOR 1, stamp {stale} ===\n  accepted {accepted}, absent {absent}, undecodable \
+         {undecodable}"
     );
     assert!(
         loaded.is_none(),
         "the base-index door ACCEPTED a stale-stamped image carrying the retired map; the rows \
          are then dropped at the decode with no error and this deletion loses data"
     );
-    assert!(refused_stale > 0, "the refusal was not counted");
+    assert!(undecodable > 0, "the refusal was not counted");
 }
 
 /// The control: the same image at the current stamp reaches the load path and is accepted.
@@ -248,31 +252,51 @@ fn a_manifest_carrying(
     let mut manifest = engine
         .create_bucket_dump_manifest(SHARD, Vec::new())
         .expect("a dump manifest over a seeded shard");
-    let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
+    let restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
         .expect("a manifest this binary wrote must decode");
-    restored.index_format_version = stamp;
-    let mut value = serde_json::to_value(&restored).expect("the manifest index serializes");
-    let object = value.as_object_mut().expect("a JSON object");
-    let previous = object.insert(field.to_string(), payload_for(field));
+    let on_the_wire = serde_json::to_value(&restored)
+        .expect("the manifest index serializes")
+        .as_object()
+        .expect("a JSON object")
+        .contains_key(field);
     if field == "sequences" {
-        assert!(previous.is_none(), "this binary still has a `sequences` field");
+        assert!(!on_the_wire, "this binary still has a `sequences` field");
     } else {
-        assert!(previous.is_some(), "`{field}` was not already on the wire");
+        assert!(on_the_wire, "`{field}` was not already on the wire");
     }
-    // Plain serde, so the stamp set above survives: `stamp_index_format_version` exists to
-    // OVERRIDE it with the current constant, which is the opposite of what this needs.
-    manifest.index_bytes = serde_json::to_vec(&value).expect("the image serializes");
+    // The container with the series beside the struct's own fields and the STAMP in the header.
+    // Not `serialize_index`, which writes the current header whatever the shard's field says.
+    manifest.index_bytes = crate::engine::encode_index_bytes_with_extra_field(
+        &restored,
+        field,
+        &payload_for(field),
+        stamp,
+    );
     manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
     manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
     manifest.checksum =
         bucket_dump_manifest_checksum(&manifest).expect("the manifest checksum recomputes");
-    assert_eq!(
-        stamp,
-        crate::engine::decode_index_bytes(&manifest.index_bytes)
-            .expect("the re-stamped image decodes")
-            .index_format_version,
-        "the re-stamped image did not keep its stamp, so a refusal arm would test an acceptance"
-    );
+    // THE FIXTURE CHECKS ITSELF, in the direction the arm that uses it needs: a current-stamped
+    // image decodes at its stamp, and a stale one is refused on its header -- never the other way
+    // round, or a refusal arm would test an acceptance.
+    let read_back = crate::engine::decode_index_bytes(&manifest.index_bytes);
+    if stamp == crate::engine::SHARD_INDEX_FORMAT_VERSION {
+        assert_eq!(
+            stamp,
+            read_back
+                .expect("the current-stamped image decodes")
+                .index_format_version,
+            "the current-stamped image did not keep its stamp, so the control would test a refusal"
+        );
+    } else {
+        let refusal = read_back
+            .err()
+            .expect("a stale-stamped image must be refused by the decode");
+        assert!(
+            refusal.contains("struct version") && refusal.contains(&stamp.to_string()),
+            "the stale image was refused, but not on its header's struct version: {refusal}"
+        );
+    }
     (dir, manifest)
 }
 
@@ -288,14 +312,10 @@ fn door_two_the_dump_manifest_refuses_a_stale_stamp_carrying_the_retired_map() {
     let (dir, manifest) = a_manifest_carrying("sequences", stale);
     let (target, index_dir) = engine_over_dirs(dir.path(), "restore-indexes");
 
-    crate::engine::persistence::reset_index_load_path_counts();
     let installed = target.install_bucket_dump_manifest(&manifest);
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
     println!(
-        "\n=== DOOR 2, stamp {stale} through install_bucket_dump_manifest ===\n  \
-         install -> {installed:?}\n  accepted {accepted}, refused-stale {refused_stale}, absent \
-         {absent}, undecodable {undecodable}"
+        "\n=== DOOR 2, stamp {stale} through install_bucket_dump_manifest ===\n  install -> \
+         {installed:?}"
     );
     let status = installed.expect_err(
         "THE DUMP DOOR ACCEPTED IT. This is the hole that blocked this removal once already: the \
@@ -303,8 +323,18 @@ fn door_two_the_dump_manifest_refuses_a_stale_stamp_carrying_the_retired_map() {
          written away with no error anywhere. The field must not be deleted while this door is \
          open",
     );
-    assert_eq!("slot_dump_stale_index_stamp", status.code, "refused for some other reason: {status:?}");
-    assert!(refused_stale > 0, "the refusal was not counted");
+    // BY CODE AND BY MESSAGE: the code is the decode's refusal, which any undecodable image also
+    // earns, and only the header's struct-version refusal names both versions.
+    assert_eq!(
+        "slot_dump_invalid_index", status.code,
+        "refused for some other reason: {status:?}"
+    );
+    assert!(
+        status.message.contains("struct version")
+            && status.message.contains(&stale.to_string())
+            && status.message.contains(&SHARD_INDEX_FORMAT_VERSION.to_string()),
+        "the install was refused, but not on the header's struct version: {status:?}"
+    );
     assert!(
         !index_dir.join(format!("shard-{SHARD}.index.json")).exists(),
         "the refused install still wrote a base index, so the refusal is not before the write"
@@ -446,8 +476,7 @@ fn door_three_control_an_absent_base_index_still_folds_the_log() {
     let (reloaded, _) = engine_over_dirs(dir.path(), "indexes");
     crate::engine::persistence::reset_index_load_path_counts();
     reloaded.load_shard(SHARD);
-    let (accepted, refused_stale, absent, undecodable) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted, absent, undecodable) = crate::engine::persistence::index_load_path_counts();
     let served = matches!(
         reloaded
             .execute(crate::types::ExecuteRequest {
@@ -460,15 +489,13 @@ fn door_three_control_an_absent_base_index_still_folds_the_log() {
         crate::types::CommandResponse::Bytes { value: Some(_) }
     );
     println!(
-        "\n=== DOOR 3 control, base index absent ===\n  accepted {accepted}, refused-stale \
-         {refused_stale}, absent {absent}, undecodable {undecodable}\n  \
-         the reload served a logged write: {served}"
+        "\n=== DOOR 3 control, base index absent ===\n  accepted {accepted}, absent {absent}, \
+         undecodable {undecodable}\n  the reload served a logged write: {served}"
     );
     assert!(
         absent > 0,
-        "the load did not take the ABSENT arm (accepted {accepted}, refused-stale \
-         {refused_stale}, absent {absent}, undecodable {undecodable}), so this is not the door \
-         arm 5 is about"
+        "the load did not take the ABSENT arm (accepted {accepted}, absent {absent}, undecodable \
+         {undecodable}), so this is not the door arm 5 is about"
     );
     assert!(
         served,

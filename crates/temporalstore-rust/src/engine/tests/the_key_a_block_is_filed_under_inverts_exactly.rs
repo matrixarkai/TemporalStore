@@ -695,9 +695,9 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 /// `block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8` is such bytes: a whole shard index a
 /// pre-change binary really wrote, captured by that module's own capture instrument, whose three
 /// page entries each spell `object_key` and `model_id` as named fields -- and whose composite keys
-/// each spell the same two values. This arm takes it through `decode_index_bytes`, the one door
-/// every served-index reader goes through, and asserts the identity the new reader reconstructs is
-/// the identity the OLD entry carried, block by block.
+/// each spell the same two values. This arm takes it through the struct's own deserializer -- the
+/// read the retired plain-JSON arm of `decode_index_bytes` made -- and asserts the identity the new
+/// reader reconstructs is the identity the OLD entry carried, block by block.
 ///
 /// # AND IT IS THE HARDEST AVAILABLE CASE, WHICH IS WHY IT IS THIS FIXTURE AND NOT A NEWER ONE
 ///
@@ -739,9 +739,9 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
         );
     }
 
-    let decoded = crate::engine::decode_index_bytes(bytes.as_bytes()).expect(
-        "[CLAUSE old-bytes-decode] an index written by a pre-change binary must still DECODE -- \
-         the stamp refuses it one layer up, and a decode that failed here would mean the new \
+    let decoded = serde_json::from_str::<crate::engine::state::ShardState>(bytes).expect(
+        "[CLAUSE old-bytes-decode] an index written by a pre-change binary must still be READ -- \
+         the header refuses it one layer up, and a read that failed here would mean the new \
          reader cannot read the old shape at all",
     );
     assert_eq!(
@@ -1208,8 +1208,8 @@ const PREDICTED_STREAM_SAVING: f64 = 50.0;
 ///      not "the base index was read": `load_index_inner` answers `Ok(None)` for a stale stamp, an
 ///      undecodable image and an absent file alike, and the caller then replays the log -- slower,
 ///      correct, and reading not one stored block entry. `index_load_path_counts` is asserted
-///      instead, as the four-tuple it is, with `accepted` non-zero and `refused_stale` and
-///      `undecodable` at zero over the same reset window.
+///      instead, as the three-tuple it is, with `accepted` non-zero and `undecodable` at zero
+///      over the same reset window.
 ///   2. A STRING READ DOES NOT GO THROUGH THE BLOCK INDEX'S KIND. A `StringGet` resolves through
 ///      the string row in `objects`, so 600 correct reads said nothing about the `model_id` the
 ///      bucket's block entries came back with. The identities are therefore compared DIRECTLY,
@@ -1358,27 +1358,25 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
 
     // --- THE PROBE ENTERED ITS REGIME: THE INDEX WAS READ, NOT REPLAYED AROUND. ---
     //
-    // BOUND BY POSITION AGAINST THE SIGNATURE, which is (accepted, refused_stale, absent,
-    // undecodable). A tuple and not a sum, because a sum cannot tell a store that read its index
-    // from one that replayed -- and replaying reads not one stored block entry, so every assertion
-    // below it would be about the write-ahead log instead.
-    let (accepted, refused_stale, _absent, undecodable) = index_load_path_counts();
+    // BOUND BY POSITION AGAINST THE SIGNATURE, which is (accepted, absent, undecodable). A tuple
+    // and not a sum, because a sum cannot tell a store that read its index from one that replayed --
+    // and replaying reads not one stored block entry, so every assertion below it would be about
+    // the write-ahead log instead.
+    let (accepted, _absent, undecodable) = index_load_path_counts();
     println!(
         "[reload-reads-everything] load paths after the reload: accepted={accepted} \
-         refused_stale={refused_stale} undecodable={undecodable}"
+         undecodable={undecodable}"
     );
     assert!(
         accepted > 0,
         "[CLAUSE the-index-was-read] the reload accepted no base index (accepted={accepted}, \
-         refused_stale={refused_stale}, undecodable={undecodable}), so it rebuilt from the log and \
-         read no stored block entry -- every assertion below would be about the write-ahead log"
+         undecodable={undecodable}), so it rebuilt from the log and read no stored block entry -- \
+         every assertion below would be about the write-ahead log"
     );
     assert_eq!(
-        (0, 0),
-        (refused_stale, undecodable),
-        "[CLAUSE the-index-was-read] the reload refused {refused_stale} image(s) as stale and \
-         found {undecodable} undecodable; an accepted load beside a refused one would make the \
-         clause above pass over a store that also replayed"
+        0, undecodable,
+        "[CLAUSE the-index-was-read] the reload refused {undecodable} image(s); an accepted load \
+         beside a refused one would make the clause above pass over a store that also replayed"
     );
 
     // --- AND EVERY BLOCK CAME BACK WITH THE IDENTITY THE WRITER HELD. ---

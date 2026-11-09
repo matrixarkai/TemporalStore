@@ -1111,25 +1111,17 @@ impl TemporalEngine {
                     // along the log a manifest sits. `index_log_sequence` says the delta may be
                     // ahead of this checkpoint, which is exactly the thing this arm is right to
                     // ignore -- the un-synced delta is what it does not trust.
-                    // `index_format_version` says the BYTES mean something other than what this
-                    // binary will read them as, and no amount of durability makes a
-                    // misinterpreted field correct. So the arm below refuses on the stamp and
-                    // falls back to the base file and the log, which is the same trade
+                    // The struct version in the image's header says the BYTES mean something other
+                    // than what this binary will read them as, and no amount of durability makes a
+                    // misinterpreted field correct. `decode_index_bytes` refuses such an image
+                    // before it reads the payload, so the `Err` arm below is where it lands, and
+                    // that arm falls back to the base file and the log, which is the same trade
                     // `load_index_inner` makes.
                     //
                     // This path is the reason the stamp needed covering at all: it is reached by
                     // an ORDINARY restart, not by anyone calling an install endpoint, so an old
                     // store with an old dump manifest on disk met no gate whatsoever.
                     match crate::engine::decode_index_bytes(&manifest.index_bytes) {
-                        // Counted in the body rather than in the guard, so the guard stays a pure
-                        // question: a guard that moved a counter would fire for a pattern that
-                        // then fell through to the arm below it.
-                        Ok(restored)
-                            if crate::engine::persistence::index_stamp_is_stale(&restored) =>
-                        {
-                            crate::engine::persistence::refuse_stale_index_stamp(&restored);
-                            (base_only, base_watermark)
-                        }
                         Ok(mut restored) => {
                             // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
                             // for the reason `install_bucket_dump_manifest` states at its own call
@@ -1170,7 +1162,16 @@ impl TemporalEngine {
                             );
                             (Some(restored), manifest.wal_sequence)
                         }
-                        Err(_) => (base_only, base_watermark),
+                        // COUNTED, exactly as `load_index_inner` counts an image it refuses, and
+                        // for the reason it gives: this arm answers with the base file and the log
+                        // whether the manifest was refused or was never there, and without the
+                        // count nothing downstream can tell the two apart.
+                        Err(_) => {
+                            crate::engine::persistence::note_index_load(
+                                crate::engine::persistence::IndexLoadPath::Undecodable,
+                            );
+                            (base_only, base_watermark)
+                        }
                     }
                 }
                 _ => (base_only, base_watermark),

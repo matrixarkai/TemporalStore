@@ -15,7 +15,7 @@
 //! refusal is untested is a bump that might not refuse.
 //!
 //! [`a_pre_bump_index_is_refused_rather_than_read`] drives a stale-stamped image through the real
-//! load path and asserts `RefusedStaleStamp`.
+//! load path and asserts the refusal is counted as `Undecodable`.
 //! [`an_index_at_the_new_stamp_is_accepted`] is the positive control -- the same fixture at 15 is
 //! accepted and its data comes back -- without which the refusal arm passes just as well when the
 //! fixture never reached the load path.
@@ -35,7 +35,7 @@
 //!
 //! # THE REPLAY CONSEQUENCE
 //!
-//! Every index written before 15 is refused on load, counted as `RefusedStaleStamp`, and the shard
+//! Every index written before 15 is refused on load, counted as `Undecodable`, and the shard
 //! rebuilds from its WAL. Slower and correct.
 //!
 //! # WHAT THIS CHANGE IS NOT
@@ -110,33 +110,42 @@ fn a_pre_bump_index_is_refused_rather_than_read() {
 
     let path = base_index_path(dir.path());
     let bytes = std::fs::read(&path).expect("a flushed base index exists");
-    let mut restored = crate::engine::decode_index_bytes(&bytes).expect("the base index decodes");
+    let restored = crate::engine::decode_index_bytes(&bytes).expect("the base index decodes");
     assert_eq!(
         restored.index_format_version,
         crate::engine::SHARD_INDEX_FORMAT_VERSION,
         "denominator: the index just written must carry the CURRENT stamp, or staling it below \
          changes nothing"
     );
-    restored.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION - 1;
-    // PLAIN JSON, NOT THE CONTAINER: the container's reader takes the stamp from its header, so a
-    // msgpack image written from a down-stamped shard would decode as current. The plain-JSON
-    // reader stores and returns the field, which is what a stale-stamp image has to be.
-    std::fs::write(&path, crate::engine::encode_index_bytes_as_plain_json(&restored))
-        .expect("write");
+    // THE STAMP IS THE CONTAINER HEADER'S: the same payload behind a header that names the previous
+    // struct version. The reader compares it before it reads the payload, so this is "an index an
+    // older build wrote" and the decode refuses it.
+    let stale = crate::engine::encode_index_bytes_at_version(
+        &restored,
+        crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+    );
+    let refusal = crate::engine::decode_index_bytes(&stale)
+        .err()
+        .expect("an image stamped one version back must be refused by the decode");
+    assert!(
+        refusal.contains("struct version"),
+        "the stale image was refused, but not on its header's struct version: {refusal}"
+    );
+    std::fs::write(&path, &stale).expect("write");
 
     reset_index_load_path_counts();
     let reloaded = engine_at(dir.path());
     reloaded.load_shard(SHARD);
-    let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
+    let (accepted_n, absent_n, decode_n) = index_load_path_counts();
     println!(
-        "  stamp {} against {} -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}",
+        "  stamp {} against {} -> decode {decode_n}, absent {absent_n}, accepted {accepted_n}",
         crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
     assert!(
-        stale_n > 0,
-        "an index stamped below {} must be counted as a STALE-STAMP refusal; got stale {stale_n} \
-         decode {decode_n} absent {absent_n} accepted {accepted_n}",
+        decode_n > 0,
+        "an index stamped below {} must be REFUSED and counted; got decode {decode_n} absent \
+         {absent_n} accepted {accepted_n}",
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
     // Refused and REBUILT, not refused and lost: replay re-derives the three members.
@@ -160,16 +169,16 @@ fn an_index_at_the_new_stamp_is_accepted() {
     reset_index_load_path_counts();
     let reloaded = engine_at(dir.path());
     reloaded.load_shard(SHARD);
-    let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
+    let (accepted_n, absent_n, decode_n) = index_load_path_counts();
     println!(
-        "  stamp {} -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}",
+        "  stamp {} -> decode {decode_n}, absent {absent_n}, accepted {accepted_n}",
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
     assert!(
         accepted_n > 0,
         "an index at the current stamp must be ACCEPTED, or the refusal arm is measuring a \
-         fixture that never reached the load path; got stale {stale_n} decode {decode_n} absent \
-         {absent_n} accepted {accepted_n}"
+         fixture that never reached the load path; got decode {decode_n} absent {absent_n} \
+         accepted {accepted_n}"
     );
     assert_eq!(
         Some((3, false)),

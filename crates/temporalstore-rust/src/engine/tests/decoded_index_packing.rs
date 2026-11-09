@@ -194,13 +194,9 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
         "denominator: the string map must hold keys"
     );
 
-    for (label, bytes) in [
-        ("container", crate::engine::encode_index_bytes(shard)),
-        (
-            "plain json",
-            crate::engine::encode_index_bytes_as_plain_json(shard),
-        ),
-    ] {
+    // The container is the only shape the decode reads; plain JSON is refused, and
+    // `served_index_container_round_trips_and_refuses_plain_json` asserts that.
+    for (label, bytes) in [("container", crate::engine::encode_index_bytes(shard))] {
         let decoded = crate::engine::decode_index_bytes(&bytes)
             .unwrap_or_else(|error| panic!("{label} index must decode: {error}"));
         assert_eq!(

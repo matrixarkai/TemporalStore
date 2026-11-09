@@ -18,10 +18,11 @@
 //!
 //! # WHAT IS MEASURED HERE, AND WHY THREE ARMS AND NOT ONE
 //!
-//! The stamp (`index_format_version` against `SHARD_INDEX_FORMAT_VERSION`) is the obvious gate,
-//! and `persistence::load_index_inner` does refuse a stale one BEFORE the index-log fold runs.
-//! Checking only that loader answers the question for ONE door and reads as if it answered it for
-//! all of them. `decode_index_bytes` has other callers.
+//! The stamp (the struct version in the container header, against `SHARD_INDEX_FORMAT_VERSION`)
+//! is the obvious gate, and `decode_index_bytes` refuses a stale one before it reads the payload,
+//! so `persistence::load_index_inner` never sees one BEFORE the index-log fold runs. Checking only
+//! that loader answers the question for ONE door and reads as if it answered it for all of them.
+//! `decode_index_bytes` has other callers.
 //!
 //!   * [`a_stale_stamped_base_index_does_not_deliver_a_context_node_entry`] -- the base-index
 //!     door, stale stamp. REFUSED, and the entry does not arrive.
@@ -110,13 +111,29 @@ fn plant_in_base_index(dir: &std::path::Path, stamp: u32) {
         .expect("the written string is in the flushed index")
         .clone();
     restored.context_nodes_mut().insert(PLANTED.into(), live.address());
-    restored.index_format_version = stamp;
-    // PLAIN JSON, NOT THE CONTAINER. The container's reader takes the stamp from its header, so a
-    // msgpack image written from a shard whose field says `stamp` decodes as CURRENT, and the image
-    // this test needs -- one that decodes and carries an old stamp -- can only be spelled by an
-    // encoding that stores the field. The plain-JSON reader still exists for exactly this.
-    std::fs::write(&path, crate::engine::encode_index_bytes_as_plain_json(&restored))
+    // THE STAMP IS WRITTEN WHERE THE READER LOOKS FOR IT: the container header. The reader takes the
+    // stamp from there and refuses any struct version but its own before it reads the payload, so
+    // "an image an older build wrote" is this build's payload behind a header that says so. At the
+    // current stamp it is an ordinary image, which is what the control arm plants.
+    std::fs::write(&path, crate::engine::encode_index_bytes_at_version(&restored, stamp))
         .expect("write");
+}
+
+/// THE FIXTURE CHECKS ITSELF: the planted image is refused BY THE HEADER, not for some other reason.
+///
+/// A counter that says "undecodable" is satisfied by a corrupt file as well as by a stale stamp, so
+/// the refusal is read off the bytes too: it must name both struct versions.
+fn assert_refused_on_the_header(dir: &std::path::Path, stamp: u32) {
+    let bytes = std::fs::read(dir.join("indexes").join("shard-7.index.json")).expect("read");
+    let refusal = crate::engine::decode_index_bytes(&bytes)
+        .err()
+        .expect("the planted image must be refused by the decode");
+    assert!(
+        refusal.contains("struct version")
+            && refusal.contains(&stamp.to_string())
+            && refusal.contains(&crate::engine::SHARD_INDEX_FORMAT_VERSION.to_string()),
+        "the planted image was refused, but not on its header's struct version: {refusal}"
+    );
 }
 
 /// Is `PLANTED` in shard 7's `context_nodes` map, as the engine now holds it?
@@ -134,18 +151,19 @@ fn a_stale_stamped_base_index_does_not_deliver_a_context_node_entry() {
     let engine = engine_at(dir.path());
     write_and_flush(&engine);
     plant_in_base_index(dir.path(), crate::engine::SHARD_INDEX_FORMAT_VERSION - 1);
+    assert_refused_on_the_header(dir.path(), crate::engine::SHARD_INDEX_FORMAT_VERSION - 1);
     drop(engine);
 
     reset_index_load_path_counts();
     let reloaded = engine_at(dir.path());
     reloaded.load_shard(7);
     // Bound by position against the accessor's own signature, not by the order that reads nicely:
-    // all four are `u64` and swapping two compiles.
-    let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
+    // all three are `u64` and swapping two compiles.
+    let (accepted_n, absent_n, decode_n) = index_load_path_counts();
     assert!(
-        stale_n > 0,
-        "an index stamped {} against a current {} must be counted as a STALE-STAMP refusal; got \
-         stale {stale_n} decode {decode_n} absent {absent_n} accepted {accepted_n}",
+        decode_n > 0,
+        "an index stamped {} against a current {} must be REFUSED and counted as undecodable; got \
+         decode {decode_n} absent {absent_n} accepted {accepted_n}",
         crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
@@ -169,11 +187,11 @@ fn a_current_stamped_base_index_does_deliver_a_context_node_entry() {
     reset_index_load_path_counts();
     let reloaded = engine_at(dir.path());
     reloaded.load_shard(7);
-    let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
+    let (accepted_n, absent_n, decode_n) = index_load_path_counts();
     assert!(
         accepted_n > 0,
-        "an index at the current stamp must be ACCEPTED; got stale {stale_n} decode {decode_n} \
-         absent {absent_n} accepted {accepted_n}"
+        "an index at the current stamp must be ACCEPTED; got decode {decode_n} absent {absent_n} \
+         accepted {accepted_n}"
     );
     assert!(
         planted_arrived(&reloaded),
@@ -182,32 +200,21 @@ fn a_current_stamped_base_index_does_deliver_a_context_node_entry() {
     );
 }
 
-/// THE DUMP-MANIFEST DOOR IS STAMPED, AS OF #2150 -- AND THIS ARM NOW GUARDS THAT.
-///
-/// # WHAT THIS ARM USED TO SAY, AND WHY IT CHANGED
+/// THE DUMP-MANIFEST DOOR IS STAMPED, AS OF #2150 -- AND THIS ARM GUARDS THAT.
 ///
 /// It was written to RECORD A HOLE. `install_bucket_dump_manifest` hands `manifest.index_bytes`
-/// to `decode_index_bytes` and uses what comes back; `decode_index_bytes` compares a version only
-/// on the binary-container arm, and a plain-JSON image -- what every store written with the
-/// container switched off carries -- has no such comparison. So a pre-stamp image installed and
-/// its `context_nodes` entries became live state, and this arm asserted exactly that, because an
-/// unguarded door is a finding worth pinning.
-///
-/// #2150 closed it: every door that trusts a stored index now reads its stamp. So the assertion
-/// inverts, and what was a record of a hole becomes a REGRESSION GUARD on the fix. The fixture is
-/// unchanged -- same plant, same staled image, same recomputed integrity bindings -- and only the
-/// verdict moves.
-///
-/// THIS WAS CAUGHT BY RUNNING THE MODULE BY NAME AFTER #2150 LANDED, NOT BY CI. On this repo
-/// `ratchet` is the Python suite and `rust-ci`'s suite step carries `continue-on-error: true`
-/// behind a timeout it reaches, so a merged test that a later change invalidates goes red in the
-/// tree and green on the PR. Two changes agreeing about a door, landed hours apart, is exactly
-/// the shape that needs a local run by name.
+/// to `decode_index_bytes` and uses what comes back, and a plain-JSON image -- what every store
+/// written with the container switched off carries -- had no version comparison at all. So a
+/// pre-stamp image installed and its `context_nodes` entries became live state, and this arm
+/// asserted exactly that, because an unguarded door is a finding worth pinning. #2150 closed it,
+/// and the assertion inverted into a REGRESSION GUARD on the fix. The plain-JSON reader is gone
+/// now, and the only way an image carries a stamp is the container header, which the decode checks
+/// before it reads the payload: the install is refused there, with the decode's own message.
 ///
 /// The manifest's own integrity bindings are recomputed here rather than bypassed: this is a
 /// legitimate manifest carrying a stale index image, which is exactly what a manifest written
-/// before the stamp existed is. That matters more now than it did, because the refusal is
-/// asserted BY CODE -- see the note at the assertion.
+/// before the stamp existed is. That matters because the refusal is asserted BY CODE AND MESSAGE --
+/// see the note at the assertion.
 #[test]
 fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -232,17 +239,19 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
         .expect("a dump manifest is created for a loaded shard");
 
     // STALE THE IMAGE INSIDE THE MANIFEST, then make the manifest honest about it again.
-    let mut image = crate::engine::decode_index_bytes(&manifest.index_bytes)
+    let image = crate::engine::decode_index_bytes(&manifest.index_bytes)
         .expect("the manifest index image decodes");
     assert!(
         image.context_nodes().contains_key(PLANTED),
         "denominator: the exported image must carry the planted entry, or the install below \
          proves nothing"
     );
-    image.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION - 1;
-    // Plain JSON, for the reason `plant_in_base_index` writes it: the container's reader takes the
-    // stamp from its header, so only an encoding that stores the field can carry an old one.
-    manifest.index_bytes = crate::engine::encode_index_bytes_as_plain_json(&image);
+    // The same payload behind a header that names the PREVIOUS struct version: the reader takes
+    // the stamp from the header, so this is what "an image an older build wrote" is.
+    manifest.index_bytes = crate::engine::encode_index_bytes_at_version(
+        &image,
+        crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+    );
     manifest.index_sha256 = super::super::sha256_hex_bytes(&manifest.index_bytes);
     // AND THE GENERATION ID, WHICH THE PRODUCER DERIVES FROM THE INDEX CHECKSUM, in the producer's
     // own order: id over the manifest fields including `index_sha256`, THEN the checksum over the
@@ -272,39 +281,39 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
         panic!(
             "the dump-manifest door accepted an index image stamped {} against a current {}. \
              That is the hole #2150 closed re-opening: this door hands `manifest.index_bytes` to \
-             `decode_index_bytes` and a plain-JSON image carries no codec-level version, so \
-             without an explicit comparison here a pre-stamp image installs and its \
-             `context_nodes` entries become live state. Do not relax this assertion.",
+             `decode_index_bytes`, and the header's struct version is the only comparison it \
+             makes, so without it a pre-stamp image installs and its `context_nodes` entries \
+             become live state. Do not relax this assertion.",
             crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
             crate::engine::SHARD_INDEX_FORMAT_VERSION
         )
     });
-    // THE REFUSAL MUST BE THE STAMP'S, BY CODE AND NOT BY THE FACT OF FAILING.
+    // THE REFUSAL MUST BE THE STAMP'S, BY CODE AND BY MESSAGE AND NOT BY THE FACT OF FAILING.
     //
     // This arm reaches the install through four integrity bindings it recomputes on the way --
     // `index_sha256`, `dump_generation_id`, the manifest `checksum`, and the slab-id check -- and
     // every one of them refuses with its own code. An assertion that the install merely FAILED
     // would be satisfied by any of those, so a change that broke the fixture would read as the
     // stamp check working. `slot_dump_generation_mismatch` is not hypothetical: it is what caught
-    // the first run of this arm before the generation id was recomputed.
+    // the first run of this arm before the generation id was recomputed. The code
+    // `slot_dump_invalid_index` is the decode's refusal, which any undecodable image also earns, so
+    // the message is read as well: only the header's struct-version refusal names both versions.
     assert_eq!(
-        "slot_dump_stale_index_stamp", refusal.code,
-        "the install was refused, but not by the format stamp: {refusal:?}. One of the manifest's \
+        "slot_dump_invalid_index", refusal.code,
+        "the install was refused, but not by the decode: {refusal:?}. One of the manifest's \
          integrity bindings is failing instead, so this arm is no longer driving the door it \
          names"
     );
-    // DERIVED FROM THE CONSTANT, NOT WRITTEN OUT. This assertion held two literals -- "13"
-    // and "14" -- and `SHARD_INDEX_FORMAT_VERSION` has moved since they were written, so it
-    // has been failing on a tree where the door it checks works perfectly: the refusal names
-    // 14 and 15 and the test demanded 13 and 14. A guard that pins a version it does not own
-    // stops describing the code at the next bump, and a red that means nothing is worse than
-    // no guard at all -- the next real red reads as the same noise.
+    // DERIVED FROM THE CONSTANT, NOT WRITTEN OUT. A guard that pins a version it does not own
+    // stops describing the code at the next bump, and a red that means nothing is worse than no
+    // guard at all -- the next real red reads as the same noise.
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     let stored = current - 1;
     assert!(
-        refusal.message.contains(&stored.to_string())
+        refusal.message.contains("struct version")
+            && refusal.message.contains(&stored.to_string())
             && refusal.message.contains(&current.to_string()),
-        "the stamp refusal names neither the stored stamp ({stored}) nor the current one \
+        "the refusal does not name the header's struct version ({stored}) and the current one \
          ({current}): {refusal:?}. Both belong in it -- an operator reading this has to know \
          which index they are holding"
     );

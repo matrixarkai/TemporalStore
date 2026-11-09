@@ -3063,7 +3063,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// asked to adjudicate.
 ///
 /// THE REPLAY CONSEQUENCE, PLAINLY. Every index written before this is refused on load, counted
-/// as `IndexLoadPath::RefusedStaleStamp`, and the shard rebuilds from its WAL. Slower and
+/// as `IndexLoadPath::Undecodable`, and the shard rebuilds from its WAL. Slower and
 /// correct, and the same trade every bump in this tree has made.
 ///
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
@@ -3474,14 +3474,12 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
     bytes
 }
 
-/// Container magic for a non-JSON served index. A JSON index starts with `{`, so a reader can
-/// tell the two apart from the first byte and never has to be told which it is holding.
+/// Container magic of a served index. Bytes that do not start with it are not a served index.
 const INDEX_CONTAINER_MAGIC: &[u8] = b"TSIDX\x01";
 
-/// Payload codec ids inside the container. The whole point of the container is that this is an
-/// enumeration rather than a decision: each payload is an id whose decoder lands beside the
-/// others, and every index written before it keeps loading.
-const INDEX_CODEC_ZSTD_JSON: u8 = 1;
+/// Payload codec ids inside the container. Id 1 was the struct's JSON, compressed; nothing writes it
+/// and nothing reads it, so it is not named here and the reader refuses it like any unknown id.
+///
 /// The struct's own serde model in a binary encoding, then compressed.
 ///
 /// Two decisions are baked in here, and measurement forced both.
@@ -3514,12 +3512,12 @@ const INDEX_BINARY_VERSION_BYTES: usize = 4;
 /// path for a large cut in bytes written and bytes read at load.
 const INDEX_ZSTD_LEVEL: i32 = 3;
 
-/// Does this look like a served index, in either of the two formats a reader may be handed?
+/// Does this look like a served index?
 ///
-/// A JSON index starts with `{`; a container starts with its magic. Callers that only need to
+/// A served index is a container, and a container starts with its magic. Callers that only need to
 /// know "these bytes are an index" -- rather than to decode one -- ask this instead of parsing.
 pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
-    bytes.first() == Some(&b'{') || bytes.starts_with(INDEX_CONTAINER_MAGIC)
+    bytes.starts_with(INDEX_CONTAINER_MAGIC)
 }
 
 /// Encode a shard with the container's binary payload: the serde model as a binary map,
@@ -3549,10 +3547,6 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// what must be read back at load.
 ///
 ///
-/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
-/// index written either way loads in either setting.
-///
-///
 /// The container was built, measured and then left switched off, so every store written since has
 /// carried a plain-JSON served index. Measured at 300 adds into one subject, which is the shape
 /// that grows an index rather than merely touching it:
@@ -3579,38 +3573,16 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// as a default rather than an opt-in. That switch has since been removed, so only the two cases
 /// above are reachable now.
 ///
-/// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
-/// magic, so both formats stay loadable.
-///
 /// Writing raw JSON was a switch until nothing selected it, and the setting that chose between the
-/// two payloads (`TS_INDEX_CODEC`) is gone: the payload is msgpack. `encode_index_bytes_as_plain_json`
-/// keeps the raw-JSON shape reachable from tests, which is where the claim "both shapes still
-/// load" has to be proved.
+/// two payloads (`TS_INDEX_CODEC`) is gone: the payload is msgpack, and msgpack is the only payload
+/// `decode_index_bytes` reads. `encode_index_bytes_as_plain_json` keeps the raw-JSON shape reachable
+/// from tests, which is where the claim that the reader REFUSES it has to be proved.
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
     // MSGPACK ONLY, AND NO FALLBACK. There is no setting that selects another payload, and this
     // does not fall through to JSON when the binary encode returns `None`: a `ShardState` that
     // msgpack refuses and JSON accepts is not a shape any type in it can produce. No JSON write
     // is left in this file outside the test-only fixture producers.
     encode_index_msgpack(shard).expect("shard index should serialize")
-}
-
-/// Put index JSON into the zstd-json container, the way an older binary wrote it.
-///
-/// Test-only. Nothing in production writes this payload any more, but the reader arm for it is still
-/// kept, and a claim about what a reader accepts is worth only as much as the bytes used to test it.
-#[cfg(test)]
-fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
-    match zstd::stream::encode_all(json.as_slice(), INDEX_ZSTD_LEVEL) {
-        Ok(payload) => {
-            let mut out = Vec::with_capacity(payload.len() + INDEX_CONTAINER_MAGIC.len() + 1);
-            out.extend_from_slice(INDEX_CONTAINER_MAGIC);
-            out.push(INDEX_CODEC_ZSTD_JSON);
-            out.extend_from_slice(&payload);
-            out
-        }
-        // A compression failure must not cost the index: fall back to the bytes that always work.
-        Err(_) => json,
-    }
 }
 
 /// The served index container as a binary of ANOTHER struct version wrote it: this shard's msgpack
@@ -3669,20 +3641,29 @@ pub(super) fn encode_index_bytes_with_extra_field(
 
 /// The served index as an older build wrote it: the struct's JSON, in no container.
 ///
-/// Production has no way to produce this any more, and that is the point -- but the reader still
-/// takes it, and a claim about what a reader accepts is worth only as much as the bytes used to
-/// test it. This is those bytes.
+/// Production has no way to produce this and the reader does not take it, and that is the point: a
+/// claim that a reader REFUSES a shape is worth only as much as the bytes used to test it, and this
+/// is those bytes. Also what a size comparison against the container needs as its other arm.
 #[cfg(test)]
 pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
     serde_json::to_vec(shard).expect("shard index should serialize")
 }
 
-/// The single place served-index bytes become a `ShardState`, whatever wrote them.
+/// The single place served-index bytes become a `ShardState`.
 ///
-/// Sniffs the container magic, so JSON written by any earlier binary keeps loading unchanged and
-/// a container written by a newer one is refused with a clear error rather than mis-parsed. Every
-/// decode site goes through here; the previous attempt at a binary index failed precisely because
-/// the decoders were scattered and could not move together.
+/// Only the msgpack container is read. Raw JSON, and the compressed-JSON payload an older binary
+/// wrote, are refused like any unknown codec: nothing writes them, and a reader for a shape no
+/// writer produces is a door a stale image can walk through. Every decode site goes through here;
+/// the previous attempt at a binary index failed precisely because the decoders were scattered and
+/// could not move together.
+///
+/// THE STRUCT VERSION IS CHECKED HERE, ON THE HEADER, BEFORE A BYTE OF THE PAYLOAD IS READ. That is
+/// the one place a stored image's stamp is compared with `SHARD_INDEX_FORMAT_VERSION`, so it holds
+/// at every caller at once -- the base-index load, the dump-manifest install, the preflight report,
+/// the recovery arm that reads a durable manifest, and the reclaim plan -- and an image from another
+/// struct version is an `Err` for all of them, which each already treats as "no usable index" and
+/// answers by replaying the log. What comes back from an `Ok` therefore always carries the current
+/// stamp, because it is taken from the header.
 ///
 /// And it is where a decoded index gets PACKED. `serde` fills a `BTreeMap` one `insert` at a time
 /// from bytes written in key order, which is the one insertion order that leaves a B-tree half
@@ -3690,45 +3671,25 @@ pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
 /// every leaf. It rides the load rather than a timer or a flag, because the load is the moment the
 /// whole structure is in hand and already paid for.
 pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
-    // WRAPPED RATHER THAN EDITED PER ARM. Every codec path below returns its own
-    // `ShardState`, and a fifth one added later would return another; a repack written into
-    // each arm would be a thing to remember. Written here it is a thing nobody can forget.
+    // WRAPPED RATHER THAN EDITED PER ARM, so that a second payload added later is packed without
+    // anyone having to remember to.
     let mut state = decode_index_bytes_inner(bytes)?;
     state::repack_decoded_btrees(&mut state);
-    // THE LEGACY CONTROL-STATE FOLD, HERE FOR THE SAME REASON THE REPACK IS HERE.
-    //
-    // Written in this wrapper it covers every codec arm and -- which is the half that matters --
-    // every CALLER -- all six of which read `index_format_version` now, so a PRE-stamp image is
-    // refused on every path. What the fold is for is an image at the CURRENT stamp: every one of
-    // them still carries the top-level key, none is stale, and `objects` defaults to empty. A fold
-    // written into one arm, or reached from one caller, would miss the rest.
-    // THE LEGACY FOLD, HERE FOR THE REASON THE REPACK ABOVE IS HERE. Written per codec arm it
-    // would be a thing to remember; written on the wrapper it covers every arm and every caller,
-    // which is what matters because an image carrying the legacy key is not necessarily STALE --
-    // the staleness test is `<`, so a current-stamp image is accepted at every door.
-    // THE LEGACY EVENT FOLD IS GONE. Its own purpose, recorded above, was an image at the
-    // CURRENT stamp still carrying the top-level `context_events` key -- false since stamp
-    // 20 moved the event series into `objects`. Pre-stamp images are refused on every
-    // caller, so the key arrives from no door.
     Ok(state)
 }
 
 /// The codec arms themselves. Reached only through `decode_index_bytes` above, which packs what
-/// this fills -- so a fourth arm added here is covered without being told to be.
+/// this fills -- so a second arm added here is covered without being told to be.
 fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
     if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
-        return serde_json::from_slice::<ShardState>(bytes).map_err(|error| error.to_string());
+        return Err("served index is not a container: it does not start with the container magic"
+            .to_string());
     }
     let body = &bytes[INDEX_CONTAINER_MAGIC.len()..];
     let (codec, payload) = body
         .split_first()
         .ok_or_else(|| "served index container is truncated".to_string())?;
     match *codec {
-        INDEX_CODEC_ZSTD_JSON => {
-            let json = zstd::stream::decode_all(payload)
-                .map_err(|error| format!("served index payload did not decompress: {error}"))?;
-            serde_json::from_slice::<ShardState>(&json).map_err(|error| error.to_string())
-        }
         INDEX_CODEC_ZSTD_MSGPACK => {
             if payload.len() < INDEX_BINARY_VERSION_BYTES {
                 return Err("served index binary payload is truncated".to_string());
