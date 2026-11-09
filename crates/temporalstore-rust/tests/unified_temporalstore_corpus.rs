@@ -393,6 +393,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::FeaturePoints { .. } => "feature_points",
         CommandResponse::FeaturePointGroups { .. } => "feature_point_groups",
         CommandResponse::Aggregate { .. } => "aggregate",
+        CommandResponse::CellMergeReceipt { .. } => "cell_merge_receipt",
         CommandResponse::SequenceRows { .. } => "sequence_rows",
         CommandResponse::SequenceRowGroups { .. } => "sequence_row_groups",
         CommandResponse::ContextNode { .. } => "context_node",

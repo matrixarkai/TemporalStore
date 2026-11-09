@@ -96,7 +96,8 @@ pub(crate) fn parse_feature_write_policy(value: &[u8]) -> Result<FeatureWritePol
         "FIRST" | "NX" | "INSERT_IF_ABSENT" => Ok(FeatureWritePolicy::InsertIfAbsent),
         "UPDATE" | "XX" | "REPLACE_EXISTING" => Ok(FeatureWritePolicy::ReplaceExisting),
         "BLOCK" => Ok(FeatureWritePolicy::Block),
-        _ => Err("ERR policy must be UPSERT, FIRST/NX, UPDATE/XX, or BLOCK".to_string()),
+        "MERGE_REDUCE" | "MERGE" => Ok(FeatureWritePolicy::MergeReduce),
+        _ => Err("ERR policy must be UPSERT, FIRST/NX, UPDATE/XX, BLOCK, or MERGE_REDUCE".to_string()),
     }
 }
 
@@ -208,5 +209,22 @@ pub(crate) fn parse_f64_arg(value: &[u8], name: &str) -> Result<f64, String> {
         Ok(value)
     } else {
         Err(format!("ERR {name} must be finite"))
+    }
+}
+
+#[cfg(test)]
+mod merge_reduce_policy_tests {
+    use super::*;
+
+    #[test]
+    fn the_text_door_spells_the_merge_reduce_policy_two_ways_and_refuses_a_guess() {
+        for spelling in [&b"merge_reduce"[..], b"MERGE", b"Merge_Reduce"] {
+            assert_eq!(
+                FeatureWritePolicy::MergeReduce,
+                parse_feature_write_policy(spelling).expect("a known spelling")
+            );
+        }
+        assert!(parse_feature_write_policy(b"merge_reduc").is_err());
+        assert!(parse_feature_write_policy(b"").is_err());
     }
 }

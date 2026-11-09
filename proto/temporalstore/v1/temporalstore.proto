@@ -295,6 +295,9 @@ message CommandResponse {
   repeated ContextNode context_nodes = 6;
   uint64 count = 7;
   bool exists = 8;
+  // A merge-reduce feature append reports what landed. `count` stays the snapshots written.
+  uint64 cells_created = 9;
+  uint64 cells_merged = 10;
 }
 
 message StringSet {
@@ -953,6 +956,7 @@ enum FeatureWritePolicy {
   FEATURE_WRITE_POLICY_INSERT_IF_ABSENT = 2;
   FEATURE_WRITE_POLICY_REPLACE_EXISTING = 3;
   FEATURE_WRITE_POLICY_BLOCK = 4;
+  FEATURE_WRITE_POLICY_MERGE_REDUCE = 5;
 }
 
 message BucketTake {

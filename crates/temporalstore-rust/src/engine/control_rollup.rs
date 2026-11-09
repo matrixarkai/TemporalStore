@@ -118,16 +118,17 @@ fn range_sum(cells: &BTreeMap<CellKey, i64>, series: &BTreeMap<u64, i64>, start_
     // smaller. This is also the only remaining defence if a single out-of-range instant ever
     // reaches the series, which would otherwise restore the whole walk above.
     if mid_lo >= mid_hi || tiling_steps(mid_lo, mid_hi) > series.len() as u64 {
-        return series.range(start_ms..=end_ms).map(|(_, v)| *v).sum();
+        return super::window_aggregate::sum_legacy(series.range(start_ms..=end_ms).map(|(_, v)| *v));
     }
     let mut sum: i64 = 0;
-    sum += series.range(start_ms..mid_lo).map(|(_, v)| *v).sum::<i64>(); // left sub-second edge
+    // left sub-second edge
+    sum += super::window_aggregate::sum_legacy(series.range(start_ms..mid_lo).map(|(_, v)| *v));
     // RIGHT SUB-SECOND EDGE, INCLUSIVE AND THEREFORE GUARDED. `mid_hi` is `end_ms + 1` whenever
     // the window ends on a whole second, and `BTreeMap::range` PANICS on an inclusive range whose
     // start exceeds its end -- so the emptiness that the old exclusive `mid_hi..e` expressed by
     // construction has to be asked for here.
     if mid_hi <= end_ms {
-        sum += series.range(mid_hi..=end_ms).map(|(_, v)| *v).sum::<i64>();
+        sum += super::window_aggregate::sum_legacy(series.range(mid_hi..=end_ms).map(|(_, v)| *v));
     }
     let mut cursor = mid_lo; // middle covered by coarsest cells
     while cursor < mid_hi {
@@ -264,6 +265,8 @@ pub(crate) fn clear_all(shard: &mut ShardState) {
 mod tests {
     use super::*;
 
+    // NOT MIGRATED, ON PURPOSE: this is the independent oracle the tiled sum is checked against. It
+    // must keep the plain `Iterator::sum` so the shared door is compared with, not defined by, it.
     fn brute(series: &BTreeMap<u64, i64>, start: u64, end: u64) -> i64 {
         series.range(start..=end).map(|(_, v)| *v).sum()
     }
