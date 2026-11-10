@@ -175,6 +175,9 @@ scan their retained points, whereas the default numeric projection can use
 the aggregate rollup. Keep the default for read-heavy window queries.
 Use `benchmarks/bench_aggregate_serving.py --compact-numeric-history` to
 measure the compact layout explicitly; its JSON report records the selected mode.
+The runner also accepts `--aggregator` for `sum`, `avg`, `min`, `max`, `first`,
+`last`, `count`, and `events`. It verifies the selected reducer's answers and
+records its name; reports marked `void` must not support performance claims.
 
 `query_feature_aggregates` sends many windows through bounded ordered batches.
 Each batch prepares the feature-type lookup and versioned view name once;
