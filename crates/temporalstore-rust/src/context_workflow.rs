@@ -3786,20 +3786,25 @@ fn context_fact_score(sentence: &str) -> i32 {
 /// the same facts: L1 always adds detail on top of L0. Raw event evidence stays
 /// in the separate L2 tier.
 fn summarize_l1(kind: ContextSourceKind, title: &str, body: &str) -> String {
-    let sentences = context_sentences(body);
-    let lead = sentences.first().copied();
-    let mut ranked = sentences
-        .iter()
-        .enumerate()
-        .skip(1)
-        .map(|(index, sentence)| (context_fact_score(sentence), index, *sentence))
-        .collect::<Vec<_>>();
-    ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    let mut sentences = context_sentence_iter(body);
+    let lead = sentences.next();
+    let mut ranked: Vec<(i32, &str)> = Vec::with_capacity(7);
+    for sentence in sentences {
+        let score = context_fact_score(sentence);
+        // Later ties stay after earlier sentences, matching the full stable ranking.
+        let position = ranked.iter().position(|held| score > held.0).unwrap_or(ranked.len());
+        if position < 7 {
+            if ranked.len() == 7 {
+                ranked.pop();
+            }
+            ranked.insert(position, (score, sentence));
+        }
+    }
     let mut facts = Vec::new();
     if let Some(lead) = lead {
         facts.push(truncate_words(lead, 32));
     }
-    for (_, _, sentence) in ranked.into_iter().take(7) {
+    for (_, sentence) in ranked {
         facts.push(truncate_words(sentence, 32));
     }
     format!(

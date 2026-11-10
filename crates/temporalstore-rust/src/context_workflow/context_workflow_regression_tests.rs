@@ -7,6 +7,29 @@ use std::net::TcpListener;
 use std::thread;
 
 #[test]
+fn bounded_summary_selection_matches_full_ranking() {
+    for count in [0, 1, 7, 8, 64, 4096] {
+        let body = (0..count).map(|index| {
+            match index % 3 {
+                0 => format!("Decision {index} changed after Review."),
+                1 => "ordinary text without markers.".to_string(),
+                _ => "Unicode text: caf\u{e9} instead of ASCII.".to_string(),
+            }
+        }).collect::<Vec<_>>().join("\n");
+        let sentences = context_sentences(&body);
+        let mut ranked = sentences.iter().enumerate().skip(1)
+            .map(|(index, sentence)| (context_fact_score(sentence), index, *sentence))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+        let mut facts = Vec::new();
+        if let Some(lead) = sentences.first() { facts.push(truncate_words(lead, 32)); }
+        facts.extend(ranked.into_iter().take(7).map(|(_, _, text)| truncate_words(text, 32)));
+        let expected = format!("kind=Chat; title=decisions; key_facts={}", facts.join(" | "));
+        assert_eq!(summarize_l1(ContextSourceKind::Chat, "decisions", &body), expected);
+    }
+}
+
+#[test]
 fn context_source_provider_inherits_only_when_omitted() {
     let source = serde_json::json!({
         "shard_id": 1, "tenant_hash": 91, "source_kind": "chat",
