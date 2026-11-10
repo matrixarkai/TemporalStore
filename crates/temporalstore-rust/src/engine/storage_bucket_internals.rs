@@ -4301,6 +4301,79 @@ impl ReplacedBlock {
     fn block_key(&self) -> Option<super::LiveBlockKey> {
         self.0.as_ref().map(super::live_block_key)
     }
+
+    /// The address of the block being left, for the handle it was filed under.
+    fn address(&self) -> Option<&ElementEntry> {
+        self.0.as_ref()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SUPERSEDE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SUPERSEDE_BY_EVERY_REF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SUPERSEDE_VERIFIES: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Test switch: whether the full filter runs beside the narrowed one and must agree. On by default
+/// in every test build; a profiler turns it off so the instructions it counts are the narrowed
+/// filter's alone.
+#[cfg(test)]
+pub(crate) fn set_supersede_verifies(on: bool) {
+    SUPERSEDE_VERIFIES.with(|flag| flag.set(on));
+}
+
+/// Blocks the supersede filter has read, this thread: one per ref it asked a block about.
+#[cfg(test)]
+pub(crate) fn supersede_block_reads() -> u64 {
+    SUPERSEDE_READS.with(std::cell::Cell::get)
+}
+
+/// Test switch: ask a block about every ref, as the filter did before it named the handles.
+#[cfg(test)]
+pub(crate) fn set_supersede_by_every_ref(on: bool) {
+    SUPERSEDE_BY_EVERY_REF.with(|flag| flag.set(on));
+}
+
+/// THE REFS THAT CAN MATCH: those carrying the handle of the block written or the block left, and
+/// that `keeps` accepts. The handle is a `u64` hash, so two refs can in principle share one; `keeps`
+/// is the full test on the block the ref names (its address against the two addresses), and it runs
+/// on every ref that carries a handle, so a collision costs one more block read and never a wrong
+/// answer. A handle that matches is not taken as the answer.
+pub(crate) fn refs_naming_handles(
+    block_refs: &[crate::engine::state::BlockLookupRef],
+    here: u64,
+    vacated: Option<u64>,
+    mut keeps: impl FnMut(&crate::engine::state::BlockLookupRef) -> bool,
+) -> Vec<crate::engine::state::BlockLookupRef> {
+    let every_ref = supersede_asks_every_ref();
+    block_refs
+        .iter()
+        .filter(|block_ref| {
+            every_ref || block_ref.block_ref_key == here || Some(block_ref.block_ref_key) == vacated
+        })
+        .filter(|block_ref| {
+            note_supersede_read();
+            keeps(block_ref)
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+}
+
+fn note_supersede_read() {
+    #[cfg(test)]
+    SUPERSEDE_READS.with(|reads| reads.set(reads.get() + 1));
+}
+
+fn supersede_asks_every_ref() -> bool {
+    #[cfg(test)]
+    {
+        SUPERSEDE_BY_EVERY_REF.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 
 /// [`upsert_bucket_index_block`], carrying one extra byte string onto the WAL outcome it stages.
@@ -5077,29 +5150,66 @@ fn upsert_bucket_index_block_inner(
     // borrows of one struct are fine -- and only the refs that survive are cloned. The removals
     // then run after both loans end, exactly as before. Same defect and same remedy as the dirty
     // mark in #2239.
+    //
+    // AND THE FILTER ASKED A BLOCK FOR EVERY REF. Each ref cost two lookups, a hash into the bucket
+    // map and a bisection of the bucket's block list, to read an address and compare it with two. On
+    // a 2,048-member hash that was 62.5% of an add (callgrind, 20 adds, debug build; 4.8 thousand
+    // instructions per existing member per add), and it grew with the member count: 1.1, 2.8 and
+    // 10.3 million instructions per add at 128, 512 and 2,048 members.
+    //
+    // A ref's handle is a hash of the model, the object key and the address, so the handle of a
+    // block that matches either address is computable from the two addresses in hand. Only a ref
+    // carrying one of those handles can match, and a plain comparison of the `u64` finds it; the
+    // test above then runs on the one or two that do, unchanged. Two blocks of one object that
+    // share a slab, offset and length also share a block id (it names which block of the object
+    // the bytes are), so equal addresses are equal handles; the old filter runs beside this in
+    // every test build and the two must agree.
+    let handle_here = crate::engine::state::block_index_handle(
+        &entry.object_key,
+        &BlockIndex::new(entry.kind, entry.address.clone(), false, false),
+    );
+    let handle_vacated = replaces.address().map(|address| {
+        crate::engine::state::block_index_handle(
+            &entry.object_key,
+            &BlockIndex::new(entry.kind, address.clone(), false, false),
+        )
+    });
     let superseded: Option<Vec<crate::engine::state::BlockLookupRef>> = if names_a_block {
+        let matches_the_blocks_written_or_left = |block_ref: &crate::engine::state::BlockLookupRef| {
+            shard
+                .bucket_index
+                .bucket_map
+                .get(&block_ref.routing_bucket)
+                .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+                .is_some_and(|block| {
+                    let key = super::live_block_key(&block.address);
+                    key == here || (!block.deleted() && Some(key) == vacated)
+                })
+        };
         let mine = if lookup_enabled {
             shard
                 .bucket_index
                 .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
                 .map(|block_refs| {
-                    block_refs
-                        .iter()
-                        .filter(|block_ref| {
-                            shard
-                                .bucket_index
-                                .bucket_map
-                                .get(&block_ref.routing_bucket)
-                                .and_then(|bucket| {
-                                    bucket.block_index.get(&block_ref.block_ref_key)
-                                })
-                                .is_some_and(|block| {
-                                    let key = super::live_block_key(&block.address);
-                                    key == here || (!block.deleted() && Some(key) == vacated)
-                                })
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
+                    let found = refs_naming_handles(
+                        block_refs,
+                        handle_here,
+                        handle_vacated,
+                        |block_ref| matches_the_blocks_written_or_left(block_ref),
+                    );
+                    #[cfg(test)]
+                    if SUPERSEDE_VERIFIES.with(std::cell::Cell::get) {
+                        let every_ref = block_refs
+                            .iter()
+                            .filter(|block_ref| matches_the_blocks_written_or_left(block_ref))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        assert_eq!(
+                            found, every_ref,
+                            "the handles named the refs the full filter would have kept"
+                        );
+                    }
+                    found
                 })
         } else {
             None
@@ -5166,19 +5276,27 @@ fn upsert_bucket_index_block_inner(
         // but the shard's routing RANGE can change, so blocks filed under an older range can sit
         // in a bucket this key would not derive today. That is why the loop reads
         // `block_ref.routing_bucket` per ref, and why this answers per bucket too.
-        let buckets_still_holding: Vec<u32> = if lookup_enabled {
-            shard
-                .bucket_index
-                .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
-                .map(|refs| refs.iter().map(|block_ref| block_ref.routing_bucket).collect())
-                .unwrap_or_default()
-        } else {
-            // Without the lookup there is no slot to ask, so keep the old question rather than
-            // answering a different one: a bucket is reported as still holding the object, and
-            // `object_index` keeps the entry. Reconcile is what corrects that case already.
-            block_refs.iter().map(|block_ref| block_ref.routing_bucket).collect()
+        //
+        // ASKED PER REMOVED BLOCK, NOT COLLECTED FOR EVERY REF. This built a `Vec<u32>` of the
+        // bucket of every ref the object holds, on every write, including the ordinary one that
+        // removes nothing: four bytes per member of the object, allocated and dropped per add. The
+        // slot is final here, so asking it once per removed block (at most one or two) gives the
+        // same answer.
+        let still_holds = |shard: &ShardState, routing_bucket: u32| -> bool {
+            if lookup_enabled {
+                shard
+                    .bucket_index
+                    .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
+                    .is_some_and(|refs| refs.iter().any(|block_ref| block_ref.routing_bucket == routing_bucket))
+            } else {
+                // Without the lookup there is no slot to ask, so keep the old question rather than
+                // answering a different one: a bucket is reported as still holding the object, and
+                // `object_index` keeps the entry. Reconcile is what corrects that case already.
+                true
+            }
         };
         for block_ref in block_refs {
+            let holds_still = still_holds(&*shard, block_ref.routing_bucket);
             let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) else {
                 continue;
             };
@@ -5198,7 +5316,7 @@ fn upsert_bucket_index_block_inner(
             if removed {
                 // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THIS OBJECT,
                 // answered from its slot above rather than by naming every block in the bucket.
-                if !buckets_still_holding.contains(&block_ref.routing_bucket) {
+                if !holds_still {
                     bucket.object_index.remove(&object_id);
                 }
                 classify_bucket_layout_in_place(&mut bucket);

@@ -512,3 +512,9 @@ mod a_feature_append_merges_cells_by_lane_reducer;
 mod a_ranked_cell_read_is_a_command;
 #[path = "tests/a_whole_container_read_shares_its_work.rs"]
 mod a_whole_container_read_shares_its_work;
+
+#[path = "tests/an_add_reads_only_the_blocks_that_can_match.rs"]
+mod an_add_reads_only_the_blocks_that_can_match;
+
+#[path = "tests/the_filter_that_names_handles_files_what_the_full_scan_files.rs"]
+mod the_filter_that_names_handles_files_what_the_full_scan_files;
