@@ -186,6 +186,8 @@ what was written unless something recorded it.
   `teardown` enumerates and deletes this view's hash fields and both history
   series layouts, including data written before a numeric-history mode change. Tracking
   is distributed over 1,024 deterministic sets to keep each container small.
+  Teardown pages those sets with exclusive cursors and bounded responses; it
+  requires a serving node with `SetScan` support.
   It still costs one extra write per row, so it is off by default.
 * With it off, `teardown` **logs a warning and leaves the rows**. It does not
   report success for work it did not do. `key_ttl_seconds` expires the latest

@@ -197,7 +197,8 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     it. A view with a million entities would have built a million-command
     request. Chunking keeps each round trip's size a function of this setting
     and makes teardown's cost linear in a bounded number of calls instead of
-    one unbounded one.
+    one unbounded one. Tracking-set reads use cursor pages of at most 256
+    members, further capped by this setting.
     """
 
 
@@ -1044,10 +1045,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 for feature in table.features
             ]
             project_suffix = f":{config.project}"
-            row_keys = set()
             active_set_keys = []
             pending_deletes: List[Dict[str, Any]] = []
             deleted = 0
+            row_entries = 0
             field_delete_round_trips = 0
 
             def queue_delete(command: Dict[str, Any]) -> None:
@@ -1060,16 +1061,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     pending_deletes.clear()
 
             def delete_members(members: Sequence[Any]) -> None:
+                nonlocal row_entries
                 for member in members:
                     raw = decode_bytes(member)
                     if raw is None:
                         continue
                     row_key = raw.decode("utf-8")
-                    if row_key in row_keys:
-                        continue
                     if not row_key.endswith(project_suffix):
                         raise ValueError("tracked entity key has a different project suffix")
-                    row_keys.add(row_key)
+                    row_entries += 1
                     for field in fields:
                         queue_delete(
                             {"kind": "hash_delete", "key": row_key, "field": field}
@@ -1094,26 +1094,44 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                                 }
                             )
 
-            legacy_members = client.execute(
-                {"kind": "set_members", "key": legacy_set_key}
-            ).get("members") or []
-            if legacy_members:
-                active_set_keys.append(legacy_set_key)
-                delete_members(legacy_members)
-
-            tracking_read_round_trips = 1
-            read_batch_size = client.max_batch_commands
-            for start in range(0, len(shard_keys), read_batch_size):
-                key_batch = shard_keys[start : start + read_batch_size]
-                shard_answers = client.batch_execute(
-                    [{"kind": "set_members", "key": key} for key in key_batch]
+            # Small first pages keep empty and lightly populated tracking sets
+            # cheap to enumerate. Larger continuation pages bound the response
+            # and avoid materializing an entire set or all row keys at once.
+            page_size = min(batch_size, 256)
+            first_page_size = min(page_size, 16)
+            scan_queue = [(key, b"") for key in [legacy_set_key] + shard_keys]
+            tracking_read_round_trips = 0
+            scan_limit = first_page_size
+            while scan_queue:
+                next_queue = []
+                read_batch_size = min(
+                    client.max_batch_commands, max(1, 4096 // scan_limit)
                 )
-                tracking_read_round_trips += 1
-                for set_key, answer in zip(key_batch, shard_answers):
-                    shard_members = answer.get("members") or []
-                    if shard_members:
-                        active_set_keys.append(set_key)
-                        delete_members(shard_members)
+                for start in range(0, len(scan_queue), read_batch_size):
+                    scan_batch = scan_queue[start : start + read_batch_size]
+                    answers = client.batch_execute(
+                        [
+                            {"kind": "set_scan", "key": key, "after": after, "limit": scan_limit}
+                            for key, after in scan_batch
+                        ]
+                    )
+                    tracking_read_round_trips += 1
+                    for (set_key, after), answer in zip(scan_batch, answers):
+                        members = answer.get("members") or []
+                        if len(members) > scan_limit:
+                            raise ValueError("set scan exceeded its requested page size")
+                        if not members:
+                            continue
+                        last = decode_bytes(members[-1])
+                        if not last or (after and last <= after):
+                            raise ValueError("set scan did not advance its cursor")
+                        if not after:
+                            active_set_keys.append(set_key)
+                        delete_members(members)
+                        if len(members) == scan_limit:
+                            next_queue.append((set_key, last))
+                scan_queue = next_queue
+                scan_limit = page_size
 
             if pending_deletes:
                 client.batch_execute(pending_deletes)
@@ -1133,10 +1151,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 client.batch_execute(tracking_deletes[start : start + batch_size])
                 tracking_delete_round_trips += 1
             logger.info(
-                "temporalstore: tore down view=%s rows=%d fields=%d in %d round "
+                "temporalstore: tore down view=%s row_entries=%d fields=%d in %d round "
                 "trip(s) of at most %d",
                 view_name,
-                len(row_keys),
+                row_entries,
                 deleted,
                 field_delete_round_trips
                 + tracking_read_round_trips
