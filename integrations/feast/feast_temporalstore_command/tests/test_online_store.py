@@ -1441,6 +1441,46 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(len(client.rows), len(rows))
         self.assertTrue(all(len(row[3]) == 3 for row in client.rows))
 
+    def test_repeated_event_times_share_one_protobuf_conversion(self):
+        from datetime import timedelta
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        import feast_temporalstore_command.online_store as online_store_module
+
+        class ConditionalRowsClient(RecordingClient):
+            def batch_hash_timestamp_set(  # type: ignore[override]
+                self, fields, timestamp_field, rows, request_upper_bound=None
+            ):
+                self.rows = list(rows)
+                return len(rows), 0
+
+        client = self._install(client=ConditionalRowsClient())
+        first = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        second = first + timedelta(seconds=1)
+        rows = [
+            (self._entity_key(i), {"trips": ValueProto(int64_val=i)}, event_time, None)
+            for i, event_time in enumerate((first, first.replace(), second, second.replace()))
+        ]
+        original = online_store_module.Timestamp.FromDatetime
+        with mock.patch.object(
+            online_store_module.Timestamp,
+            "FromDatetime",
+            autospec=True,
+            side_effect=original,
+        ) as convert:
+            self.store.online_write_batch(self.config, self.view, rows, None)
+
+        self.assertEqual(convert.call_count, 2)
+        self.assertEqual(
+            [row[1] for row in client.rows],
+            [
+                int(first.timestamp()),
+                int(first.timestamp()),
+                int(second.timestamp()),
+                int(second.timestamp()),
+            ],
+        )
+
     def test_precomputed_vector_write_omits_the_unused_timestamp(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
