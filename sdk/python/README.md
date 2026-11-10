@@ -1,106 +1,61 @@
-# TemporalStore — Python SDK
+# TemporalStore LLM-Context Python SDK
 
-> **This page describes a package that is no longer in this repository.**
->
-> The `temporalstore` Python package, its `examples/` directory and
-> `tools/test_temporalstore_features.py` were all removed by
-> *"The Python moves out: this repository becomes the Rust engine"* (#2195).
-> This repository now ships the Rust engine, the proxy and the data node; the
-> Python client lives in the `matrixark` repository. Every `PYTHONPATH`,
-> `import temporalstore` and example path below therefore refers to files that
-> are not here, and is kept only as a record of the surface that moved.
->
-> **If you are looking for a Python entry point into TemporalStore today:**
-> talk to the data node's command surface over HTTP — `POST /execute` and
-> `POST /batch_execute` with a `Command` document — which is what
-> `integrations/feast/feast_temporalstore_command/client.py` does in about a
-> hundred lines of standard library, and `sdk/proxy/openapi.yaml` describes for
-> the proxy's `/ProxyService/*` endpoints.
-
-A small, dependency-optional Python client for TemporalStore. Talks to the
-proxy over HTTP/JSON; no build step required.
-
-- **`TemporalFeatureStore`** — high-level, production-hardened client for
-  **aggregated features** (this is what most serving code should use).
-- **`ProxyClient`** — thin wrapper over the raw `/ProxyService/*` endpoints.
-
-Requires Python 3.7+. Uses only the standard library; if [`requests`] is
-installed it is used automatically for connection pooling.
+This package provides a small, standard-library client for ingesting and
+retrieving long-term LLM context through TemporalStore. It includes a
+Mem0-compatible `Memory` class and does not require code from another
+repository.
 
 ## Install
 
 ```bash
-# from a checkout
-export PYTHONPATH=$PWD/sdk/python
-# optional, for pooled connections:
-pip install requests
+python3 -m pip install -e sdk/python
 ```
 
-## Aggregated features in 20 lines
-
-```python
-from temporalstore import TemporalFeatureStore, FeatureStoreConfig
-
-MINUTE = 60_000
-fs = TemporalFeatureStore(FeatureStoreConfig(
-    endpoint="http://127.0.0.1:17102", namespace="default", table="features"))
-
-feature_key = "feature:content_interaction:user:u42"
-cs_key      = "cs:clicks:user:u42"
-
-# dual-write each event: raw observation + Control-State rollup counter
-for ts, dwell in [(1000, 12), (2000, 91), (3000, 42)]:
-    fs.record_event(feature_key, cs_key, ts, metric=dwell, precision_ms=MINUTE)
-
-# exact serving-time aggregates over any window
-fs.aggregate(feature_key, 0, 10_000, "count")   # -> 3
-fs.aggregate(feature_key, 0, 10_000, "sum")      # -> 145  (dwell)
-fs.aggregate(feature_key, 0, 10_000, "max")      # -> 91
-
-# long window: sealed rollup buckets + a bounded raw tail (no double count)
-fs.aggregate_long_window(feature_key, cs_key,
-                         window_start_ms=now-7*86_400_000, now_ms_=now,
-                         op="count", precision_ms=MINUTE)
-
-# serving control: frequency cap (allow up to 5 / day)
-decision = fs.frequency_cap(cs_key, now, limit=5, window_ms=86_400_000)
-# CapDecision(allowed=..., count=..., limit=5, remaining=..., reason=...)
-```
-
-### What `TemporalFeatureStore` gives you
-
-| method | purpose |
-| --- | --- |
-| `append` / `append_batch` / `ingest_parallel` | write raw observations (single, batched, or concurrent) |
-| `aggregate(key, s, e, op)` | exact `count/sum/min/max/avg/first/last` over a window |
-| `window(key, s, e, count, filters)` | raw rows with post-decode filters |
-| `record_event` | dual-write raw + Control-State rollup |
-| `aggregate_long_window` | hybrid: sealed rollup buckets + exact raw tail |
-| `cs_increment` / `cs_count` / `cs_family_agg` / `fol_set` / `fol_get` | Control-State counters, rollup reads, first/last |
-| `frequency_cap` / `quota_remaining` / `rolling_count` | serving controls |
-
-Production features: bounded exponential-backoff retries with jitter, per-call
-timeouts, connection pooling (with `requests`), idempotency-friendly writes,
-structured logging, config from `TEMPORALSTORE_*` env vars, and a pluggable
-transport so the whole surface is unit-testable without a server.
-
-## Control State (formerly "Risk")
-
-The serving-control capability was renamed **Risk → Control State**. Use the
-canonical names: `control_state_increment` / `control_state_count` on `Client`
-and `ProxyClient`, and the `cs_*` / `frequency_cap` helpers on
-`TemporalFeatureStore`. The engine no longer accepts the old `risk_*` command
-kinds.
-
-## Examples & tests
+Point the client at a running TemporalStore Rust proxy:
 
 ```bash
-# runnable example (needs a local node on :17102)
-TEMPORALSTORE_ENDPOINT=http://127.0.0.1:17102 \
-  python sdk/python/examples/aggregated_features.py
-
-# offline unit tests (mock transport, no server)
-python tools/test_temporalstore_features.py
+export TEMPORALSTORE_BASE_URL=http://127.0.0.1:17000
 ```
 
-[`requests`]: https://pypi.org/project/requests/
+## Ingest And Retrieve
+
+```python
+from temporalstore.llm_context import Memory
+
+memory = Memory()
+memory.add(
+    [
+        {"role": "user", "content": "Use int8 embeddings when quality stays acceptable."},
+        {"role": "assistant", "content": "I will keep the model hash with every vector."},
+    ],
+    user_id="alice",
+    agent_id="coding-assistant",
+    run_id="session-42",
+)
+
+result = memory.search(
+    "How should embeddings be stored?",
+    user_id="alice",
+    limit=8,
+)
+for item in result["results"]:
+    print(item["id"], item["memory"], item["metadata"])
+```
+
+The API uses non-versioned routes under `/memories`. Adds synchronously run
+context extraction. Search first uses the compact embedding index to select a
+bounded node set, reranks that set, and only then hydrates text and entities.
+Returned records identify their kind as `matched_chunk`, `raw_message`, or
+`entity`, allowing applications to organize results without requesting
+duplicate collections.
+
+Durable memory catalog and history values are protobuf records. Arbitrary
+metadata is encoded as MessagePack bytes inside those records. JSON is used
+only at the public HTTP edge for Python and Mem0 client compatibility.
+
+## Tests
+
+```bash
+PYTHONPATH=sdk/python \
+  python3 -m unittest discover -s sdk/python/tests/llm_context -p 'test_*.py'
+```

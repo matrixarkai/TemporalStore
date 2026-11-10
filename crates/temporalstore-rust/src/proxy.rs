@@ -18,6 +18,8 @@ mod prometheus;
 mod reports;
 #[path = "proxy/proxy_handle.rs"]
 mod handle;
+#[path = "proxy/proxy_memory.rs"]
+mod memory;
 #[path = "proxy/proxy_configuration_defaults.rs"]
 mod config;
 #[path = "proxy/proxy_metrics.rs"]

@@ -11,7 +11,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
-from temporalstore_mem0 import Memory
+from temporalstore.llm_context import Memory
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -42,25 +42,29 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self._record()
-        if self.path == "/v1/ingest":
+        if self.path == "/memories":
             self._reply({"status": "accepted", "event_id_hash": 731})
-        elif self.path == "/v1/retrieve":
-            self._reply({
-                "groups": [{
-                    "type": "event",
-                    "items": [{"id": "731", "text": "I prefer dark mode", "score": 0.92}],
-                }]
-            })
-        elif self.path == "/v1/update":
-            self._reply({"updated": True})
-        elif self.path == "/v1/delete":
-            self._reply({"deleted": True})
+        elif self.path == "/memories/search":
+            self._reply({"results": [{
+                "id": "731",
+                "memory": "I prefer dark mode",
+                "score": 0.92,
+                "metadata": {"record_type": "raw_message"},
+            }]})
         else:
             self._reply({"ok": True})
 
     def do_GET(self) -> None:
         self._record()
         self._reply({"found": True, "memory": "I prefer dark mode"})
+
+    def do_PUT(self) -> None:
+        self._record()
+        self._reply({"updated": True})
+
+    def do_DELETE(self) -> None:
+        self._record()
+        self._reply({"deleted": True})
 
 
 class MemorySdkTest(unittest.TestCase):
@@ -92,7 +96,7 @@ class MemorySdkTest(unittest.TestCase):
         )
 
         request = _Handler.requests[0]
-        self.assertEqual("/v1/ingest", request["path"])
+        self.assertEqual("/memories", request["path"])
         self.assertEqual("Bearer secret", request["authorization"])
         self.assertEqual(
             {"user_id": "alice", "agent_id": "assistant", "session_id": "session-7"},
@@ -110,12 +114,12 @@ class MemorySdkTest(unittest.TestCase):
         )
 
         request = _Handler.requests[0]
-        self.assertEqual("/v1/retrieve", request["path"])
+        self.assertEqual("/memories/search", request["path"])
         self.assertEqual({"user_id": "alice"}, request["body"]["scope"])
-        self.assertEqual({"max_selected_refs": 4}, request["body"]["ranking"])
+        self.assertEqual(4, request["body"]["limit"])
         self.assertEqual("731", result["results"][0]["id"])
         self.assertEqual("I prefer dark mode", result["results"][0]["memory"])
-        self.assertEqual("event", result["results"][0]["metadata"]["ref_type"])
+        self.assertEqual("raw_message", result["results"][0]["metadata"]["record_type"])
 
     def test_addressable_memory_methods_use_expected_routes(self) -> None:
         memory = Memory(base_url=self.base_url)
@@ -124,7 +128,7 @@ class MemorySdkTest(unittest.TestCase):
         self.assertTrue(memory.delete("731")["deleted"])
 
         self.assertEqual(
-            [("GET", "/v1/memory/a%2Fb"), ("POST", "/v1/update"), ("POST", "/v1/delete")],
+            [("GET", "/memories/a%2Fb"), ("PUT", "/memories/731"), ("DELETE", "/memories/731")],
             [(row["method"], row["path"]) for row in _Handler.requests],
         )
 

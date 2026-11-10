@@ -1767,6 +1767,7 @@ fn external_direct_source_blocks(
         .iter()
         .enumerate()
         .map(|(index, source)| temporalstore_rust::ContextBlock {
+            record_type: "matched_chunk".to_string(),
             uri: format!("external://{}/{}", case.query_id, index),
             tier: ContextTier::L2,
             node_hash: stable_hash64(&format!("{}:{}", case.query_id, source.title)),
@@ -1844,6 +1845,7 @@ fn external_stored_source_blocks(
                 event.source_ref.clone()
             };
             blocks.push(temporalstore_rust::ContextBlock {
+                record_type: "raw_message".to_string(),
                 uri: format!(
                     "external-stored://{tenant_hash}/{node_hash}/{}",
                     event.event_id_hash

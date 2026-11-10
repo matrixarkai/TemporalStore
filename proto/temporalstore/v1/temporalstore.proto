@@ -1881,3 +1881,28 @@ message DurableControlStateSeries {
   // `sint64`: zigzag, so a small negative amount is one byte and not ten.
   repeated sint64 values = 2;
 }
+
+// Compact durable records for the LLM-context memory client. Metadata is MessagePack
+// inside protobuf so arbitrary caller metadata remains typed without JSON storage.
+message LlmMemoryRecord {
+  string id = 1;
+  string memory = 2;
+  bytes metadata_msgpack = 3;
+  string tenant_id = 4;
+  string account_id = 5;
+  string user_id = 6;
+  string agent_id = 7;
+  string run_id = 8;
+  uint64 created_at_ms = 9;
+  uint64 updated_at_ms = 10;
+}
+
+message LlmMemoryHistoryRecord {
+  string id = 1;
+  string event = 2;
+  uint64 at_ms = 3;
+  optional string memory = 4;
+  bytes metadata_msgpack = 5;
+  optional string feedback = 6;
+  optional string feedback_reason = 7;
+}

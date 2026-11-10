@@ -730,7 +730,9 @@ impl ProxyService {
                     }
                 }
             }
-            _ => json_response(404, &Status::error("not_found", "unknown proxy route")),
+            _ => self.handle_memory_route(&request).unwrap_or_else(|| {
+                json_response(404, &Status::error("not_found", "unknown proxy route"))
+            }),
         }
     }
 }

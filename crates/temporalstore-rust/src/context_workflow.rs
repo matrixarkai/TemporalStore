@@ -1444,6 +1444,8 @@ pub struct ContextInjectionOrderingDebug {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextBlock {
+    #[serde(default)]
+    pub record_type: String,
     pub uri: String,
     pub tier: ContextTier,
     pub node_hash: u64,
@@ -2304,22 +2306,7 @@ pub fn retrieve_context(
     let include_l0 = tiers.contains(&ContextTier::L0);
     let include_l1 = tiers.contains(&ContextTier::L1);
     let include_l2 = tiers.contains(&ContextTier::L2);
-    let mut node_hashes = if request.node_hashes.is_empty() {
-        return ContextRetrieveReport {
-            status: Status::error(
-                "node_hash_required",
-                "context retrieval requires at least one node hash in this local workflow",
-            ),
-            blocks,
-            node_count,
-            event_count,
-            query_understanding_debug,
-            fanout_plan,
-            parity: context_pipeline_parity_evidence(),
-        };
-    } else {
-        std::mem::take(&mut request.node_hashes)
-    };
+    let mut node_hashes = std::mem::take(&mut request.node_hashes);
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query) {
         Ok(vector) => vector,
@@ -2343,6 +2330,28 @@ pub fn retrieve_context(
     // encoder is unknown, and unknown never conflicts.
     let active_embedding_model_hash =
         context_embedding_model_hash(request.provider.embedding_model.trim());
+    // A caller may omit node ids and let the compact embedding index provide a bounded
+    // tenant-wide candidate set. Text is not hydrated until after this selection.
+    if node_hashes.is_empty() {
+        let candidate_limit = request
+            .max_summary_nodes
+            .max(request.max_event_nodes)
+            .max(request.max_events)
+            .max(1)
+            .saturating_mul(4)
+            .min(128);
+        if let Some(prepared_query) = prepared_query_embedding {
+            if let Ok(hits) = engine.search_context_embeddings(
+                EmbeddingChannel::Node,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                prepared_query,
+                candidate_limit,
+            ) {
+                node_hashes.extend(hits.into_iter().map(|hit| hit.key.item_id));
+            }
+        }
+    }
     // Candidate builders can reach the same node through more than one index. Preserve the
     // first occurrence, but never fetch, quantize, score, or expand that node twice.
     let mut seen_node_hashes = HashSet::with_capacity(node_hashes.len());
@@ -3024,6 +3033,11 @@ pub fn retrieve_context(
 
     let mut event_query_returned_count = 0usize;
     let mut event_node_index = 0usize;
+    // Expand entities only after embedding selection has bounded the node set.
+    let entity_candidate_budget = request.max_events.max(1).saturating_mul(4).min(256);
+    let entity_result_limit = request.max_events.max(1).min(32);
+    let selected_node_count = node_hashes.len().max(1);
+    let mut entity_candidates = Vec::<(i64, u64, u64, u64, String)>::new();
     for (selected_node_index, node_hash) in node_hashes.iter().copied().enumerate() {
         let mut node_source_ref = String::new();
         let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
@@ -3048,6 +3062,7 @@ pub fn retrieve_context(
             }
             if include_l0 {
                 blocks.push(ContextBlock {
+                    record_type: "matched_chunk".to_string(),
                     uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
                     tier: ContextTier::L0,
                     node_hash,
@@ -3059,6 +3074,7 @@ pub fn retrieve_context(
             }
             if include_l1 {
                 blocks.push(ContextBlock {
+                    record_type: "matched_chunk".to_string(),
                     uri: format!("{}/l1", context_node_uri(request.tenant_hash, node_hash)),
                     tier: ContextTier::L1,
                     node_hash,
@@ -3067,6 +3083,72 @@ pub fn retrieve_context(
                     estimated_tokens: estimate_tokens(&node.canonical_name),
                     source_ref: node.raw_metadata_ref,
                 });
+            }
+        }
+
+        if include_l1 && entity_candidates.len() < entity_candidate_budget {
+            let remaining = entity_candidate_budget.saturating_sub(entity_candidates.len());
+            let remaining_nodes = selected_node_count.saturating_sub(selected_node_index).max(1);
+            let per_node_limit = remaining.div_ceil(remaining_nodes).max(1);
+            let response = engine.execute(ExecuteRequest {
+                shard_id: request.shard_id,
+                command: Command::ContextQueryEntities {
+                    tenant_hash: request.tenant_hash,
+                    node_hash,
+                    entity_hashes: Vec::new(),
+                    limit: Some(per_node_limit),
+                },
+            });
+            if let CommandResponse::ContextEntities { entities, .. } = response.response {
+                let rows = entities
+                    .iter()
+                    .filter(|entity| {
+                        !entity.vector.is_empty()
+                            && !context_embedding_width_conflicts(
+                                &query_embedding,
+                                &entity.vector,
+                            )
+                    })
+                    .map(|entity| EmbeddingVector {
+                        key: EmbeddingKey {
+                            tenant_id: request.tenant_hash,
+                            item_id: entity.entity_hash,
+                        },
+                        values: &entity.vector,
+                    })
+                    .collect::<Vec<_>>();
+                let scores = prepared_query_embedding
+                    .and_then(|query| {
+                        score_prepared_embedding_candidates_exact(query, &rows).ok()
+                    })
+                    .map(|hits| {
+                        hits.into_iter()
+                            .map(|hit| {
+                                (hit.key.item_id, (hit.score * 1_000_000.0) as i64)
+                            })
+                            .collect::<HashMap<_, _>>()
+                    })
+                    .unwrap_or_default();
+                for entity in entities {
+                    let text = if entity.value.trim().is_empty() {
+                        entity.name
+                    } else {
+                        format!("{}: {}", entity.name, entity.value)
+                    };
+                    if text.trim().is_empty() {
+                        continue;
+                    }
+                    let score = scores.get(&entity.entity_hash).copied().unwrap_or_else(|| {
+                        lexical_score_to_micros(context_relevance_score_plan(&query_plan, &text))
+                    });
+                    entity_candidates.push((
+                        score,
+                        entity.updated_at_ms,
+                        entity.node_hash,
+                        entity.entity_hash,
+                        text,
+                    ));
+                }
             }
         }
 
@@ -3125,6 +3207,7 @@ pub fn retrieve_context(
                         event.source_ref
                     };
                     blocks.push(ContextBlock {
+                        record_type: "raw_message".to_string(),
                         uri: context_event_uri(request.tenant_hash, node_hash, event.event_time_ms),
                         tier: ContextTier::L2,
                         node_hash,
@@ -3139,9 +3222,43 @@ pub fn retrieve_context(
     }
     fanout_plan.event_query_returned_count = event_query_returned_count;
 
+    entity_candidates.sort_unstable_by_key(
+        |(score, updated_at_ms, _, entity_hash, _)| {
+            (Reverse(*score), Reverse(*updated_at_ms), *entity_hash)
+        },
+    );
+    entity_candidates.truncate(entity_result_limit);
+    let mut entity_scores_by_ref = HashMap::with_capacity(entity_candidates.len());
+    for (score, updated_at_ms, node_hash, entity_hash, text) in entity_candidates {
+        let source_ref = format!("entity:{entity_hash:016x}");
+        entity_scores_by_ref.insert(source_ref.clone(), score);
+        blocks.push(ContextBlock {
+            record_type: "entity".to_string(),
+            uri: format!(
+                "context://tenant/{:016x}/entity/{:016x}",
+                request.tenant_hash, entity_hash
+            ),
+            tier: ContextTier::L1,
+            node_hash,
+            event_time_ms: updated_at_ms,
+            estimated_tokens: estimate_tokens(&text),
+            source_ref,
+            text,
+        });
+    }
+
     blocks.sort_by_cached_key(|block| {
         (
-            Reverse(context_relevance_score_plan(&query_plan, &block.text)),
+            Reverse(
+                entity_scores_by_ref
+                    .get(&block.source_ref)
+                    .copied()
+                    .unwrap_or_default()
+                    .max(lexical_score_to_micros(context_relevance_score_plan(
+                        &query_plan,
+                        &block.text,
+                    ))),
+            ),
             tier_rank(block.tier),
             Reverse(block.event_time_ms),
             block.uri.clone(),

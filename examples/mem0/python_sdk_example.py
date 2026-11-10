@@ -6,7 +6,7 @@
 
 Talks to a TemporalStore memory gateway. In dev mode the API key is optional.
 """
-from temporalstore_mem0 import Memory
+from temporalstore.llm_context import Memory
 
 m = Memory(
     base_url="https://api.saparo.ai",      # your gateway

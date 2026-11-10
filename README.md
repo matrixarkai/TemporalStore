@@ -392,9 +392,9 @@ standard library only: `python integrations/feast/run_tests.py`.)*
 This is the workload the project was built around, and it is the one with the most surface.
 
 **Ingest → extract → retrieve → pack.** Retrieval takes a tenant, a time window, a set of candidate
-node hashes and a query, and returns ranked `ContextBlock`s — `{uri, tier, node_hash,
-event_time_ms, text, estimated_tokens, source_ref}` across three tiers (`L0` a short form, `L1` a
-compact pointer, `L2` the event text).
+node hashes and a query, and returns ranked `ContextBlock`s. Each block carries a
+`record_type`: `matched_chunk`, `raw_message`, or `entity`. The single tagged list avoids
+copying the same text into separate response collections.
 
 **Packing to a budget.** `max_prompt_tokens` (2,048 by default) is the budget. The caller's own
 prompt is charged against it first; blocks are then taken **greedily in ranked order**, and a block
@@ -412,9 +412,11 @@ un-embedded node stays rankable instead of collapsing to recency order. The fina
 lexical relevance, then tier (`L0` before `L1` before `L2`), then recency, then URI, de-duplicated
 by `source_ref`. Freshness is a tiebreak — again, there is no decay curve.
 
-**Keeping a working set resident.** The nodes a caller names are resolved from the resident index
-and their blocks from the memory cache tier, on the same path as §4; a cold sweep deliberately does
-not fill the cache, so bulk maintenance does not evict a live working set.
+**Keeping a working set resident.** A compact quantized embedding index selects a bounded node
+candidate set before exact reranking and text hydration. Entity expansion runs only for those
+selected nodes and is capped at four times the requested result count, with a hard ceiling of 256.
+The final entity output is capped separately. A cold sweep deliberately does not fill the cache,
+so bulk maintenance does not evict a live working set.
 
 **Embedding safety is enforced, not documented.** Vectors of differing width are declined, and
 same-width vectors written by a *different* encoder are declined too, counted separately — two
@@ -431,11 +433,9 @@ replaying the whole local context, on 6 of 6 queries, with `qwen2.5:7b` as both 
 [docs/benchmarks](docs/benchmarks/README.md); that run needs a local model and was **not** re-run
 for this document.
 
-**Limits.** There is **no ANN index** — scoring is a linear cosine over the candidate nodes the
-caller supplies, and `node_hashes` is mandatory: there is no "search the whole tenant" entry point
-in this engine. The secondary-index commands exist and are queryable, but retrieval does not use
-them to select candidates; entity records are written and queryable but are not packed. Switching
-embedding model means re-embedding the corpus.
+**Limits.** Candidate routing is bounded and quantized, followed by exact scoring; it is not a
+graph ANN implementation. Callers can provide node hashes or omit them for bounded tenant-wide
+embedding selection. Switching embedding model means re-embedding the corpus.
 
 ## 6. What else the engine actually does
 
@@ -524,17 +524,27 @@ The RESP surface, the HTTP routes, and the control verbs are documented under
 [`docs/`](docs/). Deploy manuals: [Windows Docker](docs/windows_docker_install.md) ·
 [Linux](docs/linux_deploy.md) · [macOS](docs/macos_deploy.md).
 
-## Python tooling and agent integrations
+## Python LLM-context client
 
-**This repository is the Rust engine only.** The Python context tooling — ingestion, retrieval,
-feedback, the agent hooks and the MCP server — lives in
-**[matrixarkai/matrixark](https://github.com/matrixarkai/matrixark)**, also Apache-2.0.
+The installable package under [`sdk/python/`](sdk/python/) provides ingestion, retrieval, update,
+history, deletion, and batch operations through the Rust proxy's non-versioned `/memories`
+surface. It uses only Python's standard library and code in this repository:
 
-Use this repository when you want the engine: embed the crate, run the binaries, or talk to a node
-over RESP or HTTP. Use `matrixark` when you want the Python client, the extraction and retrieval
-pipeline, or an agent integration.
+```bash
+python3 -m pip install -e sdk/python
+export TEMPORALSTORE_BASE_URL=http://127.0.0.1:17000
+```
 
-The exception is the Feast online store: it is a client of the engine's own surfaces, so it lives here under [`integrations/feast/`](integrations/feast/); see [§4](#4-online-feature-serving).
+```python
+from temporalstore.llm_context import Memory
+
+memory = Memory()
+memory.add("Prefer compact int8 embeddings.", user_id="alice")
+result = memory.search("How should vectors be stored?", user_id="alice", limit=8)
+```
+
+See [the SDK workflow](sdk/python/README.md). The Feast online store remains under
+[`integrations/feast/`](integrations/feast/); see [§4](#4-online-feature-serving).
 
 ## Deploy: laptop → replicated cluster
 
