@@ -161,6 +161,54 @@ fn a_hash_write_leaves_every_field_filed_exactly_once() {
     assert_eq!(141, checked_fields);
 }
 
+#[test]
+fn a_new_packed_hash_files_one_block_for_all_fields() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    run(
+        &engine,
+        Command::HashMultiSet {
+            key: "packed".to_string(),
+            entries: vec![
+                ("first".to_string(), b"one".to_vec()),
+                ("second".to_string(), b"two".to_vec()),
+                ("payload".to_string(), vec![b'x'; 8 * 1024]),
+            ],
+        },
+    );
+
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let fields = shard.bucket_index.hashes.get("packed").expect("hash exists");
+        assert_eq!(fields.len(), 3);
+        let addresses: BTreeSet<_> = fields.iter().map(|(_, address)| identity(address)).collect();
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(shard.bucket_index.object_block_refs("hash", "packed").unwrap().len(), 1);
+    }
+
+    run(
+        &engine,
+        Command::HashSet {
+            key: "packed".to_string(),
+            field: "first".to_string(),
+            value: b"updated".to_vec(),
+        },
+    );
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGetAll { key: "packed".to_string() },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    let CommandResponse::HashEntries { entries } = response.response else {
+        panic!("expected hash entries");
+    };
+    let values = entries.into_iter().collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(values.get("first"), Some(&b"updated".to_vec()));
+    assert_eq!(values.get("second"), Some(&b"two".to_vec()));
+    assert_eq!(values.get("payload").map(Vec::len), Some(8 * 1024));
+}
+
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;

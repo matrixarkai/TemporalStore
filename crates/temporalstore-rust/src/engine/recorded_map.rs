@@ -368,6 +368,48 @@ pub(super) fn install_element_at_bucket<K: RecordedKind>(
     });
 }
 
+pub(super) fn install_new_packed_hash_block_at_bucket(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    object_key: &str,
+    fields: &[(String, Vec<u8>)],
+    address: ElementEntry,
+) {
+    let Some(first) = fields.first() else {
+        return;
+    };
+    // Replay expands the framed block into every field; one filed outcome records the whole row.
+    let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed_at_bucket(
+        shard,
+        shard_id,
+        routing_bucket,
+        object_id,
+        HashKind::KIND,
+        object_key,
+        Some(first.0.clone()),
+        address.clone(),
+        true,
+        None,
+        super::storage_bucket_internals::ReplacedBlock::of(None),
+    );
+    install_new_packed_hash_fields(shard, object_key, fields, address, filed);
+}
+
+fn install_new_packed_hash_fields(
+    shard: &mut ShardState,
+    object_key: &str,
+    fields: &[(String, Vec<u8>)],
+    address: ElementEntry,
+    _filed: BlockFiled,
+) {
+    for (field, _) in fields {
+        let handle = super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
+        HashKind::resident(shard).install_into(object_key, handle, address.clone());
+    }
+}
+
 /// The same, for a record that is a STAGED OUTCOME and no bucket-index entry.
 ///
 /// A context node's OUTCOME is deliberately never recorded under kind `hash` -- doing so would have
