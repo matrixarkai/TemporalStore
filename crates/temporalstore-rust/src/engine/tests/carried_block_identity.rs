@@ -408,6 +408,45 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_an_element_nam
     );
 }
 
+#[test]
+fn a_carried_block_read_does_not_fetch_the_following_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    load_on(&engine);
+    let object_id = stable_block_object_id(1, "hash", "small-carrier");
+    let staged = vec![StagedBlock {
+        object_id,
+        element_name: Some(std::sync::Arc::from("field")),
+        bytes: vec![b'v'; 64],
+    }];
+    let (record, log_id) = engine.wal_store
+        .append_with_sync_staged(1, carrier("small"), true, staged.clone()).unwrap();
+    crate::engine::block_in_wal::register_record(
+        &engine.block_store, 1, &staged, log_id, record.sequence, &engine.wal_store,
+    );
+    for index in 0..64 {
+        engine.wal_store.append_with_sync_staged(
+            1, carrier("tail"), false,
+            vec![StagedBlock {
+                object_id: object_id.wrapping_add(index + 1),
+                element_name: None,
+                bytes: vec![b't'; 4096],
+            }],
+        ).unwrap();
+    }
+    let before = engine.wal_store.stats(1).bytes_read;
+    assert_eq!(crate::engine::block_in_wal::read_block(
+        &engine.block_store, 1, object_id, Some("field"),
+    ), Some(vec![b'v'; 64]));
+    let after = engine.wal_store.stats(1).bytes_read;
+    assert!(after > before, "the first read must reach WAL");
+    assert!(after - before < 4096, "small record read {} bytes", after - before);
+    assert_eq!(crate::engine::block_in_wal::read_block(
+        &engine.block_store, 1, object_id, Some("field"),
+    ), Some(vec![b'v'; 64]));
+    assert_eq!(engine.wal_store.stats(1).bytes_read, after);
+}
+
 // =================================================================================================
 // 2. THE SAME QUESTION AT BATCH SCALE, WITH ITS DENOMINATOR AND ITS CONTROL.
 // =================================================================================================
