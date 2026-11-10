@@ -698,6 +698,21 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
                     == vec!["second", "first"]
     ));
 
+    let exact = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQueryEventsByIds {
+            tenant_hash: 11,
+            node_hash: 42,
+            event_id_hashes: vec![5],
+            limit: Some(1),
+        },
+    });
+    assert!(matches!(
+        exact.response,
+        CommandResponse::ContextEvents { ref events, .. }
+            if events.len() == 1 && events[0].event_id_hash == 5 && events[0].text == "first"
+    ));
+
     let index_ref = ContextIndexRef {
         primary_node_hash: 42,
         primary_event_time_ms: 1_000,
