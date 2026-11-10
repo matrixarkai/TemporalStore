@@ -1183,7 +1183,7 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
 
 fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let parts = record_parts(record)?;
-    if compress_records_enabled() {
+    if compress_records_enabled() && parts.len >= COMPRESSION_MIN_BYTES {
         // Compression cannot use the borrowing writer above: that path reserves the frame from
         // `payload_len()` before the payload exists, and how long a compressed payload will be is
         // not knowable until it has been compressed. So this arm builds the payload first and the
@@ -1205,20 +1205,18 @@ fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
             }
             Ok(compressed)
         })?;
-        if let Some(compressed) = compressed {
+        if let Some(mut compressed) = compressed {
             let escaping = !crate::log_framing::binary_frame_enabled();
-            let mut out = Vec::with_capacity(compressed.len() + 8);
-            out.push(if escaping {
-                COMPRESSED_ESCAPED_PAYLOAD_MARKER
-            } else {
-                COMPRESSED_RAW_PAYLOAD_MARKER
-            });
             if escaping {
+                let mut out = Vec::with_capacity(compressed.len() + 8);
+                out.push(COMPRESSED_ESCAPED_PAYLOAD_MARKER);
                 out.extend_from_slice(&escape_newlines(&compressed));
-            } else {
-                out.extend_from_slice(&compressed);
+                return Ok(out);
             }
-            return Ok(out);
+            // Compression keeps only frames shorter than the input, leaving room in its
+            // compress_bound-sized buffer for the marker without another allocation.
+            compressed.insert(0, COMPRESSED_RAW_PAYLOAD_MARKER);
+            return Ok(compressed);
         }
         // Not worth compressing. Fall through and write it the way it would have been written
         // anyway, under its own marker -- a reader cannot tell that this record was considered.
@@ -1643,10 +1641,8 @@ mod tests {
 
     /// What `encode` allocates, compressed against raw.
     ///
-    /// The compressed arm builds three buffers per record: the payload, the compressed copy of it,
-    /// and the output the compressed copy is then memcpy'd into. `compress_to_buffer` could put the
-    /// compressor straight into the output and remove the middle one. This measures what that is
-    /// worth before anyone writes it.
+    /// The compressed binary arm retains a payload scratch buffer and the compressor output.
+    /// The marker is inserted into that output rather than copied into a third buffer.
     #[test]
     #[ignore]
     #[cfg(feature = "alloc-probe")]
@@ -1942,6 +1938,15 @@ mod tests {
 
         std::env::set_var("TS_WAL_COMPRESS_RECORDS", "1");
         let compressed = encode(&record).expect("encodes with compression on");
+        if compressed.first() == Some(&COMPRESSED_RAW_PAYLOAD_MARKER) {
+            let mut encoded = Vec::new();
+            record_parts(&record)
+                .unwrap()
+                .put(&record, &mut encoded)
+                .unwrap();
+            let expected = compress_payload(&encoded).expect("compresses");
+            assert_eq!(&compressed[1..], expected.as_slice());
+        }
         // "0", not unset. Unset is ON now, and this line said "off" while meaning "default" -- the
         // kind of test that keeps passing through exactly the change it should have caught.
         std::env::set_var("TS_WAL_COMPRESS_RECORDS", "0");
