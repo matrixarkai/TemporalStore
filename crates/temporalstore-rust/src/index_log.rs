@@ -2532,6 +2532,8 @@ struct IndexLogInner {
     root: PathBuf,
     stats: IndexLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
+    // Valid only while the active file still has the path and length recorded below.
+    active_span_by_shard: HashMap<ShardId, ActiveIndexSegment>,
     /// MANIFEST-CONFORMANCE FOLD: the index-log byte length recorded at the last catalog dump, per
     /// shard. `undumped_len_since_dump` subtracts this from the current on-disk length to get the
     /// undumped gap that drives the threshold-dump cadence. Reset to 0
@@ -2859,6 +2861,7 @@ impl LocalIndexLogStore {
                 root,
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
+                active_span_by_shard: HashMap::new(),
                 last_dumped_len_by_shard: HashMap::new(),
                 last_dumped_at_by_shard: HashMap::new(),
                 scratch: None,
@@ -2900,9 +2903,8 @@ impl LocalIndexLogStore {
         };
         // Seal the piece being written if this record would take it past the rolling threshold,
         // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
-        // stat; the piece is walked once per ROLL, never once per append -- re-reading the file
-        // to answer "is this piece full" on every write is the cost the write-ahead log had to
-        // take back out.
+        // stat; the piece is walked only when the in-memory span is unavailable, never to
+        // answer "is this piece full" on every write.
         //
         // AFTER the sequence probe above, not before it. That probe is what trims a tail a crash
         // left half-written, and only the piece being written is ever trimmed -- so rolling first
@@ -2912,7 +2914,11 @@ impl LocalIndexLogStore {
         // written to and how long it is; the roll needs the length, the open needs the name,
         // and asking separately is what made the append probe the same path twice per record.
         let (mut active, active_len) = active_index_log(&inner.root, shard_id);
-        if roll_index_log_segment_at(&inner.root, shard_id, &active, active_len)? {
+        let cached_span = active_span_at(&inner, shard_id, &active, active_len);
+        let rolled =
+            roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+        if rolled {
+            inner.active_span_by_shard.remove(&shard_id);
             // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
             // event that can change which name the next record belongs under -- so the answer is
             // taken again exactly when it has been invalidated, and never cached past it. A roll
@@ -2967,6 +2973,16 @@ impl LocalIndexLogStore {
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+        note_active_append(
+            &mut inner,
+            shard_id,
+            &active,
+            if rolled { 0 } else { active_len },
+            bytes.len() as u64,
+            next_sequence,
+            None,
+            false,
+        );
         Ok(next_sequence)
     }
 
@@ -3074,9 +3090,8 @@ impl LocalIndexLogStore {
         };
         // Seal the piece being written if this record would take it past the rolling threshold,
         // so reclaim has whole pieces to unlink instead of a file to rewrite. The check is a
-        // stat; the piece is walked once per ROLL, never once per append -- re-reading the file
-        // to answer "is this piece full" on every write is the cost the write-ahead log had to
-        // take back out.
+        // stat; the piece is walked only when the in-memory span is unavailable, never to
+        // answer "is this piece full" on every write.
         //
         // AFTER the sequence probe above, not before it. That probe is what trims a tail a crash
         // left half-written, and only the piece being written is ever trimmed -- so rolling first
@@ -3086,7 +3101,11 @@ impl LocalIndexLogStore {
         // written to and how long it is; the roll needs the length, the open needs the name,
         // and asking separately is what made the append probe the same path twice per record.
         let (mut active, active_len) = active_index_log(&inner.root, shard_id);
-        if roll_index_log_segment_at(&inner.root, shard_id, &active, active_len)? {
+        let cached_span = active_span_at(&inner, shard_id, &active, active_len);
+        let rolled =
+            roll_index_log_segment_at(&inner.root, shard_id, &active, active_len, cached_span)?;
+        if rolled {
+            inner.active_span_by_shard.remove(&shard_id);
             // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
             // event that can change which name the next record belongs under -- so the answer is
             // taken again exactly when it has been invalidated, and never cached past it. A roll
@@ -3199,6 +3218,16 @@ impl LocalIndexLogStore {
         inner.stats.bytes_written += written_len;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+        note_active_append(
+            &mut inner,
+            shard_id,
+            &active,
+            if rolled { 0 } else { active_len },
+            written_len,
+            next_sequence,
+            record.applied_wal_sequence,
+            delta_record_carries_content_of(&record),
+        );
         // The bytes are in the file and the bookkeeping is done, so claim a barrier and then let
         // the lock go before taking it. Holding the lock across the fsync meant writers could
         // never reach the barrier together, so each paid for one that would have covered all of
@@ -3755,7 +3784,7 @@ impl LocalIndexLogStore {
         // long as a sweep runs the shard's index log accepts no record. What bounds that hold is
         // therefore what bounds the sweep, and `max_entries_per_round` is not it: see the note
         // on the parameter above.
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
         // AFTER the guard, so it drops BEFORE it: the release reading is taken while the lock is
         // still held. `a_sweep_holds_the_lock_every_append_needs` reads the two.
         #[cfg(test)]
@@ -3844,6 +3873,7 @@ impl LocalIndexLogStore {
                 temp.sync_all()?;
             }
             fs::rename(&temp_path, &path)?;
+            inner.active_span_by_shard.remove(&shard_id);
             sync_parent_dir(&path)?;
         }
         let bytes_after = index_log_total_bytes(&root, shard_id);
@@ -3913,7 +3943,7 @@ impl LocalIndexLogStore {
         probe::SWEEP_ENTRIES_POST_DUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Held to the end of the function, exactly as the budgeted sweep holds it, and for the
         // same reason: this is the lock `append_index_bytes` takes.
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
         #[cfg(test)]
         let _lock_span = probe::SweepLockSpan::new();
         fs::create_dir_all(&inner.root)?;
@@ -4030,6 +4060,7 @@ impl LocalIndexLogStore {
             temp.sync_all()?;
         }
         fs::rename(&temp_path, &path)?;
+        inner.active_span_by_shard.remove(&shard_id);
         sync_parent_dir(&path)?;
         let bytes_after = index_log_total_bytes(&root, shard_id);
         Ok(IndexLogGcReport {
@@ -4374,6 +4405,65 @@ struct IndexSegmentSpan {
     max_applied_wal: u64,
 }
 
+#[derive(Debug)]
+struct ActiveIndexSegment {
+    path: PathBuf,
+    len: u64,
+    span: IndexSegmentSpan,
+}
+
+fn active_span_at(
+    inner: &IndexLogInner,
+    shard_id: ShardId,
+    path: &Path,
+    len: u64,
+) -> Option<IndexSegmentSpan> {
+    inner
+        .active_span_by_shard
+        .get(&shard_id)
+        .filter(|cached| cached.path == path && cached.len == len)
+        .map(|cached| cached.span)
+}
+
+fn note_active_append(
+    inner: &mut IndexLogInner,
+    shard_id: ShardId,
+    path: &Path,
+    previous_len: u64,
+    written_len: u64,
+    sequence: u64,
+    applied_wal_sequence: Option<u64>,
+    carries_content: bool,
+) {
+    let anchor = if applied_wal_sequence.is_none() && carries_content {
+        INDEX_SEGMENT_UNREFLECTED
+    } else {
+        applied_wal_sequence.unwrap_or(0)
+    };
+    if previous_len == 0 {
+        inner.active_span_by_shard.insert(
+            shard_id,
+            ActiveIndexSegment {
+                path: path.to_path_buf(),
+                len: written_len,
+                span: IndexSegmentSpan {
+                    start: sequence,
+                    end: sequence.saturating_add(1),
+                    max_applied_wal: anchor,
+                },
+            },
+        );
+    } else if let Some(cached) = inner.active_span_by_shard.get_mut(&shard_id) {
+        if cached.path != path || cached.len != previous_len {
+            inner.active_span_by_shard.remove(&shard_id);
+            return;
+        }
+        cached.len = previous_len.saturating_add(written_len);
+        cached.span.end = cached.span.end.max(sequence.saturating_add(1));
+        cached.span.max_applied_wal = cached.span.max_applied_wal.max(anchor);
+    }
+}
+
 /// The anchor a piece names when nothing can prove the dumped base reflects it.
 ///
 /// A SATURATED anchor rather than a fourth field in the name, and the difference is a
@@ -4511,10 +4601,8 @@ fn index_log_total_bytes(root: &Path, shard_id: ShardId) -> u64 {
 
 /// What the piece being written holds, by walking it.
 ///
-/// Called once per ROLL -- the piece is at most the rolling threshold, and this runs once in the
-/// thousands of appends that fill it. Deliberately NOT called per append: the write-ahead log
-/// opened its file and read its header on every write to answer a question of the same shape,
-/// which was 8,240 bytes and an open per record before it was taken back out.
+/// Used when no cached span is available, normally after restart or an active-file rewrite.
+/// The steady append path supplies its span without reopening and decoding the piece.
 ///
 /// `None` when the piece holds no record at all, which is nothing to seal.
 fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, IndexLogError> {
@@ -4569,7 +4657,7 @@ fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, In
 /// piece rather than growing the one just sealed.
 fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool, IndexLogError> {
     let (path, length) = active_index_log(root, shard_id);
-    roll_index_log_segment_at(root, shard_id, &path, length)
+    roll_index_log_segment_at(root, shard_id, &path, length, None)
 }
 
 /// The roll, given a piece the caller has ALREADY resolved and measured.
@@ -4577,12 +4665,14 @@ fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool,
 /// The append resolves the piece anyway -- it is about to open it -- so handing the answer in
 /// removes the probe this function used to make for itself. Neither the name nor the length is
 /// remembered across appends: each append resolves once, under the lock, and uses that answer
-/// for both the roll decision and the open.
+/// for both the roll decision and the open. The span is cached only while the measured length
+/// and path still match.
 fn roll_index_log_segment_at(
     root: &Path,
     shard_id: ShardId,
     path: &Path,
     length: u64,
+    cached_span: Option<IndexSegmentSpan>,
 ) -> Result<bool, IndexLogError> {
     let threshold = index_log_segment_bytes();
     if threshold == 0 {
@@ -4591,7 +4681,11 @@ fn roll_index_log_segment_at(
     if length < threshold {
         return Ok(false);
     }
-    let Some(span) = index_log_segment_span_of(path)? else {
+    let span = match cached_span {
+        Some(span) => Some(span),
+        None => index_log_segment_span_of(path)?,
+    };
+    let Some(span) = span else {
         return Ok(false);
     };
 
@@ -4796,7 +4890,9 @@ mod tests {
         }
         index.extend_from_slice(b"}}");
 
-        anchoring.append_index_bytes(11, &index).unwrap();
+        let mut served_index = fixture_index("large");
+        served_index.resize(index.len(), 0);
+        anchoring.append_index_bytes(11, &served_index).unwrap();
         // The whole-index record, built here: nothing in the store writes one any more, but the
         // comparison this test pins is the size of an anchor against the size of the record it
         // replaced.
@@ -4842,6 +4938,71 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn cached_active_span_matches_disk_and_is_cleared_by_rewrite() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(
+                9,
+                vec![block_item(1, "first", false)],
+                Vec::new(),
+                Some(1),
+                None,
+                false,
+                false,
+            )
+            .unwrap();
+        store
+            .append_delta(
+                9,
+                Vec::new(),
+                vec![serde_json::json!({"key": "second"})],
+                None,
+                None,
+                false,
+                false,
+            )
+            .unwrap();
+        store.append_index_bytes(9, &fixture_index(9)).unwrap();
+
+        let (path, len) = active_index_log(dir.path(), 9);
+        let scanned = index_log_segment_span_of(&path).unwrap().unwrap();
+        let inner = store.inner.lock().unwrap();
+        assert_eq!(active_span_at(&inner, 9, &path, len), Some(scanned));
+        assert_eq!(scanned.max_applied_wal, INDEX_SEGMENT_UNREFLECTED);
+        drop(inner);
+
+        store.gc_before_sequence(9, 2).unwrap();
+        assert!(store
+            .inner
+            .lock()
+            .unwrap()
+            .active_span_by_shard
+            .get(&9)
+            .is_none());
+        let (path, len) = active_index_log(dir.path(), 9);
+        set_index_log_segment_bytes_for_test(Some(len));
+        let expected = index_log_segment_span_of(&path).unwrap().unwrap();
+        store
+            .append_delta(
+                9,
+                vec![block_item(1, "third", false)],
+                Vec::new(),
+                Some(3),
+                None,
+                false,
+                false,
+            )
+            .unwrap();
+        let sealed = index_log_segment_paths(dir.path(), 9)
+            .into_iter()
+            .find_map(|piece| sealed_index_log_span(&piece, 9))
+            .unwrap();
+        assert_eq!(sealed, expected);
+    }
 
     /// A removed log directory must STOP an append, not be quietly rebuilt under it.
     ///
