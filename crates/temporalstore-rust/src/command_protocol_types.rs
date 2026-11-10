@@ -1597,6 +1597,14 @@ pub enum Command {
         max_exclusive: bool,
         rev: bool,
     },
+    /// Bounded member-order scan, strictly after the cursor.
+    /// Answers interleaved member/score-string pairs without sorting the whole set.
+    ZSetScan {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        after: Vec<u8>,
+        limit: usize,
+    },
     /// Atomic seen-within-window check-and-mark: answers 1 when the member was already seen
     /// inside the window (a duplicate), else marks it and answers 0. Expired entries are
     /// swept from the front in bounded steps on every call.
@@ -1633,6 +1641,14 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
         increment: f64,
+    },
+    /// Adjust an integer member count atomically, removing the member at zero.
+    /// Decrementing an absent member is an idempotent zero rather than a negative count.
+    ZSetCountAdjust {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        increment: i64,
     },
     /// Pop up to `count` members off the low (min) or high end, in order.
     /// Answers interleaved member/score-string pairs.

@@ -22,10 +22,7 @@ fn persist_prepared_context_batch(
     if pending.is_empty() {
         return;
     }
-    let command_count = pending
-        .iter()
-        .map(|prepared| prepared.commands.len())
-        .sum();
+    let command_count = pending.iter().map(|prepared| prepared.commands.len()).sum();
     let mut commands = Vec::with_capacity(command_count);
     let mut command_ranges = Vec::with_capacity(pending.len());
     for prepared in &mut pending {
@@ -89,7 +86,9 @@ fn process_context_source_window(
         }
     }
     let mut summary_results: Vec<Option<Result<ContextExtractSummaries, ContextExtractReport>>> =
-        std::iter::repeat_with(|| None).take(sources.len()).collect();
+        std::iter::repeat_with(|| None)
+            .take(sources.len())
+            .collect();
     for (_, source_indexes) in summary_provider_groups {
         let requests = source_indexes
             .iter()
@@ -165,8 +164,7 @@ fn process_context_source_window(
             let mut unique_input_bytes = 0usize;
             while chunk_end < source_indexes.len() {
                 let source_index = source_indexes[chunk_end];
-                let (source, summaries, node_hash, event_id_hash) =
-                    &prepared_sources[source_index];
+                let (source, summaries, node_hash, event_id_hash) = &prepared_sources[source_index];
                 let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
                 let node_embedding_text = if emit_l1 {
                     summaries.l1.as_str()
@@ -174,9 +172,8 @@ fn process_context_source_window(
                     summaries.l0.as_str()
                 };
                 let event_text = source.body.as_str();
-                let mut source_inputs = Vec::with_capacity(
-                    2usize.saturating_add(summaries.entities.len()),
-                );
+                let mut source_inputs =
+                    Vec::with_capacity(2usize.saturating_add(summaries.entities.len()));
                 source_inputs.push(("node_text", *node_hash, 1, node_embedding_text));
                 source_inputs.push(("event_text", *event_id_hash, 3, event_text));
                 source_inputs.extend(summaries.entities.iter().map(|entity| {
@@ -239,21 +236,13 @@ fn process_context_source_window(
                 input_rows,
                 report,
                 deferred,
-            } = context_prepared_embeddings_with_fallback(
-                &provider,
-                &unique_inputs,
-                input_rows,
-            );
+            } = context_prepared_embeddings_with_fallback(&provider, &unique_inputs, input_rows);
             let batch = Arc::new(batch);
             let input_rows = Arc::<[usize]>::from(input_rows);
             for (source_index, row_offset, logical_row_count) in source_rows {
                 let mut source_report = report.clone();
                 source_report.requested_vector_count = logical_row_count;
-                source_report.generated_vector_count = if deferred {
-                    0
-                } else {
-                    logical_row_count
-                };
+                source_report.generated_vector_count = if deferred { 0 } else { logical_row_count };
                 embedding_outcomes[source_index] = Some(ContextEmbeddingOutcome::shared(
                     Arc::clone(&batch),
                     Arc::clone(&input_rows),
@@ -270,15 +259,13 @@ fn process_context_source_window(
     for (source_index, (source, summaries, node_hash, event_id_hash)) in
         prepared_sources.into_iter().enumerate()
     {
-        let embedding_outcome = embedding_outcomes[source_index]
-            .take()
-            .unwrap_or_else(|| {
-                ContextEmbeddingOutcome::owned(
-                    EmbeddingBatch::default(),
-                    ContextEmbeddingGenerationReport::default(),
-                    true,
-                )
-            });
+        let embedding_outcome = embedding_outcomes[source_index].take().unwrap_or_else(|| {
+            ContextEmbeddingOutcome::owned(
+                EmbeddingBatch::default(),
+                ContextEmbeddingGenerationReport::default(),
+                true,
+            )
+        });
         let prepared = prepare_context_gated_prepared_with_ids(
             source,
             gate_l1,
@@ -748,7 +735,6 @@ pub fn ingest_resource_skill_context(
                 _ => {}
             }
         }
-
     }
     secondary_indexes.resource_refs.sort();
     secondary_indexes.resource_refs.dedup();
@@ -1102,7 +1088,6 @@ pub(crate) fn context_resource_skill_embedding_evidence(
     report.vector_dimensions.dedup();
     report
 }
-
 
 pub(crate) fn query_missing_secondary_index_refs(
     engine: &TemporalEngine,

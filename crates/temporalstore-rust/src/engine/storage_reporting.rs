@@ -792,9 +792,8 @@ pub(super) fn object_manager_runtime_report(
 /// The same report, from live-block entries the caller ALREADY has.
 ///
 /// This walked the shard TWICE: once for the ownership report below, and once more at the very end
-/// purely to COUNT entries of eight timestamped kinds. Measured at 2.0x the shard
-/// (`what_the_compaction_preamble_walks`), which is why the compaction preamble could not get
-/// below 7.0x while calling the wrapper form.
+/// purely to COUNT entries of eight timestamped kinds. Callers that already hold the live-block
+/// entries use this form to avoid repeating that walk.
 pub(super) fn object_manager_runtime_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,

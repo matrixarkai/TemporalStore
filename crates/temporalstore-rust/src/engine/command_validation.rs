@@ -27,6 +27,7 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
         | Command::SetScan { key, .. }
+        | Command::ZSetScan { key, .. }
         | Command::FeatureQuery { key, .. }
         | Command::FeatureAggQuery { key, .. }
         | Command::FeatureProtoAggQuery { key, .. }
@@ -165,6 +166,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::ZSetRange { key, .. }
         | Command::ZSetRangeByScore { key, .. }
         | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetCountAdjust { key, .. }
         | Command::ZSetPop { key, .. }
         | Command::ZSetRank { key, .. }
         | Command::BucketTake { key, .. }
@@ -345,6 +347,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::HashLen { .. }
         | Command::SetMembers { .. }
         | Command::SetScan { .. }
+        | Command::ZSetScan { .. }
         | Command::FeatureQuery { .. }
         | Command::FeatureQueryFiltered { .. }
         | Command::FeatureAggQuery { .. }
@@ -405,6 +408,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::ZSetAdd { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
+            | Command::ZSetCountAdjust { .. }
             | Command::ZSetPop { .. }
             | Command::ControlStateIncrement { .. }
             | Command::ControlStateIncrementWithOptions { .. }
@@ -467,6 +471,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ZSetAdd { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
+            | Command::ZSetCountAdjust { .. }
             | Command::ZSetPop { .. }
             | Command::BucketTake { .. }
             | Command::SeenCheck { .. }
@@ -619,6 +624,12 @@ pub(super) fn validate_command_preconditions(
             return Err(Status::error(
                 "invalid_argument",
                 "set scan limit must be between 1 and 10000",
+            ));
+        }
+        Command::ZSetScan { limit, .. } if *limit == 0 || *limit > 10_000 => {
+            return Err(Status::error(
+                "invalid_argument",
+                "zset scan limit must be between 1 and 10000",
             ));
         }
         Command::HashMultiSetIfTimestampOlder {

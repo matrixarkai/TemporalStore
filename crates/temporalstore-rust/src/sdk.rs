@@ -340,6 +340,11 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             member: command.member,
             increment: command.increment,
         },
+        v1::command::Kind::ZsetCountAdjust(command) => types::Command::ZSetCountAdjust {
+            key: command.key,
+            member: command.member,
+            increment: command.increment,
+        },
         v1::command::Kind::ZsetPop(command) => types::Command::ZSetPop {
             key: command.key,
             min: command.min,
@@ -402,6 +407,12 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             after: command.after,
             limit: usize::try_from(command.limit)
                 .map_err(|_| TonicStatus::invalid_argument("set scan limit is too large"))?,
+        },
+        v1::command::Kind::ZsetScan(command) => types::Command::ZSetScan {
+            key: command.key,
+            after: command.after,
+            limit: usize::try_from(command.limit)
+                .map_err(|_| TonicStatus::invalid_argument("zset scan limit is too large"))?,
         },
         v1::command::Kind::FeatureAppend(command) => types::Command::FeatureAppend {
             key: command.key,

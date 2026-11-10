@@ -559,6 +559,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::HashLen { .. }
             | Command::SetMembers { .. }
             | Command::SetScan { .. }
+            | Command::ZSetScan { .. }
             | Command::FeatureQuery { .. }
             | Command::FeatureQueryFiltered { .. }
             | Command::FeatureAggQuery { .. }

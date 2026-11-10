@@ -32,7 +32,6 @@ const LEXICAL_SCORE_SATURATION: i64 = 1_000;
 /// remain rankable (never a flat 0) instead of collapsing to recency order.
 const LEXICAL_MATCH_MICROS: i64 = 500_000;
 
-
 /// Map a raw lexical-relevance score into the same micros scale cosine similarity
 /// uses (`context_embedding_similarity_micros`), so lexical and cosine node scores
 /// merge into one ranking. 0 stays 0 (no overlap => not surfaced by lexical).
@@ -41,27 +40,27 @@ fn lexical_score_to_micros(raw: u32) -> i64 {
     raw.saturating_mul(LEXICAL_MATCH_MICROS) / LEXICAL_SCORE_SATURATION
 }
 
-#[path = "context_workflow/context_query_scoring.rs"]
-mod query;
-mod embed_drainer;
-#[path = "context_workflow/context_workflow_resource.rs"]
-mod resource;
 #[path = "context_workflow/context_workflow_benchmark.rs"]
 mod benchmark;
-mod model_provider;
+mod embed_drainer;
 #[path = "context_workflow/context_workflow_ingest.rs"]
 mod ingest;
+mod model_provider;
+#[path = "context_workflow/context_query_scoring.rs"]
+mod query;
 #[path = "context_workflow/context_workflow_reports.rs"]
 mod reports;
+#[path = "context_workflow/context_workflow_resource.rs"]
+mod resource;
 #[path = "context_workflow/context_workflow_skill.rs"]
 mod skill;
 
-pub use resource::{
-    parse_context_resource, update_context_resource_lifecycle,
-};
-pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep};
 pub(crate) use benchmark::*;
-pub use reports::*;
+pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep};
+pub use embed_drainer::{
+    drain_embedding_dirty_once, embed_drainer_config_from_env, embed_drainer_enabled,
+    run_embed_drainer_loop, EmbedDrainReport, EmbedDrainerConfig,
+};
 pub use ingest::{
     ingest_extract_context, ingest_extract_context_with_l1_gate, ingest_resource_skill_context,
     validate_resource_skill_secondary_indexes,
@@ -69,10 +68,8 @@ pub use ingest::{
 pub(crate) use model_provider::*;
 pub use model_provider::{context_backfill_embeddings, context_provider_from_env};
 pub use query::context_embedding_ref_hash;
-pub use embed_drainer::{
-    drain_embedding_dirty_once, embed_drainer_config_from_env, embed_drainer_enabled,
-    run_embed_drainer_loop, EmbedDrainReport, EmbedDrainerConfig,
-};
+pub use reports::*;
+pub use resource::{parse_context_resource, update_context_resource_lifecycle};
 pub use skill::{
     context_skill_registry_from_parsed, parse_context_skill_markdown,
     select_context_skills_for_retrieval, update_context_skill_registry,
@@ -95,10 +92,9 @@ use crate::llm_context::{
 };
 use crate::types::{
     context_model_descriptors, context_node_summary_vector_enabled, BatchExecuteRequest, Command,
-    CommandResponse, ContextAuditRef, ContextChildRef, CONTEXT_SUMMARY_LEVEL_L1,
-    ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef,
-    ContextModelDescriptor, ContextNode, ContextPackAudit, ContextSummary,
-    ContextDirtyNode, ExecuteRequest, ShardId, Status,
+    CommandResponse, ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextDirtyNode,
+    ContextEntity, ContextEvent, ContextIndexRef, ContextModelDescriptor, ContextNode,
+    ContextPackAudit, ContextSummary, ExecuteRequest, ShardId, Status, CONTEXT_SUMMARY_LEVEL_L1,
 };
 
 const CONTEXT_SCOPE_NODE_INDEX_NAME: &str = "scope_node_recent";
@@ -1813,19 +1809,15 @@ pub(crate) fn context_prepared_embeddings_with_fallback(
                     return Err(status);
                 };
                 let fallback = normalize_provider(fallback.clone());
-                context_embeddings_for_prepared_unique(
-                    &fallback,
-                    unique_inputs,
-                    input_rows.len(),
-                )
-                .map(|(vectors, mut report)| {
-                    report.fallback_used = true;
-                    report.provider_name = format!(
-                        "{}+fallback:{}",
-                        provider.provider_name, report.provider_name
-                    );
-                    (vectors, report)
-                })
+                context_embeddings_for_prepared_unique(&fallback, unique_inputs, input_rows.len())
+                    .map(|(vectors, mut report)| {
+                        report.fallback_used = true;
+                        report.provider_name = format!(
+                            "{}+fallback:{}",
+                            provider.provider_name, report.provider_name
+                        );
+                        (vectors, report)
+                    })
             },
         );
     match embed_outcome {
@@ -1899,8 +1891,7 @@ pub(crate) fn context_extract_summaries_with_fallback_batch(
                 .iter()
                 .map(|index| requests[*index])
                 .collect::<Vec<_>>();
-            let fallback_results =
-                context_summaries_for_extract_batch(&fallback, &failed_requests);
+            let fallback_results = context_summaries_for_extract_batch(&fallback, &failed_requests);
             for (index, fallback_result) in failed_indexes.iter().zip(fallback_results) {
                 results[*index] = fallback_result.map(|mut summaries| {
                     summaries.provider = fallback.clone();
@@ -2092,11 +2083,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     // warrant the richer, more expensive L1 tier. Thin gated nodes keep only L0
     // (no l1_ref, no l1 summary, no l1 embedding) -- the frugal path.
     let emit_l1 = !gate_l1 || context_source_warrants_l1(&request.body);
-    let l1 = if emit_l1 {
-        summaries.l1
-    } else {
-        String::new()
-    };
+    let l1 = if emit_l1 { summaries.l1 } else { String::new() };
     let l2_ref = summaries.l2_ref;
     let mut node = ContextNode {
         node_hash,
@@ -2105,7 +2092,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         canonical_name: request.title.clone(),
         l0: l0.clone(),
         status: 1,
-            last_event_time_ms: timestamp_ms,
+        last_event_time_ms: timestamp_ms,
         l1_ref: l1.clone(),
         raw_metadata_ref: request.source_id.clone(),
         vector: Vec::new(),
@@ -2129,7 +2116,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
             confidence: 1.0,
             importance: context_importance(&request.body),
             text: request.body.clone(),
-            source_ref: String::new(),
+            source_ref: request.source_id.clone(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
             vector: Vec::new(),
@@ -2198,9 +2185,8 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     // The batch starts with the node and event texts, followed by one bounded entity value per
     // extracted entity. The provider still receives one request and can deduplicate repeated text.
     let node_embedding_text = if emit_l1 { l1.as_str() } else { l0.as_str() };
-    let mut embedding_inputs: Vec<(&str, u64, u32, &str)> = Vec::with_capacity(
-        2usize.saturating_add(extracted_entities.len()),
-    );
+    let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
+        Vec::with_capacity(2usize.saturating_add(extracted_entities.len()));
     embedding_inputs.extend([
         ("node_text", node_hash, 1, node_embedding_text),
         ("event_text", event_id_hash, 3, request.body.as_str()),
@@ -2327,44 +2313,49 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         commands.push(Command::ContextMarkEmbeddingDirty {
             tenant_hash: request.tenant_hash,
             node_hash,
-                event_time_ms: timestamp_ms,
-                reason: EMBEDDING_DIRTY_REASON_LIVE_FAILURE,
-                propagate_depth: 0,
+            event_time_ms: timestamp_ms,
+            reason: EMBEDDING_DIRTY_REASON_LIVE_FAILURE,
+            propagate_depth: 0,
             clear: false,
         });
     }
     let extracted_entity_count = extracted_entities.len();
-    commands.extend(extracted_entities.into_iter().enumerate().map(|(index, entity)| {
-        let entity_hash = context_extracted_entity_hash(&entity);
-        let vector = if embedding_deferred {
-            Vec::new()
-        } else {
-            embedding_vectors
-                .get_row(index.saturating_add(2))
-                .map(<[f32]>::to_vec)
-                .unwrap_or_default()
-        };
-        Command::ContextUpsertEntity {
-            tenant_hash: request.tenant_hash,
-            entity: ContextEntity {
-                entity_hash,
-                node_hash,
-                entity_type: context_extracted_entity_type(&entity.kind),
-                name: entity.name,
-                value: entity.value,
-                updated_at_ms: timestamp_ms,
-                valid_from_ms: timestamp_ms,
-                confidence: 0.9,
-                source_event_hashes: vec![event_id_hash],
-                embedding_model_hash: if vector.is_empty() {
-                    0
+    commands.extend(
+        extracted_entities
+            .into_iter()
+            .enumerate()
+            .map(|(index, entity)| {
+                let entity_hash = context_extracted_entity_hash(&entity);
+                let vector = if embedding_deferred {
+                    Vec::new()
                 } else {
-                    embedding_model_hash
-                },
-                vector,
-            },
-        }
-    }));
+                    embedding_vectors
+                        .get_row(index.saturating_add(2))
+                        .map(<[f32]>::to_vec)
+                        .unwrap_or_default()
+                };
+                Command::ContextUpsertEntity {
+                    tenant_hash: request.tenant_hash,
+                    entity: ContextEntity {
+                        entity_hash,
+                        node_hash,
+                        entity_type: context_extracted_entity_type(&entity.kind),
+                        name: entity.name,
+                        value: entity.value,
+                        updated_at_ms: timestamp_ms,
+                        valid_from_ms: timestamp_ms,
+                        confidence: 0.9,
+                        source_event_hashes: vec![event_id_hash],
+                        embedding_model_hash: if vector.is_empty() {
+                            0
+                        } else {
+                            embedding_model_hash
+                        },
+                        vector,
+                    },
+                }
+            }),
+    );
     PreparedContextExtract {
         commands,
         report: ContextExtractReport {
@@ -2432,7 +2423,8 @@ pub fn retrieve_context(
     let include_l2 = tiers.contains(&ContextTier::L2);
     let mut node_hashes = std::mem::take(&mut request.node_hashes);
     let retrieval_provider = normalize_provider(request.provider.clone());
-    let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query) {
+    let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query)
+    {
         Ok(vector) => vector,
         Err(status) => {
             return ContextRetrieveReport {
@@ -2509,8 +2501,7 @@ pub fn retrieve_context(
     }
     drop(seen_node_hashes);
     fanout_plan.namespace_node_candidates = node_hashes.len();
-    let mut summary_scores_by_node =
-        HashMap::<u64, (i64, usize)>::with_capacity(node_hashes.len());
+    let mut summary_scores_by_node = HashMap::<u64, (i64, usize)>::with_capacity(node_hashes.len());
     let initial_candidate_capacity = node_hashes.len().min(CONTEXT_EMBEDDING_QUERY_CHUNK);
     let mut prefetched_nodes = HashMap::<u64, ContextNode>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
@@ -2547,9 +2538,7 @@ pub fn retrieve_context(
                         let scores = summary_scores_by_node
                             .entry(summary_hit.key.item_id)
                             .or_default();
-                        scores.0 = scores
-                            .0
-                            .max((summary_hit.score * 1_000_000.0) as i64);
+                        scores.0 = scores.0.max((summary_hit.score * 1_000_000.0) as i64);
                     },
                 );
                 let _ = engine.visit_context_embedding_candidate_ids(
@@ -2715,7 +2704,10 @@ pub fn retrieve_context(
         }
         // The projection loader preserves request order while omitting missing nodes. Walk both
         // ordered lists once instead of allocating a hash set and hashing every id twice.
-        let mut returned = projections.iter().map(|projection| projection.node_hash).peekable();
+        let mut returned = projections
+            .iter()
+            .map(|projection| projection.node_hash)
+            .peekable();
         // A node the engine did not return cannot carry a vector either.
         for node_hash in candidate_chunk {
             if returned
@@ -3088,9 +3080,9 @@ pub fn retrieve_context(
     // `u64::MAX` is the public open-ended query convention, while the durable timeline reserves
     // low bits for event disambiguation. Clamp only the storage query; ranking still sees the
     // caller's original end time.
-    let event_query_end_time_ms = request.end_time_ms.min(
-        u64::MAX / crate::engine::constants::CONTEXT_TIMELINE_FANOUT,
-    );
+    let event_query_end_time_ms = request
+        .end_time_ms
+        .min(u64::MAX / crate::engine::constants::CONTEXT_TIMELINE_FANOUT);
     let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
     fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
@@ -3220,9 +3212,8 @@ pub fn retrieve_context(
     let mut entity_candidate_count = 0usize;
     let mut entity_candidates = BinaryHeap::with_capacity(entity_result_limit.saturating_add(1));
     let mut event_candidates = BinaryHeap::with_capacity(event_pack_budget.saturating_add(1));
-    let mut ranked_scores_by_uri = HashMap::with_capacity(
-        entity_result_limit.saturating_add(event_pack_budget),
-    );
+    let mut ranked_scores_by_uri =
+        HashMap::with_capacity(entity_result_limit.saturating_add(event_pack_budget));
     for (selected_node_index, node_hash) in node_hashes.iter().copied().enumerate() {
         let mut node_source_ref = String::new();
         let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
@@ -3276,7 +3267,9 @@ pub fn retrieve_context(
             && (!use_hot_entity_candidates || hot_entity_ids_by_node.contains_key(&node_hash))
         {
             let remaining = entity_candidate_budget.saturating_sub(entity_candidate_count);
-            let remaining_nodes = selected_node_count.saturating_sub(selected_node_index).max(1);
+            let remaining_nodes = selected_node_count
+                .saturating_sub(selected_node_index)
+                .max(1);
             let per_node_limit = remaining.div_ceil(remaining_nodes).max(1);
             let entity_hashes = hot_entity_ids_by_node
                 .get(&node_hash)
@@ -3336,9 +3329,8 @@ pub fn retrieve_context(
                             .ok()
                         })
                         .map(|hit| (hit.score * 1_000_000.0) as i64);
-                    let lexical_score = lexical_score_to_micros(
-                        context_relevance_score_plan(&query_plan, &text),
-                    );
+                    let lexical_score =
+                        lexical_score_to_micros(context_relevance_score_plan(&query_plan, &text));
                     let score = semantic_score.unwrap_or_default().max(lexical_score);
                     let source_ref = format!("entity:{:016x}", entity.entity_hash);
                     let uri = format!(
@@ -3451,8 +3443,8 @@ pub fn retrieve_context(
                             .ok()
                         })
                         .map(|hit| (hit.score * 1_000_000.0) as i64);
-                    let passes_prefilter = lexical_match
-                        || semantic_score.is_some_and(|score| score > 0);
+                    let passes_prefilter =
+                        lexical_match || semantic_score.is_some_and(|score| score > 0);
                     if include_debug {
                         context_query_debug_record_candidate(
                             &mut query_understanding_debug,
@@ -3470,15 +3462,13 @@ pub fn retrieve_context(
                     } else {
                         event.source_ref
                     };
-                    let lexical_score = lexical_score_to_micros(
-                        context_relevance_score_plan(&query_plan, &event.text),
-                    );
+                    let lexical_score = lexical_score_to_micros(context_relevance_score_plan(
+                        &query_plan,
+                        &event.text,
+                    ));
                     let score = semantic_score.unwrap_or_default().max(lexical_score);
-                    let uri = context_event_uri(
-                        request.tenant_hash,
-                        node_hash,
-                        event.event_time_ms,
-                    );
+                    let uri =
+                        context_event_uri(request.tenant_hash, node_hash, event.event_time_ms);
                     let estimated_tokens = estimate_tokens(&event.text);
                     retain_ranked_context_block(
                         &mut event_candidates,
@@ -3719,8 +3709,7 @@ fn context_sentences(body: &str) -> Vec<&str> {
 /// internal `node_l1_generation_policy` (>=3 events / >=180 tokens); at
 /// extract time sentences stand in for events.
 pub(crate) fn context_source_warrants_l1(body: &str) -> bool {
-    context_sentence_iter(body).take(3).count() >= 3
-        || body.split_whitespace().nth(179).is_some()
+    context_sentence_iter(body).take(3).count() >= 3 || body.split_whitespace().nth(179).is_some()
 }
 
 /// L0: the short routing/preview summary (the required
@@ -3740,9 +3729,10 @@ fn contains_ascii_case_insensitive(value: &str, marker: &str) -> bool {
     if marker.is_empty() {
         return true;
     }
-    value.as_bytes().windows(marker.len()).any(|candidate| {
-        candidate.eq_ignore_ascii_case(marker.as_bytes())
-    })
+    value
+        .as_bytes()
+        .windows(marker.len())
+        .any(|candidate| candidate.eq_ignore_ascii_case(marker.as_bytes()))
 }
 
 fn context_fact_score(sentence: &str) -> i32 {
@@ -3822,9 +3812,8 @@ fn truncate_words(value: &str, limit: usize) -> String {
     if word_count == 0 {
         return String::new();
     }
-    let mut truncated = String::with_capacity(
-        word_bytes.saturating_add(word_count.saturating_sub(1)),
-    );
+    let mut truncated =
+        String::with_capacity(word_bytes.saturating_add(word_count.saturating_sub(1)));
     for (index, word) in words.enumerate() {
         if index > 0 {
             truncated.push(' ');

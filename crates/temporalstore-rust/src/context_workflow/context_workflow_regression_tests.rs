@@ -6,7 +6,6 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
-
 fn test_engine() -> TemporalEngine {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -96,17 +95,21 @@ fn context_relevance_ranks_qa_synonyms_and_phrases() {
         context_query_terms("topic 4 in v2"),
         vec!["topic".to_string(), "4".to_string()]
     );
-    assert!(context_query_secondary_index_filter_groups(&context_query_terms(
-        "latest payment status topic 4"
-    ))
-    .iter()
-    .any(|group| group == &["query_term:4".to_string()]));
     assert!(
-        context_relevance_score("latest payment status topic 4", "latest payment status topic 4")
-            > context_relevance_score(
-                "latest payment status topic 4",
-                "latest payment status topic 0",
-            )
+        context_query_secondary_index_filter_groups(&context_query_terms(
+            "latest payment status topic 4"
+        ))
+        .iter()
+        .any(|group| group == &["query_term:4".to_string()])
+    );
+    assert!(
+        context_relevance_score(
+            "latest payment status topic 4",
+            "latest payment status topic 4"
+        ) > context_relevance_score(
+            "latest payment status topic 4",
+            "latest payment status topic 0",
+        )
     );
     let query_embedding = deterministic_context_embedding("mock", "latest payment status topic 4");
     assert!(
@@ -118,10 +121,7 @@ fn context_relevance_ranks_qa_synonyms_and_phrases() {
             ),
         ) > context_embedding_similarity_micros(
             &query_embedding,
-            &deterministic_context_embedding(
-                "mock",
-                "support ticket follow up for topic 3",
-            ),
+            &deterministic_context_embedding("mock", "support ticket follow up for topic 3",),
         )
     );
 
@@ -438,7 +438,11 @@ fn context_extract_gates_l1_for_thin_sources() {
     );
     assert!(thin.status.ok, "{:?}", thin.status);
     assert!(!thin.l0.is_empty());
-    assert!(thin.l1.is_empty(), "thin source should skip L1: {:?}", thin.l1);
+    assert!(
+        thin.l1.is_empty(),
+        "thin source should skip L1: {:?}",
+        thin.l1
+    );
     assert!(thin.node.l1_ref.is_empty());
     assert_eq!(thin.embedding_generation.requested_vector_count, 2);
 
@@ -598,8 +602,13 @@ fn a_node_and_its_level_two_summary_share_one_embedding() {
         CommandResponse::ContextSummaries { summaries, .. } => summaries,
         other => panic!("expected summaries, got {other:?}"),
     };
-    let summary = summaries.first().expect("the extract wrote a level-2 summary");
-    assert_eq!(summary.text, report.l1, "the summary that embeds the node's own text");
+    let summary = summaries
+        .first()
+        .expect("the extract wrote a level-2 summary");
+    assert_eq!(
+        summary.text, report.l1,
+        "the summary that embeds the node's own text"
+    );
 
     // The NODE as stored, not as reported. The summary above came back through a block, and every
     // stored vector form rounds -- four decimal places for the uniformly-scaled encoding that is
@@ -620,7 +629,9 @@ fn a_node_and_its_level_two_summary_share_one_embedding() {
         })
         .response
     {
-        CommandResponse::ContextNode { node: Some(node), .. } => node,
+        CommandResponse::ContextNode {
+            node: Some(node), ..
+        } => node,
         other => panic!("expected the node back, got {other:?}"),
     };
     assert!(
@@ -652,7 +663,10 @@ fn an_ingested_summary_records_the_encoder_that_embedded_it() {
         context_embedding_model_hash(&provider.model),
         "chat and embedding models must hash apart, or a chat-model stamp would pass this"
     );
-    assert_ne!(0, expected, "an unknown stamp would be waved through, not checked");
+    assert_ne!(
+        0, expected,
+        "an unknown stamp would be waved through, not checked"
+    );
 
     let report = extract_context(
         &engine,
@@ -1115,7 +1129,6 @@ fn context_benchmark_injection_uses_entity_slab_l0_l1_and_secondary_index() {
         .contains("cardiology appointment moved after the museum visit"));
     assert!(slab.related_node_hashes.is_empty());
     assert_eq!(extract.related_node_hashes, vec![node_entity.node_hash]);
-
 
     let retrieve = ContextRetrieveRequest {
         shard_id: 1,
@@ -2026,7 +2039,11 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                 // the same string as the node, and a third slot repeating it is work and money
                 // spent on a vector the first slot already returns.
                 let inputs = request_body["input"].as_array().unwrap();
-                assert_eq!(inputs.len(), 2, "one text per distinct thing to encode: {inputs:?}");
+                assert_eq!(
+                    inputs.len(),
+                    2,
+                    "one text per distinct thing to encode: {inputs:?}"
+                );
                 assert_ne!(
                     inputs[0], inputs[1],
                     "no text may appear twice in one embedding batch: {inputs:?}"
@@ -2262,100 +2279,108 @@ fn retrieval_keeps_bounded_chunks_raw_messages_and_entities() {
         summary_vector_valid_from_ms: 300,
         summary_vector_model_hash: model_hash,
     };
-    assert!(engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextUpsertNode {
-                tenant_hash,
-                node: Box::new(node),
-            },
-        })
-        .status
-        .ok);
-    let opposite_vector = query_vector.iter().map(|value| -*value).collect();
-    assert!(engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextWriteEvent {
-                tenant_hash,
-                node_hash,
-                event: Box::new(ContextEvent {
-                    event_id_hash: 302,
-                    event_time_ms: 301,
-                    ingestion_time_ms: 301,
-                    kind: 0,
-                    event_type: 1,
-                    actor_hash: 1,
-                    status: 1,
-                    valid_until_ms: 0,
-                    confidence: 1.0,
-                    importance: 1.0,
-                    text: "unrelated recent message".to_string(),
-                    source_ref: "session://launch".to_string(),
-                    related_node_hashes: Vec::new(),
-                    compact_attrs: Vec::new(),
-                    vector: opposite_vector,
-                    embedding_model_hash: model_hash,
-                }),
-                first_write_only: false,
-                cold_storage: false,
-            },
-        })
-        .status
-        .ok);
-    assert!(engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextWriteEvent {
-                tenant_hash,
-                node_hash,
-                event: Box::new(ContextEvent {
-                    event_id_hash: 301,
-                    event_time_ms: 300,
-                    ingestion_time_ms: 300,
-                    kind: 0,
-                    event_type: 1,
-                    actor_hash: 1,
-                    status: 1,
-                    valid_until_ms: 0,
-                    confidence: 1.0,
-                    importance: 1.0,
-                    // No lexical overlap: the vector must admit this raw message.
-                    text: "approved in the final review".to_string(),
-                    source_ref: "session://launch".to_string(),
-                    related_node_hashes: Vec::new(),
-                    compact_attrs: Vec::new(),
-                    vector: query_vector.to_vec(),
-                    embedding_model_hash: model_hash,
-                }),
-                first_write_only: false,
-                cold_storage: false,
-            },
-        })
-        .status
-        .ok);
-    assert!(engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextUpsertEntity {
-                tenant_hash,
-                entity: ContextEntity {
-                    entity_hash: 401,
-                    node_hash,
-                    entity_type: 5,
-                    name: "launch decision".to_string(),
-                    value: "approved".to_string(),
-                    updated_at_ms: 300,
-                    valid_from_ms: 300,
-                    confidence: 1.0,
-                    source_event_hashes: vec![301],
-                    vector: query_vector.to_vec(),
-                    embedding_model_hash: model_hash,
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertNode {
+                    tenant_hash,
+                    node: Box::new(node),
                 },
-            },
-        })
-        .status
-        .ok);
+            })
+            .status
+            .ok
+    );
+    let opposite_vector = query_vector.iter().map(|value| -*value).collect();
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteEvent {
+                    tenant_hash,
+                    node_hash,
+                    event: Box::new(ContextEvent {
+                        event_id_hash: 302,
+                        event_time_ms: 301,
+                        ingestion_time_ms: 301,
+                        kind: 0,
+                        event_type: 1,
+                        actor_hash: 1,
+                        status: 1,
+                        valid_until_ms: 0,
+                        confidence: 1.0,
+                        importance: 1.0,
+                        text: "unrelated recent message".to_string(),
+                        source_ref: "session://launch".to_string(),
+                        related_node_hashes: Vec::new(),
+                        compact_attrs: Vec::new(),
+                        vector: opposite_vector,
+                        embedding_model_hash: model_hash,
+                    }),
+                    first_write_only: false,
+                    cold_storage: false,
+                },
+            })
+            .status
+            .ok
+    );
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteEvent {
+                    tenant_hash,
+                    node_hash,
+                    event: Box::new(ContextEvent {
+                        event_id_hash: 301,
+                        event_time_ms: 300,
+                        ingestion_time_ms: 300,
+                        kind: 0,
+                        event_type: 1,
+                        actor_hash: 1,
+                        status: 1,
+                        valid_until_ms: 0,
+                        confidence: 1.0,
+                        importance: 1.0,
+                        // No lexical overlap: the vector must admit this raw message.
+                        text: "approved in the final review".to_string(),
+                        source_ref: "session://launch".to_string(),
+                        related_node_hashes: Vec::new(),
+                        compact_attrs: Vec::new(),
+                        vector: query_vector.to_vec(),
+                        embedding_model_hash: model_hash,
+                    }),
+                    first_write_only: false,
+                    cold_storage: false,
+                },
+            })
+            .status
+            .ok
+    );
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertEntity {
+                    tenant_hash,
+                    entity: ContextEntity {
+                        entity_hash: 401,
+                        node_hash,
+                        entity_type: 5,
+                        name: "launch decision".to_string(),
+                        value: "approved".to_string(),
+                        updated_at_ms: 300,
+                        valid_from_ms: 300,
+                        confidence: 1.0,
+                        source_event_hashes: vec![301],
+                        vector: query_vector.to_vec(),
+                        embedding_model_hash: model_hash,
+                    },
+                },
+            })
+            .status
+            .ok
+    );
 
     let report = retrieve_context(
         &engine,
@@ -2473,7 +2498,12 @@ fn upsert_raw_context_node(
     assert!(ok);
 }
 
-fn retrieve_top_node(engine: &TemporalEngine, tenant_hash: u64, node_hashes: Vec<u64>, query: &str) -> u64 {
+fn retrieve_top_node(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hashes: Vec<u64>,
+    query: &str,
+) -> u64 {
     let report = retrieve_context(
         engine,
         ContextRetrieveRequest {
@@ -2593,7 +2623,10 @@ fn hybrid_mixed_store_keeps_both_embedded_and_unembedded_rankable() {
     );
     assert!(report.status.ok, "{:?}", report.status);
     assert!(
-        report.blocks.iter().any(|block| block.node_hash == raw_node),
+        report
+            .blocks
+            .iter()
+            .any(|block| block.node_hash == raw_node),
         "un-embedded lexical-matching node must be retrievable in a mixed store"
     );
 }
@@ -2676,7 +2709,11 @@ fn extraction_and_recovery_populate_the_compact_vector_index() {
             include_debug: false,
         },
     );
-    assert!(globally_selected.status.ok, "{:?}", globally_selected.status);
+    assert!(
+        globally_selected.status.ok,
+        "{:?}",
+        globally_selected.status
+    );
     assert!(globally_selected
         .blocks
         .iter()
@@ -2800,10 +2837,9 @@ fn oversized_resource_ingest_keeps_original_blob_fetchable() {
 
     let resource = &report.resources[0];
     assert!(!resource.inline_payload);
-    let (_, content_hash) = crate::engine::resource_blobs::parse_resource_blob_uri(
-        &resource.external_object_uri,
-    )
-    .expect("resource blob URI");
+    let (_, content_hash) =
+        crate::engine::resource_blobs::parse_resource_blob_uri(&resource.external_object_uri)
+            .expect("resource blob URI");
     let (stored, total, eof) = engine
         .resource_blob_fetch(7, content_hash, 0, 0)
         .expect("fetch resource blob");
@@ -3680,10 +3716,27 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
     // recency ordering prefers it). Only a real cosine score against the inline vectors puts
     // the matching node ahead -- which is what failing over to the rows (all absent) would lose.
     for (node_hash, name, summary, at, vector) in [
-        (11u64, "matching", "release runbook notes".to_string(),
-         EVENT_TIME, query_vector.clone()),
-        (12, "decoy", format!("{query} {query}"), EVENT_TIME + 500, away.clone()),
-        (13, "other", "unrelated text".to_string(), EVENT_TIME, away.clone()),
+        (
+            11u64,
+            "matching",
+            "release runbook notes".to_string(),
+            EVENT_TIME,
+            query_vector.clone(),
+        ),
+        (
+            12,
+            "decoy",
+            format!("{query} {query}"),
+            EVENT_TIME + 500,
+            away.clone(),
+        ),
+        (
+            13,
+            "other",
+            "unrelated text".to_string(),
+            EVENT_TIME,
+            away.clone(),
+        ),
     ] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -3780,7 +3833,6 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
     );
 }
 
-
 /// A lifecycle record that says nothing about where its payload lives must decode as holding it
 /// inline, which is what constructing one gives you.
 ///
@@ -3793,7 +3845,10 @@ fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
     let mut body: serde_json::Value =
         serde_json::to_value(ContextResourceLifecycleRecord::default()).unwrap();
     let removed = body.as_object_mut().unwrap().remove("inline_payload");
-    assert!(removed.is_some(), "a serialised record should carry the field");
+    assert!(
+        removed.is_some(),
+        "a serialised record should carry the field"
+    );
 
     let silent: ContextResourceLifecycleRecord = serde_json::from_value(body).unwrap();
     assert!(
@@ -3816,7 +3871,6 @@ fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
         .insert("inline_payload".to_string(), serde_json::Value::Bool(false));
     let stated: ContextResourceLifecycleRecord = serde_json::from_value(external).unwrap();
     assert!(!stated.inline_payload);
-
 }
 
 /// End-to-end add latency, and whether it stays flat as the corpus grows.
@@ -4016,10 +4070,16 @@ fn which_ingest_write_grows_with_the_store() {
     fn measure(engine: &TemporalEngine, tag: u64, command: impl Fn(u64) -> Command) -> u64 {
         // Warm with a different key, then measure a fresh one: the first write of a shape touches
         // one-off structures that are not part of a steady-state write.
-        let warm = engine.execute(ExecuteRequest { shard_id: 1, command: command(tag) });
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: command(tag),
+        });
         assert!(warm.status.ok, "warm: {:?}", warm.status);
         let probe = crate::alloc_probe::Probe::start();
-        let out = engine.execute(ExecuteRequest { shard_id: 1, command: command(tag + 1) });
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: command(tag + 1),
+        });
         assert!(out.status.ok, "measured: {:?}", out.status);
         probe.stop().allocs
     }
@@ -4066,7 +4126,11 @@ fn which_ingest_write_grows_with_the_store() {
     };
 
     for (label, small_n, large_n) in [
-        ("ContextUpsertNode", measure(&small, 9_100_000, node), measure(&large, 9_200_000, node)),
+        (
+            "ContextUpsertNode",
+            measure(&small, 9_100_000, node),
+            measure(&large, 9_200_000, node),
+        ),
         (
             "ContextUpsertSummary",
             measure(&small, 9_300_000, summary),
@@ -4273,14 +4337,20 @@ fn where_does_an_adds_corpus_proportional_cost_live() {
         // Warm: the first write of a session touches one-off structures.
         let warm = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: 7701, node: Box::new(node.clone()) },
+            command: Command::ContextUpsertNode {
+                tenant_hash: 7701,
+                node: Box::new(node.clone()),
+            },
         });
         assert!(warm.status.ok, "{:?}", warm.status);
 
         let probe = crate::alloc_probe::Probe::start();
         let out = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: 7701, node: Box::new(node) },
+            command: Command::ContextUpsertNode {
+                tenant_hash: 7701,
+                node: Box::new(node),
+            },
         });
         assert!(out.status.ok, "{:?}", out.status);
         let counts = probe.stop();
@@ -4465,7 +4535,11 @@ fn what_a_retrieve_allocates() {
                     query: String::new(),
                 },
             );
-            assert!(report.status.ok, "ingest {index} failed: {:?}", report.status);
+            assert!(
+                report.status.ok,
+                "ingest {index} failed: {:?}",
+                report.status
+            );
             node_hashes.extend(report.node_hashes.iter().copied());
         }
         node_hashes.sort_unstable();
@@ -4518,7 +4592,11 @@ fn what_a_retrieve_allocates() {
             let CommandResponse::ContextNodes { nodes } = response.response else {
                 panic!("expected nodes");
             };
-            assert_eq!(nodes.len(), node_hashes.len(), "every candidate must return");
+            assert_eq!(
+                nodes.len(),
+                node_hashes.len(),
+                "every candidate must return"
+            );
         }
         let fetch = fetch_probe.stop();
 
@@ -4629,7 +4707,11 @@ fn what_a_retrieve_decodes_per_candidate() {
                 query: String::new(),
             },
         );
-        assert!(report.status.ok, "ingest {index} failed: {:?}", report.status);
+        assert!(
+            report.status.ok,
+            "ingest {index} failed: {:?}",
+            report.status
+        );
         node_hashes.extend(report.node_hashes.iter().copied());
     }
     node_hashes.sort_unstable();
@@ -4813,7 +4895,10 @@ fn the_mock_sentinel_would_have_conflicted_with_everything() {
     // The bug this arrangement avoids: hashing the normalized provider.
     let sentinel = context_embedding_model_hash("mock-context-embedding");
     let real = context_embedding_model_hash("intfloat/multilingual-e5-large");
-    assert_ne!(0, sentinel, "the sentinel is a real name and hashes to a real value");
+    assert_ne!(
+        0, sentinel,
+        "the sentinel is a real name and hashes to a real value"
+    );
     assert!(
         context_embedding_model_conflicts(real, sentinel),
         "hashing the normalized provider would skip every genuinely embedded vector"
@@ -4861,13 +4946,26 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
     near[1] -= 0.15;
 
     for (node_hash, name, summary, at, vector, model_hash) in [
-        (31u64, "matching", "release runbook notes".to_string(),
-         EVENT_TIME, near.clone(), ours),
-        (32u64, "impostor", "totally unrelated wording".to_string(),
-         EVENT_TIME + 500, query_vector.clone(), theirs),
+        (
+            31u64,
+            "matching",
+            "release runbook notes".to_string(),
+            EVENT_TIME,
+            near.clone(),
+            ours,
+        ),
+        (
+            32u64,
+            "impostor",
+            "totally unrelated wording".to_string(),
+            EVENT_TIME + 500,
+            query_vector.clone(),
+            theirs,
+        ),
     ] {
         assert_eq!(
-            query_vector.len(), vector.len(),
+            query_vector.len(),
+            vector.len(),
             "both vectors must be the same width, or this tests the width check instead"
         );
         let response = engine.execute(ExecuteRequest {
@@ -5055,7 +5153,10 @@ fn a_summary_vector_from_another_encoder_is_declined_and_counted() {
     let query_vector = query::context_query_embedding(&provider, query).unwrap();
     let ours = context_embedding_model_hash(&provider.embedding_model);
     let theirs = context_embedding_model_hash("some-other-encoder");
-    assert_ne!(ours, theirs, "the two encoders must hash apart, or this proves nothing");
+    assert_ne!(
+        ours, theirs,
+        "the two encoders must hash apart, or this proves nothing"
+    );
 
     // Close to the query but not identical, so a perfect cosine would outrank it.
     let mut near = query_vector.clone();
@@ -5199,7 +5300,8 @@ fn a_summary_vector_with_no_recorded_encoder_is_still_scored() {
         .map(|block| block.node_hash)
         .collect();
     assert_eq!(
-        vec![42u64], summary_nodes,
+        vec![42u64],
+        summary_nodes,
         "an unrecorded encoder is unknown, and unknown must keep being scored"
     );
     assert_eq!(
@@ -5265,7 +5367,11 @@ fn ingest_scoring_corpus(engine: &TemporalEngine, tenant_hash: u64, count: usize
                 query: String::new(),
             },
         );
-        assert!(report.status.ok, "ingest {index} failed: {:?}", report.status);
+        assert!(
+            report.status.ok,
+            "ingest {index} failed: {:?}",
+            report.status
+        );
         node_hashes.extend(report.node_hashes.iter().copied());
     }
     node_hashes.sort_unstable();
@@ -5308,7 +5414,10 @@ fn scoring_takes_the_summary_vector_from_the_node_it_already_fetched() {
     let engine = test_engine();
     const TENANT: u64 = 7311;
     let node_hashes = ingest_scoring_corpus(&engine, TENANT, 12);
-    assert!(node_hashes.len() >= 12, "corpus too small to be interesting");
+    assert!(
+        node_hashes.len() >= 12,
+        "corpus too small to be interesting"
+    );
 
     let nodes_response = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -5336,7 +5445,10 @@ fn scoring_takes_the_summary_vector_from_the_node_it_already_fetched() {
         .into_iter()
         .map(|entry| (entry.node_hash, entry.vector))
         .collect();
-    assert!(!owned.is_empty(), "the corpus produced no L1 summary vectors");
+    assert!(
+        !owned.is_empty(),
+        "the corpus produced no L1 summary vectors"
+    );
     // The copy must equal what the summary record holds. A copy that merely EXISTS would pass a
     // "is it populated" check while scoring something else entirely.
     for node in &nodes {
@@ -5353,7 +5465,12 @@ fn scoring_takes_the_summary_vector_from_the_node_it_already_fetched() {
 
     let report = retrieve_context(
         &engine,
-        scoring_request(TENANT, &node_hashes, "how do we deploy the ingest service", u64::MAX),
+        scoring_request(
+            TENANT,
+            &node_hashes,
+            "how do we deploy the ingest service",
+            u64::MAX,
+        ),
     );
     assert!(report.status.ok, "{:?}", report.status);
     assert_eq!(
@@ -5427,7 +5544,12 @@ fn a_query_reaching_back_before_the_copy_still_reads_the_summaries() {
 
     let now = retrieve_context(
         &engine,
-        scoring_request(TENANT, &node_hashes, "how do we deploy the ingest service", u64::MAX),
+        scoring_request(
+            TENANT,
+            &node_hashes,
+            "how do we deploy the ingest service",
+            u64::MAX,
+        ),
     );
     assert!(now.status.ok, "{:?}", now.status);
     assert_eq!(0, now.fanout_plan.summary_lookup_nodes);
@@ -5436,7 +5558,12 @@ fn a_query_reaching_back_before_the_copy_still_reads_the_summaries() {
     // them and no copy may be used.
     let historical = retrieve_context(
         &engine,
-        scoring_request(TENANT, &node_hashes, "how do we deploy the ingest service", 999),
+        scoring_request(
+            TENANT,
+            &node_hashes,
+            "how do we deploy the ingest service",
+            999,
+        ),
     );
     assert!(historical.status.ok, "{:?}", historical.status);
     assert_eq!(
@@ -5508,7 +5635,10 @@ fn an_older_summary_write_does_not_displace_a_newer_copy() {
             node_hash: NODE,
         },
     });
-    let CommandResponse::ContextNode { node: Some(node), .. } = response.response else {
+    let CommandResponse::ContextNode {
+        node: Some(node), ..
+    } = response.response
+    else {
         panic!("expected the node back");
     };
     assert_eq!(
@@ -5557,7 +5687,10 @@ fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
             node_hash: NODE,
         },
     });
-    let CommandResponse::ContextNode { node: Some(node), .. } = node_response.response else {
+    let CommandResponse::ContextNode {
+        node: Some(node), ..
+    } = node_response.response
+    else {
         panic!("expected the node back");
     };
     assert_eq!(
@@ -5567,7 +5700,12 @@ fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
 
     let retrieve = retrieve_context(
         &engine,
-        scoring_request(TENANT, &[NODE], "how do we deploy the ingest service", u64::MAX),
+        scoring_request(
+            TENANT,
+            &[NODE],
+            "how do we deploy the ingest service",
+            u64::MAX,
+        ),
     );
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
     assert_eq!(
@@ -5585,7 +5723,6 @@ fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
          count it twice"
     );
 }
-
 
 /// Does a summary write fall through to a full bucket-index rebuild?
 ///
@@ -5670,7 +5807,8 @@ fn does_a_summary_write_rebuild_the_whole_index() {
         });
         let allocs = probe.stop().allocs;
         assert!(out.status.ok, "measured: {:?}", out.status);
-        let (layout, clear_dirty, refresh, remove_all) = crate::engine::bucket_visit_sites::snapshot();
+        let (layout, clear_dirty, refresh, remove_all) =
+            crate::engine::bucket_visit_sites::snapshot();
         (
             allocs,
             crate::engine::live_block_scan_entries(),
@@ -5747,7 +5885,6 @@ fn does_a_summary_write_rebuild_the_whole_index() {
 "
     );
 }
-
 
 /// What every API costs, on the same store, in the same units.
 ///
@@ -5837,7 +5974,9 @@ fn what_every_api_costs_on_the_same_store() {
     let (large, _large_dir, large_hashes) = grown(320);
 
     let mut row = |label: &str,
-                   mut build: Box<dyn FnMut(&TemporalEngine, &[u64]) -> Box<dyn FnMut(&TemporalEngine)>>| {
+                   mut build: Box<
+        dyn FnMut(&TemporalEngine, &[u64]) -> Box<dyn FnMut(&TemporalEngine)>,
+    >| {
         let mut small_call = build(&small, &small_hashes);
         let (small_allocs, _) = measure(&small, |engine| small_call(engine));
         let mut large_call = build(&large, &large_hashes);
@@ -5874,7 +6013,10 @@ fn what_every_api_costs_on_the_same_store() {
             Box::new(move |engine: &TemporalEngine| {
                 let out = engine.execute(ExecuteRequest {
                     shard_id: 1,
-                    command: Command::ContextGetNode { tenant_hash: TENANT, node_hash: hash },
+                    command: Command::ContextGetNode {
+                        tenant_hash: TENANT,
+                        node_hash: hash,
+                    },
                 });
                 assert!(out.status.ok, "{:?}", out.status);
             })
