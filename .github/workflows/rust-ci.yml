@@ -307,6 +307,12 @@ jobs:
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_served_index_encoder_does_not_fall_through_to_json_or_read_a_setting \
             engine::tests::the_served_index_encoder_has_no_json_fallback::a_shard_that_was_never_stamped_is_written_as_msgpack_and_reads_back_current \
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_stamp_a_reader_sees_is_the_header_and_not_the_field_inside_the_payload \
+            engine::tests::the_key_state_blob_is_protobuf::every_field_survives_the_wire_value_for_value \
+            engine::tests::the_key_state_blob_is_protobuf::a_present_but_empty_map_and_an_absent_one_stay_different_answers \
+            engine::tests::the_key_state_blob_is_protobuf::the_schema_numbers_do_not_move \
+            engine::tests::the_key_state_blob_is_protobuf::a_blob_cut_anywhere_never_invents_a_field \
+            engine::tests::the_key_state_blob_is_protobuf::what_a_blob_costs_on_disk_as_a_document_and_as_a_message \
+            engine::tests::the_key_state_blob_is_protobuf::the_blobs_the_engine_writes_round_trip_and_the_fold_restores_every_model \
             engine::tests::the_dump_door_reads_the_index_stamp::the_dump_manifest_install_refuses_a_stale_stamped_image \
             engine::tests::the_dump_door_reads_the_index_stamp::the_refused_install_writes_no_index_and_installs_no_shard \
             engine::tests::the_dump_door_reads_the_index_stamp::the_same_manifest_at_the_current_stamp_installs_and_round_trips_its_series \
