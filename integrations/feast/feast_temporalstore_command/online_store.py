@@ -422,15 +422,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             {"kind": "feature_append", "key": key, "points": points}
             for key, points in numeric_points.items()
         )
-        if not defer_stored_dedup:
-            commands.extend(
-                {
-                    "kind": "common_expire",
-                    "key": key,
-                    "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-                }
-                for key in expiry_keys
-            )
         for key in dict.fromkeys(tracked_keys):
             commands.append(
                 {
@@ -481,15 +472,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 skipped += conditional_result[1]
 
         if not conditional_handled:
-            if defer_stored_dedup:
-                commands.extend(
-                    {
-                        "kind": "common_expire",
-                        "key": key,
-                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-                    }
-                    for key in expiry_keys
-                )
             if defer_stored_dedup and prepared_rows:
                 unique_hash_keys = [row[0] for row in prepared_rows]
                 reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
@@ -522,19 +504,42 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 prepared_row_shape_bytes = retained_row_shape_bytes
 
             if shared_fields is not None and shared_layout and not commands:
-                client.batch_hash_multi_set(
-                    list(shared_fields),
-                    [
-                        (hash_key, values)
-                        for hash_key, _seconds, _nanos, values in prepared_rows
-                    ],
+                ttl_ms = (
+                    int(online_config.key_ttl_seconds) * 1000
+                    if online_config.key_ttl_seconds
+                    else None
+                )
+                shared_rows = [
+                    (hash_key, values)
+                    for hash_key, _seconds, _nanos, values in prepared_rows
+                ]
+                request_upper_bound = (
                     128
                     + 4 * sum(map(len, shared_fields))
                     + 5 * len(shared_fields)
                     + sum(prepared_row_shape_bytes)
-                    + 15 * len(prepared_rows),
+                    + 15 * len(prepared_rows)
                 )
-            elif prepared_rows or commands:
+                if ttl_ms is None:
+                    client.batch_hash_multi_set(
+                        list(shared_fields), shared_rows, request_upper_bound
+                    )
+                else:
+                    client.batch_hash_multi_set(
+                        list(shared_fields), shared_rows, request_upper_bound, ttl_ms
+                    )
+            else:
+                commands.extend(
+                    {
+                        "kind": "common_expire",
+                        "key": key,
+                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
+                    }
+                    for key in expiry_keys
+                )
+            if (shared_fields is None or not shared_layout or commands) and (
+                prepared_rows or commands
+            ):
                 client.batch_write(
                     [
                         {
@@ -1180,19 +1185,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         online_config = config.online_store
         assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
         if online_config.key_ttl_seconds:
-            client.batch_write(
-                [
-                    {
-                        "kind": "hash_multi_set",
-                        "key": key,
-                        "entries": [(field, encoded)],
-                    },
-                    {
-                        "kind": "common_expire",
-                        "key": key,
-                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-                    },
-                ]
+            client.batch_hash_multi_set(
+                [field],
+                [(key, [encoded])],
+                192 + 4 * (len(field) + len(key)) + len(encoded),
+                int(online_config.key_ttl_seconds) * 1000,
             )
             return
         client.batch_hash_multi_set(

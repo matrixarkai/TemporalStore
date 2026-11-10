@@ -122,6 +122,7 @@ fn shared_field_hash_batch_keeps_requested_order_duplicates_and_missing_values()
     let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields: vec!["a".to_string(), "b".to_string()],
         rows: vec![BatchHashMultiSetRow(
             "present".to_string(),
@@ -249,6 +250,7 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
 
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields: vec!["a".to_string(), "b".to_string()],
         rows: vec![
             BatchHashMultiSetRow(
@@ -296,6 +298,7 @@ fn shared_field_hash_write_uses_regular_write_semantics_and_rejects_bad_widths()
 
     let rejected = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields: vec!["a".to_string(), "b".to_string()],
         rows: vec![BatchHashMultiSetRow(
             "bad".to_string(),
@@ -342,6 +345,7 @@ fn wide_shared_field_hash_write_routes_each_row_once() {
     crate::engine::hashing::reset_object_id_derivations();
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields,
         rows,
     });
@@ -372,6 +376,7 @@ fn shared_field_hash_write_keeps_large_and_small_fields_readable() {
 
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields: vec!["embedding".to_string(), "score".to_string()],
         rows: vec![BatchHashMultiSetRow(
             "entity".to_string(),
@@ -409,6 +414,7 @@ fn warm_packed_projection_does_not_copy_the_frame_from_cache() {
     let embedding = vec![7; EMBEDDING_BYTES];
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields: vec!["embedding".to_string(), "score".to_string()],
         rows: vec![BatchHashMultiSetRow(
             "entity".to_string(),
@@ -458,6 +464,7 @@ fn direct_compact_encoding_does_not_copy_each_feature_value_first() {
     let value = vec![b'x'; VALUE_BYTES];
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields: vec!["embedding".to_string()],
         rows: (0..ROWS)
             .map(|index| {
@@ -646,6 +653,36 @@ fn conditional_hash_stale_packed_writes_do_not_copy_the_frame() {
 }
 
 #[test]
+fn shared_hash_write_arms_expiry_in_the_packed_batch() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+
+    let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["score".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![BatchHashMultiSetValue(b"42".to_vec())],
+        )],
+        ttl_ms: Some(60_000),
+    });
+    assert!(written.status.ok, "{written:?}");
+    assert_eq!(written.applied, 1);
+
+    let ttl = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl {
+            key: "entity".to_string(),
+        },
+    });
+    assert!(matches!(
+        ttl.response,
+        CommandResponse::Integer { value } if value > 0
+    ));
+}
+
+#[test]
 fn conditional_hash_ttl_is_applied_only_with_a_fresh_row() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -719,6 +756,7 @@ fn async_shared_field_hash_write_packs_a_small_projection() {
 
     let written = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
         shard_id: 1,
+        ttl_ms: None,
         fields: vec![
             "timestamp".to_string(),
             "f0".to_string(),

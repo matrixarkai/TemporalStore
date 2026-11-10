@@ -1083,7 +1083,8 @@ fn main() {
                     ),
                 }
             }
-            ("POST", "/batch_hash_multi_set_msgpack") => {
+            ("POST", "/batch_hash_multi_set_msgpack")
+            | ("POST", "/batch_hash_multi_set_ttl_msgpack") => {
                 match parse_msgpack::<BatchHashMultiSetRequest>(&request.body) {
                     Ok(req)
                         if req.rows.len() <= 4096
