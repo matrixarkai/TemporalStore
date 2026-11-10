@@ -450,6 +450,7 @@ mod tests {
                         related_node_hashes: Vec::new(),
                         compact_attrs: Vec::new(),
                         vector: Vec::new(),
+                        embedding_model_hash: 0,
                     }),
                     first_write_only: false,
                     cold_storage: false,

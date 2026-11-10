@@ -927,15 +927,14 @@ pub(crate) fn context_pack_audit_record_from_proto(
     }
 }
 
-/// THE DURABLE EVENT, RUST TO WIRE. ALL FIFTEEN FIELDS.
+/// THE DURABLE EVENT, RUST TO WIRE. ALL SIXTEEN FIELDS.
 ///
 /// There is no client projection of `ContextEvent` to be tempted by, but the rule is the one
 /// `context_node_record_to_proto` below follows: a durable record gets its own message. Seven of
-/// the fifteen are `skip_serializing` in the JSON form and are carried anyway, because the WAL's
+/// the sixteen are `skip_serializing` in the JSON form and are carried anyway, because the WAL's
 /// contract is to reproduce the COMMAND rather than the JSON form's write policy.
 ///
-/// `vector` passes through unchanged -- no quantisation -- and carries no model hash, which is
-/// this record's existing design and not a guard dropped here.
+/// `vector` passes through unchanged -- no quantisation.
 #[allow(deprecated)]
 pub(crate) fn context_event_record_to_proto(
     event: &types::ContextEvent,
@@ -956,10 +955,11 @@ pub(crate) fn context_event_record_to_proto(
         related_node_hashes: event.related_node_hashes.clone(),
         compact_attrs: event.compact_attrs.clone(),
         vector: event.vector.clone(),
+        embedding_model_hash: event.embedding_model_hash,
     }
 }
 
-/// THE DURABLE EVENT, WIRE TO RUST. ALL FIFTEEN FIELDS.
+/// THE DURABLE EVENT, WIRE TO RUST. ALL SIXTEEN FIELDS.
 #[allow(deprecated)]
 pub(crate) fn context_event_record_from_proto(
     event: v1::ContextEventRecord,
@@ -980,6 +980,7 @@ pub(crate) fn context_event_record_from_proto(
         related_node_hashes: event.related_node_hashes,
         compact_attrs: event.compact_attrs,
         vector: event.vector,
+        embedding_model_hash: event.embedding_model_hash,
     }
 }
 

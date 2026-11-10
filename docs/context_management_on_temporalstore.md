@@ -218,6 +218,12 @@ decisions, preferences, constraints, tasks, people, organizations, and projects
 for candidate retrieval. Node, event, and entity texts share the same bounded
 `/api/embed` batch: repeated text is encoded once, each entity stores its vector
 inline, and retrieval checks the stored encoder identity before exact scoring.
+Raw messages carry the same encoder identity. Retrieval scores each raw-message
+or entity vector as it is read and retains only a fixed top-K heap for that
+record type, so overfetch improves recall without retaining a second vector or
+full candidate array. The returned ContextPack keeps matched chunks, raw
+messages, and entities as separate record types; deduplication is local to each
+type and cannot make one layer erase another.
 
 vLLM setup:
 

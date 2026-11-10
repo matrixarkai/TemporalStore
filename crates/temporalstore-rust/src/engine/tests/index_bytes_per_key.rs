@@ -3329,6 +3329,7 @@ fn how_many_times_a_context_keys_characters_exist() {
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: false,
@@ -6241,6 +6242,7 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
         related_node_hashes: Vec::new(),
         compact_attrs: Vec::new(),
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
 
     let mut rows: Vec<(usize, u64, u64, usize)> = Vec::new();
@@ -7140,6 +7142,7 @@ fn which_series_maps_the_grouped_shape_would_help() {
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 indexes: ContextExtractedEventIndexes {
                     scope_hash: 3_001,
@@ -7337,6 +7340,7 @@ fn what_the_context_index_map_costs_now_it_holds_the_array() {
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 indexes: ContextExtractedEventIndexes {
                     scope_hash: 3_001,
@@ -8773,6 +8777,7 @@ fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 indexes: ContextExtractedEventIndexes {
                     scope_hash: 3_001,

@@ -87,34 +87,42 @@ pub fn score_prepared_embedding_candidates_exact(
 ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
     let mut hits = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        if candidate.values.len() != query.dimensions() {
-            return Err(EmbeddingIndexError::DimensionMismatch {
-                key: candidate.key,
-                expected: query.dimensions(),
-                actual: candidate.values.len(),
-            });
-        }
-        let mut dot = 0.0f32;
-        let mut norm_squared = 0.0f32;
-        for (dimension, value) in candidate.values.iter().enumerate() {
-            if !value.is_finite() {
-                return Err(EmbeddingIndexError::NonFiniteValue {
-                    key: candidate.key,
-                    dimension,
-                });
-            }
-            dot += query.values[dimension] * value;
-            norm_squared += value * value;
-        }
-        if norm_squared <= f32::EPSILON {
-            return Err(EmbeddingIndexError::ZeroNorm { key: candidate.key });
-        }
-        hits.push(EmbeddingHit {
-            key: candidate.key,
-            score: dot * query.inverse_norm * norm_squared.sqrt().recip(),
-        });
+        hits.push(score_prepared_embedding_candidate_exact(query, *candidate)?);
     }
     Ok(hits)
+}
+
+/// Exact cosine score for one already bounded candidate without allocating a result vector.
+pub fn score_prepared_embedding_candidate_exact(
+    query: PreparedEmbeddingQuery<'_>,
+    candidate: EmbeddingVector<'_>,
+) -> Result<EmbeddingHit, EmbeddingIndexError> {
+    if candidate.values.len() != query.dimensions() {
+        return Err(EmbeddingIndexError::DimensionMismatch {
+            key: candidate.key,
+            expected: query.dimensions(),
+            actual: candidate.values.len(),
+        });
+    }
+    let mut dot = 0.0f32;
+    let mut norm_squared = 0.0f32;
+    for (dimension, value) in candidate.values.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(EmbeddingIndexError::NonFiniteValue {
+                key: candidate.key,
+                dimension,
+            });
+        }
+        dot += query.values[dimension] * value;
+        norm_squared += value * value;
+    }
+    if norm_squared <= f32::EPSILON {
+        return Err(EmbeddingIndexError::ZeroNorm { key: candidate.key });
+    }
+    Ok(EmbeddingHit {
+        key: candidate.key,
+        score: dot * query.inverse_norm * norm_squared.sqrt().recip(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1451,6 +1459,23 @@ unsafe fn dot_i8_f32_avx2(left: &[i8], right: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_candidate_exact_score_matches_the_batch_scorer() {
+        let query_values = [1.0, 2.0, 3.0, 4.0];
+        let candidate_values = [4.0, 3.0, 2.0, 1.0];
+        let query = PreparedEmbeddingQuery::new(&query_values).unwrap();
+        let candidate = EmbeddingVector {
+            key: EmbeddingKey {
+                tenant_id: 7,
+                item_id: 11,
+            },
+            values: &candidate_values,
+        };
+        let one = score_prepared_embedding_candidate_exact(query, candidate).unwrap();
+        let batch = score_prepared_embedding_candidates_exact(query, &[candidate]).unwrap();
+        assert_eq!(batch, vec![one]);
+    }
 
     #[test]
     fn compact_rows_return_the_nearest_items_for_one_tenant() {

@@ -1954,6 +1954,7 @@ fn ingest_external_benchmark_sources(
             compact_attrs: Vec::new(),
             // No vector on this fixture; empty is what a record without one holds.
             vector: Vec::new(),
+            embedding_model_hash: 0,
         };
         let index_ref = ContextIndexRef {
             primary_node_hash: node_hash,
