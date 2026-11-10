@@ -683,6 +683,58 @@ fn shared_hash_write_arms_expiry_in_the_packed_batch() {
 }
 
 #[test]
+fn shared_hash_ttl_refresh_skips_cache_sweeps_and_expires_untouched_fields() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    let initial = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["score".to_string(), "retained".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![
+                BatchHashMultiSetValue(b"42".to_vec()),
+                BatchHashMultiSetValue(b"cached".to_vec()),
+            ],
+        )],
+        ttl_ms: None,
+    });
+    assert!(initial.status.ok, "{initial:?}");
+    let warmed = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "entity".to_string(),
+            field: "retained".to_string(),
+        },
+    });
+    assert!(matches!(warmed.response, CommandResponse::Bytes { value: Some(_) }));
+
+    let sweep = &crate::engine::CACHE_SWEEP_COUNTS;
+    sweep.reset();
+    let refreshed = runtime.batch_hash_multi_set(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: vec!["score".to_string()],
+        rows: vec![BatchHashMultiSetRow(
+            "entity".to_string(),
+            vec![BatchHashMultiSetValue(b"43".to_vec())],
+        )],
+        ttl_ms: Some(0),
+    });
+    assert!(refreshed.status.ok, "{refreshed:?}");
+    assert_eq!(refreshed.applied, 1);
+    assert_eq!(sweep.read().1, 0, "TTL refresh swept the cache");
+
+    let expired = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "entity".to_string(),
+            field: "retained".to_string(),
+        },
+    });
+    assert!(matches!(expired.response, CommandResponse::Bytes { value: None }));
+}
+
+#[test]
 fn conditional_hash_ttl_is_applied_only_with_a_fresh_row() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

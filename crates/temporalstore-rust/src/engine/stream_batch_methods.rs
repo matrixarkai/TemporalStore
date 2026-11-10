@@ -1511,7 +1511,6 @@ impl TemporalEngine {
                         unreachable!("only shared hash rows carry a shared expiry")
                     };
                     execute_on_shard::apply_hash_expiry(
-                        &self.cache,
                         shard_id,
                         shared_row_routing_bucket
                             .expect("shared hash row has a routing bucket"),
