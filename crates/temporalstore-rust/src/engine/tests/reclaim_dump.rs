@@ -125,6 +125,28 @@ fn object_runtime_report_builds_one_identity_map_for_all_buckets() {
 }
 
 #[test]
+fn physical_index_report_identity_builds_do_not_scale_with_buckets() {
+    let dir = tempfile::tempdir().unwrap();
+    for count in [32, 128] {
+        let engine = reclaim_dump_engine(dir.path(), &format!("physical-{count}"));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        write_one_at_a_time(&engine, &reclaim_dump_keys(count));
+        let shards = engine.shards.read().unwrap();
+        let shard = &shards[&RECLAIM_DUMP_SHARD];
+        assert!(shard.bucket_index.bucket_map.len() > 16);
+        let (report, builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
+            crate::engine::storage_reporting::storage_physical_index_report(
+                RECLAIM_DUMP_SHARD, shard, Vec::new(),
+            )
+        });
+        assert_eq!(report.block_index_count, count);
+        assert_eq!(report.bucket_count, shard.bucket_index.bucket_map.len());
+        assert_eq!(report.missing_object_id_count, 0);
+        assert!(builds <= 2, "{count} objects required {builds} identity builds");
+    }
+}
+
+#[test]
 fn compacted_hash_elements_release_their_wal_positions_before_restart() {
     let dir = tempfile::tempdir().unwrap();
     let engine = reclaim_dump_engine(dir.path(), "retire");
