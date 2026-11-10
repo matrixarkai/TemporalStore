@@ -62,6 +62,9 @@ migration/replay and shared logical reads, not byte-for-byte internal layout.
 
 ## Generated And Local Files
 
+For the Apache-2.0 contribution terms, see the
+[repository contribution guide](https://github.com/matrixarkai/TemporalStore/blob/main/CONTRIBUTING.md#license).
+
 Do not commit `target/`, `build-ubuntu22/`, `output/`, `target-rust-bench/`,
 `.local/`, local benchmark reports, credentials, or third-party dependency
 caches.
