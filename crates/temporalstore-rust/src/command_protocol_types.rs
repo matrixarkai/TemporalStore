@@ -2006,6 +2006,13 @@ pub enum Command {
         #[serde(default)]
         min_importance: f32,
     },
+    ContextQueryEventsByIds {
+        tenant_hash: u64,
+        node_hash: u64,
+        event_id_hashes: Vec<u64>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     ContextWriteIndexRef {
         tenant_hash: u64,
         index_name: String,

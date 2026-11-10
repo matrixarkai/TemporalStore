@@ -108,6 +108,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextWriteEvent { .. }
         | Command::ContextWriteExtractedEvent { .. }
         | Command::ContextQueryEvents { .. }
+        | Command::ContextQueryEventsByIds { .. }
         | Command::ContextWriteIndexRef { .. }
         | Command::ContextQueryIndex { .. }
         | Command::ContextQueryIndexIntersection { .. }
@@ -182,6 +183,11 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             ..
         }
         | Command::ContextQueryEvents {
+            tenant_hash,
+            node_hash,
+            ..
+        }
+        | Command::ContextQueryEventsByIds {
             tenant_hash,
             node_hash,
             ..

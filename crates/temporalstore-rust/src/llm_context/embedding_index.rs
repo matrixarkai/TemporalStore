@@ -21,6 +21,8 @@ const SIGNATURE_MAX_CANDIDATES: usize = 32_768;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EmbeddingKey {
     pub tenant_id: u64,
+    /// Application owner used to disambiguate item ids that are only unique within a node.
+    pub owner_id: u64,
     pub item_id: u64,
 }
 
@@ -275,8 +277,9 @@ pub struct EmbeddingIndex {
 
 #[derive(Debug, Default)]
 struct TenantRows {
+    owner_ids: Vec<u64>,
     item_ids: Vec<u64>,
-    positions: HashMap<u64, usize>,
+    positions: HashMap<(u64, u64), usize>,
     scales: Vec<f32>,
     vectors: Vec<i8>,
     signature_routing: Option<SignatureRouting>,
@@ -582,7 +585,7 @@ impl EmbeddingIndex {
     pub fn contains(&self, key: EmbeddingKey) -> bool {
         self.tenants
             .get(&key.tenant_id)
-            .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
+            .is_some_and(|rows| rows.positions.contains_key(&(key.owner_id, key.item_id)))
     }
 
     pub fn upsert_batch(
@@ -612,7 +615,8 @@ impl EmbeddingIndex {
         let (scale, quantization_multiplier) = quantization_parameters(input.key, input.values)?;
 
         let rows = self.tenants.entry(input.key.tenant_id).or_default();
-        let (inserted, updated) = if let Some(&position) = rows.positions.get(&input.key.item_id) {
+        let identity = (input.key.owner_id, input.key.item_id);
+        let (inserted, updated) = if let Some(&position) = rows.positions.get(&identity) {
             let old_signature = rows.signature_at(self.config.dimensions, position);
             rows.scales[position] = scale;
             let start = position * self.config.dimensions;
@@ -625,8 +629,9 @@ impl EmbeddingIndex {
             (0, 1)
         } else {
             let position = rows.item_ids.len();
+            rows.owner_ids.push(input.key.owner_id);
             rows.item_ids.push(input.key.item_id);
-            rows.positions.insert(input.key.item_id, position);
+            rows.positions.insert(identity, position);
             rows.scales.push(scale);
             rows.vectors.extend(
                 input
@@ -711,6 +716,7 @@ impl EmbeddingIndex {
             return Err(EmbeddingIndexError::DimensionMismatch {
                 key: batch.keys.first().copied().unwrap_or(EmbeddingKey {
                     tenant_id: 0,
+                    owner_id: 0,
                     item_id: 0,
                 }),
                 expected: self.config.dimensions,
@@ -729,7 +735,9 @@ impl EmbeddingIndex {
                 || !self
                     .tenants
                     .get(&key.tenant_id)
-                    .is_some_and(|rows| rows.positions.contains_key(&key.item_id))
+                    .is_some_and(|rows| {
+                        rows.positions.contains_key(&(key.owner_id, key.item_id))
+                    })
             {
                 *new_entries_by_tenant.entry(key.tenant_id).or_default() += 1;
             }
@@ -745,6 +753,7 @@ impl EmbeddingIndex {
 
         for (tenant_id, new_entries) in new_entries_by_tenant {
             let rows = self.tenants.entry(tenant_id).or_default();
+            rows.owner_ids.reserve(new_entries);
             rows.item_ids.reserve(new_entries);
             rows.positions.reserve(new_entries);
             rows.scales.reserve(new_entries);
@@ -759,8 +768,9 @@ impl EmbeddingIndex {
             let scale = batch.scale(row);
             let vector = batch.vector(row);
             let rows = self.tenants.entry(key.tenant_id).or_default();
+            let identity = (key.owner_id, key.item_id);
             if !all_missing {
-                if let Some(&position) = rows.positions.get(&key.item_id) {
+                if let Some(&position) = rows.positions.get(&identity) {
                     let old_signature = rows.signature_at(self.config.dimensions, position);
                     rows.scales[position] = scale;
                     let start = position * self.config.dimensions;
@@ -775,8 +785,9 @@ impl EmbeddingIndex {
                 }
             }
             let position = rows.item_ids.len();
+            rows.owner_ids.push(key.owner_id);
             rows.item_ids.push(key.item_id);
-            rows.positions.insert(key.item_id, position);
+            rows.positions.insert(identity, position);
             rows.scales.push(scale);
             rows.vectors.extend_from_slice(vector);
             rows.refresh_signature_routing(self.config.dimensions, position, None);
@@ -829,10 +840,13 @@ impl EmbeddingIndex {
                 .tenants
                 .iter()
                 .flat_map(|(tenant_id, rows)| {
-                    rows.item_ids.iter().map(move |item_id| EmbeddingKey {
-                        tenant_id: *tenant_id,
-                        item_id: *item_id,
-                    })
+                    rows.owner_ids.iter().zip(&rows.item_ids).map(
+                        move |(owner_id, item_id)| EmbeddingKey {
+                            tenant_id: *tenant_id,
+                            owner_id: *owner_id,
+                            item_id: *item_id,
+                        },
+                    )
                 })
                 .filter(|key| !protected.contains(key))
                 .take(evict)
@@ -854,7 +868,7 @@ impl EmbeddingIndex {
         let Some(rows) = self.tenants.get_mut(&key.tenant_id) else {
             return false;
         };
-        let Some(position) = rows.positions.remove(&key.item_id) else {
+        let Some(position) = rows.positions.remove(&(key.owner_id, key.item_id)) else {
             return false;
         };
         let last = rows.item_ids.len() - 1;
@@ -893,10 +907,14 @@ impl EmbeddingIndex {
         }
         rows.vectors
             .truncate(last.saturating_mul(self.config.dimensions));
+        rows.owner_ids.swap_remove(position);
         rows.item_ids.swap_remove(position);
         rows.scales.swap_remove(position);
         if position != last {
-            rows.positions.insert(rows.item_ids[position], position);
+            rows.positions.insert(
+                (rows.owner_ids[position], rows.item_ids[position]),
+                position,
+            );
         }
         if rows.item_ids.len() < SIGNATURE_ROUTING_MIN_ROWS {
             rows.signature_routing = None;
@@ -1064,6 +1082,7 @@ impl EmbeddingIndex {
             .map(|Reverse(hit)| EmbeddingHit {
                 key: EmbeddingKey {
                     tenant_id,
+                    owner_id: rows.owner_ids[hit.position],
                     item_id: rows.item_ids[hit.position],
                 },
                 score: hit.score,
@@ -1194,13 +1213,17 @@ impl EmbeddingIndex {
     ) -> usize {
         let mut visited = 0usize;
         for item_id in candidate_item_ids {
-            let Some(&position) = rows.positions.get(&item_id) else {
+            let Some(&position) = rows.positions.get(&(0, item_id)) else {
                 continue;
             };
             let start = position * self.config.dimensions;
             let row = &rows.vectors[start..start + self.config.dimensions];
             visit(EmbeddingHit {
-                key: EmbeddingKey { tenant_id, item_id },
+                key: EmbeddingKey {
+                    tenant_id,
+                    owner_id: 0,
+                    item_id,
+                },
                 score: (dot.dot(row, query.values) * rows.scales[position] * query.inverse_norm)
                     .clamp(-1.0, 1.0),
             });
@@ -1468,6 +1491,7 @@ mod tests {
         let candidate = EmbeddingVector {
             key: EmbeddingKey {
                 tenant_id: 7,
+                owner_id: 0,
                 item_id: 11,
             },
             values: &candidate_values,
@@ -1488,6 +1512,7 @@ mod tests {
                 EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 7,
+                        owner_id: 0,
                         item_id: 10,
                     },
                     values: &first,
@@ -1495,6 +1520,7 @@ mod tests {
                 EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 7,
+                        owner_id: 0,
                         item_id: 11,
                     },
                     values: &second,
@@ -1502,6 +1528,7 @@ mod tests {
                 EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 8,
+                        owner_id: 0,
                         item_id: 12,
                     },
                     values: &other_tenant,
@@ -1518,16 +1545,50 @@ mod tests {
     }
 
     #[test]
+    fn equal_item_ids_from_different_owners_remain_distinct() {
+        let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 4)).unwrap();
+        let first = [1.0, 0.0];
+        let second = [0.0, 1.0];
+        index
+            .upsert_batch(&[
+                EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 7,
+                        owner_id: 10,
+                        item_id: 99,
+                    },
+                    values: &first,
+                },
+                EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 7,
+                        owner_id: 20,
+                        item_id: 99,
+                    },
+                    values: &second,
+                },
+            ])
+            .unwrap();
+
+        let hits = index.search(7, &first, 2).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!((hits[0].key.owner_id, hits[0].key.item_id), (10, 99));
+        assert_eq!((hits[1].key.owner_id, hits[1].key.item_id), (20, 99));
+    }
+
+    #[test]
     fn updates_reuse_the_existing_row_and_removal_keeps_positions_valid() {
         let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 4)).unwrap();
         let x = [1.0, 0.0];
         let y = [0.0, 1.0];
         let key_a = EmbeddingKey {
             tenant_id: 1,
+            owner_id: 0,
             item_id: 1,
         };
         let key_b = EmbeddingKey {
             tenant_id: 1,
+            owner_id: 0,
             item_id: 2,
         };
         index
@@ -1566,6 +1627,7 @@ mod tests {
         let stored = [9.0, 3.0, -1.0];
         let key = EmbeddingKey {
             tenant_id: 1,
+            owner_id: 0,
             item_id: 7,
         };
         index
@@ -1586,6 +1648,7 @@ mod tests {
         let index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 4)).unwrap();
         let key = EmbeddingKey {
             tenant_id: 1,
+            owner_id: 0,
             item_id: 7,
         };
         assert_eq!(
@@ -1628,6 +1691,7 @@ mod tests {
         let dimensions = SIGNATURE_ROUTING_MIN_DIMENSIONS;
         let row_count = 256;
         let mut rows = TenantRows {
+            owner_ids: vec![0; row_count],
             item_ids: (0..row_count as u64).collect(),
             positions: HashMap::new(),
             scales: vec![1.0 / 127.0; row_count],
@@ -1690,6 +1754,7 @@ mod tests {
         let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(4, 4)).unwrap();
         let key = EmbeddingKey {
             tenant_id: 1,
+            owner_id: 0,
             item_id: 7,
         };
         let initial = [1.0, 0.5, 0.25, 0.125];

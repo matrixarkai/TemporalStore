@@ -11,7 +11,11 @@ use crate::types::{Command, CONTEXT_SUMMARY_LEVEL_L1};
 impl TemporalEngine {
     pub(super) fn command_updates_context_embedding(command: &Command) -> bool {
         match command {
-            Command::ContextSetNodeEmbedding { .. } | Command::ContextUpsertNode { .. } => true,
+            Command::ContextSetNodeEmbedding { .. }
+            | Command::ContextUpsertNode { .. }
+            | Command::ContextWriteEvent { .. }
+            | Command::ContextWriteExtractedEvent { .. }
+            | Command::ContextUpsertEntity { .. } => true,
             Command::ContextUpsertSummary { summary, .. } => {
                 summary.level == CONTEXT_SUMMARY_LEVEL_L1
             }
@@ -33,10 +37,15 @@ impl TemporalEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut publish = |channel: EmbeddingChannel,
                            tenant_id,
+                           owner_id,
                            item_id,
                            model_hash,
                            values: &[f32]| {
-            let key = EmbeddingKey { tenant_id, item_id };
+            let key = EmbeddingKey {
+                tenant_id,
+                owner_id,
+                item_id,
+            };
             if values.is_empty() {
                 registry.remove(channel, key);
             } else {
@@ -55,6 +64,7 @@ impl TemporalEngine {
                 } => publish(
                     EmbeddingChannel::Node,
                     *tenant_hash,
+                    0,
                     *node_hash,
                     *model_hash,
                     vector,
@@ -63,6 +73,7 @@ impl TemporalEngine {
                     publish(
                         EmbeddingChannel::Node,
                         *tenant_hash,
+                        0,
                         node.node_hash,
                         node.embedding_model_hash,
                         &node.vector,
@@ -70,6 +81,7 @@ impl TemporalEngine {
                     publish(
                         EmbeddingChannel::Summary,
                         *tenant_hash,
+                        0,
                         node.node_hash,
                         node.summary_vector_model_hash,
                         &node.summary_vector,
@@ -81,9 +93,40 @@ impl TemporalEngine {
                 } if summary.level == CONTEXT_SUMMARY_LEVEL_L1 => publish(
                     EmbeddingChannel::Summary,
                     *tenant_hash,
+                    0,
                     summary.node_hash,
                     summary.embedding_model_hash,
                     &summary.vector,
+                ),
+                Command::ContextWriteEvent {
+                    tenant_hash,
+                    node_hash,
+                    event,
+                    ..
+                }
+                | Command::ContextWriteExtractedEvent {
+                    tenant_hash,
+                    node_hash,
+                    event,
+                    ..
+                } if event.event_id_hash != 0 => publish(
+                    EmbeddingChannel::Event,
+                    *tenant_hash,
+                    *node_hash,
+                    event.event_id_hash,
+                    event.embedding_model_hash,
+                    &event.vector,
+                ),
+                Command::ContextUpsertEntity {
+                    tenant_hash,
+                    entity,
+                } => publish(
+                    EmbeddingChannel::Entity,
+                    *tenant_hash,
+                    entity.node_hash,
+                    entity.entity_hash,
+                    entity.embedding_model_hash,
+                    &entity.vector,
                 ),
                 _ => {}
             }

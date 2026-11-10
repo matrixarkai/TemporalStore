@@ -5070,6 +5070,56 @@ pub(crate) fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::ContextEvents { object_key, events }
         }
+        Command::ContextQueryEventsByIds {
+            tenant_hash,
+            node_hash,
+            event_id_hashes,
+            limit,
+        } => {
+            let object_key = context_event_key(tenant_hash, node_hash);
+            mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
+            let requested = dedupe_nonzero_u64_preserve_order(event_id_hashes)
+                .into_iter()
+                .take(context_limit(limit))
+                .collect::<Vec<_>>();
+            let requested_set = requested.iter().copied().collect::<HashSet<_>>();
+            let mut timeline_by_event = HashMap::with_capacity(requested.len());
+            if let Some(timeline) = shard.context_event_timeline.get(&*object_key) {
+                for (timeline_key, event_id_hash) in timeline {
+                    if requested_set.contains(event_id_hash) {
+                        timeline_by_event.insert(*event_id_hash, *timeline_key);
+                        if timeline_by_event.len() == requested.len() {
+                            break;
+                        }
+                    }
+                }
+            }
+            let mut block_cache = HashMap::new();
+            let events = shard.context_events().get(&*object_key).map(|series| {
+                requested
+                    .into_iter()
+                    .filter_map(|event_id_hash| {
+                        let timeline_key = *timeline_by_event.get(&event_id_hash)?;
+                        let address = series.get(event_id_hash)?;
+                        read_context_value_cached::<ContextEvent>(
+                                cache,
+                                block_store,
+                                shard_id,
+                                timeline_key,
+                                address,
+                                BlockIdentity::of(shard_id, "context_event", &object_key, None),
+                                &mut block_cache,
+                                Some(block_routing_bucket(
+                                    &object_key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
+                    })
+                    .collect()
+            }).unwrap_or_default();
+            CommandResponse::ContextEvents { object_key, events }
+        }
         Command::ContextWriteIndexRef {
             tenant_hash,
             index_name,

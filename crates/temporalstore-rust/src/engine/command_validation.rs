@@ -354,6 +354,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::ContextGetNode { .. }
         | Command::ContextGetNodes { .. }
         | Command::ContextQueryEvents { .. }
+        | Command::ContextQueryEventsByIds { .. }
         | Command::ContextQueryIndex { .. }
         | Command::ContextQueryIndexIntersection { .. }
         | Command::ContextQueryPackAudit { .. }
@@ -806,6 +807,20 @@ pub(super) fn validate_command_preconditions(
             validate_context_limit(*max_scan)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
             validate_context_filters(kinds, statuses, *min_confidence, *min_importance)?;
+        }
+        Command::ContextQueryEventsByIds {
+            tenant_hash,
+            node_hash,
+            event_id_hashes,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_required(!event_id_hashes.is_empty(), "event ids are required")?;
+            validate_context_limit(*limit)?;
+            for event_id_hash in event_id_hashes {
+                validate_context_required(*event_id_hash != 0, "event id is required")?;
+            }
         }
         Command::ContextWriteIndexRef {
             tenant_hash,

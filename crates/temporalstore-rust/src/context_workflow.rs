@@ -2629,6 +2629,7 @@ pub fn retrieve_context(
                                 .push(EmbeddingVector {
                                     key: EmbeddingKey {
                                         tenant_id: request.tenant_hash,
+                                        owner_id: 0,
                                         item_id: projection.node_hash,
                                     },
                                     values: summary_vector,
@@ -2671,6 +2672,7 @@ pub fn retrieve_context(
                         .push(EmbeddingVector {
                             key: EmbeddingKey {
                                 tenant_id: request.tenant_hash,
+                                owner_id: 0,
                                 item_id: projection.node_hash,
                             },
                             values: &projection.vector,
@@ -2818,6 +2820,7 @@ pub fn retrieve_context(
                     .push(EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: request.tenant_hash,
+                            owner_id: 0,
                             item_id: entry.node_hash,
                         },
                         values: &entry.vector,
@@ -2916,6 +2919,7 @@ pub fn retrieve_context(
             exact_node_rows.push(EmbeddingVector {
                 key: EmbeddingKey {
                     tenant_id: request.tenant_hash,
+                    owner_id: 0,
                     item_id: *node_hash,
                 },
                 values: &node.vector,
@@ -2931,6 +2935,7 @@ pub fn retrieve_context(
                 exact_summary_rows.push(EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: request.tenant_hash,
+                        owner_id: 0,
                         item_id: *node_hash,
                     },
                     values: vector,
@@ -3170,6 +3175,53 @@ pub fn retrieve_context(
         .saturating_mul(event_overfetch)
         .max(event_pack_budget)
         .min(256);
+    let selected_nodes = node_hashes.iter().copied().collect::<HashSet<_>>();
+    let mut hot_entity_ids_by_node = HashMap::<u64, Vec<u64>>::new();
+    let mut hot_event_ids_by_node = HashMap::<u64, Vec<u64>>::new();
+    if let Some(prepared_query) = prepared_query_embedding {
+        if include_l1 {
+            if let Ok(hits) = engine.search_context_embeddings(
+                EmbeddingChannel::Entity,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                prepared_query,
+                entity_candidate_budget.saturating_mul(4).min(1024),
+            ) {
+                for hit in hits
+                    .into_iter()
+                    .filter(|hit| selected_nodes.contains(&hit.key.owner_id))
+                    .take(entity_candidate_budget)
+                {
+                    hot_entity_ids_by_node
+                        .entry(hit.key.owner_id)
+                        .or_default()
+                        .push(hit.key.item_id);
+                }
+            }
+        }
+        if include_l2 {
+            if let Ok(hits) = engine.search_context_embeddings(
+                EmbeddingChannel::Event,
+                request.tenant_hash,
+                active_embedding_model_hash,
+                prepared_query,
+                event_candidate_budget.saturating_mul(4).min(1024),
+            ) {
+                for hit in hits
+                    .into_iter()
+                    .filter(|hit| selected_nodes.contains(&hit.key.owner_id))
+                    .take(event_candidate_budget)
+                {
+                    hot_event_ids_by_node
+                        .entry(hit.key.owner_id)
+                        .or_default()
+                        .push(hit.key.item_id);
+                }
+            }
+        }
+    }
+    let use_hot_entity_candidates = !hot_entity_ids_by_node.is_empty();
+    let use_hot_event_candidates = !hot_event_ids_by_node.is_empty();
     let selected_node_count = node_hashes.len().max(1);
     let mut entity_candidate_count = 0usize;
     let mut entity_candidates = BinaryHeap::with_capacity(entity_result_limit.saturating_add(1));
@@ -3225,17 +3277,28 @@ pub fn retrieve_context(
             }
         }
 
-        if include_l1 && entity_candidate_count < entity_candidate_budget {
+        if include_l1
+            && entity_candidate_count < entity_candidate_budget
+            && (!use_hot_entity_candidates || hot_entity_ids_by_node.contains_key(&node_hash))
+        {
             let remaining = entity_candidate_budget.saturating_sub(entity_candidate_count);
             let remaining_nodes = selected_node_count.saturating_sub(selected_node_index).max(1);
             let per_node_limit = remaining.div_ceil(remaining_nodes).max(1);
+            let entity_hashes = hot_entity_ids_by_node
+                .get(&node_hash)
+                .cloned()
+                .unwrap_or_default();
             let response = engine.execute(ExecuteRequest {
                 shard_id: request.shard_id,
                 command: Command::ContextQueryEntities {
                     tenant_hash: request.tenant_hash,
                     node_hash,
-                    entity_hashes: Vec::new(),
-                    limit: Some(per_node_limit),
+                    limit: Some(if entity_hashes.is_empty() {
+                        per_node_limit
+                    } else {
+                        entity_hashes.len().min(per_node_limit)
+                    }),
+                    entity_hashes,
                 },
             });
             if let CommandResponse::ContextEntities { entities, .. } = response.response {
@@ -3270,6 +3333,7 @@ pub fn retrieve_context(
                                 EmbeddingVector {
                                     key: EmbeddingKey {
                                         tenant_id: request.tenant_hash,
+                                        owner_id: entity.node_hash,
                                         item_id: entity.entity_hash,
                                     },
                                     values: &entity.vector,
@@ -3319,9 +3383,15 @@ pub fn retrieve_context(
                 .div_ceil(remaining_nodes)
                 .max(1)
                 .min(event_candidate_budget);
-            let events_response = engine.execute(ExecuteRequest {
-                shard_id: request.shard_id,
-                command: Command::ContextQueryEvents {
+            let event_ids = hot_event_ids_by_node
+                .get(&node_hash)
+                .cloned()
+                .unwrap_or_default();
+            if use_hot_event_candidates && event_ids.is_empty() {
+                continue;
+            }
+            let command = if event_ids.is_empty() {
+                Command::ContextQueryEvents {
                     tenant_hash: request.tenant_hash,
                     node_hash,
                     start_time_ms: request.start_time_ms,
@@ -3334,12 +3404,31 @@ pub fn retrieve_context(
                     statuses: Vec::new(),
                     min_confidence: request.min_confidence,
                     min_importance: request.min_importance,
-                },
+                }
+            } else {
+                Command::ContextQueryEventsByIds {
+                    tenant_hash: request.tenant_hash,
+                    node_hash,
+                    limit: Some(event_ids.len().min(per_node_event_limit)),
+                    event_id_hashes: event_ids,
+                }
+            };
+            let events_response = engine.execute(ExecuteRequest {
+                shard_id: request.shard_id,
+                command,
             });
             if let CommandResponse::ContextEvents { events, .. } = events_response.response {
                 event_query_returned_count =
                     event_query_returned_count.saturating_add(events.len());
                 for event in events {
+                    let event_time_ms = event.primary_time_ms();
+                    if event_time_ms < request.start_time_ms
+                        || event_time_ms > event_query_end_time_ms
+                        || event.confidence < request.min_confidence
+                        || event.importance < request.min_importance
+                    {
+                        continue;
+                    }
                     let lexical_match = context_query_matches_plan(&query_plan, &event.text);
                     let semantic_score = prepared_query_embedding
                         .filter(|_| {
@@ -3359,6 +3448,7 @@ pub fn retrieve_context(
                                 EmbeddingVector {
                                     key: EmbeddingKey {
                                         tenant_id: request.tenant_hash,
+                                        owner_id: node_hash,
                                         item_id: event.event_id_hash,
                                     },
                                     values: &event.vector,
