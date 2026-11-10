@@ -833,6 +833,18 @@ pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
 }
 
 pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabReport {
+    inspect_slab_with_details(slab, block_slab_id, true)
+}
+
+pub(super) fn inspect_slab_corruption(slab: &[u8], block_slab_id: u64) -> bool {
+    inspect_slab_with_details(slab, block_slab_id, false).has_corruption
+}
+
+fn inspect_slab_with_details(
+    slab: &[u8],
+    block_slab_id: u64,
+    details: bool,
+) -> BlockStoreSlabReport {
     let mut report = BlockStoreSlabReport {
         block_slab_id,
         physical_bytes: slab.len() as u64,
@@ -894,58 +906,60 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                 report.logical_bytes = report
                     .logical_bytes
                     .saturating_add(decoded.logical_len as u64);
-                report.block_index_entries.push(BlockStoreBlockIndexReport {
-                    block_slab_id: block_slab_id,
-                    offset: address.offset(),
-                    length: address.length(),
-                    compact_slab_address: address.compact_slab_address(),
-                    compact_slab_id: address.compact_slab_id(),
-                    compact_slab_offset: address.compact_slab_offset(),
-                    // Always `None`: the record header carries no slab id, and the slab a record
-                    // sits in is `block_slab_id` two lines up. A report field that restated it
-                    // would be the same number twice.
-                    storage_slab_id: None,
-                    object_id: header.object_id,
-                    model_id: None,
-                    block_id: header.block_id,
-                    block_size: decoded.logical_len as u64,
-                    stored_size: header.stored_len as u64,
-                    dirty: false,
-                    deleted: decoded.logical_len == 0,
-                    block_in_log: false,
-                    routing_bucket: header.routing_bucket,
-                    // Re-hashing the payload here doubled the sha256 work of every engine open
-                    // to fill a field no caller reads. `decode_block_record` above has already
-                    // verified this record's stored checksum. Opt in with
-                    // TS_BLOCK_INDEX_CHECKSUMS=1 when inspecting a slab by hand.
-                    checksum: block_index_checksums_enabled()
-                        .then(|| sha256_hex(&decoded.payload)),
-                });
-                report.block_index_count = report.block_index_entries.len() as u64;
-                if decoded.compression == BlockRecordCompression::Zstd {
-                    report.compressed_records = report.compressed_records.saturating_add(1);
-                }
-                if let Some(object_id) = header.object_id {
-                    object_ids.insert(object_id);
-                    report.object_count = object_ids.len() as u64;
-                }
-                if let Some(routing_bucket) = header.routing_bucket {
-                    routing_buckets.insert(routing_bucket);
-                    report.routing_bucket_count = routing_buckets.len() as u64;
-                    report.first_routing_bucket = routing_buckets.first().copied();
-                    report.last_routing_bucket = routing_buckets.last().copied();
-                }
-                if let Some(block_id) = header.block_id {
-                    report.first_block_id = Some(
-                        report
-                            .first_block_id
-                            .map_or(block_id, |current| current.min(block_id)),
-                    );
-                    report.last_block_id = Some(
-                        report
-                            .last_block_id
-                            .map_or(block_id, |current| current.max(block_id)),
-                    );
+                if details {
+                    report.block_index_entries.push(BlockStoreBlockIndexReport {
+                        block_slab_id: block_slab_id,
+                        offset: address.offset(),
+                        length: address.length(),
+                        compact_slab_address: address.compact_slab_address(),
+                        compact_slab_id: address.compact_slab_id(),
+                        compact_slab_offset: address.compact_slab_offset(),
+                        // Always `None`: the record header carries no slab id, and the slab a record
+                        // sits in is `block_slab_id` two lines up. A report field that restated it
+                        // would be the same number twice.
+                        storage_slab_id: None,
+                        object_id: header.object_id,
+                        model_id: None,
+                        block_id: header.block_id,
+                        block_size: decoded.logical_len as u64,
+                        stored_size: header.stored_len as u64,
+                        dirty: false,
+                        deleted: decoded.logical_len == 0,
+                        block_in_log: false,
+                        routing_bucket: header.routing_bucket,
+                        // Re-hashing the payload here doubled the sha256 work of every engine open
+                        // to fill a field no caller reads. `decode_block_record` above has already
+                        // verified this record's stored checksum. Opt in with
+                        // TS_BLOCK_INDEX_CHECKSUMS=1 when inspecting a slab by hand.
+                        checksum: block_index_checksums_enabled()
+                            .then(|| sha256_hex(&decoded.payload)),
+                    });
+                    report.block_index_count = report.block_index_entries.len() as u64;
+                    if decoded.compression == BlockRecordCompression::Zstd {
+                        report.compressed_records = report.compressed_records.saturating_add(1);
+                    }
+                    if let Some(object_id) = header.object_id {
+                        object_ids.insert(object_id);
+                        report.object_count = object_ids.len() as u64;
+                    }
+                    if let Some(routing_bucket) = header.routing_bucket {
+                        routing_buckets.insert(routing_bucket);
+                        report.routing_bucket_count = routing_buckets.len() as u64;
+                        report.first_routing_bucket = routing_buckets.first().copied();
+                        report.last_routing_bucket = routing_buckets.last().copied();
+                    }
+                    if let Some(block_id) = header.block_id {
+                        report.first_block_id = Some(
+                            report
+                                .first_block_id
+                                .map_or(block_id, |current| current.min(block_id)),
+                        );
+                        report.last_block_id = Some(
+                            report
+                                .last_block_id
+                                .map_or(block_id, |current| current.max(block_id)),
+                        );
+                    }
                 }
             }
             Err(err) => {

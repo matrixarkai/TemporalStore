@@ -906,13 +906,10 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         let corrupt_block_slab_ids = self
             .block_store
-            .slab_reports()
+            .corrupt_slab_ids()
             .unwrap_or_default()
             .into_iter()
-            .filter(|report| {
-                report.has_corruption && manifest.block_slab_ids.contains(&report.block_slab_id)
-            })
-            .map(|report| report.block_slab_id)
+            .filter(|id| manifest.block_slab_ids.contains(id))
             .collect::<Vec<_>>();
         let stale_manifest = current_index_log_sequence > manifest.index_log_sequence;
         let mut blockers = Vec::new();

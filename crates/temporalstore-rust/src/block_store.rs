@@ -2858,6 +2858,22 @@ impl BlockStore {
         self.inner.lock().expect("block store lock poisoned").stats
     }
 
+    /// Validate every record without retaining a per-block inspection inventory.
+    pub(crate) fn corrupt_slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
+        let root = self.inner.lock().expect("block store lock poisoned").root.clone();
+        let mut tally = BlockStoreReadTally::start();
+        let mut corrupt = Vec::new();
+        for block_slab_id in slab_ids_at(&root)? {
+            let bytes = LocalSlabBackend::new(&root)
+                .read_all(block_slab_id, &mut tally)?
+                .into_bytes_charged_to_the_process_only();
+            if record::inspect_slab_corruption(&bytes, block_slab_id) {
+                corrupt.push(block_slab_id);
+            }
+        }
+        Ok(corrupt)
+    }
+
     /// Open a new write-amplification window here, because the live set has just been
     /// consolidated.
     ///
@@ -6193,6 +6209,28 @@ const RETIRED_NAMES: &[&str] = &[
             .as_ref()
             .expect("corrupt second record should be reported");
         assert!(error.contains("checksum") || error.contains("corrupt page envelope"));
+    }
+
+    #[test]
+    fn corruption_only_scan_matches_detailed_slab_inspection() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let first = store.append(&b"compressible-record-".repeat(100)).unwrap();
+        store.append(b"second record").unwrap();
+        let path = slab_path(dir.path(), first.block_slab_id());
+        let healthy = fs::read(&path).unwrap();
+        let mut corrupted = healthy.clone();
+        *corrupted.last_mut().unwrap() ^= 0xff;
+        let mut truncated = healthy.clone();
+        truncated.pop();
+        for bytes in [healthy, corrupted, truncated, Vec::new(), b"legacy raw bytes".to_vec()] {
+            fs::write(&path, bytes).unwrap();
+            let expected = store.slab_reports().unwrap().into_iter()
+                .filter(|report| report.has_corruption)
+                .map(|report| report.block_slab_id)
+                .collect::<Vec<_>>();
+            assert_eq!(store.corrupt_slab_ids().unwrap(), expected);
+        }
     }
 
     #[test]
