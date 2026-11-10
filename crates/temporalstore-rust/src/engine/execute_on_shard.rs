@@ -966,9 +966,27 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
         mutated
     } else {
         let mut applied = 0usize;
+        let mut highest_ordinal: Option<Option<u64>> = None;
         for (field, value) in &entries {
-            let block_ordinal =
-                crate::engine::state::container_block_ordinal(shard, "hash", &key, field);
+            let existing_ordinal = crate::engine::state::resident_element_name_address(
+                shard, "hash", &key, field,
+            )
+            .and_then(ElementEntry::block_id);
+            let block_ordinal = if let Some(existing) = existing_ordinal {
+                u32::try_from(existing).unwrap_or(0)
+            } else {
+                // No deletion occurs inside this batch, so successful appends can advance the
+                // live maximum without scanning all siblings again for each new field.
+                let highest = highest_ordinal.get_or_insert_with(|| {
+                    crate::engine::state::resident_highest_block_id(shard, "hash", &key)
+                });
+                let next = highest.map_or(0, |held| held.saturating_add(1));
+                if next > crate::block_store::MAX_ADDRESSABLE_BLOCK_ID {
+                    0
+                } else {
+                    u32::try_from(next).unwrap_or(0)
+                }
+            };
             let block = crate::engine::container_blocks::single_element_block("hash", field, value);
             if let Ok(address) = append_value_of_object(
                 cache,
@@ -981,6 +999,12 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
                 async_storage,
                 block_ordinal,
             ) {
+                if existing_ordinal.is_none() {
+                    if let Some(highest) = highest_ordinal.as_mut() {
+                        let assigned = u64::from(block_ordinal);
+                        *highest = Some(highest.map_or(assigned, |held| held.max(assigned)));
+                    }
+                }
                 let field_handle =
                     super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
                 super::recorded_map::install_element::<super::recorded_map::HashKind>(
