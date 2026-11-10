@@ -85,6 +85,25 @@ class RecordingClient(TemporalStoreClient):
     def _answer(self, path, document):
         self.sent.append((path, document))
         if self.tracking_members is not None:
+            if path == "/batch_execute" and all(
+                command["kind"] == "set_scan" for command in document["commands"]
+            ):
+                def page(command):
+                    after = decode_bytes(command["after"]) or b""
+                    members = sorted(set(self.tracking_members.get(command["key"], [])))
+                    return [
+                        list(member)
+                        for member in members
+                        if member > after
+                    ][: command["limit"]]
+
+                return {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [
+                        ok({"kind": "members", "members": page(command)})
+                        for command in document["commands"]
+                    ],
+                }
             if path == "/execute" and document["command"]["kind"] == "set_members":
                 key = document["command"]["key"]
                 return ok(
@@ -160,6 +179,19 @@ class ByteEncodingTest(unittest.TestCase):
 
 
 class ClientProtocolTest(unittest.TestCase):
+    def test_set_scan_cursor_is_encoded_on_both_batch_routes(self):
+        client = TemporalStoreClient()
+        command = {"kind": "set_scan", "key": "tracking", "after": b"\x00\xff", "limit": 8}
+        _chunk, body = next(client._encoded_batches([command], 1))
+        self.assertEqual(
+            decode_bytes(json.loads(body)["commands"][0]["after"]), b"\x00\xff"
+        )
+        if msgpack is not None:
+            _chunk, body = next(client._binary_batches([command], 1))
+            self.assertEqual(
+                msgpack.unpackb(body, raw=False)["commands"][0]["after"], b"\x00\xff"
+            )
+
     def test_a_refusal_is_raised_with_its_code_and_not_swallowed(self):
         client = RecordingClient(
             [{"status": {"ok": False, "code": "shard_not_loaded", "message": "nope"}}]
@@ -2204,14 +2236,15 @@ class OnlineStoreTest(unittest.TestCase):
             members_by_key.setdefault(command["key"], []).append(
                 decode_bytes(command["member"])
             )
-        # Now tear down: one legacy read plus bounded shard reads, then bounded
-        # batches of field deletes and the occupied tracking sets dropped last.
+        # Now tear down through bounded set pages and delete batches.
         client = self._install_tracking(members_by_key)
         self.store.teardown(self.config, [self.view], [self.entity])
-        self.assertEqual(client.sent[0][0], "/execute")
-        self.assertEqual(client.sent[0][1]["command"]["kind"], "set_members")
+        self.assertEqual(client.sent[0][0], "/batch_execute")
+        self.assertTrue(
+            all(command["kind"] == "set_scan" for command in client.sent[0][1]["commands"])
+        )
         field_deletes, history_deletes, key_deletes = [], [], []
-        for path, document in client.sent[1:]:
+        for path, document in client.sent:
             self.assertEqual(path, "/batch_execute")
             for command in document["commands"]:
                 if command["kind"] == "hash_delete":
@@ -2220,7 +2253,7 @@ class OnlineStoreTest(unittest.TestCase):
                     history_deletes.append(command["key"])
                 elif command["kind"] == "common_delete":
                     key_deletes.append(command["key"])
-                elif command["kind"] != "set_members":
+                elif command["kind"] != "set_scan":
                     self.fail(f"unexpected command {command['kind']}")
 
         # THE ROWS ARE NOT DELETED, THEIR FIELDS ARE. The row is shared by every
@@ -2282,15 +2315,11 @@ class OnlineStoreTest(unittest.TestCase):
         self.config.online_store.skip_dedup = True
         self.config.online_store.track_keys_for_teardown = True
         written_key = "somerow:proj"
-        client = self._install(
-            [
-                ok({"kind": "members", "members": [list(written_key.encode())]}),
-            ]
-        )
+        client = self._install_tracking(legacy_members=[written_key.encode()])
         self.store.teardown(self.config, [self.view], [self.entity])
 
         touched = []
-        for _path, document in client.sent[1:]:
+        for _path, document in client.sent:
             touched.extend(document["commands"])
 
         # DENOMINATOR: it really did emit deletes for the one tracked row.
@@ -2360,8 +2389,8 @@ class OnlineStoreTest(unittest.TestCase):
         self.store.teardown(self.config, [self.view], [self.entity])
 
         batches = [
-            [command for command in document["commands"] if command["kind"] != "set_members"]
-            for _, document in client.sent[1:]
+            [command for command in document["commands"] if command["kind"] != "set_scan"]
+            for _, document in client.sent
         ]
         batches = [batch for batch in batches if batch]
         self.assertTrue(batches, "teardown sent no deletes at all")
@@ -2383,6 +2412,36 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual({c["key"] for c in field_deletes}, written)
         self.assertEqual({c["key"] for c in key_deletes}, set(members_by_key))
         self.assertTrue(all(c["kind"] == "common_delete" for c in batches[-1]))
+
+    def test_teardown_scans_large_tracking_set_with_exclusive_cursors(self):
+        self.config.online_store.track_keys_for_teardown = True
+        self.config.online_store.teardown_batch_size = 16
+        set_key = self.store._teardown_shard_keys(self.config, "stats")[0]
+        members = [f"entity{i:04d}:proj".encode() for i in range(40)]
+        client = self._install_tracking({set_key: members})
+
+        self.store.teardown(self.config, [self.view], [self.entity])
+
+        commands = [
+            command
+            for _path, document in client.sent
+            for command in document["commands"]
+        ]
+        scans = [
+            command for command in commands
+            if command["kind"] == "set_scan" and command["key"] == set_key
+        ]
+        self.assertEqual([decode_bytes(command["after"]) for command in scans], [
+            b"", members[15], members[31],
+        ])
+        self.assertTrue(all(command["limit"] <= 16 for command in scans))
+        self.assertEqual(
+            len([command for command in commands if command["kind"] == "hash_delete"]),
+            80,
+        )
+        self.assertEqual(client.sent[-1][1]["commands"], [
+            {"kind": "common_delete", "key": set_key}
+        ])
 
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.
