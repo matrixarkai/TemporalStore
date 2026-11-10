@@ -2999,6 +2999,7 @@ pub(super) fn sync_written_hash_fields_at_bucket<'a>(
     if fields.peek().is_none() {
         return false;
     }
+    let mut previous_address = None;
     for field in fields {
         let address = shard
             .bucket_index.hashes
@@ -3008,6 +3009,21 @@ pub(super) fn sync_written_hash_fields_at_bucket<'a>(
         let Some(address) = address else {
             return false;
         };
+        // Packed fields share one block, but each re-added field must still sweep its tombstone.
+        if previous_address.as_ref() == Some(&address)
+            && shard
+                .bucket_index
+                .bucket_map
+                .get(&routing_bucket)
+                .is_none_or(|bucket| {
+                    bucket
+                        .tombstone_element_block(object_key, stored_model_kind("hash"), field)
+                        .is_none()
+                })
+        {
+            continue;
+        }
+        previous_address = Some(address.clone());
         // dirty: true, stage: false -- the flags the whole-object sync uses for a hash field: the
         // write staged its own outcome already and a second would have replay install the same
         // block twice.
