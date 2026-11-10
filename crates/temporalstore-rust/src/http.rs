@@ -9,6 +9,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+#[path = "http_chunked.rs"]
+mod chunked;
+
 /// Idle read timeout for a kept-alive server connection. A persistent client
 /// connection parks here between requests; if nothing arrives for this long the
 /// server reaps the connection (the client transparently reconnects).
@@ -967,6 +970,22 @@ fn exchange_streaming_json_once<Res: DeserializeOwned>(
     }
 
     let body_start = header_end + b"\r\n\r\n".len();
+    let transfer_encoding = String::from_utf8_lossy(&response[..header_end])
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(name, _)| name.eq_ignore_ascii_case("transfer-encoding"))
+        .map(|(_, value)| value.trim().to_string())
+        .collect::<Vec<_>>();
+    if !transfer_encoding.is_empty() {
+        if transfer_encoding.len() != 1 || !transfer_encoding[0].eq_ignore_ascii_case("chunked") {
+            return Err(HttpError::BadResponse("unsupported transfer encoding".to_string()));
+        }
+        let prefix = response.split_off(body_start);
+        drop(response);
+        let chained = std::io::Cursor::new(prefix).chain(stream);
+        let mut reader = chunked::ChunkedReader::new(BufReader::with_capacity(16 * 1024, chained));
+        return Ok(serde_json::from_reader(&mut reader)?);
+    }
     if response.len().saturating_sub(body_start) >= content_length {
         response.truncate(body_start + content_length);
         return Ok(serde_json::from_slice(&response[body_start..])?);
