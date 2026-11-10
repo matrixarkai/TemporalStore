@@ -58,7 +58,10 @@ impl BlockStore {
         block_ordinal: u32,
     ) -> Result<ElementEntry, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        std::fs::create_dir_all(&inner.root)?;
+        if !inner.root_created {
+            std::fs::create_dir_all(&inner.root)?;
+            inner.root_created = true;
+        }
         let slab_target_bytes = effective_block_slab_target_bytes();
         let block_id = u64::from(block_ordinal);
         // ENCODED ONCE, INCLUDING ACROSS A ROLL. This used to re-encode the whole record after
@@ -78,8 +81,10 @@ impl BlockStore {
         ) {
             roll_slab_inner(&mut inner)?;
         }
-        let path = slab_path(&inner.root, inner.block_slab_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        if inner.active_append_file.is_none() {
+            let path = slab_path(&inner.root, inner.block_slab_id);
+            inner.active_append_file = Some(OpenOptions::new().create(true).append(true).open(path)?);
+        }
         // CHECKED, NOT SATURATED. The slab target is capped so `write_offset` fits in the
         // address word's low half, but the cap binds what a store may be CONFIGURED with, not
         // what a slab file on disk already is: a slab grown past 4 GiB under an older, uncapped
@@ -88,8 +93,7 @@ impl BlockStore {
         // the write turns that into a failed append; truncating it would turn it into a block
         // that reads back as a different block.
         let address = ElementEntry::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id)?;
-        file.write_all(&record.bytes)?;
-        file.flush()?;
+        inner.active_append_file.as_mut().expect("active slab file").write_all(&record.bytes)?;
         // Two INDEPENDENT relaxations:
         //  * `defer_data_sync` skips this record's data-block fdatasync. UNSAFE on the live
         //    path: the served index references blocks by (slab,offset,page_id) and recovery
@@ -103,7 +107,7 @@ impl BlockStore {
         let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
         if !defer_data_sync {
-            file.sync_data()?;
+            inner.active_append_file.as_ref().expect("active slab file").sync_data()?;
         }
         inner.write_offset += address.length();
         let block_slab_id = inner.block_slab_id;
