@@ -5449,6 +5449,65 @@ fn feature_proto_aggregate_reads_numeric_values() {
     assert_eq!(empty.response, CommandResponse::Aggregate { value: 0 });
 }
 
+#[test]
+fn feature_aggregate_stream_preserves_unparseable_point_semantics() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let points = [b"unknown".as_slice(), b"-7", b"42", b"17"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| FeaturePoint {
+            timestamp_ms: (index + 1) as u64 * 10,
+            value: value.to_vec(),
+        })
+        .collect();
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "stream".to_string(),
+                points,
+            },
+        })
+        .status
+        .ok);
+    for (aggregator, expected) in [
+        ("sum", 52),
+        ("avg", 17),
+        ("min", -7),
+        ("max", 42),
+        ("first", 0),
+        ("last", 17),
+        ("count", 4),
+        ("events", 4),
+        ("unknown", 4),
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAggQuery {
+                key: "stream".to_string(),
+                start_ms: 0,
+                end_ms: 40,
+                aggregator: aggregator.to_string(),
+                count: None,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
+    let capped = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAggQuery {
+            key: "stream".to_string(),
+            start_ms: 0,
+            end_ms: 40,
+            aggregator: "sum".to_string(),
+            count: Some(2),
+        },
+    });
+    assert_eq!(capped.response, CommandResponse::Aggregate { value: -7 });
+}
+
 // The gated control-state rollup ladder must return exactly the same sum-family window
 // aggregates as the ungated raw scan, through the real execute() path. Functional-conformance
 // gate for the O(levels) long-window control-state path (frequency caps / counts).

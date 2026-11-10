@@ -3621,12 +3621,17 @@ pub(crate) fn execute_on_shard(
                 CommandResponse::Aggregate {
                     value: control_rollup::feature_windowed_sum(shard, &key, start_ms, end_ms),
                 }
-            } else if aggregator.eq_ignore_ascii_case("sum") {
-                // THE SUM KEEPS A NUMBER PER POINT, so it reads each value in place and adds it
-                // up instead of collecting every value into a `Vec<Vec<u8>>` first. The same
-                // iterator shape as `aggregate_feature_values`'s "sum" arm (parse, drop what is not
-                // a number, `sum`), over the same points in the same order.
+            } else {
                 let mut page_keys = crate::engine::PageKeys::new();
+                let count_only = matches!(
+                    crate::engine::window_aggregate::AggName::parse(&aggregator),
+                    None
+                        | Some(
+                            crate::engine::window_aggregate::AggName::Count
+                                | crate::engine::window_aggregate::AggName::Events
+                                | crate::engine::window_aggregate::AggName::Len
+                        )
+                );
                 let identity = BlockIdentity::of(shard_id, "feature", &key, None);
                 let routing_bucket = Some(block_routing_bucket(
                     &key,
@@ -3637,45 +3642,8 @@ pub(crate) fn execute_on_shard(
                     .features()
                     .get(&key[..])
                     .map(|series| {
-                        crate::engine::window_aggregate::sum_legacy(series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .take(count.unwrap_or(feature_max_size))
-                            .filter_map(|(timestamp_ms, address)| {
-                                read_feature_value_with(
-                                    cache,
-                                    block_store,
-                                    shard_id,
-                                    timestamp_ms,
-                                    address,
-                                    identity,
-                                    routing_bucket,
-                                    &mut page_keys,
-                                    |value| {
-                                        if proto_values {
-                                            parse_feature_proto_number(value)
-                                        } else {
-                                            parse_i64_slice(value)
-                                        }
-                                    },
-                                )
-                                .flatten()
-                            }))
-                    })
-                    .unwrap_or_default();
-                CommandResponse::Aggregate { value }
-            } else {
-                let identity = BlockIdentity::of(shard_id, "feature", &key, None);
-                let routing_bucket = Some(block_routing_bucket(
-                    &key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                ));
-                if proto_values {
-                    let mut page_keys = crate::engine::PageKeys::new();
-                    let parsed = shard
-                        .features()
-                        .get(&key[..])
-                        .map(|series| {
+                        crate::engine::window_aggregate::feature_stream(
+                            &aggregator,
                             series
                                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                                 .take(count.unwrap_or(feature_max_size))
@@ -3689,46 +3657,20 @@ pub(crate) fn execute_on_shard(
                                         identity,
                                         routing_bucket,
                                         &mut page_keys,
-                                        parse_feature_proto_number,
+                                        |value| {
+                                            if count_only {
+                                                None
+                                            } else if proto_values {
+                                                parse_feature_proto_number(value)
+                                            } else {
+                                                parse_i64_slice(value)
+                                            }
+                                        },
                                     )
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let total = parsed.len();
-                    let value = crate::engine::window_aggregate::feature_legacy(
-                        &aggregator,
-                        parsed.into_iter(),
-                        total,
-                    );
-                    return ExecuteOutcome {
-                        response: CommandResponse::Aggregate { value },
-                        mutated,
-                    };
-                }
-                let values = shard
-                    .features()
-                    .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .take(count.unwrap_or(feature_max_size))
-                            .filter_map(|(timestamp_ms, address)| {
-                                read_feature_point(
-                                    cache,
-                                    block_store,
-                                    shard_id,
-                                    timestamp_ms,
-                                    address,
-                                    identity,
-                                    routing_bucket,
-                                )
-                                .map(|point| point.value)
-                            })
-                            .collect::<Vec<_>>()
+                                }),
+                        )
                     })
                     .unwrap_or_default();
-                let value = aggregate_feature_values(&values, &aggregator);
                 CommandResponse::Aggregate { value }
             }
         }

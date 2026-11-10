@@ -133,6 +133,19 @@ pub(crate) fn feature_legacy(
     }
 }
 
+/// Reduce a feature window as its values are read, without retaining the window in memory.
+pub(crate) fn feature_stream(name: &str, values: impl Iterator<Item = Option<i64>>) -> i64 {
+    match AggName::parse(name) {
+        Some(AggName::Sum) => sum_legacy(values.flatten()),
+        Some(AggName::Avg) => mean_truncated(values.flatten()),
+        Some(AggName::Min) => min_or_zero(values.flatten()),
+        Some(AggName::Max) => max_or_zero(values.flatten()),
+        Some(AggName::First) => first_or_zero(values.take(1).flatten()),
+        Some(AggName::Last) => last_or_zero(values.last().into_iter().flatten()),
+        _ => values.count() as i64,
+    }
+}
+
 /// The counter-family query's reduction over `values`. `Avg` is not a counter verb, so it falls
 /// to the sum like every unknown name.
 pub(crate) fn counter_legacy(name: &str, values: &[i64]) -> i64 {
@@ -753,6 +766,11 @@ mod tests {
                     door_feature(&raw, name),
                     oracle_feature(&raw, name),
                     "feature `{name}` round {round} over {raw:?}"
+                );
+                assert_eq!(
+                    feature_stream(name, raw.iter().map(legacy_parse)),
+                    door_feature(&raw, name),
+                    "streaming feature `{name}` round {round} over {raw:?}"
                 );
                 assert_eq!(
                     counter_legacy(name, &numbers),
