@@ -357,8 +357,15 @@ pub struct ContextExtractRequest {
     pub title: String,
     pub body: String,
     pub timestamp_ms: u64,
-    #[serde(default)]
+    #[serde(default = "inherited_context_source_provider")]
     pub provider: ContextModelProviderConfig,
+}
+
+fn inherited_context_source_provider() -> ContextModelProviderConfig {
+    ContextModelProviderConfig {
+        provider_name: String::new(),
+        ..ContextModelProviderConfig::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
