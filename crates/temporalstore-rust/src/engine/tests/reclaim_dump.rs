@@ -368,6 +368,68 @@ fn a_hash_dump_keeps_wal_blocks_needed_by_restore() {
 }
 
 #[test]
+fn a_live_only_string_dump_keeps_wal_pages_without_slab_rewrites() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = reclaim_dump_keys(64);
+    for batch in [1, 8] {
+        let name = format!("live-only-{batch}");
+        let engine = reclaim_dump_engine(dir.path(), &name);
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        assert!(engine.set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config { version: 2, async_storage: true, ..Config::default() },
+        }).ok);
+        write_as_batches(&engine, &keys, batch);
+        assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), keys.len());
+        let records_before = wal_record_count(&engine);
+        assert!(!crate::engine::block_in_wal::registered_record_span_has_holes(
+            &engine.block_store, RECLAIM_DUMP_SHARD, &engine.wal_store,
+        ));
+        assert_eq!(records_before, keys.len() / batch);
+        let block_bytes_before = engine.block_store.stats().bytes_written;
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            max_dump_buckets_per_round: 0,
+            enable_prepare: false,
+            enable_evict: false,
+            enable_expire: false,
+            enable_block_reclaim: false,
+            enable_block_compaction: false,
+            enable_index_gc: false,
+            ..StorageManagerCycleRequest::default()
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+        assert!(report.stages.iter().all(|stage| stage.wal_resident_blocks_materialised == 0));
+        assert_eq!(engine.block_store.stats().bytes_written, block_bytes_before);
+        assert_eq!(wal_record_count(&engine), records_before);
+        assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), keys.len());
+        if batch == 8 {
+            assert!(engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringSet { key: keys[0].clone(), value: vec![119; 64] },
+            }).status.ok);
+            assert!(crate::engine::block_in_wal::registered_record_span_has_holes(
+                &engine.block_store, RECLAIM_DUMP_SHARD, &engine.wal_store,
+            ), "a partially superseded batch must still create relocation pressure");
+        }
+        drop(engine);
+        let restored = TemporalEngine::with_local_dirs(
+            1 << 20, dir.path().join(format!("restart-{batch}")),
+            dir.path().join(format!("{name}-blocks")), dir.path().join(format!("{name}-indexes")),
+        );
+        restored.load_shard(RECLAIM_DUMP_SHARD);
+        for key in &keys {
+            assert_eq!(restored.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: key.clone() },
+            }).response, CommandResponse::Bytes {
+                value: Some(vec![if batch == 8 && key == &keys[0] { 119 } else { 118 }; 64]),
+            });
+        }
+    }
+}
+
+#[test]
 fn an_async_string_dump_reclaims_without_losing_restore() {
     const KEYS: usize = 24;
     let dir = tempfile::tempdir().unwrap();
@@ -400,6 +462,13 @@ fn an_async_string_dump_reclaims_without_losing_restore() {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
+    // Supersede a record inside the live span so relocation can recover stale WAL space.
+    for value in [b"temporary".to_vec(), format!("value-{:04}", KEYS / 2).into_bytes()] {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringSet { key: format!("string-{:04}", KEYS / 2), value },
+        }).status.ok);
+    }
     let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: RECLAIM_DUMP_SHARD,
         min_undumped_wal_records: 0,
@@ -414,6 +483,7 @@ fn an_async_string_dump_reclaims_without_losing_restore() {
         ..StorageManagerCycleRequest::default()
     });
     assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+    assert!(report.stages.iter().any(|stage| stage.wal_resident_blocks_materialised > 0));
     assert!(
         report
             .wal_reclaim_report

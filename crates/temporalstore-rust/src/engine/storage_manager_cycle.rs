@@ -476,6 +476,9 @@ impl TemporalEngine {
         let wal_resident_blocks_materialised = if request.enable_wal_reclaim
             && !request.dry_run
             && wal_resident_blocks_before > 0
+            && super::block_in_wal::registered_record_span_has_holes(
+                &self.block_store, request.shard_id, &self.wal_store,
+            )
         {
             let per_round = if request.max_dump_buckets_per_round == 0 {
                 usize::MAX
