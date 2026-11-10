@@ -2344,7 +2344,8 @@ impl TemporalEngine {
             if shard.publish_index_flush_countdown == 0 {
                 shard.publish_index_flush_countdown =
                     self.visibility_publish_index_flush_interval();
-                Some(serialize_index(shard))
+                let publication = self.checkpoint_publications.capture(shard_id);
+                Some((serialize_index(shard), publication))
             } else {
                 None
             }
@@ -2353,17 +2354,13 @@ impl TemporalEngine {
         // countdown above. The index-log anchor goes with the index and not without it: an anchor
         // record carries the digest and length of the index file it names, so there is nothing for
         // it to name on a call that wrote no index.
-        let Some(index_bytes) = index_bytes else {
+        let Some((index_bytes, publication)) = index_bytes else {
             return Ok(0);
         };
-        if !bulk_ingest_mode() {
-            // Bulk backfill defers per-record index persistence to an explicit
-            // flush_shard_index() call; skip the O(n^2) rewrite + indexlog append here.
-            self.index_log_store
-                .append_index_bytes(shard_id, &index_bytes)
-                .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
-            self.persist_index_bytes(shard_id, &index_bytes)
-                .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        if !self.persist_captured_index_bytes(shard_id, &index_bytes, &publication)
+            .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?
+        {
+            return Ok(0);
         }
         Ok(index_bytes.len())
     }

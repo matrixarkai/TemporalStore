@@ -512,6 +512,7 @@ impl TemporalEngine {
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
         Self {
             shards: Arc::default(),
+            checkpoint_publications: Arc::default(),
             cache,
             block_store,
             wal_store,
@@ -3334,27 +3335,12 @@ impl TemporalEngine {
         // load (and any consumer that reads shard-{id}.index.json directly) on a current
         // base. The index-log is bounded separately by the storage-manager's consumer-aware
         // index GC, so unload does not truncate it here.
+        self.flush_shard_index(request.shard_id);
         {
-            let index_bytes = self
-                .shards
-                .read()
-                .expect("engine lock poisoned")
-                .get(&request.shard_id)
-                .map(serialize_index);
-            if let Some(index_bytes) = index_bytes {
-                // Discarding this result is safe for the same reason as on the replay-tail path
-                // above: unload truncates neither the WAL nor the index-log (the comment just
-                // above says so for the index-log, and the storage manager's consumer-aware GC
-                // owns that bound). A failed persist therefore leaves the older base on disk with
-                // everything after it still replayable, and the next cold load rebuilds from that
-                // base. The shard leaving memory below does not change what is recoverable.
-                let _ = self.persist_index_bytes_durable(request.shard_id, &index_bytes);
-            }
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            self.checkpoint_publications.forget(request.shard_id);
+            shards.remove(&request.shard_id);
         }
-        self.shards
-            .write()
-            .expect("engine lock poisoned")
-            .remove(&request.shard_id);
         self.infos
             .write()
             .expect("info lock poisoned")

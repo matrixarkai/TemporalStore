@@ -1779,6 +1779,31 @@ pub struct BlockStoreRollReport {
 #[derive(Debug, Clone)]
 pub struct BlockStore {
     inner: Arc<Mutex<BlockStoreInner>>,
+    identity: usize,
+}
+
+#[derive(Debug)]
+struct BlockStoreIdentity(usize);
+
+impl BlockStoreIdentity {
+    fn new() -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+        Self(
+            NEXT_ID
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |id| id.checked_add(1),
+                )
+                .expect("block store identity exhausted"),
+        )
+    }
+}
+
+impl Drop for BlockStoreIdentity {
+    fn drop(&mut self) {
+        crate::engine::clear_store_registrations(self.0);
+    }
 }
 
 impl BlockStore {
@@ -1789,12 +1814,13 @@ impl BlockStore {
     /// only thing separating two engines that both serve shard 1 and both hold a key called
     /// "user:1", so anything keyed per object has to include it.
     pub fn store_id(&self) -> usize {
-        Arc::as_ptr(&self.inner) as *const u8 as usize
+        self.identity
     }
 }
 
 #[derive(Debug)]
 struct BlockStoreInner {
+    _identity: BlockStoreIdentity,
     root: PathBuf,
     root_created: bool,
     active_append_file: Option<std::fs::File>,
@@ -2023,8 +2049,11 @@ impl BlockStore {
         if manifest_rebuilt {
             let _ = persist_slab_manifest(&root, &slabs, &mut stats);
         }
+        let identity = BlockStoreIdentity::new();
         Self {
+            identity: identity.0,
             inner: Arc::new(Mutex::new(BlockStoreInner {
+                _identity: identity,
                 root,
                 root_created,
                 active_append_file: None,

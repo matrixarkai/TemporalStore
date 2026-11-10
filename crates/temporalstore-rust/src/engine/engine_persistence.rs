@@ -74,16 +74,20 @@ pub fn reset_index_load_path_counts() {
 impl TemporalEngine {
     // The image and watermark share one guarded view. Encode the owned snapshot only
     // after releasing the guard, so serialization and sync do not block serving reads.
-    pub(super) fn capture_shard_checkpoint(&self, shard_id: ShardId) -> Option<ShardState> {
+    pub(super) fn capture_shard_checkpoint(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
+        let publication = self.checkpoint_publications.capture(shard_id);
         let mut snapshot = shard.clone();
         snapshot.applied_wal_sequence = Some(if bulk_ingest_mode() {
             shard.applied_wal_sequence.unwrap_or(0)
         } else {
             self.wal_store.stats_without_rescan(shard_id).last_sequence
         });
-        Some(snapshot)
+        Some((snapshot, publication))
     }
 
     pub(super) fn index_path(&self, shard_id: ShardId) -> PathBuf {
@@ -523,7 +527,7 @@ impl TemporalEngine {
         // the two numbers out and drops the guard before it returns, so no path ever HOLDS one of
         // these locks while acquiring the other.
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
-        let (mut snapshot, previous_anchor, anchor) = {
+        let (mut snapshot, previous_anchor, anchor, publication) = {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map blocks into bucket_index, rebuild the secondary views, refresh
             // runtime flags, then clone for encoding outside the write lock.
@@ -573,7 +577,8 @@ impl TemporalEngine {
                             }
                         })
                         .unwrap_or(default_anchor);
-                    (shard.clone(), shard.applied_wal_sequence, anchor)
+                    let publication = self.checkpoint_publications.capture(shard_id);
+                    (shard.clone(), shard.applied_wal_sequence, anchor, publication)
                 }
                 None => return,
             }
@@ -587,8 +592,11 @@ impl TemporalEngine {
             return;
         }
         // Write the served shard index directly, bypassing the bulk-mode gate.
-        let _ = fs::create_dir_all(&self.index_dir);
-        if atomic_write_bytes(&self.index_path(shard_id), &index_bytes).is_err() {
+        let published = self.checkpoint_publications.publish(&publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), &index_bytes)
+        });
+        if !matches!(published, Ok(Some(()))) {
             return;
         }
         if let Some(shard) = self.shards.write().expect("engine lock poisoned").get_mut(&shard_id) {
@@ -673,47 +681,34 @@ impl TemporalEngine {
         }
         // Capture an immutable image and its anchor before syncing their backing storage.
         // Writers during the barrier belong to the next checkpoint, not to this image.
-        let snapshot = self.capture_shard_checkpoint(shard_id)?;
+        let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)?;
         let anchor = snapshot.applied_wal_sequence.unwrap_or(0);
         let index_bytes = serialize_index(&snapshot);
         drop(snapshot);
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
             return None;
         }
-        if self
-            .persist_index_bytes_durable(shard_id, &index_bytes)
-            .is_err()
-        {
-            return None;
-        }
         // 3. Fold the slab catalog into a MetaItem anchor and append it durably to the
         //    index-log. This is this design's "dump the slab catalog into the index log" step:
         //    after it, the slab catalog is recoverable from the durable log, so the per-write
         //    slab-manifest file stops being the source of truth.
-        let slab_version = anchor;
-        let slabs = self.block_store.slab_catalog(slab_version);
-        let meta = crate::index_log::MetaItem {
-            version: 1,
-            start_wal_sequence: anchor,
-            timestamp_ms: now_ms(),
-            slab_version,
-            slabs,
-        };
-        let meta_sequence = match self.index_log_store.append_delta(
-            shard_id,
-            Vec::new(),
-            Vec::new(),
-            Some(anchor),
-            Some(meta),
-            false,
-            true,
-        ) {
-            Ok(sequence) => sequence,
-            Err(_) => return None,
-        };
-        // 4. The base + folded anchor are durable; advance the dumped watermark so the undumped
-        //    gap resets and the next threshold is measured from here.
-        self.index_log_store.mark_catalog_dumped(shard_id);
+        let meta_sequence = self.checkpoint_publications.publish(&publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), &index_bytes)?;
+            let slabs = self.block_store.slab_catalog(anchor);
+            let meta = crate::index_log::MetaItem {
+                version: 1,
+                start_wal_sequence: anchor,
+                timestamp_ms: now_ms(),
+                slab_version: anchor,
+                slabs,
+            };
+            let sequence = self.index_log_store.append_delta(
+                shard_id, Vec::new(), Vec::new(), Some(anchor), Some(meta), false, true,
+            ).map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+            self.index_log_store.mark_catalog_dumped(shard_id);
+            Ok(sequence)
+        }).ok()??;
         Some((anchor, meta_sequence))
     }
 
@@ -905,6 +900,24 @@ impl TemporalEngine {
         self.dump_and_reclaim_index_logs_with_min_reclaimable(shard_id, min_reclaimable_bytes)
     }
 
+    pub(super) fn persist_captured_index_bytes(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+        publication: &checkpoint_publication::CheckpointPublication,
+    ) -> Result<bool, std::io::Error> {
+        if bulk_ingest_mode() {
+            return Ok(false);
+        }
+        self.checkpoint_publications.publish(publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes_synced(&self.index_path(shard_id), bytes, !wal_only_sync())?;
+            self.index_log_store.append_index_bytes(shard_id, bytes)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+            Ok(())
+        }).map(|published| published.is_some())
+    }
+
     pub(super) fn persist_index_bytes(
         &self,
         shard_id: ShardId,
@@ -915,13 +928,15 @@ impl TemporalEngine {
         if bulk_ingest_mode() {
             return Ok(());
         }
-        fs::create_dir_all(&self.index_dir)?;
         // Ack-path served-index checkpoint. Under the single-barrier default the durable barrier
         // is deferred (content + rename still issued): the WAL is durably synced before ack
         // and replay-on-load rebuilds the served index from it, so a stale-on-crash index
         // only costs a longer WAL replay, never an acked write. This is the served-index
         // fsync removed from the write critical path.
-        atomic_write_bytes_synced(&self.index_path(shard_id), bytes, !wal_only_sync())
+        self.checkpoint_publications.publish_current(shard_id, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes_synced(&self.index_path(shard_id), bytes, !wal_only_sync())
+        })
     }
 
     /// Unconditional (bulk-gate-bypassing) index write for recovery-critical paths such as
@@ -936,8 +951,10 @@ impl TemporalEngine {
         shard_id: ShardId,
         bytes: &[u8],
     ) -> Result<(), std::io::Error> {
-        fs::create_dir_all(&self.index_dir)?;
-        atomic_write_bytes(&self.index_path(shard_id), bytes)
+        self.checkpoint_publications.publish_current(shard_id, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), bytes)
+        })
     }
 
     pub(super) fn validate_load_version(

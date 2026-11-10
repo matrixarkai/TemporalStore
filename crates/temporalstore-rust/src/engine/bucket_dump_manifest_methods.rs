@@ -51,13 +51,21 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let index_bytes = if bulk_ingest_mode() {
-            self.export_index_bytes(shard_id)
-                .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?
+        let (index_bytes, publication) = if bulk_ingest_mode() {
+            let publication = {
+                let shards = self.shards.read().expect("engine lock poisoned");
+                if !shards.contains_key(&shard_id) {
+                    return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+                }
+                self.checkpoint_publications.capture(shard_id)
+            };
+            let bytes = self.export_index_bytes(shard_id)
+                .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+            (bytes, publication)
         } else {
-            let snapshot = self.capture_shard_checkpoint(shard_id)
+            let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)
                 .ok_or_else(|| Status::error("shard_not_loaded", "shard is not loaded"))?;
-            serialize_index(&snapshot)
+            (serialize_index(&snapshot), publication)
         };
         let index_sha256 = sha256_hex_bytes(&index_bytes);
         let dump_index_state = crate::engine::decode_index_bytes(&index_bytes)
@@ -162,15 +170,20 @@ impl TemporalEngine {
         manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
         let manifest_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)?;
         manifest.checksum = manifest_checksum;
-        self.persist_bucket_dump_manifest(&manifest)
-            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        let published = self.checkpoint_publications.publish(&publication, || {
+            self.persist_bucket_dump_manifest(&manifest)?;
+            self.wal_store.mark_dumped(shard_id);
+            Ok(())
+        }).map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        if published.is_none() {
+            return Err(Status::error("checkpoint_superseded", "a newer checkpoint was published during capture"));
+        }
         // The manifest is durable from here, so this shard's log is dumped up to its current
         // durable length. Marked AFTER the write and behind its `?`, never before: a watermark
         // that ran ahead of the manifest would let a restart mid-dump skip records the failed
         // dump never captured. Only this path marks it -- a MERGED manifest consolidates
         // existing dumps and its coverage is bounded by its sources, so it makes nothing newer
         // dumped and must not reset the growth counter.
-        self.wal_store.mark_dumped(shard_id);
         // The index-log is bounded by the storage-manager's consumer-aware index GC (see
         // `storage_wal_reclaim_plan` / `run_storage_manager_cycle`), which retains from the
         // durable dump frontier -- the min anchor across durable manifests, held back by any
