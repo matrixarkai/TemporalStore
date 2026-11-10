@@ -105,6 +105,484 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
     records.len()
 }
 
+#[test]
+fn a_hash_dump_keeps_wal_blocks_needed_by_restore() {
+    const KEYS: usize = 48;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::HashSet {
+                key: format!("hash-{index:04}"),
+                field: "f".to_string(),
+                value: format!("value-{index:04}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), KEYS);
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+    assert_eq!(
+        engine.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD),
+        Some(1),
+        "reclaim report: {:?}",
+        report.wal_reclaim_report
+    );
+    assert_eq!(wal_record_count(&engine), KEYS, "reclaim removed live WAL records");
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::HashGet {
+                    key: "hash-0000".to_string(),
+                    field: "f".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"value-0000".to_vec()),
+        },
+        "the live shard lost its first hash before restart"
+    );
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    let load = restarted.load_shard_with(LoadShardRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(load.status.ok, "restart refused: {:?}", load.status);
+    for index in 0..KEYS {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::HashGet {
+                        key: format!("hash-{index:04}"),
+                        field: "f".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("value-{index:04}").into_bytes()),
+            },
+            "hash-{index:04} was lost after reclaim and restart"
+        );
+    }
+}
+
+#[test]
+fn an_async_string_dump_reclaims_without_losing_restore() {
+    const KEYS: usize = 24;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringSet {
+                key: format!("string-{index:04}"),
+                value: format!("value-{index:04}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+    assert!(
+        report
+            .wal_reclaim_report
+            .as_ref()
+            .is_some_and(|stage| stage.wal_records_removed > 0),
+        "reclaim report: {:?}",
+        report.wal_reclaim_report
+    );
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    for index in 0..KEYS {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::StringGet {
+                        key: format!("string-{index:04}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("value-{index:04}").into_bytes()),
+            },
+            "string-{index:04} was lost after reclaim and restart"
+        );
+    }
+}
+
+#[test]
+fn container_blocks_remain_readable_after_dump_and_restart() {
+    const KEYS: usize = 12;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for index in 0..KEYS {
+        let member = format!("member-{index:04}").into_bytes();
+        for command in [
+            Command::SetAdd {
+                key: format!("set-{index:04}"),
+                member: member.clone(),
+            },
+            Command::ListPush {
+                key: format!("list-{index:04}"),
+                member: member.clone(),
+                left: false,
+            },
+            Command::ZSetAdd {
+                key: format!("zset-{index:04}"),
+                member: member.clone(),
+                score: index as f64,
+            },
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command,
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), KEYS * 3);
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+    assert_eq!(engine.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(1));
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    for index in 0..KEYS {
+        let member = format!("member-{index:04}").into_bytes();
+        for (command, expected) in [
+            (
+                Command::SetMembers {
+                    key: format!("set-{index:04}"),
+                },
+                CommandResponse::Members {
+                    members: vec![member.clone()],
+                },
+            ),
+            (
+                Command::ListRange {
+                    key: format!("list-{index:04}"),
+                    start: 0,
+                    stop: -1,
+                },
+                CommandResponse::Members {
+                    members: vec![member.clone()],
+                },
+            ),
+            (
+                Command::ZSetScore {
+                    key: format!("zset-{index:04}"),
+                    member,
+                },
+                CommandResponse::Bytes {
+                    value: Some(index.to_string().into_bytes()),
+                },
+            ),
+        ] {
+            let got = restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command,
+                })
+                .response;
+            assert_eq!(got, expected, "container {index} changed after restart");
+        }
+    }
+}
+
+#[test]
+fn a_container_tombstone_retains_its_wal_record_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for command in [
+        Command::SetAdd {
+            key: "removed-set".to_string(),
+            member: b"former-member".to_vec(),
+        },
+        Command::SetRemove {
+            key: "removed-set".to_string(),
+            member: b"former-member".to_vec(),
+        },
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command,
+        });
+        assert!(response.status.ok, "write failed: {:?}", response.status);
+    }
+    let request = StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    };
+    engine.run_storage_manager_cycle(request.clone());
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restarted.registration_count_for_test(RECLAIM_DUMP_SHARD), 1);
+    restarted.run_storage_manager_cycle(request);
+    assert_eq!(restarted.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(2));
+    assert_eq!(
+        restarted
+            .execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::SetMembers {
+                    key: "removed-set".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Members { members: Vec::new() }
+    );
+}
+
+#[test]
+fn batched_tombstones_rehydrate_from_one_wal_record() {
+    const MEMBERS: usize = 64;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for remove in [false, true] {
+        let commands = (0..MEMBERS)
+            .map(|index| {
+                let key = format!("removed-set-{index}");
+                let member = format!("member-{index}").into_bytes();
+                if remove {
+                    Command::SetRemove { key, member }
+                } else {
+                    Command::SetAdd { key, member }
+                }
+            })
+            .collect();
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            commands,
+        });
+        assert!(response.status.ok, "batch write failed: {:?}", response.status);
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    let before = restarted.wal_store().stats(RECLAIM_DUMP_SHARD).bytes_read;
+    let load = restarted.load_shard_with(LoadShardRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(load.status.ok, "restart refused: {:?}", load.status);
+    let bytes_read = restarted.wal_store().stats(RECLAIM_DUMP_SHARD).bytes_read - before;
+    assert_eq!(restarted.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    assert!(
+        bytes_read < 1 << 20,
+        "rehydrating {MEMBERS} tombstones read {bytes_read} WAL bytes"
+    );
+    for index in 0..MEMBERS {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::SetMembers {
+                        key: format!("removed-set-{index}"),
+                    },
+                })
+                .response,
+            CommandResponse::Members { members: Vec::new() }
+        );
+    }
+}
+
 /// A bucket dirtied by a BATCH write can name its oldest undumped write, as one dirtied by a
 /// single-command write already could.
 ///

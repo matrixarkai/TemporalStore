@@ -46,6 +46,16 @@ use std::sync::{Mutex, OnceLock};
 use crate::types::ShardId;
 use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 
+#[cfg(test)]
+thread_local! {
+    static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn oldest_registered_scans_for_test() -> u64 {
+    OLDEST_REGISTERED_SCANS.with(std::cell::Cell::get)
+}
+
 thread_local! {
     /// Blocks produced by the write currently executing on this thread.
     static STAGED: RefCell<Vec<StagedBlock>> = const { RefCell::new(Vec::new()) };
@@ -298,6 +308,44 @@ pub(super) fn register_at(
     }
 }
 
+/// Recover the identity of a block that has no live model-map element, such as a tombstone.
+pub(super) fn register_from_record(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    log_id: u64,
+    placements: &[(u64, u64)],
+    store: &LocalWriteAheadLogStore,
+) -> bool {
+    let Ok(Some(bytes)) = store.read_frame_at_log_id(shard_id, log_id) else {
+        return false;
+    };
+    let Ok(record) = decode_wal_line(&bytes) else {
+        return false;
+    };
+    if placements.iter().any(|(_, sequence)| *sequence != record.sequence) {
+        return false;
+    }
+    let mut wanted = placements
+        .iter()
+        .map(|(folded, _)| *folded)
+        .collect::<std::collections::BTreeSet<_>>();
+    for block in &record.staged_blocks {
+        let folded = wal_resident_key(block.object_id, block.element_name.as_deref());
+        if wanted.remove(&folded) {
+            register_at(
+                block_store,
+                shard_id,
+                block.object_id,
+                block.element_name.as_deref(),
+                log_id,
+                record.sequence,
+                store,
+            );
+        }
+    }
+    wanted.is_empty()
+}
+
 /// The lowest WAL sequence any of this shard's registrations IN THIS LOG still depends on, or
 /// `None` when nothing is registered. WAL reclaim uses this as the block-retention floor: a
 /// record at or above it may hold the only copy of a block the served index still points at, so
@@ -338,6 +386,8 @@ pub(super) fn oldest_registered_objects(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
 ) -> Vec<(u64, BlockKey)> {
+    #[cfg(test)]
+    OLDEST_REGISTERED_SCANS.with(|scans| scans.set(scans.get() + 1));
     let Ok(map) = registry().lock() else {
         return Vec::new();
     };

@@ -6797,6 +6797,7 @@ fn writing_a_message_does_not_cost_its_nodes_history() {
                     source_ref: format!("src/{i}"),
                     related_node_hashes: vec![42],
                     compact_attrs: Vec::new(),
+                    embedding_model_hash: 0,
                     vector,
                 }),
             },
@@ -13168,6 +13169,60 @@ fn registrations_plateau_instead_of_tracking_writes() {
             "object-{index:05} was lost when its block was moved out"
         );
     }
+}
+
+#[test]
+fn hash_writes_do_not_run_string_only_resident_sweeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+
+    let scans_before = super::block_in_wal::oldest_registered_scans_for_test();
+    for index in 0..5_000 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("hash-{index:05}"),
+                field: "f".to_string(),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "hash write {index}: {:?}", response.status);
+    }
+    assert_eq!(
+        super::block_in_wal::oldest_registered_scans_for_test(),
+        scans_before,
+        "hash writes cannot produce blocks that the string-only sweep can retire"
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashGet {
+                    key: "hash-04999".to_string(),
+                    field: "f".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(vec![b'v'; 64]),
+        }
+    );
 }
 
 /// a batch leaves nothing staged for the next write to adopt.

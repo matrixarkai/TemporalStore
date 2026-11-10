@@ -37,6 +37,14 @@ fn writes() -> u64 {
         .unwrap_or(50)
 }
 
+fn profile_config() -> RaftConfig {
+    let mut config = RaftConfig::default();
+    if std::env::var("TS_BARRIER_PROFILE_WAL_SYNC").as_deref() == Ok("0") {
+        config.wal_sync = false;
+    }
+    config
+}
+
 /// Print one scenario's barrier split, normalised per write. The per-write figure is what
 /// compares against the fdatasync/write numbers measured under strace on a real node.
 fn report(scenario: &str, per: u64, before: BTreeMap<&'static str, u64>) {
@@ -58,7 +66,7 @@ fn report(scenario: &str, per: u64, before: BTreeMap<&'static str, u64>) {
 fn leader_propose(per: u64) {
     let dir = scratch("leader");
     let cluster =
-        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], RaftConfig::default())
+        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], profile_config())
             .expect("cluster");
     // A deployed process owns exactly one node while holding a view of the whole cluster, and
     // persists only its own record. Left unset -- the in-process default -- it persists a record
@@ -91,7 +99,7 @@ fn leader_propose(per: u64) {
 fn follower_append(per: u64) {
     let dir = scratch("follower");
     let cluster =
-        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], RaftConfig::default())
+        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], profile_config())
             .expect("cluster");
     // This scenario plays node 2 -- the follower the requests below are addressed to.
     cluster.set_local_node_id(2);
@@ -131,7 +139,7 @@ fn follower_append(per: u64) {
 fn concurrent_propose(per: u64, threads: u64) {
     let dir = scratch(&format!("concurrent-{threads}"));
     let cluster = Arc::new(
-        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], RaftConfig::default())
+        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], profile_config())
             .expect("cluster"),
     );
     cluster.set_local_node_id(1);
@@ -170,7 +178,7 @@ fn recovery_cost() {
     for records in [2_000u64, 4_000] {
         let dir = scratch(&format!("recovery-{records}"));
         let cluster =
-            RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], RaftConfig::default())
+            RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], profile_config())
                 .expect("cluster");
         cluster.set_local_node_id(1);
         for index in 0..records {
@@ -202,7 +210,7 @@ fn wal_format_cost() {
     let records = 2_000u64;
     let dir = scratch("format");
     let cluster =
-        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], RaftConfig::default())
+        RaftCluster::new_single_shard_with_wal(&dir, 1, [1, 2, 3], profile_config())
             .expect("cluster");
     cluster.set_local_node_id(1);
     for index in 0..records {

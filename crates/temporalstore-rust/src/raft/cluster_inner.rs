@@ -769,24 +769,26 @@ impl RaftClusterInner {
                     continue;
                 }
                 staged.push(
-                    wal.stage_node_segmented(
+                    wal.stage_node_segmented_with_sync(
                         shard_id,
                         node_id,
                         &record,
                         max_segment_bytes,
                         min_keep_segment_num,
+                        self.config.wal_sync,
                     )
                     .map_err(|err| RaftError::Wal(err.to_string()))?,
                 );
                 self.last_durable_fingerprint.insert(node_id, fingerprint);
             } else {
                 staged.push(
-                    wal.stage_node_segmented(
+                    wal.stage_node_segmented_with_sync(
                         shard_id,
                         node_id,
                         &record,
                         max_segment_bytes,
                         min_keep_segment_num,
+                        self.config.wal_sync,
                     )
                     .map_err(|err| RaftError::Wal(err.to_string()))?,
                 );

@@ -1543,6 +1543,17 @@ impl LocalWriteAheadLogStore {
         staged_blocks: Vec<StagedBlock>,
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+        self.append_batch_as_one_record_at(shard_id, outcomes, staged_blocks, sync)
+            .map(|(record, _)| record)
+    }
+
+    pub fn append_batch_as_one_record_at(
+        &self,
+        shard_id: ShardId,
+        outcomes: Vec<WalOutcomeItem>,
+        staged_blocks: Vec<StagedBlock>,
+        sync: bool,
+    ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
         // Start a piece if a crash left none, exactly as every other append entry point does.
@@ -1575,6 +1586,8 @@ impl LocalWriteAheadLogStore {
         let report = append_record_locked(&mut inner, &record, sync, None)?;
         inner.stats.last_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, seq);
+        let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
+        let log_id = base.saturating_add(report.offset.saturating_sub(header_len));
         // Roll AFTER the record, never before it and never inside it. A batch written this way
         // IS one record -- that is the whole point of the path -- so there is no inside to roll
         // in: the frame is written by one call and a torn frame was never a record. Rolling
@@ -1596,7 +1609,7 @@ impl LocalWriteAheadLogStore {
                 .verified_len_by_shard
                 .insert(shard_id, report.persistent_bytes);
         }
-        Ok(record)
+        Ok((record, log_id))
     }
 
     pub fn append_batch_atomic(
@@ -2534,6 +2547,27 @@ impl LocalWriteAheadLogStore {
         inner.stats.reads += 1;
         inner.stats.bytes_read += bytes.len() as u64;
         Ok(Some(bytes))
+    }
+
+    /// Read exactly one framed record at a stable log id.
+    pub fn read_frame_at_log_id(
+        &self,
+        shard_id: ShardId,
+        log_id: u64,
+    ) -> Result<Option<Vec<u8>>, WriteAheadLogError> {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let Some((path, physical)) = locate_log_id(&inner.root, shard_id, log_id)? else {
+            return Ok(None);
+        };
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::Start(physical))?;
+        let mut reader = BufReader::with_capacity(1024, file);
+        let raw = crate::log_framing::read_raw_record(&mut reader)?;
+        if let Some(bytes) = raw.as_ref() {
+            inner.stats.reads += 1;
+            inner.stats.bytes_read += bytes.len() as u64;
+        }
+        Ok(raw)
     }
 
     /// Reclaim this shard's WAL prefix below `retain_from_sequence`, never going past what the

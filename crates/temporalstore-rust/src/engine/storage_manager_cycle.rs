@@ -374,6 +374,7 @@ impl TemporalEngine {
         };
         let plan_span = StageSpan::close(&mut stage_clock);
         let mut stages = Vec::new();
+        let mut stage_boundary_order = Vec::with_capacity(native_stage_order.len());
         let mut errors = Vec::new();
         // Everything above gets its own stage, for the reason mx#1435 gave for the dump-load
         // policy report: `stage_clock` runs from the previous stage's push, and this is the FIRST
@@ -434,6 +435,7 @@ impl TemporalEngine {
             }
         }
         let prepare_span = StageSpan::close(&mut stage_clock);
+        stage_boundary_order.push("prepare".to_string());
         stages.push(StorageManagerStageReport {
             duration_ms: prepare_span.duration_ms,
             duration_us: prepare_span.duration_us,
@@ -468,6 +470,56 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
+        // Materialize before the dump captures its index. Moving blocks afterwards changes the
+        // live bucket generation and leaves the durable manifest unable to authorize reclaim.
+        let wal_resident_blocks_before = self.wal_resident_block_count(request.shard_id);
+        let wal_resident_blocks_materialised = if request.enable_wal_reclaim
+            && !request.dry_run
+            && wal_resident_blocks_before > 0
+        {
+            let per_round = if request.max_dump_buckets_per_round == 0 {
+                usize::MAX
+            } else {
+                request.max_dump_buckets_per_round
+            };
+            self.materialize_oldest_resident_blocks(
+                request.shard_id,
+                wal_resident_blocks_before.saturating_sub(per_round),
+            )
+        } else {
+            0
+        };
+        let mut lifecycle_report = if request.dry_run {
+            None
+        } else {
+            let mut lifecycle_request = plan_request.clone();
+            lifecycle_request.purge_delayed_destroy = false;
+            lifecycle_request.prune_bucket_dump_manifests = false;
+            lifecycle_request.roll_forward_bucket_dump_installs = false;
+            Some(self.apply_storage_lifecycle(lifecycle_request))
+        };
+        // Dump and warmup are charged to WAL reclaim; later cleanup stays in its own stage.
+        let reclaim_wal_dump_span = StageSpan::close(&mut stage_clock);
+        let wal_reclaim_plan = self.storage_wal_reclaim_plan(
+            request.shard_id,
+            request.follower_replay_cursors.clone(),
+            request.raft_snapshot_refs.clone(),
+        );
+        let wal_reclaim_report = if request.enable_wal_reclaim {
+            Some(if request.dry_run {
+                StorageWalReclaimReport {
+                    plan: wal_reclaim_plan.clone(),
+                    applied: false,
+                    ..StorageWalReclaimReport::default()
+                }
+            } else {
+                self.apply_storage_wal_reclaim(wal_reclaim_plan.clone())
+            })
+        } else {
+            None
+        };
+        let reclaim_wal_span = reclaim_wal_dump_span.plus(StageSpan::close(&mut stage_clock));
+        stage_boundary_order.push("reclaim_wal".to_string());
         let mut expiry_report = None;
         if request.enable_expire && !request.dry_run {
             match self.sweep_expired_records_with_request(ShardExpirySweepRequest {
@@ -484,7 +536,87 @@ impl TemporalEngine {
         }
 
         let expire_span = StageSpan::close(&mut stage_clock);
+        stage_boundary_order.push("expire".to_string());
 
+        // apply_storage_lifecycle's warm phase brings freshly-dumped blocks into DRAM.
+        // The pressure snapshot above was captured during prepare (pre-warm), so
+        // re-measure memory residency here so the emitted snapshot reflects the warmed
+        // cache. Only the memory fields are refreshed; disk_cache_bytes stays at its
+        // prepare value (warmed blocks also write through to SSD, and downstream
+        // reclamation assertions compare against that pre-warm disk figure).
+        if !request.dry_run {
+            // Same reading as the pressure snapshot above: this only ever took `.stats`.
+            let warmed_cache = self.cache.stats();
+            let warmed_memory_pressure = warmed_cache
+                .memory_bytes
+                .saturating_add(warmed_cache.pinned_bytes)
+                .saturating_add(warmed_cache.async_writeback_queue_bytes)
+                .saturating_add(warmed_cache.async_writeback_queue_depth);
+            pressure_signals.total_pressure_score = pressure_signals
+                .total_pressure_score
+                .saturating_sub(pressure_signals.memory_cache_pressure_score)
+                .saturating_add(warmed_memory_pressure);
+            pressure_signals.memory_cache_bytes = warmed_cache.memory_bytes;
+            pressure_signals.memory_cache_pressure_score = warmed_memory_pressure;
+        }
+        let eviction_report = if request.enable_evict {
+            Some(if request.dry_run {
+                StorageEvictionReport {
+                    shard_id: request.shard_id,
+                    // ONE MODE, because there is one arm. The dry run used to echo the request's
+                    // flag and name `delete_drop`, which is now a mode this stage cannot reach --
+                    // a dry run that predicts an arm the real round will not take is worse than no
+                    // prediction.
+                    mode: "evict_cache".to_string(),
+                    pressure_before: pressure_signals
+                        .memory_cache_pressure_score
+                        .saturating_add(pressure_signals.disk_cache_bytes),
+                    pressure_after: pressure_signals
+                        .memory_cache_pressure_score
+                        .saturating_add(pressure_signals.disk_cache_bytes),
+                    memory_pressure_threshold: request.eviction_memory_pressure_threshold,
+                    batch_limit: request.eviction_batch_limit,
+                    dump_before_evict: request.eviction_dump_before_evict,
+                    skipped_reason: "dry_run".to_string(),
+                    ..StorageEvictionReport::default()
+                }
+            } else {
+                self.apply_storage_eviction(
+                    request.shard_id,
+                    request.eviction_memory_pressure_threshold,
+                    request.eviction_batch_limit,
+                    request.eviction_dump_before_evict,
+                    // NEVER, and the request no longer carries a field that could make it true --
+                    // the same reading as the periodic loop's (`data_node/runtime_storage.rs`).
+                    // `delete_drop` deletes the model-map entry that is the only thing pointing at
+                    // a record's payload block, and writes a tombstone so the deletion survives
+                    // replay. No memory-pressure stage may reach it. The literal is the route's
+                    // absence.
+                    false,
+                )
+            })
+        } else if request.index_resident_limit_bytes > 0 && !request.dry_run {
+            // THE NARROW BOUND RUNS WITH THE WIDE STAGE OFF, which is the whole reason it is a
+            // separate arm. `enable_evict` carries a threshold, and the shipped threshold is 0 --
+            // "evicts whenever it runs" -- so a bound that inherited the flag's state would have
+            // inherited an always-open gate. On the periodic loop the two are reconciled by taking
+            // the higher bar; here, where the flag is explicit in the request, the flag wins and
+            // this arm is what a caller gets by setting only the bound.
+            //
+            // It reports through the same field because it reaches the same release, so an
+            // operator reads one eviction report either way -- `mode` says which gate opened.
+            Some(self.apply_index_resident_bound(
+                request.shard_id,
+                request.index_resident_limit_bytes,
+                request.eviction_batch_limit,
+            ))
+        } else {
+            None
+        };
+        // The warm re-measure above feeds this stage's own pressure gate, so it is charged here
+        // rather than to the dump that warmed the cache.
+        let evict_span = StageSpan::close(&mut stage_clock);
+        stage_boundary_order.push("evict".to_string());
         // ONE PINNED SLAB NO LONGER SUPPRESSES THE REST.
         //
         // The dependency plan already works out, per slab, which candidates are pinned and which
@@ -588,165 +720,42 @@ impl TemporalEngine {
             }
         }
 
-        let reclaim_block_span = StageSpan::close(&mut stage_clock);
-        let lifecycle_report = if request.dry_run {
-            None
-        } else {
+        if let Some(report) = lifecycle_report.as_mut() {
             let mut lifecycle_request = plan_request.clone();
-            // The other half of the per-slab gate. The purge now runs whenever ANY quarantined
-            // slab is free -- but it is handed the free set, so the slabs the plan blocked are
-            // passed over rather than swept up by a round that was let in on someone else's
-            // behalf. Flipping the condition without passing the list would turn a suppressed
-            // reclaim into a destroyed dependency.
             lifecycle_request.purge_delayed_destroy = lifecycle_request.purge_delayed_destroy
                 && !reclaimable_block_slab_ids.is_empty();
             lifecycle_request.purge_delayed_destroy_slab_ids =
                 Some(reclaimable_block_slab_ids.iter().copied().collect());
-            let report = Some(self.apply_storage_lifecycle(lifecycle_request));
-            // AND AGAIN AFTERWARDS. The round just relocated blocks onto a fresh slab and
-            // destroyed others; the tally published above describes the state before it. A caller
-            // that inspects the store after the round -- which is what every reclaim assertion
-            // does -- should read what the round left, not what it found.
-            self.publish_block_slab_live_bytes();
-            report
-        };
-        // The dump belongs to `reclaim_wal`: the log cannot be reclaimed past what a dump has
-        // made durable, so the dump is the price this stage pays and is charged to it.
-        let reclaim_wal_dump_span = StageSpan::close(&mut stage_clock);
-        // apply_storage_lifecycle's warm phase brings freshly-dumped blocks into DRAM.
-        // The pressure snapshot above was captured during prepare (pre-warm), so
-        // re-measure memory residency here so the emitted snapshot reflects the warmed
-        // cache. Only the memory fields are refreshed; disk_cache_bytes stays at its
-        // prepare value (warmed blocks also write through to SSD, and downstream
-        // reclamation assertions compare against that pre-warm disk figure).
-        if !request.dry_run {
-            // Same reading as the pressure snapshot above: this only ever took `.stats`.
-            let warmed_cache = self.cache.stats();
-            let warmed_memory_pressure = warmed_cache
-                .memory_bytes
-                .saturating_add(warmed_cache.pinned_bytes)
-                .saturating_add(warmed_cache.async_writeback_queue_bytes)
-                .saturating_add(warmed_cache.async_writeback_queue_depth);
-            pressure_signals.total_pressure_score = pressure_signals
-                .total_pressure_score
-                .saturating_sub(pressure_signals.memory_cache_pressure_score)
-                .saturating_add(warmed_memory_pressure);
-            pressure_signals.memory_cache_bytes = warmed_cache.memory_bytes;
-            pressure_signals.memory_cache_pressure_score = warmed_memory_pressure;
+            let purge = self.purge_storage_delayed_destroy(&lifecycle_request);
+            report.delayed_destroy_purged_slabs = purge.purged_block_slab_ids;
+            report.delayed_destroy_purged_bytes = purge.purged_physical_bytes;
+            report.delayed_destroy_restored_slabs = purge.restored_block_slab_ids;
+            report.delayed_destroy_restored_bytes = purge.restored_physical_bytes;
+            report.refresh_public_lifecycle_metrics();
         }
-        let eviction_report = if request.enable_evict {
-            Some(if request.dry_run {
-                StorageEvictionReport {
-                    shard_id: request.shard_id,
-                    // ONE MODE, because there is one arm. The dry run used to echo the request's
-                    // flag and name `delete_drop`, which is now a mode this stage cannot reach --
-                    // a dry run that predicts an arm the real round will not take is worse than no
-                    // prediction.
-                    mode: "evict_cache".to_string(),
-                    pressure_before: pressure_signals
-                        .memory_cache_pressure_score
-                        .saturating_add(pressure_signals.disk_cache_bytes),
-                    pressure_after: pressure_signals
-                        .memory_cache_pressure_score
-                        .saturating_add(pressure_signals.disk_cache_bytes),
-                    memory_pressure_threshold: request.eviction_memory_pressure_threshold,
-                    batch_limit: request.eviction_batch_limit,
-                    dump_before_evict: request.eviction_dump_before_evict,
-                    skipped_reason: "dry_run".to_string(),
-                    ..StorageEvictionReport::default()
-                }
-            } else {
-                self.apply_storage_eviction(
+        self.publish_block_slab_live_bytes();
+        let reclaim_block_span = StageSpan::close(&mut stage_clock);
+        stage_boundary_order.push("reclaim_page".to_string());
+        if request.enable_index_gc && !request.dry_run {
+            if let Some(report) = lifecycle_report.as_mut() {
+                report.manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
                     request.shard_id,
-                    request.eviction_memory_pressure_threshold,
-                    request.eviction_batch_limit,
-                    request.eviction_dump_before_evict,
-                    // NEVER, and the request no longer carries a field that could make it true --
-                    // the same reading as the periodic loop's (`data_node/runtime_storage.rs`).
-                    // `delete_drop` deletes the model-map entry that is the only thing pointing at
-                    // a record's payload block, and writes a tombstone so the deletion survives
-                    // replay. No memory-pressure stage may reach it. The literal is the route's
-                    // absence.
-                    false,
-                )
-            })
-        } else if request.index_resident_limit_bytes > 0 && !request.dry_run {
-            // THE NARROW BOUND RUNS WITH THE WIDE STAGE OFF, which is the whole reason it is a
-            // separate arm. `enable_evict` carries a threshold, and the shipped threshold is 0 --
-            // "evicts whenever it runs" -- so a bound that inherited the flag's state would have
-            // inherited an always-open gate. On the periodic loop the two are reconciled by taking
-            // the higher bar; here, where the flag is explicit in the request, the flag wins and
-            // this arm is what a caller gets by setting only the bound.
-            //
-            // It reports through the same field because it reaches the same release, so an
-            // operator reads one eviction report either way -- `mode` says which gate opened.
-            Some(self.apply_index_resident_bound(
-                request.shard_id,
-                request.index_resident_limit_bytes,
-                request.eviction_batch_limit,
-            ))
-        } else {
-            None
-        };
-        // The warm re-measure above feeds this stage's own pressure gate, so it is charged here
-        // rather than to the dump that warmed the cache.
-        let evict_span = StageSpan::close(&mut stage_clock);
-        // Blocks whose only durable copy is a WAL record leave the log HERE, before the reclaim
-        // plan is computed, because `min_registered_sequence` pins retention to the LOWEST
-        // registration: a block still resident holds the floor down and no retention policy can
-        // pass it. That is the order this stage's counterpart uses in the design this
-        // follows -- dump the dirty slots, advance the dumped-log id, and only then reclaim.
-        //
-        // Until this ran, the only caller that moved a block out of the log was the write path,
-        // which sweeps once registrations pass `TS_WAL_RESIDENT_PAGES` and therefore stops the
-        // moment writes stop. An idle shard kept every block it had ever written that way.
-        // Measured on 48 async writes: a flush left all 48 registered, and so did a full
-        // eight-stage cycle, with the log floor still at sequence 1.
-        //
-        // Bounded per cycle at `max_dump_buckets_per_round`, so a shard sitting at the write
-        // path's ceiling drains over several cycles instead of turning one into a long pause.
-        // Oldest first, because the oldest registration is the one holding the floor down. The
-        // bytes are already durable in the log, so this moves a copy that is safe either way.
-        let wal_resident_blocks_before = self.wal_resident_block_count(request.shard_id);
-        let wal_resident_blocks_materialised = if request.enable_wal_reclaim
-            && !request.dry_run
-            && wal_resident_blocks_before > 0
-        {
-            // Zero is how this request spells "no bound" -- its own default is 0 while the
-            // scheduler's is 64 -- so a cycle asked for no bound drains the shard rather than
-            // one block per pass.
-            let per_round = if request.max_dump_buckets_per_round == 0 {
-                usize::MAX
-            } else {
-                request.max_dump_buckets_per_round
-            };
-            self.materialize_oldest_resident_blocks(
-                request.shard_id,
-                wal_resident_blocks_before.saturating_sub(per_round),
-            )
-        } else {
-            0
-        };
-
-        let wal_reclaim_plan = self.storage_wal_reclaim_plan(
-            request.shard_id,
-            request.follower_replay_cursors.clone(),
-            request.raft_snapshot_refs.clone(),
-        );
-        let wal_reclaim_report = if request.enable_wal_reclaim {
-            Some(if request.dry_run {
-                StorageWalReclaimReport {
-                    plan: wal_reclaim_plan.clone(),
-                    applied: false,
-                    ..StorageWalReclaimReport::default()
-                }
-            } else {
-                self.apply_storage_wal_reclaim(wal_reclaim_plan.clone())
-            })
-        } else {
-            None
-        };
-        let reclaim_wal_span = reclaim_wal_dump_span.plus(StageSpan::close(&mut stage_clock));
+                    request.follower_replay_cursors.clone(),
+                );
+                report.install_roll_forward_reports =
+                    self.roll_forward_bucket_dump_installs(request.shard_id);
+                report.manifest_prune_report = Some(
+                    self.apply_bucket_dump_manifest_prune_with_follower_cursors(
+                        request.shard_id,
+                        request.follower_replay_cursors.clone(),
+                    ),
+                );
+                report.refresh_public_lifecycle_metrics();
+            }
+        }
+        if request.enable_index_gc && !request.dry_run {
+            self.maybe_dump_index_catalog(request.shard_id);
+        }
         let index_gc_report = Some(self.storage_index_gc_report(
             &plan,
             &wal_reclaim_plan,
@@ -755,6 +764,7 @@ impl TemporalEngine {
         ));
 
         let index_gc_span = StageSpan::close(&mut stage_clock);
+        stage_boundary_order.push("index_gc".to_string());
         stages.push(StorageManagerStageReport {
             duration_ms: reclaim_wal_span.duration_ms,
             duration_us: reclaim_wal_span.duration_us,
@@ -1029,19 +1039,18 @@ impl TemporalEngine {
             enabled: request.enable_block_reclaim,
             applied: request.enable_block_reclaim
                 && !request.dry_run
-                && block_gc_dependency_plan.safe_to_reclaim
                 && lifecycle_report
                     .as_ref()
                     .map(|report| !report.delayed_destroy_purged_slabs.is_empty())
                     .unwrap_or(false),
             skipped: !request.enable_block_reclaim
                 || plan.reclaim_candidates.is_empty()
-                || !block_gc_dependency_plan.safe_to_reclaim,
+                || reclaimable_block_slab_ids.is_empty(),
             reason: if !request.enable_block_reclaim {
                 "block reclaim disabled".to_string()
             } else if plan.reclaim_candidates.is_empty() {
                 "no stale or delayed-destroy block segments are reclaimable".to_string()
-            } else if !block_gc_dependency_plan.safe_to_reclaim {
+            } else if reclaimable_block_slab_ids.is_empty() {
                 format!(
                     "block GC refused because retained dependencies remain: {}",
                     block_gc_dependency_plan.blocker_reasons.join(",")
@@ -1060,7 +1069,7 @@ impl TemporalEngine {
             pressure_threshold: 1,
             pressure_triggered: request.enable_block_reclaim
                 && !plan.reclaim_candidates.is_empty()
-                && block_gc_dependency_plan.safe_to_reclaim,
+                && !reclaimable_block_slab_ids.is_empty(),
             candidate_count: reclaim_candidate_count,
             skipped_count: reclaim_skipped_count
                 .saturating_add(block_gc_dependency_plan.blocked_block_slab_ids.len()),
@@ -1264,6 +1273,7 @@ impl TemporalEngine {
             None
         };
         let compact_span = StageSpan::close(&mut stage_clock);
+        stage_boundary_order.push("compact".to_string());
         stages.push(StorageManagerStageReport {
             duration_ms: compact_span.duration_ms,
             duration_us: compact_span.duration_us,
@@ -1336,6 +1346,7 @@ impl TemporalEngine {
         merged_dump_load_policy.policy_ready = merged_dump_load_policy.blockers.is_empty();
 
         let reap_metrics_span = StageSpan::close(&mut stage_clock);
+        stage_boundary_order.push("reap_metrics".to_string());
         stages.push(StorageManagerStageReport {
             duration_ms: reap_metrics_span.duration_ms,
             duration_us: reap_metrics_span.duration_us,
@@ -1376,17 +1387,8 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
                 + pressure_signals.raft_snapshot_retention_blockers,
         );
 
-        // MANIFEST-CONFORMANCE FOLD threshold dump (gate on only, never on a dry run): if the undumped
-        // index-log gap has crossed `index_dump_wal_gap_bytes`, materialize the base index +
-        // fold the slab catalog into an index-log anchor here, in the background cycle --
-        // mirroring this design's background `StorageManager` dump-on-WAL-gap cadence, never
-        // per write. No-op with the gate off, so the cycle stays byte-identical when the fold is
-        // not enabled.
-        if !request.dry_run {
-            self.maybe_dump_index_catalog(request.shard_id);
-        }
-
         let production_parity_slice = errors.is_empty()
+            && stage_boundary_order == native_stage_order
             && native_stage_order
                 .iter()
                 .all(|stage| stages.iter().any(|report| &report.stage == stage))
@@ -1398,6 +1400,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
             duration_us: round_duration_us,
             dry_run: request.dry_run,
             native_stage_order,
+            stage_boundary_order,
             completed: errors.is_empty(),
             production_parity_slice,
             pressure_snapshot: pressure_signals.clone(),

@@ -14,7 +14,7 @@ fn raft_config_matches_defaults_and_validates_required_limits() {
     assert_eq!(config.max_cache_memory_bytes, 32 * 1024 * 1024);
     assert_eq!(config.raft_transport_timeout_ms, 1_000);
     assert_eq!(config.max_segment_bytes, 64 * 1024 * 1024);
-    assert!(!config.wal_sync);
+    assert!(config.wal_sync);
     assert!(config.assume_lease_when_start);
     assert!(config.can_trigger_snapshot);
     assert!(config.validate().is_ok());

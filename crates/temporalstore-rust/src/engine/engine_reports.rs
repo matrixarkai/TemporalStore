@@ -3982,6 +3982,9 @@ pub struct StorageManagerCycleReport {
     pub duration_us: u64,
     pub dry_run: bool,
     pub native_stage_order: Vec<String>,
+    /// Stage boundaries reached by this round, including stages disabled by the request.
+    #[serde(default)]
+    pub stage_boundary_order: Vec<String>,
     pub completed: bool,
     pub production_parity_slice: bool,
     #[serde(default)]

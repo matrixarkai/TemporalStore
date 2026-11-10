@@ -931,6 +931,12 @@ impl TemporalEngine {
         };
         let command = request.command;
         let write_command = is_write_command(&command);
+        let writes_string_block = matches!(
+            &command,
+            Command::StringSet { .. }
+                | Command::StringSetEx { .. }
+                | Command::StringSetConditional { .. }
+        );
         let mut config = self
             .configs
             .read()
@@ -1683,7 +1689,8 @@ impl TemporalEngine {
         // Locks are released and the barrier is done: a safe point to bound the resident set.
         // Not inside the write lock -- moving a block takes the same lock -- and not before the
         // barrier, because the write this call is acking must reach disk first.
-        if write_command && !replaying_wal() {
+        // This sweep only materializes strings; container writes cannot add a block it can retire.
+        if writes_string_block && !replaying_wal() {
             let limit = wal_resident_block_limit();
             if limit > 0
                 && block_in_wal::registration_count(&self.block_store, request.shard_id) > limit

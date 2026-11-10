@@ -984,34 +984,7 @@ impl TemporalEngine {
             }
         };
         let cache_warmup_block_refs = cache_warmup.warmed_block_refs;
-        let purge_report = if request.purge_delayed_destroy {
-            // THE LIVE SET AS IT IS NOW, not as it was when the collector quarantined these
-            // slabs. The destroy below is irreversible and the two moments are whole rounds
-            // apart; between them this same round may have written a dump manifest whose
-            // embedded index installs blocks in a slab that was unreferenced when the collector
-            // looked. Assembled exactly as the operator `/gc` path assembles it -- live block
-            // refs across every loaded shard, widened by every slab a retained manifest's index
-            // can install -- so the two reclaim paths cannot disagree about what is still needed.
-            let mut purge_live_block_slab_ids = self.live_block_slab_ids_all_shards();
-            for manifest in
-                list_bucket_dump_manifests_shared_at(&self.index_dir, request.shard_id)
-                    .unwrap_or_default()
-            {
-                purge_live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
-            }
-            self.block_store
-                .purge_delayed_destroy_slabs_selected(
-                    crate::block_store::DELAYED_DESTROY_MIN_AGE_MS,
-                    purge_live_block_slab_ids,
-                    request
-                        .purge_delayed_destroy_slab_ids
-                        .as_ref()
-                        .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>()),
-                )
-                .unwrap_or_default()
-        } else {
-            Default::default()
-        };
+        let purge_report = self.purge_storage_delayed_destroy(&request);
         let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             request.shard_id,
             request.follower_replay_cursors.clone(),
@@ -1118,6 +1091,32 @@ impl TemporalEngine {
             );
         }
         report
+    }
+
+    pub(super) fn purge_storage_delayed_destroy(
+        &self,
+        request: &StorageLifecycleRequest,
+    ) -> crate::block_store::BlockStorePurgeDelayedDestroyReport {
+        if !request.purge_delayed_destroy {
+            return Default::default();
+        }
+        let mut live_block_slab_ids = self.live_block_slab_ids_all_shards();
+        for manifest in
+            list_bucket_dump_manifests_shared_at(&self.index_dir, request.shard_id)
+                .unwrap_or_default()
+        {
+            live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
+        }
+        self.block_store
+            .purge_delayed_destroy_slabs_selected(
+                crate::block_store::DELAYED_DESTROY_MIN_AGE_MS,
+                live_block_slab_ids,
+                request
+                    .purge_delayed_destroy_slab_ids
+                    .as_ref()
+                    .map(|ids| ids.iter().copied().collect::<BTreeSet<_>>()),
+            )
+            .unwrap_or_default()
     }
 
     pub fn storage_wal_reclaim_plan(
@@ -1459,7 +1458,7 @@ impl TemporalEngine {
         let generations_durable = missing_bucket_generations.is_empty()
             && covered_bucket_count == bucket_summaries.len()
             && durable_wal_frontier > 0
-            && durable_index_log_frontier > 0;
+            && (current_index_log_sequence == 0 || durable_index_log_frontier > 0);
 
         // HOW FAR it may be followed: a retention cursor marks what some reader has still to
         // consume. Everything at or below the SLOWEST cursor is behind every reader and can go
@@ -1505,14 +1504,15 @@ impl TemporalEngine {
         // A clamp to zero reclaims nothing, which is the right answer for a cursor that has never
         // advanced -- the win here is exactly the span a reader has already consumed, and for a
         // permanently stuck follower that span is empty.
-        let safe_to_reclaim =
-            generations_durable && effective_wal_frontier > 0 && effective_index_log_frontier > 0;
+        let safe_to_reclaim = generations_durable
+            && effective_wal_frontier > 0
+            && (current_index_log_sequence == 0 || effective_index_log_frontier > 0);
         let retain_from_wal_sequence = if safe_to_reclaim {
             effective_wal_frontier.saturating_add(1)
         } else {
             0
         };
-        let retain_from_index_log_sequence = if safe_to_reclaim {
+        let retain_from_index_log_sequence = if safe_to_reclaim && current_index_log_sequence > 0 {
             effective_index_log_frontier.saturating_add(1)
         } else {
             0
@@ -1561,6 +1561,14 @@ impl TemporalEngine {
             plan.shard_id,
             plan.durable_bucket_generation_frontier_wal_sequence,
         );
+        match super::block_in_wal::min_registered_sequence(
+            &self.block_store,
+            plan.shard_id,
+            &self.wal_store,
+        ) {
+            Some(sequence) => self.wal_store.set_block_retention_floor(plan.shard_id, sequence),
+            None => self.wal_store.clear_block_retention_floor(plan.shard_id),
+        }
         let wal_gc = self
             .write_ahead_log_store()
             .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence, &durable_index)
