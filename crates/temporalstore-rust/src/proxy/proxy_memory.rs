@@ -250,6 +250,39 @@ fn memory_catalog_key(tenant_hash: u64) -> String {
     format!("context:memory:{tenant_hash:016x}")
 }
 
+fn memory_identity_scan_page(
+    response: CommandResponse,
+    after: &[u8],
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), Status> {
+    let CommandResponse::Members { members } = response else {
+        return Err(Status::error(
+            "invalid_backend_response",
+            "expected identity scan members",
+        ));
+    };
+    if members.len() % 2 != 0 {
+        return Err(Status::error(
+            "invalid_backend_response",
+            "identity scan has an incomplete pair",
+        ));
+    }
+    let mut cursor = after.to_vec();
+    let mut identities = Vec::with_capacity(members.len() / 2);
+    for pair in members.chunks_exact(2) {
+        if pair[0].as_slice() <= cursor.as_slice() {
+            return Err(Status::error(
+                "invalid_backend_response",
+                "identity scan did not advance",
+            ));
+        }
+        cursor.clone_from(&pair[0]);
+        if pair[0] != MEMORY_TOTAL_MEMBER {
+            identities.push(pair[0].clone());
+        }
+    }
+    Ok((cursor, identities))
+}
+
 fn memory_catalog_write<'a>(
     tenant_hash: u64,
     records: impl Iterator<Item = &'a MemoryRecord>,
@@ -1108,28 +1141,31 @@ impl ProxyService {
         let delete_whole_scope = identity_members.is_empty() || identity_covers_scope;
         if delete_whole_scope {
             let deleted = total.unwrap_or_default();
-            let identities = self.execute(ExecuteRequest {
-                shard_id,
-                command: Command::ZSetScan {
-                    key: memory_identity_key(tenant_hash),
-                    after: Vec::new(),
-                    limit: 10_000,
-                },
-            });
-            if !identities.status.ok {
-                return crate::http::json_response(502, &identities.status);
-            }
-            if let CommandResponse::Members { members } = identities.response {
-                for page in members
-                    .chunks_exact(2)
-                    .map(|entry| entry[0].clone())
-                    .filter(|member| member != MEMORY_TOTAL_MEMBER)
-                    .collect::<Vec<_>>()
-                    .chunks(MEMORY_CATALOG_PAGE_SIZE)
-                {
+            let mut after = Vec::new();
+            loop {
+                let identities = self.execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::ZSetScan {
+                        key: memory_identity_key(tenant_hash),
+                        after: after.clone(),
+                        limit: MEMORY_CATALOG_PAGE_SIZE,
+                    },
+                });
+                if !identities.status.ok {
+                    return crate::http::json_response(502, &identities.status);
+                }
+                let (next, members) = match memory_identity_scan_page(identities.response, &after) {
+                    Ok(page) => page,
+                    Err(status) => return crate::http::json_response(502, &status),
+                };
+                if next == after {
+                    break;
+                }
+                after = next;
+                if !members.is_empty() {
                     let response = self.batch_execute(BatchExecuteRequest {
                         shard_id,
-                        commands: page
+                        commands: members
                             .iter()
                             .map(|member| Command::StringDelete {
                                 key: memory_identity_records_key(tenant_hash, member),
@@ -1908,6 +1944,63 @@ fn json_status_ok(body: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_identity_scan_pages_beyond_ten_thousand() {
+        let mut cursor = Vec::new();
+        let mut visited = 0;
+        for start in (0..10_001).step_by(MEMORY_CATALOG_PAGE_SIZE) {
+            let mut members = Vec::new();
+            for index in start..(start + MEMORY_CATALOG_PAGE_SIZE).min(10_001) {
+                members.push(format!("u{index:08}").into_bytes());
+                members.push(b"1".to_vec());
+            }
+            let (next, identities) =
+                memory_identity_scan_page(CommandResponse::Members { members }, &cursor).unwrap();
+            assert!(next > cursor);
+            assert!(identities.len() <= MEMORY_CATALOG_PAGE_SIZE);
+            visited += identities.len();
+            cursor = next;
+        }
+        assert_eq!(visited, 10_001);
+        let (next, identities) = memory_identity_scan_page(
+            CommandResponse::Members {
+                members: Vec::new(),
+            },
+            &cursor,
+        )
+        .unwrap();
+        assert_eq!(next, cursor);
+        assert!(identities.is_empty());
+    }
+
+    #[test]
+    fn memory_identity_scan_rejects_malformed_or_stalled_pages() {
+        assert!(memory_identity_scan_page(CommandResponse::Empty, b"").is_err());
+        assert!(memory_identity_scan_page(
+            CommandResponse::Members {
+                members: vec![b"a".to_vec()],
+            },
+            b""
+        )
+        .is_err());
+        assert!(memory_identity_scan_page(
+            CommandResponse::Members {
+                members: vec![b"a".to_vec(), b"1".to_vec()],
+            },
+            b"a"
+        )
+        .is_err());
+        let (cursor, identities) = memory_identity_scan_page(
+            CommandResponse::Members {
+                members: vec![MEMORY_TOTAL_MEMBER.to_vec(), b"5".to_vec()],
+            },
+            b"",
+        )
+        .unwrap();
+        assert_eq!(cursor, MEMORY_TOTAL_MEMBER);
+        assert!(identities.is_empty());
+    }
 
     #[test]
     fn memory_ids_carry_the_tenant_route() {
