@@ -1922,7 +1922,7 @@ class OnlineStoreTest(unittest.TestCase):
         with mock.patch(
             "feast_temporalstore_command.online_store.utils._get_unique_entities",
             return_value=(["entities"], [[0], [1]], 2),
-        ), mock.patch(
+        ) as unique_entities, mock.patch(
             "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
             return_value=entity_keys,
         ), mock.patch(
@@ -1940,6 +1940,7 @@ class OnlineStoreTest(unittest.TestCase):
             )
 
         self.assertEqual(len(client.shared_reads), 1)
+        self.assertEqual(unique_entities.call_count, 1)
         keys, fields = client.shared_reads[0]
         self.assertEqual(len(keys), 2)
         self.assertEqual(
@@ -1949,6 +1950,23 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual([item[0] for item in populated], [["trips"], ["amount"]])
         self.assertEqual(populated[0][1][1][1]["trips"].int64_val, 2)
         self.assertEqual(populated[1][1][1][1]["amount"].int64_val, 20)
+
+        fares.projection.join_key_map["driver_id"] = "other_driver_id"
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], [[0], [1]], 2),
+        ) as unique_entities, mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            return_value=entity_keys,
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._populate_response_from_feature_data",
+        ):
+            self.store._read_features_per_fv(
+                self.config,
+                [(self.view, ["trips"]), (fares, ["amount"])],
+                {}, {}, object(), False, False,
+            )
+        self.assertEqual(unique_entities.call_count, 2)
 
     def test_a_short_field_answer_does_not_shift_values_onto_other_features(self):
         # A node that answers with fewer slots than fields requested must not
