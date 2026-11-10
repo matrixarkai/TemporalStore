@@ -1243,6 +1243,7 @@ impl TemporalEngine {
                         )
                     }
                     Command::HashMultiSet { key, entries }
+                    | Command::HashMultiSetWithTtl { key, entries, .. }
                     | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
                         storage_bucket_internals::sync_written_hash_fields(
                             shard,
@@ -3749,6 +3750,7 @@ fn command_upsert_element_names(
             Some(vec![("hash", key.clone(), Some(field.clone()))])
         }
         Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetWithTtl { key, entries, .. }
         | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => Some(
             entries
                 .iter()
@@ -4420,6 +4422,7 @@ fn command_touched_container_elements(
             }]
         }
         Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetWithTtl { key, entries, .. }
         | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => entries
             .iter()
             .map(|(field, _)| TouchedContainerElement::Hash {

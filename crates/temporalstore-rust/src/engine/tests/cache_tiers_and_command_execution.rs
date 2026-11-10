@@ -5081,6 +5081,70 @@ fn feature_append_with_ttl_survives_shard_reload() {
 }
 
 #[test]
+fn hash_multi_set_with_ttl_survives_shard_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let write = Command::HashMultiSetWithTtl {
+        key: "feature-row".to_string(),
+        entries: vec![("view:value".to_string(), b"seven".to_vec())],
+        ttl_ms: 60_000,
+    };
+    let encoded = crate::shared_store::command_protobuf_bytes(&write).unwrap();
+    let decoded = crate::shared_store::command_from_protobuf_bytes(&encoded).unwrap();
+    assert!(matches!(decoded, Command::HashMultiSetWithTtl { ttl_ms: 60_000, .. }));
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache-a"),
+            &blocks,
+            &indexes,
+        );
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest { shard_id: 1, command: decoded });
+        assert!(response.status.ok);
+    }
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(1);
+    let ttl = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl { key: "feature-row".to_string() },
+    });
+    assert!(matches!(ttl.response, CommandResponse::Integer { value } if value > 0));
+    let read = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "feature-row".to_string(),
+            field: "view:value".to_string(),
+        },
+    });
+    assert_eq!(read.response, CommandResponse::Bytes { value: Some(b"seven".to_vec()) });
+
+    let expire = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashMultiSetWithTtl {
+            key: "feature-row".to_string(),
+            entries: vec![("view:value".to_string(), b"eight".to_vec())],
+            ttl_ms: 0,
+        },
+    });
+    assert!(expire.status.ok);
+    let expired = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "feature-row".to_string(),
+            field: "view:value".to_string(),
+        },
+    });
+    assert_eq!(expired.response, CommandResponse::Bytes { value: None });
+}
+
+#[test]
 fn common_expire_missing_key_matches_not_found() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

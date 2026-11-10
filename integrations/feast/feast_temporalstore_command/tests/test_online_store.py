@@ -1198,6 +1198,27 @@ class OnlineStoreTest(unittest.TestCase):
             ["hash_multi_set", "hash_multi_set"],
         )
 
+    def test_mixed_feature_layouts_carry_ttl_without_expiry_commands(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._install()
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [
+            (self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None),
+            (self._entity_key(2), {"fares": ValueProto(int64_val=2)}, now, None),
+        ]
+
+        self.store.online_write_batch(self.config, self.view, rows, None)
+
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            ["hash_multi_set_with_ttl", "hash_multi_set_with_ttl"],
+        )
+        self.assertEqual([command["ttl_ms"] for command in commands], [90_000, 90_000])
+
     def test_history_serializes_each_entity_and_value_once(self):
         class CountingValue:
             def __init__(self, number):
@@ -1260,7 +1281,7 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(read_commands[0]["fields"], ["_ts:stats"])
         self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
 
-    def test_ttl_write_falls_back_to_timestamp_read_and_expire(self):
+    def test_ttl_write_falls_back_to_timestamp_read_and_combined_write(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
         client = self._install(
@@ -1271,7 +1292,7 @@ class OnlineStoreTest(unittest.TestCase):
                 },
                 {
                     "status": {"ok": True, "code": "ok", "message": ""},
-                    "applied": 2,
+                    "applied": 1,
                     "errors": [],
                 },
             ]
@@ -1291,9 +1312,9 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
         self.assertEqual(
             [command["kind"] for command in client.sent[1][1]["commands"]],
-            ["hash_multi_set", "common_expire"],
+            ["hash_multi_set_with_ttl"],
         )
-        self.assertEqual(client.sent[1][1]["commands"][1]["ttl_ms"], 90_000)
+        self.assertEqual(client.sent[1][1]["commands"][0]["ttl_ms"], 90_000)
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_default_write_uses_one_atomic_timestamp_request(self):
@@ -1956,13 +1977,12 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(
             [command["kind"] for command in commands],
             [
-                "hash_multi_set",
+                "hash_multi_set_with_ttl",
                 "feature_append_with_ttl",
                 "feature_append_with_ttl",
-                "common_expire",
             ],
         )
-        self.assertEqual([command["ttl_ms"] for command in commands[1:3]], [90_000] * 2)
+        self.assertEqual([command["ttl_ms"] for command in commands], [90_000] * 3)
 
         self.config.online_store.compact_numeric_history = True
         client = self._install()
@@ -1974,7 +1994,7 @@ class OnlineStoreTest(unittest.TestCase):
         )
         self.assertEqual(
             [command["kind"] for command in client.sent[0][1]["commands"]],
-            ["hash_multi_set", "feature_append_with_ttl", "common_expire"],
+            ["hash_multi_set_with_ttl", "feature_append_with_ttl"],
         )
 
     def test_compact_numeric_history_writes_one_series_and_queries_it(self):

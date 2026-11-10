@@ -83,7 +83,7 @@ def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
     """Return one command with byte-bearing fields represented as bytes."""
     encoded = dict(command)
     kind = encoded.get("kind")
-    if kind in {"hash_multi_set", "hash_multi_set_if_timestamp_older"}:
+    if kind in {"hash_multi_set", "hash_multi_set_with_ttl", "hash_multi_set_if_timestamp_older"}:
         encoded["entries"] = [
             (name, _required_binary(value))
             for name, value in encoded.get("entries", [])
@@ -104,7 +104,7 @@ def _json_command(command: Dict[str, Any]) -> Dict[str, Any]:
     """Return one command in the established JSON byte encoding."""
     encoded = dict(command)
     kind = encoded.get("kind")
-    if kind in {"hash_multi_set", "hash_multi_set_if_timestamp_older"}:
+    if kind in {"hash_multi_set", "hash_multi_set_with_ttl", "hash_multi_set_if_timestamp_older"}:
         encoded["entries"] = [
             (name, encode_bytes(_required_binary(value)))
             for name, value in encoded.get("entries", [])
@@ -635,19 +635,16 @@ class TemporalStoreClient:
                     self._shared_field_write_supported = True
                 return
 
+        kind = "hash_multi_set_with_ttl" if ttl_ms is not None else "hash_multi_set"
         commands = [
-                {
-                    "kind": "hash_multi_set",
-                    "key": key,
-                    "entries": list(zip(fields, values)),
-                }
-                for key, values in rows
-            ]
-        if ttl_ms is not None:
-            commands.extend(
-                {"kind": "common_expire", "key": key, "ttl_ms": ttl_ms}
-                for key, _values in rows
-            )
+            {
+                "kind": kind,
+                "key": key,
+                "entries": list(zip(fields, values)),
+                **({"ttl_ms": ttl_ms} if ttl_ms is not None else {}),
+            }
+            for key, values in rows
+        ]
         self.batch_write(commands)
 
     def batch_hash_timestamp_set(

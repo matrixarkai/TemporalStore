@@ -285,6 +285,7 @@ message Command {
     HashMultiSetIfTimestampOlder hash_multi_set_if_timestamp_older = 63;
     SetScan set_scan = 64;
     FeatureAppendWithTtl feature_append_with_ttl = 65;
+    HashMultiSetWithTtl hash_multi_set_with_ttl = 66;
   }
 }
 
@@ -335,6 +336,12 @@ message HashEntry {
 message HashMultiSet {
   string key = 1;
   repeated HashEntry entries = 2;
+}
+
+message HashMultiSetWithTtl {
+  string key = 1;
+  repeated HashEntry entries = 2;
+  uint64 ttl_ms = 3;
 }
 
 message HashMultiSetIfTimestampOlder {

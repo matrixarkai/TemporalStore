@@ -148,6 +148,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
         | Command::HashMultiSet { key, .. }
+        | Command::HashMultiSetWithTtl { key, .. }
         | Command::HashMultiSetIfTimestampOlder { key, .. }
         | Command::HashIncrBy { key, .. }
         | Command::HashDelete { key, .. }
@@ -393,6 +394,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::StringSetConditional { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetWithTtl { .. }
             | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
@@ -454,6 +456,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetWithTtl { .. }
             | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }

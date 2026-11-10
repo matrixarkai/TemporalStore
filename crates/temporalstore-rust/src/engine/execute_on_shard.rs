@@ -1826,6 +1826,35 @@ pub(crate) fn execute_on_shard(
             )
             .0;
         }
+        Command::HashMultiSetWithTtl { key, entries, ttl_ms } => {
+            let (outcome, _) = execute_hash_multi_set_reusing_metadata(
+                cache,
+                block_store,
+                shard_id,
+                start_routing_bucket,
+                end_routing_bucket,
+                shard,
+                async_storage,
+                false,
+                key.clone(),
+                entries,
+            );
+            if outcome.mutated {
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                crate::engine::set_expiry(shard, key.clone(), expires_at);
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
+            }
+            return outcome;
+        }
         Command::HashMultiSetIfTimestampOlder { .. } => unreachable!(
             "conditional hash writes are handled before command dispatch"
         ),
