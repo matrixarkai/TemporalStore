@@ -6110,9 +6110,10 @@ fn reconcile_object_index_with_live_blocks(bucket: &mut BucketNode, live: &BTree
         return;
     }
 
-    let held: Vec<u64> = bucket.object_index.iter().copied().collect();
+    let mut held: Vec<u64> = bucket.object_index.iter().copied().collect();
+    held.sort_unstable();
     for id in live {
-        if !held.contains(id) {
+        if held.binary_search(id).is_err() {
             object_index_divergence::note_block_named_an_object_the_list_lacked(*id);
             bucket.object_index.insert(*id);
         }
