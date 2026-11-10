@@ -6468,7 +6468,15 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             }
         });
         if !deleted_object_ids.is_empty() {
-            bucket.object_index.extend(deleted_object_ids.iter().copied());
+            // An empty bucket retains the deleted id as a tombstone. A mixed bucket must
+            // drop it before reconciliation, or a normal delete is reported as divergence.
+            if bucket.block_index.is_empty() {
+                bucket.object_index.extend(deleted_object_ids.iter().copied());
+            } else {
+                for object_id in &deleted_object_ids {
+                    bucket.object_index.remove(object_id);
+                }
+            }
             bucket.set_dirty(true);
             let next_flag = bucket.block_index.is_empty();
             bucket.set_deleted(next_flag);
