@@ -561,6 +561,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::FeatureQuery { .. }
             | Command::FeatureQueryFiltered { .. }
             | Command::FeatureAggQuery { .. }
+            | Command::FeatureProtoAggQuery { .. }
             | Command::SequenceQuery { .. }
             | Command::SequenceBatchQuery { .. }
             | Command::CellRankQuery { .. }

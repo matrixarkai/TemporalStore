@@ -14,6 +14,30 @@ struct HashTimestamp {
     nanos: i32,
 }
 
+#[derive(Clone, PartialEq, prost::Message)]
+struct FeatureProtoNumber {
+    #[prost(oneof = "feature_proto_number::Value", tags = "3, 4")]
+    value: Option<feature_proto_number::Value>,
+}
+
+mod feature_proto_number {
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    pub(super) enum Value {
+        #[prost(int32, tag = "3")]
+        Int32(i32),
+        #[prost(int64, tag = "4")]
+        Int64(i64),
+    }
+}
+
+fn parse_feature_proto_number(bytes: &[u8]) -> Option<i64> {
+    let number = <FeatureProtoNumber as prost::Message>::decode(bytes).ok()?;
+    match number.value? {
+        feature_proto_number::Value::Int32(value) => Some(i64::from(value)),
+        feature_proto_number::Value::Int64(value) => Some(value),
+    }
+}
+
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
 ///
 /// WHAT IT COUNTS. One increment for each field a served `HashGetAll` found NAMED BY THE BLOCK
@@ -3510,13 +3534,18 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
-        Command::FeatureAggQuery {
-            key,
-            start_ms,
-            end_ms,
-            aggregator,
-            count,
-        } => {
+        aggregate_command @ (Command::FeatureAggQuery { .. }
+        | Command::FeatureProtoAggQuery { .. }) => {
+            let proto_values = matches!(aggregate_command, Command::FeatureProtoAggQuery { .. });
+            let (key, start_ms, end_ms, aggregator, count) = match aggregate_command {
+                Command::FeatureAggQuery {
+                    key, start_ms, end_ms, aggregator, count,
+                }
+                | Command::FeatureProtoAggQuery {
+                    key, start_ms, end_ms, aggregator, count,
+                } => (key, start_ms, end_ms, aggregator, count),
+                _ => unreachable!(),
+            };
             if remove_if_expired(shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
@@ -3531,6 +3560,7 @@ pub(crate) fn execute_on_shard(
             // those stay on the raw path. Gated to no explicit `count` cap so it covers the whole
             // window, matching the raw scan on the retained series.
             let use_rollup = control_rollup_enabled
+                && !proto_values
                 && aggregator.trim().eq_ignore_ascii_case("sum")
                 && count.is_none();
             if use_rollup {
@@ -3620,7 +3650,13 @@ pub(crate) fn execute_on_shard(
                                     identity,
                                     routing_bucket,
                                     &mut page_keys,
-                                    parse_i64_slice,
+                                    |value| {
+                                        if proto_values {
+                                            parse_feature_proto_number(value)
+                                        } else {
+                                            parse_i64_slice(value)
+                                        }
+                                    },
                                 )
                                 .flatten()
                             }))
@@ -3634,6 +3670,42 @@ pub(crate) fn execute_on_shard(
                     start_routing_bucket,
                     end_routing_bucket,
                 ));
+                if proto_values {
+                    let mut page_keys = crate::engine::PageKeys::new();
+                    let parsed = shard
+                        .features()
+                        .get(&key[..])
+                        .map(|series| {
+                            series
+                                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                                .take(count.unwrap_or(feature_max_size))
+                                .filter_map(|(timestamp_ms, address)| {
+                                    read_feature_value_with(
+                                        cache,
+                                        block_store,
+                                        shard_id,
+                                        timestamp_ms,
+                                        address,
+                                        identity,
+                                        routing_bucket,
+                                        &mut page_keys,
+                                        parse_feature_proto_number,
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let total = parsed.len();
+                    let value = crate::engine::window_aggregate::feature_legacy(
+                        &aggregator,
+                        parsed.into_iter(),
+                        total,
+                    );
+                    return ExecuteOutcome {
+                        response: CommandResponse::Aggregate { value },
+                        mutated,
+                    };
+                }
                 let values = shard
                     .features()
                     .get(&key[..])
@@ -3656,9 +3728,8 @@ pub(crate) fn execute_on_shard(
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                CommandResponse::Aggregate {
-                    value: aggregate_feature_values(&values, &aggregator),
-                }
+                let value = aggregate_feature_values(&values, &aggregator);
+                CommandResponse::Aggregate { value }
             }
         }
         Command::SequenceAdd { key, rows } => {

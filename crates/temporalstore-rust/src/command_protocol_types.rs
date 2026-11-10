@@ -1714,6 +1714,14 @@ pub enum Command {
         #[serde(default)]
         count: Option<usize>,
     },
+    FeatureProtoAggQuery {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: String,
+        #[serde(default)]
+        count: Option<usize>,
+    },
     SequenceAdd {
         key: String,
         rows: Vec<SequenceFeatureRow>,

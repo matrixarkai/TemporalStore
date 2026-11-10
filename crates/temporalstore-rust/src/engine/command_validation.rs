@@ -27,6 +27,8 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
         | Command::FeatureQuery { key, .. }
+        | Command::FeatureAggQuery { key, .. }
+        | Command::FeatureProtoAggQuery { key, .. }
         | Command::SequenceQuery { key, .. }
         | Command::CellRankQuery { key, .. } => Some(key.as_str()),
         _ => None,
@@ -342,6 +344,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureQuery { .. }
         | Command::FeatureQueryFiltered { .. }
         | Command::FeatureAggQuery { .. }
+        | Command::FeatureProtoAggQuery { .. }
         | Command::SequenceQuery { .. }
         | Command::CellRankQuery { .. }
         | Command::ControlStateCount { .. }
