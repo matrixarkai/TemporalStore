@@ -510,10 +510,6 @@ impl TemporalEngine {
         let index_dir = index_dir.into();
         let wal_store = LocalWriteAheadLogStore::new(index_dir.join("wals"));
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
-        // Install the durable read-by-address fallback for log-backed hot blocks: an eviction
-        // handler spills an evicted hot block to a real slab (freeing DRAM + preventing the acked
-        // write from reading back as missing). Idempotent + a no-op when disabled.
-        hot_block_spill::install_spill_handler(&cache, &block_store);
         Self {
             shards: Arc::default(),
             cache,
@@ -559,19 +555,6 @@ impl TemporalEngine {
                 ),
             ),
         }
-    }
-
-    /// Stop this engine's cache spilling evicted hot blocks to a real slab, so a read has to come
-    /// from the log-resident path.
-    ///
-    /// Five tests want this, and `TS_HOT_PAGE_SPILL=0` was how they asked. Four could not work:
-    /// `install_spill_handler` reads that variable during construction and every one of them set
-    /// it afterwards, so the handler was already installed and the isolation they described never
-    /// happened. `register_eviction_callback` REPLACES the callback, so a no-op takes the handler
-    /// off the engine this test built, at the moment it asks.
-    #[cfg(test)]
-    pub(crate) fn disable_hot_block_spill_for_test(&self) {
-        self.cache.register_eviction_callback(|_| {});
     }
 
     /// Warm this engine's page cache in the BACKGROUND rather than during `load_shard`, so a
@@ -3468,10 +3451,6 @@ impl TemporalEngine {
             .write()
             .expect("admission lock poisoned")
             .remove(&AdmissionScope::Shard(request.shard_id));
-        // Drop this shard's hot-block spill redirects: on the next load the WAL replay re-derives
-        // the hot blocks (and re-spills them as needed), so the live-path redirect map stays
-        // bounded across load/unload cycles.
-        hot_block_spill::clear_shard(request.shard_id);
         // Drop this shard's WAL-resident registrations too: they name records in a log this
         // engine no longer serves, and a reload re-derives them from the WAL anyway.
         block_in_wal::clear_shard(&self.block_store, request.shard_id);

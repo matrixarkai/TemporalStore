@@ -453,6 +453,13 @@ fn main() {
                 ..StorageManagerCycleRequest::default()
             });
             assert!(report.errors.is_empty(), "maintenance cycle failed: {:?}", report.errors);
+            for candidate in &report.plan.reclaim_candidates {
+                println!("RECLAIM_COST round={round} slab={} physical_bytes={} live_bytes={} stale_bytes={} blocks={} live_refs={} stale_blocks={} reason={}",
+                    candidate.block_slab_id, candidate.physical_bytes,
+                    candidate.live_physical_bytes, candidate.stale_physical_bytes,
+                    candidate.block_count, candidate.live_block_refs,
+                    candidate.stale_block_estimate, candidate.reason);
+            }
             if compaction_mode == "drain" {
                 let candidates = &report.plan.reclaim_candidates;
                 let eligible_refs = temporalstore_rust::engine::compaction_relocatable_block_refs(candidates);
@@ -472,9 +479,10 @@ fn main() {
                 i128::from(tree_bytes(&dir)) - i128::from(files_before),
                 engine.write_ahead_log_store().stats(1).bytes_written.saturating_sub(wal_before));
             for stage in &report.stages {
-                println!("STAGE_COST round={round} stage={} elapsed_us={} enabled={} applied={} candidates={} before_bytes={} after_bytes={}",
+                println!("STAGE_COST round={round} stage={} elapsed_us={} enabled={} applied={} candidates={} before_bytes={} after_bytes={} rewritten_refs={}",
                     stage.stage, stage.duration_us, stage.enabled, stage.applied,
-                    stage.candidate_count, stage.before_bytes, stage.after_bytes);
+                    stage.candidate_count, stage.before_bytes, stage.after_bytes,
+                    stage.rewritten_block_refs);
                 assert!(stage.errors.is_empty(), "stage {}: {:?}", stage.stage, stage.errors);
             }
         }

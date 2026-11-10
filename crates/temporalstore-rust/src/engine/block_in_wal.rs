@@ -9,8 +9,7 @@
 //! copy is its WAL record, and it is served from the memory cache at a synthetic address that
 //! names no file. So when the cache drops that entry before a dump materializes it, the read
 //! finds nothing: an acked write reads back as MISSING until a full reload replays the WAL.
-//! [`super::hot_block_spill`] works around that by copying evicted values to a real slab, which
-//! helps only if the spill happened and succeeded.
+//! Cache misses resolve through the carrying WAL record without creating another slab copy.
 //!
 //! The value was in the WAL the whole time. What was missing was a way to say *where*: the
 //! synthetic address is a counter, not a position, so nothing could find the record again.
@@ -73,8 +72,7 @@ pub(super) fn begin_write() {
 
 /// Put a block aside for the record this write is about to append.
 ///
-/// Unconditional. `TS_BLOCK_IN_WAL` used to gate it and is gone -- said the way
-/// `hot_block_spill` says the same thing about `TS_HOT_PAGE_SPILL`, because a retired flag that
+/// Unconditional. `TS_BLOCK_IN_WAL` used to gate it and is gone. A retired flag that
 /// leaves no note behind gets cited later as though it still decided something. It was, in the
 /// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
 /// somebody reads to decide what an ack promises.

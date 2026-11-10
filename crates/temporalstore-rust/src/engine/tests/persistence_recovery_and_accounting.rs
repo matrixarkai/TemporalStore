@@ -8676,12 +8676,6 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
         },
     });
 
-    // The spill path would otherwise mask what is being tested by copying the value to a real
-    // slab on eviction.
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
-
     let key = "block-in-wal-key";
     let value = b"block-in-wal-value".to_vec();
     let write = engine.execute(ExecuteRequest {
@@ -8735,10 +8729,6 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
             ..Config::default()
         },
     });
-
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
 
     let write = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -9066,10 +9056,6 @@ fn a_block_in_wal_block_still_reads_back_after_a_shard_reload() {
         },
     });
 
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
-
     let key = "reload-block-key";
     let value = b"reload-block-value".to_vec();
     let write = engine.execute(ExecuteRequest {
@@ -9127,10 +9113,6 @@ fn a_wal_resident_block_records_where_it_lives_in_the_index() {
             ..Config::default()
         },
     });
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
-
     assert_eq!(
         engine.wal_resident_block_count(1),
         0,
@@ -9183,7 +9165,7 @@ fn a_wal_resident_block_records_where_it_lives_in_the_index() {
 ///
 /// This was once the control half of a test asserting the opposite for a store that put nothing
 /// in the log. That store no longer exists -- a write always carries its block -- so the control
-/// is the whole test: an async write with the spill handler off leaves its block in its record
+/// is the whole test: an async write leaves its block in its record
 /// and nowhere else, and the location it records is the only thing that can serve it back.
 /// A zero here means the write staged nothing, which is the acked-write-reads-back-as-MISSING
 /// case the carry was added to close.
@@ -9198,9 +9180,7 @@ fn an_async_write_records_where_its_block_lives() {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        // Asynchronous storage is what leaves a block somewhere other than the block store, and
-        // the spill handler is what would then catch it. Without both, nothing stages and the
-        // count is zero for reasons that have nothing to do with the setting.
+        // Asynchronous storage leaves the block in its carrying record rather than a slab.
         engine.set_config(SetConfigRequest {
             shard_id: 1,
             config: Config {
@@ -9209,7 +9189,6 @@ fn an_async_write_records_where_its_block_lives() {
                 ..Config::default()
             },
         });
-        engine.disable_hot_block_spill_for_test();
         assert!(
             engine
                 .execute(ExecuteRequest {
@@ -9445,10 +9424,6 @@ fn two_engines_in_one_process_do_not_read_each_others_blocks() {
                 ..Config::default()
             },
         });
-        // Said to EACH engine this closure builds. The variable worked here -- it is set before
-        // construction, unlike the four above -- but it said it to the process, and this test
-        // builds two engines to prove they do not share a spill map.
-        engine.disable_hot_block_spill_for_test();
         engine
     };
 

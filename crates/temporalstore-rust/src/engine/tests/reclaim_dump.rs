@@ -106,6 +106,72 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
 }
 
 #[test]
+fn cache_eviction_does_not_create_unindexed_slab_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "no-copy");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..crate::control::Config::default()
+        },
+    }).ok);
+    let keys = reclaim_dump_keys(64);
+    write_one_at_a_time(&engine, &keys);
+    assert_eq!(engine.materialize_oldest_resident_blocks(RECLAIM_DUMP_SHARD, 32), 32);
+    let bytes_before = engine.block_store.stats().bytes_written;
+    assert!(bytes_before > 0);
+    let buckets = engine.bucket_storage_summaries(RECLAIM_DUMP_SHARD);
+    let mut removed = 0;
+    for bucket in buckets {
+        removed += engine.cache.invalidate_slot(RECLAIM_DUMP_SHARD, bucket.routing_bucket)
+            .unwrap().memory_entries_removed;
+    }
+    assert!(removed >= keys.len());
+    assert_eq!(engine.block_store.stats().bytes_written, bytes_before);
+    let check = |engine: &TemporalEngine| {
+        for key in &keys {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(result.status.ok);
+            assert_eq!(result.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+        }
+    };
+    check(&engine);
+    for _ in 0..2 {
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            max_dump_buckets_per_round: 0,
+            ..StorageManagerCycleRequest::default()
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.plan.reclaim_candidates.is_empty());
+        assert!(report.stages.iter().all(|stage| stage.rewritten_block_refs == 0));
+        assert_eq!(engine.block_store.stats().bytes_written, bytes_before);
+    }
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "no-copy");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    check(&restored);
+}
+
+#[test]
+fn anonymous_async_blocks_have_real_storage_addresses() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "anonymous");
+    let value = b"anonymous block";
+    let address = append_value(&engine.cache, &engine.block_store, RECLAIM_DUMP_SHARD,
+        value, None, None, Some(0), true).unwrap();
+    assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+    engine.cache.invalidate_shard(RECLAIM_DUMP_SHARD).unwrap();
+    assert_eq!(engine.block_store.read(&address).unwrap(), value);
+}
+
+#[test]
 fn manifest_install_keeps_index_only_state_without_the_source_wal() {
     let dir = tempfile::tempdir().unwrap();
     let blocks = dir.path().join("shared-blocks");
