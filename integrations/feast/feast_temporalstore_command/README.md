@@ -152,6 +152,10 @@ Nodes without either binary write route are detected once per client and use
 
 ### `write_feature_history`
 
+Latest-only ingestion serializes values directly into bounded request rows,
+without creating an intermediate tuple for each feature. History ingestion
+reuses the serialized values already prepared for its series writes.
+
 Off by default. When on, every value is *also* appended to a feature series
 keyed by `(view, entity, feature)` at its event timestamp, so the history
 behind the served value stays queryable through `FeatureQuery`. Scalar Int32
