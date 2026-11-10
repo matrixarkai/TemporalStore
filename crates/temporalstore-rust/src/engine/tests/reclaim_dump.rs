@@ -106,6 +106,25 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
 }
 
 #[test]
+fn object_runtime_report_builds_one_identity_map_for_all_buckets() {
+    let dir = tempfile::tempdir().unwrap();
+    for count in [32, 128] {
+        let engine = reclaim_dump_engine(dir.path(), &format!("identity-{count}"));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        write_one_at_a_time(&engine, &reclaim_dump_keys(count));
+        let shards = engine.shards.read().unwrap();
+        let shard = &shards[&RECLAIM_DUMP_SHARD];
+        assert!(shard.bucket_index.bucket_map.len() > 16);
+        let (report, builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
+            crate::engine::object_manager::runtime_report(shard)
+        });
+        assert_eq!(report.live_object_count, count);
+        assert_eq!(report.live_block_ref_count, count);
+        assert_eq!(builds, 1, "{count} objects must share one identity map");
+    }
+}
+
+#[test]
 fn compacted_hash_elements_release_their_wal_positions_before_restart() {
     let dir = tempfile::tempdir().unwrap();
     let engine = reclaim_dump_engine(dir.path(), "retire");

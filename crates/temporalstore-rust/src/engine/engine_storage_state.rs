@@ -1423,6 +1423,18 @@ pub fn keyed_block_inversions() -> u64 {
     KEYED_INVERSIONS.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+thread_local! {
+    static BLOCK_IDENTITY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn measure_block_identity_builds_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    BLOCK_IDENTITY_BUILDS.with(|count| count.set(0));
+    let result = work();
+    (result, BLOCK_IDENTITY_BUILDS.with(|count| count.get()))
+}
+
 impl<'a> BlockKeysByPosition<'a> {
     /// REACHABLE FROM THE SIBLING MODULE THAT DERIVES, not only from this file's encoder.
     ///
@@ -1447,6 +1459,8 @@ impl<'a> BlockKeysByPosition<'a> {
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
+        #[cfg(test)]
+        BLOCK_IDENTITY_BUILDS.with(|count| count.set(count.get() + 1));
         let mut by_position = std::collections::HashMap::new();
         let mut by_handle = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
