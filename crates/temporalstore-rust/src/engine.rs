@@ -6460,7 +6460,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::block_identities_in(
             &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
+            &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+                routing_bucket,
+            ),
         );
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
