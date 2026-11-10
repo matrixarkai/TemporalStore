@@ -69,22 +69,30 @@ pub(super) fn begin_write() {
 /// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
 /// somebody reads to decide what an ack promises.
 pub(super) fn stage(object_id: u64, element_name: Option<&str>, bytes: &[u8]) {
-    // Charged here rather than at the two call sites inside `append_value`: this copy is what
-    // carrying a block in its record COSTS, and a third caller staging a block would otherwise add
-    // that cost to the store while adding nothing to the count.
+    // Charge the copy where it occurs. Owned packed rows take `stage_owned` and avoid it.
     //
-    // The element name's copy is charged to the same class for the same reason. It is a second,
+    // The element name's copy is charged to the same class. It is a second,
     // smaller cost of carrying the block -- a hash field name is two or three bytes, a zset member
     // is `16 + 2n` characters -- and it belongs beside the block copy it travels with rather than
     // against whichever caller happened to render the name.
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedBlock, || {
-        STAGED.with(|staged| {
-            staged.borrow_mut().push(StagedBlock {
-                object_id,
-                element_name: element_name.map(std::sync::Arc::from),
-                bytes: bytes.to_vec(),
-            })
-        });
+        stage_inner(object_id, element_name, bytes.to_vec());
+    });
+}
+
+pub(super) fn stage_owned(object_id: u64, element_name: Option<&str>, bytes: Vec<u8>) {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedBlock, || {
+        stage_inner(object_id, element_name, bytes);
+    });
+}
+
+fn stage_inner(object_id: u64, element_name: Option<&str>, bytes: Vec<u8>) {
+    STAGED.with(|staged| {
+        staged.borrow_mut().push(StagedBlock {
+            object_id,
+            element_name: element_name.map(std::sync::Arc::from),
+            bytes,
+        })
     });
 }
 

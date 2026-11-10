@@ -844,14 +844,13 @@ fn write_packed_hash_entries(
         .and_then(|ordinal| u32::try_from(ordinal).ok())
         .unwrap_or(0);
     let block = crate::engine::container_blocks::encode_utf8_container_block(&packed_entries);
-    let address = append_value_of_object(
+    let address = super::append_owned_value_of_object(
         cache,
         block_store,
         shard_id,
-        &block,
-        Some(object_id),
-        None,
-        Some(routing_bucket),
+        block,
+        object_id,
+        routing_bucket,
         async_storage,
         block_ordinal,
     );

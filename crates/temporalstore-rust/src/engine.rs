@@ -7201,7 +7201,7 @@ fn append_value_of_object(
     async_storage: bool,
     block_ordinal: u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    // Both arms, and every command that stores a value, reach a slab through here. The payload's
+    // Borrowed-value writes pass through here. The payload's
     // own copies re-tag themselves inside -- the encode as `BlockBytes`, the carried copy as
     // `CarriedBlock` -- so what is left under this class is the append machinery and not the bytes.
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
@@ -7217,6 +7217,43 @@ fn append_value_of_object(
             block_ordinal,
         )
     })
+}
+
+// Packed rows own their encoded frame, so a synchronous append can move it into the WAL.
+#[allow(clippy::too_many_arguments)]
+fn append_owned_value_of_object(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    bytes: Vec<u8>,
+    object_id: u64,
+    routing_bucket: u32,
+    async_storage: bool,
+    block_ordinal: u32,
+) -> Result<ElementEntry, BlockStoreError> {
+    if async_storage {
+        return append_value_of_object(
+            cache,
+            block_store,
+            shard_id,
+            &bytes,
+            Some(object_id),
+            None,
+            Some(routing_bucket),
+            true,
+            block_ordinal,
+        );
+    }
+    let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+        block_store.append_block_of_object(
+            &bytes,
+            Some(object_id),
+            Some(routing_bucket),
+            block_ordinal,
+        )
+    })?;
+    block_in_wal::stage_owned(object_id, None, bytes);
+    Ok(address)
 }
 
 #[allow(clippy::too_many_arguments)]
