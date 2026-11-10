@@ -674,6 +674,105 @@ impl Reducer {
     }
 }
 
+/// Refuses a typed reducer or `scale` that names no answer, naming the field. Run at validation,
+/// so a bad query is refused before it reads anything.
+pub(crate) fn check_typed(
+    reducer: &crate::types::FeatureReducer,
+    scale: u64,
+) -> Result<(), ParamError> {
+    use crate::types::{FeatureReducer as R, MAX_REDUCER_WEIGHTS};
+    let bad = |text: String| Err(ParamError(text));
+    if scale == 0 {
+        return bad("scale must be at least 1".to_string());
+    }
+    match reducer {
+        R::DecayedSum { half_life_ms: 0, .. } => bad("half_life_ms must be greater than 0".to_string()),
+        R::Ewma { alpha } if !(*alpha > 0.0 && *alpha <= 1.0) => {
+            bad(format!("alpha must be in (0, 1], got {alpha}"))
+        }
+        R::Wilson { z, .. } if !z.is_finite() || *z < 0.0 => {
+            bad(format!("z must be finite and not negative, got {z}"))
+        }
+        R::Weighted { weights } if weights.is_empty() => bad("weights must not be empty".to_string()),
+        R::Weighted { weights } if weights.len() > MAX_REDUCER_WEIGHTS => bad(format!(
+            "weights holds {} entries, at most {MAX_REDUCER_WEIGHTS} are allowed",
+            weights.len()
+        )),
+        R::Weighted { weights } => match weights.iter().position(|w| !w.is_finite()) {
+            Some(index) => bad(format!("weights[{index}] must be finite")),
+            None => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// The typed query's answer over `(timestamp_ms, value)` points in ascending timestamp order: the
+/// reducer's number times `scale`, rounded by `rounding`. A window with nothing to reduce, or a
+/// reducer with no answer for it, is `0`. Parameters are checked again here, so a caller that
+/// skipped [`check_typed`] gets the refusal and not a wrong number.
+pub(crate) fn reduce_typed(
+    reducer: &crate::types::FeatureReducer,
+    rounding: crate::types::FeatureRounding,
+    scale: u64,
+    start_ms: u64,
+    end_ms: u64,
+    points: impl Iterator<Item = (u64, i64)>,
+) -> Result<i64, ParamError> {
+    use crate::types::{FeatureReducer as R, FeatureRounding as FR};
+    check_typed(reducer, scale)?;
+    let mode = match rounding {
+        FR::Floor => Rounding::Floor,
+        FR::Ceil => Rounding::Ceil,
+        FR::Nearest => Rounding::Nearest,
+    };
+    let answer: Option<f64> = match reducer {
+        R::Mean => Reducer::Mean.reduce(points)?.map(Reduced::as_f64),
+        R::Variance { sample } => Reducer::Variance { sample: *sample }.reduce(points)?.map(Reduced::as_f64),
+        R::StdDev { sample } => Reducer::StdDev { sample: *sample }.reduce(points)?.map(Reduced::as_f64),
+        R::Ewma { alpha } => Reducer::Ewma { alpha: *alpha }.reduce(points)?.map(Reduced::as_f64),
+        R::DecayedSum { half_life_ms, as_of_ms } => {
+            let mut acc = DecayedSumAcc::new(*half_life_ms, *as_of_ms)?;
+            points.for_each(|(t, v)| acc.push(t, v));
+            Some(acc.finish_f64())
+        }
+        R::Rate => {
+            let mut acc = SumAcc::default();
+            points.for_each(|(_, v)| acc.push(v));
+            rate_per_second(acc.finish() as f64, start_ms, end_ms)
+        }
+        R::Ratio { at_least } => {
+            let (hits, total) = count_at_least(points, *at_least);
+            ratio(hits as i64, total as i64)
+        }
+        R::Wilson { at_least, z } => {
+            let (hits, total) = count_at_least(points, *at_least);
+            wilson_lower_bound(hits, total, *z)
+        }
+        R::Weighted { weights } => {
+            let mut newest: std::collections::VecDeque<i64> = std::collections::VecDeque::new();
+            for (_, value) in points {
+                if newest.len() == weights.len() {
+                    newest.pop_front();
+                }
+                newest.push_back(value);
+            }
+            if newest.len() == weights.len() {
+                weighted_sum(newest.make_contiguous(), weights)
+            } else {
+                None
+            }
+        }
+    };
+    Ok(answer.map_or(0, |value| round_to_i64(value * scale as f64, mode)))
+}
+
+/// `(points at or above the threshold, all points)`.
+fn count_at_least(points: impl Iterator<Item = (u64, i64)>, at_least: i64) -> (u64, u64) {
+    points.fold((0, 0), |(hits, total), (_, value)| {
+        (hits + u64::from(value >= at_least), total + 1)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
