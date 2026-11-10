@@ -1162,10 +1162,23 @@ impl TemporalEngine {
                 request.follower_replay_cursors.clone(),
             )
         });
-        let object_lifecycle = if detailed_report {
-            self.storage_object_lifecycle_snapshot(request.shard_id)
+        // ONE listing of the live blocks for the object lifecycle and the four report samples below,
+        // taken only for a detailed report. They were two listings under two reads of the shard,
+        // taken a few statements apart.
+        let shards_guard;
+        let listing = if detailed_report {
+            shards_guard = self.shards.read().expect("shards lock poisoned");
+            shards_guard
+                .get(&request.shard_id)
+                .map(|shard| (shard, collect_live_block_entries(shard)))
         } else {
-            StorageObjectLifecycleReport::default()
+            None
+        };
+        let object_lifecycle = match &listing {
+            Some((shard, entries)) => {
+                self.storage_object_lifecycle_snapshot_from_entries(request.shard_id, shard, entries)
+            }
+            None => StorageObjectLifecycleReport::default(),
         };
         let mut report = StorageLifecycleReport {
             shard_id: request.shard_id,
@@ -1212,12 +1225,7 @@ impl TemporalEngine {
         if !detailed_report {
             return report;
         }
-        if let Some(shard) = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&request.shard_id)
-        {
+        if let Some((shard, sampling_entries)) = &listing {
             // ONE walk for all four sampling snapshots.
             //
             // Each of these built its own `collect_live_block_entries` -- a fresh Vec of every live
@@ -1229,29 +1237,28 @@ impl TemporalEngine {
             // lock above covers all four, `&ShardState` is unchanged throughout, and these produce
             // report SAMPLES rather than a decision. A shared snapshot cannot change what the
             // system does; it only makes the four samples describe one moment instead of four.
-            let sampling_entries = collect_live_block_entries(shard);
             report.storage_index_snapshot = storage_index_snapshot_with_samples_from_entries(
                 request.shard_id,
-                &sampling_entries,
+                sampling_entries,
                 report.storage_index_snapshot,
             );
             report.storage_watermark_snapshot =
                 storage_watermark_snapshot_with_samples_from_entries(
                     request.shard_id,
                     shard,
-                    &sampling_entries,
+                    sampling_entries,
                     report.storage_watermark_snapshot,
                 );
             report.storage_gc_snapshot = storage_gc_snapshot_with_samples_from_entries(
                 request.shard_id,
                 shard,
-                &sampling_entries,
+                sampling_entries,
                 report.storage_gc_snapshot,
             );
             report.storage_topology_snapshot = storage_topology_snapshot_with_samples_from_entries(
                 request.shard_id,
                 shard,
-                &sampling_entries,
+                sampling_entries,
                 report.storage_topology_snapshot,
             );
         }

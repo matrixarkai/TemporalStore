@@ -645,3 +645,5 @@ mod a_sequence_read_takes_the_shared_lock;
 mod a_sorted_set_range_and_pop_select_the_first_members;
 #[path = "tests/a_write_asks_the_cache_before_it_invalidates.rs"]
 mod a_write_asks_the_cache_before_it_invalidates;
+#[path = "tests/an_apply_lists_the_shard_once_for_its_report.rs"]
+mod an_apply_lists_the_shard_once_for_its_report;

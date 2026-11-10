@@ -501,9 +501,6 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageObjectLifecycleReport {
-        // Header walk, not a full decode of every record -- see `storage_reclaim_slab_reports`.
-        // Only the per-slab block count is read below.
-        let block_slab_counts = self.block_store.slab_block_counts().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
             return StorageObjectLifecycleReport::default();
@@ -522,9 +519,21 @@ impl TemporalEngine {
         // change what a walk would find. Elsewhere in the round the stages genuinely mutate
         // between calls, which is why this is a hoist and not a cache.
         //
-        // Order matters only because the report CONSUMES the entries: borrow for the two cheap
-        // derivations first, then hand the Vec over last.
         let entries = collect_live_block_entries(shard);
+        self.storage_object_lifecycle_snapshot_from_entries(shard_id, shard, &entries)
+    }
+
+    /// The snapshot over a listing the caller already took under its own read of the shard, so the
+    /// lifecycle apply can feed this and its report samples from one listing.
+    pub(super) fn storage_object_lifecycle_snapshot_from_entries(
+        &self,
+        shard_id: ShardId,
+        shard: &ShardState,
+        entries: &[LiveBlockEntry],
+    ) -> StorageObjectLifecycleReport {
+        // Header walk, not a full decode of every record -- see `storage_reclaim_slab_reports`.
+        // Only the per-slab block count is read below.
+        let block_slab_counts = self.block_store.slab_block_counts().unwrap_or_default();
 
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
@@ -536,7 +545,7 @@ impl TemporalEngine {
         let ownership = validate_bucket_ownership_index_from_entries(
             shard_id,
             shard,
-            &entries,
+            entries,
             start_routing_bucket,
             end_routing_bucket,
         );
@@ -545,13 +554,13 @@ impl TemporalEngine {
         // count, summed. An address naming a slab the store has no report for contributes
         // nothing (the report path gives it block_count 0, so its shortfall saturates to 0).
         let mut live_block_refs_by_slab = BTreeMap::<u64, u64>::new();
-        for entry in &entries {
+        for entry in entries {
             *live_block_refs_by_slab
                 .entry(entry.address.block_slab_id())
                 .or_default() += 1;
         }
 
-        let mut report = object_lifecycle_report_from_entries(
+        let mut report = object_lifecycle_report_from_entry_slice(
             shard_id,
             shard,
             entries,
