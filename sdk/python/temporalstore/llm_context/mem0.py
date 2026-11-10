@@ -1,37 +1,31 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""mem0-compatible SDK shim for MatrixArk / TemporalStore.
+"""Mem0-compatible SDK backed only by TemporalStore's LLM-context API.
 
-Drop-in for ``from mem0 import Memory``. Point an existing mem0 codebase at a
-MatrixArk deployment with a one-line import swap::
+Drop-in for ``from mem0 import Memory``. Point an existing client at a
+TemporalStore proxy with a one-line import swap::
 
     # from mem0 import Memory
-    from temporalstore_mem0 import Memory
+    from temporalstore.llm_context import Memory
 
     m = Memory()                         # env-configured, same as the ingest client
     m.add(messages, user_id="u1", agent_id="assistant", run_id="sess-42")
     m.search("what did we decide?", user_id="u1", agent_id="assistant", limit=8)
 
 mem0 passes memory identity as TOP-LEVEL kwargs (not nested under a scope). This
-shim maps those kwargs onto MatrixArk's canonical ``scope`` object:
+shim maps those kwargs onto TemporalStore's canonical ``scope`` object:
 
     ============  ==========================
-    mem0 kwarg    MatrixArk scope field
+    mem0 kwarg    TemporalStore scope field
     ============  ==========================
     ``user_id``   ``scope.user_id``
     ``agent_id``  ``scope.agent_id``
     ``run_id``    ``scope.session_id``
     ============  ==========================
 
-The same aliases are ALSO accepted at the top level of ``/v1/ingest`` directly
-(the server folds them in ``normalize_envelope``), so this shim simply builds the
-canonical scope up front. Empty identity fields are omitted from the body.
-
-Only the stdlib (``http.client`` + ``json``) is used; connection/URL/api-key
-resolution is reused from ``matrixark_ingest_client`` so ``base_url`` / ``api_key``
-prefer ``TEMPORALSTORE_BASE_URL`` / ``TEMPORALSTORE_GATEWAY_URL`` /
-``TEMPORALSTORE_API_KEY`` while retaining the older ``MATRIXARK_*`` aliases.
+Only the Python standard library is required. ``base_url`` and ``api_key`` prefer
+the ``TEMPORALSTORE_*`` environment names.
 """
 from __future__ import annotations
 
@@ -39,49 +33,102 @@ from __future__ import annotations
 # quietly issuing an unbounded number of requests.
 MEM0_BATCH_LIMIT = 1000
 
+import json
+import os
 from typing import Any, Optional
-
-try:  # top-level (run from tools/) ...
-    from matrixark_ingest_client import (
-        _get_json,
-        _post_json,
-        _resolve_api_key,
-        _resolve_base_url,
-    )
-    from matrixark_model_adapters import to_messages
-except ImportError:  # ... or package path.
-    from tools.matrixark_ingest_client import (  # type: ignore
-        _get_json,
-        _post_json,
-        _resolve_api_key,
-        _resolve_base_url,
-    )
-    from tools.matrixark_model_adapters import to_messages  # type: ignore
-
+from urllib.error import HTTPError
 from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 Json = dict[str, Any]
 
 __all__ = ["Memory"]
 
 
+def _resolve_base_url(base_url: Optional[str]) -> str:
+    return (base_url or os.environ.get("TEMPORALSTORE_BASE_URL")
+            or os.environ.get("TEMPORALSTORE_GATEWAY_URL")
+            or "http://127.0.0.1:17000").rstrip("/")
+
+
+def _resolve_api_key(api_key: Optional[str]) -> Optional[str]:
+    return api_key or os.environ.get("TEMPORALSTORE_API_KEY") or None
+
+
+def _request_json(base_url: str, api_key: Optional[str], method: str, path: str,
+                  body: Optional[Json], timeout: float) -> Json:
+    data = json.dumps(body, separators=(",", ":")).encode("utf-8") if body is not None else None
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = Request(base_url + path, data=data, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except HTTPError as error:
+        raw = error.read()
+        if error.code != 404:
+            raise RuntimeError(f"{method} {path} failed: HTTP {error.code}: {raw[:256]!r}") from error
+    return json.loads(raw) if raw else {}
+
+
+def _post_json(base_url: str, api_key: Optional[str], path: str, body: Json,
+               timeout: float) -> Json:
+    return _request_json(base_url, api_key, "POST", path, body, timeout)
+
+
+def _get_json(base_url: str, api_key: Optional[str], path: str, timeout: float) -> Json:
+    return _request_json(base_url, api_key, "GET", path, None, timeout)
+
+
+def _put_json(base_url: str, api_key: Optional[str], path: str, body: Json,
+              timeout: float) -> Json:
+    return _request_json(base_url, api_key, "PUT", path, body, timeout)
+
+
+def _delete_json(base_url: str, api_key: Optional[str], path: str, timeout: float) -> Json:
+    return _request_json(base_url, api_key, "DELETE", path, None, timeout)
+
+
+def _provider_messages(value: Any) -> list[Json]:
+    """Normalize common OpenAI/Anthropic response objects without another package."""
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    if isinstance(value, dict) and isinstance(value.get("choices"), list):
+        return _provider_messages([choice.get("message", {}) for choice in value["choices"]])
+    if isinstance(value, dict) and isinstance(value.get("content"), list):
+        text = "".join(str(part.get("text", "")) for part in value["content"]
+                       if isinstance(part, dict) and part.get("type") == "text")
+        return [{"role": str(value.get("role") or "assistant"), "content": text}]
+    if isinstance(value, list):
+        result: list[Json] = []
+        for item in value:
+            if hasattr(item, "model_dump"):
+                item = item.model_dump()
+            if isinstance(item, dict):
+                content = item.get("content", item.get("text", ""))
+                if isinstance(content, list):
+                    content = "".join(str(part.get("text", "")) for part in content
+                                      if isinstance(part, dict))
+                result.append({"role": str(item.get("role") or "user"),
+                               "content": str(content or "")})
+        return result
+    if isinstance(value, dict):
+        return [{"role": str(value.get("role") or "user"),
+                 "content": str(value.get("content", value.get("text", "")) or "")}]
+    return [{"role": "user", "content": str(value)}]
+
+
 def _reshape_search_results(res: Json) -> Json:
-    """Map a MatrixArk ContextPack response to mem0's ``search`` shape.
+    """Map a TemporalStore context response to mem0's ``search`` shape.
 
-    mem0 callers read ``res["results"][i]["memory"]`` (the text), plus ``id`` / ``score`` /
-    ``metadata``. Each ref becomes ``{"id", "memory": <text>, "score", "metadata"}``; ``memory`` is
-    the ref's text/citation, ``id`` is a stable identifier derived from the ref (``source_ref`` /
-    ``ref_hash`` / a hash of the text) and ``metadata`` carries the remaining ref fields. Unknown
-    shapes yield ``{"results": []}``.
-
-    TWO pack shapes are accepted, because this is where mem0 parity silently broke: the shim was
-    written against flat ``selected_refs``, but a ContextPack now serves its refs GROUPED --
-    ``groups: [{"type": "event"|"entity", "n": N, "items": [{"text", ...}]}]`` -- and no key named
-    ``selected_refs`` appears at all. Every ``Memory.search()`` call therefore returned
-    ``{"results": []}`` against a pack that plainly had content (``search_raw`` showed it), for what
-    is mem0's primary read API. Group items are flattened in group order, and the group's ``type``
-    is carried into each item's metadata as ``ref_type`` so callers keep the event/entity
-    distinction the flat shape gave them."""
+    Native memory responses already use the target shape. Older grouped context
+    responses are flattened while preserving their event/entity kind in metadata.
+    """
+    if isinstance(res.get("results"), list):
+        return res
     refs = res.get("selected_refs")
     if not isinstance(refs, list):
         result = res.get("result")
@@ -152,7 +199,7 @@ def _add_memory_text(messages: Any) -> str:
 
 
 def _with_mem0_add_results(response: Json, messages: Any) -> Json:
-    """Augment a MatrixArk ``/v1/ingest`` response with mem0's ``add`` return shape.
+    """Augment a TemporalStore add response with mem0's ``add`` return shape.
 
     Real mem0 ``add`` returns ``{"results": [{"id", "memory", "event"}]}`` and strict callers read
     ``result["results"][0]["id"]``. We keep every existing top-level field (``event_id_hash``,
@@ -188,7 +235,7 @@ def _with_mem0_add_results(response: Json, messages: Any) -> Json:
 
 
 def _already_normalized(messages: list) -> bool:
-    """True when ``messages`` is already MatrixArk-shaped: every element is a
+    """True when ``messages`` is already normalized: every element is a
     ``{role, content}`` mapping whose ``content`` is a plain string (not a list
     of provider content-parts). Such input is passed through byte-identically so
     existing callers are completely unaffected."""
@@ -202,7 +249,7 @@ def _already_normalized(messages: list) -> bool:
 
 
 def _normalize_messages(messages: Any, provider: Optional[str] = None) -> list[Json]:
-    """Normalize mem0's flexible ``messages`` into MatrixArk turns.
+    """Normalize mem0's flexible ``messages`` into TemporalStore turns.
 
     * A bare **string** is wrapped as a single user turn.
     * An already-normalized ``[{role, content}, ...]`` list (string content) is
@@ -210,25 +257,24 @@ def _normalize_messages(messages: Any, provider: Optional[str] = None) -> list[J
     * An explicit ``provider`` (``"openai"`` / ``"anthropic"``), or any other
       shape (a provider request/response dict/object, or a list carrying
       content-part blocks), is routed through
-      ``matrixark_model_adapters.to_messages`` so customers can pass their model
-      SDK's output directly."""
+      the built-in provider normalizer so callers can pass model SDK output directly."""
     if isinstance(messages, str):
         return [{"role": "user", "content": messages}]
     # Explicit provider always routes through the adapter.
     if provider is not None and str(provider).lower() != "auto":
-        return to_messages(messages, provider=provider)
+        return _provider_messages(messages)
     if isinstance(messages, list):
         if _already_normalized(messages):
             return messages
-        return to_messages(messages, provider="auto")
+        return _provider_messages(messages)
     if messages is None:
         return []
     # A provider request/response object (dict or SDK model) — sniff + adapt.
-    return to_messages(messages, provider="auto")
+    return _provider_messages(messages)
 
 
 def _scope_from_identity(user_id: Optional[str], agent_id: Optional[str], run_id: Optional[str]) -> Json:
-    """Build a canonical MatrixArk scope from mem0 identity kwargs, omitting
+    """Build a canonical TemporalStore scope from mem0 identity kwargs, omitting
     empty fields (``run_id`` -> ``session_id``)."""
     scope: Json = {}
     if user_id:
@@ -241,7 +287,7 @@ def _scope_from_identity(user_id: Optional[str], agent_id: Optional[str], run_id
 
 
 class Memory:
-    """A subset of mem0's ``Memory`` surface backed by MatrixArk's HTTP API.
+    """A subset of mem0's ``Memory`` surface backed by TemporalStore's HTTP API.
 
     Args:
         base_url: gateway base URL; defaults to ``$TEMPORALSTORE_BASE_URL`` /
@@ -272,7 +318,7 @@ class Memory:
         output directly: ``"openai"`` / ``"anthropic"`` force that adapter, and
         the default (``None`` / ``"auto"``) auto-sniffs provider-shaped input
         (an OpenAI ``choices`` response, an Anthropic content-block message,
-        etc.) via ``matrixark_model_adapters.to_messages``. Already-normalized
+        etc.) via the built-in normalizer. Already-normalized
         ``[{role, content}]`` lists are passed through unchanged.
 
         PurchaseMemory (additive, all optional): ``expires_at`` (absolute unix
@@ -290,8 +336,7 @@ class Memory:
         Pass ``finalize=False`` deliberately to stream a conversation in and let
         the idle commit close it, which is cheaper per call.
 
-        Extra kwargs are ignored for mem0 signature compatibility. Returns the
-        parsed ``/v1/ingest`` response."""
+        Extra kwargs are ignored for mem0 signature compatibility."""
         normalized = _normalize_messages(messages, provider)
         # finalize so extraction runs INLINE and the memory is searchable when add returns.
         # Without it the gateway treats this as a streaming ingest and schedules an
@@ -321,25 +366,23 @@ class Memory:
             body["identity_key"] = identity_key
         if truth_class:
             body["truth_class"] = truth_class
-        response = _post_json(self._base_url, self._api_key, "/v1/ingest", body, self._timeout)
+        response = _post_json(self._base_url, self._api_key, "/memories", body, self._timeout)
         return _with_mem0_add_results(response, normalized)
 
     def search(self, query: str, *, user_id: Optional[str] = None,
                agent_id: Optional[str] = None, run_id: Optional[str] = None,
                limit: Optional[int] = None, raw: bool = False, **kw: Any) -> Json:
         """Retrieve context for ``query`` (mem0 ``search``). Maps identity kwargs
-        to ``scope`` and ``limit`` to ``ranking.max_selected_refs`` (the number of
-        selected refs MatrixArk returns). Extra kwargs are ignored.
+        to ``scope`` and caps the number of returned results. Extra kwargs are ignored.
 
         By default returns mem0's shape -- ``{"results": [{"id", "memory", "score",
         "metadata"}, ...]}`` -- so an existing mem0 codebase reading
         ``res["results"][i]["memory"]`` works unchanged. Pass ``raw=True`` (or call
-        :meth:`search_raw`) to get the full MatrixArk ContextPack response instead."""
+        :meth:`search_raw`) to get the full TemporalStore response instead."""
         pack = self.search_raw(query, user_id=user_id, agent_id=agent_id, run_id=run_id, limit=limit)
         if raw:
             return pack
-        reshaped = _reshape_search_results(pack)
-        return self._attach_real_ids(reshaped, user_id=user_id, agent_id=agent_id, run_id=run_id)
+        return _reshape_search_results(pack)
 
     def _attach_real_ids(self, reshaped: Json, *, user_id: Optional[str],
                          agent_id: Optional[str], run_id: Optional[str]) -> Json:
@@ -394,42 +437,42 @@ class Memory:
     def search_raw(self, query: str, *, user_id: Optional[str] = None,
                    agent_id: Optional[str] = None, run_id: Optional[str] = None,
                    limit: Optional[int] = None, **kw: Any) -> Json:
-        """Like :meth:`search` but always returns the full MatrixArk ContextPack response
-        (the raw parsed ``/v1/retrieve`` body), without the mem0 reshape."""
+        """Like :meth:`search` but returns the full TemporalStore retrieval response."""
         body: Json = {"query": query}
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
             body["scope"] = scope
         if limit is not None:
-            body["ranking"] = {"max_selected_refs": int(limit)}
-        return _post_json(self._base_url, self._api_key, "/v1/retrieve", body, self._timeout)
+            body["limit"] = int(limit)
+        return _post_json(self._base_url, self._api_key, "/memories/search", body, self._timeout)
 
     def get(self, memory_id: str, **kw: Any) -> Json:
         """Fetch a single memory by id (mem0 ``get``). ``memory_id`` is the id returned by
-        ``add`` / ``get_all`` (MatrixArk's ``event_id_hash``). GETs ``/v1/memory/<id>``; a
+        ``add`` / ``get_all``; a
         deleted/forgotten memory returns ``{"found": false}``."""
         return _get_json(self._base_url, self._api_key,
-                         f"/v1/memory/{quote(str(memory_id), safe='')}", self._timeout)
+                         f"/memories/{quote(str(memory_id), safe='')}", self._timeout)
 
     def update(self, memory_id: str, data: str, **kw: Any) -> Json:
         """Update a memory's content (mem0 ``update``). Implemented server-side as a supersede: the
         new ``data`` is ingested in the memory's own scope and the old id is tombstoned, so a later
-        ``search`` / ``get_all`` returns the new version. POSTs ``/v1/update``."""
+        ``search`` / ``get_all`` returns the new version."""
         body: Json = {"memory_id": str(memory_id), "data": data}
-        return _post_json(self._base_url, self._api_key, "/v1/update", body, self._timeout)
+        return _put_json(self._base_url, self._api_key,
+                         f"/memories/{quote(str(memory_id), safe='')}", body, self._timeout)
 
     def history(self, memory_id: str, **kw: Any) -> Json:
         """Return the ordered change history for a memory id (mem0 ``history``): ingest ->
-        update/supersede -> delete, with timestamps. GETs ``/v1/memory/<id>/history``."""
+        update/supersede -> delete, with timestamps."""
         return _get_json(self._base_url, self._api_key,
-                         f"/v1/memory/{quote(str(memory_id), safe='')}/history", self._timeout)
+                         f"/memories/{quote(str(memory_id), safe='')}/history", self._timeout)
 
     def delete(self, memory_id: str, **kw: Any) -> Json:
         """Delete a single memory by id (mem0 ``delete``). ``memory_id`` is the id returned by
-        ``add``/``get_all`` (MatrixArk's ``event_id_hash``). Posts to ``/v1/delete``. The addressed
+        ``add``/``get_all``. The addressed
         memory stops resurfacing from ``search``; provenance-closure deletion is deferred server-side."""
-        body: Json = {"memory_id": str(memory_id)}
-        return _post_json(self._base_url, self._api_key, "/v1/delete", body, self._timeout)
+        return _delete_json(self._base_url, self._api_key,
+                            f"/memories/{quote(str(memory_id), safe='')}", self._timeout)
 
     def feedback(self, memory_id: str, feedback: str, feedback_reason: Optional[str] = None,
                  **kw: Any) -> Json:
@@ -442,10 +485,12 @@ class Memory:
         `feedback` is one of POSITIVE, NEGATIVE, VERY_NEGATIVE. An unknown value is refused by the
         server rather than stored.
         """
-        body: Json = {"memory_id": str(memory_id), "feedback": str(feedback)}
+        body: Json = {"feedback": str(feedback)}
         if feedback_reason:
             body["feedback_reason"] = str(feedback_reason)
-        return _post_json(self._base_url, self._api_key, "/v1/memory/feedback", body, self._timeout)
+        return _post_json(self._base_url, self._api_key,
+                          f"/memories/{quote(str(memory_id), safe='')}/feedback", body,
+                          self._timeout)
 
     def batch_update(self, memories: Any, **kw: Any) -> Json:
         """Update many memories in one call (mem0 ``batch_update``).
@@ -454,7 +499,7 @@ class Memory:
         ``metadata``. ``text`` is mem0's name for the field this API calls ``data``, so it is
         mapped; either name is accepted here.
 
-        NOT atomic. mem0's batch endpoint is a single server-side request, but MatrixArk's update
+        NOT atomic. The update
         is a supersede (ingest the amended version, tombstone the old id) with no cross-memory
         transaction behind it, so this issues one update per entry and reports what happened to
         each. Callers who need all-or-nothing must not use this. Entries are attempted in order
@@ -466,27 +511,13 @@ class Memory:
             raise ValueError(
                 f"batch_update accepts at most {MEM0_BATCH_LIMIT} memories, got {len(entries)}"
             )
-        results: list[Json] = []
-        failed: list[Json] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 raise ValueError("each batch_update entry must be a dict with a memory_id")
-            memory_id = entry.get("memory_id")
-            if not memory_id:
+            if not entry.get("memory_id"):
                 raise ValueError("each batch_update entry requires memory_id")
-            body: Json = {"memory_id": str(memory_id)}
-            data = entry.get("text", entry.get("data"))
-            if data is not None:
-                body["data"] = data
-            if entry.get("metadata") is not None:
-                body["metadata"] = entry["metadata"]
-            try:
-                response = _post_json(self._base_url, self._api_key, "/v1/update", body, self._timeout)
-            except Exception as exc:  # noqa: BLE001 - report, do not abort the rest of the batch
-                failed.append({"memory_id": str(memory_id), "error": repr(exc)})
-                continue
-            results.append({"memory_id": str(memory_id), "result": response})
-        return {"results": results, "updated": len(results), "failed": failed}
+        return _post_json(self._base_url, self._api_key, "/memories/batch/update",
+                          {"memories": entries}, self._timeout)
 
     def batch_delete(self, memories: Any, **kw: Any) -> Json:
         """Delete many memories in one call (mem0 ``batch_delete``).
@@ -502,31 +533,22 @@ class Memory:
             raise ValueError(
                 f"batch_delete accepts at most {MEM0_BATCH_LIMIT} memories, got {len(entries)}"
             )
-        results: list[Json] = []
-        failed: list[Json] = []
         for entry in entries:
             memory_id = entry.get("memory_id") if isinstance(entry, dict) else entry
             if not memory_id:
                 raise ValueError("each batch_delete entry requires memory_id")
-            try:
-                response = _post_json(self._base_url, self._api_key, "/v1/delete",
-                                      {"memory_id": str(memory_id)}, self._timeout)
-            except Exception as exc:  # noqa: BLE001 - report, do not abort the rest of the batch
-                failed.append({"memory_id": str(memory_id), "error": repr(exc)})
-                continue
-            results.append({"memory_id": str(memory_id), "result": response})
-        return {"results": results, "deleted": len(results), "failed": failed}
+        return _post_json(self._base_url, self._api_key, "/memories/batch/delete",
+                          {"memories": entries}, self._timeout)
 
     def delete_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
                    run_id: Optional[str] = None, **kw: Any) -> Json:
         """Delete ALL memory for a subject (mem0 ``delete_all(user_id=...)``). Maps identity kwargs to
-        ``scope`` and posts to ``/v1/forget`` with ``confirm == user_id`` (the server requires an exact
-        match; there is no wildcard). Requires ``user_id``."""
+        ``scope``. Requires ``user_id``."""
         if not user_id:
             raise ValueError("delete_all requires user_id (the subject to forget)")
         scope = _scope_from_identity(user_id, agent_id, run_id)
-        body: Json = {"scope": scope, "confirm": user_id}
-        return _post_json(self._base_url, self._api_key, "/v1/forget", body, self._timeout)
+        return _post_json(self._base_url, self._api_key, "/memories/delete_all",
+                          {"scope": scope}, self._timeout)
 
     def delete_users(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
                      run_id: Optional[str] = None, **kw: Any) -> Json:
@@ -580,14 +602,14 @@ class Memory:
     def get_all(self, *, user_id: Optional[str] = None, agent_id: Optional[str] = None,
                 run_id: Optional[str] = None, limit: Optional[int] = None, **kw: Any) -> Json:
         """List a subject's active memories (mem0 ``get_all(user_id=...)``). Maps identity kwargs to
-        ``scope`` and posts to ``/v1/memories``. Forgotten/deleted memories are excluded server-side."""
+        ``scope``. Forgotten/deleted memories are excluded server-side."""
         scope = _scope_from_identity(user_id, agent_id, run_id)
         body: Json = {}
         if scope:
             body["scope"] = scope
         if limit is not None:
             body["limit"] = int(limit)
-        return _post_json(self._base_url, self._api_key, "/v1/memories", body, self._timeout)
+        return _post_json(self._base_url, self._api_key, "/memories/list", body, self._timeout)
 
     def users(self, *, limit: Optional[int] = None, **kw: Any) -> Json:
         """List the users / agents / runs that hold memories (mem0 ``users``).
@@ -600,10 +622,10 @@ class Memory:
         body: Json = {}
         if limit is not None:
             body["limit"] = int(limit)
-        return _post_json(self._base_url, self._api_key, "/v1/users", body, self._timeout)
+        return _post_json(self._base_url, self._api_key, "/memories/users", body, self._timeout)
 
     def reset(self, *, confirm: str = "RESET", **kw: Any) -> Json:
-        """Wipe ALL memory for the caller's tenant (mem0 ``reset``). Posts to ``/v1/reset`` with an
+        """Wipe ALL memory for the caller's tenant (mem0 ``reset``) with an
         explicit ``confirm`` (defaults to the literal ``"RESET"`` sentinel the server accepts)."""
         body: Json = {"confirm": str(confirm)}
-        return _post_json(self._base_url, self._api_key, "/v1/reset", body, self._timeout)
+        return _post_json(self._base_url, self._api_key, "/memories/reset", body, self._timeout)

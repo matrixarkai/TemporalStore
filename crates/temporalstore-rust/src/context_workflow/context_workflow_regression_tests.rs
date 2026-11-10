@@ -2403,7 +2403,7 @@ fn hybrid_mixed_store_keeps_both_embedded_and_unembedded_rankable() {
 }
 
 #[test]
-fn extraction_prewarms_and_retrieval_rebuilds_the_compact_vector_index() {
+fn extraction_and_recovery_populate_the_compact_vector_index() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
     let block_dir = dir.path().join("blocks");
@@ -2430,7 +2430,7 @@ fn extraction_prewarms_and_retrieval_rebuilds_the_compact_vector_index() {
 
     let recovered = TemporalEngine::with_local_dirs(1024 * 1024, cache_dir, block_dir, index_dir);
     recovered.load_shard(1);
-    assert_eq!(recovered.context_embedding_index_len(), 0);
+    assert!(recovered.context_embedding_index_len() >= 1);
     let report = retrieve_context(
         &recovered,
         ContextRetrieveRequest {
@@ -2458,6 +2458,37 @@ fn extraction_prewarms_and_retrieval_rebuilds_the_compact_vector_index() {
         vec![extracted.node.node_hash]
     );
     assert!(recovered.context_embedding_index_len() >= 1);
+
+    let globally_selected = retrieve_context(
+        &recovered,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes: Vec::new(),
+            query: "fast durable vector retrieval after restart".to_string(),
+            start_time_ms: 0,
+            end_time_ms: u64::MAX,
+            max_events: 4,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 1,
+            max_event_nodes: 1,
+            prefer_current_agent: false,
+            current_agent_scope_key: String::new(),
+            provider: ContextModelProviderConfig::default(),
+            include_debug: false,
+        },
+    );
+    assert!(globally_selected.status.ok, "{:?}", globally_selected.status);
+    assert!(globally_selected
+        .blocks
+        .iter()
+        .any(|block| block.node_hash == extracted.node.node_hash));
+    assert!(globally_selected
+        .blocks
+        .iter()
+        .all(|block| !block.record_type.is_empty()));
 }
 
 #[test]

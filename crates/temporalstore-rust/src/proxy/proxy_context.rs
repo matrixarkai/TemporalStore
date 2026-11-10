@@ -196,7 +196,7 @@ pub(super) fn context_tenant_hash(scope: &ProxyContextScope) -> u64 {
     stable_scope_hash(&format!("{account_id}:{tenant_id}"))
 }
 
-fn stable_scope_hash(value: &str) -> u64 {
+pub(super) fn stable_scope_hash(value: &str) -> u64 {
     let digest = Sha256::digest(value.as_bytes());
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&digest[..8]);

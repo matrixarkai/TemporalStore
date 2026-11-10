@@ -569,7 +569,7 @@ m = Memory()
 m.add(messages, user_id="alice", run_id="s-42")
 m.search("coffee?", user_id="alice")</code></pre></div>
   <div><b>MatrixArk (same signatures)</b>
-<pre><code>from matrixark_mem0_compat import Memory
+<pre><code>from temporalstore.llm_context import Memory
 m = Memory(base_url="https://saparo.ai:8080")  # api_key optional
 m.add(messages, user_id="alice", run_id="s-42") # run_id -> session_id
 m.search("coffee?", user_id="alice")</code></pre></div>
