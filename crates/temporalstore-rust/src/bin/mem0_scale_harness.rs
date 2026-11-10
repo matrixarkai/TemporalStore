@@ -184,23 +184,25 @@ fn main() {
     let ingest_elapsed = ingest_started.elapsed();
 
     for query_index in 0..options.searches {
-        let query_tenant = corpus_tenant(&tenant_id, query_index % options.tenant_shards);
+        let record_index = query_record_index(options.records, options.batch_size, query_index);
+        let query_tenant = corpus_tenant(
+            &tenant_id,
+            (record_index / options.batch_size) % options.tenant_shards,
+        );
         let mut body = scope_body(&query_tenant);
-        body["query"] = json!(format!(
-            "topic {:08} retrieval marker",
-            query_index % options.records.max(1)
-        ));
+        body["query"] = json!(format!("topic {:08} retrieval marker", record_index));
         body["limit"] = json!(10);
         if let Some(provider) = &options.provider {
             body["provider"] = provider.clone();
         }
-        measure_post(
+        measure_post_checked(
             &mut timings,
             &mut failures,
             "search",
             &options.addr,
             "/memories/search",
             &body,
+            |response| require_search_candidates(response, 10),
         );
     }
 
@@ -368,8 +370,23 @@ fn measure_post(
     path: &str,
     body: &Value,
 ) {
+    measure_post_checked(timings, failures, name, addr, path, body, |_| Ok(()));
+}
+
+fn measure_post_checked(
+    timings: &mut Timings,
+    failures: &mut Vec<String>,
+    name: &str,
+    addr: &str,
+    path: &str,
+    body: &Value,
+    check: impl FnOnce(&Value) -> Result<(), String>,
+) {
     let started = Instant::now();
-    let result = post(addr, path, body);
+    let result = post(addr, path, body).and_then(|response| {
+        check(&response)?;
+        Ok(response)
+    });
     timings.observe(name, started, &result);
     if let Err(error) = result {
         failures.push(format!("{name}: {error}"));
@@ -429,6 +446,29 @@ fn corpus_tenant(base: &str, shard: usize) -> String {
     } else {
         format!("{base}-{shard:04}")
     }
+}
+
+fn query_record_index(records: usize, batch_size: usize, query_index: usize) -> usize {
+    let batch_count = records.div_ceil(batch_size);
+    let batch_start = (query_index % batch_count) * batch_size;
+    let batch_len = (records - batch_start).min(batch_size);
+    batch_start + (query_index / batch_count) % batch_len
+}
+
+fn require_search_candidates(response: &Value, limit: usize) -> Result<(), String> {
+    let rows = response["results"]
+        .as_array()
+        .ok_or_else(|| "search response has no results array".to_string())?;
+    if rows.is_empty() {
+        return Err("search returned no candidates for an ingested corpus query".to_string());
+    }
+    if rows.len() > limit {
+        return Err(format!(
+            "search returned {} candidates, limit is {limit}",
+            rows.len()
+        ));
+    }
+    Ok(())
 }
 
 fn corpus_text(index: usize, target_bytes: usize) -> String {
@@ -595,5 +635,33 @@ fn parse_options() -> Options {
             })
             .collect(),
         provider,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_targets_follow_ingest_batches_including_the_short_tail() {
+        assert_eq!(query_record_index(1_025, 512, 0), 0);
+        assert_eq!(query_record_index(1_025, 512, 1), 512);
+        assert_eq!(query_record_index(1_025, 512, 2), 1_024);
+        assert_eq!(query_record_index(1_025, 512, 3), 1);
+        assert_eq!(query_record_index(1_025, 512, 5), 1_024);
+        for query in 0..10_000 {
+            let record = query_record_index(1_025, 512, query);
+            assert!(record < 1_025);
+            assert_eq!(record / 512, query % 3);
+        }
+        assert_eq!(query_record_index(1, 512, 100), 0);
+    }
+
+    #[test]
+    fn empty_or_unbounded_searches_do_not_pass_the_workload() {
+        assert!(require_search_candidates(&json!({}), 10).is_err());
+        assert!(require_search_candidates(&json!({"results": []}), 10).is_err());
+        assert!(require_search_candidates(&json!({"results": [{}]}), 10).is_ok());
+        assert!(require_search_candidates(&json!({"results": vec![json!({}); 11]}), 10).is_err());
     }
 }
