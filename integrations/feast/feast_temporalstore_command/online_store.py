@@ -54,8 +54,10 @@ entity.
 from __future__ import annotations
 
 import logging
+import struct
 import zlib
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -66,7 +68,7 @@ from feast.infra.key_encoding_utils import serialize_entity_key
 from feast.infra.online_stores.online_store import OnlineStore
 from feast.infra.supported_async_methods import SupportedAsyncMethods
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
-from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+from feast.protos.feast.types.Value_pb2 import Value as ValueProto, ValueType
 from feast.repo_config import FeastConfigBaseModel
 from feast.types import Int32, Int64
 
@@ -199,6 +201,16 @@ def _feature_field(feature_view_name: str, feature_name: str) -> str:
     return f"{feature_view_name}:{feature_name}"
 
 
+@lru_cache(maxsize=128)
+def _single_entity_prefix(join_key: str) -> Optional[bytes]:
+    prototype = EntityKeyProto(
+        join_keys=[join_key], entity_values=[ValueProto(int64_val=0)]
+    )
+    encoded = serialize_entity_key(prototype, entity_key_serialization_version=3)
+    suffix = struct.pack("<IIq", ValueType.INT64, 8, 0)
+    return encoded[: -len(suffix)] if encoded.endswith(suffix) else None
+
+
 class TemporalStoreCommandOnlineStore(OnlineStore):
     """TemporalStore implementation of Feast's online store interface."""
 
@@ -250,6 +262,16 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
 
     @staticmethod
     def _entity_key_hex(config: RepoConfig, entity_key: EntityKeyProto) -> str:
+        if (
+            config.entity_key_serialization_version == 3
+            and len(entity_key.join_keys) == 1
+            and len(entity_key.entity_values) == 1
+            and entity_key.entity_values[0].WhichOneof("val") == "int64_val"
+        ):
+            value = entity_key.entity_values[0].int64_val
+            prefix = _single_entity_prefix(entity_key.join_keys[0])
+            if prefix is not None:
+                return (prefix + struct.pack("<IIq", ValueType.INT64, 8, value)).hex()
         return serialize_entity_key(
             entity_key,
             entity_key_serialization_version=config.entity_key_serialization_version,
