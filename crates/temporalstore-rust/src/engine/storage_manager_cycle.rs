@@ -1261,11 +1261,14 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
+        // Use the same victims as the periodic scheduler. Multiple fully live slabs, or
+        // collector-only slabs, do not justify copying otherwise unchanged live blocks.
+        let drain_block_slab_ids = compaction_drain_block_slab_ids(&plan.reclaim_candidates);
         let should_compact = request.enable_block_compaction
             && !request.dry_run
-            && (!plan.reclaim_candidates.is_empty() || plan.live_block_slab_ids.len() > 1);
+            && !drain_block_slab_ids.is_empty();
         let compaction_report = if should_compact {
-            match self.compact_shard_blocks(request.shard_id) {
+            match self.compact_shard_blocks_draining(request.shard_id, drain_block_slab_ids.clone()) {
                 Ok(report) => Some(report),
                 Err(err) => {
                     errors.push(format!("compact: {}", err.message));
@@ -1286,16 +1289,16 @@ impl TemporalEngine {
             applied: compaction_report.is_some(),
             skipped: !request.enable_block_compaction
                 || request.dry_run
-                || (plan.reclaim_candidates.is_empty() && plan.live_block_slab_ids.len() <= 1),
+                || drain_block_slab_ids.is_empty(),
             reason: if !request.enable_block_compaction {
                 "block compaction disabled".to_string()
             } else if request.dry_run {
                 "dry run reports compaction pressure without rewriting blocks".to_string()
-            } else if plan.reclaim_candidates.is_empty() && plan.live_block_slab_ids.len() <= 1 {
-                "compaction skipped because block density does not show stale-segment pressure"
+            } else if drain_block_slab_ids.is_empty() {
+                "compaction skipped because no live blocks occupy drain slabs"
                     .to_string()
             } else {
-                "rewrote live model block references into a fresh compacted segment".to_string()
+                "relocated live model blocks from selected drain slabs".to_string()
             },
             pressure_signal: "model_layout_compaction_debt+stale_segment_density".to_string(),
             pressure_score: pressure_signals
@@ -1303,13 +1306,8 @@ impl TemporalEngine {
                 .saturating_add(pressure_signals.block_slab_stale_density_basis_points),
             pressure_threshold: 1,
             pressure_triggered: should_compact,
-            candidate_count: plan.stale_block_slab_ids.len(),
-            skipped_count: plan.stale_block_slab_ids.len().saturating_sub(
-                compaction_report
-                    .as_ref()
-                    .map(|report| report.stale_block_slab_ids.len())
-                    .unwrap_or_default(),
-            ),
+            candidate_count: drain_block_slab_ids.len(),
+            skipped_count: reclaim_candidate_count.saturating_sub(drain_block_slab_ids.len()),
             before_bytes: bucket_physical_bytes,
             after_bytes: compaction_report
                 .as_ref()
@@ -1317,10 +1315,7 @@ impl TemporalEngine {
                 .unwrap_or(bucket_physical_bytes),
             live_bytes: bucket_logical_bytes,
             stale_bytes: reclaim_stale_bytes,
-            selected_block_slab_ids: compaction_report
-                .as_ref()
-                .map(|report| report.stale_block_slab_ids.clone())
-                .unwrap_or_default(),
+            selected_block_slab_ids: drain_block_slab_ids.into_iter().collect(),
             compacted_block_slab_id: compaction_report
                 .as_ref()
                 .map(|report| report.compacted_block_slab_id),
