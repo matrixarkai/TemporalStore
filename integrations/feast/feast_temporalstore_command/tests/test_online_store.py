@@ -1199,10 +1199,6 @@ class OnlineStoreTest(unittest.TestCase):
         )
 
     def test_history_serializes_each_entity_and_value_once(self):
-        from unittest.mock import patch
-
-        import feast_temporalstore_command.online_store as online_store_module
-
         class CountingValue:
             def __init__(self, number):
                 self.int64_val = number
@@ -1219,20 +1215,10 @@ class OnlineStoreTest(unittest.TestCase):
         self.config.online_store.skip_dedup = True
         self.config.online_store.write_feature_history = True
         values = {"trips": CountingValue(7), "fares": CountingValue(11)}
-        original_serialize_entity_key = online_store_module.serialize_entity_key
-        entity_serialize_calls = 0
-
-        def count_entity_serialization(*args, **kwargs):
-            nonlocal entity_serialize_calls
-            entity_serialize_calls += 1
-            return original_serialize_entity_key(*args, **kwargs)
-
         now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
-        with patch.object(
-            online_store_module,
-            "serialize_entity_key",
-            side_effect=count_entity_serialization,
-        ):
+        with mock.patch.object(
+            self.store, "_entity_key_hex", wraps=self.store._entity_key_hex
+        ) as encode_key:
             self.store.online_write_batch(
                 self.config,
                 self.view,
@@ -1240,7 +1226,7 @@ class OnlineStoreTest(unittest.TestCase):
                 None,
             )
 
-        self.assertEqual(entity_serialize_calls, 1)
+        self.assertEqual(encode_key.call_count, 1)
         self.assertTrue(all(value.serialize_calls == 1 for value in values.values()))
         self.assertEqual(client.shared_writes, [])
         self.assertEqual(len(client.sent[0][1]["commands"]), 5)
@@ -1798,6 +1784,55 @@ class OnlineStoreTest(unittest.TestCase):
             3,
             "repeated positions must not share mutable protobuf messages",
         )
+
+    def test_single_integer_entity_keys_keep_feasts_wire_bytes(self):
+        from feast.infra.key_encoding_utils import serialize_entity_key
+        from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        for name in ("id", "driver_id", "long_join_key_name"):
+            for number in (-(1 << 63), -1, 0, 1, (1 << 63) - 1):
+                key = EntityKeyProto(
+                    join_keys=[name], entity_values=[ValueProto(int64_val=number)]
+                )
+                self.assertEqual(
+                    self.store._entity_key_hex(self.config, key),
+                    serialize_entity_key(key, entity_key_serialization_version=3).hex(),
+                )
+
+    def test_other_entity_key_shapes_use_feasts_encoder(self):
+        from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        import feast_temporalstore_command.online_store as online_store_module
+
+        integer_key = self._entity_key(7)
+        non_integer_key = EntityKeyProto(
+            join_keys=["driver_id"], entity_values=[ValueProto(string_val="seven")]
+        )
+        multi_key = EntityKeyProto(
+            join_keys=["driver_id", "region"],
+            entity_values=[ValueProto(int64_val=7), ValueProto(string_val="west")],
+        )
+        online_store_module._single_entity_prefix("driver_id")
+        original = online_store_module.serialize_entity_key
+        with mock.patch.object(
+            online_store_module, "serialize_entity_key", wraps=original
+        ) as encode:
+            self.store._entity_key_hex(self.config, integer_key)
+            self.assertEqual(encode.call_count, 0)
+            self.store._entity_key_hex(self.config, non_integer_key)
+            self.store._entity_key_hex(self.config, multi_key)
+            self.config.entity_key_serialization_version = 4
+            self.store._entity_key_hex(self.config, integer_key)
+            self.assertEqual(encode.call_count, 3)
+
+        self.config.entity_key_serialization_version = 3
+        with mock.patch.object(online_store_module, "_single_entity_prefix", return_value=None):
+            with mock.patch.object(
+                online_store_module, "serialize_entity_key", wraps=original
+            ) as encode:
+                self.store._entity_key_hex(self.config, integer_key)
+                self.assertEqual(encode.call_count, 1)
 
     def test_feature_views_with_the_same_entities_share_one_projection(self):
         from feast import FeatureView, Field
