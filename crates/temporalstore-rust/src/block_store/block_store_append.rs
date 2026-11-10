@@ -5,21 +5,60 @@
 use super::*;
 use super::record::sha256_bytes;
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_NEXT_SYNC: std::cell::RefCell<Option<(usize, Box<dyn FnOnce()>)>> =
+        std::cell::RefCell::new(None);
+}
+
 impl BlockStore {
+    #[cfg(test)]
+    pub(crate) fn with_after_next_sync_for_test<R>(
+        &self,
+        after: impl FnOnce() + 'static,
+        action: impl FnOnce() -> R,
+    ) -> R {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                AFTER_NEXT_SYNC.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        AFTER_NEXT_SYNC.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none());
+            *slot = Some((self.store_id(), Box::new(after)));
+        });
+        let _reset = Reset;
+        action()
+    }
+
     /// Force durability for writes made under relaxed (bulk) mode: fsync the
     /// active slab's data and persist the extent manifest once. No-op when
     /// nothing was deferred (e.g. the live per-append-fsync path).
     pub fn sync_durable(&self) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        if !inner.relaxed_dirty {
-            return Ok(());
+        if inner.relaxed_dirty {
+            let path = slab_path(&inner.root, inner.block_slab_id);
+            OpenOptions::new().append(true).open(&path)?.sync_data()?;
+            inner.persist_slab_manifest_counted()?;
+            inner.relaxed_dirty = false;
         }
-        let path = slab_path(&inner.root, inner.block_slab_id);
-        if let Ok(file) = OpenOptions::new().append(true).open(&path) {
-            file.sync_data()?;
+        drop(inner);
+        #[cfg(test)]
+        {
+            let after = AFTER_NEXT_SYNC.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.as_ref().is_some_and(|(owner, _)| *owner == self.store_id()) {
+                    slot.take().map(|(_, after)| after)
+                } else {
+                    None
+                }
+            });
+            if let Some(after) = after {
+                after();
+            }
         }
-        inner.persist_slab_manifest_counted()?;
-        inner.relaxed_dirty = false;
         Ok(())
     }
 
@@ -232,5 +271,21 @@ impl BlockStore {
             .compression_bytes_saved
             .saturating_add(compression_bytes_saved);
         Ok(addresses)
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn missing_active_slab_refuses_the_durability_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let address = store.append(b"pending checkpoint data").unwrap();
+        store.inner.lock().unwrap().relaxed_dirty = true;
+        std::fs::remove_file(slab_path(dir.path(), address.block_slab_id())).unwrap();
+        assert!(store.sync_durable().is_err());
+        assert!(store.inner.lock().unwrap().relaxed_dirty);
     }
 }

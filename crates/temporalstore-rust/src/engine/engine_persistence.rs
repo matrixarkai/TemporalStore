@@ -72,6 +72,20 @@ pub fn reset_index_load_path_counts() {
 }
 
 impl TemporalEngine {
+    // The image and watermark share one guarded view. Encode the owned snapshot only
+    // after releasing the guard, so serialization and sync do not block serving reads.
+    pub(super) fn capture_shard_checkpoint(&self, shard_id: ShardId) -> Option<ShardState> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id)?;
+        let mut snapshot = shard.clone();
+        snapshot.applied_wal_sequence = Some(if bulk_ingest_mode() {
+            shard.applied_wal_sequence.unwrap_or(0)
+        } else {
+            self.wal_store.stats_without_rescan(shard_id).last_sequence
+        });
+        Some(snapshot)
+    }
+
     pub(super) fn index_path(&self, shard_id: ShardId) -> PathBuf {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
@@ -505,23 +519,14 @@ impl TemporalEngine {
     /// after driving many extract_context calls under MATRIXARK_BULK_INGEST=1,
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
-        // Make the chunk's deferred bulk writes durable before publishing the
-        // served index: fsync block slabs + slab manifest, then the WAL. If the
-        // barrier FAILS, bail without pinning applied_wal_sequence or writing the index:
-        // advancing the durable anchor past blocks that never reached disk would suppress
-        // their replay on reload -> silent data loss. advances the watermark only after
-        // the commit succeeds; the next flush retries.
-        if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
-            return;
-        }
         // Read OUTSIDE the shards write lock. `shard_routing_range` takes `infos.read()`, copies
         // the two numbers out and drops the guard before it returns, so no path ever HOLDS one of
         // these locks while acquiring the other.
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
-        let index_bytes = {
+        let (mut snapshot, previous_anchor, anchor) = {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map blocks into bucket_index, rebuild the secondary views, refresh
-            // runtime flags, then serialize once. Needs a write lock.
+            // runtime flags, then clone for encoding outside the write lock.
             let mut shards = self.shards.write().expect("engine lock poisoned");
             match shards.get_mut(&shard_id) {
                 Some(shard) => {
@@ -547,7 +552,11 @@ impl TemporalEngine {
                     // written by the live process, so it pins the anchor to the WAL
                     // sequence observed before the batch began and lets restart
                     // replay the interleaved tail.
-                    let default_anchor = self.wal_store.stats(shard_id).last_sequence;
+                    let default_anchor = if bulk_ingest_mode() {
+                        self.wal_store.stats(shard_id).last_sequence
+                    } else {
+                        self.wal_store.stats_without_rescan(shard_id).last_sequence
+                    };
                     let anchor = std::env::var("MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE")
                         .ok()
                         .and_then(|value| value.trim().parse::<u64>().ok())
@@ -564,15 +573,29 @@ impl TemporalEngine {
                             }
                         })
                         .unwrap_or(default_anchor);
-                    shard.applied_wal_sequence = Some(anchor);
-                    serialize_index(shard)
+                    (shard.clone(), shard.applied_wal_sequence, anchor)
                 }
                 None => return,
             }
         };
+        snapshot.applied_wal_sequence = Some(anchor);
+        let index_bytes = serialize_index(&snapshot);
+        drop(snapshot);
+        // The barrier must cover the captured image, not an earlier state. Keep the live
+        // anchor unchanged until publication succeeds, and never overwrite a newer writer's.
+        if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
+            return;
+        }
         // Write the served shard index directly, bypassing the bulk-mode gate.
         let _ = fs::create_dir_all(&self.index_dir);
-        let _ = atomic_write_bytes(&self.index_path(shard_id), &index_bytes);
+        if atomic_write_bytes(&self.index_path(shard_id), &index_bytes).is_err() {
+            return;
+        }
+        if let Some(shard) = self.shards.write().expect("engine lock poisoned").get_mut(&shard_id) {
+            if shard.applied_wal_sequence == previous_anchor {
+                shard.applied_wal_sequence = Some(anchor);
+            }
+        }
     }
 
     /// MANIFEST-CONFORMANCE FOLD threshold check: dump the index catalog when the undumped index-log
@@ -648,25 +671,15 @@ impl TemporalEngine {
         {
             return None;
         }
-        // 1. Make deferred data blocks + the slab manifest + the WAL durable BEFORE materializing
-        //    the dump, so nothing the anchor references is un-fsynced. Bail (without advancing the
-        //    watermark) if the barrier fails; the next cycle retries.
+        // Capture an immutable image and its anchor before syncing their backing storage.
+        // Writers during the barrier belong to the next checkpoint, not to this image.
+        let snapshot = self.capture_shard_checkpoint(shard_id)?;
+        let anchor = snapshot.applied_wal_sequence.unwrap_or(0);
+        let index_bytes = serialize_index(&snapshot);
+        drop(snapshot);
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
             return None;
         }
-        // 2. Serialize + durably write the base served index (collapses the legacy per-write
-        //    whole-index rewrite into this threshold dump). Also read the WAL anchor the index
-        //    reflects for the folded MetaItem.
-        let (index_bytes, anchor) = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            match shards.get(&shard_id) {
-                Some(shard) => (
-                    serialize_index(shard),
-                    shard.applied_wal_sequence.unwrap_or(0),
-                ),
-                None => return None,
-            }
-        };
         if self
             .persist_index_bytes_durable(shard_id, &index_bytes)
             .is_err()

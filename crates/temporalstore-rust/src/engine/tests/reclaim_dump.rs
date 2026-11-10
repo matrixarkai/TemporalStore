@@ -106,6 +106,109 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
 }
 
 #[test]
+fn a_failed_flush_keeps_the_live_checkpoint_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "failed-flush");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..crate::control::Config::default()
+        },
+    }).ok);
+    write_one_at_a_time(&engine, &reclaim_dump_keys(1));
+    let before = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence;
+    let index_path = engine.index_path(RECLAIM_DUMP_SHARD);
+    if index_path.is_file() {
+        std::fs::remove_file(&index_path).unwrap();
+    }
+    std::fs::create_dir_all(&index_path).unwrap();
+    engine.flush_shard_index(RECLAIM_DUMP_SHARD);
+    assert!(index_path.is_dir());
+    assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence, before);
+}
+
+#[test]
+fn checkpoint_capture_precedes_the_storage_barrier() {
+    for (kind, async_storage) in [
+        ("manifest", false), ("flush", false), ("catalog", false),
+        ("manifest", true), ("flush", true), ("catalog", true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), kind));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        assert!(engine.set_config(crate::control::SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: crate::control::Config {
+                version: 2,
+                async_storage,
+                ..crate::control::Config::default()
+            },
+        }).ok);
+        let write = |engine: &TemporalEngine, key: &str| {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringSet { key: key.to_string(), value: key.as_bytes().to_vec() },
+            });
+            assert!(result.status.ok, "{:?}", result.status);
+        };
+        write(&engine, "early");
+        if async_storage {
+            assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+                .applied_wal_sequence.unwrap_or(0), 0);
+        }
+        let captured_sequence = engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence;
+        let writer = std::sync::Arc::clone(&engine);
+        let injected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let did_inject = std::sync::Arc::clone(&injected);
+        let bytes = engine.block_store.with_after_next_sync_for_test(
+            move || {
+                write(&writer, "late");
+                did_inject.store(true, std::sync::atomic::Ordering::Relaxed);
+            },
+            || match kind {
+                "manifest" => engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, [])
+                    .unwrap().index_bytes,
+                "flush" => {
+                    engine.flush_shard_index(RECLAIM_DUMP_SHARD);
+                    std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap()
+                }
+                "catalog" => {
+                    assert!(engine.dump_index_catalog(RECLAIM_DUMP_SHARD));
+                    std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap()
+                }
+                _ => unreachable!(),
+            },
+        );
+        assert!(injected.load(std::sync::atomic::Ordering::Relaxed));
+        let live_sequence = engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence;
+        assert!(live_sequence > captured_sequence);
+        let captured = crate::engine::decode_index_bytes(&bytes).unwrap();
+        assert_eq!(captured.applied_wal_sequence, Some(captured_sequence), "{kind}");
+        assert!(captured.string_address("early").is_some());
+        assert!(captured.string_address("late").is_none(), "{kind} captured a write after its data sync");
+        assert!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].string_address("late").is_some());
+        if !async_storage {
+            assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence,
+                Some(live_sequence), "{kind} must not roll back a concurrent writer's anchor");
+        }
+        drop(engine);
+        let restored = reclaim_dump_engine(dir.path(), kind);
+        restored.load_shard(RECLAIM_DUMP_SHARD);
+        for key in ["early", "late"] {
+            let result = restored.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringGet { key: key.to_string() },
+            });
+            assert!(result.status.ok);
+            assert_eq!(result.response, CommandResponse::Bytes { value: Some(key.as_bytes().to_vec()) }, "{kind}");
+        }
+    }
+}
+
+#[test]
 fn cache_eviction_does_not_create_unindexed_slab_copies() {
     let dir = tempfile::tempdir().unwrap();
     let engine = reclaim_dump_engine(dir.path(), "no-copy");
