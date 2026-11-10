@@ -1474,6 +1474,8 @@ pub struct LocalRaftWal {
     /// instead of queueing to take an identical one. Shared by `clone`, like the cursors: two
     /// handles to the same file must share a gate or each would take its own barrier again.
     flush_gates: Arc<crate::flush_gate::FlushRegistry>,
+    /// Unsynced completions must not satisfy a writer waiting for a real fsync.
+    unsynced_gates: Arc<crate::flush_gate::FlushRegistry>,
 }
 
 
@@ -3481,6 +3483,8 @@ pub struct RaftConfig {
     pub ignore_witness: bool,
     pub send_snapshot_timeout_ms: u64,
     pub raft_transport_timeout_ms: u64,
+    /// Sync Raft WAL records before acknowledging them. Disabling this trades crash durability
+    /// for throughput and must be an explicit choice.
     pub wal_sync: bool,
     pub max_segment_bytes: u64,
     pub min_keep_segment_num: u64,
@@ -3559,7 +3563,7 @@ impl Default for RaftConfig {
             // rejects every proposal to it for the same minute.
             send_snapshot_timeout_ms: 10_000,
             raft_transport_timeout_ms: 1_000,
-            wal_sync: false,
+            wal_sync: true,
             max_segment_bytes: 64 * 1024 * 1024,
             min_keep_segment_num: 2,
             can_trigger_snapshot: true,

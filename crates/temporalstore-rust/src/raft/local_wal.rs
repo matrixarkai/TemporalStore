@@ -10,7 +10,7 @@ use super::*;
 /// order matters, since each record carries the log and an older one landing after a newer one
 /// would regress it on recovery -- and then release that lock before the barrier, which is both
 /// the expensive part and the part that concurrent writers can share.
-#[must_use = "a staged append is not durable until finish_staged takes its barrier"]
+#[must_use = "a staged append must be finished before use"]
 pub struct StagedWalAppend {
     gate: Arc<crate::flush_gate::FlushGate>,
     ticket: crate::flush_gate::FlushTicket,
@@ -19,6 +19,7 @@ pub struct StagedWalAppend {
     node_id: RaftNodeId,
     min_keep_segments: usize,
     slow_fsync_threshold_ms: u64,
+    wal_sync: bool,
     /// Whether this append wrote a base whose snapshot boundary ADVANCED -- the one kind of
     /// record that supersedes on-disk history. Its barrier makes earlier segments prunable.
     compacting_base: bool,
@@ -30,6 +31,7 @@ impl LocalRaftWal {
             root: root.into(),
             cursors: Arc::new(Mutex::new(BTreeMap::new())),
             flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
+            unsynced_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
         }
     }
 
@@ -255,6 +257,27 @@ impl LocalRaftWal {
         )
     }
 
+    /// Stage with an explicit durability mode. Unsynced appends still finish in order.
+    pub fn stage_node_segmented_with_sync(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+        max_segment_bytes: u64,
+        min_keep_segments: usize,
+        wal_sync: bool,
+    ) -> io::Result<StagedWalAppend> {
+        self.stage_node_segmented_with_options(
+            shard_id,
+            node_id,
+            record,
+            max_segment_bytes,
+            min_keep_segments,
+            u64::MAX,
+            wal_sync,
+        )
+    }
+
     /// Append a record and make it durable before returning.
     pub fn persist_node_segmented_with_fsync_threshold(
         &self,
@@ -290,6 +313,27 @@ impl LocalRaftWal {
         max_segment_bytes: u64,
         min_keep_segments: usize,
         slow_fsync_threshold_ms: u64,
+    ) -> io::Result<StagedWalAppend> {
+        self.stage_node_segmented_with_options(
+            shard_id,
+            node_id,
+            record,
+            max_segment_bytes,
+            min_keep_segments,
+            slow_fsync_threshold_ms,
+            true,
+        )
+    }
+
+    fn stage_node_segmented_with_options(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+        max_segment_bytes: u64,
+        min_keep_segments: usize,
+        slow_fsync_threshold_ms: u64,
+        wal_sync: bool,
     ) -> io::Result<StagedWalAppend> {
         // A state image is written once, to its own file, before any record that references it;
         // the record then carries the reference. Embedding it re-serialized the whole image into
@@ -458,7 +502,8 @@ impl LocalRaftWal {
         // under the cursor lock is what kept barriers-per-write pinned at 1.0 however many
         // writers there were: each queued for the lock and then paid for an fsync that would have
         // covered all of them. The barrier is taken below, once the lock is released.
-        let gate = self.flush_gates.gate((shard_id, node_id));
+        let gate = if wal_sync { &self.flush_gates } else { &self.unsynced_gates }
+            .gate((shard_id, node_id));
         let ticket = gate.register_write();
 
         // Update the in-memory segment metadata to mirror what a fresh on-disk scan
@@ -495,7 +540,7 @@ impl LocalRaftWal {
             }
             active.last_log_index = active.last_log_index.max(record_last_log_index);
         }
-        // One more record is now durable on disk.
+        // One more record has been appended; the configured barrier runs in `finish_staged`.
         cursor.next_sequence = cursor.next_sequence.saturating_add(1);
         if wrote_base {
             cursor.base_bytes = encoded.len() as u64;
@@ -521,6 +566,7 @@ impl LocalRaftWal {
             node_id,
             min_keep_segments,
             slow_fsync_threshold_ms,
+            wal_sync,
             compacting_base: wrote_base && marker_advanced,
         })
     }
@@ -538,11 +584,16 @@ impl LocalRaftWal {
             node_id,
             min_keep_segments,
             slow_fsync_threshold_ms,
+            wal_sync,
             compacting_base,
         } = staged;
         let last_fsync_elapsed_ms = gate.await_durable(ticket, || {
-            crate::durability_metrics::record_barrier("raft_wal_append");
-            file.sync_data()
+            if wal_sync {
+                crate::durability_metrics::record_barrier("raft_wal_append");
+                file.sync_data()
+            } else {
+                Ok(())
+            }
         })?;
         let mut cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
         let Some(cursor) = cursors.get_mut(&(shard_id, node_id)) else {
