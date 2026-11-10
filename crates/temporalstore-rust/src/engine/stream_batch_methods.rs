@@ -1272,10 +1272,17 @@ impl TemporalEngine {
         let mut wal_commands = Vec::new();
         let mut wal_payloads_elided = false;
         let mut context_embedding_commands = Vec::new();
-        // Async and bulk writes defer served-index persistence, so they do not consume the
+        // Shared rows can be served from retained WAL frames while materialization is deferred.
+        // This changes materialization only: the configured synchronous commit still fsyncs.
+        let defer_shared_hash_materialization = reuse_hash_command_metadata
+            && command_source.recycles_commands()
+            && !wal_legacy_recovery()
+            && config.maxmemory_bytes.is_none();
+        let hash_storage_async = config.async_storage || defer_shared_hash_materialization;
+        // WAL-resident and bulk writes defer served-index persistence, so they do not consume the
         // per-key delta metadata below. Building it anyway clones every touched hash key and
         // field, then drops the complete batch without writing it.
-        let persist_index_delta = !config.async_storage && !bulk_ingest_mode();
+        let persist_index_delta = !hash_storage_async && !bulk_ingest_mode();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
@@ -1445,7 +1452,7 @@ impl TemporalEngine {
                                 .expect("shared hash row has a routing bucket"),
                             shared_row_object_id.expect("shared hash row has an object id"),
                             shard,
-                            config.async_storage,
+                            hash_storage_async,
                             true,
                             key,
                             entries,
@@ -1470,7 +1477,7 @@ impl TemporalEngine {
                                 .expect("shared timestamp row has a routing bucket"),
                             shared_row_object_id.expect("shared timestamp row has an object id"),
                             shard,
-                            config.async_storage,
+                            hash_storage_async,
                             key,
                             timestamp_field,
                             timestamp_seconds,
@@ -1801,6 +1808,7 @@ impl TemporalEngine {
                         "packed hash outcomes were not recoverable from the data-only WAL",
                     ));
             }
+            let oldest_unindexed_sequence = shard.applied_wal_sequence.unwrap_or_default().saturating_add(1);
             let batch_result = if use_data_only {
                 self.wal_store
                     .append_batch_as_one_record_at(
@@ -1810,10 +1818,16 @@ impl TemporalEngine {
                         sync,
                     )
                     .map(|(record, log_id)| {
-                        // Synchronous batch writes have block-store addresses. A dump syncs
-                        // those blocks before advancing the reclaim frontier; only asynchronous
-                        // writes may leave an address that resolves through this WAL record.
-                        if !sync {
+                        // Materialization and the commit barrier are independent. A durable
+                        // shared-row batch can still need these locations after cache eviction.
+                        let has_wal_resident_blocks = record.outcomes.iter().any(|item| {
+                            item.resolved_address().is_some_and(|address| {
+                                crate::wal_record::is_wal_resident(address.block_slab_id())
+                            })
+                        });
+                        if !sync || has_wal_resident_blocks
+                            || (reuse_hash_command_metadata && !shard.wal_resident_blocks.is_empty())
+                        {
                             let locations = super::block_in_wal::register_record_with_outcomes(
                                 &self.block_store,
                                 shard_id,
@@ -1831,6 +1845,13 @@ impl TemporalEngine {
                                         sequence: record.sequence,
                                     },
                                 );
+                            }
+                        }
+                        for item in &record.outcomes {
+                            if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&item.routing_bucket) {
+                                if bucket.first_dirty_wal_sequence == 0 {
+                                    bucket.first_dirty_wal_sequence = oldest_unindexed_sequence.min(record.sequence);
+                                }
                             }
                         }
                     })

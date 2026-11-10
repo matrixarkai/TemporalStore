@@ -7269,6 +7269,27 @@ fn append_owned_value_of_object(
     Ok(address)
 }
 
+fn reserve_hot_block_offset(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
+    counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |offset| {
+        (offset <= u64::from(u32::MAX)).then(|| offset + 1)
+    }).ok()
+}
+
+#[cfg(test)]
+mod hot_block_ticket_tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_hot_block_tickets_select_physical_storage_without_wrapping() {
+        let counter = std::sync::atomic::AtomicU64::new(u64::from(u32::MAX) - 1);
+        assert_eq!(reserve_hot_block_offset(&counter), Some(u64::from(u32::MAX) - 1));
+        assert_eq!(reserve_hot_block_offset(&counter), Some(u64::from(u32::MAX)));
+        assert_eq!(reserve_hot_block_offset(&counter), None);
+        assert_eq!(reserve_hot_block_offset(&counter), None);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::from(u32::MAX) + 1);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_value_inner(
     cache: &MultiLayerCache,
@@ -7284,7 +7305,12 @@ fn append_value_inner(
     // Large async values can evict thousands of smaller hot blocks before a dump.
     // Anonymous values also need a real address: without an identity they cannot be
     // staged or resolved through the WAL after their cache entry is gone.
-    if !async_storage || bytes.len() >= 8 * 1024 || object_id.is_none() {
+    let hot_offset = if async_storage && bytes.len() < 8 * 1024 && object_id.is_some() {
+        reserve_hot_block_offset(&HOT_BLOCK_OFFSET)
+    } else {
+        None
+    };
+    if hot_offset.is_none() {
         // Carry the block in this write's record, the same as the asynchronous arm below.
         //
         // The record is allowed to state its results and drop the operation only when the blocks
@@ -7308,17 +7334,9 @@ fn append_value_inner(
             block_ordinal,
         );
     }
-    // THE COUNTER IS NOW BOUNDED, AND IT IS REFUSED RATHER THAN WRAPPED.
-    //
-    // A hot block's "offset" is not a position, it is a ticket from a process-wide counter, and
-    // the address word gives that ticket 32 bits. Four billion hot writes in ONE process is a
-    // long run but not an impossible one, and the two things that could happen at the boundary
-    // are both worse than a refusal: wrapping hands a live block the address of an older one, and
-    // truncating does the same thing without even reaching the boundary. So the mint is checked,
-    // and a process that exhausts its tickets stops minting hot addresses instead of aliasing
-    // them. Recovery advances the process-local counter past retained synthetic addresses
-    // before accepting new writes.
-    let address = ElementEntry::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id)?;
+    // Tickets fit the address word's 32-bit offset. Exhaustion selects the physical append
+    // above, without wrapping onto a live frame; recovery raises the counter past retained tickets.
+    let address = ElementEntry::try_from_parts(HOT_BLOCK_SLAB_ID, hot_offset.expect("reserved hot offset"), bytes.len() as u64, None, object_id)?;
     // Put the block aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
