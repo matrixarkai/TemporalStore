@@ -145,6 +145,9 @@ impl BlockStore {
             temp.flush()?;
             temp.sync_all()?;
         }
+        if block_slab_id >= inner.block_slab_id {
+            inner.active_append_file = None;
+        }
         std::fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         if block_slab_id >= inner.block_slab_id {

@@ -1796,6 +1796,8 @@ impl BlockStore {
 #[derive(Debug)]
 struct BlockStoreInner {
     root: PathBuf,
+    root_created: bool,
+    active_append_file: Option<std::fs::File>,
     // Set when a relaxed (bulk) append deferred its fsync + manifest persist;
     // cleared by sync_durable(). See bulk_relaxed_durability().
     relaxed_dirty: bool,
@@ -1933,7 +1935,7 @@ impl BlockStore {
 
     pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
         let root = root.into();
-        let _ = std::fs::create_dir_all(&root);
+        let root_created = std::fs::create_dir_all(&root).is_ok();
         let block_slab_id = latest_slab_id_at(&root).unwrap_or_default();
         let mut write_offset = slab_path(&root, block_slab_id)
             .metadata()
@@ -2024,6 +2026,8 @@ impl BlockStore {
         Self {
             inner: Arc::new(Mutex::new(BlockStoreInner {
                 root,
+                root_created,
+                active_append_file: None,
                 relaxed_dirty: false,
                 block_slab_id,
                 write_offset,
@@ -2087,6 +2091,8 @@ impl BlockStore {
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         std::fs::create_dir_all(&inner.root)?;
+        inner.root_created = true;
+        inner.active_append_file = None;
         let existing_max = slab_ids_at(&inner.root)?.into_iter().max();
         let new_slab_id = through_slab_id
             .max(inner.block_slab_id)
@@ -2968,6 +2974,8 @@ fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     std::fs::create_dir_all(&inner.root)?;
+    inner.root_created = true;
+    inner.active_append_file = None;
     let previous_block_slab_id = inner.block_slab_id;
     // The outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
     // durable before we seal and stop writing to it.
