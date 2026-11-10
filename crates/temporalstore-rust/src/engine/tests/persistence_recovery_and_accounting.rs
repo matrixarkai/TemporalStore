@@ -18526,6 +18526,7 @@ fn an_entity_upsert_does_not_report_its_block_uncovered() {
             confidence: 0.97,
             source_event_hashes: vec![5],
             vector: Vec::new(),
+            embedding_model_hash: 0,
         }
     };
     // The first write creates the node's collection; the second is the one under test.

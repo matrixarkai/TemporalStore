@@ -2134,13 +2134,24 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     // to every owner of it. Batch ingestion preserves that ownership with compact row mappings,
     // so repeated source text also occupies one temporary vector instead of one copy per owner.
     //
-    // So the batch is two texts whether or not L1 is emitted: the text the node is searched by,
-    // and the event body.
+    // The batch starts with the node and event texts, followed by one bounded entity value per
+    // extracted entity. The provider still receives one request and can deduplicate repeated text.
     let node_embedding_text = if emit_l1 { l1.as_str() } else { l0.as_str() };
-    let embedding_inputs: Vec<(&str, u64, u32, &str)> = vec![
+    let mut embedding_inputs: Vec<(&str, u64, u32, &str)> = Vec::with_capacity(
+        2usize.saturating_add(extracted_entities.len()),
+    );
+    embedding_inputs.extend([
         ("node_text", node_hash, 1, node_embedding_text),
         ("event_text", event_id_hash, 3, request.body.as_str()),
-    ];
+    ]);
+    embedding_inputs.extend(extracted_entities.iter().map(|entity| {
+        (
+            "entity_state",
+            context_extracted_entity_hash(entity),
+            4,
+            entity.value.as_str(),
+        )
+    }));
     // Compute embeddings, trying the fallback provider on error. On total failure
     // the behavior depends on `context_embed_defer_on_failure()`: the default is to
     // DEFER (persist the node/event/summaries without vectors and mark the node
@@ -2161,6 +2172,11 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     // Left empty when embedding was deferred (provider failure): the node is marked
     // embedding-dirty and the async drainer attaches vectors later, so an empty vector here
     // means "not yet", never "none". skip_serializing_if keeps that costing nothing on disk.
+    let embedding_model_hash = if embedding_deferred {
+        0
+    } else {
+        context_embedding_model_hash(&provider.embedding_model)
+    };
     if !embedding_deferred {
         // embedding_inputs order is node text then event text, so the vectors line up with their
         // owners: index 0 is whatever the node was embedded from -- taken by the node, the L0
@@ -2171,7 +2187,6 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         // every owner that takes a vector. The summaries need it as much as the node does: the
         // retrieve pass scores an L1 summary vector too, and an unstamped one cannot be told
         // apart from one the encoder in use wrote.
-        let embedding_model_hash = context_embedding_model_hash(&provider.embedding_model);
         if let Some(vector) = embedding_vectors.get_row(0) {
             // The level-1 summary carries its own vector because that is the only place a
             // summary's vector lives -- the embedding fold moved vectors off separate rows and
@@ -2257,16 +2272,20 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         });
     }
     let extracted_entity_count = extracted_entities.len();
-    commands.extend(extracted_entities.into_iter().map(|entity| {
-        let entity_identity = format!(
-            "{}:{}",
-            entity.kind,
-            entity.name.to_ascii_lowercase()
-        );
+    commands.extend(extracted_entities.into_iter().enumerate().map(|(index, entity)| {
+        let entity_hash = context_extracted_entity_hash(&entity);
+        let vector = if embedding_deferred {
+            Vec::new()
+        } else {
+            embedding_vectors
+                .get_row(index.saturating_add(2))
+                .map(<[f32]>::to_vec)
+                .unwrap_or_default()
+        };
         Command::ContextUpsertEntity {
             tenant_hash: request.tenant_hash,
             entity: ContextEntity {
-                entity_hash: stable_hash64(&entity_identity),
+                entity_hash,
                 node_hash,
                 entity_type: context_extracted_entity_type(&entity.kind),
                 name: entity.name,
@@ -2275,7 +2294,12 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
                 valid_from_ms: timestamp_ms,
                 confidence: 0.9,
                 source_event_hashes: vec![event_id_hash],
-                vector: Vec::new(),
+                embedding_model_hash: if vector.is_empty() {
+                    0
+                } else {
+                    embedding_model_hash
+                },
+                vector,
             },
         }
     }));
@@ -3146,6 +3170,10 @@ pub fn retrieve_context(
                                 &query_embedding,
                                 &entity.vector,
                             )
+                            && !context_embedding_model_conflicts(
+                                entity.embedding_model_hash,
+                                active_embedding_model_hash,
+                            )
                     })
                     .map(|entity| EmbeddingVector {
                         key: EmbeddingKey {
@@ -3639,6 +3667,14 @@ fn context_extracted_entity_type(kind: &str) -> u32 {
         "fact" => 8,
         _ => 0,
     }
+}
+
+fn context_extracted_entity_hash(entity: &ContextExtractedEntity) -> u64 {
+    stable_hash64(&format!(
+        "{}:{}",
+        entity.kind,
+        entity.name.to_ascii_lowercase()
+    ))
 }
 
 fn context_node_uri(tenant_hash: u64, node_hash: u64) -> String {

@@ -362,6 +362,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
                     confidence: 1.0,
                     source_event_hashes: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 },
             },
             Command::ContextUpsertChildRef {

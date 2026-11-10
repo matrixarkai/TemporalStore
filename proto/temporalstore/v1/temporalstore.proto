@@ -1437,7 +1437,7 @@ message ContextWriteExtractedEvent {
   bool cold_storage = 6;
 }
 
-// THE DURABLE ENTITY. ALL TEN FIELDS.
+// THE DURABLE ENTITY. ALL ELEVEN FIELDS.
 message ContextEntityRecord {
   uint64 entity_hash = 1;
   uint64 node_hash = 2;
@@ -1452,11 +1452,9 @@ message ContextEntityRecord {
   float confidence = 8;
   repeated uint64 source_event_hashes = 9;
   // Inline, `repeated float`, packed, and NOT quantised.
-  //
-  // NO MODEL HASH, which is `ContextEntity`'s existing design rather than a guard dropped here --
-  // the entity vector has never carried one, exactly as the event vector has not. Compare
-  // ContextSummaryRecord below, which DOES carry one and must keep it.
   repeated float vector = 10;
+  // Encoder identity for `vector`. Zero keeps records written before this field readable.
+  uint64 embedding_model_hash = 11;
 }
 
 // THE DURABLE SUMMARY. ALL SIX FIELDS, AND ONE OF THEM IS AN ENCODER GUARD IN ITS OWN RIGHT.
