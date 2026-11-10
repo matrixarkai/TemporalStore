@@ -892,6 +892,18 @@ def main() -> int:
                 f"sqlite_control pair -- this group has NO control"
             )
             continue
+        first_write_per_row = first.write_seconds / first.entities
+        last_write_per_row = last.write_seconds / last.entities
+        if first_write_per_row > 0:
+            write_drift = abs(last_write_per_row - first_write_per_row) / first_write_per_row
+            print(
+                f"control: payload {payload_bytes} B/row SQLite write time per row "
+                f"drift={write_drift:.1%}"
+            )
+            if write_drift > args.control_tolerance:
+                drift_reasons.append(
+                    f"{payload_bytes} B/row write time drifted {write_drift:.1%}"
+                )
         if first.warm_b1.p50 <= 0:
             continue
         drift = abs(last.warm_b1.p50 - first.warm_b1.p50) / first.warm_b1.p50
@@ -901,7 +913,7 @@ def main() -> int:
             f"drift={drift:.1%}"
         )
         if drift > args.control_tolerance:
-            drift_reasons.append(f"{payload_bytes} B/row drifted {drift:.1%}")
+            drift_reasons.append(f"{payload_bytes} B/row read latency drifted {drift:.1%}")
     if drift_reasons:
         control_void = (
             f"the control arm drifted beyond the {args.control_tolerance:.0%} "

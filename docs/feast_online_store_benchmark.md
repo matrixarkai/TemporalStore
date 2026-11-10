@@ -163,6 +163,9 @@ PYTHONPATH="$PWD" python benchmarks/bench_feature_serving.py \
 ```
 
 The harness exits non-zero when a run is PROVISIONAL or VOID, so it can gate.
+The SQLite control must stay within `--control-tolerance` for both write time
+per row and warm single-row read p50. Stable reads alone cannot validate a
+write-throughput comparison. A rejection in either dimension marks the run VOID.
 
 For long list-valued features, use `--payloads sequence`. That profile writes
 one 4,096-element Feast `Array(Int64)` per entity, verifies serialized values
