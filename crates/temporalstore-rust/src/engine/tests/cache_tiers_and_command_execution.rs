@@ -5604,6 +5604,20 @@ fn feature_proto_aggregate_reads_numeric_values() {
         },
     });
     assert_eq!(capped.response, CommandResponse::Aggregate { value: 35 });
+    for (count, expected) in [(Some(0), 0), (Some(1), -7), (Some(2), 42), (None, 17)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureProtoAggQuery {
+                key: "numeric".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                aggregator: "last".to_string(),
+                count,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
     let empty = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::FeatureProtoAggQuery {
@@ -5674,6 +5688,47 @@ fn feature_aggregate_stream_preserves_unparseable_point_semantics() {
         },
     });
     assert_eq!(capped.response, CommandResponse::Aggregate { value: -7 });
+    for (count, expected) in [(Some(0), 0), (Some(1), 0), (Some(2), -7), (None, 17)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAggQuery {
+                key: "stream".to_string(),
+                start_ms: 0,
+                end_ms: 40,
+                aggregator: "last".to_string(),
+                count,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
+}
+
+#[test]
+fn feature_last_keeps_an_unparseable_newest_point_and_capped_prefix() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "last-boundary".to_string(),
+            points: vec![
+                FeaturePoint { timestamp_ms: 10, value: b"7".to_vec() },
+                FeaturePoint { timestamp_ms: 20, value: b"unknown".to_vec() },
+            ],
+        },
+    }).status.ok);
+    for (count, expected) in [(None, 0), (Some(0), 0), (Some(1), 7), (Some(2), 0)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAggQuery {
+                key: "last-boundary".to_string(), start_ms: 0, end_ms: 20,
+                aggregator: "last".to_string(), count,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
 }
 
 // The gated control-state rollup ladder must return exactly the same sum-family window
