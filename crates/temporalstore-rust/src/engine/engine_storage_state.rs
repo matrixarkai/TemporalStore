@@ -1412,6 +1412,36 @@ pub(super) struct BlockKeysByPosition<'a> {
     restricted: bool,
 }
 
+#[cfg(test)]
+mod bucket_projection_tests {
+    use super::*;
+
+    #[test]
+    fn bucket_projection_matches_full_identity_without_unrelated_allocations() {
+        let objects = BTreeMap::new();
+        let mut lookup = ObjectBlockLookup::default();
+        let kind = Arc::<str>::from("hash");
+        for index in 0..4096u64 {
+            lookup.file(&kind, &Arc::from(format!("key-{index}")), BlockLookupRef {
+                routing_bucket: (index % 64) as u32,
+                block_ref_key: index,
+            });
+        }
+        let full = BlockKeysByPosition::from_parts(&objects, &lookup);
+        assert_eq!(full.by_position.len(), 4096);
+        assert_eq!(full.by_handle.len(), 4096);
+        for bucket in 0..64 {
+            let scoped = BlockKeysByPosition::from_parts_for_bucket(&objects, &lookup, bucket);
+            assert_eq!(scoped.by_position.len(), 64);
+            assert!(scoped.by_handle.is_empty());
+            for (position, identity) in &scoped.by_position {
+                assert_eq!(position.0, bucket);
+                assert_eq!(Some(identity), full.by_position.get(position));
+            }
+        }
+    }
+}
+
 thread_local! {
     /// Times THIS THREAD built a block-identity inversion restricted to named keys. Per thread, so
     /// a probe counts its own writes and not a neighbouring test's.
@@ -1459,17 +1489,44 @@ impl<'a> BlockKeysByPosition<'a> {
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
+        Self::from_parts_filtered(objects, lookup, None)
+    }
+
+    pub(super) fn from_parts_for_bucket(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        routing_bucket: u32,
+    ) -> Self {
+        Self::from_parts_filtered(objects, lookup, Some(routing_bucket))
+    }
+
+    fn from_parts_filtered(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        routing_bucket: Option<u32>,
+    ) -> Self {
         #[cfg(test)]
         BLOCK_IDENTITY_BUILDS.with(|count| count.set(count.get() + 1));
         let mut by_position = std::collections::HashMap::new();
         let mut by_handle = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
             for block_ref in refs.iter() {
+                if routing_bucket.is_some_and(|bucket| bucket != block_ref.routing_bucket) {
+                    continue;
+                }
                 by_position.insert(
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
-                by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
+                if routing_bucket.is_none() {
+                    by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
+                }
             }
         };
         // THE SLOT HOME FIRST. `as_str` on the kind is `&'static str`, which outlives `'a`.
@@ -1487,7 +1544,7 @@ impl<'a> BlockKeysByPosition<'a> {
         Self {
             by_position,
             by_handle,
-            restricted: false,
+            restricted: routing_bucket.is_some(),
         }
     }
 
