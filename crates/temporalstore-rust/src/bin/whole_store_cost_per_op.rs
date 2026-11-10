@@ -26,6 +26,7 @@
 //! read-back matches.
 //!
 //! Usage: whole_store_cost_per_op <string|hash> <ops> <key_bytes> <value_bytes>
+//! Optional maintenance: WSC_MAINTENANCE_ROUNDS=1..16 and WSC_COMPACTION_MODE=operator|drain.
 
 use temporalstore_rust::control::{Config, LoadShardRequest, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
@@ -436,6 +437,9 @@ fn main() {
     assert!(rounds <= 16, "maintenance rounds must not exceed 16");
     if rounds > 0 {
         assert!(matches!(model, "string" | "hash"), "maintenance read-back requires string or hash");
+        let compaction_mode = std::env::var("WSC_COMPACTION_MODE").unwrap_or_else(|_| "operator".to_string());
+        assert!(matches!(compaction_mode.as_str(), "operator" | "drain"),
+            "WSC_COMPACTION_MODE must be operator or drain");
         for round in 0..rounds {
             let files_before = tree_bytes(&dir);
             let wal_before = engine.write_ahead_log_store().stats(1).bytes_written;
@@ -445,9 +449,25 @@ fn main() {
                 max_dump_buckets_per_round: 64,
                 min_undumped_wal_records: 0,
                 min_undumped_wal_bytes: 0,
+                enable_block_compaction: compaction_mode == "operator",
                 ..StorageManagerCycleRequest::default()
             });
-            println!("CYCLE_COST round={round} kind=operator elapsed_us={} file_delta={} wal_appended={}",
+            assert!(report.errors.is_empty(), "maintenance cycle failed: {:?}", report.errors);
+            if compaction_mode == "drain" {
+                let candidates = &report.plan.reclaim_candidates;
+                let eligible_refs = temporalstore_rust::engine::compaction_relocatable_block_refs(candidates);
+                let compact_started = std::time::Instant::now();
+                let rewritten = if eligible_refs > 0 {
+                    let slabs = temporalstore_rust::engine::compaction_drain_block_slab_ids(candidates);
+                    engine.compact_shard_blocks_draining(1, slabs)
+                        .expect("drain compaction failed").rewritten_object_blocks
+                } else {
+                    0
+                };
+                println!("STAGE_COST round={round} stage=compact_drain elapsed_us={} eligible_refs={eligible_refs} rewritten_refs={rewritten}",
+                    compact_started.elapsed().as_micros());
+            }
+            println!("CYCLE_COST round={round} kind={compaction_mode} elapsed_us={} file_delta={} wal_appended={}",
                 started.elapsed().as_micros(),
                 i128::from(tree_bytes(&dir)) - i128::from(files_before),
                 engine.write_ahead_log_store().stats(1).bytes_written.saturating_sub(wal_before));
