@@ -4977,6 +4977,110 @@ fn common_expire_and_ttl_work() {
 }
 
 #[test]
+fn feature_append_with_ttl_expires_the_series_and_round_trips_through_protobuf() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let append = Command::FeatureAppendWithTtl {
+        key: "ttl-history".to_string(),
+        points: vec![FeaturePoint {
+            timestamp_ms: 10,
+            value: b"v".to_vec(),
+        }],
+        ttl_ms: 60_000,
+    };
+    let encoded = crate::shared_store::command_protobuf_bytes(&append).unwrap();
+    let decoded = crate::shared_store::command_from_protobuf_bytes(&encoded).unwrap();
+    assert!(matches!(decoded, Command::FeatureAppendWithTtl { ttl_ms: 60_000, .. }));
+    assert!(engine.execute(ExecuteRequest { shard_id: 1, command: decoded }).status.ok);
+    let ttl = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl { key: "ttl-history".to_string() },
+    });
+    assert!(matches!(ttl.response, CommandResponse::Integer { value } if value > 0));
+
+    let expire = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppendWithTtl {
+            key: "ttl-history".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 20,
+                value: b"new".to_vec(),
+            }],
+            ttl_ms: 0,
+        },
+    });
+    assert!(expire.status.ok);
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "ttl-history".to_string(),
+            start_ms: 0,
+            end_ms: 30,
+            count: None,
+        },
+    });
+    assert_eq!(read.response, CommandResponse::FeaturePoints { points: Vec::new() });
+}
+
+#[test]
+fn feature_append_with_ttl_survives_shard_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache-a"),
+            &blocks,
+            &indexes,
+        );
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppendWithTtl {
+                key: "reloaded-history".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"persisted".to_vec(),
+                }],
+                ttl_ms: 60_000,
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(1);
+    let ttl = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl { key: "reloaded-history".to_string() },
+    });
+    assert!(matches!(ttl.response, CommandResponse::Integer { value } if value > 0));
+    let read = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "reloaded-history".to_string(),
+            start_ms: 0,
+            end_ms: 20,
+            count: None,
+        },
+    });
+    assert_eq!(
+        read.response,
+        CommandResponse::FeaturePoints {
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"persisted".to_vec(),
+            }],
+        }
+    );
+}
+
+#[test]
 fn common_expire_missing_key_matches_not_found() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);

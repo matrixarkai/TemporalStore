@@ -186,7 +186,9 @@ what was written unless something recorded it.
   It still costs one extra write per row, so it is off by default.
 * With it off, `teardown` **logs a warning and leaves the rows**. It does not
   report success for work it did not do. `key_ttl_seconds` expires the latest
-  entity hash, not the separate history series.
+  entity hash and, for new history writes, each history series. History TTL
+  requires a serving node that supports `FeatureAppendWithTtl`; older nodes
+  reject the command rather than retaining history without the requested TTL.
 
 ## What of Feast's `OnlineStore` contract is covered
 

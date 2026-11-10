@@ -284,6 +284,7 @@ message Command {
     ContextWritePackAudit context_write_pack_audit = 62;
     HashMultiSetIfTimestampOlder hash_multi_set_if_timestamp_older = 63;
     SetScan set_scan = 64;
+    FeatureAppendWithTtl feature_append_with_ttl = 65;
   }
 }
 
@@ -373,6 +374,12 @@ message FeaturePoint {
 message FeatureAppend {
   string key = 1;
   repeated FeaturePoint points = 2;
+}
+
+message FeatureAppendWithTtl {
+  string key = 1;
+  repeated FeaturePoint points = 2;
+  uint64 ttl_ms = 3;
 }
 
 message FeatureQuery {

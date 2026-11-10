@@ -171,6 +171,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::SeenCheck { key, .. }
         | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithTtl { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
@@ -414,6 +415,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             // so a one-point feature append into a 1,024-key store cost 12,717 allocations, none of
             // it about the point being appended.
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
@@ -466,6 +468,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::BucketTake { .. }
             | Command::SeenCheck { .. }
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
@@ -648,7 +651,8 @@ pub(super) fn validate_command_preconditions(
                 return Err(Status::error("not_found", "key not found"));
             }
         }
-        Command::FeatureAppend { key, points } => {
+        Command::FeatureAppend { key, points }
+        | Command::FeatureAppendWithTtl { key, points, .. } => {
             let current = shard
                 .features()
                 .get(&key[..])

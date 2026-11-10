@@ -5177,6 +5177,19 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                     .collect(),
             })
         }
+        Command::FeatureAppendWithTtl { key, points, ttl_ms } => {
+            v1::command::Kind::FeatureAppendWithTtl(v1::FeatureAppendWithTtl {
+                key: key.clone(),
+                points: points
+                    .iter()
+                    .map(|point| v1::FeaturePoint {
+                        timestamp_ms: point.timestamp_ms,
+                        value: point.value.clone(),
+                    })
+                    .collect(),
+                ttl_ms: *ttl_ms,
+            })
+        }
         Command::FeatureQuery {
             key,
             start_ms,

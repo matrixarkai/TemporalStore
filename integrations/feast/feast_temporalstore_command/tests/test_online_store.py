@@ -1938,6 +1938,45 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertTrue(numeric["key"].startswith("fa:"))
         self.assertEqual(bytes(numeric["points"][0]["value"]), b"1")
 
+    def test_history_ttl_is_carried_by_each_append_without_extra_commands(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        self.config.online_store.key_ttl_seconds = 90
+        client = self._install()
+        timestamp = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=7)}, timestamp, None)],
+            None,
+        )
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            [
+                "hash_multi_set",
+                "feature_append_with_ttl",
+                "feature_append_with_ttl",
+                "common_expire",
+            ],
+        )
+        self.assertEqual([command["ttl_ms"] for command in commands[1:3]], [90_000] * 2)
+
+        self.config.online_store.compact_numeric_history = True
+        client = self._install()
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=7)}, timestamp, None)],
+            None,
+        )
+        self.assertEqual(
+            [command["kind"] for command in client.sent[0][1]["commands"]],
+            ["hash_multi_set", "feature_append_with_ttl", "common_expire"],
+        )
+
     def test_compact_numeric_history_writes_one_series_and_queries_it(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
