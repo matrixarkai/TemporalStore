@@ -368,17 +368,43 @@ pub(super) fn install_element_at_bucket<K: RecordedKind>(
     });
 }
 
-pub(super) fn install_new_packed_hash_block_at_bucket(
+pub(super) fn install_packed_hash_block_at_bucket<'a>(
     shard: &mut ShardState,
     shard_id: ShardId,
     routing_bucket: u32,
     object_id: u64,
     object_key: &str,
-    fields: &[(String, Vec<u8>)],
+    fields: impl Iterator<Item = &'a str> + Clone,
     address: ElementEntry,
 ) {
-    let Some(first) = fields.first() else {
+    let Some(first) = fields.clone().next() else {
         return;
+    };
+    super::storage_bucket_internals::reload_released_bucket(shard, shard_id, routing_bucket);
+    let existing = shard.bucket_index.hashes.get(object_key);
+    let mut written: Option<HashSet<&str>> = None;
+    let replaces = if let Some(existing) = existing {
+        let landing = super::live_block_key(&address);
+        let mut vacated: HashSet<_> = fields.clone()
+            .filter_map(|field| existing.get(field))
+            .map(super::live_block_key)
+            .filter(|key| *key != landing)
+            .collect();
+        if !vacated.is_empty() {
+            let names: HashSet<&str> = fields.clone().collect();
+            for (field, old) in existing.iter() {
+                if !names.contains(field.as_ref()) {
+                    vacated.remove(&super::live_block_key(old));
+                    if vacated.is_empty() {
+                        break;
+                    }
+                }
+            }
+            written = Some(names);
+        }
+        super::storage_bucket_internals::ReplacedBlock::from_keys(vacated.into_iter())
+    } else {
+        super::storage_bucket_internals::ReplacedBlock::none()
     };
     // Replay expands the framed block into every field; one filed outcome records the whole row.
     let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed_at_bucket(
@@ -388,23 +414,34 @@ pub(super) fn install_new_packed_hash_block_at_bucket(
         object_id,
         HashKind::KIND,
         object_key,
-        Some(first.0.clone()),
+        Some(first.to_string()),
         address.clone(),
         true,
         None,
-        super::storage_bucket_internals::ReplacedBlock::of(None),
+        replaces,
     );
-    install_new_packed_hash_fields(shard, object_key, fields, address, filed);
+    // A re-add must clear every written field's tombstone, not just the outcome's first name.
+    if shard.bucket_index.bucket_map.get(&routing_bucket)
+        .is_some_and(|bucket| !bucket.tombstone_elements.is_empty())
+    {
+        let written = written.get_or_insert_with(|| {
+            fields.clone().collect()
+        });
+        super::storage_bucket_internals::sweep_packed_hash_tombstones(
+            shard, routing_bucket, object_key, written,
+        );
+    }
+    install_packed_hash_fields(shard, object_key, fields, address, filed);
 }
 
-fn install_new_packed_hash_fields(
+fn install_packed_hash_fields<'a>(
     shard: &mut ShardState,
     object_key: &str,
-    fields: &[(String, Vec<u8>)],
+    fields: impl Iterator<Item = &'a str>,
     address: ElementEntry,
     _filed: BlockFiled,
 ) {
-    for (field, _) in fields {
+    for field in fields {
         let handle = super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
         HashKind::resident(shard).install_into(object_key, handle, address.clone());
     }

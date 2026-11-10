@@ -2155,23 +2155,13 @@ impl TemporalEngine {
                 let (Some(address), Some(fields)) = (item.resolved_address(), live.as_ref()) else {
                     return false;
                 };
-                for field in fields {
-                    // FROM THE POOL, as the live write site does. Replay is where a key becomes
-                    // resident again after a restart, so a minted name here would put the store back
-                    // into the shape the conversion removed.
-                    let field_handle =
-                        super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
-                    super::recorded_map::install_element::<super::recorded_map::HashKind>(
-                        shard,
-                        shard_id,
-                        &item.object_key,
-                        Some(field.clone()),
-                        field_handle,
-                        address.clone(),
-                        true,
-                        address.clone(),
-                    );
-                }
+                let (start, end) = shard.routing_range();
+                let routing_bucket = super::hashing::block_routing_bucket(&item.object_key, start, end);
+                let object_id = super::stable_block_object_id(shard_id, "hash", &item.object_key);
+                super::recorded_map::install_packed_hash_block_at_bucket(
+                    shard, shard_id, routing_bucket, object_id, &item.object_key,
+                    fields.iter().map(String::as_str), address,
+                );
                 true
             }
             // set: the PAGE spells the member, and the page's key IS the member.
@@ -2818,8 +2808,7 @@ impl TemporalEngine {
             .unwrap_or(0)
     }
 
-    /// Re-register WAL-backed blocks from persisted positions and model-map element names.
-    /// Entries without a live model-map element are resolved from their recorded block identity.
+    /// Restore persisted locations one record at a time, including packed-frame field aliases.
     pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) -> Result<(), Status> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
@@ -2828,88 +2817,12 @@ impl TemporalEngine {
         if shard.wal_resident_blocks.is_empty() {
             return Ok(());
         }
-        let mut registered = std::collections::BTreeSet::new();
-        let identities = shard.bucket_index.block_identities();
-        for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, block) in bucket.block_index.iter() {
-                if block.deleted() {
-                    continue;
-                }
-                // A LIVE block is named by the object lookup, which the decode fills -- so the
-                // `else` here is the window between a decode and that filing, which no longer
-                // exists on any path that reaches this.
-                let Some(beside) = identities.identity_of(bucket, *handle, block) else {
-                    continue;
-                };
-                let object_id = block.object_id(shard_id, beside.object_key);
-                let element_name = None;
-                let folded = super::block_in_wal::wal_resident_key(object_id, element_name);
-                let Some(placement) = shard.wal_resident_blocks.get(&folded) else {
-                    continue;
-                };
-                super::block_in_wal::register_at(
-                    &self.block_store,
-                    shard_id,
-                    object_id,
-                    element_name,
-                    placement.log_id,
-                    placement.sequence,
-                    &self.wal_store,
-                );
-                registered.insert(folded);
-            }
-        }
-        let mut register_element = |kind: &str, key: &str, element_name: &str, address: &crate::block_store::ElementEntry| {
-            if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
-                return;
-            }
-            let object_id = super::stable_block_object_id(shard_id, kind, key);
-            let folded = super::block_in_wal::wal_resident_key(object_id, Some(element_name));
-            if let Some(placement) = shard.wal_resident_blocks.get(&folded) {
-                super::block_in_wal::register_at(
-                    &self.block_store,
-                    shard_id,
-                    object_id,
-                    Some(element_name),
-                    placement.log_id,
-                    placement.sequence,
-                    &self.wal_store,
-                );
-                registered.insert(folded);
-            }
-        };
-        for (key, fields) in &shard.bucket_index.hashes {
-            for (field, address) in fields.iter() {
-                register_element("hash", key, field, address);
-            }
-        }
-        for (key, members) in &shard.bucket_index.sets {
-            for (member, address) in members.iter() {
-                let element_name = super::execute_on_shard::set_element_name(member);
-                register_element("set", key, &element_name, address);
-            }
-        }
-        for (key, members) in &shard.bucket_index.zsets {
-            for (member, (_, address)) in members.iter() {
-                let element_name = super::execute_on_shard::zset_element_name(member);
-                register_element("zset", key, &element_name, address);
-            }
-        }
-        for (key, positions) in &shard.bucket_index.lists {
-            for (position, address) in positions.iter() {
-                let mut buffer = [0; 16];
-                let element_name = super::execute_on_shard::list_element_name(*position, &mut buffer);
-                register_element("list", key, element_name, address);
-            }
-        }
         let mut unresolved = std::collections::BTreeMap::<u64, Vec<(u64, u64)>>::new();
         for (folded, placement) in &shard.wal_resident_blocks {
-            if !registered.contains(folded) {
-                unresolved
-                    .entry(placement.log_id)
-                    .or_default()
-                    .push((*folded, placement.sequence));
-            }
+            unresolved
+                .entry(placement.log_id)
+                .or_default()
+                .push((*folded, placement.sequence));
         }
         drop(shards);
         for (log_id, placements) in unresolved {
@@ -3145,26 +3058,24 @@ impl TemporalEngine {
                 // id is still in hand, makes a replayed record as addressable as a written one.
                 if !record.staged_blocks.is_empty() {
                     if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
-                        super::block_in_wal::register_record(
+                        let locations = super::block_in_wal::register_record_with_outcomes(
                             &self.block_store,
                             shard_id,
                             &record.staged_blocks,
+                            &record.outcomes,
                             log_id,
                             record.sequence,
                             &self.wal_store,
                         );
                         // The same fact written where it survives this process, so a later reload
                         // rehydrates it instead of rediscovering that it cannot.
-                        wal_resident_updates.extend(record.staged_blocks.iter().map(|block| {
+                        wal_resident_updates.extend(locations.into_iter().map(|folded| {
                             (
                                 // The record says which element each block is, so replay files one
                                 // entry PER BLOCK. Keyed on the object alone, a record carrying
                                 // several elements of one key would file one entry and the blocks
                                 // that lost would be unreachable after the next reload.
-                                super::block_in_wal::wal_resident_key(
-                                    block.object_id,
-                                    block.element_name.as_deref(),
-                                ),
+                                folded,
                                 crate::engine::state::WalResidentBlock {
                                     log_id,
                                     sequence: record.sequence,
@@ -3182,8 +3093,13 @@ impl TemporalEngine {
                 // instead of silently recovering as nothing. The command cannot be dropped from the
                 // record until no accepted write can produce an empty one.
                 if !record.outcomes.is_empty() {
+                    let bindings = super::block_in_wal::hash_outcome_blocks(&record.outcomes, &record.staged_blocks);
                     for item in &record.outcomes {
-                        if !self.apply_outcome_item(shard_id, item, &record.staged_blocks) {
+                        let selected = item.resolved_address()
+                            .and_then(|address| bindings.get(&(item.object_id, super::live_block_key(&address))))
+                            .map(|index| std::slice::from_ref(&record.staged_blocks[*index]))
+                            .unwrap_or(&record.staged_blocks);
+                        if !self.apply_outcome_item(shard_id, item, selected) {
                             // Say which precondition was unmet. `apply_outcome_item` answers with a
                             // bool from eighteen different places, so the caller was reporting that
                             // an outcome would not install and never which part of it was missing --

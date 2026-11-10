@@ -209,6 +209,173 @@ fn a_new_packed_hash_files_one_block_for_all_fields() {
     assert_eq!(values.get("payload").map(Vec::len), Some(8 * 1024));
 }
 
+fn grouped_row(engine: &TemporalEngine, fields: &[&str], generation: u8) {
+    use crate::types::{BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue};
+    let (response, completed) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
+        shard_id: 1,
+        fields: fields.iter().map(|field| field.to_string()).collect(),
+        rows: vec![BatchHashMultiSetRow("grouped".to_string(), fields.iter()
+            .map(|_| BatchHashMultiSetValue(vec![generation; 48])).collect())],
+        ttl_ms: None,
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    assert_eq!(response.applied, 1);
+    assert_eq!(completed, ["grouped"]);
+    let records = engine.write_ahead_log_store().scan(1, 0, u64::MAX, u64::MAX).unwrap();
+    let record = crate::wal::decode_wal_line(&records.last().unwrap().1).unwrap();
+    assert_eq!(record.outcomes.iter().filter(|item| item.kind == "hash" && !item.deleted).count(), 1);
+}
+
+fn grouped_values(engine: &TemporalEngine) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGetAll { key: "grouped".to_string() },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    let CommandResponse::HashEntries { entries } = response.response else { panic!("hash entries") };
+    entries.into_iter().collect()
+}
+
+fn grouped_block_count(engine: &TemporalEngine) -> usize {
+    let shards = engine.shards.read().unwrap();
+    let shard = shards.get(&1).unwrap();
+    let held: BTreeSet<_> = shard.bucket_index.hashes.get("grouped").unwrap()
+        .values().map(identity).collect();
+    let refs = shard.bucket_index.object_block_refs("hash", "grouped").unwrap();
+    let filed: BTreeSet<_> = refs.iter().map(|block_ref| {
+        let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket).unwrap();
+        let block = bucket.block_index.get(&block_ref.block_ref_key).unwrap();
+        assert!(!block.deleted());
+        identity(&block.address)
+    }).collect();
+    assert_eq!(refs.len(), filed.len());
+    assert_eq!(held, filed);
+    held.len()
+}
+
+fn grouped_tombstone(engine: &TemporalEngine, field: &str) -> bool {
+    let shards = engine.shards.read().unwrap();
+    let shard = shards.get(&1).unwrap();
+    let (start, end) = shard.routing_range();
+    let bucket = shard.bucket_index.bucket_map.get(&block_routing_bucket("grouped", start, end)).unwrap();
+    bucket.tombstone_element_block("grouped",
+        crate::engine::storage_bucket_internals::stored_model_kind("hash"), field).is_some()
+}
+
+#[test]
+fn grouped_packed_hash_overwrites_file_one_outcome_and_one_live_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let fields: Vec<String> = (0..21).map(|i| format!("f{i}")).collect();
+    let names: Vec<&str> = fields.iter().map(String::as_str).collect();
+    for generation in 0..5 {
+        grouped_row(&engine, &names, generation);
+        assert_eq!(grouped_block_count(&engine), 1);
+        let values = grouped_values(&engine);
+        assert_eq!(values.len(), 21);
+        assert!(values.values().all(|value| value == &vec![generation; 48]));
+    }
+}
+
+#[test]
+fn grouped_packed_hash_retires_multiple_blocks_but_preserves_untouched_blocks() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    for field in ["a0", "a1", "a2", "b0"] {
+        run(&engine, Command::HashSet {
+            key: "grouped".to_string(), field: field.to_string(), value: vec![0; 48],
+        });
+    }
+    assert_eq!(grouped_block_count(&engine), 4);
+    grouped_row(&engine, &["a0", "a1", "a2"], 1);
+    assert_eq!(grouped_block_count(&engine), 2);
+    let values = grouped_values(&engine);
+    assert_eq!(values["b0"], vec![0; 48]);
+    assert_eq!(values["a2"], vec![1; 48]);
+    grouped_row(&engine, &["a0", "a1", "a2", "b0"], 2);
+    assert_eq!(grouped_block_count(&engine), 1);
+}
+
+#[test]
+fn grouped_packed_hash_partial_readds_survive_wal_and_dump_recovery() {
+    for async_storage in [false, true] {
+        for dump in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = engine_on(dir.path());
+            assert!(engine.set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config { version: 2, async_storage, ..Config::default() },
+            }).ok);
+            grouped_row(&engine, &["a0", "a1", "b0", "b1"], 0);
+            grouped_row(&engine, &["a0", "a1"], 1);
+            assert_eq!(grouped_block_count(&engine), 2);
+            for field in ["a1", "b1"] {
+                run(&engine, Command::HashDelete { key: "grouped".to_string(), field: field.to_string() });
+            }
+            assert!(grouped_tombstone(&engine, "a1"));
+            assert!(grouped_tombstone(&engine, "b1"));
+            grouped_row(&engine, &["a0", "a1"], 2);
+            assert!(!grouped_tombstone(&engine, "a1"));
+            assert!(grouped_tombstone(&engine, "b1"));
+            let expected = grouped_values(&engine);
+            assert_eq!(expected.len(), 3);
+            assert_eq!(expected["b0"], vec![0; 48]);
+            assert_eq!(expected["a0"], vec![2; 48]);
+            assert_eq!(expected["a1"], vec![2; 48]);
+            grouped_block_count(&engine);
+            engine.write_ahead_log_store().flush(1).unwrap();
+            if dump {
+                let result = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+                    shard_id: 1, min_undumped_wal_records: 0, min_undumped_wal_bytes: 0,
+                    ..crate::engine::reports::StorageLifecycleRequest::default()
+                });
+                assert!(result.dump_manifest.is_some(), "{result:?}");
+            }
+            drop(engine);
+            let recovered = engine_on(dir.path());
+            assert_eq!(grouped_values(&recovered), expected, "async={async_storage}, dump={dump}");
+            grouped_block_count(&recovered);
+        }
+    }
+}
+
+#[test]
+fn grouped_packed_hash_replays_multiple_frames_of_one_object_in_one_record() {
+    for async_storage in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_on(dir.path());
+        assert!(engine.set_config(SetConfigRequest {
+            shard_id: 1, config: Config { version: 2, async_storage, ..Config::default() },
+        }).ok);
+        let mut commands = Vec::new();
+        for (timestamp, fields, generation) in [
+            (1, vec!["a0", "a1", "b0", "b1"], 0),
+            (2, vec!["a0", "a1"], 1),
+        ] {
+            commands.push(Command::HashMultiSetIfTimestampOlder {
+                key: "grouped".to_string(), timestamp_field: "stamp".to_string(),
+                timestamp_seconds: timestamp, timestamp_nanos: 0, ttl_ms: None,
+                entries: fields.iter().map(|field| (field.to_string(), vec![generation; 48])).collect(),
+            });
+        }
+        let response = engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands });
+        assert!(response.status.ok, "{:?}", response.status);
+        assert!(response.responses.iter().all(|response| response.status.ok));
+        let expected = grouped_values(&engine);
+        assert_eq!(expected["a0"], vec![1; 48]);
+        assert_eq!(expected["b0"], vec![0; 48]);
+        engine.write_ahead_log_store().flush(1).unwrap();
+        drop(engine);
+        let recovered = engine_on(dir.path());
+        if async_storage {
+            recovered.compact_shard_blocks(1).unwrap();
+            assert_eq!(recovered.registration_count_for_test(1), 0);
+        }
+        assert_eq!(grouped_values(&recovered), expected, "async={async_storage}");
+        grouped_block_count(&recovered);
+    }
+}
+
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;
