@@ -742,6 +742,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             proto_ts.ParseFromString(ts_bytes)
             event_timestamp = proto_ts.ToDatetime()
 
+        if event_timestamp is None and not any(decoded[:-1]):
+            return None, None
+
         row: Dict[str, ValueProto] = {}
         for feature_name, value_bytes in zip(feature_names, decoded[:-1]):
             value = ValueProto()
@@ -749,8 +752,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 value.ParseFromString(value_bytes)
             row[feature_name] = value
 
-        if event_timestamp is None and not any(decoded[:-1]):
-            return None, None
         return event_timestamp, row
 
     @staticmethod
