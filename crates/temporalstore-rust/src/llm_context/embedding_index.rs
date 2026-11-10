@@ -956,6 +956,36 @@ impl EmbeddingIndex {
         self.search_prepared_rows(tenant_id, rows, query, limit)
     }
 
+    pub(crate) fn search_prepared_owners(
+        &self,
+        tenant_id: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+        owner_ids: &HashSet<u64>,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        if limit == 0 || owner_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(rows) = self.tenants.get(&tenant_id) else {
+            return Ok(Vec::new());
+        };
+        query.validate_dimensions(self.config.dimensions)?;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(dot) = Avx2DotProduct::detect() {
+            return Ok(self.search_prepared_owner_rows_with(
+                &dot, tenant_id, rows, query, limit, owner_ids,
+            ));
+        }
+        Ok(self.search_prepared_owner_rows_with(
+            &ScalarDotProduct,
+            tenant_id,
+            rows,
+            query,
+            limit,
+            owner_ids,
+        ))
+    }
+
     fn search_prepared_rows(
         &self,
         tenant_id: u64,
@@ -1020,6 +1050,65 @@ impl EmbeddingIndex {
             limit,
             0..rows.item_ids.len(),
         )
+    }
+
+    fn search_prepared_owner_rows_with<D: CompactDotProduct>(
+        &self,
+        dot: &D,
+        tenant_id: u64,
+        rows: &TenantRows,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+        owner_ids: &HashSet<u64>,
+    ) -> Vec<EmbeddingHit> {
+        let limit = limit.min(rows.item_ids.len());
+        if let Some(routing) = &rows.signature_routing {
+            let candidate_budget = limit
+                .saturating_mul(SIGNATURE_CANDIDATES_PER_HIT)
+                .clamp(SIGNATURE_MIN_CANDIDATES, SIGNATURE_MAX_CANDIDATES)
+                .min(rows.item_ids.len());
+            let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
+            let mut matched = 0usize;
+            routing.visit_candidates(
+                embedding_signature_f32(query.values),
+                rows.item_ids.len(),
+                candidate_budget,
+                |position| {
+                    let position = position as usize;
+                    if owner_ids.contains(&rows.owner_ids[position]) {
+                        matched = matched.saturating_add(1);
+                        self.score_position(
+                            dot,
+                            rows,
+                            query.values,
+                            query.inverse_norm,
+                            limit,
+                            position,
+                            &mut heap,
+                        );
+                    }
+                },
+            );
+            if matched >= limit.saturating_mul(4) {
+                return Self::finish_search(tenant_id, rows, heap);
+            }
+        }
+
+        let mut heap = BinaryHeap::<Reverse<HeapHit>>::with_capacity(limit);
+        for position in 0..rows.item_ids.len() {
+            if owner_ids.contains(&rows.owner_ids[position]) {
+                self.score_position(
+                    dot,
+                    rows,
+                    query.values,
+                    query.inverse_norm,
+                    limit,
+                    position,
+                    &mut heap,
+                );
+            }
+        }
+        Self::finish_search(tenant_id, rows, heap)
     }
 
     fn search_positions<D: CompactDotProduct>(
@@ -1092,6 +1181,7 @@ impl EmbeddingIndex {
             right
                 .score
                 .total_cmp(&left.score)
+                .then_with(|| left.key.owner_id.cmp(&right.key.owner_id))
                 .then_with(|| left.key.item_id.cmp(&right.key.item_id))
         });
         hits
@@ -1574,6 +1664,47 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!((hits[0].key.owner_id, hits[0].key.item_id), (10, 99));
         assert_eq!((hits[1].key.owner_id, hits[1].key.item_id), (20, 99));
+    }
+
+    #[test]
+    fn owner_filtered_search_ignores_better_scoring_rows_from_other_nodes() {
+        let mut index = EmbeddingIndex::new(EmbeddingIndexConfig::new(2, 8)).unwrap();
+        let query = [1.0, 0.0];
+        let selected = [0.8, 0.2];
+        let distractor = [1.0, 0.0];
+        index
+            .upsert_batch(&[
+                EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 7,
+                        owner_id: 10,
+                        item_id: 1,
+                    },
+                    values: &selected,
+                },
+                EmbeddingVector {
+                    key: EmbeddingKey {
+                        tenant_id: 7,
+                        owner_id: 20,
+                        item_id: 2,
+                    },
+                    values: &distractor,
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(index.search(7, &query, 1).unwrap()[0].key.owner_id, 20);
+        let owners = HashSet::from([10]);
+        let hits = index
+            .search_prepared_owners(
+                7,
+                PreparedEmbeddingQuery::new(&query).unwrap(),
+                1,
+                &owners,
+            )
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].key.owner_id, hits[0].key.item_id), (10, 1));
     }
 
     #[test]

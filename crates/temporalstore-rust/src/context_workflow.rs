@@ -3180,18 +3180,15 @@ pub fn retrieve_context(
     let mut hot_event_ids_by_node = HashMap::<u64, Vec<u64>>::new();
     if let Some(prepared_query) = prepared_query_embedding {
         if include_l1 {
-            if let Ok(hits) = engine.search_context_embeddings(
+            if let Ok(hits) = engine.search_context_embeddings_for_owners(
                 EmbeddingChannel::Entity,
                 request.tenant_hash,
                 active_embedding_model_hash,
                 prepared_query,
-                entity_candidate_budget.saturating_mul(4).min(1024),
+                entity_candidate_budget,
+                &selected_nodes,
             ) {
-                for hit in hits
-                    .into_iter()
-                    .filter(|hit| selected_nodes.contains(&hit.key.owner_id))
-                    .take(entity_candidate_budget)
-                {
+                for hit in hits {
                     hot_entity_ids_by_node
                         .entry(hit.key.owner_id)
                         .or_default()
@@ -3200,18 +3197,15 @@ pub fn retrieve_context(
             }
         }
         if include_l2 {
-            if let Ok(hits) = engine.search_context_embeddings(
+            if let Ok(hits) = engine.search_context_embeddings_for_owners(
                 EmbeddingChannel::Event,
                 request.tenant_hash,
                 active_embedding_model_hash,
                 prepared_query,
-                event_candidate_budget.saturating_mul(4).min(1024),
+                event_candidate_budget,
+                &selected_nodes,
             ) {
-                for hit in hits
-                    .into_iter()
-                    .filter(|hit| selected_nodes.contains(&hit.key.owner_id))
-                    .take(event_candidate_budget)
-                {
+                for hit in hits {
                     hot_event_ids_by_node
                         .entry(hit.key.owner_id)
                         .or_default()

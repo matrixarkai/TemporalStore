@@ -443,6 +443,28 @@ impl EmbeddingIndexRegistry {
         )
     }
 
+    pub(crate) fn search_prepared_owners(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+        owner_ids: &HashSet<u64>,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        if limit == 0 || owner_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.search_with(
+            channel,
+            tenant_id,
+            model_hash,
+            query.dimensions(),
+            limit,
+            |index| index.search_prepared_owners(tenant_id, query, limit, owner_ids),
+        )
+    }
+
     fn search_with<F>(
         &self,
         channel: EmbeddingChannel,

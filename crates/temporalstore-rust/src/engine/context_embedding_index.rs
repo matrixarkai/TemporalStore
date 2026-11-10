@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::collections::HashSet;
+
 use super::TemporalEngine;
 use crate::llm_context::{
     EmbeddingChannel, EmbeddingHit, EmbeddingIndexError, EmbeddingKey, EmbeddingVector,
@@ -179,6 +181,28 @@ impl TemporalEngine {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .search_prepared(channel, tenant_hash, model_hash, query, limit)
+    }
+
+    pub(crate) fn search_context_embeddings_for_owners(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_hash: u64,
+        model_hash: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+        owner_ids: &HashSet<u64>,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.context_embedding_indexes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .search_prepared_owners(
+                channel,
+                tenant_hash,
+                model_hash,
+                query,
+                limit,
+                owner_ids,
+            )
     }
 
     #[cfg(test)]
