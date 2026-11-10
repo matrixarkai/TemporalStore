@@ -119,9 +119,11 @@ before the first ingest, not afterwards. Only new stores take the shipped defaul
 aggregates. The same shapes exist for control-state counters, where `"at most N in the last H
 hours"` is a single round trip.
 
-**By default an aggregate is recomputed from the points in the window on every read** — the window
-is ranged, each point decoded, and the aggregator folded over the result. Exact, and linear in the
-window.
+**Most aggregates are recomputed from the points in the window on every read**: the window
+is ranged, each point decoded, and the aggregator folded over the result. `last` instead walks
+backward from the eligible window tail and stops at the first readable value. An explicit
+`count` still limits the eligible prefix before that backward walk; it does not select the
+newest `count` points. The sum-family rollup path below is another specialized read path.
 
 **Kept current without recomputing: the rollup ladder.** For sum-family counters an optional index
 maintains exact per-bucket sums at **1 s → 1 m → 1 h → 1 d**, folded forward on each counter write,
@@ -267,6 +269,14 @@ open-source feature store. It resolves its online store through a plugin class n
 `feature_store.yaml`, and this repository ships two of them under
 [`integrations/feast/`](integrations/feast/), because the engine exposes two surfaces with
 different trade-offs. Pick by surface:
+
+For installation, configuration, batching, and numeric-history options, start with the
+[Feast integration guide](integrations/feast/README.md). For repeatable materialization and
+serving measurements, use the [benchmark guide](docs/feast_online_store_benchmark.md).
+Compare write rows/s, read requests/s, read rows/s, latency percentiles, and storage bytes
+separately. A lower batch-read latency does not establish higher write throughput, and a
+local run does not establish multi-host performance. Match durability and payloads before
+comparing stores.
 
 | package | surface | pick it when |
 |---|---|---|
@@ -572,13 +582,14 @@ Foundation ─ MatrixCache (multi-layer cache) · MatrixRaft (Rust Raft consensu
 Storage backend (auto) ─ object store → shared filesystem → local + Raft
 ```
 
-Five Apache-2.0 repositories, all public and open to anyone in the world to use, fork and
+Related Apache-2.0 repositories, public and open to anyone in the world to use, fork and
 contribute to:
 [TemporalStore](https://github.com/matrixarkai/TemporalStore) (engine) ·
 [MatrixCache](https://github.com/matrixarkai/MatrixCache) (cache) ·
 [MatrixRaft](https://github.com/matrixarkai/MatrixRaft) (consensus) ·
 [MatrixObject](https://github.com/matrixarkai/MatrixObject) (object store) ·
-[matrixark](https://github.com/matrixarkai/matrixark) (Python tooling).
+[matrixark](https://github.com/matrixarkai/matrixark) (Python tooling) ·
+[MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) (ads retrieval and ranking demo).
 
 ---
 
