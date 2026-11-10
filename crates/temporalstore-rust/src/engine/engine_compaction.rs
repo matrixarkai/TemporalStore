@@ -798,8 +798,59 @@ fn container_batch_target_bytes() -> usize {
 /// Re-spelling them here would be a second copy of four rules, free to drift from the four
 /// originals." There is a renderer now, so the caller hands over key bytes and this asks it.
 pub(super) struct ContainerElementRef<'a> {
-    pub(super) key: Vec<u8>,
+    key: DeferredContainerKey<'a>,
     pub(super) address: &'a mut ElementEntry,
+}
+
+enum DeferredContainerKey<'a> {
+    Bytes(&'a [u8]),
+    Inline([u8; 8]),
+    Prefixed([u8; 8], &'a [u8]),
+}
+
+impl DeferredContainerKey<'_> {
+    fn encode(self) -> Vec<u8> {
+        match self {
+            Self::Bytes(bytes) => bytes.to_vec(),
+            Self::Inline(bytes) => bytes.to_vec(),
+            Self::Prefixed(prefix, bytes) => {
+                let mut key = Vec::with_capacity(prefix.len() + bytes.len());
+                key.extend_from_slice(&prefix);
+                key.extend_from_slice(bytes);
+                key
+            }
+        }
+    }
+}
+
+impl<'a> ContainerElementRef<'a> {
+    pub(super) fn bytes(key: &'a [u8], address: &'a mut ElementEntry) -> Self {
+        Self { key: DeferredContainerKey::Bytes(key), address }
+    }
+
+    pub(super) fn inline(key: [u8; 8], address: &'a mut ElementEntry) -> Self {
+        Self { key: DeferredContainerKey::Inline(key), address }
+    }
+
+    pub(super) fn prefixed(prefix: [u8; 8], key: &'a [u8], address: &'a mut ElementEntry) -> Self {
+        Self { key: DeferredContainerKey::Prefixed(prefix, key), address }
+    }
+}
+
+#[cfg(test)]
+mod deferred_container_key_tests {
+    use super::DeferredContainerKey;
+
+    #[test]
+    fn deferred_compaction_keys_preserve_encoded_bytes() {
+        assert_eq!(DeferredContainerKey::Bytes(b"field").encode(), b"field");
+        assert_eq!(DeferredContainerKey::Bytes(&[0, 255]).encode(), [0, 255]);
+        let prefix = 17u64.to_be_bytes();
+        assert_eq!(DeferredContainerKey::Inline(prefix).encode(), prefix);
+        let mut expected = prefix.to_vec();
+        expected.extend_from_slice(&[0, 255]);
+        assert_eq!(DeferredContainerKey::Prefixed(prefix, &[0, 255]).encode(), expected);
+    }
 }
 
 /// Rewrite a container's blocks as FEWER, LARGER blocks that each hold several elements.
@@ -908,9 +959,10 @@ pub(super) fn compact_container_blocks_batched<'a>(
         if !rewrite_stats.should_relocate(element.address) {
             continue;
         }
+        let key = element.key.encode();
         let element_name = match super::container_blocks::element_name_from_element_key(
             spelling,
-            &element.key,
+            &key,
         ) {
             Some(element_name) => element_name,
             // A key this spelling cannot render names no element name, so no page can be found for it.
@@ -940,7 +992,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
         // Would this element take the batch past either bound? Flush first, so a batch is sealed
         // BEFORE it exceeds the target rather than after -- the same order the timestamped chunker
         // splits in.
-        let item_bytes = element.key.len() + value.len() + 8;
+        let item_bytes = key.len() + value.len() + 8;
         if !items.is_empty()
             && (items.len() >= CONTAINER_BATCH_ELEMENT_CAP
                 || batch_bytes + item_bytes > target_bytes)
@@ -965,7 +1017,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
 
         batch_bytes += item_bytes;
         cold_in_batch |= cold;
-        items.push((element.key, value));
+        items.push((key, value));
         destinations.push(element.address);
     }
 

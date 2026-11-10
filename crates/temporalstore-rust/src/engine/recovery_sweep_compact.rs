@@ -1673,11 +1673,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "hash",
                 key,
                 routing_bucket,
-                addresses.iter_mut().map(|(field, address)| ContainerElementRef {
+                addresses.iter_mut().map(|(field, address)| ContainerElementRef::bytes(
                     // A hash field's element name IS the field name, so its key bytes are the name's.
-                    key: field.as_bytes().to_vec(),
+                    field.as_bytes(),
                     address,
-                }),
+                )),
                 &mut rewrite_stats,
             )?;
         }
@@ -1693,13 +1693,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 members.iter_mut().map(|(member, entry)| {
                     // The biased score big-endian, then the member: the two halves the element name
                     // spells as sixteen hex characters and then the member's hex.
-                    let mut element_key = Vec::with_capacity(8 + member.len());
-                    element_key.extend_from_slice(&entry.0.to_be_bytes());
-                    element_key.extend_from_slice(member);
-                    ContainerElementRef {
-                        key: element_key,
-                        address: &mut entry.1,
-                    }
+                    ContainerElementRef::prefixed(entry.0.to_be_bytes(), member, &mut entry.1)
                 }),
                 &mut rewrite_stats,
             )?;
@@ -1713,15 +1707,14 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "list",
                 key,
                 routing_bucket,
-                elements.iter_mut().map(|(sequence, address)| ContainerElementRef {
+                elements.iter_mut().map(|(sequence, address)| ContainerElementRef::inline(
                     // The same two's-complement bias `ListPush` renders as sixteen hex characters,
                     // as the eight bytes underneath that rendering.
-                    key: (*sequence as u64)
+                    (*sequence as u64)
                         .wrapping_sub(i64::MIN as u64)
-                        .to_be_bytes()
-                        .to_vec(),
+                        .to_be_bytes(),
                     address,
-                }),
+                )),
                 &mut rewrite_stats,
             )?;
         }
@@ -1734,12 +1727,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "set",
                 key,
                 routing_bucket,
-                addresses.iter_mut().map(|(member, address)| ContainerElementRef {
+                addresses.iter_mut().map(|(member, address)| ContainerElementRef::bytes(
                     // A set member's element name renders the member and nothing else, in whichever
                     // spelling it was filed under, so the member IS the key.
-                    key: member.clone(),
+                    member,
                     address,
-                }),
+                )),
                 &mut rewrite_stats,
             )?;
         }
