@@ -789,21 +789,20 @@ fn write_packed_hash_entries(
     } else {
         deduplicate_hash_entries(entries)
     };
-    let block_ordinal = packed_entries
-        .iter()
-        .find_map(|(field, _)| {
-            shard
-                .bucket_index.hashes
-                .get(key)
-                .and_then(|fields| fields.get(field))
-                .and_then(ElementEntry::block_id)
-        })
-        .or_else(|| {
-            shard
-                .bucket_index.hashes
-                .get(key)
-                .and_then(|fields| fields.values().filter_map(ElementEntry::block_id).max())
-                .map(|held| held.saturating_add(1))
+    let block_ordinal = shard
+        .bucket_index.hashes
+        .get(key)
+        .and_then(|fields| {
+            packed_entries
+                .iter()
+                .find_map(|(field, _)| fields.get(field).and_then(ElementEntry::block_id))
+                .or_else(|| {
+                    fields
+                        .values()
+                        .filter_map(ElementEntry::block_id)
+                        .max()
+                        .map(|held| held.saturating_add(1))
+                })
         })
         .filter(|ordinal| *ordinal <= crate::block_store::MAX_ADDRESSABLE_BLOCK_ID)
         .and_then(|ordinal| u32::try_from(ordinal).ok())
@@ -890,7 +889,8 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     fields_are_unique: bool,
 ) -> (ExecuteOutcome, Command) {
     remove_if_expired(shard, &key);
-    let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
+    let contains_large_value = !pack_projection
+        && entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
     // Shared feature-row batches carry one projection and read it back together, so one packed
     // block avoids repeating the block header and physical append for every field. The packed
     // projection reader fetches that shared address once on both storage modes. Generic hash
