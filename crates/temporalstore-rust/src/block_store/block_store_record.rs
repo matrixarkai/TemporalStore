@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek};
@@ -210,16 +211,12 @@ pub(super) fn encode_block_record(
     // step over a record whose length it does not know. Putting the decompressed size here
     // rather than in the header keeps the header one size for every block, and costs the four
     // bytes only where something was actually compressed.
-    let stored_payload = match compression {
-        BlockRecordCompression::None => squeezed,
-        BlockRecordCompression::Zstd => {
-            let mut framed = Vec::with_capacity(squeezed.len() + 4);
-            framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            framed.extend_from_slice(&squeezed);
-            framed
-        }
-    };
-    let block_size = stored_payload.len();
+    let block_size = squeezed.len()
+        + if compression == BlockRecordCompression::Zstd {
+            4
+        } else {
+            0
+        };
     if block_size as u64 > u64::from(BLOCK_RECORD_LENGTH_MASK) {
         return Err(corrupt_block_envelope(
             &ElementEntry::default(),
@@ -249,7 +246,10 @@ pub(super) fn encode_block_record(
     record.extend_from_slice(&(block_id as u16).to_le_bytes());
     debug_assert_eq!(record.len(), BLOCK_RECORD_HEADER_LEN, "the header is one size");
     let stored_len = block_size;
-    record.extend_from_slice(&stored_payload);
+    if compression == BlockRecordCompression::Zstd {
+        record.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    }
+    record.extend_from_slice(&squeezed);
     Ok(EncodedBlockRecord {
         bytes: record,
         logical_len: payload.len(),
@@ -258,24 +258,22 @@ pub(super) fn encode_block_record(
     })
 }
 
-fn encode_block_record_payload(
-    payload: &[u8],
+fn encode_block_record_payload<'a>(
+    payload: &'a [u8],
     options: BlockStoreOptions,
-) -> Result<(Vec<u8>, BlockRecordCompression), BlockStoreError> {
+) -> Result<(Cow<'a, [u8]>, BlockRecordCompression), BlockStoreError> {
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes, || {
         encode_block_record_payload_inner(payload, options)
     })
 }
 
-/// The encode itself. Split out so the allocation class above covers a whole function body rather
-/// than a span the early return skips: an uncompressed write takes that return, and it is the one
-/// a scope wrapped around the tail would have missed.
-fn encode_block_record_payload_inner(
-    payload: &[u8],
+/// Borrow raw bytes until the final record is assembled; only compressed bytes need an owner.
+fn encode_block_record_payload_inner<'a>(
+    payload: &'a [u8],
     options: BlockStoreOptions,
-) -> Result<(Vec<u8>, BlockRecordCompression), BlockStoreError> {
+) -> Result<(Cow<'a, [u8]>, BlockRecordCompression), BlockStoreError> {
     if !options.compression_enabled || payload.len() < options.compression_min_bytes {
-        return Ok((payload.to_vec(), BlockRecordCompression::None));
+        return Ok((Cow::Borrowed(payload), BlockRecordCompression::None));
     }
     // Reuse one compression context per thread, the mirror of the decoder below.
     //
@@ -302,9 +300,9 @@ fn encode_block_record_payload_inner(
         compressor.compress(payload)
     })?;
     if compressed.len() < payload.len() {
-        Ok((compressed, BlockRecordCompression::Zstd))
+        Ok((Cow::Owned(compressed), BlockRecordCompression::Zstd))
     } else {
-        Ok((payload.to_vec(), BlockRecordCompression::None))
+        Ok((Cow::Borrowed(payload), BlockRecordCompression::None))
     }
 }
 
@@ -1011,6 +1009,23 @@ mod block_record_format_tests {
         assert_eq!(header.stored_len, payload.len());
         assert_eq!(header.object_id, None, "the index holds the object id");
         assert_eq!(header.routing_bucket, None, "the index holds the routing bucket");
+        let decoded = decode_block_record(&encoded.bytes, &address()).expect("decode");
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn compressed_record_keeps_its_stored_length_and_original_size() {
+        let payload = vec![b'x'; 1024];
+        let encoded = encode_block_record(&payload, 9, None, None, BlockStoreOptions::default())
+            .expect("encode");
+        assert_eq!(encoded.compression, BlockRecordCompression::Zstd);
+        let header = parse_block_record_header(&encoded.bytes, &address()).expect("parse");
+        assert_eq!(header.stored_len, encoded.bytes.len() - BLOCK_RECORD_HEADER_LEN);
+        assert_eq!(header.payload_len, payload.len());
+        assert_eq!(
+            &encoded.bytes[BLOCK_RECORD_HEADER_LEN..BLOCK_RECORD_HEADER_LEN + 4],
+            &(payload.len() as u32).to_le_bytes(),
+        );
         let decoded = decode_block_record(&encoded.bytes, &address()).expect("decode");
         assert_eq!(decoded.payload, payload);
     }
