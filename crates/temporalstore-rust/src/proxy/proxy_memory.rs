@@ -250,6 +250,18 @@ fn memory_catalog_key(tenant_hash: u64) -> String {
     format!("context:memory:{tenant_hash:016x}")
 }
 
+fn memory_catalog_write<'a>(
+    tenant_hash: u64,
+    records: impl Iterator<Item = &'a MemoryRecord>,
+) -> Command {
+    Command::HashMultiSet {
+        key: memory_catalog_key(tenant_hash),
+        entries: records
+            .map(|record| (record.id.clone(), record.encode()))
+            .collect(),
+    }
+}
+
 fn memory_tombstone_key(tenant_hash: u64) -> String {
     format!("context:memory-tombstone:{tenant_hash:016x}")
 }
@@ -594,12 +606,8 @@ impl ProxyService {
             return (status, body);
         }
         let mut commands = Vec::with_capacity(records.len() * 3 + 3);
+        commands.push(memory_catalog_write(tenant_hash, records.iter()));
         for (index, record) in records.iter().enumerate() {
-            commands.push(Command::HashSet {
-                key: memory_catalog_key(tenant_hash),
-                field: record.id.clone(),
-                value: record.encode(),
-            });
             commands.push(Command::HashSet {
                 key: memory_history_key(tenant_hash, &record.id),
                 field: history_field(now, base_sequence + index as u64),
@@ -1393,13 +1401,12 @@ impl ProxyService {
 
             for page in planned.chunks(MEMORY_UPDATE_PAGE_SIZE) {
                 let mut commands = Vec::with_capacity(page.len() * 4);
+                commands.push(memory_catalog_write(
+                    tenant_hash,
+                    page.iter().map(|(_, _, record, _)| record),
+                ));
                 for (sequence, (id, old_order_member, record, now)) in page.iter().enumerate() {
                     commands.extend([
-                        Command::HashSet {
-                            key: memory_catalog_key(tenant_hash),
-                            field: record.id.clone(),
-                            value: record.encode(),
-                        },
                         Command::HashSet {
                             key: memory_history_key(tenant_hash, id),
                             field: history_field(*now, sequence as u64),
@@ -1939,6 +1946,13 @@ mod tests {
             updated_at_ms: 1,
         };
         let members = memory_identity_members(&record);
+        let Command::HashMultiSet { key, entries } =
+            memory_catalog_write(42, std::iter::once(&record))
+        else {
+            panic!("catalog batch must use one multi-field write");
+        };
+        assert_eq!(key, memory_catalog_key(42));
+        assert_eq!(entries, vec![(record.id.clone(), record.encode())]);
         assert_eq!(
             members,
             [b"ualice".to_vec(), b"acodex".to_vec(), b"rrun-1".to_vec()]
