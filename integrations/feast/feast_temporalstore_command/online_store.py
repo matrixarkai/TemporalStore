@@ -670,8 +670,13 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         commands = []
         command_indexes = {}
         response_indexes = []
+        feature_types: Dict[str, Any] = {}
+        if queries:
+            for feature in table.features:
+                feature_types.setdefault(feature.name, feature.dtype)
+        view_name = self._view_name(table, config) if queries else ""
         for query in queries:
-            command = self._feature_aggregate_command(config, table, *query)
+            command = self._feature_aggregate_command(config, feature_types, view_name, *query)
             identity = (
                 command["key"],
                 command["start_ms"],
@@ -697,7 +702,8 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
     def _feature_aggregate_command(
         self,
         config: RepoConfig,
-        table: FeatureView,
+        feature_types: Dict[str, Any],
+        view_name: str,
         entity_key: EntityKeyProto,
         feature_name: str,
         start_ms: int,
@@ -711,19 +717,15 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             raise ValueError("write_feature_history must be enabled")
         if start_ms < 0 or end_ms < start_ms or (count is not None and count < 0):
             raise ValueError("invalid aggregate window or count")
-        feature = next(
-            (item for item in table.features if item.name == feature_name), None
-        )
-        if feature is None:
+        if feature_name not in feature_types:
             raise ValueError(f"unknown feature: {feature_name}")
         name = aggregator.lower()
         if name not in (
             "sum", "avg", "average", "min", "max", "first", "last", "count", "events"
         ):
             raise ValueError(f"unsupported aggregator: {aggregator}")
-        if name not in ("count", "events") and feature.dtype not in (Int32, Int64):
+        if name not in ("count", "events") and feature_types[feature_name] not in (Int32, Int64):
             raise ValueError("numeric aggregates require an Int32 or Int64 feature")
-        view_name = self._view_name(table, config)
         compact_numeric = (
             online_config.compact_numeric_history and name not in ("count", "events")
         )
