@@ -25,6 +25,13 @@ runner, and `benchmarks/bench_feature_serving.py` measures either of them agains
 and PostgreSQL through Feast itself — see
 [`docs/feast_online_store_benchmark.md`](../../docs/feast_online_store_benchmark.md).
 
+For an isolated write-size or storage-layout sample, the benchmark accepts
+`--skip-teardown` with exactly one arm and one payload. It still checks sampled
+values, then leaves the rows in place so the teardown path does not delay the
+write result. Start the next sample with a new empty store. Such a single-arm
+run has no SQLite control or cross-store comparison; use the full controlled
+run when comparing against Valkey.
+
 The rest of this file is about the RESP plugin, which serves feature values out of
 TemporalStore over its RESP surface.
 
