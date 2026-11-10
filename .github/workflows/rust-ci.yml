@@ -307,6 +307,16 @@ jobs:
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_served_index_encoder_does_not_fall_through_to_json_or_read_a_setting \
             engine::tests::the_served_index_encoder_has_no_json_fallback::a_shard_that_was_never_stamped_is_written_as_msgpack_and_reads_back_current \
             engine::tests::the_served_index_encoder_has_no_json_fallback::the_stamp_a_reader_sees_is_the_header_and_not_the_field_inside_the_payload \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_dump_manifest_install_refuses_a_stale_stamped_image \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_refused_install_writes_no_index_and_installs_no_shard \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_same_manifest_at_the_current_stamp_installs_and_round_trips_its_series \
+            engine::tests::the_dump_door_reads_the_index_stamp::a_manifest_this_binary_writes_is_stamped_current_and_still_installs \
+            engine::tests::the_dump_door_reads_the_index_stamp::the_preflight_report_names_the_stale_stamp_as_a_blocker \
+            engine::tests::no_door_delivers_a_sequence_map::door_two_the_dump_manifest_refuses_a_stale_stamp_carrying_the_retired_map \
+            engine::tests::no_door_delivers_a_sequence_map::door_two_control_the_same_manifest_at_the_current_stamp_installs \
+            engine::tests::context_node_map_arrival::the_dump_manifest_door_refuses_a_stale_stamped_index_image \
+            engine::tests::part1::served_index_container_round_trips_and_refuses_plain_json \
+            engine::tests::part1::binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read \
             engine::tests::the_config_log_is_framed_only::the_config_log_reads_frames_skips_a_json_line_and_a_torn_or_damaged_frame_is_not_misread \
             engine::tests::the_config_log_is_framed_only::the_config_log_writer_is_binary_and_a_torn_tail_does_not_swallow_the_next_entry \
             engine::tests::the_config_log_is_framed_only::no_json_path_is_left_in_the_config_log_code \
