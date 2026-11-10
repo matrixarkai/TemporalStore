@@ -1221,7 +1221,8 @@ fn index_record_shapes() -> Vec<(String, crate::index_log::IndexDeltaRecord)> {
     }));
     shapes.push(("a record carrying key states".to_string(), {
         let mut record = one_delta_record(8);
-        record.key_states = vec![serde_json::json!({"k": "tenant/1/object/00000008", "v": [1,2,3]})];
+        record.key_states =
+            vec![serde_json::json!({"key": "tenant/1/object/00000008", "expires_at_ms": 5u64})];
         record
     }));
     shapes

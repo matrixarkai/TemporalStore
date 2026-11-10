@@ -208,18 +208,20 @@ fn no_context_node_entry_arrives_through_a_load_with_no_base_index() {
         "denominator: no file at all under the index-log root, so there is no third door to \
          drive"
     );
-    let carried = logs.iter().any(|path| {
-        std::fs::read(path).map_or(false, |bytes| {
-            bytes
-                .windows(b"context_nodes".len())
-                .any(|window| window == b"context_nodes")
-        })
-    });
+    // READ BACK THROUGH THE STORE'S OWN READER. A blob is a protobuf message on disk, with no field
+    // names in its bytes, so a scan of the file for the literal `context_nodes` finds nothing whether
+    // or not the capture wrote it; the question is whether a record's decoded blob names it.
+    let carried = crate::index_log::LocalIndexLogStore::new(dir.path().join("indexes").join("indexlogs"))
+        .read_delta_records(7, 0)
+        .map_or(false, |records| {
+            records.iter().any(|record| {
+                record.key_states.iter().any(|blob| blob.get("context_nodes").is_some())
+            })
+        });
     assert!(
         carried,
-        "CONTROL 1 FAILED: no index-log file contains the literal `context_nodes`, so the \
-         capture never wrote the blob and a no-arrival below would say nothing about the fold. \
-         Files checked: {logs:?}"
+        "no decoded index-log record carries a blob naming `context_nodes`, so the capture never \
+         wrote it and nothing below says anything about the fold. Files checked: {logs:?}"
     );
 
     // CONTROL 3: there is no base index to read a stamp from. Belt and braces -- the fixture was

@@ -64,6 +64,7 @@ mod control_state_block;
 pub use self::control_state_block::control_state_blocks_unreadable;
 mod sequence_row_value;
 pub use self::sequence_row_value::sequence_rows_unreadable;
+pub use self::key_state_wire::{key_state_blobs_refused, reset_key_state_blobs_refused};
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
@@ -118,6 +119,8 @@ mod bucket_store;
 mod control_rollup;
 #[path = "engine/engine_hll.rs"]
 mod hll;
+#[path = "engine/key_state_wire.rs"]
+pub(crate) mod key_state_wire;
 mod hot_block_spill;
 mod block_in_wal;
 #[path = "engine/engine_storage_state.rs"]
