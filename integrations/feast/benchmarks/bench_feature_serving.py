@@ -164,6 +164,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "type": "redis",
             "redis_type": "redis",
             "connection_string": args.redis,
+            "skip_dedup": args.skip_dedup,
             "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     if arm == "redis_aof":
@@ -176,6 +177,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "type": "redis",
             "redis_type": "redis",
             "connection_string": args.redis_aof,
+            "skip_dedup": args.skip_dedup,
             "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     if arm == "postgres":
@@ -202,9 +204,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "host": host,
             "port": int(port),
             "shard_id": args.shard_id,
-            # The dedup read is for out-of-order materialization. The fixture
-            # arrives in order, so omit it from the measured write path.
-            "skip_dedup": True,
+            "skip_dedup": args.skip_dedup,
             "key_ttl_seconds": args.key_ttl_seconds or None,
             # The harness knows every entity key and deletes those keys
             # directly, so tracking would add work without helping cleanup.
@@ -217,7 +217,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "host": host,
             "port": int(port),
             "shard_id": args.shard_id,
-            "skip_dedup": True,
+            "skip_dedup": args.skip_dedup,
             "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     raise SystemExit(f"unknown arm: {arm}")
@@ -747,7 +747,8 @@ def render(
             f"### Payload {payload_bytes} B/row, {group[0].entities} entities, "
             f"hot set {args.hot}, {args.reads} reads per cell, "
             f"key TTL {args.key_ttl_seconds or 'disabled'} s, "
-            f"write batch {args.write_batch}"
+            f"write batch {args.write_batch}, "
+            f"Redis/TemporalStore skip_dedup={args.skip_dedup}"
         )
         lines.append("")
         lines.append(
@@ -813,6 +814,10 @@ def main() -> int:
     parser.add_argument("--cold-reads", type=int, default=2000)
     parser.add_argument("--batch", type=int, default=10)
     parser.add_argument("--write-batch", type=int, default=500)
+    parser.add_argument(
+        "--skip-dedup", action="store_true",
+        help="Disable timestamp deduplication on Redis and TemporalStore for ordered loads",
+    )
     parser.add_argument("--skip-teardown", action="store_true")
     parser.add_argument("--key-ttl-seconds", type=int, default=0)
     parser.add_argument("--redis", default="127.0.0.1:6380")
@@ -942,6 +947,7 @@ def main() -> int:
                     "arm", "store", "durability", "transport", "payload_bytes_per_row",
                     "entities", "phase", "calls", "rows_served", "p50_us", "p99_us",
                     "rows_per_s", "load_before", "load_after", "workers", "wall_seconds",
+                    "skip_dedup",
                 ]
             )
             for r in results:
@@ -952,6 +958,7 @@ def main() -> int:
                         (r.entities + args.write_batch - 1) // args.write_batch,
                         r.entities, "", "", f"{r.entities / r.write_seconds:.1f}",
                         "", "", 1, f"{r.write_seconds:.6f}",
+                        args.skip_dedup if r.arm.startswith(("ts_", "redis")) else "",
                     ]
                 )
                 for phase in (r.cold, r.warm_b1, r.warm_bn, r.serving, r.concurrent):
@@ -967,6 +974,7 @@ def main() -> int:
                             f"{phase.load_before:.2f}", f"{phase.load_after:.2f}",
                             args.concurrency if phase is r.concurrent else 1,
                             f"{phase.wall_seconds:.6f}" if phase is r.concurrent else "",
+                            args.skip_dedup if r.arm.startswith(("ts_", "redis")) else "",
                         ]
                     )
         print(f"\nwrote {args.out} and {csv_path}")

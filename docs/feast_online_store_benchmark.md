@@ -119,7 +119,14 @@ server and host scheduling.
 ## Reproducing
 
 For an isolated large-ingest sample, start with an empty shard and run one arm
-and one payload. `--skip-teardown` keeps the known fixture keys after sampled
+and one payload. Timestamp deduplication is enabled by default for both Redis and
+TemporalStore. Use `--skip-dedup` to disable it on both for an ordered initial-load
+measurement; the Markdown and CSV reports record this setting. Do not compare runs
+with different timestamp policies as though they measured the same write path.
+Older versions of this harness forced skip-dedup on TemporalStore but left Redis
+at its default. Re-run their write-rate comparisons with a recorded, matched policy.
+
+`--skip-teardown` keeps the known fixture keys after sampled
 value verification, avoiding a potentially long deletion phase outside the
 timed writes. The report names the write-batch size and marks that teardown
 was skipped. Remove the isolated store directory before the next sample.
