@@ -63,6 +63,23 @@ Other routes:
 
 ## Large-corpus profiling
 
+Run an isolated local metadata, data, and proxy process from this repository:
+
+```bash
+bash scripts/mem0_scale_local.sh \
+  --records 100000 --batch-size 512 --tenant-shards 16 \
+  --users 1000 --searches 200 --payload-bytes 512
+```
+
+The runner builds release binaries, leaves normal 30-second storage maintenance enabled, and
+writes `report.json`, checkout details, binary hashes, and three service logs under
+`target/mem0-scale-local`. Corpus files live in a separate `data` directory, so reports and logs
+are not counted as stored corpus bytes. Processes stop and corpus files are removed on exit;
+`--keep-data` preserves them, and a later run refuses to overwrite an existing data directory.
+Use `--work-dir` and `--port-base` to select another isolated location and port range.
+`--skip-build` reuses existing binaries; checkout details alone do not identify their source,
+so the runner also records binary hashes and whether the build was skipped.
+
 `mem0_scale_harness` is a Rust workload driver for the complete memory API. It creates a unique
 corpus, optionally partitions it across tenant scopes, ingests generated context through the
 normal extraction path, runs retrieval and every management route, and writes latency, throughput,
@@ -84,3 +101,10 @@ cargo run --release -p temporalstore-rust --bin mem0_scale_harness -- \
 Set `TS_MEM0_PROVIDER_JSON` or pass `--provider-json` to exercise a configured model provider.
 Without it, the harness uses the deterministic local path so storage and serving costs can be
 measured without model latency dominating the result.
+
+Search targets rotate through ingested batches and use the tenant that received each target.
+Missing, empty, or over-limit result arrays fail the workload instead of counting as successful
+low-latency searches. This checks candidate availability and bounds, not semantic relevance or
+exact-target recall. Per-route sample counts are included; management routes with one sample do
+not establish a reliable tail-latency distribution. Storage bytes are measured after management
+operations, not at the peak of ingestion.
