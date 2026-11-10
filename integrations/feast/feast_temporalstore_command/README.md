@@ -6,6 +6,11 @@ shared-field `POST /batch_hash_multi_set_msgpack` writes and
 compact `POST /batch_hash_multi_get_compact_msgpack` reads, with compatible
 shared-field and command-batch routing for augmented writes and older nodes.
 
+The latest-value path supports bounded writes and reads, timestamp-conditioned
+updates, TTL, and async Feast calls. Optional history and aggregate queries use
+the feature-series commands described below; teardown is exact only when key
+tracking was enabled before materialization.
+
 ## Which integration point this is
 
 Feast has three pluggable slots that are easy to conflate. This is the first
@@ -310,6 +315,14 @@ PYTEST_PLUGINS=feast_temporalstore_command.feast_online_store_creator \
 ```
 
 ## Wire-format notes worth knowing before you measure anything
+
+For large materializations, measure the whole corpus rather than extrapolating
+from a small, hot read set. The benchmark's `--write-batch` controls rows per
+Feast write call; the adapter also bounds command count and encoded request
+bytes. Use `--skip-teardown` only on a fresh single-arm, single-payload run to
+isolate write and read timings. It does not provide a cross-store control, and
+it leaves rows behind for the caller to remove with the store's data directory.
+See the [benchmark guide](../../../docs/feast_online_store_benchmark.md).
 
 The command surface is asymmetric about byte payloads, and it matters to
 anyone reading a latency or bandwidth number off this path:

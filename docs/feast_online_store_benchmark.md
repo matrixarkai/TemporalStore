@@ -118,6 +118,24 @@ server and host scheduling.
 
 ## Reproducing
 
+For an isolated large-ingest sample, start with an empty shard and run one arm
+and one payload. `--skip-teardown` keeps the known fixture keys after sampled
+value verification, avoiding a potentially long deletion phase outside the
+timed writes. The report names the write-batch size and marks that teardown
+was skipped. Remove the isolated store directory before the next sample.
+
+```bash
+PYTHONPATH=integrations/feast python integrations/feast/benchmarks/bench_feature_serving.py \
+  --arms ts_sync --payloads large --entities 50000 --write-batch 500 \
+  --hot 512 --reads 1 --cold-reads 1 --skip-teardown \
+  --temporalstore 127.0.0.1:17502
+```
+
+This invocation has no SQLite control and cannot support a claim against
+another store. The controlled multi-arm run below retains its default teardown
+and verification behavior. Record the node build, configuration, load, and
+block/index/WAL bytes along with throughput when comparing storage settings.
+
 ```bash
 # a data node with every persistent directory isolated for this run
 BENCH_NODE=/dev/shm/feast-command-benchmark-node

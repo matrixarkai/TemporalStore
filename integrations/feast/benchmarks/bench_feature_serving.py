@@ -658,9 +658,15 @@ def run_arm(
 
     # The fixture knows every key it wrote. Delete those keys directly on the
     # command-surface arms, then verify the server's own record count fell.
-    records_before = temporalstore_record_count(args) if arm.startswith("ts_") else None
+    records_before = (
+        temporalstore_record_count(args)
+        if arm.startswith("ts_") and not args.skip_teardown
+        else None
+    )
     try:
-        if arm.startswith("ts_"):
+        if args.skip_teardown:
+            print("    teardown skipped; use a fresh store for the next sample")
+        elif arm.startswith("ts_"):
             from feast_temporalstore_command import TemporalStoreCommandOnlineStore
 
             adapter = TemporalStoreCommandOnlineStore()
@@ -740,7 +746,8 @@ def render(
         lines.append(
             f"### Payload {payload_bytes} B/row, {group[0].entities} entities, "
             f"hot set {args.hot}, {args.reads} reads per cell, "
-            f"key TTL {args.key_ttl_seconds or 'disabled'} s"
+            f"key TTL {args.key_ttl_seconds or 'disabled'} s, "
+            f"write batch {args.write_batch}"
         )
         lines.append("")
         lines.append(
@@ -778,6 +785,8 @@ def render(
                         f"{phase.throughput_rows_per_s:,.0f} | "
                         f"{phase.p50:,.0f} us | {phase.p99:,.0f} us |"
                     )
+    if args.skip_teardown:
+        lines.extend(["", "Teardown skipped; use a fresh store for each sample."])
     if provisional:
         lines.append("")
         lines.append(
@@ -804,6 +813,7 @@ def main() -> int:
     parser.add_argument("--cold-reads", type=int, default=2000)
     parser.add_argument("--batch", type=int, default=10)
     parser.add_argument("--write-batch", type=int, default=500)
+    parser.add_argument("--skip-teardown", action="store_true")
     parser.add_argument("--key-ttl-seconds", type=int, default=0)
     parser.add_argument("--redis", default="127.0.0.1:6380")
     parser.add_argument("--redis-aof", default="127.0.0.1:6381")
@@ -832,6 +842,8 @@ def main() -> int:
     os.makedirs(args.run_dir, exist_ok=True)
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     payloads = [p.strip() for p in args.payloads.split(",") if p.strip()]
+    if args.skip_teardown and (len(arms) != 1 or len(payloads) != 1):
+        parser.error("--skip-teardown requires one arm and one payload")
 
     print(
         f"io pressure at start: {io_pressure():.2f}%  "

@@ -315,6 +315,10 @@ features), a 16-core shared host at 1-minute load 3 with no compiler running, Te
 byte for byte before any clock started, and the SQLite control re-run held within tolerance (drift
 17.3% and 13.0% against a 25% limit).
 
+These small-load serving figures do not describe sustained materialization into a large shard.
+For that workload, use the [Feast benchmark guide](docs/feast_online_store_benchmark.md) with
+a fresh store per sample and report write throughput, read latency, and storage bytes separately.
+
 | store | durability | cold p50 | warm p50, batch 1 | warm p50, batch 10 | warm rows/s, batch 10 |
 |---|---|---:|---:|---:|---:|
 | SQLite | rollback journal, in-process (control) | 72 µs | 73 µs | 452 µs | 20,053 |
