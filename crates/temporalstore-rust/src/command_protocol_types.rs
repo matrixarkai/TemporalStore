@@ -498,6 +498,9 @@ pub struct ContextEvent {
     // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
+    /// Hash of the encoder that produced `vector`; zero means unknown for older records.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub embedding_model_hash: u64,
 }
 
 impl ContextEvent {
@@ -1004,6 +1007,13 @@ impl ContextWire for ContextEvent {
         encode_bytes_field(&mut out, 8, self.text.as_bytes());
         encode_varint_field(&mut out, 9, self.primary_time_ms());
         encode_vector_field(&mut out, &self.vector);
+        if self.embedding_model_hash != 0 {
+            encode_varint_field(
+                &mut out,
+                CONTEXT_EMBEDDING_MODEL_FIELD,
+                self.embedding_model_hash,
+            );
+        }
         out
     }
 
@@ -1025,6 +1035,7 @@ impl ContextWire for ContextEvent {
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
             vector: Vec::new(),
+            embedding_model_hash: 0,
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -1054,6 +1065,9 @@ impl ContextWire for ContextEvent {
                 }
                 (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
                     value.vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
+                }
+                (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
+                    value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
                 }
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
                 (12, 0) => value

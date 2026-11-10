@@ -782,7 +782,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             .query_understanding_debug
             .tree_traversal_summary
             .query_embedding_dimension,
-        16
+        DETERMINISTIC_EMBEDDING_DIMENSIONS
     );
     assert!(retrieve
         .query_understanding_debug
@@ -2210,6 +2210,10 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
     assert_eq!(report.embedding_generation.generated_vector_count, 3);
     assert!(report.embedding_generation.production_evidence_ready);
     assert_eq!(report.extracted_entity_count, 1);
+    assert_eq!(
+        report.event.embedding_model_hash,
+        context_embedding_model_hash("nomic-context-test")
+    );
     let entities = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ContextQueryEntities {
@@ -2230,6 +2234,171 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
                 && entities[0].embedding_model_hash
                     == context_embedding_model_hash("nomic-context-test")
     ));
+}
+
+#[test]
+fn retrieval_keeps_bounded_chunks_raw_messages_and_entities() {
+    let engine = test_engine();
+    let tenant_hash = 81;
+    let node_hash = 91;
+    let query = "where is the launch decision";
+    let provider = ContextModelProviderConfig::default();
+    let query_vector = context_query_embedding_shared(&provider, query).unwrap();
+    let model_hash = context_embedding_model_hash(&provider.embedding_model);
+    let node = ContextNode {
+        node_hash,
+        parent_hash: 0,
+        kind: 0,
+        canonical_name: "launch notes".to_string(),
+        l0: "launch notes".to_string(),
+        status: 1,
+        last_event_time_ms: 300,
+        l1_ref: "current launch context".to_string(),
+        raw_metadata_ref: "session://launch".to_string(),
+        vector: query_vector.to_vec(),
+        embedding_model_hash: model_hash,
+        embedding_updated_at_ms: 300,
+        summary_vector: query_vector.to_vec(),
+        summary_vector_valid_from_ms: 300,
+        summary_vector_model_hash: model_hash,
+    };
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash,
+                node: Box::new(node),
+            },
+        })
+        .status
+        .ok);
+    let opposite_vector = query_vector.iter().map(|value| -*value).collect();
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash,
+                node_hash,
+                event: Box::new(ContextEvent {
+                    event_id_hash: 302,
+                    event_time_ms: 301,
+                    ingestion_time_ms: 301,
+                    kind: 0,
+                    event_type: 1,
+                    actor_hash: 1,
+                    status: 1,
+                    valid_until_ms: 0,
+                    confidence: 1.0,
+                    importance: 1.0,
+                    text: "unrelated recent message".to_string(),
+                    source_ref: "session://launch".to_string(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: opposite_vector,
+                    embedding_model_hash: model_hash,
+                }),
+                first_write_only: false,
+                cold_storage: false,
+            },
+        })
+        .status
+        .ok);
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash,
+                node_hash,
+                event: Box::new(ContextEvent {
+                    event_id_hash: 301,
+                    event_time_ms: 300,
+                    ingestion_time_ms: 300,
+                    kind: 0,
+                    event_type: 1,
+                    actor_hash: 1,
+                    status: 1,
+                    valid_until_ms: 0,
+                    confidence: 1.0,
+                    importance: 1.0,
+                    // No lexical overlap: the vector must admit this raw message.
+                    text: "approved in the final review".to_string(),
+                    source_ref: "session://launch".to_string(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: query_vector.to_vec(),
+                    embedding_model_hash: model_hash,
+                }),
+                first_write_only: false,
+                cold_storage: false,
+            },
+        })
+        .status
+        .ok);
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertEntity {
+                tenant_hash,
+                entity: ContextEntity {
+                    entity_hash: 401,
+                    node_hash,
+                    entity_type: 5,
+                    name: "launch decision".to_string(),
+                    value: "approved".to_string(),
+                    updated_at_ms: 300,
+                    valid_from_ms: 300,
+                    confidence: 1.0,
+                    source_event_hashes: vec![301],
+                    vector: query_vector.to_vec(),
+                    embedding_model_hash: model_hash,
+                },
+            },
+        })
+        .status
+        .ok);
+
+    let report = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes: vec![node_hash],
+            query: query.to_string(),
+            start_time_ms: 0,
+            end_time_ms: u64::MAX,
+            max_events: 1,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 1,
+            max_event_nodes: 1,
+            prefer_current_agent: false,
+            current_agent_scope_key: String::new(),
+            provider,
+            include_debug: false,
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(report.event_count, 1);
+    assert_eq!(
+        report
+            .blocks
+            .iter()
+            .filter(|block| block.record_type == "raw_message")
+            .count(),
+        1
+    );
+    assert!(report
+        .blocks
+        .iter()
+        .any(|block| block.record_type == "matched_chunk"));
+    assert!(report
+        .blocks
+        .iter()
+        .any(|block| block.record_type == "entity"));
+    assert!(report.blocks.iter().any(|block| {
+        block.record_type == "raw_message" && block.text == "approved in the final review"
+    }));
 }
 
 // --- Hybrid retrieve scoring (un-embedded nodes rankable via lexical) ---
@@ -2293,6 +2462,7 @@ fn upsert_raw_context_node(
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: false,

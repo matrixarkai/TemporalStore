@@ -18,7 +18,7 @@ pub mod reports;
 
 mod admin_report;
 #[path = "engine/engine_constants.rs"]
-mod constants;
+pub(crate) mod constants;
 mod container_membership;
 mod container_blocks;
 mod execute_on_shard;

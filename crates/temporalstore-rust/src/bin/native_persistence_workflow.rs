@@ -340,6 +340,7 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
                     compact_attrs: Vec::new(),
                     // No vector on this fixture; empty is what a record without one holds.
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: true,
                 cold_storage: false,
@@ -427,6 +428,7 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
                     compact_attrs: Vec::new(),
                     // No vector on this fixture; empty is what a record without one holds.
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: true,
                 cold_storage: false,

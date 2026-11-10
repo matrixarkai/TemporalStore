@@ -14271,7 +14271,7 @@ fn the_last_context_record_writes_refuse_an_absent_record_by_name() {
     }
 }
 
-/// A `ContextEvent` with every one of its fifteen fields set, and set DISTINCTLY.
+/// A `ContextEvent` with every one of its sixteen fields set, and set DISTINCTLY.
 ///
 /// A converter that crossed two fields of the same type, or dropped one, passes on a fixture whose
 /// fields are mostly zero. The seven `skip_serializing` fields are deliberately non-default here,
@@ -14297,8 +14297,9 @@ fn a_fully_populated_context_event() -> crate::types::ContextEvent {
         source_ref: "source://ref/1".to_string(),
         related_node_hashes: vec![7, 8, 9],
         compact_attrs: vec![0xA7, 0xB3, 0x00, 0xFF],
-        // NOT quantised, and no model hash: `ContextEvent` has never carried one.
+        // NOT quantised. `1.0e-7`-style precision would remain intact on this wire path.
         vector: vec![-1.5, 0.0, 0.5, 1.0],
+        embedding_model_hash: 0x5152_5354_5556_5758,
     }
 }
 
@@ -14338,7 +14339,7 @@ fn a_fully_populated_index_block() -> crate::types::ContextExtractedEventIndexes
 ///   4. the TAGGING of the durable JSON record is pinned -- one FLAT object with a `kind`
 ///      discriminator beside the variant's own fields -- so the old-format reader is driven on the
 ///      shape it will actually meet on disk rather than on a guess;
-///   5. that JSON form DROPS seven of the event's fifteen fields and this record does not, which
+///   5. that JSON form DROPS seven of the event's sixteen fields and this record does not, which
 ///      makes the port strictly more faithful rather than merely different. Asserted by showing a
 ///      JSON round trip returns something UNEQUAL to the command while the proto one does not.
 #[test]

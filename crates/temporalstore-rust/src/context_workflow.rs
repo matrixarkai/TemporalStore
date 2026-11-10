@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -90,8 +90,8 @@ use crate::http::{
     HttpRequestOptions,
 };
 use crate::llm_context::{
-    score_prepared_embedding_candidates_exact, EmbeddingBatch, EmbeddingChannel, EmbeddingKey,
-    EmbeddingVector, PreparedEmbeddingQuery,
+    score_prepared_embedding_candidate_exact, score_prepared_embedding_candidates_exact,
+    EmbeddingBatch, EmbeddingChannel, EmbeddingKey, EmbeddingVector, PreparedEmbeddingQuery,
 };
 use crate::types::{
     context_model_descriptors, context_node_summary_vector_enabled, BatchExecuteRequest, Command,
@@ -1467,6 +1467,66 @@ pub struct ContextBlock {
     pub source_ref: String,
 }
 
+#[derive(Debug)]
+struct RankedContextBlock {
+    score: i64,
+    block: ContextBlock,
+}
+
+impl PartialEq for RankedContextBlock {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for RankedContextBlock {}
+
+impl PartialOrd for RankedContextBlock {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedContextBlock {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .cmp(&other.score)
+            .then_with(|| self.block.event_time_ms.cmp(&other.block.event_time_ms))
+            // A smaller stable URI wins an otherwise exact tie.
+            .then_with(|| other.block.uri.cmp(&self.block.uri))
+    }
+}
+
+fn retain_ranked_context_block(
+    candidates: &mut BinaryHeap<Reverse<RankedContextBlock>>,
+    candidate: RankedContextBlock,
+    limit: usize,
+) {
+    if limit == 0 {
+        return;
+    }
+    if candidates.len() < limit {
+        candidates.push(Reverse(candidate));
+    } else if candidates
+        .peek()
+        .is_some_and(|Reverse(worst)| candidate > *worst)
+    {
+        candidates.pop();
+        candidates.push(Reverse(candidate));
+    }
+}
+
+fn take_ranked_context_blocks(
+    candidates: BinaryHeap<Reverse<RankedContextBlock>>,
+) -> Vec<RankedContextBlock> {
+    let mut candidates = candidates
+        .into_iter()
+        .map(|Reverse(candidate)| candidate)
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|left, right| right.cmp(left));
+    candidates
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextInjectRequest {
     pub retrieve: ContextRetrieveRequest,
@@ -2073,6 +2133,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
             vector: Vec::new(),
+            embedding_model_hash: 0,
         },
     );
     let index_ref = ContextIndexRef {
@@ -2225,6 +2286,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         // to the batch whether or not L1 was emitted.
         if let Some(vector) = embedding_vectors.get_row(1) {
             event.vector = vector.to_vec();
+            event.embedding_model_hash = embedding_model_hash;
         }
     }
 
@@ -3018,6 +3080,12 @@ pub fn retrieve_context(
         .and_then(|value| value.trim().parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(64);
+    // `u64::MAX` is the public open-ended query convention, while the durable timeline reserves
+    // low bits for event disambiguation. Clamp only the storage query; ranking still sees the
+    // caller's original end time.
+    let event_query_end_time_ms = request.end_time_ms.min(
+        u64::MAX / crate::engine::constants::CONTEXT_TIMELINE_FANOUT,
+    );
     let skipped_node_count = summary_candidate_count.saturating_sub(event_node_limit);
     fanout_plan.summary_candidate_nodes = summary_candidate_count;
     fanout_plan.summary_selected_nodes = node_hashes.len();
@@ -3098,8 +3166,17 @@ pub fn retrieve_context(
     // Expand entities only after embedding selection has bounded the node set.
     let entity_candidate_budget = request.max_events.max(1).saturating_mul(4).min(256);
     let entity_result_limit = request.max_events.max(1).min(32);
+    let event_candidate_budget = event_pack_budget
+        .saturating_mul(event_overfetch)
+        .max(event_pack_budget)
+        .min(256);
     let selected_node_count = node_hashes.len().max(1);
-    let mut entity_candidates = Vec::<(i64, u64, u64, u64, String)>::new();
+    let mut entity_candidate_count = 0usize;
+    let mut entity_candidates = BinaryHeap::with_capacity(entity_result_limit.saturating_add(1));
+    let mut event_candidates = BinaryHeap::with_capacity(event_pack_budget.saturating_add(1));
+    let mut ranked_scores_by_uri = HashMap::with_capacity(
+        entity_result_limit.saturating_add(event_pack_budget),
+    );
     for (selected_node_index, node_hash) in node_hashes.iter().copied().enumerate() {
         let mut node_source_ref = String::new();
         let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
@@ -3148,8 +3225,8 @@ pub fn retrieve_context(
             }
         }
 
-        if include_l1 && entity_candidates.len() < entity_candidate_budget {
-            let remaining = entity_candidate_budget.saturating_sub(entity_candidates.len());
+        if include_l1 && entity_candidate_count < entity_candidate_budget {
+            let remaining = entity_candidate_budget.saturating_sub(entity_candidate_count);
             let remaining_nodes = selected_node_count.saturating_sub(selected_node_index).max(1);
             let per_node_limit = remaining.div_ceil(remaining_nodes).max(1);
             let response = engine.execute(ExecuteRequest {
@@ -3162,40 +3239,10 @@ pub fn retrieve_context(
                 },
             });
             if let CommandResponse::ContextEntities { entities, .. } = response.response {
-                let rows = entities
-                    .iter()
-                    .filter(|entity| {
-                        !entity.vector.is_empty()
-                            && !context_embedding_width_conflicts(
-                                &query_embedding,
-                                &entity.vector,
-                            )
-                            && !context_embedding_model_conflicts(
-                                entity.embedding_model_hash,
-                                active_embedding_model_hash,
-                            )
-                    })
-                    .map(|entity| EmbeddingVector {
-                        key: EmbeddingKey {
-                            tenant_id: request.tenant_hash,
-                            item_id: entity.entity_hash,
-                        },
-                        values: &entity.vector,
-                    })
-                    .collect::<Vec<_>>();
-                let scores = prepared_query_embedding
-                    .and_then(|query| {
-                        score_prepared_embedding_candidates_exact(query, &rows).ok()
-                    })
-                    .map(|hits| {
-                        hits.into_iter()
-                            .map(|hit| {
-                                (hit.key.item_id, (hit.score * 1_000_000.0) as i64)
-                            })
-                            .collect::<HashMap<_, _>>()
-                    })
-                    .unwrap_or_default();
                 for entity in entities {
+                    if entity_candidate_count >= entity_candidate_budget {
+                        break;
+                    }
                     let text = if entity.value.trim().is_empty() {
                         entity.name
                     } else {
@@ -3204,38 +3251,81 @@ pub fn retrieve_context(
                     if text.trim().is_empty() {
                         continue;
                     }
-                    let score = scores.get(&entity.entity_hash).copied().unwrap_or_else(|| {
-                        lexical_score_to_micros(context_relevance_score_plan(&query_plan, &text))
-                    });
-                    entity_candidates.push((
-                        score,
-                        entity.updated_at_ms,
-                        entity.node_hash,
-                        entity.entity_hash,
-                        text,
-                    ));
+                    entity_candidate_count = entity_candidate_count.saturating_add(1);
+                    let semantic_score = prepared_query_embedding
+                        .filter(|_| {
+                            !entity.vector.is_empty()
+                                && !context_embedding_width_conflicts(
+                                    &query_embedding,
+                                    &entity.vector,
+                                )
+                                && !context_embedding_model_conflicts(
+                                    entity.embedding_model_hash,
+                                    active_embedding_model_hash,
+                                )
+                        })
+                        .and_then(|query| {
+                            score_prepared_embedding_candidate_exact(
+                                query,
+                                EmbeddingVector {
+                                    key: EmbeddingKey {
+                                        tenant_id: request.tenant_hash,
+                                        item_id: entity.entity_hash,
+                                    },
+                                    values: &entity.vector,
+                                },
+                            )
+                            .ok()
+                        })
+                        .map(|hit| (hit.score * 1_000_000.0) as i64);
+                    let lexical_score = lexical_score_to_micros(
+                        context_relevance_score_plan(&query_plan, &text),
+                    );
+                    let score = semantic_score.unwrap_or_default().max(lexical_score);
+                    let source_ref = format!("entity:{:016x}", entity.entity_hash);
+                    let uri = format!(
+                        "context://tenant/{:016x}/entity/{:016x}",
+                        request.tenant_hash, entity.entity_hash
+                    );
+                    let estimated_tokens = estimate_tokens(&text);
+                    retain_ranked_context_block(
+                        &mut entity_candidates,
+                        RankedContextBlock {
+                            score,
+                            block: ContextBlock {
+                                record_type: "entity".to_string(),
+                                uri,
+                                tier: ContextTier::L1,
+                                node_hash: entity.node_hash,
+                                event_time_ms: entity.updated_at_ms,
+                                estimated_tokens,
+                                source_ref,
+                                text,
+                            },
+                        },
+                        entity_result_limit,
+                    );
                 }
             }
         }
 
-        if include_l2 && event_count < event_pack_budget && selected_node_index < event_node_count {
-            let remaining_budget = event_pack_budget.saturating_sub(event_count).max(1);
-            let remaining_nodes = event_node_count
-                .saturating_sub(event_node_index)
-                .max(1);
+        if include_l2 && selected_node_index < event_node_count {
+            let remaining_nodes = event_node_count.saturating_sub(event_node_index).max(1);
             event_node_index = event_node_index.saturating_add(1);
-            let per_node_event_limit = remaining_budget
+            let remaining_candidate_budget = event_candidate_budget
+                .saturating_sub(event_query_returned_count.min(event_candidate_budget))
+                .max(1);
+            let per_node_event_limit = remaining_candidate_budget
                 .div_ceil(remaining_nodes)
                 .max(1)
-                .saturating_mul(event_overfetch)
-                .min(event_pack_budget);
+                .min(event_candidate_budget);
             let events_response = engine.execute(ExecuteRequest {
                 shard_id: request.shard_id,
                 command: Command::ContextQueryEvents {
                     tenant_hash: request.tenant_hash,
                     node_hash,
                     start_time_ms: request.start_time_ms,
-                    end_time_ms: request.end_time_ms,
+                    end_time_ms: event_query_end_time_ms,
                     limit: Some(per_node_event_limit),
                     max_scan: Some(event_scan_cap),
                     current_valid_only: false,
@@ -3250,10 +3340,35 @@ pub fn retrieve_context(
                 event_query_returned_count =
                     event_query_returned_count.saturating_add(events.len());
                 for event in events {
-                    if event_count >= event_pack_budget {
-                        break;
-                    }
-                    let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
+                    let lexical_match = context_query_matches_plan(&query_plan, &event.text);
+                    let semantic_score = prepared_query_embedding
+                        .filter(|_| {
+                            !event.vector.is_empty()
+                                && !context_embedding_width_conflicts(
+                                    &query_embedding,
+                                    &event.vector,
+                                )
+                                && !context_embedding_model_conflicts(
+                                    event.embedding_model_hash,
+                                    active_embedding_model_hash,
+                                )
+                        })
+                        .and_then(|query| {
+                            score_prepared_embedding_candidate_exact(
+                                query,
+                                EmbeddingVector {
+                                    key: EmbeddingKey {
+                                        tenant_id: request.tenant_hash,
+                                        item_id: event.event_id_hash,
+                                    },
+                                    values: &event.vector,
+                                },
+                            )
+                            .ok()
+                        })
+                        .map(|hit| (hit.score * 1_000_000.0) as i64);
+                    let passes_prefilter = lexical_match
+                        || semantic_score.is_some_and(|score| score > 0);
                     if include_debug {
                         context_query_debug_record_candidate(
                             &mut query_understanding_debug,
@@ -3266,58 +3381,59 @@ pub fn retrieve_context(
                     if !passes_prefilter {
                         continue;
                     }
-                    event_count += 1;
                     let source_ref = if event.source_ref.is_empty() {
                         node_source_ref.clone()
                     } else {
                         event.source_ref
                     };
-                    blocks.push(ContextBlock {
-                        record_type: "raw_message".to_string(),
-                        uri: context_event_uri(request.tenant_hash, node_hash, event.event_time_ms),
-                        tier: ContextTier::L2,
+                    let lexical_score = lexical_score_to_micros(
+                        context_relevance_score_plan(&query_plan, &event.text),
+                    );
+                    let score = semantic_score.unwrap_or_default().max(lexical_score);
+                    let uri = context_event_uri(
+                        request.tenant_hash,
                         node_hash,
-                        event_time_ms: event.event_time_ms,
-                        text: event.text,
-                        estimated_tokens: estimate_tokens(&source_ref),
-                        source_ref,
-                    });
+                        event.event_time_ms,
+                    );
+                    let estimated_tokens = estimate_tokens(&event.text);
+                    retain_ranked_context_block(
+                        &mut event_candidates,
+                        RankedContextBlock {
+                            score,
+                            block: ContextBlock {
+                                record_type: "raw_message".to_string(),
+                                uri,
+                                tier: ContextTier::L2,
+                                node_hash,
+                                event_time_ms: event.event_time_ms,
+                                text: event.text,
+                                estimated_tokens,
+                                source_ref,
+                            },
+                        },
+                        event_pack_budget,
+                    );
                 }
             }
         }
     }
     fanout_plan.event_query_returned_count = event_query_returned_count;
 
-    entity_candidates.sort_unstable_by_key(
-        |(score, updated_at_ms, _, entity_hash, _)| {
-            (Reverse(*score), Reverse(*updated_at_ms), *entity_hash)
-        },
-    );
-    entity_candidates.truncate(entity_result_limit);
-    let mut entity_scores_by_ref = HashMap::with_capacity(entity_candidates.len());
-    for (score, updated_at_ms, node_hash, entity_hash, text) in entity_candidates {
-        let source_ref = format!("entity:{entity_hash:016x}");
-        entity_scores_by_ref.insert(source_ref.clone(), score);
-        blocks.push(ContextBlock {
-            record_type: "entity".to_string(),
-            uri: format!(
-                "context://tenant/{:016x}/entity/{:016x}",
-                request.tenant_hash, entity_hash
-            ),
-            tier: ContextTier::L1,
-            node_hash,
-            event_time_ms: updated_at_ms,
-            estimated_tokens: estimate_tokens(&text),
-            source_ref,
-            text,
-        });
+    for candidate in take_ranked_context_blocks(event_candidates) {
+        event_count = event_count.saturating_add(1);
+        ranked_scores_by_uri.insert(candidate.block.uri.clone(), candidate.score);
+        blocks.push(candidate.block);
+    }
+    for candidate in take_ranked_context_blocks(entity_candidates) {
+        ranked_scores_by_uri.insert(candidate.block.uri.clone(), candidate.score);
+        blocks.push(candidate.block);
     }
 
     blocks.sort_by_cached_key(|block| {
         (
             Reverse(
-                entity_scores_by_ref
-                    .get(&block.source_ref)
+                ranked_scores_by_uri
+                    .get(&block.uri)
                     .copied()
                     .unwrap_or_default()
                     .max(lexical_score_to_micros(context_relevance_score_plan(
@@ -3358,10 +3474,11 @@ fn dedupe_context_blocks_by_source_ref(blocks: &mut Vec<ContextBlock>) {
     let mut deduped = Vec::<ContextBlock>::with_capacity(blocks.len());
     for block in blocks.drain(..) {
         let key = if block.source_ref.trim().is_empty() {
-            format!("uri:{}", block.uri)
+            format!("{}:uri:{}", block.record_type, block.uri)
         } else {
             format!(
-                "source:{}:{}",
+                "{}:source:{}:{}",
+                block.record_type,
                 block.node_hash,
                 block.source_ref.trim().to_ascii_lowercase()
             )
@@ -3733,6 +3850,7 @@ fn empty_event() -> ContextEvent {
         related_node_hashes: Vec::new(),
         compact_attrs: Vec::new(),
         vector: Vec::new(),
+        embedding_model_hash: 0,
     }
 }
 

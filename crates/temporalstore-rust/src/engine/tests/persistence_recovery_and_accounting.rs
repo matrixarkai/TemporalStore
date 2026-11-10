@@ -9843,6 +9843,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
                 related_node_hashes: vec![42],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             indexes: crate::types::ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -11505,6 +11506,7 @@ fn a_numeric_element_name_travels_as_a_number_and_returns_intact() {
                 related_node_hashes: vec![42],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             indexes: crate::types::ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -18179,6 +18181,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
                         related_node_hashes: vec![42],
                         compact_attrs: Vec::new(),
                         vector: (0..dims).map(|d| (d as f32) * 0.001 + i as f32).collect(),
+                        embedding_model_hash: 0,
                     }),
                 },
                 "SetAdd" => Command::SetAdd {

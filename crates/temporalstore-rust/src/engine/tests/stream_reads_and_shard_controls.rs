@@ -624,6 +624,7 @@ fn recovery_validates_all_timestamped_kv_block_families() {
                         related_node_hashes: vec![55],
                         compact_attrs: vec![1, 2, 3],
                         vector: Vec::new(),
+                        embedding_model_hash: 0,
                     }),
                     first_write_only: false,
                     cold_storage: false,

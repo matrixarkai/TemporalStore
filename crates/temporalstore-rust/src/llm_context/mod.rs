@@ -14,9 +14,10 @@ mod registry;
 mod storage;
 
 pub use embedding_index::{
-    score_embedding_candidates_exact, score_prepared_embedding_candidates_exact,
-    CompactEmbeddingBatch, EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError,
-    EmbeddingKey, EmbeddingVector, EmbeddingWriteReport, PreparedEmbeddingQuery,
+    score_embedding_candidates_exact, score_prepared_embedding_candidate_exact,
+    score_prepared_embedding_candidates_exact, CompactEmbeddingBatch, EmbeddingHit, EmbeddingIndex,
+    EmbeddingIndexConfig, EmbeddingIndexError, EmbeddingKey, EmbeddingVector,
+    EmbeddingWriteReport, PreparedEmbeddingQuery,
 };
 pub use ingest::{
     BatchEmbedder, BatchExtractor, ContextEngineError, ContextIngestReport, ContextMessage,

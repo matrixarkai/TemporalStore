@@ -630,6 +630,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
         related_node_hashes: vec![42],
         compact_attrs: vec![1, 2, 3],
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let mut event_b = event_a.clone();
     event_b.event_id_hash = 6;
@@ -751,6 +752,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
         related_node_hashes: vec![42],
         compact_attrs: Vec::new(),
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let extracted = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -834,6 +836,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
                 related_node_hashes: vec![43],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             indexes: ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -989,6 +992,7 @@ fn context_query_events_applies_limit_after_filter_like_native() {
         related_node_hashes: vec![42],
         compact_attrs: vec![],
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     // 100 low-confidence events at earlier timestamps, then 5 high-confidence ones later.
     for i in 0..100u64 {
@@ -1335,6 +1339,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: false,
@@ -1431,6 +1436,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: true,
@@ -1732,6 +1738,7 @@ fn block_compaction_reports_model_layouts_delete_markers_object_blocks_and_densi
                 related_node_hashes: Vec::new(),
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             first_write_only: false,
             cold_storage: false,
@@ -10137,7 +10144,7 @@ fn emptied_buckets_are_dropped_without_walking_the_map() {
                     actor_hash: 42, status: 1, valid_until_ms: 0, confidence: 1.0,
                     importance: 1.0, text: "body".to_string(),
                     source_ref: format!("msg-{nid}"), related_node_hashes: Vec::new(),
-                    compact_attrs: Vec::new(), vector: Vec::new(),
+                    compact_attrs: Vec::new(), vector: Vec::new(), embedding_model_hash: 0,
                 }),
             },
             Command::ContextWriteIndexRef {

@@ -3153,6 +3153,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: false,
