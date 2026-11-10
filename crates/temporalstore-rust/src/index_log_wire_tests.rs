@@ -109,7 +109,10 @@ fn record(items: Vec<IndexItem>) -> IndexDeltaRecord {
             slab_version: 900,
         }),
         applied_wal_sequence: Some(0),
-        key_states: vec![serde_json::json!({"ttl": [1, 2, 3]}), serde_json::json!("x")],
+        key_states: vec![
+            serde_json::json!({"key": "a", "expires_at_ms": 7u64}),
+            serde_json::json!({"key": "b"}),
+        ],
         upsert: true,
         shared_object_key: Some(String::new()),
     }

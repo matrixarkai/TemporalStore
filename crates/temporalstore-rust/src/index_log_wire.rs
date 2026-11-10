@@ -200,7 +200,7 @@ pub struct ProtoIndexLog {
     /// shared key is a real answer and is not the same as no hoist.
     #[prost(string, optional, tag = "22")]
     pub shared_object_key: Option<String>,
-    /// Opaque per-key state, one JSON document each.
+    /// Per-key state, one protobuf `KeyState` message each (see `engine::key_state_wire`).
     #[prost(bytes = "vec", repeated, tag = "23")]
     pub key_states: Vec<Vec<u8>>,
 }
@@ -401,10 +401,10 @@ impl ProtoMetaItem {
 }
 
 impl ProtoIndexLog {
-    pub fn from_record<K: serde::Serialize>(record: &IndexDeltaRecord<K>) -> Result<Self, String> {
+    pub fn from_record<K: crate::engine::key_state_wire::KeyStateBlob>(record: &IndexDeltaRecord<K>) -> Result<Self, String> {
         let mut key_states = Vec::with_capacity(record.key_states.len());
         for state in &record.key_states {
-            key_states.push(serde_json::to_vec(state).map_err(|error| error.to_string())?);
+            key_states.push(state.to_blob()?);
         }
         Ok(ProtoIndexLog {
             version: INDEX_LOG_WIRE_VERSION,
@@ -427,7 +427,7 @@ impl ProtoIndexLog {
         }
         let mut key_states = Vec::with_capacity(self.key_states.len());
         for state in &self.key_states {
-            key_states.push(serde_json::from_slice(state).map_err(|error| error.to_string())?);
+            key_states.push(crate::engine::key_state_wire::decode_blob(state)?);
         }
         Ok(IndexDeltaRecord {
             shard_id: self.shard_id as ShardId,
@@ -443,7 +443,7 @@ impl ProtoIndexLog {
 }
 
 /// The record as protobuf bytes.
-pub fn encode_delta_record<K: serde::Serialize>(record: &IndexDeltaRecord<K>) -> Result<Vec<u8>, String> {
+pub fn encode_delta_record<K: crate::engine::key_state_wire::KeyStateBlob>(record: &IndexDeltaRecord<K>) -> Result<Vec<u8>, String> {
     Ok(ProtoIndexLog::from_record(record)?.encode_to_vec())
 }
 

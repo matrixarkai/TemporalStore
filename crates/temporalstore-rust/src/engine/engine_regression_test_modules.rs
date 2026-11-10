@@ -627,3 +627,5 @@ mod a_feature_range_read_takes_the_shared_lock;
 mod a_restating_write_names_one_bucket_not_the_shard;
 #[path = "tests/a_resident_map_read_takes_the_shared_lock.rs"]
 mod a_resident_map_read_takes_the_shared_lock;
+#[path = "tests/the_key_state_blob_is_protobuf.rs"]
+mod the_key_state_blob_is_protobuf;
