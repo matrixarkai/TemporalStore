@@ -782,8 +782,13 @@ fn write_packed_hash_entries(
     key: &str,
     async_storage: bool,
     entries: Vec<(String, Vec<u8>)>,
+    fields_are_unique: bool,
 ) -> (bool, Vec<(String, Vec<u8>)>) {
-    let mut packed_entries = deduplicate_hash_entries(entries);
+    let mut packed_entries = if fields_are_unique {
+        entries
+    } else {
+        deduplicate_hash_entries(entries)
+    };
     let block_ordinal = packed_entries
         .iter()
         .find_map(|(field, _)| {
@@ -867,6 +872,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
         pack_projection,
         key,
         entries,
+        false,
     )
 }
 
@@ -881,6 +887,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     pack_projection: bool,
     key: String,
     mut entries: Vec<(String, Vec<u8>)>,
+    fields_are_unique: bool,
 ) -> (ExecuteOutcome, Command) {
     remove_if_expired(shard, &key);
     let contains_large_value = entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
@@ -900,6 +907,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             &key,
             async_storage,
             entries,
+            fields_are_unique,
         );
         entries = returned_entries;
         mutated
@@ -985,6 +993,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         timestamp_nanos,
         ttl_ms,
         entries,
+        false,
     )
 }
 
@@ -1002,6 +1011,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     timestamp_nanos: i32,
     ttl_ms: Option<u64>,
     entries: Vec<(String, Vec<u8>)>,
+    fields_are_unique: bool,
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
@@ -1060,6 +1070,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         &key,
         async_storage,
         entries,
+        fields_are_unique,
     );
     mutated |= packed_mutated;
     if let Some(ttl_ms) = ttl_ms {

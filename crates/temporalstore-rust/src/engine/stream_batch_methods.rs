@@ -1449,6 +1449,7 @@ impl TemporalEngine {
                             true,
                             key,
                             entries,
+                            true,
                         );
                     (outcome, Some(metadata))
                 }
@@ -1476,6 +1477,7 @@ impl TemporalEngine {
                             timestamp_nanos,
                             ttl_ms,
                             entries,
+                            true,
                         );
                     (outcome, Some(metadata))
                 }
