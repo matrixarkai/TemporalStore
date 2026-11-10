@@ -4516,7 +4516,10 @@ fn capture_container_element_states(
                 .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.get(field))
-                .and_then(|address| serde_json::to_value((field, address)).ok())
+                .map(|address| serde_json::Value::Array(vec![
+                    serde_json::Value::String(field.clone()),
+                    address.compact_carried_value(),
+                ]))
                 .map(|value| (CARRIED_CONTAINER_FIELDS[3], value)),
         };
         let Some((field, value)) = carried else {

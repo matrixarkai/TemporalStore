@@ -3748,6 +3748,22 @@ mod open_read_scale;
 mod tests {
     use std::fs::{self, File};
 
+    #[test]
+    fn compact_carried_address_agrees_with_wire_and_round_trips() {
+        for block_id in [None, Some(0), Some(17), Some(u16::MAX as u64)] {
+            let entry = super::ElementEntry::from_parts(7, 23, 4096, block_id, None);
+            let compact = entry.compact_carried_value();
+            let encoded = rmp_serde::to_vec(&entry).unwrap();
+            let wire: serde_json::Value = rmp_serde::from_slice(&encoded).unwrap();
+            assert_eq!(compact, wire);
+            let restored: super::ElementEntry = serde_json::from_value(compact.clone()).unwrap();
+            assert_eq!(restored, entry);
+            assert_eq!(restored.generation(), entry.generation());
+            assert!(rmp_serde::to_vec(&compact).unwrap().len()
+                < rmp_serde::to_vec(&serde_json::to_value(&entry).unwrap()).unwrap().len());
+        }
+    }
+
     /// The on-disk names, and the readers that have to agree with them.
     ///
     /// A rename that edits the BUILDERS and leaves the READERS behind produces a store the
@@ -9361,6 +9377,18 @@ pub struct ElementEntry {
 // `Hash` is written to agree with `Eq`, because a type where equal values hash differently
 // breaks every `HashMap` holding it, silently.
 impl ElementEntry {
+    /// Positional address state accepted by the existing carried-state reader.
+    pub(crate) fn compact_carried_value(&self) -> serde_json::Value {
+        let wire = BlockAddressWire::from(self.clone());
+        serde_json::json!([
+            wire.address,
+            wire.length,
+            wire.block_id,
+            wire.object_id,
+            wire.generation
+        ])
+    }
+
     /// The flag word with the holder's lent bits masked off: the presence bits alone, which ARE
     /// part of this address's identity because they say whether the block id and generation exist.
     fn identity_flags(&self) -> u16 {
