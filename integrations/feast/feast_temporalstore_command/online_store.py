@@ -430,12 +430,14 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         layouts: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
         for hash_key, proto_ts in latest_timestamps.items():
             serialized_values = latest_serialized_values.get(hash_key)
+            values = [proto_ts.SerializeToString()]
             if serialized_values is None:
-                serialized_values = [
-                    (feature_name, value, value.SerializeToString())
-                    for feature_name, value in latest_values[hash_key].items()
-                ]
-            feature_names = tuple(item[0] for item in serialized_values)
+                row_values = latest_values[hash_key]
+                feature_names = tuple(row_values)
+                values.extend(value.SerializeToString() for value in row_values.values())
+            else:
+                feature_names = tuple(item[0] for item in serialized_values)
+                values.extend(item[2] for item in serialized_values)
             row_fields = layouts.get(feature_names)
             if row_fields is None:
                 row_fields = (ts_field,) + tuple(
@@ -443,8 +445,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     for feature_name in feature_names
                 )
                 layouts[feature_names] = row_fields
-            values = [proto_ts.SerializeToString()]
-            values.extend(item[2] for item in serialized_values)
             prepared_rows.append(
                 (hash_key, proto_ts.seconds, proto_ts.nanos, values)
             )
