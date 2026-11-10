@@ -5373,6 +5373,82 @@ fn feature_agg_rollup_matches_raw_scan() {
     assert!(raw.iter().any(|value| *value != 0), "test series should be non-trivial");
 }
 
+#[test]
+fn feature_proto_aggregate_reads_numeric_values() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let points = vec![
+        FeaturePoint {
+            timestamp_ms: 10,
+            value: hex::decode("20f9ffffffffffffffff01").unwrap(),
+        },
+        FeaturePoint {
+            timestamp_ms: 20,
+            value: hex::decode("182a").unwrap(),
+        },
+        FeaturePoint {
+            timestamp_ms: 30,
+            value: hex::decode("2011").unwrap(),
+        },
+    ];
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "numeric".to_string(),
+                points,
+            },
+        })
+        .status
+        .ok);
+    for (aggregator, expected) in [
+        ("sum", 52),
+        ("avg", 17),
+        ("min", -7),
+        ("max", 42),
+        ("first", -7),
+        ("last", 17),
+        ("count", 3),
+    ] {
+        let command = serde_json::from_value(serde_json::json!({
+            "kind": "feature_proto_agg_query",
+            "key": "numeric",
+            "start_ms": 0,
+            "end_ms": 30,
+            "aggregator": aggregator,
+        }))
+        .unwrap();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
+    let capped = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureProtoAggQuery {
+            key: "numeric".to_string(),
+            start_ms: 0,
+            end_ms: 30,
+            aggregator: "sum".to_string(),
+            count: Some(2),
+        },
+    });
+    assert_eq!(capped.response, CommandResponse::Aggregate { value: 35 });
+    let empty = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureProtoAggQuery {
+            key: "numeric".to_string(),
+            start_ms: 31,
+            end_ms: 40,
+            aggregator: "sum".to_string(),
+            count: None,
+        },
+    });
+    assert_eq!(empty.response, CommandResponse::Aggregate { value: 0 });
+}
+
 // The gated control-state rollup ladder must return exactly the same sum-family window
 // aggregates as the ungated raw scan, through the real execute() path. Functional-conformance
 // gate for the O(levels) long-window control-state path (frequency caps / counts).

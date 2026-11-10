@@ -84,6 +84,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
         | Command::FeatureAggQuery { key, .. }
+        | Command::FeatureProtoAggQuery { key, .. }
         | Command::SequenceAdd { key, .. }
         | Command::SequenceQuery { key, .. }
         | Command::CellRankQuery { key, .. }

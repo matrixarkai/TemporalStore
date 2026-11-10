@@ -149,6 +149,14 @@ and Int64 values also get an ASCII-integer projection for native windowed
 read the raw series. Existing history written before the numeric projection
 needs backfilling before numeric queries can include it.
 
+For write-heavy history workloads, set `compact_numeric_history: true` alongside
+`write_feature_history: true`. This stores each numeric value only in the raw
+serialized series and sends numeric windows through `FeatureProtoAggQuery`.
+The serving node must support that command; older nodes reject it rather than
+returning a value computed from the wrong encoding. Compact numeric windows
+scan their retained points, whereas the default numeric projection can use
+the aggregate rollup. Keep the default for read-heavy window queries.
+
 `query_feature_aggregates` sends many windows through bounded ordered batches.
 The repeat-gated 1,024-entity benchmark measured a median 4,207 aggregate
 queries/s at batch 64, with every full-window and tail-window result verified.
@@ -172,12 +180,13 @@ TemporalStore's command surface has **no key-space scan** — there is no `SCAN`
 what was written unless something recorded it.
 
 * `track_keys_for_teardown: true` records each entity key in a per-view set, so
-  `teardown` enumerates and deletes exactly the rows the view wrote. Tracking
+  `teardown` enumerates and deletes this view's hash fields and both history
+  series layouts, including data written before a numeric-history mode change. Tracking
   is distributed over 1,024 deterministic sets to keep each container small.
   It still costs one extra write per row, so it is off by default.
 * With it off, `teardown` **logs a warning and leaves the rows**. It does not
-  report success for work it did not do. Set `key_ttl_seconds` if you want rows
-  to age out on their own.
+  report success for work it did not do. `key_ttl_seconds` expires the latest
+  entity hash, not the separate history series.
 
 ## What of Feast's `OnlineStore` contract is covered
 

@@ -1938,6 +1938,42 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertTrue(numeric["key"].startswith("fa:"))
         self.assertEqual(bytes(numeric["points"][0]["value"]), b"1")
 
+    def test_compact_numeric_history_writes_one_series_and_queries_it(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        self.config.online_store.compact_numeric_history = True
+        key = self._entity_key(1)
+        timestamp = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        client = self._install()
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(key, {"trips": ValueProto(int64_val=-7)}, timestamp, None)],
+            None,
+        )
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            ["hash_multi_set", "feature_append"],
+        )
+        self.assertTrue(commands[1]["key"].startswith("fh:"))
+        self.assertEqual(
+            bytes(commands[1]["points"][0]["value"]),
+            ValueProto(int64_val=-7).SerializeToString(),
+        )
+
+        aggregate = self.store._feature_aggregate_command(
+            self.config, self.view, key, "trips", 0, 100, "sum", None
+        )
+        count = self.store._feature_aggregate_command(
+            self.config, self.view, key, "trips", 0, 100, "count", None
+        )
+        self.assertEqual(aggregate["kind"], "feature_proto_agg_query")
+        self.assertEqual(count["kind"], "feature_agg_query")
+        self.assertEqual(aggregate["key"], count["key"])
+
     def test_repeated_entity_history_is_consolidated_without_losing_points(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
@@ -2115,12 +2151,14 @@ class OnlineStoreTest(unittest.TestCase):
         self.store.teardown(self.config, [self.view], [self.entity])
         self.assertEqual(client.sent[0][0], "/execute")
         self.assertEqual(client.sent[0][1]["command"]["kind"], "set_members")
-        field_deletes, key_deletes = [], []
+        field_deletes, history_deletes, key_deletes = [], [], []
         for path, document in client.sent[1:]:
             self.assertEqual(path, "/batch_execute")
             for command in document["commands"]:
                 if command["kind"] == "hash_delete":
                     field_deletes.append((command["key"], command["field"]))
+                elif command["kind"] == "feature_delete":
+                    history_deletes.append(command["key"])
                 elif command["kind"] == "common_delete":
                     key_deletes.append(command["key"])
                 elif command["kind"] != "set_members":
@@ -2153,6 +2191,9 @@ class OnlineStoreTest(unittest.TestCase):
             len(written) * 2,
             "one delete per (row, field), no field twice",
         )
+        self.assertEqual(len(history_deletes), len(written) * 2)
+        self.assertTrue(any(key.startswith("fh:proj:stats:") for key in history_deletes))
+        self.assertTrue(any(key.startswith("fa:proj:stats:") for key in history_deletes))
 
     def test_tearing_down_one_view_leaves_another_views_fields_on_a_shared_row(self):
         """FEAST ISSUE #2150, WHICH THIS LAYOUT IS EXPOSED TO BY CONSTRUCTION.

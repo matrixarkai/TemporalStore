@@ -157,6 +157,14 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     read path alone.
     """
 
+    compact_numeric_history: bool = False
+    """Store numeric history only as serialized feature values.
+
+    Requires a node with ``feature_proto_agg_query`` support. Windowed numeric
+    aggregates scan the retained points instead of using the separate numeric
+    series, reducing write and storage cost for write-heavy history workloads.
+    """
+
     track_keys_for_teardown: bool = False
     """Record each written entity key in a per-view set so teardown can find it.
 
@@ -389,7 +397,10 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         }
                     )
                     numeric_field = value.WhichOneof("val")
-                    if numeric_field in ("int32_val", "int64_val"):
+                    if (
+                        numeric_field in ("int32_val", "int64_val")
+                        and not online_config.compact_numeric_history
+                    ):
                         aggregate_key = self._aggregate_key_from_hex(
                             config, view_name, entity_key_hex, feature_name
                         )
@@ -718,13 +729,16 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         if name not in ("count", "events") and feature.dtype not in (Int32, Int64):
             raise ValueError("numeric aggregates require an Int32 or Int64 feature")
         view_name = self._view_name(table, config)
+        compact_numeric = (
+            online_config.compact_numeric_history and name not in ("count", "events")
+        )
         key = (
             self._history_key(config, view_name, entity_key, feature_name)
-            if name in ("count", "events")
+            if compact_numeric or name in ("count", "events")
             else self._aggregate_key(config, view_name, entity_key, feature_name)
         )
         return {
-            "kind": "feature_agg_query",
+            "kind": "feature_proto_agg_query" if compact_numeric else "feature_agg_query",
             "key": key,
             "start_ms": start_ms,
             "end_ms": end_ms,
@@ -1031,14 +1045,27 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             fields = [
                 _feature_field(view_name, feature.name) for feature in table.features
             ] + [_ts_field(view_name)]
+            history_features = [
+                (feature.name, feature.dtype in (Int32, Int64))
+                for feature in table.features
+            ]
+            project_suffix = f":{config.project}"
             row_keys = set()
             active_set_keys = []
             pending_deletes: List[Dict[str, Any]] = []
             deleted = 0
             field_delete_round_trips = 0
 
-            def delete_members(members: Sequence[Any]) -> None:
+            def queue_delete(command: Dict[str, Any]) -> None:
                 nonlocal deleted, field_delete_round_trips
+                pending_deletes.append(command)
+                if len(pending_deletes) == batch_size:
+                    client.batch_execute(pending_deletes)
+                    deleted += len(pending_deletes)
+                    field_delete_round_trips += 1
+                    pending_deletes.clear()
+
+            def delete_members(members: Sequence[Any]) -> None:
                 for member in members:
                     raw = decode_bytes(member)
                     if raw is None:
@@ -1046,16 +1073,32 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     row_key = raw.decode("utf-8")
                     if row_key in row_keys:
                         continue
+                    if not row_key.endswith(project_suffix):
+                        raise ValueError("tracked entity key has a different project suffix")
                     row_keys.add(row_key)
                     for field in fields:
-                        pending_deletes.append(
+                        queue_delete(
                             {"kind": "hash_delete", "key": row_key, "field": field}
                         )
-                        if len(pending_deletes) == batch_size:
-                            client.batch_execute(pending_deletes)
-                            deleted += len(pending_deletes)
-                            field_delete_round_trips += 1
-                            pending_deletes.clear()
+                    entity_key_hex = row_key[: -len(project_suffix)]
+                    for feature_name, numeric in history_features:
+                        queue_delete(
+                            {
+                                "kind": "feature_delete",
+                                "key": self._history_key_from_hex(
+                                    config, view_name, entity_key_hex, feature_name
+                                ),
+                            }
+                        )
+                        if numeric:
+                            queue_delete(
+                                {
+                                    "kind": "feature_delete",
+                                    "key": self._aggregate_key_from_hex(
+                                        config, view_name, entity_key_hex, feature_name
+                                    ),
+                                }
+                            )
 
             legacy_members = client.execute(
                 {"kind": "set_members", "key": legacy_set_key}
