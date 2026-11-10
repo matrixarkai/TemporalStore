@@ -27,7 +27,8 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
         | Command::FeatureQuery { key, .. }
-        | Command::SequenceQuery { key, .. } => Some(key.as_str()),
+        | Command::SequenceQuery { key, .. }
+        | Command::CellRankQuery { key, .. } => Some(key.as_str()),
         _ => None,
     }
 }
@@ -342,6 +343,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureQueryFiltered { .. }
         | Command::FeatureAggQuery { .. }
         | Command::SequenceQuery { .. }
+        | Command::CellRankQuery { .. }
         | Command::ControlStateCount { .. }
         | Command::ControlStateQuery { .. }
         | Command::ControlStateDetail { .. }
@@ -608,6 +610,14 @@ pub(super) fn validate_command_preconditions(
                 "invalid_argument",
                 "timestamp_nanos must be between 0 and 999999999",
             ));
+        }
+        // A ranked cell read is refused at admission for everything that needs no snapshot: the
+        // bounds, the window, the score parameters. Names are checked against the key's header when
+        // the read runs.
+        Command::CellRankQuery { spec, .. } => {
+            if let Err(why) = super::cell_rank::validate_spec(spec) {
+                return Err(Status::error("invalid_argument", why));
+            }
         }
         // Expiry checks here use the SAME replay-aware clock as the executor's
         // `remove_if_expired`. Validation runs only on the leader today, where the two

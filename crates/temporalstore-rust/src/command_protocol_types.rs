@@ -295,6 +295,11 @@ pub struct RankedCells {
     pub unscored: u64,
     /// Best first; equal scores order by member, smaller first.
     pub rows: Vec<RankedCellRow>,
+    /// Why the read was refused, when it was: a name the key does not declare, a window over the
+    /// bound, a snapshot that cannot be read. Empty when the read was served. A refused read has no
+    /// rows, and an empty `rows` with an empty `refused` means there was nothing to rank.
+    #[serde(default)]
+    pub refused: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1708,6 +1713,11 @@ pub enum Command {
     SequenceBatchQuery {
         queries: Vec<SequenceQuerySpec>,
     },
+    /// A ranked windowed read over the cell snapshots stored under `key`.
+    CellRankQuery {
+        key: String,
+        spec: CellRankSpec,
+    },
     ControlStateIncrement {
         key: String,
         timestamp_ms: u64,
@@ -2835,6 +2845,9 @@ pub enum CommandResponse {
     },
     SequenceRowGroups {
         groups: Vec<(String, Vec<SequenceFeatureRow>)>,
+    },
+    CellRanking {
+        ranked: RankedCells,
     },
     ContextNode {
         object_key: String,
