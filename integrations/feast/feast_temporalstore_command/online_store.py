@@ -300,10 +300,14 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         view_name = self._view_name(table, config)
         ts_field = _ts_field(view_name)
 
-        entity_key_hexes = [self._entity_key_hex(config, row[0]) for row in data]
-        hash_keys = [
-            f"{entity_key_hex}:{config.project}" for entity_key_hex in entity_key_hexes
-        ]
+        entity_key_hexes: List[str] = []
+        if online_config.write_feature_history:
+            entity_key_hexes = [self._entity_key_hex(config, row[0]) for row in data]
+            hash_keys = [
+                f"{entity_key_hex}:{config.project}" for entity_key_hex in entity_key_hexes
+            ]
+        else:
+            hash_keys = [self._entity_hash_key(config, row[0]) for row in data]
 
         defer_stored_dedup = (
             not online_config.skip_dedup
@@ -332,17 +336,12 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         expiry_keys: Dict[str, None] = {}
         written = 0
         skipped = 0
-        # The newest event time queued so far in this call, per key. Without it,
-        # two rows sharing an entity key would both compare against the same
-        # pre-call value, both pass, and whichever was queued last would win
-        # regardless of its event time.
-        queued_nanos: Dict[str, int] = {}
         tracked_keys: List[str] = []
         previous_timestamp: Optional[datetime] = None
         previous_proto_ts: Optional[Timestamp] = None
 
-        for (_entity_key, values, timestamp, _created), hash_key, entity_key_hex in zip(
-            data, hash_keys, entity_key_hexes
+        for index, ((_entity_key, values, timestamp, _created), hash_key) in enumerate(
+            zip(data, hash_keys)
         ):
             if previous_proto_ts is not None and timestamp == previous_timestamp:
                 proto_ts = previous_proto_ts
@@ -353,22 +352,26 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 previous_proto_ts = proto_ts
             event_nanos = proto_ts.seconds * 1_000_000_000 + proto_ts.nanos
 
-            latest_seen = max(
-                stored_nanos.get(hash_key, 0), queued_nanos.get(hash_key, 0)
+            # The latest-row map also fences earlier rows for this key in the batch.
+            queued_timestamp = latest_timestamps.get(hash_key)
+            queued_event_nanos = (
+                queued_timestamp.seconds * 1_000_000_000 + queued_timestamp.nanos
+                if queued_timestamp is not None
+                else 0
             )
+            latest_seen = max(stored_nanos.get(hash_key, 0), queued_event_nanos)
             if latest_seen and event_nanos <= latest_seen:
                 skipped += 1
                 if progress:
                     progress(1)
                 continue
-            queued_nanos[hash_key] = event_nanos
-
             # A Feast batch can contain many events for one entity. Only its
             # newest accepted row belongs in the latest-value hash; history
             # below retains every accepted timestamp.
             latest_timestamps[hash_key] = proto_ts
 
             if online_config.write_feature_history:
+                entity_key_hex = entity_key_hexes[index]
                 serialized_values = [
                     (feature_name, value, value.SerializeToString())
                     for feature_name, value in values.items()
