@@ -6797,6 +6797,7 @@ fn writing_a_message_does_not_cost_its_nodes_history() {
                     source_ref: format!("src/{i}"),
                     related_node_hashes: vec![42],
                     compact_attrs: Vec::new(),
+                    embedding_model_hash: 0,
                     vector,
                 }),
             },

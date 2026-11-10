@@ -1997,6 +1997,10 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
     }
     assert!(report.lifecycle_report.is_some());
     assert!(report
+        .stages
+        .iter()
+        .any(|stage| stage.stage == "reclaim_wal" && stage.dumped_bucket_count > 0));
+    assert!(report
         .expiry_report
         .as_ref()
         .is_some_and(|expiry| expiry.expired_records_removed >= 1));
@@ -2025,6 +2029,16 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
             "compact",
             "reap_metrics",
         ]
+    );
+    assert_eq!(report.stage_boundary_order, report.native_stage_order);
+    assert_eq!(
+        report
+            .stages
+            .iter()
+            .filter(|stage| stage.stage != "plan" && stage.stage != "merged_dump_load_policy")
+            .map(|stage| stage.stage.as_str())
+            .collect::<Vec<_>>(),
+        report.stage_boundary_order.iter().map(String::as_str).collect::<Vec<_>>()
     );
 }
 
