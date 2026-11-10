@@ -3044,6 +3044,39 @@ pub(crate) fn execute_on_shard(
                 }
             })
         }
+        Command::SetScan { key, after, limit } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::Members {
+                        members: Vec::new(),
+                    },
+                    mutated,
+                };
+            }
+            let members = shard
+                .bucket_index
+                .sets
+                .get(&key)
+                .map(|members| {
+                    if after.is_empty() {
+                        members
+                            .keys()
+                            .take(limit)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    } else {
+                        use std::ops::Bound::{Excluded, Unbounded};
+                        members
+                            .range::<[u8], _>((Excluded(after.as_slice()), Unbounded))
+                            .take(limit)
+                            .map(|(member, _)| member.clone())
+                            .collect::<Vec<_>>()
+                    }
+                })
+                .unwrap_or_default();
+            CommandResponse::Members { members }
+        }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let member_element_name = set_element_name(&member);
