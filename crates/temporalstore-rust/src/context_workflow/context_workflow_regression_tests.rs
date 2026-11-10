@@ -2145,9 +2145,13 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
                 assert_eq!(request_body["model"], "qwen-context-test");
                 assert_eq!(request_body["stream"], false);
                 assert!(request_body["format"]["properties"]["l0"].is_object());
+                assert_eq!(
+                    request_body["format"]["properties"]["entities"]["maxItems"],
+                    8
+                );
                 serde_json::json!({
                     "message": {
-                        "content": "{\"l0\":\"local checkout incident\",\"l1\":\"payment risk and customer impact\"}"
+                        "content": "{\"l0\":\"local checkout incident\",\"l1\":\"payment risk and customer impact\",\"entities\":[{\"kind\":\"decision\",\"name\":\"checkout policy\",\"value\":\"support paused the account\"}]}"
                     }
                 })
             } else {
@@ -2204,6 +2208,24 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
     assert_eq!(report.embedding_generation.vector_dimension, 4);
     assert_eq!(report.embedding_generation.generated_vector_count, 2);
     assert!(report.embedding_generation.production_evidence_ready);
+    assert_eq!(report.extracted_entity_count, 1);
+    let entities = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQueryEntities {
+            tenant_hash: 8,
+            node_hash: report.node.node_hash,
+            entity_hashes: Vec::new(),
+            limit: Some(8),
+        },
+    });
+    assert!(matches!(
+        entities.response,
+        CommandResponse::ContextEntities { ref entities, .. }
+            if entities.len() == 1
+                && entities[0].entity_type == 5
+                && entities[0].name == "checkout policy"
+                && entities[0].value == "support paused the account"
+    ));
 }
 
 // --- Hybrid retrieve scoring (un-embedded nodes rankable via lexical) ---

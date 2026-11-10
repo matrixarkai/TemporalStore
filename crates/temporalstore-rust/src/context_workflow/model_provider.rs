@@ -11,11 +11,14 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::*;
 
-const CONTEXT_SUMMARY_SYSTEM_PROMPT: &str = "You generate TemporalStore ContextNode traversal summaries. Be faithful to the supplied source; prefer current state and resolved contradictions; never invent facts. l0 is a compact routing abstract; l1 is a richer synthesis whose length scales to the source's information.";
-const CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX: &str = "Generate an independent hierarchical summary for every source below. Return one item for every source_index and preserve each ordinal exactly. l0 is a routing abstract of at most 220 characters. For rich_source=true, l1 is a semantic synthesis of at most 1200 characters; otherwise l1 is one distilled fact line of at most 220 characters. Do not combine facts between sources or invent facts. Sources: ";
+const CONTEXT_SUMMARY_SYSTEM_PROMPT: &str = "You generate TemporalStore ContextNode traversal summaries and durable entities. Be faithful to the supplied source; prefer current state and resolved contradictions; never invent facts. l0 is a compact routing abstract; l1 is a richer synthesis whose length scales to the source's information. entities contains at most eight durable facts, decisions, preferences, constraints, tasks, people, organizations, or projects; omit transient chatter and unsupported inference.";
+const CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX: &str = "Generate an independent hierarchical summary and durable entity set for every source below. Return one item for every source_index and preserve each ordinal exactly. l0 is a routing abstract of at most 220 characters. For rich_source=true, l1 is a semantic synthesis of at most 1200 characters; otherwise l1 is one distilled fact line of at most 220 characters. entities contains at most eight objects with kind, name, and value. Do not combine facts between sources or invent facts. Sources: ";
 const DEFAULT_EMBED_MAX_BATCH_ITEMS: usize = 128;
 const DEFAULT_EMBED_MAX_INPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_EMBED_MAX_REQUEST_BYTES: usize = 512 * 1024;
+const MAX_EXTRACTED_ENTITIES_PER_SOURCE: usize = 8;
+const MAX_EXTRACTED_ENTITY_NAME_BYTES: usize = 256;
+const MAX_EXTRACTED_ENTITY_VALUE_BYTES: usize = 1_024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ContextExtractSummaries {
@@ -24,6 +27,7 @@ pub(crate) struct ContextExtractSummaries {
     pub(crate) l0: String,
     pub(crate) l1: String,
     pub(crate) l2_ref: String,
+    pub(crate) entities: Vec<ContextExtractedEntity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +40,8 @@ struct ContextSummaryBatchItem {
     source_index: usize,
     l0: String,
     l1: String,
+    #[serde(default)]
+    entities: Vec<ContextExtractedEntity>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -44,6 +50,8 @@ struct ContextSummaryOutput {
     l0: Value,
     #[serde(default)]
     l1: Value,
+    #[serde(default)]
+    entities: Vec<ContextExtractedEntity>,
 }
 
 #[derive(Serialize)]
@@ -301,7 +309,7 @@ pub(crate) fn context_summaries_for_extract(
     match provider.provider_kind {
         ContextProviderKind::OpenAiCompatible => {
             let content = call_openai_compatible_context_provider(&provider, request)?;
-            let (l0, l1) = parse_provider_summary_content(&content, request);
+            let (l0, l1, entities) = parse_provider_summary_content(&content, request);
             let l2_ref = format!(
                 "tsctx://tenant/{}/model/{}/source/{}",
                 request.tenant_hash, provider.provider_name, request.source_id
@@ -312,11 +320,12 @@ pub(crate) fn context_summaries_for_extract(
                 l0,
                 l1,
                 l2_ref,
+                entities,
             })
         }
         ContextProviderKind::Ollama => {
             let output = call_ollama_context_provider(&provider, request)?;
-            let (l0, l1) = normalize_ollama_summary(output, request);
+            let (l0, l1, entities) = normalize_ollama_summary(output, request);
             let l2_ref = format!(
                 "tsctx://tenant/{}/model/{}/source/{}",
                 request.tenant_hash, provider.provider_name, request.source_id
@@ -327,6 +336,7 @@ pub(crate) fn context_summaries_for_extract(
                 l0,
                 l1,
                 l2_ref,
+                entities,
             })
         }
         ContextProviderKind::Mock => Ok(mock_context_summaries(provider, request)),
@@ -396,6 +406,7 @@ pub(crate) fn context_summaries_for_extract_batch(
                         "tsctx://tenant/{}/model/{}/source/{}",
                         request.tenant_hash, provider.provider_name, request.source_id
                     ),
+                    entities: normalize_extracted_entities(item.entities),
                 }));
             }
         }
@@ -818,6 +829,7 @@ pub(crate) fn mock_context_summaries(
             "tsctx://tenant/{}/node/{}/source/{}",
             request.tenant_hash, node_hash, request.source_id
         ),
+        entities: Vec::new(),
     }
 }
 
@@ -885,9 +897,10 @@ fn call_ollama_context_provider(
 }
 
 fn normalize_ollama_summary(
-    output: ContextSummaryOutput,
+    mut output: ContextSummaryOutput,
     request: &ContextExtractRequest,
-) -> (String, String) {
+) -> (String, String, Vec<ContextExtractedEntity>) {
+    let entities = normalize_extracted_entities(std::mem::take(&mut output.entities));
     let l0 = output.l0.as_str().filter(|value| !value.trim().is_empty());
     let l1 = output.l1.as_str().filter(|value| !value.trim().is_empty());
     let require_model = context_require_model_summaries();
@@ -914,7 +927,59 @@ fn normalize_ollama_summary(
                 summarize_l1(request.source_kind, &request.title, &request.body)
             }
         });
-    (l0, l1)
+    (l0, l1, entities)
+}
+
+fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
+    let value = value.trim();
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].trim_end().to_string()
+}
+
+fn normalize_extracted_entities(
+    entities: Vec<ContextExtractedEntity>,
+) -> Vec<ContextExtractedEntity> {
+    let mut normalized = Vec::with_capacity(
+        entities
+            .len()
+            .min(MAX_EXTRACTED_ENTITIES_PER_SOURCE),
+    );
+    for entity in entities {
+        if normalized.len() == MAX_EXTRACTED_ENTITIES_PER_SOURCE {
+            break;
+        }
+        let name = truncate_utf8_bytes(&entity.name, MAX_EXTRACTED_ENTITY_NAME_BYTES);
+        let value = truncate_utf8_bytes(&entity.value, MAX_EXTRACTED_ENTITY_VALUE_BYTES);
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        let kind = match entity.kind.trim().to_ascii_lowercase().as_str() {
+            "person" => "person",
+            "organization" | "organisation" => "organization",
+            "project" => "project",
+            "preference" => "preference",
+            "decision" => "decision",
+            "constraint" => "constraint",
+            "task" => "task",
+            _ => "fact",
+        }
+        .to_string();
+        if normalized.iter().any(|existing: &ContextExtractedEntity| {
+            existing.kind == kind
+                && existing.name.eq_ignore_ascii_case(&name)
+                && existing.value == value
+        }) {
+            continue;
+        }
+        normalized.push(ContextExtractedEntity { kind, name, value });
+    }
+    normalized
 }
 
 pub(crate) fn call_openai_compatible_embedding_provider(
@@ -1176,9 +1241,10 @@ fn context_summary_prompt_with_guidance(
 ) -> String {
     format!(
         "Generate hierarchical ContextNode traversal summaries for source_kind={:?}, source_id={}, title={}.\n\
-         Return ONLY JSON with string fields l0 and l1.\n\
+         Return ONLY JSON with string fields l0 and l1 plus an entities array.\n\
          l0: a compact routing abstract (<=220 characters) used for embedding-scored tree traversal.\n\
          {l1_guidance}\n\
+         entities: at most eight durable objects with kind, name, and value; omit transient chatter.\n\
          Do not invent facts beyond the source.\n\
          Source body:\n{}",
         request.source_kind, request.source_id, request.title, request.body
@@ -1192,9 +1258,10 @@ fn context_summary_schema() -> &'static Value {
             "type": "object",
             "properties": {
                 "l0": { "type": "string" },
-                "l1": { "type": "string" }
+                "l1": { "type": "string" },
+                "entities": context_entities_schema()
             },
-            "required": ["l0", "l1"]
+            "required": ["l0", "l1", "entities"]
         })
     })
 }
@@ -1212,14 +1279,34 @@ fn context_summary_batch_schema() -> &'static Value {
                         "properties": {
                             "source_index": { "type": "integer" },
                             "l0": { "type": "string" },
-                            "l1": { "type": "string" }
+                            "l1": { "type": "string" },
+                            "entities": context_entities_schema()
                         },
-                        "required": ["source_index", "l0", "l1"]
+                        "required": ["source_index", "l0", "l1", "entities"]
                     }
                 }
             },
             "required": ["items"]
         })
+    })
+}
+
+fn context_entities_schema() -> Value {
+    serde_json::json!({
+        "type": "array",
+        "maxItems": MAX_EXTRACTED_ENTITIES_PER_SOURCE,
+        "items": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["person", "organization", "project", "preference", "decision", "constraint", "task", "fact"]
+                },
+                "name": { "type": "string" },
+                "value": { "type": "string" }
+            },
+            "required": ["kind", "name", "value"]
+        }
     })
 }
 
@@ -1243,11 +1330,11 @@ pub(crate) fn parse_openai_compatible_base_url(base_url: &str) -> Result<(String
 pub(crate) fn parse_provider_summary_content(
     content: &str,
     request: &ContextExtractRequest,
-) -> (String, String) {
+) -> (String, String, Vec<ContextExtractedEntity>) {
     // When models are required, a missing l0/l1 falls back to the model's own raw
     // content (still model-derived) rather than the title/body string heuristic.
     let require_model = context_require_model_summaries();
-    if let Ok(value) = serde_json::from_str::<Value>(content) {
+    if let Ok(mut value) = serde_json::from_str::<Value>(content) {
         let l0 = value["l0"]
             .as_str()
             .filter(|value| !value.trim().is_empty())
@@ -1270,7 +1357,13 @@ pub(crate) fn parse_provider_summary_content(
                     summarize_l1(request.source_kind, &request.title, &request.body)
                 }
             });
-        return (l0, l1);
+        let entities = value
+            .get_mut("entities")
+            .map(Value::take)
+            .and_then(|entities| serde_json::from_value(entities).ok())
+            .map(normalize_extracted_entities)
+            .unwrap_or_default();
+        return (l0, l1, entities);
     }
     (
         truncate_words(content, 32),
@@ -1280,5 +1373,60 @@ pub(crate) fn parse_provider_summary_content(
             request.title,
             truncate_words(content, 96)
         ),
+        Vec::new(),
     )
+}
+
+#[cfg(test)]
+mod entity_extraction_tests {
+    use super::*;
+
+    #[test]
+    fn extracted_entities_are_deduplicated_and_capped() {
+        let mut entities = vec![
+            ContextExtractedEntity {
+                kind: "Decision".to_string(),
+                name: "Storage mode".to_string(),
+                value: "Use protobuf".to_string(),
+            },
+            ContextExtractedEntity {
+                kind: "decision".to_string(),
+                name: "storage MODE".to_string(),
+                value: "Use protobuf".to_string(),
+            },
+        ];
+        entities.extend((0..12).map(|index| ContextExtractedEntity {
+            kind: "unknown".to_string(),
+            name: format!("fact {index}"),
+            value: format!("value {index}"),
+        }));
+
+        let normalized = normalize_extracted_entities(entities);
+
+        assert_eq!(normalized.len(), MAX_EXTRACTED_ENTITIES_PER_SOURCE);
+        assert_eq!(normalized[0].kind, "decision");
+        assert_eq!(normalized[1].kind, "fact");
+        assert_eq!(
+            normalized
+                .iter()
+                .filter(|entity| entity.name.eq_ignore_ascii_case("storage mode"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn extracted_entity_fields_are_utf8_safely_bounded() {
+        let normalized = normalize_extracted_entities(vec![ContextExtractedEntity {
+            kind: "fact".to_string(),
+            name: "\u{4e0a}".repeat(MAX_EXTRACTED_ENTITY_NAME_BYTES),
+            value: "\u{4e0b}".repeat(MAX_EXTRACTED_ENTITY_VALUE_BYTES),
+        }]);
+
+        assert_eq!(normalized.len(), 1);
+        assert!(normalized[0].name.len() <= MAX_EXTRACTED_ENTITY_NAME_BYTES);
+        assert!(normalized[0].value.len() <= MAX_EXTRACTED_ENTITY_VALUE_BYTES);
+        assert!(normalized[0].name.is_char_boundary(normalized[0].name.len()));
+        assert!(normalized[0].value.is_char_boundary(normalized[0].value.len()));
+    }
 }
