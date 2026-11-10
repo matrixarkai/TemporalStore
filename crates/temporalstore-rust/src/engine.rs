@@ -4498,28 +4498,27 @@ fn capture_container_element_states(
                 .bucket_index.sets
                 .get(key)
                 .and_then(|members| members.get(member))
-                .and_then(|address| serde_json::to_value((member, address)).ok())
+                .and_then(|address| serde_json::to_value((member, address.compact_carried_row())).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[0], value)),
             TouchedContainerElement::ZSet { key, member } => shard
                 .bucket_index.zsets
                 .get(key)
                 .and_then(|members| members.get(member))
-                .and_then(|scored| serde_json::to_value((member, scored)).ok())
+                .and_then(|(score, address)| {
+                    serde_json::to_value((member, (score, address.compact_carried_row()))).ok()
+                })
                 .map(|value| (CARRIED_CONTAINER_FIELDS[1], value)),
             TouchedContainerElement::List { key, sequence } => shard
                 .bucket_index.lists
                 .get(key)
                 .and_then(|entries| entries.get(sequence))
-                .and_then(|address| serde_json::to_value((sequence, address)).ok())
+                .and_then(|address| serde_json::to_value((sequence, address.compact_carried_row())).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[2], value)),
             TouchedContainerElement::Hash { key, field } => shard
                 .bucket_index.hashes
                 .get(key)
                 .and_then(|fields| fields.get(field))
-                .map(|address| serde_json::Value::Array(vec![
-                    serde_json::Value::String(field.clone()),
-                    address.compact_carried_value(),
-                ]))
+                .and_then(|address| serde_json::to_value((field, address.compact_carried_row())).ok())
                 .map(|value| (CARRIED_CONTAINER_FIELDS[3], value)),
         };
         let Some((field, value)) = carried else {
