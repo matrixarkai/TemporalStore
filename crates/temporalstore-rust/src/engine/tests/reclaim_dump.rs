@@ -106,6 +106,47 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
 }
 
 #[test]
+fn compacted_hash_elements_release_their_wal_positions_before_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "retire");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    for index in 0..16 {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::HashSet {
+                key: "many-fields".to_string(),
+                field: format!("field-{index}"),
+                value: vec![index as u8; 64],
+            },
+        }).status.ok);
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 16);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 16);
+    engine.compact_shard_blocks(RECLAIM_DUMP_SHARD).unwrap();
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 0);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 0);
+    engine.flush_shard_index(RECLAIM_DUMP_SHARD);
+    drop(engine);
+    let restarted = reclaim_dump_engine(dir.path(), "retire");
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restarted.wal_resident_block_count(RECLAIM_DUMP_SHARD), 0);
+    for index in 0..16 {
+        let response = restarted.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::HashGet {
+                key: "many-fields".to_string(), field: format!("field-{index}"),
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![index as u8; 64]) });
+    }
+}
+
+#[test]
 fn a_hash_dump_keeps_wal_blocks_needed_by_restore() {
     const KEYS: usize = 48;
     let dir = tempfile::tempdir().unwrap();
