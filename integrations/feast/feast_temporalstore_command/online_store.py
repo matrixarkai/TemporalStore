@@ -877,14 +877,24 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         if not grouped_refs:
             return
         groups: Dict[Tuple[bytes, ...], List[Tuple[Any, ...]]] = {}
+        entity_plans: Dict[Any, Tuple[Any, ...]] = {}
         for table, requested_features in grouped_refs:
-            entity_values, row_indexes, output_len = utils._get_unique_entities(
-                table, join_key_values, entity_name_to_join_key_map
+            entity_layout = (
+                tuple(table.entities),
+                tuple(sorted(table.projection.join_key_map.items())),
             )
-            entity_keys = utils._get_entity_key_protos(entity_values)
-            identity = tuple(
-                key.SerializeToString(deterministic=True) for key in entity_keys
-            )
+            plan = entity_plans.get(entity_layout)
+            if plan is None:
+                entity_values, row_indexes, output_len = utils._get_unique_entities(
+                    table, join_key_values, entity_name_to_join_key_map
+                )
+                entity_keys = utils._get_entity_key_protos(entity_values)
+                identity = tuple(
+                    key.SerializeToString(deterministic=True) for key in entity_keys
+                )
+                plan = (entity_keys, row_indexes, output_len, identity)
+                entity_plans[entity_layout] = plan
+            entity_keys, row_indexes, output_len, identity = plan
             groups.setdefault(identity, []).append(
                 (
                     table,

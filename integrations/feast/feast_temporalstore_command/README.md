@@ -94,6 +94,11 @@ footprint ratio without knowing.
 
 ## Reads
 
+Feature views with matching entities and join-key aliases reuse one entity
+deduplication and protobuf plan within each serving request. Different alias
+maps remain separate. The plan is discarded after the request, so later calls
+cannot reuse stale entity values or row positions.
+
 `online_read` over N entity keys uses ordered binary
 `/batch_hash_multi_get_compact_msgpack` requests and responses bounded by key
 count and encoded request bytes. The projection is encoded once per batch
