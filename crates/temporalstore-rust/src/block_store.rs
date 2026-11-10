@@ -3752,7 +3752,7 @@ mod tests {
     fn compact_carried_address_agrees_with_wire_and_round_trips() {
         for block_id in [None, Some(0), Some(17), Some(u16::MAX as u64)] {
             let entry = super::ElementEntry::from_parts(7, 23, 4096, block_id, None);
-            let compact = entry.compact_carried_value();
+            let compact = serde_json::to_value(entry.compact_carried_row()).unwrap();
             let encoded = rmp_serde::to_vec(&entry).unwrap();
             let wire: serde_json::Value = rmp_serde::from_slice(&encoded).unwrap();
             assert_eq!(compact, wire);
@@ -9378,15 +9378,17 @@ pub struct ElementEntry {
 // breaks every `HashMap` holding it, silently.
 impl ElementEntry {
     /// Positional address state accepted by the existing carried-state reader.
-    pub(crate) fn compact_carried_value(&self) -> serde_json::Value {
+    pub(crate) fn compact_carried_row(
+        &self,
+    ) -> (Option<u64>, u64, Option<u64>, Option<u64>, Option<u64>) {
         let wire = BlockAddressWire::from(self.clone());
-        serde_json::json!([
+        (
             wire.address,
             wire.length,
             wire.block_id,
             wire.object_id,
             wire.generation
-        ])
+        )
     }
 
     /// The flag word with the holder's lent bits masked off: the presence bits alone, which ARE
