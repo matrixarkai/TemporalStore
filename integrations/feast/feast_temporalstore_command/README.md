@@ -175,6 +175,8 @@ scan their retained points, whereas the default numeric projection can use
 the aggregate rollup. Keep the default for read-heavy window queries.
 
 `query_feature_aggregates` sends many windows through bounded ordered batches.
+Each batch prepares the feature-type lookup and versioned view name once;
+window bounds, feature types, and aggregate names are still validated per query.
 The repeat-gated 1,024-entity benchmark measured a median 4,207 aggregate
 queries/s at batch 64, with every full-window and tail-window result verified.
 

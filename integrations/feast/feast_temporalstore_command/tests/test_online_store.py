@@ -2074,10 +2074,12 @@ class OnlineStoreTest(unittest.TestCase):
         )
 
         aggregate = self.store._feature_aggregate_command(
-            self.config, self.view, key, "trips", 0, 100, "sum", None
+            self.config, {"trips": self.view.features[0].dtype}, self.view.name,
+            key, "trips", 0, 100, "sum", None
         )
         count = self.store._feature_aggregate_command(
-            self.config, self.view, key, "trips", 0, 100, "count", None
+            self.config, {"trips": self.view.features[0].dtype}, self.view.name,
+            key, "trips", 0, 100, "count", None
         )
         self.assertEqual(aggregate["kind"], "feature_proto_agg_query")
         self.assertEqual(count["kind"], "feature_agg_query")
@@ -2160,14 +2162,16 @@ class OnlineStoreTest(unittest.TestCase):
             ]
         )
         key = self._entity_key(1)
-        values = self.store.query_feature_aggregates(
-            self.config,
-            self.view,
-            [
-                (key, "trips", 1, 100, "sum", None),
-                (key, "trips", 1, 100, "count", None),
-            ],
-        )
+        with mock.patch.object(self.store, "_view_name", wraps=self.store._view_name) as view_name:
+            values = self.store.query_feature_aggregates(
+                self.config,
+                self.view,
+                [
+                    (key, "trips", 1, 100, "sum", None),
+                    (key, "trips", 1, 100, "count", None),
+                ],
+            )
+        self.assertEqual(view_name.call_count, 1)
         self.assertEqual(values, [13, 3])
         self.assertEqual(len(client.sent), 1)
         path, document = client.sent[0]
