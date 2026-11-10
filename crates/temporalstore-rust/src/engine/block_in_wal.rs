@@ -194,7 +194,8 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
 /// The sequence is what lets WAL reclaim coexist with these registrations: a registered block's
 /// only durable copy is its record, so reclaim must never truncate below the lowest registered
 /// sequence (see [`min_registered_sequence`]).
-type Registration = (LocalWriteAheadLogStore, u64, u64);
+// The final count is zero when an index-only registration has not read its carrying record.
+type Registration = (LocalWriteAheadLogStore, u64, u64, usize);
 
 /// Which block this table is about: the object, and which element of it.
 ///
@@ -280,7 +281,7 @@ pub(super) fn register_record(
                     shard_id,
                     (block.object_id, block.element_name.clone()),
                 ),
-                (store.clone(), log_id, sequence),
+                (store.clone(), log_id, sequence, staged_blocks.len()),
             );
         }
     }
@@ -303,7 +304,7 @@ pub(super) fn register_at(
     if let Ok(mut map) = registry().lock() {
         map.insert(
             (block_store.store_id(), shard_id, block_key(object_id, element_name)),
-            (store.clone(), log_id, sequence),
+            (store.clone(), log_id, sequence, 0),
         );
     }
 }
@@ -361,11 +362,36 @@ pub(super) fn min_registered_sequence(
 ) -> Option<u64> {
     let map = registry().lock().ok()?;
     map.iter()
-        .filter(|((owner, shard, _), (reg_store, _, _))| {
+        .filter(|((owner, shard, _), (reg_store, _, _, _))| {
             *owner == block_store.store_id() && *shard == shard_id && reg_store.same_log(store)
         })
-        .map(|(_, (_, _, sequence))| *sequence)
+        .map(|(_, (_, _, sequence, _))| *sequence)
         .min()
+}
+
+/// A necessary relocation-pressure signal, not permission to reclaim any record.
+/// If every record between the oldest and newest live registrations is still needed,
+/// relocating those blocks only exchanges live WAL bytes for live slab bytes.
+pub(super) fn registered_record_span_has_holes(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    store: &LocalWriteAheadLogStore,
+) -> bool {
+    let Ok(map) = registry().lock() else { return false };
+    let mut records = std::collections::BTreeMap::<u64, (usize, usize)>::new();
+    for ((owner, shard, _), (log, _, sequence, expected)) in map.iter() {
+        if *owner != block_store.store_id() || *shard != shard_id || !log.same_log(store) {
+            continue;
+        }
+        let record = records.entry(*sequence).or_insert((0, *expected));
+        if record.1 != *expected { return true; }
+        record.0 += 1;
+    }
+    if records.values().any(|(live, expected)| *expected == 0 || live != expected) {
+        return true;
+    }
+    let (Some(first), Some(last)) = (records.keys().next(), records.keys().next_back()) else { return false };
+    (records.len() as u64) < last.saturating_sub(*first).saturating_add(1)
 }
 
 /// How many registrations this shard is holding.
@@ -395,7 +421,7 @@ pub(super) fn oldest_registered_objects(
     let mut entries: Vec<(u64, BlockKey)> = map
         .iter()
         .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
-        .map(|((_, _, block), (_, _, sequence))| (*sequence, block.clone()))
+        .map(|((_, _, block), (_, _, sequence, _))| (*sequence, block.clone()))
         .collect();
     entries.sort_unstable();
     entries
@@ -456,7 +482,7 @@ pub(super) fn read_block(
     object_id: u64,
     element_name: Option<&str>,
 ) -> Option<Vec<u8>> {
-    let (store, log_id, _) = {
+    let (store, log_id, _, _) = {
         let map = registry().lock().ok()?;
         let owner = block_store.store_id();
         map.get(&(owner, shard_id, block_key(object_id, element_name)))
