@@ -262,9 +262,9 @@ jobs:
             meta::tests::every_shape_of_torn_tail_is_dropped_and_cut_back_to_a_record_boundary \
             meta::tests::a_record_that_does_not_parse_with_records_after_it_is_still_an_error \
             meta::tests::a_complete_record_with_a_bad_checksum_is_refused_and_not_truncated \
-            ingestion::tests::the_ingestion_state_reader_accepts_both_shapes \
+            ingestion::tests::the_ingestion_state_reader_takes_protobuf_and_refuses_json \
             ingestion::tests::an_unknown_flink_tag_or_an_absent_ingestion_source_is_refused_rather_than_defaulted \
-            ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_still_read_on_restart \
+            ingestion::tests::the_state_writer_is_binary_and_a_planted_json_file_is_refused_on_restart \
             engine::tests::routing_range_stamp_binary::the_local_stamp_is_written_binary_and_a_planted_json_stamp_is_refused \
             engine::tests::routing_range_stamp_binary::no_json_encode_path_is_left_for_the_local_routing_range_stamp \
             shared_store::tests::restore_reads_a_published_dump_manifest_and_refuses_a_planted_json_one \
