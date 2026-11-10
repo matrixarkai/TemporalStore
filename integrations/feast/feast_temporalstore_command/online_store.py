@@ -123,7 +123,7 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     """Approximate encoded command bytes per HTTP batch."""
 
     key_ttl_seconds: Optional[int] = None
-    """Expiry armed on each entity key after a write.
+    """Expiry armed on each entity key and feature history series after a write.
 
     TemporalStore's command surface has no key-space scan, so this is the only
     mechanism that reclaims rows without the caller remembering their keys --
@@ -456,14 +456,25 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             elif row_fields != shared_fields:
                 shared_layout = False
         commands: List[Dict[str, Any]] = []
-        commands.extend(
-            {"kind": "feature_append", "key": key, "points": points}
-            for key, points in history_points.items()
+        history_ttl_ms = (
+            int(online_config.key_ttl_seconds) * 1000
+            if online_config.key_ttl_seconds
+            else None
         )
-        commands.extend(
-            {"kind": "feature_append", "key": key, "points": points}
-            for key, points in numeric_points.items()
-        )
+        for series in (history_points, numeric_points):
+            for key, points in series.items():
+                command: Dict[str, Any] = {
+                    "kind": (
+                        "feature_append_with_ttl"
+                        if history_ttl_ms is not None
+                        else "feature_append"
+                    ),
+                    "key": key,
+                    "points": points,
+                }
+                if history_ttl_ms is not None:
+                    command["ttl_ms"] = history_ttl_ms
+                commands.append(command)
         for key in dict.fromkeys(tracked_keys):
             commands.append(
                 {

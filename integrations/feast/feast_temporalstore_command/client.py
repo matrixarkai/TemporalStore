@@ -92,7 +92,7 @@ def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
         encoded["value"] = _required_binary(encoded["value"])
     elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
         encoded["member"] = _required_binary(encoded["member"])
-    elif kind in {"feature_append", "feature_append_with_policy", "feature_replace"}:
+    elif kind in {"feature_append", "feature_append_with_ttl", "feature_append_with_policy", "feature_replace"}:
         encoded["points"] = [
             {**point, "value": _required_binary(point["value"])}
             for point in encoded.get("points", [])
@@ -113,7 +113,7 @@ def _json_command(command: Dict[str, Any]) -> Dict[str, Any]:
         encoded["value"] = encode_bytes(_required_binary(encoded["value"]))
     elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
         encoded["member"] = encode_bytes(_required_binary(encoded["member"]))
-    elif kind in {"feature_append", "feature_append_with_policy", "feature_replace"}:
+    elif kind in {"feature_append", "feature_append_with_ttl", "feature_append_with_policy", "feature_replace"}:
         encoded["points"] = [
             {**point, "value": list(_required_binary(point["value"]))}
             for point in encoded.get("points", [])

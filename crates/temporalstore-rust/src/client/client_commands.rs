@@ -79,6 +79,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::SeenCheck { key, .. }
         | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithTtl { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }
         | Command::FeatureQueryFiltered { key, .. }

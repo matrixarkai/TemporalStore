@@ -3780,7 +3780,8 @@ fn command_upsert_element_names(
         //
         // DEDUPED, because `sorted_feature_points` collapses repeated timestamps before the write
         // and the element names have to be the ones that actually landed.
-        Command::FeatureAppend { key, points } => {
+        Command::FeatureAppend { key, points }
+        | Command::FeatureAppendWithTtl { key, points, .. } => {
             let mut seen = std::collections::BTreeSet::new();
             Some(
                 points
@@ -4241,7 +4242,8 @@ fn command_will_trim_feature_membership(
         return current_len.saturating_add(new_timestamps.len()) > feature_max_size;
     }
     let (key, points, may_add) = match command {
-        Command::FeatureAppend { key, points } => (key, points, true),
+        Command::FeatureAppend { key, points }
+        | Command::FeatureAppendWithTtl { key, points, .. } => (key, points, true),
         Command::FeatureAppendWithPolicy { key, points, policy } => (
             key,
             points,

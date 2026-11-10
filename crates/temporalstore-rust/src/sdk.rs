@@ -402,6 +402,17 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .map(sdk_feature_point_to_types)
                 .collect(),
         },
+        v1::command::Kind::FeatureAppendWithTtl(command) => {
+            types::Command::FeatureAppendWithTtl {
+                key: command.key,
+                points: command
+                    .points
+                    .into_iter()
+                    .map(sdk_feature_point_to_types)
+                    .collect(),
+                ttl_ms: command.ttl_ms,
+            }
+        }
         v1::command::Kind::FeatureQuery(command) => types::Command::FeatureQuery {
             key: command.key,
             start_ms: command.start_ms,

@@ -3107,7 +3107,15 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
-        Command::FeatureAppend { key, points } => {
+        append_command @ (Command::FeatureAppend { .. }
+        | Command::FeatureAppendWithTtl { .. }) => {
+            let (key, points, ttl_ms) = match append_command {
+                Command::FeatureAppend { key, points } => (key, points, None),
+                Command::FeatureAppendWithTtl { key, points, ttl_ms } => {
+                    (key, points, Some(ttl_ms))
+                }
+                _ => unreachable!(),
+            };
             remove_if_expired(shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -3188,6 +3196,23 @@ pub(crate) fn execute_on_shard(
                     mutated,
                     false,
                 );
+            }
+            if let Some(ttl_ms) = ttl_ms {
+                if shard.features().get(&key[..]).is_some_and(|series| series.len() > 0) {
+                    let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                    crate::engine::set_expiry(shard, key.clone(), expires_at);
+                    stage_meta_outcome(
+                        shard_id,
+                        "object",
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        None,
+                        Some(expires_at),
+                        false,
+                    );
+                    mutated = true;
+                }
             }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty

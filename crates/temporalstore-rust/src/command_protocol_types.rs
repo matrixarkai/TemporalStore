@@ -1683,6 +1683,11 @@ pub enum Command {
         key: String,
         points: Vec<FeaturePoint>,
     },
+    FeatureAppendWithTtl {
+        key: String,
+        points: Vec<FeaturePoint>,
+        ttl_ms: u64,
+    },
     FeatureAppendWithPolicy {
         key: String,
         points: Vec<FeaturePoint>,
