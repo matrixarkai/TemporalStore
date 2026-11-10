@@ -60,3 +60,27 @@ Other routes:
 | `POST` | `/memories/batch/delete` |
 | `POST` | `/memories/delete_all` |
 | `POST` | `/memories/reset` |
+
+## Large-corpus profiling
+
+`mem0_scale_harness` is a Rust workload driver for the complete memory API. It creates a unique
+corpus, optionally partitions it across tenant scopes, ingests generated context through the
+normal extraction path, runs retrieval and every management route, and writes latency, throughput,
+process CPU/RSS, and optional on-disk amplification measurements.
+
+```bash
+cargo run --release -p temporalstore-rust --bin mem0_scale_harness -- \
+  --addr 127.0.0.1:17000 \
+  --records 1000000 \
+  --batch-size 512 \
+  --tenant-shards 128 \
+  --users 10000 \
+  --searches 1000 \
+  --service-pids "$(pgrep -n proxy),$(pgrep -n server)" \
+  --data-root /path/to/temporalstore-data \
+  --out target/mem0-scale/report.json
+```
+
+Set `TS_MEM0_PROVIDER_JSON` or pass `--provider-json` to exercise a configured model provider.
+Without it, the harness uses the deterministic local path so storage and serving costs can be
+measured without model latency dominating the result.

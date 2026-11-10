@@ -221,6 +221,8 @@ mod length_answer_and_listing_agree;
 mod set_listing_block_reads;
 #[path = "tests/set_scan.rs"]
 mod set_scan;
+#[path = "tests/zset_count_adjust.rs"]
+mod zset_count_adjust;
 #[path = "tests/object_is_a_key_not_an_element.rs"]
 mod object_is_a_key_not_an_element;
 #[path = "tests/container_block_element_key.rs"]

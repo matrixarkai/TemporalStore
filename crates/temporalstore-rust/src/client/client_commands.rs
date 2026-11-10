@@ -72,7 +72,9 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ZSetCard { key }
         | Command::ZSetRange { key, .. }
         | Command::ZSetRangeByScore { key, .. }
+        | Command::ZSetScan { key, .. }
         | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetCountAdjust { key, .. }
         | Command::ZSetPop { key, .. }
         | Command::ZSetRank { key, .. }
         | Command::BucketTake { key, .. }

@@ -366,7 +366,9 @@ pub(crate) fn context_summaries_for_extract_batch(
         Err(status) => return requests.iter().map(|_| Err(status.clone())).collect(),
     };
     let mut results: Vec<Option<Result<ContextExtractSummaries, Status>>> =
-        std::iter::repeat_with(|| None).take(requests.len()).collect();
+        std::iter::repeat_with(|| None)
+            .take(requests.len())
+            .collect();
     let mut start = 0usize;
     while start < requests.len() {
         let (end, prompt) = ollama_summary_batch_prompt(&client, requests, start);
@@ -650,9 +652,7 @@ fn context_embeddings_for_unique_inputs(
                 .generated_vector_count
                 .saturating_add(report.generated_vector_count);
             total.batch_count = total.batch_count.saturating_add(report.batch_count);
-            total.live_call_count = total
-                .live_call_count
-                .saturating_add(report.live_call_count);
+            total.live_call_count = total.live_call_count.saturating_add(report.live_call_count);
             total.production_evidence_ready &= report.production_evidence_ready;
         } else {
             combined_report = Some(report);
@@ -701,13 +701,14 @@ fn context_embeddings_for_extract_one_batch(
             "embedding_input_too_large",
             format!(
                 "embedding input {index} is {} bytes; limit is {}",
-                input.3.len(), limits.max_input_bytes
+                input.3.len(),
+                limits.max_input_bytes
             ),
         ));
     }
-    let request_bytes = inputs.iter().fold(0usize, |bytes, input| {
-        bytes.saturating_add(input.3.len())
-    });
+    let request_bytes = inputs
+        .iter()
+        .fold(0usize, |bytes, input| bytes.saturating_add(input.3.len()));
     if inputs.len() > limits.max_items || request_bytes > limits.max_request_bytes {
         return Err(Status::error(
             "embedding_request_too_large",
@@ -945,11 +946,7 @@ fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
 fn normalize_extracted_entities(
     entities: Vec<ContextExtractedEntity>,
 ) -> Vec<ContextExtractedEntity> {
-    let mut normalized = Vec::with_capacity(
-        entities
-            .len()
-            .min(MAX_EXTRACTED_ENTITIES_PER_SOURCE),
-    );
+    let mut normalized = Vec::with_capacity(entities.len().min(MAX_EXTRACTED_ENTITIES_PER_SOURCE));
     for entity in entities {
         if normalized.len() == MAX_EXTRACTED_ENTITIES_PER_SOURCE {
             break;
@@ -1173,10 +1170,9 @@ fn ollama_summary_batch_prompt(
                 .saturating_add(128)
         },
     );
-    let mut prompt = Vec::with_capacity(client.bounded_prompt_capacity(
-        CONTEXT_SUMMARY_SYSTEM_PROMPT.len(),
-        estimated_prompt_bytes,
-    ));
+    let mut prompt = Vec::with_capacity(
+        client.bounded_prompt_capacity(CONTEXT_SUMMARY_SYSTEM_PROMPT.len(), estimated_prompt_bytes),
+    );
     prompt.extend_from_slice(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX.as_bytes());
     prompt.push(b'[');
     while end < max_end {
@@ -1190,9 +1186,7 @@ fn ollama_summary_batch_prompt(
             &context_summary_batch_source(source_index, requests[end]),
         )
         .expect("borrowed context summary source serializes");
-        let candidate_prompt_bytes = prompt
-            .len()
-            .saturating_add(1);
+        let candidate_prompt_bytes = prompt.len().saturating_add(1);
         let fits = candidate_prompt_bytes <= config.max_input_bytes
             && CONTEXT_SUMMARY_SYSTEM_PROMPT
                 .len()
@@ -1426,7 +1420,11 @@ mod entity_extraction_tests {
         assert_eq!(normalized.len(), 1);
         assert!(normalized[0].name.len() <= MAX_EXTRACTED_ENTITY_NAME_BYTES);
         assert!(normalized[0].value.len() <= MAX_EXTRACTED_ENTITY_VALUE_BYTES);
-        assert!(normalized[0].name.is_char_boundary(normalized[0].name.len()));
-        assert!(normalized[0].value.is_char_boundary(normalized[0].value.len()));
+        assert!(normalized[0]
+            .name
+            .is_char_boundary(normalized[0].name.len()));
+        assert!(normalized[0]
+            .value
+            .is_char_boundary(normalized[0].value.len()));
     }
 }

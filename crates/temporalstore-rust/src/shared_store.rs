@@ -5071,6 +5071,13 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 increment: *increment,
             })
         }
+        Command::ZSetCountAdjust { key, member, increment } => {
+            v1::command::Kind::ZsetCountAdjust(v1::ZSetCountAdjust {
+                key: key.clone(),
+                member: member.clone(),
+                increment: *increment,
+            })
+        }
         Command::ZSetPop { key, min, count } => v1::command::Kind::ZsetPop(v1::ZSetPop {
             key: key.clone(),
             min: *min,
@@ -5173,6 +5180,13 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
         }
         Command::SetScan { key, after, limit } => {
             v1::command::Kind::SetScan(v1::SetScan {
+                key: key.clone(),
+                after: after.clone(),
+                limit: *limit as u64,
+            })
+        }
+        Command::ZSetScan { key, after, limit } => {
+            v1::command::Kind::ZsetScan(v1::ZSetScan {
                 key: key.clone(),
                 after: after.clone(),
                 limit: *limit as u64,

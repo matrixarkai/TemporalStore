@@ -286,6 +286,8 @@ message Command {
     SetScan set_scan = 64;
     FeatureAppendWithTtl feature_append_with_ttl = 65;
     HashMultiSetWithTtl hash_multi_set_with_ttl = 66;
+    ZSetCountAdjust zset_count_adjust = 67;
+    ZSetScan zset_scan = 68;
   }
 }
 
@@ -368,6 +370,12 @@ message SetMembers {
 }
 
 message SetScan {
+  string key = 1;
+  bytes after = 2;
+  uint64 limit = 3;
+}
+
+message ZSetScan {
   string key = 1;
   bytes after = 2;
   uint64 limit = 3;
@@ -936,6 +944,12 @@ message ZSetIncrBy {
   string key = 1;
   bytes member = 2;
   double increment = 3;
+}
+
+message ZSetCountAdjust {
+  string key = 1;
+  bytes member = 2;
+  int64 increment = 3;
 }
 
 message ZSetPop {
@@ -1910,6 +1924,7 @@ message LlmMemoryRecord {
   string run_id = 8;
   uint64 created_at_ms = 9;
   uint64 updated_at_ms = 10;
+  string context_ref = 11;
 }
 
 message LlmMemoryHistoryRecord {
