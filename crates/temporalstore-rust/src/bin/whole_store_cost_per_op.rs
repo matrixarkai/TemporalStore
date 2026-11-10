@@ -29,6 +29,7 @@
 
 use temporalstore_rust::control::{Config, LoadShardRequest, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
+use temporalstore_rust::engine::reports::StorageManagerCycleRequest;
 use temporalstore_rust::types::{Command, CommandResponse, ExecuteRequest};
 
 /// Sum of every file length under `root`, recursively. The directory is the denominator.
@@ -429,5 +430,57 @@ fn main() {
         grew % PREALLOC_STEP != 0 || grew < PREALLOC_STEP,
         "THIS IS A PREALLOCATION STEP, NOT A COST: the directory grew {grew} B, an exact multiple          of the {PREALLOC_STEP} B segment this store reserves in advance. Re-run with          TS_WAL_PREALLOCATE=0 so the log's length follows its records."
     );
+    let rounds = std::env::var("WSC_MAINTENANCE_ROUNDS")
+        .map(|value| value.parse::<usize>().expect("WSC_MAINTENANCE_ROUNDS must be an integer"))
+        .unwrap_or(0);
+    assert!(rounds <= 16, "maintenance rounds must not exceed 16");
+    if rounds > 0 {
+        assert!(matches!(model, "string" | "hash"), "maintenance read-back requires string or hash");
+        for round in 0..rounds {
+            let files_before = tree_bytes(&dir);
+            let wal_before = engine.write_ahead_log_store().stats(1).bytes_written;
+            let started = std::time::Instant::now();
+            let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                max_dump_buckets_per_round: 64,
+                min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
+                ..StorageManagerCycleRequest::default()
+            });
+            println!("CYCLE_COST round={round} kind=operator elapsed_us={} file_delta={} wal_appended={}",
+                started.elapsed().as_micros(),
+                i128::from(tree_bytes(&dir)) - i128::from(files_before),
+                engine.write_ahead_log_store().stats(1).bytes_written.saturating_sub(wal_before));
+            for stage in &report.stages {
+                println!("STAGE_COST round={round} stage={} elapsed_us={} enabled={} applied={} candidates={} before_bytes={} after_bytes={}",
+                    stage.stage, stage.duration_us, stage.enabled, stage.applied,
+                    stage.candidate_count, stage.before_bytes, stage.after_bytes);
+                assert!(stage.errors.is_empty(), "stage {}: {:?}", stage.stage, stage.errors);
+            }
+        }
+        drop(engine);
+        let restored = TemporalEngine::with_local_dirs(
+            memory_capacity_bytes, dir.join("cache"), dir.join("blocks"), dir.join("indexes"),
+        );
+        let load = restored.load_shard_with(LoadShardRequest {
+            shard_id: 1, load_version: 0, local_node_id: None, shard_uri: String::new(),
+            start_routing_bucket: 0, end_routing_bucket, readonly: false, table_name: String::new(),
+        });
+        assert!(load.status.ok, "maintenance reload failed: {:?}", load.status);
+        for index in 0..ops {
+            let key = padded("k", index, key_bytes);
+            let command = if model == "hash" {
+                Command::HashGet { key, field: "f".to_string() }
+            } else {
+                Command::StringGet { key }
+            };
+            let response = restored.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(response.status.ok, "restored read {index}: {:?}", response.status);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(value.clone()) },
+                "restored value {index}");
+        }
+        println!("CYCLE_COST restored_exact={ops}");
+        drop(restored);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
