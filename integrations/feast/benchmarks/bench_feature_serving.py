@@ -728,6 +728,7 @@ def render(
     args: argparse.Namespace,
     provisional: bool,
     peak_io_pressure: float,
+    peak_load: float,
 ) -> str:
     lines: List[str] = []
     by_payload: Dict[str, List[ArmResult]] = {}
@@ -901,10 +902,10 @@ def main() -> int:
     # Decided on I/O pressure, not on loadavg, for the reason in load_average's
     # docstring. `peak_load` is still carried and printed.
     provisional = peak_io_pressure > args.max_io_pressure
-    table = render(results, args, provisional, peak_io_pressure)
-    print(table)
+    table = render(results, args, provisional, peak_io_pressure, peak_load)
     if control_void:
-        print(f"\n**VOID** -- {control_void}")
+        table += f"\n\n**VOID** -- {control_void}"
+    print(table)
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:
