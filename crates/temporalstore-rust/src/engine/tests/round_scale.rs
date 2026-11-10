@@ -654,6 +654,11 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
         "the second-half seed failed: {:?}",
         response.status
     );
+    let released = engine.apply_storage_eviction(1, 0, 16, true, false);
+    assert!(
+        released.bucket_index_buckets_released > 0,
+        "the fixture must dump and release some buckets: {released:?}"
+    );
 
     crate::engine::reset_live_block_scan_entries();
     crate::engine::reset_live_block_scan_sites();
@@ -764,8 +769,8 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // ---- WHAT ONE WALK OF THESE TWO COSTS --------------------------------
     //
     // More than the block set it hands back, and the difference is not small. A round leaves
-    // buckets RELEASED -- 16 of them on this fixture, which is an ordinary storage round and not
-    // a contrived state -- and a released bucket's index holds no blocks. So
+    // buckets RELEASED -- the fixture dumps and releases candidates explicitly -- and a
+    // released bucket's index holds no blocks. So
     // `collect_bucket_index_live_block_entries` walks the index, then walks the WHOLE model-map
     // block set a second time to supplement the released buckets' blocks back in. It materialises
     // `indexed + every live block` to return `indexed + released`.
