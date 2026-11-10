@@ -113,13 +113,16 @@ empty values.
 `online_write_batch` sends the common latest-value batch through
 the packed timestamp-set routes: field names are encoded once, followed by
 ordered `(entity key, timestamp, values)` rows. TTL writes use a distinct route
-so older nodes can reject the capability and trigger the compatible fallback
-instead of ignoring expiry metadata. The server compares timestamps,
+and fall back to timestamp reads plus TTL-bearing hash commands when that route
+is unavailable. The serving node must support the combined command; older
+nodes reject it rather than silently retaining keys. The server compares timestamps,
 writes accepted rows, and arms their optional key expiry under one shard guard;
 stale rows neither write data nor refresh their expiry. This removes the
 timestamp-read round trip and a separate expiry command from the common TTL
 materialization path. Mixed feature layouts and writes augmented with history
 or teardown tracking use bounded binary `/batch_write_msgpack` command batches.
+When TTL is configured, each hash write in those batches carries its own
+expiry; it does not need a second command for the same entity.
 A batched timestamp read runs first only when stale-write suppression is
 requested and the atomic route is unavailable. That timestamp projection also uses
 the compact shared-field read route, so `_ts` crosses the wire once per batch.
@@ -170,8 +173,8 @@ Serving reads do not change: `online_read` always answers from the hash. That
 is deliberate, and it is worth knowing why. `FeatureQuery` returns a window in
 **ascending** timestamp order and truncates with `take(count)`, so asking it
 for "the latest point" costs O(points in the window), not O(1). It is a history
-read, not a latest-value read. Turning this flag on adds one `FeatureAppend`
-per feature per row to the write path and leaves the read path alone.
+read, not a latest-value read. Turning this flag on adds one history append
+per feature series in a write batch and leaves the read path alone.
 
 ## Teardown
 

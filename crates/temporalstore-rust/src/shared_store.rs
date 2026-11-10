@@ -5122,6 +5122,19 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                     .collect(),
             })
         }
+        Command::HashMultiSetWithTtl { key, entries, ttl_ms } => {
+            v1::command::Kind::HashMultiSetWithTtl(v1::HashMultiSetWithTtl {
+                key: key.clone(),
+                entries: entries
+                    .iter()
+                    .map(|(field, value)| v1::HashEntry {
+                        field: field.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+                ttl_ms: *ttl_ms,
+            })
+        }
         Command::HashMultiSetIfTimestampOlder {
             key,
             timestamp_field,

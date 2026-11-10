@@ -1518,6 +1518,12 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde::pairs")]
         entries: Vec<(String, Vec<u8>)>,
     },
+    HashMultiSetWithTtl {
+        key: String,
+        #[serde(with = "crate::bytes_serde::pairs")]
+        entries: Vec<(String, Vec<u8>)>,
+        ttl_ms: u64,
+    },
     /// Atomically replace hash fields when the stored protobuf timestamp is older.
     ///
     /// The condition and writes execute under one shard guard. A skipped command does not

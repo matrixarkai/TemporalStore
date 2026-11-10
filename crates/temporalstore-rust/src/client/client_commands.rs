@@ -52,6 +52,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::HashGet { key, .. }
         | Command::HashMultiGet { key, .. }
         | Command::HashMultiSet { key, .. }
+        | Command::HashMultiSetWithTtl { key, .. }
         | Command::HashMultiSetIfTimestampOlder { key, .. }
         | Command::HashIncrBy { key, .. }
         | Command::HashGetAll { key }

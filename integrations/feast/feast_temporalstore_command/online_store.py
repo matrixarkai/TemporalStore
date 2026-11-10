@@ -152,8 +152,8 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     hash. That is deliberate. ``FeatureQuery`` returns a window in ascending
     timestamp order and truncates with ``take(count)``, so asking it for "the
     latest point" costs O(points in the window) rather than O(1); it is a
-    history read, not a latest-value read. Turning this on adds one
-    ``FeatureAppend`` per feature per row to the **write** path and leaves the
+    history read, not a latest-value read. Turning this on adds one history
+    append per feature series in the batch to the **write** path and leaves the
     read path alone.
     """
 
@@ -304,6 +304,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             return
         online_config = config.online_store
         assert isinstance(online_config, TemporalStoreCommandOnlineStoreConfig)
+        ttl_ms = (
+            int(online_config.key_ttl_seconds) * 1000
+            if online_config.key_ttl_seconds
+            else None
+        )
         client = self._get_client(config)
         view_name = self._view_name(table, config)
         ts_field = _ts_field(view_name)
@@ -341,7 +346,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         ] = {}
         history_points: Dict[str, List[Dict[str, Any]]] = {}
         numeric_points: Dict[str, List[Dict[str, Any]]] = {}
-        expiry_keys: Dict[str, None] = {}
         written = 0
         skipped = 0
         tracked_keys: List[str] = []
@@ -413,8 +417,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             else:
                 latest_values[hash_key] = values
 
-            if online_config.key_ttl_seconds:
-                expiry_keys[hash_key] = None
             if online_config.track_keys_for_teardown:
                 tracked_keys.append(hash_key)
             written += 1
@@ -456,24 +458,19 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             elif row_fields != shared_fields:
                 shared_layout = False
         commands: List[Dict[str, Any]] = []
-        history_ttl_ms = (
-            int(online_config.key_ttl_seconds) * 1000
-            if online_config.key_ttl_seconds
-            else None
-        )
         for series in (history_points, numeric_points):
             for key, points in series.items():
                 command: Dict[str, Any] = {
                     "kind": (
                         "feature_append_with_ttl"
-                        if history_ttl_ms is not None
+                        if ttl_ms is not None
                         else "feature_append"
                     ),
                     "key": key,
                     "points": points,
                 }
-                if history_ttl_ms is not None:
-                    command["ttl_ms"] = history_ttl_ms
+                if ttl_ms is not None:
+                    command["ttl_ms"] = ttl_ms
                 commands.append(command)
         for key in dict.fromkeys(tracked_keys):
             commands.append(
@@ -499,11 +496,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 + 5 * len(shared_fields)
                 + sum(prepared_row_shape_bytes)
                 + 33 * len(prepared_rows)
-            )
-            ttl_ms = (
-                int(online_config.key_ttl_seconds) * 1000
-                if online_config.key_ttl_seconds
-                else None
             )
             if ttl_ms is None:
                 conditional_result = client.batch_hash_timestamp_set(
@@ -557,11 +549,6 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 prepared_row_shape_bytes = retained_row_shape_bytes
 
             if shared_fields is not None and shared_layout and not commands:
-                ttl_ms = (
-                    int(online_config.key_ttl_seconds) * 1000
-                    if online_config.key_ttl_seconds
-                    else None
-                )
                 shared_rows = [
                     (hash_key, values)
                     for hash_key, _seconds, _nanos, values in prepared_rows
@@ -581,24 +568,20 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                     client.batch_hash_multi_set(
                         list(shared_fields), shared_rows, request_upper_bound, ttl_ms
                     )
-            else:
-                commands.extend(
-                    {
-                        "kind": "common_expire",
-                        "key": key,
-                        "ttl_ms": int(online_config.key_ttl_seconds) * 1000,
-                    }
-                    for key in expiry_keys
-                )
             if (shared_fields is None or not shared_layout or commands) and (
                 prepared_rows or commands
             ):
                 client.batch_write(
                     [
                         {
-                            "kind": "hash_multi_set",
+                            "kind": (
+                                "hash_multi_set_with_ttl"
+                                if ttl_ms is not None
+                                else "hash_multi_set"
+                            ),
                             "key": row[0],
                             "entries": list(zip(layout, row[3])),
+                            **({"ttl_ms": ttl_ms} if ttl_ms is not None else {}),
                         }
                         for row, layout in zip(prepared_rows, row_layouts)
                     ]

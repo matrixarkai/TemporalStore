@@ -365,6 +365,15 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .map(|entry| (entry.field, entry.value))
                 .collect(),
         },
+        v1::command::Kind::HashMultiSetWithTtl(command) => types::Command::HashMultiSetWithTtl {
+            key: command.key,
+            entries: command
+                .entries
+                .into_iter()
+                .map(|entry| (entry.field, entry.value))
+                .collect(),
+            ttl_ms: command.ttl_ms,
+        },
         v1::command::Kind::HashMultiSetIfTimestampOlder(command) => {
             types::Command::HashMultiSetIfTimestampOlder {
                 key: command.key,
