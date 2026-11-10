@@ -164,6 +164,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "type": "redis",
             "redis_type": "redis",
             "connection_string": args.redis,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     if arm == "redis_aof":
         # The SAME Feast online-store type as `redis`: the difference is entirely
@@ -175,6 +176,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "type": "redis",
             "redis_type": "redis",
             "connection_string": args.redis_aof,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     if arm == "postgres":
         host, port = args.postgres.split(":")
@@ -203,6 +205,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             # The dedup read is for out-of-order materialization. The fixture
             # arrives in order, so omit it from the measured write path.
             "skip_dedup": True,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
             # The harness knows every entity key and deletes those keys
             # directly, so tracking would add work without helping cleanup.
             "timeout_seconds": 120.0,
@@ -215,6 +218,7 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "port": int(port),
             "shard_id": args.shard_id,
             "skip_dedup": True,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     raise SystemExit(f"unknown arm: {arm}")
 
@@ -734,7 +738,8 @@ def render(
         lines.append("")
         lines.append(
             f"### Payload {payload_bytes} B/row, {group[0].entities} entities, "
-            f"hot set {args.hot}, {args.reads} reads per cell"
+            f"hot set {args.hot}, {args.reads} reads per cell, "
+            f"key TTL {args.key_ttl_seconds or 'disabled'} s"
         )
         lines.append("")
         lines.append(
@@ -798,6 +803,7 @@ def main() -> int:
     parser.add_argument("--cold-reads", type=int, default=2000)
     parser.add_argument("--batch", type=int, default=10)
     parser.add_argument("--write-batch", type=int, default=500)
+    parser.add_argument("--key-ttl-seconds", type=int, default=0)
     parser.add_argument("--redis", default="127.0.0.1:6380")
     parser.add_argument("--redis-aof", default="127.0.0.1:6381")
     parser.add_argument("--postgres", default="127.0.0.1:55432")
@@ -819,6 +825,8 @@ def main() -> int:
 
     if args.concurrency < 1 or args.reads < 1 or args.batch < 1 or args.hot < 1:
         parser.error("concurrency, reads, batch and hot must be positive")
+    if args.key_ttl_seconds < 0:
+        parser.error("key ttl must not be negative")
 
     os.makedirs(args.run_dir, exist_ok=True)
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
