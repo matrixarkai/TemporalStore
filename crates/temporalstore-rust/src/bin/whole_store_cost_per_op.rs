@@ -27,14 +27,16 @@
 //!
 //! Usage: whole_store_cost_per_op <string|hash> <ops> <key_bytes> <value_bytes>
 
-use temporalstore_rust::control::{Config, SetConfigRequest};
+use temporalstore_rust::control::{Config, LoadShardRequest, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::types::{Command, CommandResponse, ExecuteRequest};
 
 /// Sum of every file length under `root`, recursively. The directory is the denominator.
 fn tree_bytes(root: &std::path::Path) -> u64 {
     fn walk(path: &std::path::Path, total: &mut u64) {
-        let Ok(entries) = std::fs::read_dir(path) else { return };
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
         for entry in entries.flatten() {
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
@@ -94,7 +96,10 @@ fn main() {
     let key_bytes: usize = args.get(3).and_then(|a| a.parse().ok()).unwrap_or(16);
     let value_bytes: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(64);
     assert!(
-        matches!(model, "string" | "hash" | "set" | "zset" | "list" | "feature"),
+        matches!(
+            model,
+            "string" | "hash" | "set" | "zset" | "list" | "feature"
+        ),
         "model must be string|hash|set|zset|list|feature, got {model}"
     );
     // CONTAINER MODELS WRITE ONE MEMBER PER OPERATION INTO ONE KEY, which is the comparison that
@@ -112,13 +117,43 @@ fn main() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).unwrap();
+    let memory_capacity_bytes = std::env::var("WSC_MEMORY_BYTES")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .expect("WSC_MEMORY_BYTES must be an integer")
+        })
+        .unwrap_or(64 << 20);
+    let end_routing_bucket = std::env::var("WSC_END_ROUTING_BUCKET")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .expect("WSC_END_ROUTING_BUCKET must be an integer")
+        })
+        .unwrap_or(temporalstore_rust::DEFAULT_END_ROUTING_BUCKET);
     let engine = TemporalEngine::with_local_dirs(
-        1 << 20,
+        memory_capacity_bytes,
         dir.join("cache"),
         dir.join("blocks"),
         dir.join("indexes"),
     );
-    engine.load_shard(1);
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 0,
+                local_node_id: None,
+                shard_uri: String::new(),
+                start_routing_bucket: 0,
+                end_routing_bucket,
+                readonly: false,
+                table_name: String::new(),
+            })
+            .status
+            .ok
+    );
     // DURABLE LOGGING ON. Their oplog is unconditional, so a comparison against a configuration
     // that skips our log would be measuring a different durability promise, not a cheaper one.
     assert!(
@@ -304,12 +339,13 @@ fn main() {
     // `Bytes`, not `Value` -- read off the arms in `execute_on_shard` rather than guessed, after
     // guessing wrong once.
 
-
     let grew = after.saturating_sub(before);
     println!("model              {model}");
     println!("ops                {ops}");
     println!("key bytes          {key_bytes}");
     println!("value bytes        {value_bytes}");
+    println!("memory bytes       {memory_capacity_bytes}");
+    println!("routing buckets    0..{end_routing_bucket}");
     println!("denominator        sum of file lengths under the WHOLE data dir (cache+blocks+indexes+log)");
     println!(
         "record compression TS_WAL_COMPRESS_RECORDS={}   (a compressible payload makes this a codec measurement)",
@@ -317,7 +353,11 @@ fn main() {
     );
     println!(
         "payload shape      {}   (identical = the original maximally-compressible fixture)",
-        if identical_payload { "identical" } else { "random" }
+        if identical_payload {
+            "identical"
+        } else {
+            "random"
+        }
     );
     println!("bytes before       {before}");
     println!("bytes after        {after}");
@@ -360,12 +400,18 @@ fn main() {
             .to_string()
     );
     // REFUSE A FIGURE THAT CANNOT BE ABOUT THE WRITES.
-    assert_eq!(accepted, ops, "every operation must be accepted or the figure is about a subset");
+    assert_eq!(
+        accepted, ops,
+        "every operation must be accepted or the figure is about a subset"
+    );
     assert!(
         served,
         "THE READ-BACK DID NOT MATCH, so the bytes above are not the cost of storing this payload"
     );
-    assert!(grew > 0, "the directory did not grow; nothing durable was written");
+    assert!(
+        grew > 0,
+        "the directory did not grow; nothing durable was written"
+    );
     // REFUSE A PREALLOCATION STEP. `TS_WAL_PREALLOCATE` is ON by default and reserves 256 KiB
     // segments, so a short run's directory delta is the SEGMENT it reserved rather than the
     // records it wrote -- and the tell is that two different models report the identical delta.
