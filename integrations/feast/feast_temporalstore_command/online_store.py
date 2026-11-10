@@ -316,13 +316,19 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         # regardless of its event time.
         queued_nanos: Dict[str, int] = {}
         tracked_keys: List[str] = []
+        previous_timestamp: Optional[datetime] = None
+        previous_proto_ts: Optional[Timestamp] = None
 
         for (_entity_key, values, timestamp, _created), hash_key, entity_key_hex in zip(
             data, hash_keys, entity_key_hexes
         ):
-            aware_ts = utils.make_tzaware(timestamp)
-            proto_ts = Timestamp()
-            proto_ts.FromDatetime(aware_ts)
+            if previous_proto_ts is not None and timestamp == previous_timestamp:
+                proto_ts = previous_proto_ts
+            else:
+                proto_ts = Timestamp()
+                proto_ts.FromDatetime(utils.make_tzaware(timestamp))
+                previous_timestamp = timestamp
+                previous_proto_ts = proto_ts
             event_nanos = proto_ts.seconds * 1_000_000_000 + proto_ts.nanos
 
             latest_seen = max(
