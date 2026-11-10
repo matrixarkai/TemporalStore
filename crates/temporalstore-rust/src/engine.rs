@@ -119,6 +119,8 @@ mod control_rollup;
 #[path = "engine/engine_hll.rs"]
 mod hll;
 mod block_in_wal;
+pub(crate) use block_in_wal::clear_store_registrations;
+mod checkpoint_publication;
 #[path = "engine/engine_storage_state.rs"]
 mod state;
 mod hash_field_map;
@@ -212,6 +214,7 @@ pub struct TemporalEngine {
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
+    checkpoint_publications: Arc<checkpoint_publication::CheckpointPublications>,
     // Set only when the engine minted its own index_dir (no caller-supplied one): the
     // engine owns that scratch directory, and the last clone's drop removes it.
     index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,

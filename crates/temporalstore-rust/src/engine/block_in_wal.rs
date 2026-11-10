@@ -575,6 +575,31 @@ pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id
     }
 }
 
+pub(crate) fn clear_store_registrations(owner: usize) {
+    if let Ok(mut map) = registry().lock() {
+        map.retain(|(store_id, _, _), _| *store_id != owner);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn registrations_live_until_the_final_store_owner_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = crate::block_store::BlockStore::new(dir.path().join("blocks"));
+    let clone = blocks.clone();
+    let owner = blocks.store_id();
+    let wal = LocalWriteAheadLogStore::new(dir.path().join("wal"));
+    register_at(&blocks, 1, 42, None, 1, 1, &wal);
+    assert_eq!(registration_count(&clone, 1), 1);
+    drop(blocks);
+    assert_eq!(registration_count(&clone, 1), 1);
+    drop(clone);
+    assert!(!registry().lock().unwrap().keys().any(|(id, _, _)| *id == owner));
+    let next = crate::block_store::BlockStore::new(dir.path().join("next"));
+    assert_ne!(next.store_id(), owner);
+    assert_eq!(registration_count(&next, 1), 0);
+}
+
 /// Read the block for `object_id` back out of the record carrying it.
 ///
 /// `None` means the object was never registered, its record has been reclaimed, or the record

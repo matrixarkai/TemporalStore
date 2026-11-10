@@ -2505,7 +2505,8 @@ impl TemporalEngine {
                         // writes can happen after the guard drops, so a round that is not going
                         // to encode has nothing to clone -- which is most of the saving on a
                         // large shard, not an incidental extra.
-                        pending_index_flush = Some(shard.clone());
+                        let publication = self.checkpoint_publications.capture(shard_id);
+                        pending_index_flush = Some((shard.clone(), publication));
                         DELETE_DROP_GUARD_NANOS
                             .add_since(&DELETE_DROP_GUARD_NANOS.snapshot, phase);
                     }
@@ -2517,10 +2518,9 @@ impl TemporalEngine {
             // countdown above. The index-log anchor goes with the index and not without it: an
             // anchor record carries the digest and length of the index file it names, so there is
             // nothing for it to name on a round that wrote no index.
-            if let Some(snapshot) = pending_index_flush {
+            if let Some((snapshot, publication)) = pending_index_flush {
                 let index_bytes = super::serialize_index(&snapshot);
-                let _ = self.persist_index_bytes(shard_id, &index_bytes);
-                let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
+                let _ = self.persist_captured_index_bytes(shard_id, &index_bytes, &publication);
             }
         }
         // THE SAME TERM AS THE BEFORE READING, which is what makes the pair subtractable. With the

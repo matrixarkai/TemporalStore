@@ -192,13 +192,15 @@ impl TemporalEngine {
         bytes: &[u8],
         routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp,
     ) -> Result<(), std::io::Error> {
-        fs::create_dir_all(&self.index_dir)?;
-        crate::engine::routing_range_stamp::write_routing_range_stamp(
-            &self.index_dir,
-            shard_id,
-            routing_range,
-        )?;
-        fs::write(self.index_path(shard_id), bytes)
+        self.checkpoint_publications.publish_current(shard_id, || {
+            fs::create_dir_all(&self.index_dir)?;
+            crate::engine::routing_range_stamp::write_routing_range_stamp(
+                &self.index_dir,
+                shard_id,
+                routing_range,
+            )?;
+            atomic_write_bytes(&self.index_path(shard_id), bytes)
+        })
     }
 
     pub fn storage_recovery_report(&self, shard_id: ShardId) -> StorageRecoveryReport {

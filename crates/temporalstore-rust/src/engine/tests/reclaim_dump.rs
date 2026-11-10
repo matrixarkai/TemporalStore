@@ -106,6 +106,126 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
 }
 
 #[test]
+fn older_checkpoint_publications_do_not_replace_newer_images() {
+    for kind in ["flush", "catalog"] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), kind));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        assert!(engine.set_config(crate::control::SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: crate::control::Config {
+                version: 2,
+                async_storage: false,
+                ..crate::control::Config::default()
+            },
+        }).ok);
+        write_one_at_a_time(&engine, &["early".to_string()]);
+        let writer = std::sync::Arc::clone(&engine);
+        engine.block_store.with_after_next_sync_for_test(
+            move || {
+                write_one_at_a_time(&writer, &["late".to_string()]);
+                assert!(writer.dump_index_catalog(RECLAIM_DUMP_SHARD));
+            },
+            || match kind {
+                "flush" => engine.flush_shard_index(RECLAIM_DUMP_SHARD),
+                "catalog" => { assert!(!engine.dump_index_catalog(RECLAIM_DUMP_SHARD)); }
+                _ => unreachable!(),
+            },
+        );
+        let bytes = std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap();
+        let durable = crate::engine::decode_index_bytes(&bytes).unwrap();
+        assert_eq!(durable.applied_wal_sequence,
+            Some(engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence), "{kind}");
+        assert!(durable.string_address("late").is_some(), "{kind} replaced the newer image");
+        drop(engine);
+        let indexes = dir.path().join(format!("{kind}-indexes"));
+        for name in ["wals", "indexlogs"] {
+            let path = indexes.join(name);
+            if path.exists() {
+                std::fs::remove_dir_all(path).unwrap();
+            }
+        }
+        let restored = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join(format!("{kind}-restart-cache")),
+            dir.path().join(format!("{kind}-blocks")),
+            &indexes,
+        );
+        restored.load_shard(RECLAIM_DUMP_SHARD);
+        assert_eq!(wal_record_count(&restored), 0);
+        for key in ["early", "late"] {
+            let response = restored.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringGet { key: key.to_string() },
+            });
+            assert!(response.status.ok);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+        }
+    }
+}
+
+#[test]
+fn a_superseded_manifest_capture_is_not_published() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), "superseded"));
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    write_one_at_a_time(&engine, &["early".to_string()]);
+    let writer = std::sync::Arc::clone(&engine);
+    let result = engine.block_store.with_after_next_sync_for_test(
+        move || {
+            write_one_at_a_time(&writer, &["late".to_string()]);
+            assert!(writer.dump_index_catalog(RECLAIM_DUMP_SHARD));
+        },
+        || engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []),
+    );
+    assert!(result.is_err());
+    assert!(crate::engine::bucket_dump_io::list_bucket_dump_manifests_at(
+        &engine.index_dir, RECLAIM_DUMP_SHARD).unwrap().is_empty());
+}
+
+#[test]
+fn compaction_at_the_same_wal_sequence_supersedes_an_older_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), "relocated"));
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2, async_storage: false, ..crate::control::Config::default()
+        },
+    }).ok);
+    write_one_at_a_time(&engine, &["early".to_string()]);
+    let before = engine.string_block_address(RECLAIM_DUMP_SHARD, "early").unwrap();
+    let sequence = engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence;
+    let compactor = std::sync::Arc::clone(&engine);
+    engine.block_store.with_after_next_sync_for_test(
+        move || { compactor.compact_shard_blocks(RECLAIM_DUMP_SHARD).unwrap(); },
+        || engine.flush_shard_index(RECLAIM_DUMP_SHARD),
+    );
+    let after = engine.string_block_address(RECLAIM_DUMP_SHARD, "early").unwrap();
+    assert_ne!(before, after);
+    assert_eq!(engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence, sequence);
+    let durable = crate::engine::decode_index_bytes(
+        &std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap()).unwrap();
+    assert_eq!(durable.string_address("early"), Some(after));
+}
+
+#[test]
+fn unload_forgets_publication_state_and_refuses_old_captures() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "generations");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    let (_, older) = engine.capture_shard_checkpoint(RECLAIM_DUMP_SHARD).unwrap();
+    assert_eq!(engine.checkpoint_publications.tracked_shards_for_test(), 1);
+    engine.unload_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(engine.checkpoint_publications.tracked_shards_for_test(), 0);
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    let (_, newer) = engine.capture_shard_checkpoint(RECLAIM_DUMP_SHARD).unwrap();
+    assert!(engine.checkpoint_publications.publish(&older, || Ok(())).unwrap().is_none());
+    assert!(engine.checkpoint_publications.publish(&newer, || Ok(())).unwrap().is_some());
+}
+
+#[test]
 fn a_failed_flush_keeps_the_live_checkpoint_anchor() {
     let dir = tempfile::tempdir().unwrap();
     let engine = reclaim_dump_engine(dir.path(), "failed-flush");
