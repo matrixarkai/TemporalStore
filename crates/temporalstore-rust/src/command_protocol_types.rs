@@ -456,10 +456,10 @@ pub struct ContextEvent {
     pub event_time_ms: u64,
     #[serde(default)]
     pub ingestion_time_ms: u64,
-    // Deprecated hot-schema field: use type/event_type instead.
+    // Deprecated hot-schema field: use type instead.
     #[serde(default, skip_serializing)]
     pub kind: u32,
-    #[serde(default, rename = "type", alias = "event_type")]
+    #[serde(default, rename = "type")]
     pub event_type: u32,
     // Deprecated hot-schema field: reserves this field.
     #[serde(default, skip_serializing)]
@@ -612,7 +612,7 @@ pub struct ContextDirtyNode {
 pub struct ContextEntity {
     pub entity_hash: u64,
     pub node_hash: u64,
-    #[serde(default, rename = "type", alias = "entity_type")]
+    #[serde(default, rename = "type")]
     pub entity_type: u32,
     #[serde(default)]
     pub name: String,
@@ -876,7 +876,8 @@ impl ContextWire for ContextNode {
         // source provenance moved to resource/provenance sidecars. It is the last
         // deprecated field still being written to the canonical wire payload,
         // so encoding it round-trips a value the trimmed schema must drop. Stop
-        // emitting field 10; decode still accepts it for legacy on-disk blocks.
+        // emitting field 10, and decode no longer reads fields 7, 9 and 10 at all: they fall to
+        // the skip arm like any tag this binary does not know.
         encode_vector_field(&mut out, &self.vector);
         if self.embedding_model_hash != 0 {
             encode_varint_field(&mut out, CONTEXT_EMBEDDING_MODEL_FIELD, self.embedding_model_hash);
@@ -942,10 +943,6 @@ impl ContextWire for ContextNode {
                 (4, 2) => value.canonical_name = decode_string(bytes, &mut cursor)?,
                 (5, 2) => value.l0 = decode_string(bytes, &mut cursor)?,
                 (6, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
-                // Legacy Rust-only node fields from pre-trim builds.
-                (7, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
-                (9, 2) => value.l1_ref = decode_string(bytes, &mut cursor)?,
-                (10, 2) => value.raw_metadata_ref = decode_string(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
@@ -1036,9 +1033,6 @@ impl ContextWire for ContextEvent {
                     value.event_type = event_type;
                 }
                 // Legacy Rust-only event fields from pre-trim builds.
-                (4, 0) => {
-                    value.event_type = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
-                }
                 (5, 0) => value.actor_hash = decode_varint(bytes, &mut cursor)?,
                 (6, 0) => value.status = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
                 (6, 5) => value.confidence = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
@@ -4099,6 +4093,76 @@ mod tests {
         assert!(decoded.vector.is_empty(), "no vector may be invented");
         assert_eq!(legacy.l0, decoded.l0);
         assert_eq!(legacy.canonical_name, decoded.canonical_name);
+    }
+
+    /// A TAG NO WRITER EMITS IS SKIPPED, AND THE NAME NO WRITER USES IS NOT READ.
+    ///
+    /// The node wire once carried `last_event_time_ms` at field 7, `l1_ref` at 9 and
+    /// `raw_metadata_ref` at 10, and the event wire `event_type` at field 4; the decoders still
+    /// filled the struct from them for blocks written by pre-trim builds, and the JSON forms read
+    /// `event_type` and `entity_type` as spellings of `type`. The first release carries no such
+    /// block, and nothing emits any of these, so each is now what any unknown tag or key is:
+    /// skipped. The controls are the live spellings, so a refusal is not a decoder that reads
+    /// nothing.
+    #[test]
+    fn a_tag_or_key_no_writer_emits_is_skipped_and_not_read_into_a_field() {
+        // ---- node: fields 7, 9, 10 ----
+        let mut node_bytes = Vec::new();
+        encode_varint_field(&mut node_bytes, 1, 42);
+        encode_varint_field(&mut node_bytes, 7, 999);
+        encode_bytes_field(&mut node_bytes, 9, b"l1");
+        encode_bytes_field(&mut node_bytes, 10, b"raw");
+        let node = ContextNode::decode_context_proto_value(&node_bytes).expect("a node decodes");
+        assert_eq!(42, node.node_hash, "the control field did not decode");
+        assert_eq!(0, node.last_event_time_ms, "field 7 still fills last_event_time_ms");
+        assert!(node.l1_ref.is_empty(), "field 9 still fills l1_ref");
+        assert!(node.raw_metadata_ref.is_empty(), "field 10 still fills raw_metadata_ref");
+        let mut live = node_bytes.clone();
+        encode_varint_field(&mut live, 6, 123);
+        assert_eq!(
+            123,
+            ContextNode::decode_context_proto_value(&live)
+                .expect("a node decodes")
+                .last_event_time_ms,
+            "control: field 6 is the live home of last_event_time_ms"
+        );
+
+        // ---- event: field 4 ----
+        let mut event_bytes = Vec::new();
+        encode_varint_field(&mut event_bytes, 1, 5);
+        encode_varint_field(&mut event_bytes, 4, 9);
+        let event =
+            ContextEvent::decode_context_proto_value(&event_bytes).expect("an event decodes");
+        assert_eq!(5, event.event_id_hash, "the control field did not decode");
+        assert_eq!(0, event.event_type, "field 4 still fills event_type");
+        let mut live = event_bytes.clone();
+        encode_varint_field(&mut live, 3, 9);
+        assert_eq!(
+            9,
+            ContextEvent::decode_context_proto_value(&live)
+                .expect("an event decodes")
+                .event_type,
+            "control: field 3 is the live home of event_type"
+        );
+
+        // ---- the JSON spellings ----
+        let retired: ContextEvent =
+            serde_json::from_str(r#"{"event_id_hash":1,"event_time_ms":2,"event_type":7}"#)
+                .expect("an event with an unknown key still parses");
+        assert_eq!(0, retired.event_type, "`event_type` is still read as `type`");
+        let live: ContextEvent =
+            serde_json::from_str(r#"{"event_id_hash":1,"event_time_ms":2,"type":7}"#)
+                .expect("an event parses");
+        assert_eq!(7, live.event_type, "control: `type` is the key");
+        let retired: ContextEntity = serde_json::from_str(
+            r#"{"entity_hash":1,"node_hash":2,"updated_at_ms":3,"entity_type":7}"#,
+        )
+        .expect("an entity with an unknown key still parses");
+        assert_eq!(0, retired.entity_type, "`entity_type` is still read as `type`");
+        let live: ContextEntity =
+            serde_json::from_str(r#"{"entity_hash":1,"node_hash":2,"updated_at_ms":3,"type":7}"#)
+                .expect("an entity parses");
+        assert_eq!(7, live.entity_type, "control: `type` is the key");
     }
 
     #[test]
