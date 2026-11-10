@@ -1442,10 +1442,13 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
                 ..StorageLifecycleReport::default()
             }
         };
-        let manifest = lifecycle
-            .dump_manifest
-            .clone()
-            .or_else(|| latest_bucket_dump_manifest_at(&self.index_dir, lifecycle_request.shard_id));
+        // The report reads the checkpoint but never mutates its embedded index image.
+        let cached_manifest = if lifecycle.dump_manifest.is_none() {
+            latest_bucket_dump_manifest_shared_at(&self.index_dir, lifecycle_request.shard_id)
+        } else {
+            None
+        };
+        let manifest = lifecycle.dump_manifest.as_ref().or(cached_manifest.as_deref());
         // Sampled, not the whole store. This report is here for `manifest_chain_issues`, the two
         // dump sequences and the two replay sequences, none of which reads a block -- but it also
         // CARRIES `stale_index_block_refs` / `unreadable_page_bytes`, so the readability check is
