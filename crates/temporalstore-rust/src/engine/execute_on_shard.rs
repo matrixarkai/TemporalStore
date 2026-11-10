@@ -1100,7 +1100,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     );
     mutated |= packed_mutated;
     if let Some(ttl_ms) = ttl_ms {
-        apply_hash_expiry(cache, shard_id, routing_bucket, shard, &key, ttl_ms);
+        apply_hash_expiry(shard_id, routing_bucket, shard, &key, ttl_ms);
         mutated = true;
     }
     (
@@ -1120,7 +1120,6 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
 }
 
 pub(super) fn apply_hash_expiry(
-    cache: &MultiLayerCache,
     shard_id: ShardId,
     routing_bucket: u32,
     shard: &mut ShardState,
@@ -1133,6 +1132,8 @@ pub(super) fn apply_hash_expiry(
             crate::engine::set_expiry(shard, record_key, expires_at);
         }
     }
+    // Reads check the deadline before cache lookup; the write already invalidates changed fields.
+    // A deadline refresh alone must not scan every cache entry once per row.
     stage_meta_outcome(
         shard_id,
         "object",
@@ -1143,7 +1144,6 @@ pub(super) fn apply_hash_expiry(
         Some(expires_at),
         false,
     );
-    invalidate_record_all(cache, shard_id, key, &CACHE_SWEEP_COUNTS);
 }
 
 #[cfg(test)]
