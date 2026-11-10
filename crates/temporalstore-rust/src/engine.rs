@@ -118,7 +118,6 @@ mod bucket_store;
 mod control_rollup;
 #[path = "engine/engine_hll.rs"]
 mod hll;
-mod hot_block_spill;
 mod block_in_wal;
 #[path = "engine/engine_storage_state.rs"]
 mod state;
@@ -7277,10 +7276,10 @@ fn append_value_inner(
     async_storage: bool,
     block_ordinal: u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    // Large async values can evict thousands of smaller hot blocks before a
-    // dump. Give them a real readable address immediately, while the WAL still
-    // carries the block for recovery if that append has not reached storage.
-    if !async_storage || bytes.len() >= 8 * 1024 {
+    // Large async values can evict thousands of smaller hot blocks before a dump.
+    // Anonymous values also need a real address: without an identity they cannot be
+    // staged or resolved through the WAL after their cache entry is gone.
+    if !async_storage || bytes.len() >= 8 * 1024 || object_id.is_none() {
         // Carry the block in this write's record, the same as the asynchronous arm below.
         //
         // The record is allowed to state its results and drop the operation only when the blocks
@@ -8266,22 +8265,9 @@ fn read_block_frame_bytes_after_cache_miss(
     // three fallbacks below because every one of them is a trip to the store and they must not
     // drift apart in the tally; a cache HIT returns above and is not I/O.
     shard_write_guard::note_block_read();
-    // Log-backed hot block (synthetic address, no block-store file): a cache miss here would read
-    // as MISSING for an acked async write. If it was spilled to a real slab on eviction, resolve
-    // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
-    // this falls through to the normal read below, which returns None -- the WAL still holds the
-    // value and a reload replays it.
+    // Hot blocks are carried in the WAL. Cache eviction does not relocate them or create
+    // unindexed slab copies; the registration continues to pin their durable record.
     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
-        if let Some(real_address) = hot_block_spill::lookup_spilled(shard_id, address.offset()) {
-            if let Ok(bytes) = block_store.read(&real_address) {
-                let _ = cache.put(cache_key, bytes.clone());
-                return Some(bytes);
-            }
-        }
-        // Nothing spilled, so the value exists only in its WAL record -- which is where it has
-        // been all along. Read it back by the log id the write registered. Tried after the
-        // spill redirect because a spilled copy is a direct block-store read, while this one
-        // parses a log record.
         if let Some(bytes) = block_in_wal::read_block(
             block_store,
             shard_id,

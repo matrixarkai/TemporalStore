@@ -2939,8 +2939,7 @@ fn the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_cloc
 /// A passing read-back proves nothing unless three preconditions actually held, and each of them
 /// fails SILENTLY by making the arm weaker rather than redder:
 ///
-///   1. **The shard must really SPILL** -- `block_store().stats().writes > 0`. Measured at 3,987
-///      block writes for these 400 rows.
+///   1. **The cache must really EVICT** -- `cache().stats().memory_evictions > 0`.
 ///   2. **Every command must reach the log** -- the WAL is the durable home while blocks lag, so a
 ///      read-back means nothing if a write never became durable anywhere. Measured 800 of 800.
 ///   3. **The budget must really be crossed, by a MARGIN** -- measured 163,296 B resident against
@@ -2949,16 +2948,8 @@ fn the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_cloc
 ///   4. **The read-back must cover the whole write population** -- every key is read and the count
 ///      examined is asserted, so a loop that silently covered nothing cannot report success.
 ///
-/// # WHAT THIS ARM DELIBERATELY DOES NOT CLAIM, AND WHY IT IS STRONGER FOR IT
-///
-/// It does NOT rest on `async_storage` being honoured. My first version asserted
-/// `block_writes == 0` on the reasoning that the flag defers persistence -- and that is FALSE once
-/// the budget is crossed: 3,987 blocks were written, because the data has to go somewhere, and
-/// spilling is exactly what PREVENTS the loss. There is also no in-process config read-back to
-/// assert the flag with. So the claim is the one that can be evidenced end to end: **under real
-/// budget pressure with real spilling, every acknowledged row keeps its content.** That is the
-/// property which failed historically, and it cannot silently stop guarding if `set_config` were
-/// ever ignored -- which an assertion about the flag could.
+/// Cache eviction does not need another slab copy: acknowledged blocks remain in their WAL
+/// records. Measure eviction itself rather than requiring an extra write as evidence of pressure.
 ///
 /// Values are a function of their key and slot, so a read resolved through the wrong block fails
 /// rather than passing on a lucky length, and the mismatch lists are asserted EMPTY, not printed.
@@ -3038,15 +3029,11 @@ fn an_acknowledged_row_keeps_its_fields_across_the_cache_budget() {
         assert!(tracked.status.ok, "tracking add {index} failed: {tracked:?}");
     }
 
-    // --- NON-VACUITY 1: persistence really was deferred, so these rows ARE the population at risk.
-    // --- NON-VACUITY 1: the shard really SPILLED. Measured 3,987 block writes for these 400
-    // --- rows, so the deferral is not total once the budget is crossed -- and that is the
-    // --- mechanism which PREVENTS the loss, not a violation of it.
-    let block_writes = engine.block_store().stats().writes;
+    // The cache must have dropped entries, not merely approached its budget.
+    let memory_evictions = engine.cache().stats().memory_evictions;
     assert!(
-        block_writes > 0,
-        "NON-VACUITY: no block was written, so nothing spilled and this arm never reached the \
-         regime the loss lived in. Raise ROWS or lower CACHE_BUDGET rather than loosening this."
+        memory_evictions > 0,
+        "no cache eviction occurred, so the cold-read path was not exercised"
     );
 
     // --- NON-VACUITY 2: every command reached the log, which is the durable home while blocks lag.
