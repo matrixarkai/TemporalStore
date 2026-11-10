@@ -789,6 +789,18 @@ fn write_packed_hash_entries(
     } else {
         deduplicate_hash_entries(entries)
     };
+    let bucket = shard.bucket_index.bucket_map.get(&routing_bucket);
+    let new_hash_object = !shard.bucket_index.hashes.contains_key(key)
+        && shard.bucket_index.object_block_refs("hash", key).is_none()
+        && packed_entries.iter().all(|(field, _)| {
+            bucket.is_none_or(|bucket| {
+                bucket.tombstone_element_block(
+                    key,
+                    super::storage_bucket_internals::stored_model_kind("hash"),
+                    field,
+                ).is_none()
+            })
+        });
     let block_ordinal = shard
         .bucket_index.hashes
         .get(key)
@@ -821,21 +833,35 @@ fn write_packed_hash_entries(
     );
     let mutated = match address {
         Ok(address) => {
-            for (field, _) in &packed_entries {
-                let field_handle =
-                    super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
-                super::recorded_map::install_element_at_bucket::<super::recorded_map::HashKind>(
+            if new_hash_object && !packed_entries.is_empty() {
+                super::recorded_map::install_new_packed_hash_block_at_bucket(
                     shard,
                     shard_id,
                     routing_bucket,
                     object_id,
                     key,
-                    Some(field.clone()),
-                    field_handle,
-                    address.clone(),
-                    true,
-                    address.clone(),
+                    &packed_entries,
+                    address,
                 );
+            } else {
+                for (field, _) in &packed_entries {
+                    let field_handle =
+                        super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
+                    super::recorded_map::install_element_at_bucket::<super::recorded_map::HashKind>(
+                        shard,
+                        shard_id,
+                        routing_bucket,
+                        object_id,
+                        key,
+                        Some(field.clone()),
+                        field_handle,
+                        address.clone(),
+                        true,
+                        address.clone(),
+                    );
+                }
+            }
+            for (field, _) in &packed_entries {
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, key, field));
             }
             !packed_entries.is_empty()
