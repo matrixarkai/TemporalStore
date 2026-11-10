@@ -6,6 +6,34 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
+#[test]
+fn context_source_provider_inherits_only_when_omitted() {
+    let source = serde_json::json!({
+        "shard_id": 1, "tenant_hash": 91, "source_kind": "chat",
+        "source_id": "provider-inheritance", "title": "decision",
+        "body": "Use a dedicated embedding model.", "timestamp_ms": 1
+    });
+    let omitted: ContextExtractRequest = serde_json::from_value(source.clone()).unwrap();
+    assert!(omitted.provider.provider_name.is_empty());
+    let mut explicit = source.clone();
+    explicit["provider"] = serde_json::to_value(ContextModelProviderConfig::default()).unwrap();
+    let explicit: ContextExtractRequest = serde_json::from_value(explicit).unwrap();
+    assert!(!explicit.provider.provider_name.is_empty());
+
+    let mut batch_provider = ContextModelProviderConfig::default();
+    batch_provider.provider_name = "batch-encoder".into();
+    batch_provider.embedding_model = "batch-vector-space".into();
+    let request: ContextIngestExtractRequest = serde_json::from_value(serde_json::json!({
+        "shard_id": 1, "tenant_hash": 91, "sources": [source],
+        "start_time_ms": 0, "end_time_ms": 100, "provider": batch_provider
+    })).unwrap();
+    let report = ingest_extract_context(&test_engine(), request);
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(report.accepted, 1);
+    assert_eq!(report.extracts[0].provider.provider_name, "batch-encoder");
+    assert_eq!(report.extracts[0].provider.embedding_model, "batch-vector-space");
+}
+
 fn test_engine() -> TemporalEngine {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
