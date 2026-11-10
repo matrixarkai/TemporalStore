@@ -193,7 +193,87 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
 /// only durable copy is its record, so reclaim must never truncate below the lowest registered
 /// sequence (see [`min_registered_sequence`]).
 // The final count is zero when an index-only registration has not read its carrying record.
-type Registration = (LocalWriteAheadLogStore, u64, u64, usize);
+type Registration = std::sync::Arc<(LocalWriteAheadLogStore, u64, u64, usize, Option<usize>)>;
+
+fn packed_objects(outcomes: &[crate::wal::WalOutcomeItem]) -> std::collections::HashSet<u64> {
+    let mut maximum: Option<u64> = None;
+    let mut packed = std::collections::HashSet::new();
+    for item in outcomes {
+        if item.kind == "hash" && !item.deleted {
+            packed.insert(item.object_id);
+        }
+        if let Some(address) = item.resolved_address() {
+            if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                maximum = Some(maximum.unwrap_or(0).max(address.offset()));
+            }
+        }
+    }
+    if let Some(maximum) = maximum {
+        super::HOT_BLOCK_OFFSET.fetch_max(maximum.saturating_add(1), std::sync::atomic::Ordering::Relaxed);
+    }
+    packed
+}
+
+fn registration_names(
+    block: &StagedBlock,
+    packed: &std::collections::HashSet<u64>,
+) -> Vec<Option<std::sync::Arc<str>>> {
+    let mut names = vec![block.element_name.clone()];
+    if block.element_name.is_none() && packed.contains(&block.object_id) {
+        if let super::container_blocks::ContainerBlockDecode::Framed { spelling, items, .. } =
+            super::container_blocks::decode_container_block(&block.bytes)
+        {
+            for item in items.iter().filter(|item| !item.deleted) {
+                if let Some(name) = super::container_blocks::element_name_from_element_key(spelling, &item.key) {
+                    names.push(Some(std::sync::Arc::from(name)));
+                }
+            }
+            if names.len() > 1 {
+                names.remove(0);
+            }
+        }
+    }
+    names
+}
+
+pub(super) fn hash_outcome_blocks(
+    outcomes: &[crate::wal::WalOutcomeItem],
+    blocks: &[StagedBlock],
+) -> HashMap<(u64, super::LiveBlockKey), usize> {
+    // Appends stage blocks and their outcomes in the same order. Older records can repeat
+    // an address per field, so pair only distinct addresses with the carried frames.
+    let mut addresses = HashMap::<u64, Vec<(super::LiveBlockKey, bool)>>::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in outcomes.iter().filter(|item| item.kind == "hash") {
+        if let Some(address) = item.resolved_address() {
+            let key = super::live_block_key(&address);
+            if seen.insert((item.object_id, key)) {
+                addresses.entry(item.object_id).or_default().push((key,
+                    crate::wal_record::is_wal_resident(address.block_slab_id())));
+            }
+        }
+    }
+    let mut staged = HashMap::<u64, Vec<usize>>::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if addresses.contains_key(&block.object_id) {
+            staged.entry(block.object_id).or_default().push(index);
+        }
+    }
+    let mut bindings = HashMap::new();
+    for (object_id, addresses) in addresses {
+        let Some(staged) = staged.get(&object_id) else { continue };
+        if addresses.len() != staged.len()
+            || addresses.iter().zip(staged).any(|((address, synthetic), index)|
+                *synthetic && address.2 != blocks[*index].bytes.len() as u64)
+        {
+            continue;
+        }
+        for ((address, _), index) in addresses.into_iter().zip(staged) {
+            bindings.insert((object_id, address), *index);
+        }
+    }
+    bindings
+}
 
 /// Which block this table is about: the object, and which element of it.
 ///
@@ -268,21 +348,35 @@ pub(super) fn register_record(
     sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) {
+    let _ = register_record_with_outcomes(block_store, shard_id, staged_blocks, &[], log_id, sequence, store);
+}
+
+pub(super) fn register_record_with_outcomes(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    staged_blocks: &[StagedBlock],
+    outcomes: &[crate::wal::WalOutcomeItem],
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+) -> Vec<u64> {
     if staged_blocks.is_empty() {
-        return;
+        return Vec::new();
     }
+    let packed = packed_objects(outcomes);
+    let names: Vec<_> = staged_blocks.iter().map(|block| registration_names(block, &packed)).collect();
+    let expected = names.iter().map(Vec::len).sum();
+    let mut folded = Vec::with_capacity(expected);
     if let Ok(mut map) = registry().lock() {
-        for block in staged_blocks {
-            map.insert(
-                (
-                    block_store.store_id(),
-                    shard_id,
-                    (block.object_id, block.element_name.clone()),
-                ),
-                (store.clone(), log_id, sequence, staged_blocks.len()),
-            );
+        for (index, (block, names)) in staged_blocks.iter().zip(names).enumerate() {
+            let location = std::sync::Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
+            for name in names {
+                folded.push(wal_resident_key(block.object_id, name.as_deref()));
+                map.insert((block_store.store_id(), shard_id, (block.object_id, name)), location.clone());
+            }
         }
     }
+    folded
 }
 
 /// Register a block whose location came from the index rather than from an append.
@@ -302,7 +396,7 @@ pub(super) fn register_at(
     if let Ok(mut map) = registry().lock() {
         map.insert(
             (block_store.store_id(), shard_id, block_key(object_id, element_name)),
-            (store.clone(), log_id, sequence, 0),
+            std::sync::Arc::new((store.clone(), log_id, sequence, 0, None)),
         );
     }
 }
@@ -328,20 +422,31 @@ pub(super) fn register_from_record(
         .iter()
         .map(|(folded, _)| *folded)
         .collect::<std::collections::BTreeSet<_>>();
-    for block in &record.staged_blocks {
-        let folded = wal_resident_key(block.object_id, block.element_name.as_deref());
-        if wanted.remove(&folded) {
-            register_at(
-                block_store,
-                shard_id,
-                block.object_id,
-                block.element_name.as_deref(),
-                log_id,
-                record.sequence,
-                store,
-            );
+    let packed = packed_objects(&record.outcomes);
+    let names: Vec<_> = record.staged_blocks.iter().map(|block| {
+        let mut names = registration_names(block, &packed);
+        // Older indexes registered packed frames under the whole-object slot.
+        if block.element_name.is_none() && wanted.contains(&wal_resident_key(block.object_id, None))
+            && !names.iter().any(Option::is_none)
+        {
+            names.push(None);
+        }
+        names
+    }).collect();
+    let expected = names.iter().map(Vec::len).sum();
+    let Ok(mut map) = registry().lock() else { return false };
+    let mut found = std::collections::BTreeSet::new();
+    for (index, (block, names)) in record.staged_blocks.iter().zip(names).enumerate() {
+        let location = std::sync::Arc::new((store.clone(), log_id, record.sequence, expected, Some(index)));
+        for name in names {
+            let folded = wal_resident_key(block.object_id, name.as_deref());
+            if wanted.contains(&folded) {
+                found.insert(folded);
+                map.insert((block_store.store_id(), shard_id, (block.object_id, name)), location.clone());
+            }
         }
     }
+    for folded in found { wanted.remove(&folded); }
     wanted.is_empty()
 }
 
@@ -360,10 +465,10 @@ pub(super) fn min_registered_sequence(
 ) -> Option<u64> {
     let map = registry().lock().ok()?;
     map.iter()
-        .filter(|((owner, shard, _), (reg_store, _, _, _))| {
-            *owner == block_store.store_id() && *shard == shard_id && reg_store.same_log(store)
+        .filter(|((owner, shard, _), location)| {
+            *owner == block_store.store_id() && *shard == shard_id && location.0.same_log(store)
         })
-        .map(|(_, (_, _, sequence, _))| *sequence)
+        .map(|(_, location)| location.2)
         .min()
 }
 
@@ -377,7 +482,8 @@ pub(super) fn registered_record_span_has_holes(
 ) -> bool {
     let Ok(map) = registry().lock() else { return false };
     let mut records = std::collections::BTreeMap::<u64, (usize, usize)>::new();
-    for ((owner, shard, _), (log, _, sequence, expected)) in map.iter() {
+    for ((owner, shard, _), location) in map.iter() {
+        let (log, _, sequence, expected, _) = &**location;
         if *owner != block_store.store_id() || *shard != shard_id || !log.same_log(store) {
             continue;
         }
@@ -419,7 +525,7 @@ pub(super) fn oldest_registered_objects(
     let mut entries: Vec<(u64, BlockKey)> = map
         .iter()
         .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
-        .map(|((_, _, block), (_, _, sequence, _))| (*sequence, block.clone()))
+        .map(|((_, _, block), location)| (location.2, block.clone()))
         .collect();
     entries.sort_unstable();
     entries
@@ -480,13 +586,14 @@ pub(super) fn read_block(
     object_id: u64,
     element_name: Option<&str>,
 ) -> Option<Vec<u8>> {
-    let (store, log_id, _, _) = {
+    let location = {
         let map = registry().lock().ok()?;
         let owner = block_store.store_id();
         map.get(&(owner, shard_id, block_key(object_id, element_name)))
             .or_else(|| map.get(&(owner, shard_id, block_key(object_id, None))))?
             .clone()
     };
+    let (store, log_id, _, _, index) = &*location;
     // One batch record carries many blocks, and an ingest reads several of the fields its own
     // batch just wrote -- so the same record used to be pread and re-parsed once per block. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
@@ -496,8 +603,12 @@ pub(super) fn read_block(
         // so the same number names unrelated records in different engines' logs.
         if let Some((_, _, _, blocks)) = cache
             .iter()
-            .find(|(s, shard, l, _)| *shard == shard_id && *l == log_id && s.same_log(&store))
+            .find(|(s, shard, l, _)| *shard == shard_id && l == log_id && s.same_log(store))
         {
+            if let Some(index) = index {
+                return blocks.get(*index).filter(|block| block.object_id == object_id)
+                    .map(|block| block.bytes.clone());
+            }
             if let Some(block) = blocks
                 .iter()
                 .find(|block| names_block(block, object_id, element_name))
@@ -509,14 +620,18 @@ pub(super) fn read_block(
     }
     // Read the carrying frame once, without fetching unrelated records after it or retrying
     // overlapping windows when a large record exceeds the initial read size.
-    let bytes = store.read_frame_at_log_id(shard_id, log_id).ok()??;
+    let bytes = store.read_frame_at_log_id(shard_id, *log_id).ok()??;
     let record = decode_wal_line(&bytes).ok()?;
     let blocks = record.staged_blocks;
     if let Ok(mut cache) = record_lru().lock() {
         if cache.len() >= 8 {
             cache.remove(0);
         }
-        cache.push((store.clone(), shard_id, log_id, blocks.clone()));
+        cache.push((store.clone(), shard_id, *log_id, blocks.clone()));
+    }
+    if let Some(index) = index {
+        return blocks.get(*index).filter(|block| block.object_id == object_id)
+            .map(|block| block.bytes.clone());
     }
     blocks
         .iter()

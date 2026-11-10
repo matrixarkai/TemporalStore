@@ -1814,20 +1814,18 @@ impl TemporalEngine {
                         // those blocks before advancing the reclaim frontier; only asynchronous
                         // writes may leave an address that resolves through this WAL record.
                         if !sync {
-                            super::block_in_wal::register_record(
+                            let locations = super::block_in_wal::register_record_with_outcomes(
                                 &self.block_store,
                                 shard_id,
                                 &record.staged_blocks,
+                                &record.outcomes,
                                 log_id,
                                 record.sequence,
                                 &self.wal_store,
                             );
-                            for block in &record.staged_blocks {
+                            for folded in locations {
                                 shard.wal_resident_blocks.insert(
-                                    super::block_in_wal::wal_resident_key(
-                                        block.object_id,
-                                        block.element_name.as_deref(),
-                                    ),
+                                    folded,
                                     super::state::WalResidentBlock {
                                         log_id,
                                         sequence: record.sequence,

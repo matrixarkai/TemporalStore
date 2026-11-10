@@ -1429,24 +1429,22 @@ impl TemporalEngine {
                             // Point every block this record carries at the record, keyed on the
                             // object id the write derived -- which is what the stored address
                             // carries, so a read finds it by identity rather than by timing.
-                            block_in_wal::register_record(
+                            let locations = block_in_wal::register_record_with_outcomes(
                                 &self.block_store,
                                 request.shard_id,
                                 &record.staged_blocks,
+                                &record.outcomes,
                                 log_id,
                                 record.sequence,
                                 &self.wal_store,
                             );
                             // Same fact, written down where it survives this process.
-                            wal_resident_updates.extend(record.staged_blocks.iter().map(|block| {
+                            wal_resident_updates.extend(locations.into_iter().map(|folded| {
                                 (
                                     // One entry per BLOCK, not per object: the record says which
                                     // element each block is, and a record carrying several
                                     // elements of one key files several entries here.
-                                    block_in_wal::wal_resident_key(
-                                        block.object_id,
-                                        block.element_name.as_deref(),
-                                    ),
+                                    folded,
                                     crate::engine::state::WalResidentBlock {
                                         log_id,
                                         sequence: record.sequence,
@@ -7315,7 +7313,8 @@ fn append_value_inner(
     // are both worse than a refusal: wrapping hands a live block the address of an older one, and
     // truncating does the same thing without even reaching the boundary. So the mint is checked,
     // and a process that exhausts its tickets stops minting hot addresses instead of aliasing
-    // them. The counter is process-local and a reload starts it again at one.
+    // them. Recovery advances the process-local counter past retained synthetic addresses
+    // before accepting new writes.
     let address = ElementEntry::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id)?;
     // Put the block aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.

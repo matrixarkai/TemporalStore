@@ -4279,8 +4279,7 @@ pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
         || kind == ModelKind::Zset.as_str()
 }
 
-/// THE BLOCK A WRITE REPLACES -- the address the element's resident map held for it before this
-/// write, and only when that write leaves the block EMPTY.
+/// Blocks a write vacates, included only when no surviving element uses them.
 ///
 /// # WHY A TYPE AND NOT AN `Option<ElementEntry>`
 ///
@@ -4295,28 +4294,73 @@ pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
 /// A first write replaces no block. A rewrite that lands back on its own block is superseded through
 /// the landing address and needs nothing extra. A rewrite off a block a SIBLING element is still on
 /// replaces nothing either -- that block is still live, and its entry is what keeps the sibling
-/// reachable. `recorded_map::RecordedMap::block_an_element_vacates` is the one producer of a
-/// non-empty one, and it asks all three questions.
+/// reachable. Scalar installs ask `RecordedMap::block_an_element_vacates`; packed installs
+/// exclude blocks held by any untouched field before filing the replacement.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct ReplacedBlock(Option<ElementEntry>);
+pub(super) enum ReplacedBlock {
+    #[default]
+    None,
+    One(super::LiveBlockKey),
+    Many(HashSet<super::LiveBlockKey>),
+}
 
 impl ReplacedBlock {
     pub(super) fn of(block: Option<ElementEntry>) -> Self {
-        Self(block)
+        block.map_or(Self::None, |block| Self::One(super::live_block_key(&block)))
+    }
+
+    pub(super) fn from_keys(mut keys: impl Iterator<Item = super::LiveBlockKey>) -> Self {
+        let Some(first) = keys.next() else { return Self::None };
+        let Some(second) = keys.next() else { return Self::One(first) };
+        let mut held = HashSet::from([first, second]);
+        held.extend(keys);
+        Self::Many(held)
     }
 
     /// NO PAGE REPLACED, SPELLED RATHER THAN DEFAULTED. A filer that cannot know -- a projection
     /// rebuilding an object's live set from scratch, a tombstone, a whole-object restate -- says so
     /// at its call site instead of leaving a reader to infer it from an absent argument.
     pub(super) fn none() -> Self {
-        Self(None)
+        Self::None
     }
 
-    /// The block key the supersede compares against: slab, offset and length, which is what an
-    /// entry's identity is once it no longer names an element.
-    fn block_key(&self) -> Option<super::LiveBlockKey> {
-        self.0.as_ref().map(super::live_block_key)
+    /// Physical keys contain slab, offset and length, matching the entry's identity.
+    fn contains(&self, key: super::LiveBlockKey) -> bool {
+        match self {
+            Self::None => false,
+            Self::One(held) => *held == key,
+            Self::Many(held) => held.contains(&key),
+        }
     }
+}
+
+pub(super) fn sweep_packed_hash_tombstones(
+    shard: &mut ShardState,
+    routing_bucket: u32,
+    object_key: &str,
+    fields: &HashSet<&str>,
+) {
+    let kind = stored_model_kind("hash");
+    let swept: HashSet<_> = shard.bucket_index.bucket_map.get(&routing_bucket)
+        .into_iter()
+        .flat_map(|bucket| bucket.tombstone_elements.iter())
+        .filter(|row| row.object_key.as_ref() == object_key && row.model_id == kind
+            && fields.contains(row.element_name.as_ref()))
+        .map(|row| row.block)
+        .collect();
+    if swept.is_empty() {
+        return;
+    }
+    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        bucket.block_index.retain(
+            &mut shard.bucket_index.block_slab_live,
+            crate::engine::state::StaleCause::Swept,
+            |_, block| !(block.deleted()
+                && swept.contains(&crate::engine::state::tombstone_block_key(&block.address))),
+        );
+        classify_bucket_layout_in_place(&mut bucket);
+    }
+    shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
 
 /// [`upsert_bucket_index_block`], carrying one extra byte string onto the WAL outcome it stages.
@@ -5073,7 +5117,6 @@ fn upsert_bucket_index_block_inner(
     // hash serving one element more than was written, and as a zset rescore leaving two live
     // entries for one member. `ReplacedBlock` is the caller's answer to which block that is, and it
     // is empty unless the write really is a rewrite that leaves its old block empty.
-    let vacated = replaces.block_key();
     let here = super::live_block_key(&entry.address);
     // FILTERED WHERE THE REFS LIVE, INSTEAD OF COPIED AND THEN FILTERED.
     //
@@ -5111,7 +5154,7 @@ fn upsert_bucket_index_block_inner(
                                 })
                                 .is_some_and(|block| {
                                     let key = super::live_block_key(&block.address);
-                                    key == here || (!block.deleted() && Some(key) == vacated)
+                                    key == here || (!block.deleted() && replaces.contains(key))
                                 })
                         })
                         .cloned()
