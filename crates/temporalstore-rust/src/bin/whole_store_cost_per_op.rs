@@ -173,6 +173,8 @@ fn main() {
     // Measured AFTER load and config, so the figure is the cost of the WRITES.
     let before = tree_bytes(&dir);
     let legs_before = legs(&dir);
+    let wal_before = engine.write_ahead_log_store().stats(1).bytes_written;
+    let index_log_before = engine.index_log_store().stats(1).bytes_written;
     // INCOMPRESSIBLE AND DETERMINISTIC. A repeated byte made every figure a compression
     // measurement -- `bytes/op` fell as the payload grew and the envelope went negative, which a
     // real cost cannot do. splitmix64 over the index gives bytes with no exploitable structure
@@ -262,6 +264,8 @@ fn main() {
     }
     let elapsed = started.elapsed();
     let after = tree_bytes(&dir);
+    let wal_appended = engine.write_ahead_log_store().stats(1).bytes_written - wal_before;
+    let index_log_appended = engine.index_log_store().stats(1).bytes_written - index_log_before;
 
     // ARRIVAL, PROVEN. A success code is not evidence the bytes are stored.
     // ARRIVAL PER MODEL. A container model proves its MEMBER COUNT, because a per-member write
@@ -363,6 +367,9 @@ fn main() {
     println!("bytes after        {after}");
     println!("bytes delta        {grew}");
     println!("bytes per op       {:.1}", grew as f64 / ops.max(1) as f64);
+    println!("wal appended       {wal_appended}");
+    println!("wal bytes per op   {:.1}", wal_appended as f64 / ops.max(1) as f64);
+    println!("index log appended {index_log_appended}");
     // WHAT THIS MODEL ACTUALLY STORED, not a constant. `key_bytes + value_bytes` was reported for
     // every model, but a container model stores its member and never touches `value`; the
     // difference was being read as an envelope.

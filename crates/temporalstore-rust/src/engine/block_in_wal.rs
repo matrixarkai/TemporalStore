@@ -46,6 +46,16 @@ use std::sync::{Mutex, OnceLock};
 use crate::types::ShardId;
 use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 
+#[cfg(test)]
+thread_local! {
+    static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn oldest_registered_scans_for_test() -> u64 {
+    OLDEST_REGISTERED_SCANS.with(std::cell::Cell::get)
+}
+
 thread_local! {
     /// Blocks produced by the write currently executing on this thread.
     static STAGED: RefCell<Vec<StagedBlock>> = const { RefCell::new(Vec::new()) };
@@ -338,6 +348,8 @@ pub(super) fn oldest_registered_objects(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
 ) -> Vec<(u64, BlockKey)> {
+    #[cfg(test)]
+    OLDEST_REGISTERED_SCANS.with(|scans| scans.set(scans.get() + 1));
     let Ok(map) = registry().lock() else {
         return Vec::new();
     };
