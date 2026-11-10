@@ -3728,32 +3728,59 @@ pub(crate) fn execute_on_shard(
                     .features()
                     .get(&key[..])
                     .map(|series| {
+                        let mut read_number = |(timestamp_ms, address): (u64, &ElementEntry)| {
+                            read_feature_value_with(
+                                cache,
+                                block_store,
+                                shard_id,
+                                timestamp_ms,
+                                address,
+                                identity,
+                                routing_bucket,
+                                &mut page_keys,
+                                |value| {
+                                    if count_only {
+                                        None
+                                    } else if proto_values {
+                                        parse_feature_proto_number(value)
+                                    } else {
+                                        parse_i64_slice(value)
+                                    }
+                                },
+                            )
+                        };
+                        let limit = count.unwrap_or(feature_max_size);
+                        if matches!(
+                            crate::engine::window_aggregate::AggName::parse(&aggregator),
+                            Some(crate::engine::window_aggregate::AggName::Last)
+                        ) {
+                            // A count cap selects the earliest points before unreadable blocks
+                            // are filtered. Find that prefix's endpoint without reading values.
+                            let endpoint = if series.len() <= limit {
+                                Some(end_ms)
+                            } else {
+                                series
+                                    .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                                    .take(limit)
+                                    .last()
+                                    .map(|(timestamp, _)| timestamp)
+                            };
+                            return endpoint
+                                .and_then(|end| {
+                                    series
+                                        .range(crate::engine::timestamp_range_bounds(start_ms, end))
+                                        .rev()
+                                        .find_map(&mut read_number)
+                                })
+                                .flatten()
+                                .unwrap_or_default();
+                        }
                         crate::engine::window_aggregate::feature_stream(
                             &aggregator,
                             series
                                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                                .take(count.unwrap_or(feature_max_size))
-                                .filter_map(|(timestamp_ms, address)| {
-                                    read_feature_value_with(
-                                        cache,
-                                        block_store,
-                                        shard_id,
-                                        timestamp_ms,
-                                        address,
-                                        identity,
-                                        routing_bucket,
-                                        &mut page_keys,
-                                        |value| {
-                                            if count_only {
-                                                None
-                                            } else if proto_values {
-                                                parse_feature_proto_number(value)
-                                            } else {
-                                                parse_i64_slice(value)
-                                            }
-                                        },
-                                    )
-                                }),
+                                .take(limit)
+                                .filter_map(read_number),
                         )
                     })
                     .unwrap_or_default();
