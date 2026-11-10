@@ -106,6 +106,77 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
 }
 
 #[test]
+fn manifest_install_keeps_index_only_state_without_the_source_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("shared-blocks");
+    let source = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("source-cache"), &blocks, dir.path().join("source-index"),
+    );
+    source.load_shard(RECLAIM_DUMP_SHARD);
+    for command in [
+        Command::StringSet { key: "anchor".to_string(), value: b"anchor-value".to_vec() },
+        Command::SeenCheck { key: "seen-only".to_string(), member: b"member".to_vec(), window_ms: 600_000 },
+        Command::BucketTake { key: "quota-only".to_string(), tokens: 2.0, capacity: 2.0, refill_per_sec: 0.0 },
+        Command::CommonExpire { key: "seen-only".to_string(), ttl_ms: 600_000 },
+    ] {
+        let result = source.execute(ExecuteRequest { shard_id: RECLAIM_DUMP_SHARD, command });
+        assert!(result.status.ok, "source write: {:?}", result.status);
+    }
+    let peek = Command::BucketPeek {
+        key: "quota-only".to_string(), tokens: 1.0, capacity: 2.0, refill_per_sec: 0.0,
+    };
+    let expected_quota = source.execute(ExecuteRequest {
+        shard_id: RECLAIM_DUMP_SHARD, command: peek.clone(),
+    });
+    assert!(expected_quota.status.ok);
+    match &expected_quota.response {
+        CommandResponse::Members { members } => {
+            assert_eq!(members.first().map(Vec::as_slice), Some(b"0".as_slice()),
+                "the source quota must be exhausted, not a fresh full bucket");
+        }
+        other => panic!("unexpected quota response: {other:?}"),
+    }
+    let expected_deadline = source.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .expires_at_ms().get("seen-only").copied().expect("the seen set has a deadline");
+    source.flush_shard_index(RECLAIM_DUMP_SHARD);
+    let selected = source.bucket_storage_summaries(RECLAIM_DUMP_SHARD)[0].routing_bucket;
+    let manifest = source.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, [selected]).unwrap();
+    assert_eq!(manifest.bucket_ids, vec![selected]);
+    assert!(manifest.wal_sequence > 0);
+
+    let target_indexes = dir.path().join("target-index");
+    let target = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("target-cache"), &blocks, &target_indexes,
+    );
+    target.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(target.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence, 0);
+    target.install_bucket_dump_manifest(&manifest).unwrap();
+    let check = |engine: &TemporalEngine| {
+        let seen = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::SeenCard { key: "seen-only".to_string() },
+        });
+        assert!(seen.status.ok);
+        assert_eq!(seen.response, CommandResponse::Integer { value: 1 });
+        let quota = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD, command: peek.clone(),
+        });
+        assert!(quota.status.ok);
+        assert_eq!(quota.response, expected_quota.response);
+        assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+            .expires_at_ms().get("seen-only").copied(), Some(expected_deadline));
+        assert_eq!(engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence, 0);
+    };
+    check(&target);
+    drop(target);
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("restart-cache"), &blocks, &target_indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    check(&restarted);
+}
+
+#[test]
 fn object_runtime_report_builds_one_identity_map_for_all_buckets() {
     let dir = tempfile::tempdir().unwrap();
     for count in [32, 128] {
