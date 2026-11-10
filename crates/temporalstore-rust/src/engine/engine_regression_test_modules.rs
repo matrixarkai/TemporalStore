@@ -223,6 +223,8 @@ mod set_listing_block_reads;
 mod set_scan;
 #[path = "tests/zset_count_adjust.rs"]
 mod zset_count_adjust;
+#[path = "tests/hash_batch_ordinals.rs"]
+mod hash_batch_ordinals;
 #[path = "tests/object_is_a_key_not_an_element.rs"]
 mod object_is_a_key_not_an_element;
 #[path = "tests/container_block_element_key.rs"]
