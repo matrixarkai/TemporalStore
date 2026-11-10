@@ -5161,7 +5161,7 @@ fn upsert_bucket_index_block_inner(
         );
         all
     };
-    if let Some(block_refs) = superseded {
+    if let Some(block_refs) = superseded.filter(|refs| !refs.is_empty()) {
         // WHICH BUCKETS THIS OBJECT STILL HAS A BLOCK IN, asked ONCE, from its own slot.
         //
         // What the loop below needs, per block it removes, is whether the object is still
