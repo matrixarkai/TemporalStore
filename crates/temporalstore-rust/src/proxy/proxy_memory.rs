@@ -14,6 +14,7 @@ use crate::sdk::v1::{LlmMemoryHistoryRecord, LlmMemoryRecord};
 use crate::types::CommandResponse;
 
 const MEMORY_BATCH_LIMIT: usize = 1_000;
+const MEMORY_CATALOG_PAGE_SIZE: usize = 512;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct MemoryIdentity {
@@ -242,6 +243,27 @@ fn memory_catalog_key(tenant_hash: u64) -> String {
     format!("context:memory:{tenant_hash:016x}")
 }
 
+fn memory_order_key(tenant_hash: u64) -> String {
+    format!("context:memory-order:{tenant_hash:016x}")
+}
+
+fn memory_order_ready_key(tenant_hash: u64) -> String {
+    format!("context:memory-order-ready:{tenant_hash:016x}")
+}
+
+fn memory_order_member(updated_at_ms: u64, memory_id: &str) -> Vec<u8> {
+    let mut member = Vec::with_capacity(8 + memory_id.len());
+    member.extend_from_slice(&u64::MAX.saturating_sub(updated_at_ms).to_be_bytes());
+    member.extend_from_slice(memory_id.as_bytes());
+    member
+}
+
+fn memory_id_from_order_member(member: &[u8]) -> Option<String> {
+    (member.len() > 8)
+        .then(|| std::str::from_utf8(&member[8..]).ok().map(str::to_owned))
+        .flatten()
+}
+
 fn memory_history_key(tenant_hash: u64, memory_id: &str) -> String {
     format!("context:memory-history:{tenant_hash:016x}:{memory_id}")
 }
@@ -409,6 +431,9 @@ impl ProxyService {
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
         let shard_id = self.context_shard_id(tenant_hash);
+        if let Err(status) = self.memory_prepare_order_index(tenant_hash) {
+            return crate::http::json_response(502, &status);
+        }
         let now = now_ms().max(1);
         let base_sequence = self
             .inner
@@ -460,7 +485,7 @@ impl ProxyService {
         if status != 200 || !json_status_ok(&body) {
             return (status, body);
         }
-        let mut commands = Vec::with_capacity(records.len() * 2);
+        let mut commands = Vec::with_capacity(records.len() * 3);
         for (index, record) in records.iter().enumerate() {
             commands.push(Command::HashSet {
                 key: memory_catalog_key(tenant_hash),
@@ -480,6 +505,10 @@ impl ProxyService {
                     feedback_reason: None,
                 }
                 .encode(),
+            });
+            commands.push(Command::SetAdd {
+                key: memory_order_key(tenant_hash),
+                member: memory_order_member(record.updated_at_ms, &record.id),
             });
         }
         let stored = self.batch_execute(BatchExecuteRequest { shard_id, commands });
@@ -590,10 +619,27 @@ impl ProxyService {
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
         let limit = request.limit.unwrap_or(100).clamp(1, 10_000);
-        let mut records = self.memory_read_all(tenant_hash);
-        records.retain(|record| record.matches(&identity));
-        records.sort_by_key(|record| std::cmp::Reverse(record.updated_at_ms));
-        records.truncate(limit);
+        if let Err(status) = self.memory_prepare_order_index(tenant_hash) {
+            return crate::http::json_response(502, &status);
+        }
+        let mut records = Vec::with_capacity(limit.min(MEMORY_CATALOG_PAGE_SIZE));
+        let mut after = Vec::new();
+        while records.len() < limit {
+            let (next_after, page) =
+                self.memory_order_page(tenant_hash, &after, MEMORY_CATALOG_PAGE_SIZE);
+            if next_after.is_empty() {
+                break;
+            }
+            after = next_after;
+            for (_, record) in page {
+                if record.matches(&identity) {
+                    records.push(record);
+                    if records.len() == limit {
+                        break;
+                    }
+                }
+            }
+        }
         let count = records.len();
         crate::http::json_response(200, &json!({"results": records, "memories": count}))
     }
@@ -602,9 +648,13 @@ impl ProxyService {
         let Some(tenant_hash) = tenant_hash_from_memory_id(memory_id) else {
             return self.memory_bad_request("invalid memory id".to_string());
         };
+        if let Err(status) = self.memory_prepare_order_index(tenant_hash) {
+            return crate::http::json_response(502, &status);
+        }
         let Some(mut record) = self.memory_read_one(tenant_hash, memory_id) else {
             return crate::http::json_response(404, &json!({"updated": false, "id": memory_id}));
         };
+        let old_order_member = memory_order_member(record.updated_at_ms, &record.id);
         if request.data.trim().is_empty() && request.metadata.is_none() {
             return self.memory_bad_request("update requires data or metadata".to_string());
         }
@@ -665,6 +715,14 @@ impl ProxyService {
                 }
                 .encode(),
             },
+            Command::SetRemove {
+                key: memory_order_key(tenant_hash),
+                member: old_order_member,
+            },
+            Command::SetAdd {
+                key: memory_order_key(tenant_hash),
+                member: memory_order_member(record.updated_at_ms, &record.id),
+            },
         ];
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
         if !response.status.ok {
@@ -677,10 +735,12 @@ impl ProxyService {
         let Some(tenant_hash) = tenant_hash_from_memory_id(memory_id) else {
             return self.memory_bad_request("invalid memory id".to_string());
         };
-        let existed = self.memory_read_one(tenant_hash, memory_id).is_some();
-        if !existed {
-            return crate::http::json_response(404, &json!({"deleted": false, "id": memory_id}));
+        if let Err(status) = self.memory_prepare_order_index(tenant_hash) {
+            return crate::http::json_response(502, &status);
         }
+        let Some(record) = self.memory_read_one(tenant_hash, memory_id) else {
+            return crate::http::json_response(404, &json!({"deleted": false, "id": memory_id}));
+        };
         let now = now_ms().max(1);
         let shard_id = self.context_shard_id(tenant_hash);
         let response = self.batch_execute(BatchExecuteRequest {
@@ -703,6 +763,10 @@ impl ProxyService {
                         feedback_reason: None,
                     }
                     .encode(),
+                },
+                Command::SetRemove {
+                    key: memory_order_key(tenant_hash),
+                    member: memory_order_member(record.updated_at_ms, memory_id),
                 },
             ],
         });
@@ -777,19 +841,31 @@ impl ProxyService {
         let identity = request.scope.identity(&request.identity);
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
-        let records = self.memory_read_all(tenant_hash);
+        if let Err(status) = self.memory_prepare_order_index(tenant_hash) {
+            return crate::http::json_response(502, &status);
+        }
+        let limit = request.limit.unwrap_or(1_000).clamp(1, 10_000);
         let mut users = BTreeSet::new();
         let mut agents = BTreeSet::new();
         let mut runs = BTreeSet::new();
-        for record in records {
-            if !record.user_id.is_empty() {
-                users.insert(record.user_id);
+        let mut after = Vec::new();
+        while users.len() + agents.len() + runs.len() < limit {
+            let (next_after, page) =
+                self.memory_order_page(tenant_hash, &after, MEMORY_CATALOG_PAGE_SIZE);
+            if next_after.is_empty() {
+                break;
             }
-            if !record.agent_id.is_empty() {
-                agents.insert(record.agent_id);
-            }
-            if !record.run_id.is_empty() {
-                runs.insert(record.run_id);
+            after = next_after;
+            for (_, record) in page {
+                if !record.user_id.is_empty() {
+                    users.insert(record.user_id);
+                }
+                if !record.agent_id.is_empty() {
+                    agents.insert(record.agent_id);
+                }
+                if !record.run_id.is_empty() {
+                    runs.insert(record.run_id);
+                }
             }
         }
         let mut results = Vec::with_capacity(users.len() + agents.len() + runs.len());
@@ -807,9 +883,7 @@ impl ProxyService {
             runs.into_iter()
                 .map(|name| json!({"type": "run", "name": name})),
         );
-        if let Some(limit) = request.limit {
-            results.truncate(limit);
-        }
+        results.truncate(limit);
         crate::http::json_response(200, &json!({"results": results}))
     }
 
@@ -817,43 +891,57 @@ impl ProxyService {
         let identity = request.scope.identity(&request.identity);
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
-        let records = self.memory_read_all(tenant_hash);
-        let ids: Vec<String> = records
-            .into_iter()
-            .filter(|row| row.matches(&identity))
-            .map(|row| row.id)
-            .collect();
+        if let Err(status) = self.memory_prepare_order_index(tenant_hash) {
+            return crate::http::json_response(502, &status);
+        }
         let shard_id = self.context_shard_id(tenant_hash);
-        if ids.is_empty() {
-            return crate::http::json_response(200, &json!({"deleted": 0}));
-        }
         let now = now_ms().max(1);
-        let mut commands = Vec::with_capacity(ids.len() * 2);
-        for (index, id) in ids.iter().enumerate() {
-            commands.push(Command::HashDelete {
-                key: memory_catalog_key(tenant_hash),
-                field: id.clone(),
-            });
-            commands.push(Command::HashSet {
-                key: memory_history_key(tenant_hash, id),
-                field: history_field(now, index as u64),
-                value: MemoryHistoryEntry {
-                    id: id.clone(),
-                    event: "DELETE".to_string(),
-                    at_ms: now,
-                    memory: None,
-                    metadata: None,
-                    feedback: None,
-                    feedback_reason: None,
+        let mut deleted = 0usize;
+        let mut after = Vec::new();
+        loop {
+            let (next_after, page) =
+                self.memory_order_page(tenant_hash, &after, MEMORY_CATALOG_PAGE_SIZE);
+            if next_after.is_empty() {
+                break;
+            }
+            after = next_after;
+            let mut commands = Vec::new();
+            for (member, record) in page {
+                if !record.matches(&identity) {
+                    continue;
                 }
-                .encode(),
-            });
+                commands.push(Command::HashDelete {
+                    key: memory_catalog_key(tenant_hash),
+                    field: record.id.clone(),
+                });
+                commands.push(Command::HashSet {
+                    key: memory_history_key(tenant_hash, &record.id),
+                    field: history_field(now, deleted as u64),
+                    value: MemoryHistoryEntry {
+                        id: record.id,
+                        event: "DELETE".to_string(),
+                        at_ms: now,
+                        memory: None,
+                        metadata: None,
+                        feedback: None,
+                        feedback_reason: None,
+                    }
+                    .encode(),
+                });
+                commands.push(Command::SetRemove {
+                    key: memory_order_key(tenant_hash),
+                    member,
+                });
+                deleted += 1;
+            }
+            if !commands.is_empty() {
+                let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
+                if !response.status.ok {
+                    return crate::http::json_response(502, &response.status);
+                }
+            }
         }
-        let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-        if !response.status.ok {
-            return crate::http::json_response(502, &response.status);
-        }
-        crate::http::json_response(200, &json!({"deleted": ids.len()}))
+        crate::http::json_response(200, &json!({"deleted": deleted}))
     }
 
     fn memory_batch_update(&self, request: MemoryBatchRequest) -> (u16, Vec<u8>) {
@@ -933,6 +1021,80 @@ impl ProxyService {
         )
     }
 
+    fn memory_prepare_order_index(&self, tenant_hash: u64) -> Result<(), Status> {
+        let shard_id = self.context_shard_id(tenant_hash);
+        let marker = self.execute(ExecuteRequest {
+            shard_id,
+            command: Command::StringGet {
+                key: memory_order_ready_key(tenant_hash),
+            },
+        });
+        if !marker.status.ok {
+            return Err(marker.status);
+        }
+        if matches!(marker.response, CommandResponse::Bytes { value: Some(_) }) {
+            return Ok(());
+        }
+
+        let records = self.memory_read_all(tenant_hash);
+        for page in records.chunks(MEMORY_CATALOG_PAGE_SIZE) {
+            let commands = page
+                .iter()
+                .map(|record| Command::SetAdd {
+                    key: memory_order_key(tenant_hash),
+                    member: memory_order_member(record.updated_at_ms, &record.id),
+                })
+                .collect();
+            let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
+            if !response.status.ok {
+                return Err(response.status);
+            }
+        }
+        let marker = self.execute(ExecuteRequest {
+            shard_id,
+            command: Command::StringSet {
+                key: memory_order_ready_key(tenant_hash),
+                value: b"1".to_vec(),
+            },
+        });
+        marker.status.ok.then_some(()).ok_or(marker.status)
+    }
+
+    fn memory_order_page(
+        &self,
+        tenant_hash: u64,
+        after: &[u8],
+        limit: usize,
+    ) -> (Vec<u8>, Vec<(Vec<u8>, MemoryRecord)>) {
+        let response = self.execute(ExecuteRequest {
+            shard_id: self.context_shard_id(tenant_hash),
+            command: Command::SetScan {
+                key: memory_order_key(tenant_hash),
+                after: after.to_vec(),
+                limit: limit.clamp(1, 10_000),
+            },
+        });
+        let members = match response.response {
+            CommandResponse::Members { members } => members,
+            _ => return (Vec::new(), Vec::new()),
+        };
+        let next_after = members.last().cloned().unwrap_or_default();
+        let keyed_ids: Vec<(Vec<u8>, String)> = members
+            .iter()
+            .filter_map(|member| {
+                memory_id_from_order_member(member).map(|id| (member.clone(), id))
+            })
+            .collect();
+        let ids: Vec<String> = keyed_ids.iter().map(|(_, id)| id.clone()).collect();
+        let records = self.memory_read_many(tenant_hash, &ids);
+        let rows = keyed_ids
+            .into_iter()
+            .zip(records)
+            .filter_map(|((member, _), record)| record.map(|record| (member, record)))
+            .collect();
+        (next_after, rows)
+    }
+
     fn memory_read_one(&self, tenant_hash: u64, memory_id: &str) -> Option<MemoryRecord> {
         self.memory_read_many(tenant_hash, &[memory_id.to_string()])
             .into_iter()
@@ -995,6 +1157,20 @@ mod tests {
         let id = memory_id(42, 100, 7, "remember this");
         assert_eq!(tenant_hash_from_memory_id(&id), Some(42));
         assert_eq!(id.len(), 33);
+    }
+
+    #[test]
+    fn memory_order_members_sort_newest_first_and_round_trip_ids() {
+        let newest = memory_order_member(300, "memory-new");
+        let middle = memory_order_member(200, "memory-middle");
+        let oldest = memory_order_member(100, "memory-old");
+        assert!(newest < middle);
+        assert!(middle < oldest);
+        assert_eq!(
+            memory_id_from_order_member(&middle).as_deref(),
+            Some("memory-middle")
+        );
+        assert_eq!(memory_id_from_order_member(b"short"), None);
     }
 
     #[test]

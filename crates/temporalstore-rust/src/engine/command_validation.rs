@@ -26,6 +26,7 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::HashGetAll { key, .. }
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
+        | Command::SetScan { key, .. }
         | Command::FeatureQuery { key, .. }
         | Command::FeatureAggQuery { key, .. }
         | Command::FeatureProtoAggQuery { key, .. }
@@ -341,6 +342,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::HashGetAll { .. }
         | Command::HashLen { .. }
         | Command::SetMembers { .. }
+        | Command::SetScan { .. }
         | Command::FeatureQuery { .. }
         | Command::FeatureQueryFiltered { .. }
         | Command::FeatureAggQuery { .. }
@@ -607,6 +609,12 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::SetScan { limit, .. } if *limit == 0 || *limit > 10_000 => {
+            return Err(Status::error(
+                "invalid_argument",
+                "set scan limit must be between 1 and 10000",
+            ));
+        }
         Command::HashMultiSetIfTimestampOlder {
             timestamp_nanos, ..
         } if !(0..1_000_000_000).contains(timestamp_nanos) => {

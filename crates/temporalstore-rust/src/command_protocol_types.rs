@@ -1667,6 +1667,13 @@ pub enum Command {
     SetMembers {
         key: String,
     },
+    /// Return at most `limit` members in byte order, strictly after `after`.
+    SetScan {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        after: Vec<u8>,
+        limit: usize,
+    },
     SetRemove {
         key: String,
         #[serde(with = "crate::bytes_serde")]

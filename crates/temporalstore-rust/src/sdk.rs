@@ -388,6 +388,12 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             member: command.member,
         },
         v1::command::Kind::SetMembers(command) => types::Command::SetMembers { key: command.key },
+        v1::command::Kind::SetScan(command) => types::Command::SetScan {
+            key: command.key,
+            after: command.after,
+            limit: usize::try_from(command.limit)
+                .map_err(|_| TonicStatus::invalid_argument("set scan limit is too large"))?,
+        },
         v1::command::Kind::FeatureAppend(command) => types::Command::FeatureAppend {
             key: command.key,
             points: command

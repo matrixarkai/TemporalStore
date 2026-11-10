@@ -283,6 +283,7 @@ message Command {
     ContextWriteCompressionEvent context_write_compression_event = 61;
     ContextWritePackAudit context_write_pack_audit = 62;
     HashMultiSetIfTimestampOlder hash_multi_set_if_timestamp_older = 63;
+    SetScan set_scan = 64;
   }
 }
 
@@ -356,6 +357,12 @@ message SetAdd {
 
 message SetMembers {
   string key = 1;
+}
+
+message SetScan {
+  string key = 1;
+  bytes after = 2;
+  uint64 limit = 3;
 }
 
 message FeaturePoint {

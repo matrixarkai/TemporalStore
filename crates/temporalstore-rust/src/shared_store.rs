@@ -5158,6 +5158,13 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
         Command::SetMembers { key } => {
             v1::command::Kind::SetMembers(v1::SetMembers { key: key.clone() })
         }
+        Command::SetScan { key, after, limit } => {
+            v1::command::Kind::SetScan(v1::SetScan {
+                key: key.clone(),
+                after: after.clone(),
+                limit: *limit as u64,
+            })
+        }
         Command::FeatureAppend { key, points } => {
             v1::command::Kind::FeatureAppend(v1::FeatureAppend {
                 key: key.clone(),
