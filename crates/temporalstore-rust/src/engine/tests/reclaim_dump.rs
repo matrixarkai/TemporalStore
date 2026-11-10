@@ -488,6 +488,101 @@ fn a_container_tombstone_retains_its_wal_record_after_restart() {
     );
 }
 
+#[test]
+fn batched_tombstones_rehydrate_from_one_wal_record() {
+    const MEMBERS: usize = 64;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for remove in [false, true] {
+        let commands = (0..MEMBERS)
+            .map(|index| {
+                let key = format!("removed-set-{index}");
+                let member = format!("member-{index}").into_bytes();
+                if remove {
+                    Command::SetRemove { key, member }
+                } else {
+                    Command::SetAdd { key, member }
+                }
+            })
+            .collect();
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            commands,
+        });
+        assert!(response.status.ok, "batch write failed: {:?}", response.status);
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    let before = restarted.wal_store().stats(RECLAIM_DUMP_SHARD).bytes_read;
+    let load = restarted.load_shard_with(LoadShardRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(load.status.ok, "restart refused: {:?}", load.status);
+    let bytes_read = restarted.wal_store().stats(RECLAIM_DUMP_SHARD).bytes_read - before;
+    assert_eq!(restarted.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    assert!(
+        bytes_read < 1 << 20,
+        "rehydrating {MEMBERS} tombstones read {bytes_read} WAL bytes"
+    );
+    for index in 0..MEMBERS {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::SetMembers {
+                        key: format!("removed-set-{index}"),
+                    },
+                })
+                .response,
+            CommandResponse::Members { members: Vec::new() }
+        );
+    }
+}
+
 /// A bucket dirtied by a BATCH write can name its oldest undumped write, as one dirtied by a
 /// single-command write already could.
 ///

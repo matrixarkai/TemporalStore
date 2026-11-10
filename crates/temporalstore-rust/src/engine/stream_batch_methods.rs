@@ -1803,13 +1803,39 @@ impl TemporalEngine {
             }
             let batch_result = if use_data_only {
                 self.wal_store
-                    .append_batch_as_one_record(
+                    .append_batch_as_one_record_at(
                         shard_id,
                         staged_outcomes,
                         staged_blocks,
                         sync,
                     )
-                    .map(|_| ())
+                    .map(|(record, log_id)| {
+                        // Synchronous batch writes have block-store addresses. A dump syncs
+                        // those blocks before advancing the reclaim frontier; only asynchronous
+                        // writes may leave an address that resolves through this WAL record.
+                        if !sync {
+                            super::block_in_wal::register_record(
+                                &self.block_store,
+                                shard_id,
+                                &record.staged_blocks,
+                                log_id,
+                                record.sequence,
+                                &self.wal_store,
+                            );
+                            for block in &record.staged_blocks {
+                                shard.wal_resident_blocks.insert(
+                                    super::block_in_wal::wal_resident_key(
+                                        block.object_id,
+                                        block.element_name.as_deref(),
+                                    ),
+                                    super::state::WalResidentBlock {
+                                        log_id,
+                                        sequence: record.sequence,
+                                    },
+                                );
+                            }
+                        }
+                    })
             } else {
                 self.wal_store
                     .append_batch_atomic(shard_id, wal_commands, sync)

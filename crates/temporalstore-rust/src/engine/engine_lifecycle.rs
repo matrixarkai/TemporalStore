@@ -2919,20 +2919,22 @@ impl TemporalEngine {
                 register_element("list", key, element_name, address);
             }
         }
-        let unresolved = shard
-            .wal_resident_blocks
-            .iter()
-            .filter(|(folded, _)| !registered.contains(folded))
-            .map(|(folded, placement)| (*folded, placement.log_id, placement.sequence))
-            .collect::<Vec<_>>();
+        let mut unresolved = std::collections::BTreeMap::<u64, Vec<(u64, u64)>>::new();
+        for (folded, placement) in &shard.wal_resident_blocks {
+            if !registered.contains(folded) {
+                unresolved
+                    .entry(placement.log_id)
+                    .or_default()
+                    .push((*folded, placement.sequence));
+            }
+        }
         drop(shards);
-        for (folded, log_id, sequence) in unresolved {
+        for (log_id, placements) in unresolved {
             if !super::block_in_wal::register_from_record(
                 &self.block_store,
                 shard_id,
-                folded,
                 log_id,
-                sequence,
+                &placements,
                 &self.wal_store,
             ) {
                 return Err(Status::error(
