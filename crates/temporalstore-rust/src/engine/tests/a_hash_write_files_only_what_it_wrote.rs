@@ -376,6 +376,95 @@ fn grouped_packed_hash_replays_multiple_frames_of_one_object_in_one_record() {
     }
 }
 
+fn timestamp_bytes(seconds: i64) -> Vec<u8> {
+    use prost::Message;
+    #[derive(Clone, PartialEq, Message)]
+    struct Timestamp {
+        #[prost(int64, tag = "1")]
+        seconds: i64,
+        #[prost(int32, tag = "2")]
+        nanos: i32,
+    }
+    Timestamp { seconds, nanos: 0 }.encode_to_vec()
+}
+
+fn cached_timestamp_write(engine: &TemporalEngine, seconds: i64, entries: Vec<(String, Vec<u8>)>) -> i64 {
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashMultiSetIfTimestampOlder {
+            key: "grouped".to_string(), timestamp_field: "stamp".to_string(),
+            timestamp_seconds: seconds, timestamp_nanos: 0, ttl_ms: None, entries,
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    let CommandResponse::Integer { value } = response.response else { panic!("conditional result") };
+    value
+}
+
+#[test]
+fn cached_timestamp_checks_do_not_read_packed_payloads_after_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let before = engine.block_store.stats().reads;
+    for seconds in 1..=8 {
+        assert_eq!(cached_timestamp_write(&engine, seconds, vec![
+            ("stamp".to_string(), timestamp_bytes(seconds)),
+            ("payload".to_string(), vec![seconds as u8; 256 * 1024]),
+        ]), 1);
+    }
+    assert_eq!(engine.block_store.stats().reads, before);
+    let writes = engine.block_store.stats().writes;
+    assert_eq!(cached_timestamp_write(&engine, 7, vec![
+        ("stamp".to_string(), timestamp_bytes(7)),
+        ("payload".to_string(), b"stale".to_vec()),
+    ]), 0);
+    assert_eq!(engine.block_store.stats().reads, before);
+    assert_eq!(engine.block_store.stats().writes, writes);
+    assert_eq!(grouped_values(&engine)["payload"], vec![8; 256 * 1024]);
+}
+
+#[test]
+fn cached_timestamp_checks_follow_actual_bytes_and_hash_invalidations() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    assert_eq!(cached_timestamp_write(&engine, 1, vec![("stamp".to_string(), timestamp_bytes(1))]), 1);
+    run(&engine, Command::HashSet {
+        key: "grouped".to_string(), field: "stamp".to_string(), value: timestamp_bytes(50),
+    });
+    assert_eq!(cached_timestamp_write(&engine, 49, vec![("stamp".to_string(), timestamp_bytes(49))]), 0);
+    // Comparison arguments are not a substitute for the actual last stored field value.
+    assert_eq!(cached_timestamp_write(&engine, 51, vec![("stamp".to_string(), timestamp_bytes(2))]), 1);
+    assert_eq!(cached_timestamp_write(&engine, 3, vec![
+        ("stamp".to_string(), timestamp_bytes(3)),
+        ("stamp".to_string(), timestamp_bytes(100)),
+    ]), 1);
+    assert_eq!(cached_timestamp_write(&engine, 99, vec![("stamp".to_string(), timestamp_bytes(99))]), 0);
+    assert_eq!(grouped_values(&engine)["stamp"], timestamp_bytes(100));
+    run(&engine, Command::HashDelete { key: "grouped".to_string(), field: "stamp".to_string() });
+    assert_eq!(cached_timestamp_write(&engine, 1, vec![("stamp".to_string(), timestamp_bytes(1))]), 1);
+    run(&engine, Command::CommonExpire { key: "grouped".to_string(), ttl_ms: 0 });
+    assert_eq!(cached_timestamp_write(&engine, 1, vec![("stamp".to_string(), timestamp_bytes(1))]), 1);
+    run(&engine, Command::CommonDelete { key: "grouped".to_string() });
+    assert_eq!(cached_timestamp_write(&engine, 1, vec![("stamp".to_string(), timestamp_bytes(1))]), 1);
+}
+
+#[test]
+fn cached_timestamp_checks_fall_back_after_eviction_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    assert_eq!(cached_timestamp_write(&engine, 10, vec![("stamp".to_string(), timestamp_bytes(10))]), 1);
+    engine.cache.invalidate(&CacheKey::hash(1, "grouped", "stamp")).unwrap();
+    let before = engine.block_store.stats().reads;
+    assert_eq!(cached_timestamp_write(&engine, 9, vec![("stamp".to_string(), timestamp_bytes(9))]), 0);
+    assert!(engine.block_store.stats().reads > before);
+    engine.write_ahead_log_store().flush(1).unwrap();
+    drop(engine);
+    let recovered = engine_on(dir.path());
+    assert_eq!(cached_timestamp_write(&recovered, 9, vec![("stamp".to_string(), timestamp_bytes(9))]), 0);
+    assert_eq!(cached_timestamp_write(&recovered, 11, vec![("stamp".to_string(), timestamp_bytes(11))]), 1);
+    assert_eq!(grouped_values(&recovered)["stamp"], timestamp_bytes(11));
+}
+
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;

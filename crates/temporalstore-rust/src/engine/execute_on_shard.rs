@@ -1057,19 +1057,24 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         .get(&key)
         .and_then(|fields| fields.get(&timestamp_field))
         .and_then(|address| {
-            // Keep the cached packed row shared while selecting its tiny timestamp. Copying the
-            // whole frame here makes every stale embedding write pay for its payload a second
-            // time before it can be rejected.
-            read_block_frame_shared(
-                cache,
-                block_store,
-                shard_id,
-                address,
-                BlockIdentity::of(shard_id, "hash", &key, Some(timestamp_field.as_str())),
-                Some(routing_bucket),
-            )
+            // Consult the field cache only after the resident map confirms the field exists.
+            // Ordinary hash writes and deletes invalidate this same key under the shard lock.
+            match cached_response(cache, CacheKey::hash(shard_id, &key, &timestamp_field), || {
+                CommandResponse::Bytes {
+                    value: read_block_frame_shared(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        BlockIdentity::of(shard_id, "hash", &key, Some(timestamp_field.as_str())),
+                        Some(routing_bucket),
+                    ).and_then(|frame| select_container_value(&frame, &timestamp_field)),
+                }
+            }) {
+                CommandResponse::Bytes { value } => value,
+                _ => None,
+            }
         })
-        .and_then(|frame| select_container_value(&frame, &timestamp_field))
         .and_then(|timestamp| <HashTimestamp as prost::Message>::decode(timestamp.as_slice()).ok())
         .map(|timestamp| (timestamp.seconds, timestamp.nanos));
     if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
@@ -1091,6 +1096,12 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         );
     }
 
+    // Preserve the actual stored bytes, not the comparison argument: direct commands may
+    // supply different timestamp bytes or duplicate fields (whose last value wins).
+    let timestamp_value = entries.iter().rev()
+        .find(|(field, _)| field == &timestamp_field)
+        .filter(|(_, value)| value.len() <= 64)
+        .map(|(_, value)| value.clone());
     let (packed_mutated, metadata_entries) = write_packed_hash_entries(
         cache,
         block_store,
@@ -1104,6 +1115,13 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         fields_are_unique,
     );
     mutated |= packed_mutated;
+    if packed_mutated {
+        if let Some(value) = timestamp_value {
+            if let Some(encoded) = encode_cached_response(&CommandResponse::Bytes { value: Some(value) }) {
+                cache.put_memory_only(CacheKey::hash(shard_id, &key, &timestamp_field), encoded);
+            }
+        }
+    }
     if let Some(ttl_ms) = ttl_ms {
         apply_hash_expiry(shard_id, routing_bucket, shard, &key, ttl_ms);
         mutated = true;
