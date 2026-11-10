@@ -1466,6 +1466,33 @@ fn expiry_scan_budget(limit: usize) -> usize {
         self.compact_shard_blocks_with_budgets(shard_id, budget_bytes, usize::MAX)
     }
 
+    // Called under the shard write guard, after the block durability barrier succeeds.
+    fn publish_compacted_container_index(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+        stats: &CompactionRewriteStats,
+    ) -> Result<Vec<u8>, Status> {
+        let mut removed = Vec::new();
+        for (object_id, element_name) in &stats.retired_container_wal_blocks {
+            let key = super::block_in_wal::wal_resident_key(*object_id, Some(element_name));
+            if let Some(placement) = shard.wal_resident_blocks.remove(&key) {
+                removed.push((key, placement));
+            }
+        }
+        let bytes = super::serialize_index_stamped(shard);
+        if let Err(err) = self.persist_index_bytes_durable(shard_id, &bytes) {
+            shard.wal_resident_blocks.extend(removed);
+            return Err(Status::error("block_compaction_failed", err.to_string()));
+        }
+        for (object_id, element_name) in &stats.retired_container_wal_blocks {
+            super::block_in_wal::deregister(
+                &self.block_store, shard_id, *object_id, Some(element_name),
+            );
+        }
+        Ok(bytes)
+    }
+
     pub(crate) fn compact_shard_blocks_with_budgets(
         &self,
         shard_id: ShardId,
@@ -1946,10 +1973,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     ),
                 )
             })?;
-            let partial_index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
-                .map_err(|serialize| Status::error("block_compaction_failed", serialize.to_string()))?;
-            self.persist_index_bytes(shard_id, &partial_index_bytes)
-                .map_err(|persist| Status::error("block_compaction_failed", persist.to_string()))?;
+            let partial_index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats)?;
             let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
             // Keep the round OPEN. A relocation that failed partway left work behind by
             // definition -- the blocks it had not reached yet are still on their old slabs -- and
@@ -2059,14 +2083,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // Holding the guard across the encode is what makes that window not exist: no other
         // thread can observe the vacated volatile index until the durable one names the new
         // slab. The cost is real and measured; it buys the invariant.
-        let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
-            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
         // The PUBLISH, not just the encode, is what has to happen inside the region. See
         // `FLUSH_PUBLISHED_UNDER_GUARD`.
         #[cfg(test)]
         note_compaction_flush_publish();
-        self.persist_index_bytes(shard_id, &index_bytes)
-            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
+        let index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats)?;
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
         let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
         let bucket_layout_transition_count =

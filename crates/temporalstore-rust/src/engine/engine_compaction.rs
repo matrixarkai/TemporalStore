@@ -267,6 +267,7 @@ pub(super) fn compaction_action_for_policy(
 
 #[derive(Debug, Default)]
 pub(super) struct CompactionRewriteStats {
+    pub(super) retired_container_wal_blocks: Vec<(u64, String)>,
     pub(super) rewritten_block_refs: usize,
     pub(super) cold_block_rewrite_refs: usize,
     by_model: BTreeMap<String, ModelCompactionRewriteStats>,
@@ -1070,7 +1071,15 @@ fn flush_container_batch(
         bytes,
     );
     let folded = destinations.len();
-    for destination in destinations.drain(..) {
+    for (destination, (key, _)) in destinations.drain(..).zip(items.iter()) {
+        if crate::wal_record::is_wal_resident(destination.block_slab_id()) {
+            if let (Some(object_id), Some(element_name)) = (
+                object_id,
+                super::container_blocks::element_name_from_element_key(spelling, key),
+            ) {
+                rewrite_stats.retired_container_wal_blocks.push((object_id, element_name));
+            }
+        }
         *destination = new_address.clone();
         rewrite_stats.record(model_id, *cold_in_batch);
     }
