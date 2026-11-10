@@ -308,6 +308,49 @@ pub(super) fn register_at(
     }
 }
 
+/// Recover the identity of a block that has no live model-map element, such as a tombstone.
+pub(super) fn register_from_record(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    folded_key: u64,
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+) -> bool {
+    for size in [128u64 << 10, 1 << 20, u64::MAX] {
+        let Ok(Some(bytes)) = store.read_at_log_id(shard_id, log_id, size) else {
+            return false;
+        };
+        let frame = match crate::log_framing::next_frame(&bytes) {
+            Ok(Some((consumed, _))) => &bytes[..consumed],
+            Ok(None) => continue,
+            Err(_) => return false,
+        };
+        let Ok(record) = decode_wal_line(frame) else {
+            return false;
+        };
+        if record.sequence != sequence {
+            return false;
+        }
+        let Some(block) = record.staged_blocks.iter().find(|block| {
+            wal_resident_key(block.object_id, block.element_name.as_deref()) == folded_key
+        }) else {
+            return false;
+        };
+        register_at(
+            block_store,
+            shard_id,
+            block.object_id,
+            block.element_name.as_deref(),
+            log_id,
+            sequence,
+            store,
+        );
+        return true;
+    }
+    false
+}
+
 /// The lowest WAL sequence any of this shard's registrations IN THIS LOG still depends on, or
 /// `None` when nothing is registered. WAL reclaim uses this as the block-retention floor: a
 /// record at or above it may hold the only copy of a block the served index still points at, so

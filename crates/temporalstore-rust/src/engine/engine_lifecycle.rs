@@ -1301,10 +1301,12 @@ impl TemporalEngine {
         // Hand the resolver the log ids the index has been carrying. Without this a block whose
         // only durable copy is a WAL record stays unreadable by address after a reload -- the
         // served index points at a synthetic address and the resolver's table starts empty.
-        self.rehydrate_wal_resident_blocks(request.shard_id);
+        let rehydrated = self.rehydrate_wal_resident_blocks(request.shard_id);
         #[cfg(test)]
         restore_phase_probe::mark("publish_and_seed");
-        if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
+        let restore_result = rehydrated
+            .and_then(|_| self.replay_wal_into_shard(request.shard_id, replay_watermark));
+        if let Err(status) = restore_result {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
             // state -- a not-loaded shard is recoverable/re-routable; silent truncation
@@ -2833,46 +2835,17 @@ impl TemporalEngine {
             .unwrap_or(0)
     }
 
-    /// Re-register every WAL-resident block the index knows about.
-    ///
-    /// The append path learns a block's log id by writing the record; a reload learns it by
-    /// reading the index. Both end up in the same table, which is why no read path had to
-    /// change for this to work.
-    /// THE ELEMENT CANNOT COME FROM THE INDEX ENTRY ANY MORE, AND IT HAD ALREADY STOPPED COMING
-    /// FROM THERE BEFORE THE FIELD WENT.
-    ///
-    /// This read "the element has to be read back from the place that has always held it:
-    /// `BlockIndex::element_name`, sitting on the same block entry as the address whose object id this
-    /// is." That field is gone, and the paragraph was already describing a value that was `None`
-    /// for every entry of every kind: one entry a block files no element name, so this walk has
-    /// folded on `wal_resident_key(object_id, None)` -- which the function returns as `object_id`
-    /// unchanged -- since the collapse, not since this change.
-    ///
-    /// WHAT THAT MEANS, STATED RATHER THAN LEFT TO BE REDISCOVERED. The two WRITERS of this map
-    /// (`TemporalEngine`'s append path and `lifecycle`'s replay) key each entry on the STAGED
-    /// BLOCK's element name, which IS the element's own name -- a record is a full account of the
-    /// write. So an entry filed for a container element has a folded key no walk over the index can
-    /// reconstruct, and it is skipped here. Only registrations for the kinds that carry no element
-    /// name -- one block per object -- rehydrate.
-    ///
-    /// AND SKIPPING IS THE SAFE DIRECTION, which is why this is a cost and not a defect: a
-    /// registration with the WRONG element is worse than none, because the entry resolves a record
-    /// and then fails to find its block inside it -- a miss that costs a record read. A block whose
-    /// folded key is not in the map is skipped, and only an exact match registers. What a skip
-    /// costs is that a container element still living in the log is read through the block store's
-    /// ordinary path on the first read after a reload instead of being resolved straight to its
-    /// record.
-    ///
-    /// Walking the index rather than re-reading each record keeps this a pure in-memory pass over
-    /// state the load has already built -- no extra log I/O on the load path.
-    pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) {
+    /// Re-register WAL-backed blocks from persisted positions and model-map element names.
+    /// Entries without a live model-map element are resolved from their recorded block identity.
+    pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) -> Result<(), Status> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
-            return;
+            return Ok(());
         };
         if shard.wal_resident_blocks.is_empty() {
-            return;
+            return Ok(());
         }
+        let mut registered = std::collections::BTreeSet::new();
         let identities = shard.bucket_index.block_identities();
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, block) in bucket.block_index.iter() {
@@ -2886,8 +2859,6 @@ impl TemporalEngine {
                     continue;
                 };
                 let object_id = block.object_id(shard_id, beside.object_key);
-                // `None`: an entry names a block, not an element. See this function's doc for what
-                // that skips and why skipping is the safe direction.
                 let element_name = None;
                 let folded = super::block_in_wal::wal_resident_key(object_id, element_name);
                 let Some(placement) = shard.wal_resident_blocks.get(&folded) else {
@@ -2902,8 +2873,75 @@ impl TemporalEngine {
                     placement.sequence,
                     &self.wal_store,
                 );
+                registered.insert(folded);
             }
         }
+        let mut register_element = |kind: &str, key: &str, element_name: &str, address: &crate::block_store::ElementEntry| {
+            if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                return;
+            }
+            let object_id = super::stable_block_object_id(shard_id, kind, key);
+            let folded = super::block_in_wal::wal_resident_key(object_id, Some(element_name));
+            if let Some(placement) = shard.wal_resident_blocks.get(&folded) {
+                super::block_in_wal::register_at(
+                    &self.block_store,
+                    shard_id,
+                    object_id,
+                    Some(element_name),
+                    placement.log_id,
+                    placement.sequence,
+                    &self.wal_store,
+                );
+                registered.insert(folded);
+            }
+        };
+        for (key, fields) in &shard.bucket_index.hashes {
+            for (field, address) in fields.iter() {
+                register_element("hash", key, field, address);
+            }
+        }
+        for (key, members) in &shard.bucket_index.sets {
+            for (member, address) in members.iter() {
+                let element_name = super::execute_on_shard::set_element_name(member);
+                register_element("set", key, &element_name, address);
+            }
+        }
+        for (key, members) in &shard.bucket_index.zsets {
+            for (member, (_, address)) in members.iter() {
+                let element_name = super::execute_on_shard::zset_element_name(member);
+                register_element("zset", key, &element_name, address);
+            }
+        }
+        for (key, positions) in &shard.bucket_index.lists {
+            for (position, address) in positions.iter() {
+                let mut buffer = [0; 16];
+                let element_name = super::execute_on_shard::list_element_name(*position, &mut buffer);
+                register_element("list", key, element_name, address);
+            }
+        }
+        let unresolved = shard
+            .wal_resident_blocks
+            .iter()
+            .filter(|(folded, _)| !registered.contains(folded))
+            .map(|(folded, placement)| (*folded, placement.log_id, placement.sequence))
+            .collect::<Vec<_>>();
+        drop(shards);
+        for (folded, log_id, sequence) in unresolved {
+            if !super::block_in_wal::register_from_record(
+                &self.block_store,
+                shard_id,
+                folded,
+                log_id,
+                sequence,
+                &self.wal_store,
+            ) {
+                return Err(Status::error(
+                    "wal_resident_block_missing",
+                    format!("shard {shard_id} cannot recover WAL-backed block at log id {log_id}"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn replay_wal_into_shard(

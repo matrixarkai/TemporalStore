@@ -1566,7 +1566,7 @@ impl TemporalEngine {
             // same suffix from it; replaying here as well would be the same work done twice.
             //
             // A log holding nothing past the anchor replays nothing and costs a scan.
-            self.rehydrate_wal_resident_blocks(manifest.shard_id);
+            self.rehydrate_wal_resident_blocks(manifest.shard_id)?;
             if let Err(status) =
                 self.replay_wal_into_shard(manifest.shard_id, manifest.wal_sequence)
             {

@@ -1458,7 +1458,7 @@ impl TemporalEngine {
         let generations_durable = missing_bucket_generations.is_empty()
             && covered_bucket_count == bucket_summaries.len()
             && durable_wal_frontier > 0
-            && durable_index_log_frontier > 0;
+            && (current_index_log_sequence == 0 || durable_index_log_frontier > 0);
 
         // HOW FAR it may be followed: a retention cursor marks what some reader has still to
         // consume. Everything at or below the SLOWEST cursor is behind every reader and can go
@@ -1504,14 +1504,15 @@ impl TemporalEngine {
         // A clamp to zero reclaims nothing, which is the right answer for a cursor that has never
         // advanced -- the win here is exactly the span a reader has already consumed, and for a
         // permanently stuck follower that span is empty.
-        let safe_to_reclaim =
-            generations_durable && effective_wal_frontier > 0 && effective_index_log_frontier > 0;
+        let safe_to_reclaim = generations_durable
+            && effective_wal_frontier > 0
+            && (current_index_log_sequence == 0 || effective_index_log_frontier > 0);
         let retain_from_wal_sequence = if safe_to_reclaim {
             effective_wal_frontier.saturating_add(1)
         } else {
             0
         };
-        let retain_from_index_log_sequence = if safe_to_reclaim {
+        let retain_from_index_log_sequence = if safe_to_reclaim && current_index_log_sequence > 0 {
             effective_index_log_frontier.saturating_add(1)
         } else {
             0
@@ -1560,6 +1561,14 @@ impl TemporalEngine {
             plan.shard_id,
             plan.durable_bucket_generation_frontier_wal_sequence,
         );
+        match super::block_in_wal::min_registered_sequence(
+            &self.block_store,
+            plan.shard_id,
+            &self.wal_store,
+        ) {
+            Some(sequence) => self.wal_store.set_block_retention_floor(plan.shard_id, sequence),
+            None => self.wal_store.clear_block_retention_floor(plan.shard_id),
+        }
         let wal_gc = self
             .write_ahead_log_store()
             .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence, &durable_index)

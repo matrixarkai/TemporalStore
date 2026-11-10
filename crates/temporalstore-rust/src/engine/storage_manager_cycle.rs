@@ -470,40 +470,13 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
-        let mut lifecycle_report = if request.dry_run {
-            None
-        } else {
-            let mut lifecycle_request = plan_request.clone();
-            lifecycle_request.purge_delayed_destroy = false;
-            lifecycle_request.prune_bucket_dump_manifests = false;
-            lifecycle_request.roll_forward_bucket_dump_installs = false;
-            Some(self.apply_storage_lifecycle(lifecycle_request))
-        };
-        // Dump and warmup are charged to WAL reclaim; later cleanup stays in its own stage.
-        let reclaim_wal_dump_span = StageSpan::close(&mut stage_clock);
-        // Blocks whose only durable copy is a WAL record leave the log HERE, before the reclaim
-        // plan is computed, because `min_registered_sequence` pins retention to the LOWEST
-        // registration: a block still resident holds the floor down and no retention policy can
-        // pass it. Dumping dirty slots advances the durable frontier before reclaim runs.
-        //
-        // Until this ran, the only caller that moved a block out of the log was the write path,
-        // which sweeps once registrations pass `TS_WAL_RESIDENT_PAGES` and therefore stops the
-        // moment writes stop. An idle shard kept every block it had ever written that way.
-        // Measured on 48 async writes: a flush left all 48 registered, and so did a full
-        // eight-stage cycle, with the log floor still at sequence 1.
-        //
-        // Bounded per cycle at `max_dump_buckets_per_round`, so a shard sitting at the write
-        // path's ceiling drains over several cycles instead of turning one into a long pause.
-        // Oldest first, because the oldest registration is the one holding the floor down. The
-        // bytes are already durable in the log, so this moves a copy that is safe either way.
+        // Materialize before the dump captures its index. Moving blocks afterwards changes the
+        // live bucket generation and leaves the durable manifest unable to authorize reclaim.
         let wal_resident_blocks_before = self.wal_resident_block_count(request.shard_id);
         let wal_resident_blocks_materialised = if request.enable_wal_reclaim
             && !request.dry_run
             && wal_resident_blocks_before > 0
         {
-            // Zero is how this request spells "no bound" -- its own default is 0 while the
-            // scheduler's is 64 -- so a cycle asked for no bound drains the shard rather than
-            // one block per pass.
             let per_round = if request.max_dump_buckets_per_round == 0 {
                 usize::MAX
             } else {
@@ -516,7 +489,17 @@ impl TemporalEngine {
         } else {
             0
         };
-
+        let mut lifecycle_report = if request.dry_run {
+            None
+        } else {
+            let mut lifecycle_request = plan_request.clone();
+            lifecycle_request.purge_delayed_destroy = false;
+            lifecycle_request.prune_bucket_dump_manifests = false;
+            lifecycle_request.roll_forward_bucket_dump_installs = false;
+            Some(self.apply_storage_lifecycle(lifecycle_request))
+        };
+        // Dump and warmup are charged to WAL reclaim; later cleanup stays in its own stage.
+        let reclaim_wal_dump_span = StageSpan::close(&mut stage_clock);
         let wal_reclaim_plan = self.storage_wal_reclaim_plan(
             request.shard_id,
             request.follower_replay_cursors.clone(),
