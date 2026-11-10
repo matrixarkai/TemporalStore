@@ -2017,7 +2017,7 @@ pub(crate) fn execute_on_shard(
                 .into_iter()
                 .filter_map(|(name, element_name, address)| {
                     let cache_key = page_keys.key(shard_id, &address, Some(routing_bucket));
-                    read_block_bytes_keyed(
+                    read_block_value_keyed(
                         cache,
                         block_store,
                         shard_id,
@@ -2858,6 +2858,13 @@ pub(crate) fn execute_on_shard(
                 // An allocation probe cannot see that difference, so it is stated here rather
                 // than left for a flat byte measurement to imply otherwise.
                 let wanted = (to - from + 1) as usize;
+                // One routing bucket for the whole range, and one page-key builder: the entries of
+                // a list sit in few slabs, so their keys share a record key rather than each
+                // spelling it again, and the element name is rendered in place rather than in a
+                // `String` per entry.
+                let routing_bucket =
+                    block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                let mut page_keys = crate::engine::PageKeys::new();
                 list.map(|list| {
                     list.iter()
                         .skip(from as usize)
@@ -2865,21 +2872,18 @@ pub(crate) fn execute_on_shard(
                         .filter_map(|(seq, address)| {
                             // The same rendering ListPop uses, which is what the index rows
                             // for this list were filed under.
-                            let element_name =
-                                format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
-                            read_block_bytes(
+                            let mut name = [0_u8; 16];
+                            let element_name = list_element_name(*seq, &mut name);
+                            let cache_key = page_keys.key(shard_id, address, Some(routing_bucket));
+                            read_block_value_keyed(
                                 cache,
                                 block_store,
                                 shard_id,
                                 address,
                                 // Re-derived from the sequence the same way ListPop renders it. `.values()` used to
                                 // drop that sequence, which is why the iteration above is now `.iter()`.
-                                BlockIdentity::of(shard_id, "list", &key, Some(element_name.as_str())),
-                                Some(block_routing_bucket(
-                                    &key,
-                                    start_routing_bucket,
-                                    end_routing_bucket,
-                                )),
+                                BlockIdentity::of(shard_id, "list", &key, Some(element_name)),
+                                cache_key,
                             )
                         })
                         .collect()
@@ -6321,4 +6325,20 @@ fn bucket_answer(allowed: bool, remaining: f64, retry_after_ms: u64) -> Vec<Vec<
         format!("{remaining:.3}").into_bytes(),
         retry_after_ms.to_string().into_bytes(),
     ]
+}
+
+/// The element name a list entry is filed under: its sequence, offset so that the order of the names
+/// is the order of the list, as sixteen lowercase hex digits.
+///
+/// This is `format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64))` written into a caller's
+/// buffer, so a read that names one entry per element of a range does not allocate a `String` for
+/// each. A test compares it with the formatted spelling.
+pub(crate) fn list_element_name(seq: i64, buf: &mut [u8; 16]) -> &str {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut value = (seq as u64).wrapping_sub(i64::MIN as u64);
+    for slot in buf.iter_mut().rev() {
+        *slot = DIGITS[(value & 0xf) as usize];
+        value >>= 4;
+    }
+    std::str::from_utf8(buf).expect("hex digits are ascii")
 }

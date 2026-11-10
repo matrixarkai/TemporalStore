@@ -1894,7 +1894,7 @@ impl TemporalEngine {
                     .filter_map(|(field, address)| {
                         let cache_key =
                             page_keys.key(request.shard_id, address, Some(routing_bucket));
-                        read_block_bytes_keyed(
+                        read_block_value_keyed(
                             &self.cache,
                             &self.block_store,
                             request.shard_id,
@@ -8320,9 +8320,16 @@ fn read_block_bytes(
     select_container_value(&bytes, element_name)
 }
 
-/// [`read_block_bytes`] with the page key already built (see [`PageKeys`]).
+/// One element's value, for a caller that reads many elements and built their page keys itself
+/// (see [`PageKeys`]).
+///
+/// A warm read selects the element out of the frame the cache already holds, shared, so the frame
+/// is not copied into a `Vec` only to have one value copied out of it and the frame dropped. That
+/// copy was one allocation and a memcpy of the whole frame per element of a whole-container read.
+/// The value returned is the same bytes `read_block_bytes` returns: the same lookup, the same
+/// selection, and on a miss the same storage fallbacks, promotion included.
 #[allow(clippy::too_many_arguments)]
-fn read_block_bytes_keyed(
+fn read_block_value_keyed(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
@@ -8330,12 +8337,16 @@ fn read_block_bytes_keyed(
     identity: BlockIdentity<'_>,
     cache_key: CacheKey,
 ) -> Option<Vec<u8>> {
-    let bytes =
-        read_block_frame_bytes_keyed(cache, block_store, shard_id, address, identity, cache_key)?;
-    let Some(element_name) = identity.element_name() else {
-        return Some(bytes);
-    };
-    select_container_value(&bytes, element_name)
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&cache_key)
+    });
+    if let Ok(Some(frame)) = cached {
+        let Some(element_name) = identity.element_name() else {
+            return Some(frame.to_vec());
+        };
+        return select_container_value(&frame, element_name);
+    }
+    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
 }
 
 fn read_block_bytes_after_cache_miss(
