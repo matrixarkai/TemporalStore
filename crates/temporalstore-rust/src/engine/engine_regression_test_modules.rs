@@ -523,3 +523,5 @@ mod a_feature_append_merges_cells_by_lane_reducer;
 mod a_ranked_cell_read_is_a_command;
 #[path = "tests/a_whole_container_read_shares_its_work.rs"]
 mod a_whole_container_read_shares_its_work;
+#[path = "tests/a_worked_example_of_cells.rs"]
+mod a_worked_example_of_cells;
