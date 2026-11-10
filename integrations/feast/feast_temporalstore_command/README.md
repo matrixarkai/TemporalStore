@@ -173,6 +173,8 @@ The serving node must support that command; older nodes reject it rather than
 returning a value computed from the wrong encoding. Compact numeric windows
 scan their retained points, whereas the default numeric projection can use
 the aggregate rollup. Keep the default for read-heavy window queries.
+Use `benchmarks/bench_aggregate_serving.py --compact-numeric-history` to
+measure the compact layout explicitly; its JSON report records the selected mode.
 
 `query_feature_aggregates` sends many windows through bounded ordered batches.
 Each batch prepares the feature-type lookup and versioned view name once;

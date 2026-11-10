@@ -70,6 +70,7 @@ def main() -> None:
     parser.add_argument("--shard-id", type=int, default=1)
     parser.add_argument("--entities", type=int, default=256)
     parser.add_argument("--events", type=int, default=64)
+    parser.add_argument("--compact-numeric-history", action="store_true")
     parser.add_argument("--write-batch", type=int, default=256)
     parser.add_argument("--reads", type=int, default=1000)
     parser.add_argument("--aggregate-batch", type=int, default=64)
@@ -119,6 +120,7 @@ def main() -> None:
                 "shard_id": args.shard_id,
                 "skip_dedup": True,
                 "write_feature_history": True,
+                "compact_numeric_history": args.compact_numeric_history,
                 "timeout_seconds": args.timeout_seconds,
             },
         )
@@ -298,6 +300,7 @@ def main() -> None:
             report = {
                 "entities": args.entities,
                 "async_storage": async_storage,
+                "compact_numeric_history": args.compact_numeric_history,
                 "timeout_seconds": args.timeout_seconds,
                 "events_per_entity": args.events,
                 "history_writes": args.entities * args.events,
