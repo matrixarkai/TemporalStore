@@ -2002,14 +2002,15 @@ pub struct IndexDeltaRecord {
     /// every block of each of them, every time.
     #[serde(rename = "u", default)]
     pub upsert: bool,
-    /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
+    /// Opaque per-touched-key state blobs (one protobuf message per key, see
+    /// `engine::key_state_wire`) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
     /// single block-index entry -- packed timestamped series (feature membership survives
     /// eviction) and the non-block maps (TTL, control-state change/selection, context
     /// nodes). Opaque here so the index-log layer stays decoupled from `ShardState`; the
     /// engine builds and applies them. Replaying these on load pins the exact membership a
     /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
-    #[serde(rename = "ks", default)]
+    #[serde(rename = "ks", default, with = "crate::engine::key_state_wire::blobs")]
     pub key_states: Vec<serde_json::Value>,
     /// The one object key every item carries, when at least two items carry the same one.
     ///
@@ -4796,7 +4797,11 @@ mod tests {
         }
         index.extend_from_slice(b"}}");
 
-        anchoring.append_index_bytes(11, &index).unwrap();
+        // The anchor names the index it was taken over by length and digest and never reads it, but
+        // it asserts it was handed a served index, which is a container.
+        let mut container = b"TSIDX".to_vec();
+        container.extend_from_slice(&index);
+        anchoring.append_index_bytes(11, &container).unwrap();
         // The whole-index record, built here: nothing in the store writes one any more, but the
         // comparison this test pins is the size of an anchor against the size of the record it
         // replaced.
@@ -5286,7 +5291,9 @@ mod tests {
     /// back is caught and not only all of them.
     #[test]
     fn a_delta_record_with_a_long_field_name_is_not_read_as_the_same_record() {
-        let current = r#"{"s":7,"q":3,"items":[],"aw":11,"u":true,"ks":[{"key":"m:0"}]}"#;
+        // A blob is a protobuf message, which JSON spells as a list of numbers: `[10, 3, 109, 58, 48]`
+        // is the message naming the key `m:0`.
+        let current = r#"{"s":7,"q":3,"items":[],"aw":11,"u":true,"ks":[[10,3,109,58,48]]}"#;
         let original: IndexDeltaRecord =
             serde_json::from_str(current).expect("the control, in the written names, must load");
         assert_eq!(original.shard_id, 7);
@@ -7586,7 +7593,7 @@ mod tests {
                  "rs":545210715,"g":0,"b":0},
             "sz":126,"il":false,"d":false}],
             "aw":1,"u":true,
-            "ks":[{"key":"string:m:0","kind":"string","pages":[0],"version":1}]}"#;
+            "ks":[[10,10,115,116,114,105,110,103,58,109,58,48]]}"#;
         let record: IndexDeltaRecord =
             serde_json::from_str(line).expect("the record the log writes must still load");
 
@@ -9812,7 +9819,7 @@ flag exists to say",
             meta: None,
             applied_wal_sequence: Some(2),
             upsert: true,
-            key_states: vec![serde_json::json!({"k": 1})],
+            key_states: vec![serde_json::json!({"key": "k", "expires_at_ms": 1u64})],
             shared_object_key: None,
         };
         let mut payload =
@@ -9841,6 +9848,62 @@ flag exists to say",
         assert_eq!(next, 3);
     }
 
+    /// A KEY-STATE BLOB THAT IS A JSON DOCUMENT IS REFUSED, NOT READ AND NOT DROPPED.
+    ///
+    /// The record is a protobuf record whose one blob is the document form a record used to carry. The
+    /// reader must not return it as a record with that blob in it (that would be reading a document as
+    /// a message), and it must say it refused: either the read errors, or the record is not among
+    /// those returned, and the refusal is counted. The record before it is the control: it is read.
+    #[test]
+    fn a_json_key_state_blob_in_a_protobuf_record_is_refused_and_counted() {
+        use prost::Message as _;
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(3, vec![block_item(1, "first", false)], Vec::new(), Some(1), None, true, true)
+            .unwrap();
+        drop(store);
+
+        let record = IndexDeltaRecord {
+            shard_id: 3,
+            sequence: 2,
+            items: vec![block_item(2, "second", false)],
+            meta: None,
+            applied_wal_sequence: Some(2),
+            upsert: true,
+            key_states: Vec::new(),
+            shared_object_key: None,
+        };
+        let mut wire = crate::index_log_wire::ProtoIndexLog::from_record(&record).unwrap();
+        wire.key_states =
+            vec![serde_json::to_vec(&serde_json::json!({"key": "k", "expires_at_ms": 1u64})).unwrap()];
+        let mut payload =
+            vec![index_container_byte(INDEX_LOG_CODEC_PROTOBUF, INDEX_LOG_SHAPE_DELTA)];
+        payload.extend_from_slice(&wire.encode_to_vec());
+        let path = index_log_path(dir.path(), 3);
+        let mut file = OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        file.write_all(&crate::log_framing::encode_frame(&payload)).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        crate::engine::reset_key_state_blobs_refused();
+        let reopened = LocalIndexLogStore::new(dir.path());
+        match reopened.read_delta_records(3, 0) {
+            Err(_) => {}
+            Ok(records) => {
+                assert!(
+                    records.iter().all(|read| read.sequence != 2),
+                    "the record holding a JSON blob was read: {records:?}"
+                );
+                assert_eq!(records.len(), 1, "the control record was not read: {records:?}");
+            }
+        }
+        assert!(
+            crate::engine::key_state_blobs_refused() >= 1,
+            "the refusal of a JSON blob was not counted"
+        );
+    }
+
     /// THE WRITER, WHEN ASKED: the same appends in the two codecs read back as the same records.
     ///
     /// Two stores get identical `append_delta` calls, one with the protobuf writer on for this
@@ -9855,7 +9918,7 @@ flag exists to say",
                     .append_delta(
                         9,
                         vec![block_item(position as u32 + 1, key, position % 2 == 1)],
-                        vec![serde_json::json!({"n": position})],
+                        vec![serde_json::json!({"key": key, "expires_at_ms": position as u64})],
                         Some(position as u64 + 10),
                         None,
                         position % 2 == 0,

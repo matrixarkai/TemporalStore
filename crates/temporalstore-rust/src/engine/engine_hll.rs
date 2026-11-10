@@ -115,6 +115,17 @@ impl Hll {
         }
     }
 
+    /// The registers, for the one encoder that stores a sketch as bytes.
+    pub(crate) fn registers(&self) -> &[u8] {
+        &self.registers
+    }
+
+    /// A sketch from stored registers, refused unless there are exactly as many as this build uses:
+    /// a sketch of another width is not this sketch and merging it would answer wrongly.
+    pub(crate) fn from_registers(registers: Vec<u8>) -> Option<Self> {
+        (registers.len() == M).then_some(Self { registers })
+    }
+
     /// Add one element (its raw bytes) to the sketch.
     pub(crate) fn add(&mut self, bytes: &[u8]) {
         let hash = hash64(bytes);
