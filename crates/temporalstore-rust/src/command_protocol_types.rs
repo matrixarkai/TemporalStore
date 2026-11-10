@@ -638,6 +638,9 @@ pub struct ContextEntity {
     // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
+    /// Hash of the encoder that produced `vector`; zero means unknown for older records.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub embedding_model_hash: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1222,6 +1225,9 @@ impl ContextWire for ContextEntity {
         for source_event_hash in &self.source_event_hashes {
             encode_varint_field(&mut out, 9, *source_event_hash);
         }
+        if self.embedding_model_hash != 0 {
+            encode_varint_field(&mut out, 11, self.embedding_model_hash);
+        }
         encode_vector_field(&mut out, &self.vector);
         out
     }
@@ -1239,6 +1245,7 @@ impl ContextWire for ContextEntity {
             confidence: 0.0,
             source_event_hashes: Vec::new(),
             vector: Vec::new(),
+            embedding_model_hash: 0,
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -1265,6 +1272,7 @@ impl ContextWire for ContextEntity {
                             .push(decode_varint(&packed, &mut packed_cursor)?);
                     }
                 }
+                (11, 0) => value.embedding_model_hash = decode_varint(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
@@ -4382,6 +4390,7 @@ mod tests {
             confidence: 0.97,
             source_event_hashes: vec![5, 6],
             vector: Vec::new(),
+            embedding_model_hash: 0x51A7,
         };
         assert_eq!(
             ContextEntity::decode_context_proto_value(&entity.encode_context_proto_value()),

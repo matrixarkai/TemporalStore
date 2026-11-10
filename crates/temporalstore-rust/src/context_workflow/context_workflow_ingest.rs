@@ -7,8 +7,8 @@ use super::*;
 // Amortize durability while bounding duplicated report and command payloads in memory.
 const CONTEXT_DURABLE_SOURCE_BATCH: usize = 16;
 // Bound summaries and embedding matrices retained between model calls and durable commits.
-// Sixty-four sources also fill the default 128-item embedding request exactly because each
-// source contributes one node text and one event text.
+// The embedding planner subdivides this window by provider item and byte limits because a source
+// contributes node, event, and zero to eight entity rows.
 const CONTEXT_MODEL_SOURCE_WINDOW: usize = 64;
 
 fn persist_prepared_context_batch(
@@ -127,8 +127,8 @@ fn process_context_source_window(
     }
 
     // Embedding endpoints accept batches. Group by normalized provider, then subdivide by both
-    // item count and bytes. Every source addresses its two rows in the shared provider matrix,
-    // avoiding a second allocation and copy for every source in the window.
+    // item count and bytes. Every source addresses its node, event, and bounded entity rows in the
+    // shared provider matrix, avoiding a second allocation and copy for every source in the window.
     let mut provider_groups: Vec<(ContextModelProviderConfig, Vec<usize>)> = Vec::new();
     for (source_index, (_, summaries, _, _)) in prepared_sources.iter().enumerate() {
         if let Some((_, source_indexes)) = provider_groups
@@ -150,19 +150,23 @@ fn process_context_source_window(
         while chunk_start < source_indexes.len() {
             let mut chunk_end = chunk_start;
             // Provider limits apply to distinct encoder inputs, not the number of source owners.
-            let remaining_inputs = source_indexes
-                .len()
-                .saturating_sub(chunk_start)
-                .saturating_mul(2)
+            let remaining_inputs = source_indexes[chunk_start..]
+                .iter()
+                .map(|source_index| {
+                    2usize.saturating_add(prepared_sources[*source_index].1.entities.len())
+                })
+                .sum::<usize>()
                 .min(limits.max_items);
             let mut unique_by_text =
                 std::collections::HashMap::<&str, usize>::with_capacity(remaining_inputs);
             let mut unique_inputs = Vec::with_capacity(remaining_inputs);
             let mut input_rows = Vec::with_capacity(remaining_inputs);
+            let mut source_rows = Vec::<(usize, usize, usize)>::new();
             let mut unique_input_bytes = 0usize;
             while chunk_end < source_indexes.len() {
+                let source_index = source_indexes[chunk_end];
                 let (source, summaries, node_hash, event_id_hash) =
-                    &prepared_sources[source_indexes[chunk_end]];
+                    &prepared_sources[source_index];
                 let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
                 let node_embedding_text = if emit_l1 {
                     summaries.l1.as_str()
@@ -170,20 +174,29 @@ fn process_context_source_window(
                     summaries.l0.as_str()
                 };
                 let event_text = source.body.as_str();
-                let existing_node_row = unique_by_text.get(node_embedding_text).copied();
-                let existing_event_row = if event_text == node_embedding_text {
-                    existing_node_row
-                } else {
-                    unique_by_text.get(event_text).copied()
-                };
-                let node_is_new = existing_node_row.is_none();
-                let event_is_new =
-                    event_text != node_embedding_text && existing_event_row.is_none();
-                let new_count =
-                    usize::from(node_is_new).saturating_add(usize::from(event_is_new));
-                let new_bytes = usize::from(node_is_new)
-                    .saturating_mul(node_embedding_text.len())
-                    .saturating_add(usize::from(event_is_new).saturating_mul(event_text.len()));
+                let mut source_inputs = Vec::with_capacity(
+                    2usize.saturating_add(summaries.entities.len()),
+                );
+                source_inputs.push(("node_text", *node_hash, 1, node_embedding_text));
+                source_inputs.push(("event_text", *event_id_hash, 3, event_text));
+                source_inputs.extend(summaries.entities.iter().map(|entity| {
+                    (
+                        "entity_state",
+                        context_extracted_entity_hash(entity),
+                        4,
+                        entity.value.as_str(),
+                    )
+                }));
+                let mut new_texts = std::collections::HashSet::with_capacity(source_inputs.len());
+                for (_, _, _, text) in &source_inputs {
+                    if !unique_by_text.contains_key(text) {
+                        new_texts.insert(*text);
+                    }
+                }
+                let new_count = new_texts.len();
+                let new_bytes = new_texts
+                    .iter()
+                    .fold(0usize, |bytes, text| bytes.saturating_add(text.len()));
                 let candidate_count = unique_by_text.len().saturating_add(new_count);
                 let candidate_bytes = unique_input_bytes.saturating_add(new_bytes);
                 if chunk_end > chunk_start
@@ -192,30 +205,28 @@ fn process_context_source_window(
                 {
                     break;
                 }
-                let node_row = if let Some(row) = existing_node_row {
-                    row
-                } else {
-                    let row = unique_inputs.len();
-                    unique_by_text.insert(node_embedding_text, row);
-                    unique_inputs.push(("node_text", *node_hash, 1, node_embedding_text));
-                    row
-                };
-                input_rows.push(node_row);
-                let event_row = if event_text == node_embedding_text {
-                    node_row
-                } else if let Some(row) = existing_event_row {
-                    row
-                } else {
-                    let row = unique_inputs.len();
-                    unique_by_text.insert(event_text, row);
-                    unique_inputs.push(("event_text", *event_id_hash, 3, event_text));
-                    row
-                };
-                input_rows.push(event_row);
+                let row_offset = input_rows.len();
+                let logical_row_count = source_inputs.len();
+                for input in source_inputs {
+                    let row = if let Some(row) = unique_by_text.get(input.3).copied() {
+                        row
+                    } else {
+                        let row = unique_inputs.len();
+                        unique_by_text.insert(input.3, row);
+                        unique_inputs.push(input);
+                        row
+                    };
+                    input_rows.push(row);
+                }
+                source_rows.push((source_index, row_offset, logical_row_count));
                 unique_input_bytes = candidate_bytes;
                 chunk_end += 1;
                 if node_embedding_text.len() > limits.max_input_bytes
                     || source.body.len() > limits.max_input_bytes
+                    || summaries
+                        .entities
+                        .iter()
+                        .any(|entity| entity.value.len() > limits.max_input_bytes)
                     || unique_by_text.len() > limits.max_items
                     || unique_input_bytes > limits.max_request_bytes
                 {
@@ -223,7 +234,6 @@ fn process_context_source_window(
                 }
             }
 
-            let chunk_indexes = &source_indexes[chunk_start..chunk_end];
             let ContextCompactEmbeddingOutcome {
                 rows: batch,
                 input_rows,
@@ -236,14 +246,18 @@ fn process_context_source_window(
             );
             let batch = Arc::new(batch);
             let input_rows = Arc::<[usize]>::from(input_rows);
-            for (chunk_offset, source_index) in chunk_indexes.iter().copied().enumerate() {
+            for (source_index, row_offset, logical_row_count) in source_rows {
                 let mut source_report = report.clone();
-                source_report.requested_vector_count = 2;
-                source_report.generated_vector_count = if deferred { 0 } else { 2 };
+                source_report.requested_vector_count = logical_row_count;
+                source_report.generated_vector_count = if deferred {
+                    0
+                } else {
+                    logical_row_count
+                };
                 embedding_outcomes[source_index] = Some(ContextEmbeddingOutcome::shared(
                     Arc::clone(&batch),
                     Arc::clone(&input_rows),
-                    chunk_offset.saturating_mul(2),
+                    row_offset,
                     source_report,
                     deferred,
                 ));
@@ -657,6 +671,7 @@ pub fn ingest_resource_skill_context(
             confidence: 1.0,
             source_event_hashes: vec![extract.event.event_id_hash],
             vector: Vec::new(),
+            embedding_model_hash: 0,
         };
         let compression = ContextCompressionEvent {
             compression_id_hash: stable_hash64(&format!(

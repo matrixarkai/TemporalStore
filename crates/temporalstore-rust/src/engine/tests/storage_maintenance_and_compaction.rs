@@ -565,6 +565,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
         confidence: 0.97,
         source_event_hashes: vec![5],
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let entity_upsert = engine.execute(ExecuteRequest {
         shard_id: 1,

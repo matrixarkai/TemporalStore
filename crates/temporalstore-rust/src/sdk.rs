@@ -759,10 +759,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
     })
 }
 
-/// THE DURABLE ENTITY, RUST TO WIRE. ALL TEN FIELDS.
-///
-/// `vector` passes through unchanged -- no quantisation -- and carries no model hash, which is
-/// `ContextEntity`'s existing design and not a guard dropped here.
+/// THE DURABLE ENTITY, RUST TO WIRE. ALL ELEVEN FIELDS.
 pub(crate) fn context_entity_record_to_proto(
     entity: &types::ContextEntity,
 ) -> v1::ContextEntityRecord {
@@ -777,10 +774,11 @@ pub(crate) fn context_entity_record_to_proto(
         confidence: entity.confidence,
         source_event_hashes: entity.source_event_hashes.clone(),
         vector: entity.vector.clone(),
+        embedding_model_hash: entity.embedding_model_hash,
     }
 }
 
-/// THE DURABLE ENTITY, WIRE TO RUST. ALL TEN FIELDS.
+/// THE DURABLE ENTITY, WIRE TO RUST. ALL ELEVEN FIELDS.
 pub(crate) fn context_entity_record_from_proto(
     entity: v1::ContextEntityRecord,
 ) -> types::ContextEntity {
@@ -795,6 +793,7 @@ pub(crate) fn context_entity_record_from_proto(
         confidence: entity.confidence,
         source_event_hashes: entity.source_event_hashes,
         vector: entity.vector,
+        embedding_model_hash: entity.embedding_model_hash,
     }
 }
 

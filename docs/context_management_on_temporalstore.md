@@ -215,7 +215,9 @@ normalized durable entities in one model call. Entity names and values are
 byte-bounded, duplicate entities are removed before persistence, and the cap
 limits write, memory, and retrieval amplification while preserving facts,
 decisions, preferences, constraints, tasks, people, organizations, and projects
-for candidate retrieval.
+for candidate retrieval. Node, event, and entity texts share the same bounded
+`/api/embed` batch: repeated text is encoded once, each entity stores its vector
+inline, and retrieval checks the stored encoder identity before exact scoring.
 
 vLLM setup:
 

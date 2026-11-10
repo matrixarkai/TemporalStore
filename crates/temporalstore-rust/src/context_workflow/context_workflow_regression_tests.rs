@@ -2156,11 +2156,12 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
                 })
             } else {
                 assert_eq!(request_body["model"], "nomic-context-test");
-                assert_eq!(request_body["input"].as_array().unwrap().len(), 2);
+                assert_eq!(request_body["input"].as_array().unwrap().len(), 3);
                 serde_json::json!({
                     "embeddings": [
                         [1.0, 0.0, 0.0, 0.0],
-                        [0.0, 1.0, 0.0, 0.0]
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0]
                     ]
                 })
             }
@@ -2206,7 +2207,7 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
     assert!(report.l1.contains("payment risk"));
     assert_eq!(report.provider.provider_kind, ContextProviderKind::Ollama);
     assert_eq!(report.embedding_generation.vector_dimension, 4);
-    assert_eq!(report.embedding_generation.generated_vector_count, 2);
+    assert_eq!(report.embedding_generation.generated_vector_count, 3);
     assert!(report.embedding_generation.production_evidence_ready);
     assert_eq!(report.extracted_entity_count, 1);
     let entities = engine.execute(ExecuteRequest {
@@ -2225,6 +2226,9 @@ fn context_workflow_extracts_and_embeds_with_ollama() {
                 && entities[0].entity_type == 5
                 && entities[0].name == "checkout policy"
                 && entities[0].value == "support paused the account"
+                && entities[0].vector == vec![0.0, 0.0, 1.0, 0.0]
+                && entities[0].embedding_model_hash
+                    == context_embedding_model_hash("nomic-context-test")
     ));
 }
 

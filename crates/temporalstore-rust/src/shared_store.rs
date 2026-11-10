@@ -13721,9 +13721,9 @@ fn a_fully_populated_context_entity() -> crate::types::ContextEntity {
         valid_from_ms: 1_700_000_000_012,
         confidence: 0.125,
         source_event_hashes: vec![201, 202, 203],
-        // NOT quantised, and no model hash: `ContextEntity` has never carried one. `1.0e-7` is the
-        // element that says so -- it is exact in `f32` and would not survive int8 quantisation.
+        // NOT quantised. `1.0e-7` is exact in `f32` and would not survive int8 quantisation.
         vector: vec![0.5, -0.25, 1.0e-7, 3.5],
+        embedding_model_hash: 0x4142_4344_4546_4748,
     }
 }
 
