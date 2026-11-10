@@ -210,6 +210,13 @@ and embedding truncation settings are available under the
 `TEMPORALSTORE_OLLAMA_*` prefix. Existing `MATRIXARK_OLLAMA_*` settings remain
 accepted after the TemporalStore-prefixed names.
 
+Each structured extraction request returns the L0/L1 summaries and up to eight
+normalized durable entities in one model call. Entity names and values are
+byte-bounded, duplicate entities are removed before persistence, and the cap
+limits write, memory, and retrieval amplification while preserving facts,
+decisions, preferences, constraints, tasks, people, organizations, and projects
+for candidate retrieval.
+
 vLLM setup:
 
 ```bash

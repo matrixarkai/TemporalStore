@@ -716,7 +716,7 @@ pub fn ingest_resource_skill_context(
                 }
             }
         }
-        fanout.entity_count += 1;
+        fanout.entity_count += 1 + extract.extracted_entity_count;
         fanout.child_ref_count += 1;
         fanout.compression_count += 1;
 

@@ -324,6 +324,16 @@ pub struct ContextModelProviderConfig {
     pub mock_mode: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextExtractedEntity {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
 impl Default for ContextModelProviderConfig {
     fn default() -> Self {
         Self {
@@ -396,6 +406,8 @@ pub struct ContextExtractReport {
     pub provider: ContextModelProviderConfig,
     #[serde(default)]
     pub embedding_generation: ContextEmbeddingGenerationReport,
+    #[serde(default)]
+    pub extracted_entity_count: usize,
     pub node: ContextNode,
     pub event: ContextEvent,
     pub index_ref: ContextIndexRef,
@@ -1976,6 +1988,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     node_hash: u64,
     event_id_hash: u64,
 ) -> PreparedContextExtract {
+    let extracted_entities = summaries.entities;
     let provider = summaries.provider;
     if !summaries.status.ok {
         return PreparedContextExtract {
@@ -1984,6 +1997,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
                 status: summaries.status,
                 provider,
                 embedding_generation: ContextEmbeddingGenerationReport::default(),
+                extracted_entity_count: 0,
                 node: empty_node(),
                 event: empty_event(),
                 index_ref: ContextIndexRef {
@@ -2242,12 +2256,36 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
             clear: false,
         });
     }
+    let extracted_entity_count = extracted_entities.len();
+    commands.extend(extracted_entities.into_iter().map(|entity| {
+        let entity_identity = format!(
+            "{}:{}",
+            entity.kind,
+            entity.name.to_ascii_lowercase()
+        );
+        Command::ContextUpsertEntity {
+            tenant_hash: request.tenant_hash,
+            entity: ContextEntity {
+                entity_hash: stable_hash64(&entity_identity),
+                node_hash,
+                entity_type: context_extracted_entity_type(&entity.kind),
+                name: entity.name,
+                value: entity.value,
+                updated_at_ms: timestamp_ms,
+                valid_from_ms: timestamp_ms,
+                confidence: 0.9,
+                source_event_hashes: vec![event_id_hash],
+                vector: Vec::new(),
+            },
+        }
+    }));
     PreparedContextExtract {
         commands,
         report: ContextExtractReport {
             status: Status::ok(),
             provider,
             embedding_generation,
+            extracted_entity_count,
             node,
             event,
             index_ref,
@@ -3589,6 +3627,20 @@ fn source_kind_code(kind: ContextSourceKind) -> u32 {
     }
 }
 
+fn context_extracted_entity_type(kind: &str) -> u32 {
+    match kind {
+        "person" => 1,
+        "organization" => 2,
+        "project" => 3,
+        "preference" => 4,
+        "decision" => 5,
+        "constraint" => 6,
+        "task" => 7,
+        "fact" => 8,
+        _ => 0,
+    }
+}
+
 fn context_node_uri(tenant_hash: u64, node_hash: u64) -> String {
     format!("tsctx://tenant/{tenant_hash}/node/{node_hash}")
 }
@@ -3666,6 +3718,7 @@ fn empty_extract_report(
         status,
         provider,
         embedding_generation,
+        extracted_entity_count: 0,
         node: empty_node(),
         event: empty_event(),
         index_ref: ContextIndexRef {
