@@ -633,6 +633,7 @@ pub(super) fn storage_physical_index_report(
             hex::encode(native_packed_block_index_bytes(&block_index));
         bucket.block_indexes.push(block_index);
     }
+    let identities = shard.bucket_index.block_identities();
     for (routing_bucket, runtime_bucket) in &shard.bucket_index.bucket_map {
         let bucket = buckets
             .entry(*routing_bucket)
@@ -663,7 +664,6 @@ pub(super) fn storage_physical_index_report(
         // by the newest one reported the older manifest's WAL sequence and now reports 0. That
         // figure is not reconstructible from the newest manifest alone, and it was not readable
         // by anything that decided anything.
-        let identities = shard.bucket_index.block_identities();
         for (handle, block) in runtime_bucket.block_index.iter() {
             // THE ROW NAMES AN OBJECT, so a block whose neighbours do not name one cannot produce a
             // row. The one such block is a tombstone whose removal named no element.
