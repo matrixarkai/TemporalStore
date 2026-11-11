@@ -1094,23 +1094,19 @@ pub(super) fn bucket_generation_digests_from_entries(
     entries: &[LiveBlockEntry],
 ) -> BTreeMap<u32, BucketFingerprintDigest> {
     let mut lines = BTreeMap::<u32, Vec<(u64, u64)>>::new();
-    // One buffer for every line: the digest reads the bytes and keeps none of them.
-    let mut line = String::new();
     for entry in entries {
         let routing_bucket = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        line.clear();
-        write_bucket_fingerprint_line(&mut line, shard_id, &entry, routing_bucket);
         lines
             .entry(routing_bucket)
             .or_default()
-            .push(fingerprint_line_hash(&line));
+            .push(fingerprint_fields_hash(shard_id, entry, routing_bucket));
     }
     lines
         .into_iter()
         .map(|(routing_bucket, mut hashes)| {
-            // A SET, as the strings were: two blocks that state the same line are one line.
+            // Repeated entries do not change the bucket's fingerprint set.
             hashes.sort_unstable();
             hashes.dedup();
             (routing_bucket, BucketFingerprintDigest::of_sorted(&hashes))
@@ -1119,7 +1115,7 @@ pub(super) fn bucket_generation_digests_from_entries(
 }
 
 /// The 128-bit digest of one bucket's fingerprint set. Two buckets compare equal exactly when their
-/// sets of lines do, up to a collision in 128 bits of a keyed hash over data nobody chooses against
+/// sets of fields do, up to a collision in 128 bits of a hash over data nobody chooses against
 /// it: both sides are produced by this binary a moment apart, and an unequal pair is the safe
 /// direction for the reclaim plan (it declines to treat the manifest as covering the bucket).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1144,6 +1140,36 @@ impl BucketFingerprintDigest {
     }
 }
 
+fn fingerprint_fields_hash(
+    shard_id: ShardId,
+    entry: &LiveBlockEntry,
+    routing_bucket: u32,
+) -> (u64, u64) {
+    use std::hash::{Hash, Hasher};
+    // The derived object ID depends only on shard, kind and key, already included here.
+    // Keep the old empty/absent aliases and omit transient dirty/deleted/residency flags.
+    let fields = (
+        shard_id,
+        entry.kind.as_str(),
+        entry.object_key.as_ref(),
+        entry.element_name.as_deref().unwrap_or_default(),
+        entry.address.block_slab_id(),
+        entry.address.offset(),
+        entry.address.length(),
+        entry.address.block_id().unwrap_or_default(),
+        routing_bucket,
+        entry.address.generation().unwrap_or_default(),
+    );
+    let mut low = std::collections::hash_map::DefaultHasher::new();
+    let mut high = std::collections::hash_map::DefaultHasher::new();
+    low.write_u8(0x5a);
+    high.write_u8(0xa5);
+    fields.hash(&mut low);
+    fields.hash(&mut high);
+    (low.finish(), high.finish())
+}
+
+#[cfg(test)]
 fn fingerprint_line_hash(line: &str) -> (u64, u64) {
     use std::hash::Hasher;
     let mut low = std::collections::hash_map::DefaultHasher::new();
@@ -1155,8 +1181,8 @@ fn fingerprint_line_hash(line: &str) -> (u64, u64) {
     (low.finish(), high.finish())
 }
 
-/// The ONE home of what a fingerprint line says. The digest above hashes it and the reference
-/// below keeps it, so neither can drift from the other.
+/// Textual oracle for the fields the maintenance comparison includes.
+#[cfg(test)]
 fn write_bucket_fingerprint_line(
     out: &mut String,
     shard_id: ShardId,
@@ -1182,6 +1208,10 @@ fn write_bucket_fingerprint_line(
         String::new()
     );
 }
+
+#[cfg(test)]
+#[path = "fingerprint_fields_tests.rs"]
+mod fingerprint_fields_tests;
 
 /// The lines themselves, as the plan compared them before it compared digests. Kept for the test
 /// that holds the digest to the same answer, pair by pair.
