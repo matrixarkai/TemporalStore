@@ -7259,7 +7259,7 @@ fn append_value_of_object(
     })
 }
 
-// Packed rows own their encoded frame, so a synchronous append can move it into the WAL.
+// Packed rows can move their encoded frame into the WAL on either placement path.
 #[allow(clippy::too_many_arguments)]
 fn append_owned_value_of_object(
     cache: &MultiLayerCache,
@@ -7271,20 +7271,21 @@ fn append_owned_value_of_object(
     async_storage: bool,
     block_ordinal: impl FnOnce() -> u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    if async_storage {
+    if let Some(offset) = (async_storage && bytes.len() < 8 * 1024)
+        .then(|| reserve_hot_block_offset(&HOT_BLOCK_OFFSET)).flatten()
+    {
         return crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
-            append_value_inner(
-                cache,
-                block_store,
-                shard_id,
-                &bytes,
-                Some(object_id),
-                None,
+            let address = ElementEntry::try_from_parts(
+                HOT_BLOCK_SLAB_ID, offset, bytes.len() as u64, None, Some(object_id),
+            )?;
+            let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes,
+                || bytes.clone());
+            block_in_wal::stage_owned(object_id, None, bytes);
+            cache.put_memory_only(CacheKey::page_with_slot(
+                shard_id, address.block_slab_id(), address.offset(), address.length(),
                 Some(routing_bucket),
-                true,
-                8 * 1024 - 1,
-                block_ordinal,
-            )
+            ), cached);
+            Ok(address)
         });
     }
     let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
@@ -7298,6 +7299,10 @@ fn append_owned_value_of_object(
     block_in_wal::stage_owned(object_id, None, bytes);
     Ok(address)
 }
+
+#[cfg(test)]
+#[path = "engine/owned_packed_frames_tests.rs"]
+mod owned_packed_frames_tests;
 
 fn reserve_hot_block_offset(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
     counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |offset| {
