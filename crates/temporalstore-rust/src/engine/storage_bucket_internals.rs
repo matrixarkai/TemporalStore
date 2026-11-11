@@ -2656,6 +2656,44 @@ pub(super) fn reload_released_bucket(
     if !shard.bucket_index.released_buckets.contains(&routing_bucket) {
         return false;
     }
+    let entries = collect_model_live_block_entries_in_bucket(shard, routing_bucket);
+    install_released_bucket_entries(shard, shard_id, routing_bucket, entries)
+}
+
+/// Complete an owned checkpoint before memory-only release markers leave its stored form.
+pub(super) fn restore_released_buckets_in_checkpoint(shard: &mut ShardState, shard_id: ShardId) {
+    if shard.bucket_index.released_buckets.is_empty() {
+        return;
+    }
+    let released = shard.bucket_index.released_buckets.clone();
+    let (start, end) = shard.routing_range();
+    let mut by_bucket = BTreeMap::<u32, Vec<LiveBlockEntry>>::new();
+    // One pass regardless of how many buckets were released. Single-bucket reloads
+    // each inspect the model maps, so calling them in a loop multiplies that work.
+    visit_model_live_blocks(
+        shard,
+        ModelWalkTally::BucketScopedEntries,
+        |key, _| released.contains(&block_routing_bucket(key, start, end)),
+        |kind, key, element, address| {
+            let bucket = block_routing_bucket(key.as_str(), start, end);
+            by_bucket.entry(bucket).or_default().push(live_block_entry_filed(
+                key.to_handle(), kind.as_str(), element.map(str::to_string), address.clone(), bucket,
+            ));
+        },
+    );
+    for bucket in released {
+        install_released_bucket_entries(
+            shard, shard_id, bucket, by_bucket.remove(&bucket).unwrap_or_default(),
+        );
+    }
+}
+
+fn install_released_bucket_entries(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    entries: Vec<LiveBlockEntry>,
+) -> bool {
     if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         // Held across the derivation below. Under the shard write lock nothing can observe it
         // today; it is the state a queued concurrent loader would wait on if this ever became
@@ -2668,11 +2706,7 @@ pub(super) fn reload_released_bucket(
     // THE IDENTITY TRAVELS WITH THE BLOCK, in the tuple, because the model-map entry it is read
     // off is the only place it exists on this path and the block is about to stop carrying one.
     let mut blocks: Vec<(Arc<str>, BlockIndex, u64)> = Vec::new();
-    // ONE bucket's blocks, filtered inside the walk. This used to materialize every live block in
-    // the shard and then drop all but this bucket's -- a batch reload over N released buckets
-    // would have paid the whole store N times. The walk now filters by bucket, so one reload
-    // costs one bucket's blocks.
-    for entry in collect_model_live_block_entries_in_bucket(shard, routing_bucket) {
+    for entry in entries {
         let object_id = expected_live_block_object_id(shard_id, &entry);
         let address = entry.address;
         blocks.push((
