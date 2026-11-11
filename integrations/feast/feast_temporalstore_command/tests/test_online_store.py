@@ -178,6 +178,42 @@ class ByteEncodingTest(unittest.TestCase):
         self.assertEqual(decode_bytes([]), b"")
 
 
+class TimestampPrefetchPolicyTest(unittest.TestCase):
+    def test_bulk_threshold_and_hysteresis(self):
+        client = TemporalStoreClient()
+        for total, skipped, expected in (
+            (7, 7, False), (8, 6, True), (8, 4, True),
+            (8, 2, False), (8, 8, True), (1, 0, False),
+        ):
+            client.observe_timestamp_dedup(total, skipped)
+            self.assertEqual(client.timestamp_prefetch_preferred(), expected)
+
+    def test_invalid_observations_do_not_change_policy(self):
+        client = TemporalStoreClient()
+        client.observe_timestamp_dedup(8, 8)
+        for total, skipped in ((0, 0), (-1, 0), (8, -1), (8, 9)):
+            client.observe_timestamp_dedup(total, skipped)
+            self.assertTrue(client.timestamp_prefetch_preferred())
+
+    def test_policy_is_per_thread_and_close_resets_it(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        client = TemporalStoreClient()
+        client.observe_timestamp_dedup(8, 8)
+
+        def other_thread():
+            before = client.timestamp_prefetch_preferred()
+            client.observe_timestamp_dedup(8, 0)
+            return before, client.timestamp_prefetch_preferred()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            self.assertEqual(pool.submit(other_thread).result(), (False, False))
+        self.assertTrue(client.timestamp_prefetch_preferred())
+        self.assertEqual(vars(client._local), {"prefer_timestamp_prefetch": True})
+        client.close()
+        self.assertFalse(client.timestamp_prefetch_preferred())
+
+
 class ClientProtocolTest(unittest.TestCase):
     def test_set_scan_cursor_is_encoded_on_both_batch_routes(self):
         client = TemporalStoreClient()
@@ -1133,6 +1169,173 @@ class OnlineStoreTest(unittest.TestCase):
             self.config.online_store.max_write_batch_commands,
         )
         return client
+
+    def _timestamp_client(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        class TimestampClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self.current = {}
+                self.conditional_calls = []
+                self.before_conditional = None
+
+            def batch_hash_multi_get(self, keys, fields):
+                self.shared_reads.append((list(keys), list(fields)))
+                return [[self.current.get(key)] for key in keys]
+
+            def batch_hash_timestamp_set(
+                self, fields, timestamp_field, rows, request_upper_bound=None, ttl_ms=None
+            ):
+                self.conditional_calls.append((list(fields), list(rows), ttl_ms))
+                if self.before_conditional is not None:
+                    self.before_conditional()
+                applied = 0
+                for key, seconds, nanos, values in rows:
+                    raw = self.current.get(key)
+                    if raw is not None:
+                        stored = Timestamp.FromString(raw)
+                        if (seconds, nanos) <= (stored.seconds, stored.nanos):
+                            continue
+                    self.current[key] = values[fields.index(timestamp_field)]
+                    applied += 1
+                return applied, len(rows) - applied
+
+            def batch_hash_multi_set(self, *args, **kwargs):
+                raise AssertionError("survivors must retain their atomic timestamp guard")
+
+        return self._install(client=TimestampClient())
+
+    def _timestamp_rows(self, seconds, ids=range(8), value=None):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        return [
+            (self._entity_key(i), {"trips": value if value is not None else ValueProto(int64_val=i)},
+             self.datetime.fromtimestamp(seconds, self.timezone.utc), None)
+            for i in ids
+        ]
+
+    def _train_timestamp_prefetch(self, client):
+        for seconds in (20, 10):
+            self.store.online_write_batch(
+                self.config, self.view, self._timestamp_rows(seconds), None
+            )
+        self.assertTrue(client.timestamp_prefetch_preferred())
+
+    def test_adaptive_stale_batch_avoids_feature_serialization_and_payload_write(self):
+        client = self._timestamp_client()
+        self._train_timestamp_prefetch(client)
+        self.assertEqual(client.shared_reads, [])
+        self.assertEqual(len(client.conditional_calls), 2)
+
+        class UnserializableValue:
+            def SerializeToString(self):
+                raise AssertionError("stale feature must not be serialized")
+
+        progress = []
+        self.store.online_write_batch(
+            self.config, self.view, self._timestamp_rows(10, value=UnserializableValue()),
+            progress.append,
+        )
+        self.assertEqual(sum(progress), 8)
+        self.assertEqual(len(client.conditional_calls), 2)
+        self.assertEqual(len(client.shared_reads), 1)
+        self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
+
+    def test_adaptive_survivors_remain_atomic_and_ttl_is_preserved(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        self.config.online_store.key_ttl_seconds = 90
+        self._train_timestamp_prefetch(client)
+
+        def newer_concurrent_write():
+            client.current.update({key: Timestamp(seconds=40).SerializeToString()
+                                   for key in client.current})
+
+        client.before_conditional = newer_concurrent_write
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(30), None)
+        self.assertTrue(all(Timestamp.FromString(v).seconds == 40 for v in client.current.values()))
+        self.assertTrue(client.timestamp_prefetch_preferred())
+        client.before_conditional = None
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(50), None)
+        self.assertFalse(client.timestamp_prefetch_preferred())
+        reads = len(client.shared_reads)
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(60), None)
+        self.assertEqual(len(client.shared_reads), reads)
+        self.assertTrue(all(call[2] == 90_000 for call in client.conditional_calls))
+
+    def test_adaptive_does_not_cache_timestamps_across_delete_or_expiry(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        self._train_timestamp_prefetch(client)
+        client.current.clear()
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(10), None)
+        self.assertEqual(len(client.current), 8)
+        self.assertTrue(all(Timestamp.FromString(v).seconds == 10 for v in client.current.values()))
+        self.assertFalse(client.timestamp_prefetch_preferred())
+
+    def test_adaptive_counts_unique_keys_instead_of_local_duplicates(self):
+        client = self._timestamp_client()
+        self._train_timestamp_prefetch(client)
+        rows = self._timestamp_rows(10, ids=range(6)) * 20
+        rows += self._timestamp_rows(30, ids=range(6, 8)) * 20
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        self.assertEqual(len(client.conditional_calls[-1][1]), 2)
+        self.assertTrue(client.timestamp_prefetch_preferred())
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(40), None)
+        self.assertFalse(client.timestamp_prefetch_preferred())
+        client.shared_reads.clear()
+        rows = self._timestamp_rows(10, ids=[0]) * 20
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        self.assertFalse(client.timestamp_prefetch_preferred())
+        self.assertEqual(client.shared_reads, [])
+
+    def test_adaptive_handles_epoch_zero_and_negative_event_times(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        client.observe_timestamp_dedup(8, 8)
+        for i, seconds in ((0, 0), (1, -10)):
+            key = self.store._entity_hash_key(self.config, self._entity_key(i))
+            client.current[key] = Timestamp(seconds=seconds).SerializeToString()
+        rows = self._timestamp_rows(0, ids=[0]) + self._timestamp_rows(-20, ids=[1])
+        rows += self._timestamp_rows(-5, ids=[2]) + self._timestamp_rows(-10, ids=[2])
+        rows += self._timestamp_rows(-4, ids=[3]) + self._timestamp_rows(-3, ids=[3])
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        self.assertEqual([r[1] for r in client.conditional_calls[-1][1]], [-5, -3])
+
+    def test_adaptive_opt_out_and_augmented_paths_preserve_routing(self):
+        client = self._timestamp_client()
+        client.observe_timestamp_dedup(8, 8)
+        self.config.online_store.adaptive_timestamp_prefetch = False
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(20), None)
+        self.assertEqual(client.shared_reads, [])
+        self.assertEqual(len(client.conditional_calls), 1)
+
+        for option in ("skip_dedup", "write_feature_history", "track_keys_for_teardown"):
+            with self.subTest(option=option):
+                client = self._install()
+                self.config.online_store.adaptive_timestamp_prefetch = True
+                for setting in ("skip_dedup", "write_feature_history", "track_keys_for_teardown"):
+                    setattr(self.config.online_store, setting, setting == option)
+                client.timestamp_prefetch_preferred = mock.Mock(side_effect=AssertionError("ineligible"))
+                self.store.online_write_batch(self.config, self.view, self._timestamp_rows(20), None)
+                client.timestamp_prefetch_preferred.assert_not_called()
+                self.assertEqual(len(client.shared_reads), 0 if option == "skip_dedup" else 1)
+
+    def test_fallback_timestamp_reads_distinguish_missing_from_epoch_zero(self):
+        client = self._install(answers=[{
+            "status": {"ok": True},
+            "responses": [ok({"kind": "values", "values": [[]]}),
+                          ok({"kind": "values", "values": [None]})],
+        }])
+        rows = self._timestamp_rows(-5, ids=[0, 1])
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        commands = client.sent[-1][1]["commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["key"], self.store._entity_hash_key(self.config, self._entity_key(1)))
 
     def _install_tracking(self, members_by_key=None, legacy_members=None):
         client = self._install()

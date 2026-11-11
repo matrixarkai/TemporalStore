@@ -48,6 +48,7 @@ online_store:
   max_write_batch_commands: 4096
   max_batch_request_bytes: 4194304
   skip_dedup: false          # see "Writes" below
+  adaptive_timestamp_prefetch: true
   key_ttl_seconds: null      # see "Teardown" below
   write_feature_history: false
 ```
@@ -133,8 +134,8 @@ materialization path. Mixed feature layouts and writes augmented with history
 or teardown tracking use bounded binary `/batch_write_msgpack` command batches.
 When TTL is configured, each hash write in those batches carries its own
 expiry; it does not need a second command for the same entity.
-A batched timestamp read runs first only when stale-write suppression is
-requested and the atomic route is unavailable. That timestamp projection also uses
+A batched timestamp read also serves augmented writes, mixed layouts, older-node
+fallbacks, and the adaptive stale-traffic path below. That projection uses
 the compact shared-field read route, so `_ts` crosses the wire once per batch.
 Reads retain the 512-command response bound while writes
 default to 4,096 commands and remain capped at 4 MiB of encoded request data.
@@ -143,7 +144,7 @@ Nodes without either binary write route are detected once per client and use
 
 * **`skip_dedup: false` (default)** — the common latest-only, shared-layout path
   atomically compares the stored event timestamp and writes newer rows on the
-  server, without a preliminary timestamp read. History, teardown tracking,
+  server, normally without a preliminary timestamp read. History, teardown tracking,
   mixed layouts, and older-node fallbacks use a separate timestamp projection
   and write path; that read-then-write fallback is not an atomic conditional
   update across concurrent writers. Within a call, rows sharing an entity key
@@ -151,6 +152,22 @@ Nodes without either binary write route are detected once per client and use
 * **`skip_dedup: true`** — disables stored-timestamp suppression and uses the
   unconditional write path. Use it only when input ordering is guaranteed;
   an older materialization can otherwise replace a newer stored value.
+
+With `adaptive_timestamp_prefetch: true` (default), each client thread learns a
+single routing hint. A conditional batch with at least eight unique rows and at
+least 75% stale rejections enables a timestamp-only pre-read for following batches.
+Stale rows are then skipped before feature serialization; survivors still use the
+atomic conditional route when their layout supports it. A batch with at most 25%
+stale rows disables the hint. Ratios between those thresholds keep its current state.
+Local duplicate rows do not inflate the learned stale ratio.
+
+Only the hint persists: timestamps and feature values are read afresh, so deletion
+or expiry cannot leave a cached timestamp fence. The hint is thread-local and resets
+when the client closes. Fresh traffic normally keeps one write request; the first
+fresh batch after stale traffic may pay a pre-read plus a write. Set the option to
+`false` to keep the nonadaptive path. History, teardown tracking and `skip_dedup`
+do not use this policy. Mixed-layout and older-node fallbacks retain their existing
+read-then-write concurrency limits.
 
 ### Payload copies and persistence
 
