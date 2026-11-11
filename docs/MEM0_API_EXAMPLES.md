@@ -73,6 +73,13 @@ When selecting an Ollama model per request, send the same provider configuration
 update, and search. Updates do not infer or persist credentials or model settings in the
 memory catalog. The scale driver forwards its configured provider to both update routes.
 
+Batch extraction uses the configured transport retry budget. Once a model transport fails,
+it stops the remaining chunks of that invocation instead of issuing a new model request for
+every source. Valid partial responses still retry only missing sources; malformed content
+can still recover through single-source extraction. An explicitly configured fallback
+provider remains available. This bounds failure amplification without replacing failed
+extraction with an implicit mock result.
+
 ## Large-corpus profiling
 
 Run an isolated local metadata, data, and proxy process from this repository:

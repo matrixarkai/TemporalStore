@@ -343,6 +343,21 @@ pub(crate) fn context_summaries_for_extract(
     }
 }
 
+#[cfg(test)]
+#[path = "summary_batch_failure_tests.rs"]
+mod summary_batch_failure_tests;
+
+fn summary_batch_transport_failure(error: &crate::llm_context::OllamaError) -> bool {
+    match error {
+        // Streaming JSON decoding can wrap a socket timeout in a JSON error.
+        crate::llm_context::OllamaError::Http(crate::http::HttpError::Json(error)) => {
+            error.io_error_kind().is_some()
+        }
+        crate::llm_context::OllamaError::Http(_) => true,
+        _ => false,
+    }
+}
+
 pub(crate) fn context_summaries_for_extract_batch(
     provider: &ContextModelProviderConfig,
     requests: &[&ContextExtractRequest],
@@ -373,21 +388,30 @@ pub(crate) fn context_summaries_for_extract_batch(
     while start < requests.len() {
         let (end, prompt) = ollama_summary_batch_prompt(&client, requests, start);
         let chunk = &requests[start..end];
-        let output: Result<ContextSummaryBatchOutput, Status> = client
-            .generate_structured_output(
-                CONTEXT_SUMMARY_SYSTEM_PROMPT,
-                &prompt,
-                context_summary_batch_schema(),
-            )
-            .map_err(|err| {
-                Status::error(
-                    "model_provider_request_failed",
-                    format!(
-                        "context provider {} request failed: {err}",
-                        provider.provider_name
-                    ),
-                )
-            });
+        let output = client.generate_structured_output::<ContextSummaryBatchOutput>(
+            CONTEXT_SUMMARY_SYSTEM_PROMPT,
+            &prompt,
+            context_summary_batch_schema(),
+        );
+        if let Some(error) = output
+            .as_ref()
+            .err()
+            .filter(|error| summary_batch_transport_failure(error))
+        {
+            // The transport already exhausted its configured retries. Do not expand a timeout
+            // or unavailable endpoint into more model calls for this invocation.
+            let status = Status::error(
+                "model_provider_request_failed",
+                format!(
+                    "context provider {} request failed: {error}",
+                    provider.provider_name
+                ),
+            );
+            for result in &mut results[start..] {
+                *result = Some(Err(status.clone()));
+            }
+            break;
+        }
 
         if let Ok(output) = output {
             let mut seen = HashSet::with_capacity(output.items.len());
