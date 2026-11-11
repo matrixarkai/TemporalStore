@@ -1556,14 +1556,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // one called `collect_live_block_entries` for its own copy -- measured by
         // `what_the_compaction_preamble_walks` as 5.0x the shard. All of them run under the same
         // WRITE lock on an unchanged `&ShardState`, so every read and write on the shard queues
-        // behind the lot. Three of them take the same live-block set and now share one walk.
+        // behind the lot. Two of them take the same live-block set and now share one walk.
         //
         // `collect_live_block_slab_ids` still walks on its own because it reads the model maps
         // directly rather than the live-block set. The object-manager report is deliberately not
         // built here: compaction only needs its four layout totals, computed below from buckets.
         //
-        // Order is forced by the last consumer taking the Vec BY VALUE: the two that borrow go
-        // first, so nothing is cloned.
+        // Both consumers borrow the entries; release the allocation before relocation.
         let entries = collect_live_block_entries(shard);
         let ownership = validate_bucket_ownership_index_from_entries(
             shard_id,
@@ -1584,11 +1583,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let before_slabs = collect_live_block_slab_ids(shard);
         let before = compaction_utility_report_from_entries(&self.block_store, shard, &entries);
         let model_layouts_before = compaction_model_layout_reports(&self.block_store, shard);
-        // Ordered so the ONE consumer that takes the Vec by value goes last. These are read-only
-        // reports over unchanged state, so the order among them carries no meaning beyond that.
+        drop(entries);
         let delete_marked_object_ids_before =
-            object_lifecycle_report_from_entries(shard_id, shard, entries, &BTreeSet::new(), |_| 0)
-                .delete_marked_object_ids;
+            storage_reporting::storage_delete_marked_object_count(shard);
         let bucket_layout_transition_count_before = 0u64;
         // Start a round, or continue the one a budget cut short.
         //
@@ -2039,7 +2036,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let after = compaction_utility_report(&self.block_store, shard);
         rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
         let delete_marked_object_ids_after =
-            storage_object_lifecycle_report(shard_id, shard).delete_marked_object_ids;
+            storage_reporting::storage_delete_marked_object_count(shard);
         let bucket_layout_transition_count_after = 0u64;
         let bucket_layout_states_after = compaction_bucket_layout_states(shard);
         let stale_block_slab_ids = before_slabs
