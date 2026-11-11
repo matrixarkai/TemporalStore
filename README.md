@@ -89,6 +89,25 @@ services to start alongside TemporalStore.
   history reads separate in capacity estimates. Local instruction or allocation
   reductions do not establish an end-to-end throughput improvement.
 
+## Feature-Serving Behavior
+
+The native Feast provider exposes different storage work depending on the selected
+options. Use its [configuration guide](integrations/feast/feast_temporalstore_command/README.md)
+when choosing a path rather than treating every materialization as the same write.
+
+| Workflow | Behavior and boundary |
+|---|---|
+| Latest values with default deduplication | Supported shared-layout writes compare event timestamps atomically on the server; augmented and older-node paths have the concurrency limits documented by the provider. |
+| Adaptive stale-traffic prefetch | A thread-local hint can enable fresh timestamp projections before later writes. It is not a cache of timestamp values or a substitute for server ordering. |
+| Optional history | `write_feature_history` adds series work; numeric-history configuration changes the aggregate read path. Latest-value reads and history-window reads remain different APIs. |
+| Expiring data | `key_ttl_seconds` configures latest-key expiry and TTL on new history writes. Choose a compatible server; expiry is not exact view enumeration. |
+| Removing a view | Exact cleanup requires `track_keys_for_teardown`. With tracking disabled, teardown warns and leaves rows rather than claiming deletion. |
+
+For throughput and latency work, start with the
+[Feast benchmark guide](docs/feast_online_store_benchmark.md). Keep accepted rows,
+stale refusals, returned rows, request counts, and read widths separate, and include
+metadata and retained buffers when reporting memory beyond the payload-cache budget.
+
 ## Is this the store for your problem?
 
 | You are building | This store | Read on |
