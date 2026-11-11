@@ -1457,6 +1457,29 @@ pub(super) fn mark_object_dirty_at_bucket(
     note_bucket_flags_stale(shard, routing_bucket);
 }
 
+fn collect_rebuild_tombstones<const INDEXED: bool>(shard: &ShardState)
+    -> Vec<(u32, BlockIndex, Option<TombstoneElement>)>
+{
+    let mut entries = Vec::new();
+    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+        let indexed = INDEXED.then(|| {
+            let mut rows = HashMap::new();
+            for row in bucket.tombstone_elements.iter() {
+                rows.entry(row.block).or_insert(row);
+            }
+            rows
+        });
+        for block in bucket.block_index.values().filter(|block| block.deleted()) {
+            let row = match &indexed {
+                Some(rows) => rows.get(&crate::engine::state::tombstone_block_key(&block.address)).copied(),
+                None => bucket.tombstone_element_at(&block.address),
+            };
+            entries.push((*routing_bucket, block.clone(), row.cloned()));
+        }
+    }
+    entries
+}
+
 pub(super) fn rebuild_bucket_block_ownership(
     shard_id: ShardId,
     shard: &mut ShardState,
@@ -1501,24 +1524,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // carried across without its row survives as an entry nothing can identify: the next re-add
     // cannot find it to clear, so the removal is restated for ever and the retention stops being
     // bounded at one row per distinct element removed.
-    let preserved_tombstones: Vec<(u32, BlockIndex, Option<TombstoneElement>)> = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .flat_map(|(routing_bucket, bucket)| {
-            bucket
-                .block_index
-                .values()
-                .filter(|block| block.deleted())
-                .map(move |block| {
-                    (
-                        *routing_bucket,
-                        block.clone(),
-                        bucket.tombstone_element_at(&block.address).cloned(),
-                    )
-                })
-        })
-        .collect();
+    let preserved_tombstones = collect_rebuild_tombstones::<true>(shard);
     shard.bucket_index.bucket_map.clear();
     // AND THE LOOKUP WITH IT, because it describes the map that was just emptied.
     //
@@ -6857,6 +6863,19 @@ pub(super) fn rebuild_bucket_first_index(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) {
+    rebuild_bucket_first_index_with_layout::<true>(
+        shard_id, shard, start_routing_bucket, end_routing_bucket,
+        update_bucket_layout_with_live_objects,
+    );
+}
+
+fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    mut finalize: impl FnMut(&mut BucketNode, &BTreeSet<u64>),
+) {
     // Preserve tombstone (deleted) object ids across the rebuild. A delete removes the object
     // from the model maps (strings/hashes/...), so collect_model_live_block_entries no longer
     // sees it, but the object manager must keep reporting it as a tombstone until GC reclaims
@@ -6892,24 +6911,7 @@ pub(super) fn rebuild_bucket_first_index(
     // bucket all-tombstone and made ownership validation refuse the round.
     // AND THE ELEMENT ROW BESIDE EACH, for the reason stated on the other rebuild: an entry that
     // survives without its row is a tombstone nothing can identify.
-    let prior_tombstone_entries: Vec<(u32, BlockIndex, Option<TombstoneElement>)> = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .flat_map(|(routing_bucket, bucket)| {
-            bucket
-                .block_index
-                .values()
-                .filter(|block| block.deleted())
-                .map(move |block| {
-                    (
-                        *routing_bucket,
-                        block.clone(),
-                        bucket.tombstone_element_at(&block.address).cloned(),
-                    )
-                })
-        })
-        .collect();
+    let prior_tombstone_entries = collect_rebuild_tombstones::<BATCHED>(shard);
     // THE LIVE OBJECT IDS THIS RECONSTRUCT FILES, ACCUMULATED PER BUCKET AS IT GOES.
     //
     // A reconstruct has no lookup to invert -- it builds one at the END, out of what it filed --
@@ -6967,12 +6969,19 @@ pub(super) fn rebuild_bucket_first_index(
         if let Some(placed) = bucket.block_index.get(&handle) {
             filed_blocks.push((routing_bucket, handle, object_key, placed.clone()));
         }
-        update_bucket_layout_with_live_objects(
+        if !BATCHED { finalize(
             &mut bucket,
             live_object_ids_by_bucket
                 .get(&routing_bucket)
                 .unwrap_or(&no_live_objects),
-        );
+        ); }
+    }
+    // Finalize live buckets before restoring deleted-object ids, preserving the original phase
+    // ordering without reconciling each growing block prefix.
+    if BATCHED {
+        for (routing_bucket, mut bucket) in bucket_index.bucket_map.iter_mut() {
+            finalize(&mut bucket, live_object_ids_by_bucket.get(routing_bucket).unwrap_or(&no_live_objects));
+        }
     }
     // Re-attach the tombstone ids captured above. Keep them in object_index too so the object
     // manager's object_count matches the deserialize/reconcile load path (which never dropped
@@ -6996,6 +7005,7 @@ pub(super) fn rebuild_bucket_first_index(
     // reach the same state or it would restate a removal the store has already undone -- the mirror
     // image of the defect this exists to prevent, and the direction nothing else here would catch.
     let mut refiled = 0usize;
+    let mut refiled_buckets = BTreeSet::new();
     for (routing_bucket, tombstone, element) in prior_tombstone_entries {
         let Some(element) = element else {
             // A TOMBSTONE NAMING NO ELEMENT CANNOT BE REFILED, and this is where that becomes
@@ -7057,12 +7067,19 @@ pub(super) fn rebuild_bucket_first_index(
         // A TOMBSTONE CONTRIBUTES NOTHING LIVE, so the set is the one accumulated above for this
         // bucket -- and for a bucket that holds only refiled tombstones it is empty, which is the
         // clear arm of the reconcile firing exactly where it used to.
-        update_bucket_layout_with_live_objects(
+        if BATCHED { refiled_buckets.insert(routing_bucket); }
+        else { finalize(
             &mut bucket,
             live_object_ids_by_bucket
                 .get(&routing_bucket)
                 .unwrap_or(&no_live_objects),
-        );
+        ); }
+    }
+    if BATCHED {
+        for routing_bucket in refiled_buckets {
+            let mut bucket = bucket_index.bucket_map.get_mut(&routing_bucket).expect("refiled bucket exists");
+            finalize(&mut bucket, live_object_ids_by_bucket.get(&routing_bucket).unwrap_or(&no_live_objects));
+        }
     }
     note_tombstones_refiled(refiled);
     // FILED FROM WHAT THIS RECONSTRUCT PLACED, where a whole-shard rebuild used to re-derive it.
@@ -7088,6 +7105,10 @@ pub(super) fn rebuild_bucket_first_index(
     // confirm it is the walk being removed.
     shard.bucket_index.block_slab_live.mark_ready();
 }
+
+#[cfg(test)]
+#[path = "tests/bucket_rebuild_finalize.rs"]
+mod bucket_rebuild_finalize_tests;
 
 /// Merge a block-derived timestamped-series view against the pre-existing (deserialized /
 /// in-memory) model map, which is AUTHORITATIVE for membership. reconcile re-reads packed
