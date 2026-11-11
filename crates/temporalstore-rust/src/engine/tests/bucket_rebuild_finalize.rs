@@ -135,3 +135,59 @@ fn indexed_tombstone_capture_preserves_scalar_rows_and_order() {
         }
     }
 }
+
+#[test]
+fn rebuilt_tombstone_rows_preserve_scalar_identity_order_and_shared_names() {
+    let shard = fixture(32, false, false);
+    let source = collect_rebuild_tombstones::<false>(&shard);
+    assert!(!source.is_empty());
+    for count in [0, 64, 4096, 16384] {
+        let mut expected = BucketNode::default();
+        let mut actual = BucketNode::default();
+        let mut first_names = HashMap::new();
+        let mut rows = Vec::new();
+        for index in 0..count {
+            let (_, block, row) = &source[(index / 17) % source.len()];
+            let mut row = row.clone().unwrap();
+            row.object_key = Arc::from(format!("object-{}", index % 3));
+            row.element_name = Arc::from(format!("member-{}", index % 2048));
+            row.model_id = if index % 2 == 0 {
+                StoredModelKind::Set
+            } else {
+                StoredModelKind::Hash
+            };
+            row.block = crate::engine::state::tombstone_block_key(&block.address);
+            first_names
+                .entry((
+                    row.model_id,
+                    Arc::clone(&row.object_key),
+                    Arc::clone(&row.element_name),
+                ))
+                .or_insert_with(|| (Arc::clone(&row.object_key), Arc::clone(&row.element_name)));
+            expected.record_tombstone_element(
+                &row.object_key,
+                row.model_id,
+                &row.element_name,
+                &block.address,
+            );
+            rows.push(row);
+        }
+        actual.rebuild_tombstone_elements(rows);
+        assert_eq!(actual.tombstone_elements, expected.tombstone_elements);
+        for row in actual.tombstone_elements.iter() {
+            let (object, name) = &first_names[&(
+                row.model_id,
+                Arc::clone(&row.object_key),
+                Arc::clone(&row.element_name),
+            )];
+            assert!(Arc::ptr_eq(object, &row.object_key));
+            assert!(Arc::ptr_eq(name, &row.element_name));
+        }
+        actual.rebuild_tombstone_elements(Vec::new());
+        assert!(actual.tombstone_elements.is_empty());
+        assert_eq!(
+            serde_json::to_string(&actual.tombstone_elements).unwrap(),
+            "[]"
+        );
+    }
+}

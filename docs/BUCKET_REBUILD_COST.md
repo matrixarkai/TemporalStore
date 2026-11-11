@@ -10,6 +10,13 @@ Both rebuild paths capture tombstone identities through a temporary per-bucket a
 lookup. Duplicate addresses keep the scalar lookup's first row, and capture order is
 unchanged. No resident index or persisted fields are added.
 
+Reattaching rows also uses a temporary identity lookup rather than searching the growing
+row list for every retained block. Both rebuilds move the captured shared object/member
+names into per-bucket row batches. Duplicate identities retain their first row position
+and shared names, with the last address winning, just as scalar insertion does. The batch
+is deduplicated in place and releases excess capacity when duplicates were removed;
+the lookup is discarded before serving resumes. The ordinary mutation path is unchanged.
+
 The state-equivalence test compares the previous scalar rebuild with the batched path.
 At 128 churn rounds, its live fixture drops from 146 layout calls visiting 10,586 block
 entries to three calls visiting 163, with identical serialized bucket state. Deleted-only,

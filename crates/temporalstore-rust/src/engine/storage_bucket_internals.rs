@@ -1623,6 +1623,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // state or it would resurrect a removal the store has already undone -- the mirror image of the
     // defect this whole change is about, and the one direction nothing else here would catch.
     let mut tombstones_refiled = 0usize;
+    let mut rebuilt_rows = BTreeMap::<u32, Vec<TombstoneElement>>::new();
     for (routing_bucket, tombstone, element) in preserved_tombstones {
         let Some(element) = element else {
             // A TOMBSTONE NAMING NO ELEMENT CANNOT BE REFILED, and this is where that becomes
@@ -1689,13 +1690,15 @@ pub(super) fn rebuild_bucket_block_ownership(
         // row was dropped above rather than refiled. Without the row the tombstone survives the
         // rebuild as an entry whose element nothing can name, so the next re-add cannot find it to
         // clear and the retention bound is gone.
-        bucket.record_tombstone_element(
-            &element.object_key,
-            model_id,
-            &element.element_name,
-            &address,
-        );
+        let mut element = element;
+        element.model_id = model_id;
+        element.block = crate::engine::state::tombstone_block_key(&address);
+        rebuilt_rows.entry(routing_bucket).or_default().push(element);
         tombstones_refiled += 1;
+    }
+    for (routing_bucket, rows) in rebuilt_rows {
+        let mut bucket = shard.bucket_index.bucket_map.get_mut(&routing_bucket).expect("refiled bucket exists");
+        bucket.rebuild_tombstone_elements(rows);
     }
     note_tombstones_refiled(tombstones_refiled);
     // THE WHOLE-SHARD REBUILD IS GONE FROM HERE, and the claim it stood for is checked instead.
@@ -7005,7 +7008,7 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     // reach the same state or it would restate a removal the store has already undone -- the mirror
     // image of the defect this exists to prevent, and the direction nothing else here would catch.
     let mut refiled = 0usize;
-    let mut refiled_buckets = BTreeSet::new();
+    let mut rebuilt_rows = BTreeMap::<u32, Vec<TombstoneElement>>::new();
     for (routing_bucket, tombstone, element) in prior_tombstone_entries {
         let Some(element) = element else {
             // A TOMBSTONE NAMING NO ELEMENT CANNOT BE REFILED, and this is where that becomes
@@ -7053,12 +7056,19 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
             tombstone,
             &mut bucket_index.block_slab_live,
         );
-        bucket.record_tombstone_element(
-            &element.object_key,
-            model_id,
-            &element.element_name,
-            &address,
-        );
+        if BATCHED {
+            let mut element = element;
+            element.model_id = model_id;
+            element.block = crate::engine::state::tombstone_block_key(&address);
+            rebuilt_rows.entry(routing_bucket).or_default().push(element);
+        } else {
+            bucket.record_tombstone_element(
+                &element.object_key,
+                model_id,
+                &element.element_name,
+                &address,
+            );
+        }
         refiled += 1;
         // THE SHARD COMES FROM THE CALLER. `rebuild_bucket_first_index` takes `shard_id`, and this
         // is a RECONSTRUCT path -- `object_index` is being rebuilt from block entries, where no
@@ -7067,8 +7077,7 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
         // A TOMBSTONE CONTRIBUTES NOTHING LIVE, so the set is the one accumulated above for this
         // bucket -- and for a bucket that holds only refiled tombstones it is empty, which is the
         // clear arm of the reconcile firing exactly where it used to.
-        if BATCHED { refiled_buckets.insert(routing_bucket); }
-        else { finalize(
+        if !BATCHED { finalize(
             &mut bucket,
             live_object_ids_by_bucket
                 .get(&routing_bucket)
@@ -7076,8 +7085,9 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
         ); }
     }
     if BATCHED {
-        for routing_bucket in refiled_buckets {
+        for (routing_bucket, rows) in rebuilt_rows {
             let mut bucket = bucket_index.bucket_map.get_mut(&routing_bucket).expect("refiled bucket exists");
+            bucket.rebuild_tombstone_elements(rows);
             finalize(&mut bucket, live_object_ids_by_bucket.get(&routing_bucket).unwrap_or(&no_live_objects));
         }
     }
