@@ -3859,6 +3859,16 @@ fn command_upsert_element_names(
             key.clone(),
             Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )]),
+        Command::ZSetCountAdjust { key, member, .. }
+            if shard.bucket_index.zsets.get(key).is_some_and(|members| members.contains_key(member)) =>
+        {
+            // A positive count writes one member. Zero removes it and must keep snapshot semantics.
+            Some(vec![(
+                "zset",
+                key.clone(),
+                Some(crate::engine::execute_on_shard::zset_element_name(member)),
+            )])
+        }
         Command::SetAdd { key, member } => {
             Some(vec![(
                 "set",
@@ -4416,7 +4426,8 @@ fn command_touched_container_elements(
         // map at capture time, so the record carries the score the map actually holds rather than a
         // second rendering of the `f64` the caller sent -- which is #1989's rule, applied at the
         // point the value is written down instead of at the point it is read back.
-        Command::ZSetAdd { key, member, .. } => vec![TouchedContainerElement::ZSet {
+        Command::ZSetAdd { key, member, .. }
+        | Command::ZSetCountAdjust { key, member, .. } => vec![TouchedContainerElement::ZSet {
             key: key.clone(),
             member: member.clone(),
         }],
