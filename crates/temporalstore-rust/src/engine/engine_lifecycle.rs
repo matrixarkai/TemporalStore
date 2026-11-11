@@ -2085,6 +2085,12 @@ impl TemporalEngine {
                 }
                 true
             }
+            // Lazy expiry retires one exact record, not its independently live families.
+            "record" if item.deleted && item.meta && item.address.is_none()
+                && item.element_name.is_none() && item.value.is_none() && item.ttl.is_none() => {
+                super::delete_record_exact(shard, &item.object_key);
+                true
+            }
             // The object is gone, everywhere it appeared.
             "object" if item.deleted => {
                 super::delete_record(shard, &item.object_key);

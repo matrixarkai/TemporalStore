@@ -384,13 +384,13 @@ fn write_context_node(
 /// It is a PER-CALL-SITE obligation: `execute_on_shard` has one arm per command and each one
 /// has to remember. So it is spelled once here and called, and
 /// `execute_on_shard_guards_every_arm_that_can_hold_a_deadline` fails when an arm appears
-/// that calls neither this nor `remove_if_expired` and is not listed as exempt with a reason.
+/// that cannot reach this helper and is not listed as exempt with a reason.
 ///
 /// COST. `remove_if_expired` returns on an `is_empty` when the shard holds no deadlines at
 /// all, and otherwise examines only the key it is given plus the three control-state families
 /// derived from it. It never walks the keyspace, so the O(due) cost of an expiry round is
-/// untouched. The cache sweep below runs only when a record was actually dropped -- once per
-/// expired key, not once per read.
+/// untouched. Cache retirement runs only when a record was actually dropped and uses
+/// record-scoped indexes, so unrelated payload pages are not scanned.
 ///
 /// THE CACHE GOES WITH THE RECORD. Dropping the record and leaving its cached copy would let
 /// the very next read answer from the copy, which is the bug this exists to close.
@@ -400,8 +400,16 @@ fn drop_if_expired(
     shard: &mut ShardState,
     key: &str,
 ) -> bool {
-    if remove_if_expired(shard, key) {
-        invalidate_record_all(cache, shard_id, key, &CACHE_SWEEP_COUNTS);
+    let (start, end) = shard.routing_range();
+    let mut removed_keys = Vec::new();
+    let removed = remove_if_expired_with(shard, key, |removed_key| {
+        // A write's outcomes must retire the expired incarnation before its new blocks.
+        // Unlike a family-wide delete, this does not remove related records that remain live.
+        stage_meta_outcome(shard_id, "record", removed_key, start, end, None, None, true);
+        removed_keys.push(removed_key.to_owned());
+    });
+    if removed {
+        invalidate_records_all_batched(cache, shard_id, &removed_keys, &CACHE_SWEEP_COUNTS);
         true
     } else {
         false
@@ -618,8 +626,7 @@ pub(super) fn execute_hash_multi_get(
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
     projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ExecuteOutcome {
-    if remove_if_expired(shard, key) {
-        let _ = cache.invalidate_record(shard_id, "hash", key);
+    if drop_if_expired(cache, shard_id, shard, key) {
         return ExecuteOutcome {
             response: CommandResponse::Values {
                 values: vec![None; fields.len()],
@@ -978,7 +985,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
 ) -> (ExecuteOutcome, Command, Option<HashIndexFiled>) {
-    remove_if_expired(shard, &key);
+    let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let contains_large_value =
         !pack_projection && entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
     // Shared feature-row batches carry one projection and read it back together, so one packed
@@ -986,7 +993,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     // projection reader fetches that shared address once on both storage modes. Generic hash
     // writes retain their per-field representation; a large value still selects the packed
     // layout on every path so its scalar siblings stay with it under pressure.
-    let (mutated, index_filed) = if pack_projection || contains_large_value {
+    let (wrote, index_filed) = if pack_projection || contains_large_value {
         let (filed, returned_entries) = write_packed_hash_entries(
             cache,
             block_store,
@@ -1067,6 +1074,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
         // Every applied scalar field was filed by install_element before its resident update.
         (applied > 0, (applied > 0).then_some(HashIndexFiled(())))
     };
+    mutated |= wrote;
 
     (
         ExecuteOutcome {
@@ -1413,29 +1421,9 @@ pub(crate) fn execute_on_shard(
         Command::CommonPersist { key } => {
             // Expired-but-unswept is "missing" here, exactly as reads treat it: removing the
             // sweep's pending work must not resurrect a value whose deadline already passed.
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                // The collection is a DELETION, and it has to be recorded as one. This branch
-                // reported a mutation and staged nothing, so `PERSIST` on a key whose deadline
-                // had passed but which the sweep had not yet reached hit the standing
-                // "changed the shard and recorded nothing" check in every debug build --
-                // `SET k v PX 5`, wait, `PERSIST k` panicked the shard on an unmodified tree.
-                // In a release build it is quieter and worse: the WAL entry for the command
-                // carries no item describing the removal, so recovery has to re-run the
-                // command against the restart clock instead of installing what it did.
-                // Staged exactly as `CommonDelete` stages its own removal, which is the same
-                // event reached by a different route.
-                stage_meta_outcome(
-                    shard_id,
-                    "object",
-                    &key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                    None,
-                    None,
-                    true,
-                );
-                invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
+                // The expiry helper has already recorded each exact deletion.
                 CommandResponse::Integer { value: 0 }
             } else {
                 let mut removed = false;
@@ -1486,9 +1474,8 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Integer { value }
         }
         Command::CommonExists { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
-                invalidate_record_all(cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,
@@ -1499,7 +1486,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::StringSet { key, value } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let object_id = stable_block_object_id(shard_id, "string", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1540,7 +1527,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::StringSetEx { key, value, ttl_ms } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let object_id = stable_block_object_id(shard_id, "string", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1604,7 +1591,7 @@ pub(crate) fn execute_on_shard(
             return_old,
             keep_ttl,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let old_value = shard.string_address(key.as_str()).and_then(|address| {
                 read_block_bytes(
                     cache,
@@ -1730,7 +1717,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::StringGet { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
                 return ExecuteOutcome {
@@ -1786,7 +1773,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::HashSet { key, field, value } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let object_id = stable_block_object_id(shard_id, "hash", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1848,7 +1835,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::HashGet { key, field } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 return ExecuteOutcome {
@@ -1953,7 +1940,7 @@ pub(crate) fn execute_on_shard(
             field,
             increment,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // UNDER ONE ENTRY A BLOCK THE INDEX CANNOT NAME THIS FIELD, so the index-only read
             // would miss a present counter through `unwrap_or_default()` and silently restart it
             // at zero -- this is the one HASH surface among the four that WRITES on a miss, so
@@ -2034,7 +2021,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Integer { value }
         }
         Command::HashGetAll { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "hash", &key);
                 return ExecuteOutcome {
@@ -2177,7 +2164,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "hash", &key);
                 return ExecuteOutcome {
@@ -2251,7 +2238,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::SetAdd { key, member } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let member_element_name = set_element_name(&member);
             let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
@@ -2315,7 +2302,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::ZSetAdd { key, member, score } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let biased = zset_score_bits(score);
             let existed = shard
                 .bucket_index
@@ -2402,7 +2389,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::ZSetScore { key, member } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
@@ -2455,7 +2442,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::ZSetCard { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -2472,7 +2459,7 @@ pub(crate) fn execute_on_shard(
             stop,
             rev,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let mut ordered = zset_ordered_members(shard, &key);
             if rev {
                 ordered.reverse();
@@ -2501,7 +2488,7 @@ pub(crate) fn execute_on_shard(
             max_exclusive,
             rev,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let min_bits = zset_score_bits(min);
             let max_bits = zset_score_bits(max);
             // The score test runs before the member bytes are copied, so a narrow window copies
@@ -2524,7 +2511,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Members { members }
         }
         Command::ZSetScan { key, after, limit } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
@@ -2571,7 +2558,7 @@ pub(crate) fn execute_on_shard(
             // a lapsed seen-set still answers "duplicate" and suppresses work that
             // should run, a lapsed bucket still answers "denied" and keeps rejecting a
             // caller whose limit was meant to have been discarded.
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let now = resolve_now_ms();
             let floor = now.saturating_sub(window_ms);
             // No block backs a seen-set; it lives in the index snapshot. So the outcome carries
@@ -2624,7 +2611,7 @@ pub(crate) fn execute_on_shard(
             // not whatever it held when the deadline arrived. The removal is a real change to
             // the shard, so it is reported as one -- the same shape `StringGet` and
             // `CommonExists` use.
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -2650,7 +2637,7 @@ pub(crate) fn execute_on_shard(
             // a lapsed seen-set still answers "duplicate" and suppresses work that
             // should run, a lapsed bucket still answers "denied" and keeps rejecting a
             // caller whose limit was meant to have been discarded.
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let now = resolve_now_ms();
             let current = shard.buckets.get(&key[..]).copied();
             let (allowed, remaining, retry_after_ms, next) =
@@ -2718,7 +2705,7 @@ pub(crate) fn execute_on_shard(
             // A peek that drops a lapsed bucket has changed the shard, so it says so -- the
             // answer below then describes a bucket at full capacity, which is what the caller
             // would get from the next take.
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
             }
             let now = resolve_now_ms();
@@ -2734,7 +2721,7 @@ pub(crate) fn execute_on_shard(
             member,
             increment,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let old = shard
                 .bucket_index
                 .zsets
@@ -2812,7 +2799,7 @@ pub(crate) fn execute_on_shard(
             member,
             increment,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let old = shard
                 .bucket_index
                 .zsets
@@ -2890,7 +2877,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Integer { value: count }
         }
         Command::ZSetPop { key, min, count } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
@@ -2932,7 +2919,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Members { members }
         }
         Command::ZSetRank { key, member, rev } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let target = shard
                 .bucket_index
                 .zsets
@@ -2969,7 +2956,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::ListPush { key, member, left } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // READ, NOT `entry().or_default()`, WHICH CLOSES #2087 BY CONSTRUCTION.
             //
             // This arm was the only container command that created its map entry BEFORE the append
@@ -3048,7 +3035,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Integer { value: length }
         }
         Command::ListPop { key, left } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
@@ -3103,7 +3090,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::ListRange { key, start, stop } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
@@ -3175,7 +3162,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Members { members }
         }
         Command::ListLen { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -3187,7 +3174,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::SetMembers { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
@@ -3297,7 +3284,7 @@ pub(crate) fn execute_on_shard(
             })
         }
         Command::SetScan { key, after, limit } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
@@ -3364,7 +3351,7 @@ pub(crate) fn execute_on_shard(
                 }
                 _ => unreachable!(),
             };
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
@@ -3467,7 +3454,7 @@ pub(crate) fn execute_on_shard(
             points,
             policy,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // MERGE-REDUCE: the request's cells are merged into what is stored BEFORE the series
@@ -3625,7 +3612,7 @@ pub(crate) fn execute_on_shard(
             // Apply lazy expiry before serving, matching FeatureAggQuery/SequenceQuery and
             // every sibling read: a key past its deadline but not yet swept must read empty,
             // otherwise FeatureQuery and FeatureAggQuery disagree on the same expired key.
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
                 return ExecuteOutcome {
@@ -3686,7 +3673,7 @@ pub(crate) fn execute_on_shard(
             // Apply lazy expiry before serving, matching FeatureAggQuery/SequenceQuery and
             // every sibling read: an expired-but-unswept key must read empty so filtered and
             // aggregate reads stay consistent with each other on the same key.
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
                 return ExecuteOutcome {
@@ -3742,7 +3729,7 @@ pub(crate) fn execute_on_shard(
             end_ms,
             points,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
@@ -3857,7 +3844,7 @@ pub(crate) fn execute_on_shard(
                 } => (key, start_ms, end_ms, aggregator, count),
                 _ => unreachable!(),
             };
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
                 return ExecuteOutcome {
@@ -4012,7 +3999,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::SequenceAdd { key, rows } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
@@ -4104,7 +4091,7 @@ pub(crate) fn execute_on_shard(
             count,
             filters,
         } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::SequenceRows { rows: Vec::new() },
@@ -4158,7 +4145,7 @@ pub(crate) fn execute_on_shard(
                          count,
                          filters,
                      }| {
-                        if remove_if_expired(shard, &key) {
+                        if drop_if_expired(cache, shard_id, shard, &key) {
                             mutated = true;
                             return (key, Vec::new());
                         }
@@ -4180,7 +4167,7 @@ pub(crate) fn execute_on_shard(
             CommandResponse::SequenceRowGroups { groups }
         }
         Command::CellRankQuery { key, spec } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
                 return ExecuteOutcome {
@@ -4209,7 +4196,7 @@ pub(crate) fn execute_on_shard(
             timestamp_ms,
             amount,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let resulting = {
                 let counter = shard
                     .control_state_mut()
@@ -4247,7 +4234,7 @@ pub(crate) fn execute_on_shard(
             precision_ms,
             ttl_ms,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let bucket_ms = precision_ms
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
@@ -4316,7 +4303,7 @@ pub(crate) fn execute_on_shard(
             precision_ms,
             ttl_ms,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let bucket_ms = precision_ms
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
@@ -4353,7 +4340,7 @@ pub(crate) fn execute_on_shard(
             start_ms,
             end_ms,
         } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -4383,7 +4370,7 @@ pub(crate) fn execute_on_shard(
             end_ms,
             aggregator,
         } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -4420,7 +4407,7 @@ pub(crate) fn execute_on_shard(
             end_ms,
             count,
         } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::FeaturePoints { points: Vec::new() },
@@ -4449,7 +4436,7 @@ pub(crate) fn execute_on_shard(
             timestamp_ms,
             amount,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let key = control_state_family_key(family, &key);
             let resulting = {
                 let counter = shard
@@ -4488,7 +4475,7 @@ pub(crate) fn execute_on_shard(
             end_ms,
             aggregator,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let key = control_state_family_key(family, &key);
             let series = shard
                 .control_state_mut()
@@ -4535,7 +4522,7 @@ pub(crate) fn execute_on_shard(
             ttl_ms,
             uuid,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let key = control_state_family_key(family, &key);
             // UUID idempotency: dedup at-least-once replays within a bounded window,
             // mirroring the control_state dedup ledger. A duplicate is a no-op
@@ -4652,7 +4639,7 @@ pub(crate) fn execute_on_shard(
             end_ms,
             aggregator,
         } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -4691,7 +4678,7 @@ pub(crate) fn execute_on_shard(
             ttl_ms,
             selection_type,
         } => {
-            remove_if_expired(shard, &key);
+            mutated |= drop_if_expired(cache, shard_id, shard, &key);
             // FirstOrLastSet substitutes occur_time==0 with the current time BEFORE the
             // FIRST/LAST comparison (an occur_time of 0 is replaced with the current time).
             // occur_time defaults to 0 on the proto, so a caller that omits it must compare as
@@ -4749,13 +4736,13 @@ pub(crate) fn execute_on_shard(
                 );
             }
             // A comparison this value LOST stored nothing and set no deadline, so it changed
-            // nothing. Reporting it as a mutation dirtied the shard and appended a record for a
-            // write that did not happen.
-            mutated = should_store || ttl_ms > 0;
+            // nothing, unless lazy expiry already removed a related record. Preserve that
+            // earlier mutation even when this comparison stores no new value.
+            mutated |= should_store || ttl_ms > 0;
             CommandResponse::Empty
         }
         Command::ControlStateSelectionQuery { key } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
@@ -4777,7 +4764,7 @@ pub(crate) fn execute_on_shard(
             end_offset,
             is_distinct,
         } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::HashEntries {
@@ -4802,7 +4789,7 @@ pub(crate) fn execute_on_shard(
             start_ms,
             end_ms,
         } => {
-            if remove_if_expired(shard, &key) {
+            if drop_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::HashEntries {
