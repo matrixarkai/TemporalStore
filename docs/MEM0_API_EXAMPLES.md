@@ -80,6 +80,27 @@ can still recover through single-source extraction. An explicitly configured fal
 provider remains available. This bounds failure amplification without replacing failed
 extraction with an implicit mock result.
 
+Ollama extraction uses closed output schemas: L0 is limited to 220 characters, L1 to
+1,200 characters, and each source has at most eight entities. Entity names and values
+also have generation limits; normalization retains the existing 256-byte name and
+1,024-byte value limits without splitting UTF-8. Each batch schema is sized to its actual
+source window and source ordinals. The model is instructed to put durable facts in entities
+as well as summaries and use an empty entity array only for sources without durable information.
+Batch items that copy another source's complete text into a summary or entity are retried
+individually when the copied text is at least 32 bytes and is absent from their own source.
+This guard detects verbatim leakage, not every possible semantic attribution error.
+
+An opt-in Rust model check exercises both single-source and batched extraction without
+writing memories. It requires an already installed Ollama chat model:
+
+```bash
+TS_TEST_OLLAMA_CHAT_MODEL=qwen2.5:3b cargo test -p temporalstore-rust --lib \
+  live_ollama_summary_keeps_durable_facts_in_entities -- --ignored --nocapture
+```
+
+The check uses a 30-second request deadline. A cold model load can consume that budget;
+successful warm-model extraction is not evidence that cold-start or full Mem0 flows pass.
+
 ## Large-corpus profiling
 
 Run an isolated local metadata, data, and proxy process from this repository:
