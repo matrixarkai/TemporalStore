@@ -48,7 +48,7 @@ fn fixture(count: usize) -> (Vec<WalOutcomeItem>, Vec<StagedBlock>) {
 
 #[test]
 fn indexed_and_scalar_coverage_agree_on_mixed_and_reordered_batches() {
-    for count in [0, 1, 8, 9, 16, 63, 64, 65, 128, 500] {
+    for count in [0, 1, 8, 9, 16, 63, 64, 65, 128, 500, 511, 512, 513, 1024] {
         for seed in 0..12 {
             let mut state = seed + 1_u64;
             let mut random = || {
@@ -94,7 +94,7 @@ fn indexed_and_scalar_coverage_agree_on_mixed_and_reordered_batches() {
 
 #[test]
 fn indexed_coverage_accepts_whole_objects_and_exact_empty_names() {
-    let (mut outcomes, mut blocks) = fixture(64);
+    let (mut outcomes, mut blocks) = fixture(512);
     blocks.push(block(900, None));
     blocks.push(block(901, Some("")));
     outcomes.extend([
@@ -112,7 +112,7 @@ fn indexed_coverage_accepts_whole_objects_and_exact_empty_names() {
 
 #[test]
 fn indexed_coverage_requires_the_same_object_and_real_value_bytes() {
-    let (mut outcomes, blocks) = fixture(64);
+    let (mut outcomes, blocks) = fixture(512);
     let mut tail = item(900, Some("field"));
     tail.value = Some(Vec::new());
     outcomes.push(tail);
