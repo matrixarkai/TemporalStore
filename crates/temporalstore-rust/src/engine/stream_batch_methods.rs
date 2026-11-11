@@ -313,6 +313,13 @@ impl BatchCommandSource<'_> {
         !matches!(self, Self::Commands(_))
     }
 
+    fn shared_hash_entries(&self) -> Option<&[(String, Vec<u8>)]> {
+        match self {
+            Self::SharedHashRows { entries, .. } | Self::SharedTimestampRows { entries, .. } => Some(entries),
+            Self::Commands(_) => None,
+        }
+    }
+
     fn shared_hash_ttl_ms(&self) -> Option<u64> {
         match self {
             Self::SharedHashRows { ttl_ms, .. } => *ttl_ms,
@@ -1828,15 +1835,17 @@ impl TemporalEngine {
                         if !sync || has_wal_resident_blocks
                             || (reuse_hash_command_metadata && !shard.wal_resident_blocks.is_empty())
                         {
-                            let locations = super::block_in_wal::register_record_with_outcomes(
-                                &self.block_store,
-                                shard_id,
-                                &record.staged_blocks,
-                                &record.outcomes,
-                                log_id,
-                                record.sequence,
-                                &self.wal_store,
-                            );
+                            let locations = match command_source.shared_hash_entries() {
+                                Some(entries) => super::block_in_wal::register_shared_hash_record(
+                                    &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
+                                    log_id, record.sequence, &self.wal_store,
+                                    entries.iter().map(|(field, _)| field.as_str()),
+                                ),
+                                None => super::block_in_wal::register_record_with_outcomes(
+                                    &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
+                                    log_id, record.sequence, &self.wal_store,
+                                ),
+                            };
                             for folded in locations {
                                 shard.wal_resident_blocks.insert(
                                     folded,

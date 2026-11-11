@@ -768,6 +768,25 @@ fn take_item<'a>(
         .map(|(key, value, deleted)| (key, value.to_vec(), deleted))
 }
 
+/// Match a complete UTF-8 field projection without allocating keys or values.
+pub(super) fn matches_utf8_projection(bytes: &[u8], fields: &[std::sync::Arc<str>]) -> bool {
+    let Some(Ok((shape, ElementKeySpelling::Utf8))) = frame_header(bytes) else {
+        return false;
+    };
+    let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
+    let Ok(count) = take_varint(bytes, &mut cursor, "item count") else { return false };
+    if count != fields.len() as u64 {
+        return false;
+    }
+    for (index, field) in fields.iter().enumerate() {
+        match take_item_bytes(bytes, &mut cursor, index as u64, shape) {
+            Ok((key, _, false)) if key == field.as_bytes() => {}
+            _ => return false,
+        }
+    }
+    cursor == bytes.len()
+}
+
 /// Ask a payload for one element's value, without building every other item.
 ///
 /// `element_name` is the index's spelling, which is what every reader has in hand: the read funnel is
@@ -1185,6 +1204,31 @@ pub(super) fn tombstone_block(kind: &str, element_name: &str) -> Option<Vec<u8>>
 #[cfg(test)]
 mod member_element_name_tests {
     use super::*;
+
+    #[test]
+    fn shared_registration_projection_requires_a_complete_live_frame() {
+        let fields = [std::sync::Arc::from("first"), std::sync::Arc::from("second")];
+        let payload = vec![b'x'; 16 * 1024];
+        let frame = encode_container_block(ElementKeySpelling::Utf8,
+            &[(b"first".as_slice(), payload.as_slice()), (b"second", b"second")]);
+        assert!(matches_utf8_projection(&frame, &fields));
+        assert!(!matches_utf8_projection(&frame, &[fields[1].clone(), fields[0].clone()]));
+        assert!(!matches_utf8_projection(&frame, &fields[..1]));
+        assert!(!matches_utf8_projection(&frame, &[]));
+        for end in 0..frame.len() {
+            assert!(!matches_utf8_projection(&frame[..end], &fields), "cut at {end}");
+        }
+        let mut trailing = frame.clone();
+        trailing.push(0);
+        assert!(!matches_utf8_projection(&trailing, &fields));
+        let removed = encode_container_block_items(ElementKeySpelling::Utf8,
+            &[ContainerBlockWrite::live(b"first", b"one"), ContainerBlockWrite::removed(b"second")]);
+        assert!(!matches_utf8_projection(&removed, &fields));
+        let other = encode_container_block(ElementKeySpelling::Hex,
+            &[(b"first".as_slice(), b"one".as_slice()), (b"second", b"two")]);
+        assert!(!matches_utf8_projection(&other, &fields));
+        assert!(!matches_utf8_projection(b"plain bytes", &fields));
+    }
 
     #[test]
     fn owned_utf8_rows_encode_identically_without_pair_vectors() {

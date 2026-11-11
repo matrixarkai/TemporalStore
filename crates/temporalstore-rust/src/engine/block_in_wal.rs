@@ -217,6 +217,7 @@ fn packed_objects(outcomes: &[crate::wal::WalOutcomeItem]) -> std::collections::
 fn registration_names(
     block: &StagedBlock,
     packed: &std::collections::HashSet<u64>,
+    pool: &mut std::collections::HashSet<std::sync::Arc<str>>,
 ) -> Vec<Option<std::sync::Arc<str>>> {
     let mut names = vec![block.element_name.clone()];
     if block.element_name.is_none() && packed.contains(&block.object_id) {
@@ -224,8 +225,22 @@ fn registration_names(
             super::container_blocks::decode_container_block(&block.bytes)
         {
             for item in items.iter().filter(|item| !item.deleted) {
-                if let Some(name) = super::container_blocks::element_name_from_element_key(spelling, &item.key) {
-                    names.push(Some(std::sync::Arc::from(name)));
+                let name = if spelling == super::container_blocks::ElementKeySpelling::Utf8 {
+                    std::str::from_utf8(&item.key).ok().map(std::borrow::Cow::Borrowed)
+                } else {
+                    super::container_blocks::element_name_from_element_key(spelling, &item.key)
+                        .map(std::borrow::Cow::Owned)
+                };
+                if let Some(name) = name {
+                    let shared = match pool.get(name.as_ref()) {
+                        Some(shared) => shared.clone(),
+                        None => {
+                            let shared: std::sync::Arc<str> = std::sync::Arc::from(name.as_ref());
+                            pool.insert(shared.clone());
+                            shared
+                        }
+                    };
+                    names.push(Some(shared));
                 }
             }
             if names.len() > 1 {
@@ -234,6 +249,36 @@ fn registration_names(
         }
     }
     names
+}
+
+enum RegistrationNames<'a> {
+    Shared(&'a [std::sync::Arc<str>]),
+    Owned(Vec<Option<std::sync::Arc<str>>>),
+}
+
+impl RegistrationNames<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Shared(names) => names.len(),
+            Self::Owned(names) => names.len(),
+        }
+    }
+}
+
+fn select_registration_names<'a>(
+    block: &StagedBlock,
+    packed: &std::collections::HashSet<u64>,
+    projection: Option<&'a [std::sync::Arc<str>]>,
+    pool: &mut std::collections::HashSet<std::sync::Arc<str>>,
+) -> RegistrationNames<'a> {
+    if block.element_name.is_none() && packed.contains(&block.object_id) {
+        if let Some(fields) = projection.filter(|fields| !fields.is_empty()) {
+            if super::container_blocks::matches_utf8_projection(&block.bytes, fields) {
+                return RegistrationNames::Shared(fields);
+            }
+        }
+    }
+    RegistrationNames::Owned(registration_names(block, packed, pool))
 }
 
 pub(super) fn hash_outcome_blocks(
@@ -360,19 +405,56 @@ pub(super) fn register_record_with_outcomes(
     sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) -> Vec<u64> {
+    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, None)
+}
+
+pub(super) fn register_shared_hash_record<'a>(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    staged_blocks: &[StagedBlock],
+    outcomes: &[crate::wal::WalOutcomeItem],
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+    fields: impl Iterator<Item = &'a str>,
+) -> Vec<u64> {
+    let projection: Vec<std::sync::Arc<str>> = fields.map(std::sync::Arc::from).collect();
+    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, Some(&projection))
+}
+
+fn register_record_locations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    staged_blocks: &[StagedBlock],
+    outcomes: &[crate::wal::WalOutcomeItem],
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+    projection: Option<&[std::sync::Arc<str>]>,
+) -> Vec<u64> {
     if staged_blocks.is_empty() {
         return Vec::new();
     }
     let packed = packed_objects(outcomes);
-    let names: Vec<_> = staged_blocks.iter().map(|block| registration_names(block, &packed)).collect();
-    let expected = names.iter().map(Vec::len).sum();
+    let mut pool = std::collections::HashSet::new();
+    let names: Vec<_> = staged_blocks.iter()
+        .map(|block| select_registration_names(block, &packed, projection, &mut pool)).collect();
+    let expected = names.iter().map(RegistrationNames::len).sum();
     let mut folded = Vec::with_capacity(expected);
     if let Ok(mut map) = registry().lock() {
         for (index, (block, names)) in staged_blocks.iter().zip(names).enumerate() {
             let location = std::sync::Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
-            for name in names {
+            let mut install = |name: Option<std::sync::Arc<str>>| {
                 folded.push(wal_resident_key(block.object_id, name.as_deref()));
                 map.insert((block_store.store_id(), shard_id, (block.object_id, name)), location.clone());
+            };
+            match names {
+                RegistrationNames::Shared(fields) => {
+                    for name in fields { install(Some(name.clone())); }
+                }
+                RegistrationNames::Owned(names) => {
+                    for name in names { install(name); }
+                }
             }
         }
     }
@@ -423,8 +505,9 @@ pub(super) fn register_from_record(
         .map(|(folded, _)| *folded)
         .collect::<std::collections::BTreeSet<_>>();
     let packed = packed_objects(&record.outcomes);
+    let mut pool = std::collections::HashSet::new();
     let names: Vec<_> = record.staged_blocks.iter().map(|block| {
-        let mut names = registration_names(block, &packed);
+        let mut names = registration_names(block, &packed, &mut pool);
         // Older indexes registered packed frames under the whole-object slot.
         if block.element_name.is_none() && wanted.contains(&wal_resident_key(block.object_id, None))
             && !names.iter().any(Option::is_none)
@@ -598,6 +681,109 @@ fn registrations_live_until_the_final_store_owner_is_dropped() {
     let next = crate::block_store::BlockStore::new(dir.path().join("next"));
     assert_ne!(next.store_id(), owner);
     assert_eq!(registration_count(&next, 1), 0);
+}
+
+#[cfg(test)]
+mod shared_registration_tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use crate::engine::container_blocks::{encode_utf8_container_block, select_container_element, ContainerElementRead};
+
+    #[test]
+    fn shared_registration_checks_hints_and_pools_fallback_names() {
+        let block = StagedBlock {
+            object_id: 42,
+            element_name: None,
+            bytes: encode_utf8_container_block(&[("first", b"one"), ("second", b"two")]),
+        };
+        let packed = HashSet::from([42]);
+        let fields: Vec<Arc<str>> = ["first", "second"].into_iter().map(Arc::from).collect();
+        let mut pool = HashSet::new();
+        let RegistrationNames::Shared(names) = select_registration_names(&block, &packed, Some(&fields), &mut pool)
+            else { panic!("matching frames must reuse the projection") };
+        assert!(std::ptr::eq(names.as_ptr(), fields.as_ptr()));
+        assert!(pool.is_empty());
+        let wrong = [Arc::from("second"), Arc::from("first")];
+        let RegistrationNames::Owned(first) = select_registration_names(&block, &packed, Some(&wrong), &mut pool)
+            else { panic!("mismatched projections must decode the actual frame") };
+        let RegistrationNames::Owned(second) = select_registration_names(&block, &packed, None, &mut pool)
+            else { panic!("no projection") };
+        assert_eq!(pool.len(), 2);
+        for (index, field) in fields.iter().enumerate() {
+            assert_eq!(first[index].as_deref(), Some(field.as_ref()));
+            assert!(Arc::ptr_eq(first[index].as_ref().unwrap(), second[index].as_ref().unwrap()));
+        }
+        let RegistrationNames::Owned(scalar) = select_registration_names(&block, &HashSet::new(), Some(&fields), &mut pool)
+            else { panic!("non-hash payloads cannot use hash aliases") };
+        assert_eq!(scalar, [None]);
+    }
+
+    #[test]
+    fn shared_registration_preserves_empty_and_corrupt_fallbacks() {
+        let packed = HashSet::from([42]);
+        let mut pool = HashSet::new();
+        let fields = [Arc::from("first")];
+        for bytes in [Vec::new(), b"not framed".to_vec(),
+            encode_utf8_container_block(&[("first", b"one")])[..10].to_vec(),
+            encode_utf8_container_block::<&str, &[u8]>(&[])] {
+            let block = StagedBlock { object_id: 42, element_name: None, bytes };
+            let RegistrationNames::Owned(names) = select_registration_names(&block, &packed, Some(&fields), &mut pool)
+                else { panic!("invalid or empty frames must retain generic behavior") };
+            assert_eq!(names, [None]);
+        }
+        assert!(pool.is_empty());
+    }
+
+    fn assert_shared_rows(engine: &crate::engine::TemporalEngine) {
+        let owner = engine.block_store.store_id();
+        let entries: Vec<_> = registry().lock().unwrap().iter()
+            .filter(|((id, shard, _), _)| *id == owner && *shard == 1)
+            .map(|((_, _, (object, name)), location)| (*object, name.clone(), location.clone()))
+            .collect();
+        assert_eq!(entries.len(), 24);
+        let allocations: HashSet<_> = entries.iter().map(|(_, name, _)|
+            Arc::as_ptr(name.as_ref().unwrap()) as *const () as usize).collect();
+        assert_eq!(allocations.len(), 3, "one field-name allocation per column, not per row");
+        for (object, name, location) in entries {
+            let name = name.unwrap();
+            let frame = read_block(&engine.block_store, 1, object, Some(&name)).unwrap();
+            assert!(location.4.is_some(), "each alias retains its exact staged frame");
+            let ContainerElementRead::Found(value) = select_container_element(&frame, &name)
+                else { panic!("registered field must select a value") };
+            let row = location.4.unwrap() as u8;
+            let field = name.strip_prefix("field-").unwrap().parse::<u8>().unwrap();
+            assert_eq!(value, vec![row * 3 + field; 48]);
+        }
+    }
+
+    #[test]
+    fn shared_registration_reuses_names_on_commit_and_recovery() {
+        use crate::types::{BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue};
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            let engine = crate::engine::TemporalEngine::with_local_dirs(64 * 1024 * 1024,
+                dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+            engine.load_shard(1);
+            engine
+        };
+        let engine = open();
+        let (response, completed) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
+            shard_id: 1,
+            fields: (0..3).map(|field| format!("field-{field}")).collect(),
+            rows: (0..8u8).map(|row| BatchHashMultiSetRow(format!("row-{row}"),
+                (0..3u8).map(|field| BatchHashMultiSetValue(vec![row * 3 + field; 48])).collect())).collect(),
+            ttl_ms: None,
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.applied, 8);
+        assert_eq!(completed.len(), 8);
+        assert_shared_rows(&engine);
+        engine.write_ahead_log_store().flush(1).unwrap();
+        drop(engine);
+        let recovered = open();
+        assert_shared_rows(&recovered);
+    }
 }
 
 /// Read the block for `object_id` back out of the record carrying it.
