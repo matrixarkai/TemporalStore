@@ -211,6 +211,19 @@ class TemporalStoreClient:
             False if msgpack is None else None
         )
 
+    def timestamp_prefetch_preferred(self) -> bool:
+        """Whether this thread recently observed mostly stale bulk writes."""
+        return getattr(self._local, "prefer_timestamp_prefetch", False)
+
+    def observe_timestamp_dedup(self, total_rows: int, skipped_rows: int) -> None:
+        """Keep a routing hint, never cached timestamps or feature values."""
+        if total_rows <= 0 or skipped_rows < 0 or skipped_rows > total_rows:
+            return
+        if total_rows >= 8 and skipped_rows * 4 >= total_rows * 3:
+            self._local.prefer_timestamp_prefetch = True
+        elif skipped_rows * 4 <= total_rows:
+            self._local.prefer_timestamp_prefetch = False
+
     # -- connection handling -------------------------------------------------
 
     def _connection(self) -> http.client.HTTPConnection:

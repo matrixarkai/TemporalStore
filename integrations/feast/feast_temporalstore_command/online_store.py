@@ -131,13 +131,19 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     """
 
     skip_dedup: bool = False
-    """Write without first reading each row's stored event timestamp.
+    """Disable stored-event timestamp suppression when set to True.
 
-    The default (``False``) matches Feast's Redis store: read the stored
-    timestamps, then write only the rows that are newer, so an out-of-order
-    materialization cannot move a feature backwards. Setting this to ``True``
-    halves the round trips and is appropriate for an initial load or an
-    append-only pipeline whose rows arrive in order.
+    The default uses an atomic conditional write for common latest-value
+    batches. History, tracking, mixed layouts and older nodes use timestamp
+    reads plus writes instead. True permits older input to replace newer data.
+    """
+
+    adaptive_timestamp_prefetch: bool = True
+    """Read timestamps before serializing mostly stale latest-value batches.
+
+    A per-thread hint learns from bulk stale rejections and turns off for
+    mostly fresh input. No timestamp values are cached. Surviving shared-layout
+    rows still use atomic conditional writes; False disables this optimization.
     """
 
     write_feature_history: bool = False
@@ -328,14 +334,25 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             and not online_config.write_feature_history
             and not online_config.track_keys_for_teardown
         )
+        adaptive_dedup = (
+            defer_stored_dedup and online_config.adaptive_timestamp_prefetch
+        )
+        prefetch_timestamps = (
+            adaptive_dedup and client.timestamp_prefetch_preferred()
+        )
+        prefetch_total = 0
         stored_nanos: Dict[str, int] = {}
-        if not online_config.skip_dedup and not defer_stored_dedup:
+        if not online_config.skip_dedup and (
+            not defer_stored_dedup or prefetch_timestamps
+        ):
             # Read just the timestamp field before the bounded write batches.
             unique_hash_keys = list(dict.fromkeys(hash_keys))
+            if prefetch_timestamps:
+                prefetch_total = len(unique_hash_keys)
             reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
             for key, values in zip(unique_hash_keys, reads):
                 raw = decode_bytes(values[0]) if values else None
-                if raw:
+                if raw is not None:
                     stored = Timestamp()
                     stored.ParseFromString(raw)
                     stored_nanos[key] = stored.seconds * 1_000_000_000 + stored.nanos
@@ -372,8 +389,13 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 if queued_timestamp is not None
                 else 0
             )
-            latest_seen = max(stored_nanos.get(hash_key, 0), queued_event_nanos)
-            if latest_seen and event_nanos <= latest_seen:
+            stored_event_nanos = stored_nanos.get(hash_key)
+            if (
+                stored_event_nanos is not None
+                and event_nanos <= stored_event_nanos
+            ) or (
+                queued_timestamp is not None and event_nanos <= queued_event_nanos
+            ):
                 skipped += 1
                 if progress:
                     progress(1)
@@ -421,6 +443,12 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             if online_config.track_keys_for_teardown:
                 tracked_keys.append(hash_key)
             written += 1
+
+        prefetch_skipped = (
+            prefetch_total - len(latest_timestamps) if prefetch_timestamps else 0
+        )
+        if prefetch_timestamps and not latest_timestamps:
+            client.observe_timestamp_dedup(prefetch_total, prefetch_skipped)
 
         prepared_rows: List[Tuple[str, int, int, List[bytes]]] = []
         prepared_row_shape_bytes: List[int] = []
@@ -516,6 +544,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             if conditional_result is not None:
                 conditional_handled = True
                 skipped += conditional_result[1]
+                if adaptive_dedup:
+                    client.observe_timestamp_dedup(
+                        prefetch_total if prefetch_timestamps else len(prepared_rows),
+                        prefetch_skipped + conditional_result[1],
+                    )
 
         if not conditional_handled:
             if defer_stored_dedup and prepared_rows:
@@ -523,7 +556,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 reads = client.batch_hash_multi_get(unique_hash_keys, [ts_field])
                 for key, values in zip(unique_hash_keys, reads):
                     raw = decode_bytes(values[0]) if values else None
-                    if raw:
+                    if raw is not None:
                         stored = Timestamp()
                         stored.ParseFromString(raw)
                         stored_nanos[key] = (
@@ -539,7 +572,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 ):
                     hash_key, seconds, nanos, _values = row
                     event_nanos = seconds * 1_000_000_000 + nanos
-                    if event_nanos <= stored_nanos.get(hash_key, 0):
+                    stored_event_nanos = stored_nanos.get(hash_key)
+                    if (
+                        stored_event_nanos is not None
+                        and event_nanos <= stored_event_nanos
+                    ):
                         skipped += 1
                     else:
                         retained_rows.append(row)
