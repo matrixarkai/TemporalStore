@@ -91,6 +91,29 @@ fn apply_timestamped_point(
     })
 }
 
+fn insert_timestamped_point_if_absent(
+    shard: &mut super::state::ShardState,
+    kind: &str,
+    object_key: &str,
+    at: u64,
+    address: &crate::block_store::ElementEntry,
+) -> Option<bool> {
+    use super::timestamped_series::insert_point_if_absent as insert;
+    Some(match kind {
+        "feature" => insert(shard.features_mut(), object_key, at, address),
+        "context_index" => insert(shard.context_indexes_mut(), object_key, at, address),
+        "context_audit" => insert(shard.context_audits_mut(), object_key, at, address),
+        "context_child" => insert(shard.context_children_mut(), object_key, at, address),
+        "context_summary" => insert(shard.context_summaries_mut(), object_key, at, address),
+        "context_compression" => insert(shard.context_compressions_mut(), object_key, at, address),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+#[path = "timestamped_replay_append_tests.rs"]
+mod timestamped_replay_append_tests;
+
 #[cfg(test)]
 pub(crate) static LAST_REPLAY_WATERMARK: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -2371,6 +2394,27 @@ impl TemporalEngine {
                     Some(address) if !item.deleted => Some(address),
                     _ => None,
                 };
+                if let Some(address) = point.as_ref() {
+                    if insert_timestamped_point_if_absent(
+                        shard,
+                        &item.kind,
+                        &item.object_key,
+                        stored_key,
+                        address,
+                    ) == Some(true) {
+                        // Match the live append path: no existing point was displaced.
+                        super::sync_bucket_index_object_blocks_with_mode(
+                            shard,
+                            shard_id,
+                            &item.kind,
+                            &item.object_key,
+                            vec![address.clone()],
+                            true,
+                            false,
+                        );
+                        return true;
+                    }
+                }
                 let Some(live_addresses) =
                     apply_timestamped_point(shard, &item.kind, &item.object_key, stored_key, point)
                 else {
