@@ -13,6 +13,9 @@ enum Fault {
     Missing,
     AppliedUnknown,
     CatalogRead,
+    CatalogCorrupt,
+    CatalogIdentity,
+    CatalogShape,
 }
 
 #[derive(Default)]
@@ -107,6 +110,19 @@ fn fixture(
                     let mut result = engine.batch_execute(batch);
                     if matches!(fault,Fault::CatalogRead) {
                         result.responses[0].status=Status::error("catalog_read_failed","injected catalog read failure");
+                    }
+                    if matches!(fault,Fault::CatalogCorrupt) {
+                        result.responses[0].response=CommandResponse::HashEntries {
+                            entries:vec![(record.id.clone(),vec![255])],
+                        };
+                    }
+                    if matches!(fault,Fault::CatalogIdentity) {
+                        result.responses[0].response=CommandResponse::HashEntries {
+                            entries:vec![("different-id".into(),record.encode())],
+                        };
+                    }
+                    if matches!(fault,Fault::CatalogShape) {
+                        result.responses[0].response=CommandResponse::Empty;
                     }
                     return json_response(200,&result);
                 }
@@ -243,9 +259,29 @@ fn unknown_outcome_is_not_reported_as_success_or_replayed() {
 
 #[test]
 fn failed_backfill_or_catalog_scan_never_publishes_readiness() {
-    for fault in [Fault::First, Fault::Last, Fault::CatalogRead] {
+    for fault in [
+        Fault::First,
+        Fault::Last,
+        Fault::CatalogRead,
+        Fault::CatalogCorrupt,
+        Fault::CatalogIdentity,
+        Fault::CatalogShape,
+    ] {
         let (_dir, proxy, _id, tenant, seen) = fixture(fault, 1, false);
-        assert!(proxy.memory_prepare_indexes(tenant).is_err());
+        let error = proxy.memory_prepare_indexes(tenant).unwrap_err();
+        if matches!(
+            fault,
+            Fault::CatalogRead
+                | Fault::CatalogCorrupt
+                | Fault::CatalogIdentity
+                | Fault::CatalogShape
+        ) {
+            assert_eq!(seen.batches.load(Ordering::Relaxed), 0);
+            assert!(
+                error.code.starts_with("catalog_read_")
+                    || error.code.starts_with("invalid_memory_catalog_")
+            );
+        }
         assert_eq!(seen.ready_writes.load(Ordering::Relaxed), 0);
         assert!(!proxy
             .inner
