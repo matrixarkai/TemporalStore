@@ -1982,21 +1982,21 @@ impl TemporalEngine {
                     Some([only]) => Some(only.clone()),
                     _ => None,
                 };
-                match (item.kind.as_str(), element_name.as_deref()) {
+                let vacated = match (item.kind.as_str(), element_name.as_deref()) {
                     ("string", _) => {
                         super::mark_bucket_index_object_deleted(shard, &item.object_key);
                         shard.remove_string_row(item.object_key.as_str());
+                        None
                     }
                     ("hash", Some(field)) => {
                         // `&field.to_string()` because this kind's element IS a `String` and the replayed item
                         // carries a `&str`. One allocation on a replay removal, which is the honest
                         // cost of the element type being the key rather than a borrow of it.
-                        shard
-                            .bucket_index.hashes
-                            .replay_remove_element(
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::HashKind>(
+                                shard,
                                 &item.object_key,
                                 &std::sync::Arc::from(&field[..]),
-                            );
+                            )
                     }
                     ("set", Some(encoded)) => {
                         let Some(member) =
@@ -2004,16 +2004,14 @@ impl TemporalEngine {
                         else {
                             return false;
                         };
-                        shard.bucket_index.sets.replay_remove_element(&item.object_key, &member);
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::SetKind>(shard, &item.object_key, &member)
                     }
                     ("list", Some(encoded)) => {
                         let Ok(biased) = u64::from_str_radix(encoded, 16) else {
                             return false;
                         };
                         let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                        shard
-                            .bucket_index.lists
-                            .replay_remove_element(&item.object_key, &sequence);
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::ListKind>(shard, &item.object_key, &sequence)
                     }
                     // THE SCORE HALF IS GONE FROM THIS STRING -- a removal never needed it for
                     // anything beyond finding the member to drop, which is still all this arm
@@ -2024,13 +2022,11 @@ impl TemporalEngine {
                         else {
                             return false;
                         };
-                        shard
-                            .bucket_index.zsets
-                            .replay_remove_element(&item.object_key, &member);
+                        super::recorded_map::remove_replayed_element::<super::recorded_map::ZSetKind>(shard, &item.object_key, &member)
                     }
                     // An element-name-keyed kind with no element names nothing to remove.
                     _ => return false,
-                }
+                };
                 if item.kind != "string" {
                     // THE OUTCOME'S ADDRESS IS THE TOMBSTONE BLOCK, AND REPLAY HAS TO RE-FILE IT.
                     //
@@ -2056,6 +2052,10 @@ impl TemporalEngine {
                         false,
                         item.address.clone(),
                     );
+                    if let Some(address) = vacated {
+                        super::storage_bucket_internals::drop_vacated_live_block(
+                            shard, &item.kind, &item.object_key, &address);
+                    }
                 }
                 true
             }
@@ -2161,7 +2161,7 @@ impl TemporalEngine {
                 let object_id = super::stable_block_object_id(shard_id, "hash", &item.object_key);
                 super::recorded_map::install_packed_hash_block_at_bucket(
                     shard, shard_id, routing_bucket, object_id, &item.object_key,
-                    fields.iter().map(String::as_str), address,
+                    fields.iter().map(String::as_str), address, None,
                 );
                 true
             }

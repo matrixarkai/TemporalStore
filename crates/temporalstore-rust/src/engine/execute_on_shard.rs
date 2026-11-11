@@ -408,6 +408,11 @@ fn drop_if_expired(
     }
 }
 
+pub(super) struct ContainerRemoval {
+    pub(super) index_removed: bool,
+    pub(super) tombstone_written: bool,
+}
+
 /// Remove one element of a container, RECORDING THE REMOVAL IN THE BLOCKS as well as the index.
 ///
 /// # WHY THERE IS A FUNCTION HERE AT ALL
@@ -447,7 +452,7 @@ pub(super) fn remove_container_element(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     async_storage: bool,
-) -> bool {
+) -> ContainerRemoval {
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     let tombstone = crate::engine::container_blocks::tombstone_block(model_id, element_name)
         .and_then(|block| {
@@ -474,7 +479,8 @@ pub(super) fn remove_container_element(
     if tombstone.is_none() {
         TOMBSTONE_APPEND_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    crate::engine::mark_bucket_index_block_deleted_recording(
+    let tombstone_written = tombstone.is_some();
+    let index_removed = crate::engine::mark_bucket_index_block_deleted_recording(
         shard,
         shard_id,
         model_id,
@@ -482,7 +488,8 @@ pub(super) fn remove_container_element(
         Some(element_name),
         true,
         tombstone,
-    )
+    );
+    ContainerRemoval { index_removed, tombstone_written }
 }
 
 /// Gated listings answered from a fold of the blocks, and gated listings that DECLINED to.
@@ -808,6 +815,7 @@ fn write_packed_hash_entries(
     async_storage: bool,
     entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
+    shared_fields: Option<&super::container_blocks::SharedHashFields>,
 ) -> (bool, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = if fields_are_unique {
         entries
@@ -851,7 +859,7 @@ fn write_packed_hash_entries(
         Ok(address) => {
             super::recorded_map::install_packed_hash_block_at_bucket(
                 shard, shard_id, routing_bucket, object_id, key,
-                packed_entries.iter().map(|(field, _)| field.as_str()), address,
+                packed_entries.iter().map(|(field, _)| field.as_str()), address, shared_fields,
             );
             for (field, _) in &packed_entries {
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, key, field));
@@ -890,6 +898,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
         key,
         entries,
         false,
+        None,
     )
 }
 
@@ -905,6 +914,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     key: String,
     mut entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
+    shared_fields: Option<&super::container_blocks::SharedHashFields>,
 ) -> (ExecuteOutcome, Command) {
     remove_if_expired(shard, &key);
     let contains_large_value =
@@ -926,6 +936,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             async_storage,
             entries,
             fields_are_unique,
+            shared_fields,
         );
         entries = returned_entries;
         mutated
@@ -1031,6 +1042,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         ttl_ms,
         entries,
         false,
+        None,
     )
 }
 
@@ -1049,6 +1061,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     ttl_ms: Option<u64>,
     entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
+    shared_fields: Option<&super::container_blocks::SharedHashFields>,
 ) -> (ExecuteOutcome, Command) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
@@ -1108,6 +1121,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         async_storage,
         entries,
         fields_are_unique,
+        shared_fields,
     );
     mutated |= packed_mutated;
     if packed_mutated {
@@ -2737,7 +2751,7 @@ pub(crate) fn execute_on_shard(
             let count = current.saturating_add(increment).max(0);
             if old.is_some() {
                 let element_name = zset_element_name(&member);
-                remove_container_element(
+                let removal = remove_container_element(
                     cache,
                     block_store,
                     shard,
@@ -2749,10 +2763,11 @@ pub(crate) fn execute_on_shard(
                     end_routing_bucket,
                     async_storage,
                 );
-                shard
-                    .bucket_index
-                    .zsets
-                    .replay_remove_element(&key, &member);
+                if let Some(address) = super::recorded_map::remove_replayed_element::<super::recorded_map::ZSetKind>(shard, &key, &member) {
+                    if removal.tombstone_written {
+                        super::storage_bucket_internals::drop_vacated_live_block(shard, "zset", &key, &address);
+                    }
+                }
                 mutated = true;
             }
             if count > 0 {
@@ -2816,7 +2831,7 @@ pub(crate) fn execute_on_shard(
             let mut members = Vec::new();
             for (member, biased) in ordered {
                 let element_name = zset_element_name(&member);
-                remove_container_element(
+                let removal = remove_container_element(
                     cache,
                     block_store,
                     shard,
@@ -2828,10 +2843,11 @@ pub(crate) fn execute_on_shard(
                     end_routing_bucket,
                     async_storage,
                 );
-                shard
-                    .bucket_index
-                    .zsets
-                    .replay_remove_element(&key, &member);
+                if let Some(address) = super::recorded_map::remove_replayed_element::<super::recorded_map::ZSetKind>(shard, &key, &member) {
+                    if removal.tombstone_written {
+                        super::storage_bucket_internals::drop_vacated_live_block(shard, "zset", &key, &address);
+                    }
+                }
                 mutated = true;
                 members.push(member);
                 members.push(zset_score_string(biased).into_bytes());

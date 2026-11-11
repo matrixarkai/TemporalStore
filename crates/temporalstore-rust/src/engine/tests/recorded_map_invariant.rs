@@ -193,6 +193,9 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "install_packed_hash_block_at_bucket",
         "install_element_staged_only",
         "remove_element",
+        // Wraps the existing replay removal and returns its vacated address. The caller has
+        // already recorded the deletion; this adds no new unrecorded mutation capability.
+        "remove_replayed_element",
         "drop_object",
         // What a level-2 container must supply, declared beside the operation that needs it.
         "RemovableElementMap",

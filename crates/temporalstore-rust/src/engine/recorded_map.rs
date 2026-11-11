@@ -368,6 +368,30 @@ pub(super) fn install_element_at_bucket<K: RecordedKind>(
     });
 }
 
+enum WrittenHashFields<'a, 'b> {
+    Shared(&'b super::container_blocks::SharedHashFields),
+    Owned(HashSet<&'a str>),
+}
+
+impl WrittenHashFields<'_, '_> {
+    fn contains(&self, field: &str) -> bool {
+        match self {
+            Self::Shared(fields) => fields.contains(field),
+            Self::Owned(fields) => fields.contains(field),
+        }
+    }
+}
+
+fn written_hash_fields<'a, 'b>(
+    fields: impl Iterator<Item = &'a str> + Clone,
+    shared: Option<&'b super::container_blocks::SharedHashFields>,
+) -> WrittenHashFields<'a, 'b> {
+    match shared.filter(|shared| shared.matches(fields.clone())) {
+        Some(shared) => WrittenHashFields::Shared(shared),
+        None => WrittenHashFields::Owned(fields.collect()),
+    }
+}
+
 pub(super) fn install_packed_hash_block_at_bucket<'a>(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -376,25 +400,25 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
     object_key: &str,
     fields: impl Iterator<Item = &'a str> + Clone,
     address: ElementEntry,
+    shared: Option<&super::container_blocks::SharedHashFields>,
 ) {
     let Some(first) = fields.clone().next() else {
         return;
     };
     super::storage_bucket_internals::reload_released_bucket(shard, shard_id, routing_bucket);
     let existing = shard.bucket_index.hashes.get(object_key);
-    let mut written: Option<HashSet<&str>> = None;
+    let mut written = None;
     let replaces = if let Some(existing) = existing {
         let landing = super::live_block_key(&address);
-        let mut vacated: HashSet<_> = fields.clone()
+        let mut vacated = super::storage_bucket_internals::ReplacedBlock::from_keys(fields.clone()
             .filter_map(|field| existing.get(field))
             .map(super::live_block_key)
-            .filter(|key| *key != landing)
-            .collect();
+            .filter(|key| *key != landing));
         if !vacated.is_empty() {
-            let names: HashSet<&str> = fields.clone().collect();
+            let names = written_hash_fields(fields.clone(), shared);
             for (field, old) in existing.iter() {
                 if !names.contains(field.as_ref()) {
-                    vacated.remove(&super::live_block_key(old));
+                    vacated.remove(super::live_block_key(old));
                     if vacated.is_empty() {
                         break;
                     }
@@ -402,7 +426,7 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
             }
             written = Some(names);
         }
-        super::storage_bucket_internals::ReplacedBlock::from_keys(vacated.into_iter())
+        vacated
     } else {
         super::storage_bucket_internals::ReplacedBlock::none()
     };
@@ -424,11 +448,9 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
     if shard.bucket_index.bucket_map.get(&routing_bucket)
         .is_some_and(|bucket| !bucket.tombstone_elements.is_empty())
     {
-        let written = written.get_or_insert_with(|| {
-            fields.clone().collect()
-        });
+        let written = written.get_or_insert_with(|| written_hash_fields(fields.clone(), shared));
         super::storage_bucket_internals::sweep_packed_hash_tombstones(
-            shard, routing_bucket, object_key, written,
+            shard, routing_bucket, object_key, |field| written.contains(field),
         );
     }
     install_packed_hash_fields(shard, object_key, fields, address, filed);
@@ -511,9 +533,10 @@ pub(super) fn remove_element<K: RecordedKind>(
     async_storage: bool,
 ) -> bool
 where
-    K::Elements: RemovableElementMap,
+    K::Elements: RemovableElementMap + AddressedElementMap,
 {
-    let removed = super::execute_on_shard::remove_container_element(
+    let vacated = K::resident(shard).block_an_element_removal_vacates(object_key, &element);
+    let removal = super::execute_on_shard::remove_container_element(
         cache,
         block_store,
         shard,
@@ -529,6 +552,11 @@ where
         object_key: object_key.to_string(),
         element,
     });
+    if removal.tombstone_written && dropped {
+        if let Some(address) = vacated {
+            super::storage_bucket_internals::drop_vacated_live_block(shard, K::KIND, object_key, &address);
+        }
+    }
     // AND WHEN THAT WAS THE LAST ELEMENT, THE INDEX HAS TO LET GO TOO.
     //
     // EXISTENCE HAS TWO SOURCES AND EMPTYING ONE DOES NOT EMPTY THE KEY. `record_exists_exact` ORs
@@ -556,7 +584,20 @@ where
         // tombstone per cycle.
         super::storage_bucket_internals::drop_live_object_entries(shard, K::KIND, object_key);
     }
-    removed || dropped
+    removal.index_removed || dropped
+}
+
+/// Return a vacated block so replay can file its tombstone before retiring that block.
+pub(super) fn remove_replayed_element<K: RecordedKind>(
+    shard: &mut ShardState,
+    object_key: &str,
+    element: &<K::Elements as ElementMap>::Element,
+) -> Option<ElementEntry>
+where
+    K::Elements: RemovableElementMap + AddressedElementMap,
+{
+    let vacated = K::resident(shard).block_an_element_removal_vacates(object_key, element);
+    K::resident(shard).replay_remove_element(object_key, element).then_some(vacated).flatten()
 }
 
 /// Drop a recorded object's whole element map.
@@ -724,6 +765,19 @@ impl<K: RecordedKind> RecordedMap<K> {
             return None;
         }
         Some(previous.clone())
+    }
+
+    fn block_an_element_removal_vacates(
+        &self,
+        object_key: &str,
+        element: &<K::Elements as ElementMap>::Element,
+    ) -> Option<ElementEntry>
+    where
+        K::Elements: AddressedElementMap,
+    {
+        let elements = self.entries.get(object_key)?;
+        let previous = elements.element_address(element)?;
+        (!elements.any_element_other_than_at(element, previous)).then(|| previous.clone())
     }
 }
 
@@ -1417,6 +1471,10 @@ impl<'de, K: RecordedKind> serde::Deserialize<'de> for RecordedMap<K> {
 }
 
 // ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+#[path = "tests/shared_hash_fields.rs"]
+mod shared_hash_fields_tests;
+
 // TEST FIXTURES. `#[cfg(test)]`, so none of this exists in a shipped binary, and each is named
 // `_for_test` so a production use cannot be mistaken for an ordinary write.
 // ---------------------------------------------------------------------------------------------

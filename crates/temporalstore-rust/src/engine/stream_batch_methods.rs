@@ -1306,6 +1306,10 @@ impl TemporalEngine {
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
         // does not make the others' identities uncarryable.
         let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
+        let shared_hash_fields = command_source.shared_hash_entries()
+            .filter(|_| reuse_hash_command_metadata)
+            .and_then(|entries| super::container_blocks::SharedHashFields::new(
+                entries.iter().map(|(field, _)| field.as_str())));
         while let Some(command) = command_source.next_command() {
             let write_command = is_write_command(&command);
             if readonly && write_command {
@@ -1464,6 +1468,7 @@ impl TemporalEngine {
                             key,
                             entries,
                             true,
+                            shared_hash_fields.as_ref(),
                         );
                     (outcome, Some(metadata))
                 }
@@ -1492,6 +1497,7 @@ impl TemporalEngine {
                             ttl_ms,
                             entries,
                             true,
+                            shared_hash_fields.as_ref(),
                         );
                     (outcome, Some(metadata))
                 }
@@ -1835,11 +1841,11 @@ impl TemporalEngine {
                         if !sync || has_wal_resident_blocks
                             || (reuse_hash_command_metadata && !shard.wal_resident_blocks.is_empty())
                         {
-                            let locations = match command_source.shared_hash_entries() {
-                                Some(entries) => super::block_in_wal::register_shared_hash_record(
+                            let locations = match shared_hash_fields.as_ref() {
+                                Some(fields) => super::block_in_wal::register_shared_hash_record(
                                     &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
                                     log_id, record.sequence, &self.wal_store,
-                                    entries.iter().map(|(field, _)| field.as_str()),
+                                    fields.names(),
                                 ),
                                 None => super::block_in_wal::register_record_with_outcomes(
                                     &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,

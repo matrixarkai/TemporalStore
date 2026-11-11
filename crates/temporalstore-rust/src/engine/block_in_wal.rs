@@ -464,7 +464,7 @@ pub(super) fn register_record_with_outcomes(
     register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, None)
 }
 
-pub(super) fn register_shared_hash_record<'a>(
+pub(super) fn register_shared_hash_record(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     staged_blocks: &[StagedBlock],
@@ -472,10 +472,9 @@ pub(super) fn register_shared_hash_record<'a>(
     log_id: u64,
     sequence: u64,
     store: &LocalWriteAheadLogStore,
-    fields: impl Iterator<Item = &'a str>,
+    projection: &[std::sync::Arc<str>],
 ) -> Vec<u64> {
-    let projection: Vec<std::sync::Arc<str>> = fields.map(std::sync::Arc::from).collect();
-    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, Some(&projection))
+    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, Some(projection))
 }
 
 fn register_record_locations(
