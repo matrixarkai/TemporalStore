@@ -8,6 +8,71 @@ use crate::types::BatchHashMultiSetValue;
 mod lazy_expiry_cache;
 
 #[test]
+fn indexed_feature_invalidation_refreshes_warm_queries_for_single_and_batch_writes() {
+    for batched in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.load_shard(2);
+        let run = |shard_id, command| {
+            let reply = engine.execute(ExecuteRequest { shard_id, command });
+            assert!(reply.status.ok, "{:?}", reply.status);
+            reply.response
+        };
+        let write = |command| {
+            if batched {
+                let reply = engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands: vec![command] });
+                assert!(reply.status.ok && reply.responses.len() == 1);
+                assert!(reply.responses[0].status.ok, "{:?}", reply.responses[0].status);
+            } else {
+                run(1, command);
+            }
+        };
+        let append = |key: &str, at, value: &[u8]| Command::FeatureAppend {
+            key: key.into(), points: vec![crate::types::FeaturePoint { timestamp_ms: at, value: value.to_vec() }],
+        };
+        let query = |key: &str, start_ms| Command::FeatureQuery {
+            key: key.into(), start_ms, end_ms: 100, count: None,
+        };
+        for (shard, key) in [(1, "history"), (1, "neighbor"), (2, "history")] {
+            run(shard, append(key, 10, b"1"));
+            run(shard, query(key, 0));
+        }
+        run(1, query("history", 20));
+        run(1, query("new", 0));
+        let full = CacheKey::feature_query(1, "history", 0, 100, None);
+        let tail = CacheKey::feature_query(1, "history", 20, 100, None);
+        let empty = CacheKey::feature_query(1, "new", 0, 100, None);
+        assert!(engine.cache.peek(&full) && engine.cache.peek(&tail) && engine.cache.peek(&empty));
+        assert!(engine.cache.keys_for_records(1, "feature", &["history"]).indexed);
+        write(append("history", 20, b"2"));
+        assert!(!engine.cache.peek(&full) && !engine.cache.peek(&tail));
+        assert!(engine.cache.peek(&CacheKey::feature_query(1, "neighbor", 0, 100, None)));
+        assert!(engine.cache.peek(&CacheKey::feature_query(2, "history", 0, 100, None)));
+        for (start, expected) in [(0, vec![(10, b"1".to_vec()), (20, b"2".to_vec())]), (20, vec![(20, b"2".to_vec())])] {
+            let CommandResponse::FeaturePoints { points } = run(1, query("history", start)) else { panic!("expected points") };
+            assert_eq!(points.into_iter().map(|point| (point.timestamp_ms, point.value)).collect::<Vec<_>>(), expected);
+        }
+        write(append("history", 20, b"9"));
+        let CommandResponse::FeaturePoints { points } = run(1, query("history", 20)) else { panic!("expected points") };
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].value, b"9");
+        assert_eq!(run(1, Command::FeatureAggQuery {
+            key: "history".into(), start_ms: 0, end_ms: 100, aggregator: "sum".into(), count: None,
+        }), CommandResponse::Aggregate { value: 10 });
+        write(Command::FeatureDelete { key: "history".into() });
+        assert_eq!(run(1, query("history", 0)), CommandResponse::FeaturePoints { points: vec![] });
+        write(append("new", 20, b"7"));
+        assert!(!engine.cache.peek(&empty));
+        let CommandResponse::FeaturePoints { points } = run(1, query("new", 0)) else { panic!("expected points") };
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].value, b"7");
+    }
+}
+
+#[test]
 fn maintenance_record_lookup_preserves_mixed_models_and_unrelated_pages() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
