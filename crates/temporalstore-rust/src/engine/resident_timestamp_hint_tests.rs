@@ -191,3 +191,62 @@ fn repeated_hint_updates_reuse_names_keys_and_reserved_slots() {
     println!("TIMESTAMP_HINT entry_bytes={} capacity={} repeated_updates=1000 allocations={}",
              std::mem::size_of::<(ModelKey, TimestampHint)>(), map.timestamp_hints.capacity(), reading.allocs);
 }
+
+#[test]
+fn malformed_and_oversized_stored_timestamps_do_not_reuse_comparison_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    assert_eq!(conditional(&engine, 10, vec![("ts".into(), stamp(10))]), 1);
+    assert_eq!(conditional(&engine, 20, vec![("ts".into(), vec![0xff])]), 1);
+    evict_payload_caches(&engine);
+    assert_eq!(conditional(&engine, 15, vec![("ts".into(), stamp(15))]), 1);
+    let mut large = stamp(50);
+    large.extend([0x1a, 80]);
+    large.extend([b'x'; 80]);
+    assert!(large.len() > 64);
+    assert_eq!(conditional(&engine, 30, vec![("ts".into(), large.clone())]), 1);
+    evict_payload_caches(&engine);
+    assert_eq!(conditional(&engine, 40, vec![("ts".into(), stamp(40))]), 0);
+    assert_eq!(execute(&engine, Command::HashGet { key: "row".into(), field: "ts".into() }),
+               CommandResponse::Bytes { value: Some(large) });
+}
+
+#[test]
+fn repeated_rows_in_one_batch_observe_the_latest_uncommitted_field_address() {
+    use crate::types::{BatchHashTimestampSetRequest, BatchHashTimestampSetRow, BatchHashMultiSetValue};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let (response, _) = engine.batch_execute_packed_hash_rows(BatchHashTimestampSetRequest {
+        shard_id: 1, fields: vec!["ts".into(), "v".into()], timestamp_field: "ts".into(), ttl_ms: None,
+        rows: [30, 20, 40].into_iter().map(|seconds| BatchHashTimestampSetRow(
+            "row".into(), seconds, 0,
+            vec![BatchHashMultiSetValue(stamp(seconds)), BatchHashMultiSetValue(vec![seconds as u8])],
+        )).collect(),
+    });
+    assert!(response.status.ok);
+    assert_eq!((response.applied, response.skipped), (2, 1));
+    evict_payload_caches(&engine);
+    assert_eq!(conditional(&engine, 35, vec![("ts".into(), stamp(35))]), 0);
+    assert_eq!(execute(&engine, Command::HashGet { key: "row".into(), field: "v".into() }),
+               CommandResponse::Bytes { value: Some(vec![40]) });
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn hint_population_cost_is_resident_metadata_not_a_payload_cache_budget() {
+    let mut map = RecordedMap::<HashKind>::default();
+    let field: super::super::hash_field_map::FieldName = std::sync::Arc::from("ts");
+    let keys: Vec<_> = (0..52000).map(|row| format!("row-{row}")).collect();
+    for key in &keys {
+        map.insert_element_for_test(key, field.clone(), address(1));
+    }
+    let probe = crate::alloc_probe::Probe::start();
+    for key in &keys { map.remember_timestamp(key, "ts", Some((1, 0))); }
+    let reading = probe.stop();
+    assert_eq!(map.timestamp_hints.len(), map.len());
+    assert!(reading.allocs < 32, "keys and names must not be allocated per hint: {reading:?}");
+    println!("TIMESTAMP_HINT_POPULATION rows={} entries={} capacity={} entry_bytes={} allocated_bytes={} retained_requested_bytes={} allocations={}",
+             keys.len(), map.timestamp_hints.len(), map.timestamp_hints.capacity(),
+             std::mem::size_of::<(ModelKey, TimestampHint)>(), reading.alloc_bytes,
+             reading.outstanding(), reading.allocs);
+}

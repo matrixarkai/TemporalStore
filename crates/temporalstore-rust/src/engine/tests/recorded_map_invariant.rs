@@ -275,6 +275,10 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // The kinds themselves -- ALL FOUR container kinds now, which is the whole point: adding
         // one is a `RecordedKind` impl plus markers, and it appears HERE rather than as a new type.
         "HashKind",
+        // Derived comparator reads and updates only. Neither lends mutable model entries or
+        // changes payloads, serialized state, or ordering records; every hit checks its source.
+        "cached_timestamp",
+        "remember_timestamp",
         "SetKind",
         "ZSetKind",
         "ListKind",
