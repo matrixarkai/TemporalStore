@@ -195,6 +195,15 @@ impl ProxyService {
             .collect()
     }
 
+    pub(super) fn memory_read_one_checked(
+        &self,
+        tenant: u64,
+        id: &str,
+    ) -> Result<Option<MemoryRecord>, Status> {
+        self.memory_read_many_checked(tenant, &[id.to_owned()])
+            .map(|records| records.into_iter().next().flatten())
+    }
+
     pub(super) fn memory_rebuild_node_lookup(
         &self,
         request: MemoryNodeLookupRebuildRequest,

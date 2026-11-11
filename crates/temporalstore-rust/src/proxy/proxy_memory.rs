@@ -1017,9 +1017,10 @@ impl ProxyService {
         let Some(tenant_hash) = tenant_hash_from_memory_id(memory_id) else {
             return self.memory_bad_request("invalid memory id".to_string());
         };
-        match self.memory_read_one(tenant_hash, memory_id) {
-            Some(record) => crate::http::json_response(200, &record),
-            None => crate::http::json_response(404, &json!({"found": false, "id": memory_id})),
+        match self.memory_read_one_checked(tenant_hash, memory_id) {
+            Ok(Some(record)) => crate::http::json_response(200, &record),
+            Ok(None) => crate::http::json_response(404, &json!({"found": false, "id": memory_id})),
+            Err(status) => crate::http::json_response(502, &status),
         }
     }
 
@@ -1195,7 +1196,11 @@ impl ProxyService {
         if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
             return crate::http::json_response(502, &status);
         }
-        let Some(mut record) = self.memory_read_one(tenant_hash, memory_id) else {
+        let record = match self.memory_read_one_checked(tenant_hash, memory_id) {
+            Ok(record) => record,
+            Err(status) => return crate::http::json_response(502, &status),
+        };
+        let Some(mut record) = record else {
             return crate::http::json_response(404, &json!({"updated": false, "id": memory_id}));
         };
         let old_order_member = memory_order_member(record.updated_at_ms, &record.id);
@@ -1272,7 +1277,11 @@ impl ProxyService {
         if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
             return crate::http::json_response(502, &status);
         }
-        let Some(record) = self.memory_read_one(tenant_hash, memory_id) else {
+        let record = match self.memory_read_one_checked(tenant_hash, memory_id) {
+            Ok(record) => record,
+            Err(status) => return crate::http::json_response(502, &status),
+        };
+        let Some(record) = record else {
             return crate::http::json_response(404, &json!({"deleted": false, "id": memory_id}));
         };
         let now = now_ms().max(1);
@@ -1355,15 +1364,26 @@ impl ProxyService {
                 key: memory_history_key(tenant_hash, memory_id),
             },
         });
+        if !response.status.ok {
+            return crate::http::json_response(502, &response.status);
+        }
         let mut entries = match response.response {
             CommandResponse::HashEntries { entries } => entries,
-            _ => Vec::new(),
+            _ => return crate::http::json_response(502, &Status::error(
+                "invalid_memory_history_response", "expected memory history entries",
+            )),
         };
         entries.sort_by(|left, right| left.0.cmp(&right.0));
-        let history: Vec<MemoryHistoryEntry> = entries
+        let history = entries
             .into_iter()
-            .filter_map(|(_, bytes)| MemoryHistoryEntry::decode(&bytes))
-            .collect();
+            .map(|(_, bytes)| MemoryHistoryEntry::decode(&bytes).ok_or_else(|| Status::error(
+                "invalid_memory_history_record", "memory history entry cannot be decoded",
+            )))
+            .collect::<Result<Vec<_>, _>>();
+        let history = match history {
+            Ok(history) => history,
+            Err(status) => return crate::http::json_response(502, &status),
+        };
         crate::http::json_response(200, &json!({"results": history}))
     }
 
@@ -1371,7 +1391,11 @@ impl ProxyService {
         let Some(tenant_hash) = tenant_hash_from_memory_id(memory_id) else {
             return self.memory_bad_request("invalid memory id".to_string());
         };
-        if self.memory_read_one(tenant_hash, memory_id).is_none() {
+        let record = match self.memory_read_one_checked(tenant_hash, memory_id) {
+            Ok(record) => record,
+            Err(status) => return crate::http::json_response(502, &status),
+        };
+        if record.is_none() {
             return crate::http::json_response(404, &json!({"recorded": false, "id": memory_id}));
         }
         let feedback = request.feedback.to_ascii_uppercase();
@@ -1728,13 +1752,21 @@ impl ProxyService {
             let content_updated = provider_key.is_some();
             if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
                 for (id, _) in updates {
-                    failed.push(json!({"memory_id": id, "status": 502, "body": status.message}));
+                    failed.push(json!({"memory_id": id, "status": 502, "code":status.code, "body": status.message}));
                 }
                 continue;
             }
 
             let ids: Vec<String> = updates.iter().map(|(id, _)| id.clone()).collect();
-            let records = self.memory_read_many(tenant_hash, &ids);
+            let records = match self.memory_read_many_checked(tenant_hash, &ids) {
+                Ok(records) => records,
+                Err(status) => {
+                    failed.extend(ids.into_iter().map(|id| json!({
+                        "memory_id":id,"status":502,"code":status.code,"body":status.message
+                    })));
+                    continue;
+                }
+            };
             let provider = updates
                 .first()
                 .and_then(|(_, update)| update.provider.clone());
@@ -1742,7 +1774,7 @@ impl ProxyService {
             for ((id, update), record) in updates.into_iter().zip(records) {
                 let Some(mut record) = record else {
                     failed
-                        .push(json!({"memory_id": id, "status": 404, "body": "memory not found"}));
+                        .push(json!({"memory_id": id, "status": 404, "code":"memory_not_found", "body": "memory not found"}));
                     continue;
                 };
                 if update.data.trim().is_empty() && update.metadata.is_none() {
@@ -2285,11 +2317,9 @@ impl ProxyService {
         })
     }
 
+    #[cfg(test)]
     fn memory_read_one(&self, tenant_hash: u64, memory_id: &str) -> Option<MemoryRecord> {
-        self.memory_read_many(tenant_hash, &[memory_id.to_string()])
-            .into_iter()
-            .next()
-            .flatten()
+        self.memory_read_one_checked(tenant_hash, memory_id).ok().flatten()
     }
 
     fn memory_read_many(&self, tenant_hash: u64, ids: &[String]) -> Vec<Option<MemoryRecord>> {
@@ -2386,6 +2416,10 @@ mod update_provider_tests;
 #[cfg(test)]
 #[path = "memory_explicit_tests.rs"]
 mod explicit_tests;
+
+#[cfg(test)]
+#[path = "memory_read_error_tests.rs"]
+mod read_error_tests;
 
 #[cfg(test)]
 mod tests {

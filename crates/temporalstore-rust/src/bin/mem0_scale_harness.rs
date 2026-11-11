@@ -498,7 +498,14 @@ fn validate_response(response: Value) -> Result<Value, String> {
         .and_then(Value::as_array)
         .is_some_and(|failed| !failed.is_empty())
     {
-        return Err("batch response contains failed operations".into());
+        let failed = response["failed"].as_array().expect("checked failed array");
+        let first = &failed[0];
+        let code = first.get("code").and_then(Value::as_str)
+            .filter(|code| code.len() <= 128 && code.bytes().all(|byte|
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-')))
+            .unwrap_or("unspecified");
+        let status = first.get("status").and_then(Value::as_u64).unwrap_or_default();
+        return Err(format!("batch response contains {} failed operations; first_status={status} first_code={code}", failed.len()));
     }
     if ["updated", "deleted"]
         .iter()
@@ -768,6 +775,20 @@ mod tests {
         assert!(validate_response(json!({"updated":true})).is_ok());
         assert!(validate_response(json!({"updated":2,"failed":[]})).is_ok());
         assert!(validate_response(json!({"deleted":2,"failed":[]})).is_ok());
+    }
+
+    #[test]
+    fn batch_failures_report_codes_without_echoing_memory_contents() {
+        let error = validate_response(json!({"failed":[{
+            "status":502,"code":"catalog_read_unavailable", "body":"private memory contents"
+        }]})).unwrap_err();
+        assert!(error.contains("first_status=502"));
+        assert!(error.contains("first_code=catalog_read_unavailable"));
+        assert!(!error.contains("private memory contents"));
+        let invalid = validate_response(json!({"failed":[{
+            "status":502,"code":"private memory contents"
+        }]})).unwrap_err();
+        assert!(!invalid.contains("private memory contents"));
     }
 
     #[test]
