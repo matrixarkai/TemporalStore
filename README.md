@@ -73,6 +73,22 @@ The other independently usable Apache-2.0 projects are
 ads-serving demonstration. These repositories are not a list of mandatory
 services to start alongside TemporalStore.
 
+## Deployment and Upgrade Checklist
+
+- Pin the server revision and client package together. Select the HTTP command
+  provider or RESP provider explicitly; their endpoints are not interchangeable.
+- Record acknowledgement policy, replication mode, cache budget, and whether
+  history is enabled. Increasing a cache budget changes the memory conditions
+  of a performance comparison, not the write durability contract.
+- Preserve durable volumes before changing versions. Read the
+  [format policy](#before-the-first-milestone-formats-can-change) before opening
+  existing data with a new binary; do not assume downgrade compatibility.
+- Size for process memory as well as configured cache capacity. Resident indexes,
+  decoded data, in-flight requests, and allocator retention are separate costs.
+- Keep accepted newer writes, rejected stale writes, latest-value reads, and
+  history reads separate in capacity estimates. Local instruction or allocation
+  reductions do not establish an end-to-end throughput improvement.
+
 ## Is this the store for your problem?
 
 | You are building | This store | Read on |
