@@ -129,9 +129,9 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     crate::engine::container_blocks::reset_unframed_container_removal_count();
     let element_names = [
         ("hash", "some-field".to_string()),
-        ("set", hex::encode(b"a-member")),
-        // The CURRENT spelling: the member alone. The score is not in an element name any more.
-        ("zset", hex::encode(b"a-member")),
+        ("set", crate::engine::container_blocks::member_element_name(b"a-member")),
+        // The current tagged member spelling carries no score.
+        ("zset", crate::engine::container_blocks::member_element_name(b"a-member")),
         ("list", format!("{:016x}", 7u64)),
     ];
     for (kind, element_name) in &element_names {
@@ -144,6 +144,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                 assert!(items[0].deleted, "{kind}: the tombstone item is not marked removed");
                 // THE ROUND TRIP, AND IT IS THE PROPERTY A SIDE TABLE WOULD OTHERWISE HAVE TO HOLD.
                 //
+                // Canonical writer names round-trip exactly; legacy hex input is checked below.
                 // The tombstone block's single item carries the ELEMENT KEY as its key, so the
                 // element's identity is already stored durably in the block the entry points at.
                 // Asserting the inverse here is what makes that a measured property rather than a

@@ -854,7 +854,7 @@ fn release_hash_entry_payloads(entries: &mut [(String, Vec<u8>)]) {
     }
 }
 
-pub(super) struct PackedHashIndexFiled(());
+pub(super) struct HashIndexFiled(());
 
 fn write_packed_hash_entries(
     cache: &MultiLayerCache,
@@ -869,7 +869,7 @@ fn write_packed_hash_entries(
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
     borrowed_values: Option<&[crate::types::BorrowedHashValue<'_>]>,
-) -> (Option<PackedHashIndexFiled>, Vec<(String, Vec<u8>)>) {
+) -> (Option<HashIndexFiled>, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = if fields_are_unique {
         entries
     } else {
@@ -924,7 +924,7 @@ fn write_packed_hash_entries(
             for (field, _) in &packed_entries {
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, key, field));
             }
-            Some(PackedHashIndexFiled(()))
+            Some(HashIndexFiled(()))
         }
         Err(_) => None,
     };
@@ -943,10 +943,10 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
     pack_projection: bool,
     key: String,
     entries: Vec<(String, Vec<u8>)>,
-) -> (ExecuteOutcome, Command) {
+) -> (ExecuteOutcome, Command, Option<HashIndexFiled>) {
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
-    let (outcome, command, _) = execute_hash_multi_set_reusing_metadata_at_bucket(
+    let (outcome, command, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
         cache,
         block_store,
         shard_id,
@@ -960,7 +960,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
         false,
         None,
     );
-    (outcome, command)
+    (outcome, command, filed)
 }
 
 pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
@@ -976,7 +976,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     mut entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
-) -> (ExecuteOutcome, Command, Option<PackedHashIndexFiled>) {
+) -> (ExecuteOutcome, Command, Option<HashIndexFiled>) {
     remove_if_expired(shard, &key);
     let contains_large_value =
         !pack_projection && entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
@@ -1060,7 +1060,8 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             }
         }
         release_hash_entry_payloads(&mut entries);
-        (applied > 0, None)
+        // Every applied scalar field was filed by install_element before its resident update.
+        (applied > 0, (applied > 0).then_some(HashIndexFiled(())))
     };
 
     (
@@ -1128,7 +1129,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
     borrowed_values: Option<&[crate::types::BorrowedHashValue<'_>]>,
-) -> (ExecuteOutcome, Command, Option<PackedHashIndexFiled>) {
+) -> (ExecuteOutcome, Command, Option<HashIndexFiled>) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
         .bucket_index
@@ -1918,7 +1919,7 @@ pub(crate) fn execute_on_shard(
             .0;
         }
         Command::HashMultiSetWithTtl { key, entries, ttl_ms } => {
-            let (outcome, _) = execute_hash_multi_set_reusing_metadata(
+            let (outcome, _, _) = execute_hash_multi_set_reusing_metadata(
                 cache,
                 block_store,
                 shard_id,
