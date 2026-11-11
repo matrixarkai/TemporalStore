@@ -1271,7 +1271,7 @@ pub(super) fn cached_response(
     source: impl FnOnce() -> CommandResponse,
 ) -> CommandResponse {
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
-        cache.get(&key)
+        cache.get_shared(&key)
     });
     if let Ok(Some(bytes)) = cached {
         if let Some(response) = decode_cached_response(&bytes) {
@@ -1285,6 +1285,50 @@ pub(super) fn cached_response(
     }
     response
 }
+
+#[derive(serde::Deserialize)]
+struct BorrowedCachedBytes<'a> {
+    #[serde(borrow)]
+    kind: &'a str,
+    #[serde(borrow)]
+    value: Option<&'a [u8]>,
+}
+
+fn decode_borrowed_cached_bytes(bytes: &[u8]) -> Option<Option<&[u8]>> {
+    let response = rmp_serde::from_slice::<BorrowedCachedBytes<'_>>(bytes).ok()?;
+    (response.kind == "bytes").then_some(response.value)
+}
+
+/// Consume cached bytes in place; older payload encodings retain the owned decoder.
+pub(super) fn cached_bytes_with<R>(
+    cache: &MultiLayerCache,
+    key: CacheKey,
+    source: impl FnOnce() -> Option<Vec<u8>>,
+    consume: impl FnOnce(Option<&[u8]>) -> R,
+) -> R {
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&key)
+    });
+    if let Ok(Some(bytes)) = cached {
+        if let Some(value) = decode_borrowed_cached_bytes(&bytes) {
+            return consume(value);
+        }
+        if let Some(CommandResponse::Bytes { value }) = decode_cached_response(&bytes) {
+            return consume(value.as_deref());
+        }
+        let _ = cache.invalidate(&key);
+    }
+    let response = CommandResponse::Bytes { value: source() };
+    if let Some(bytes) = encode_cached_response(&response) {
+        cache.put_memory_only(key, bytes);
+    }
+    let CommandResponse::Bytes { value } = response else { unreachable!() };
+    consume(value.as_deref())
+}
+
+#[cfg(test)]
+#[path = "tests/borrowed_cache.rs"]
+mod borrowed_cache_tests;
 
 pub(super) fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
     if cache.peek(&key) {

@@ -1059,23 +1059,18 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         .and_then(|address| {
             // Consult the field cache only after the resident map confirms the field exists.
             // Ordinary hash writes and deletes invalidate this same key under the shard lock.
-            match cached_response(cache, CacheKey::hash(shard_id, &key, &timestamp_field), || {
-                CommandResponse::Bytes {
-                    value: read_block_frame_shared(
+            cached_bytes_with(cache, CacheKey::hash(shard_id, &key, &timestamp_field), || {
+                    read_block_frame_shared(
                         cache,
                         block_store,
                         shard_id,
                         address,
                         BlockIdentity::of(shard_id, "hash", &key, Some(timestamp_field.as_str())),
                         Some(routing_bucket),
-                    ).and_then(|frame| select_container_value(&frame, &timestamp_field)),
-                }
-            }) {
-                CommandResponse::Bytes { value } => value,
-                _ => None,
-            }
+                    ).and_then(|frame| select_container_value(&frame, &timestamp_field))
+            }, |timestamp| timestamp.and_then(|timestamp|
+                <HashTimestamp as prost::Message>::decode(timestamp).ok()))
         })
-        .and_then(|timestamp| <HashTimestamp as prost::Message>::decode(timestamp.as_slice()).ok())
         .map(|timestamp| (timestamp.seconds, timestamp.nanos));
     if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
         let mut metadata_entries = entries;
