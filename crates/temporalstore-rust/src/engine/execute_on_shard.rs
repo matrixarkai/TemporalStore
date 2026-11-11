@@ -921,8 +921,9 @@ fn write_packed_hash_entries(
                 shard, shard_id, routing_bucket, object_id, key,
                 packed_entries.iter().map(|(field, _)| field.as_str()), address, shared_fields,
             );
+            let mut invalidator = HashFieldCacheInvalidator::new(cache, shard_id, key);
             for (field, _) in &packed_entries {
-                invalidate_if_cached(cache, CacheKey::hash(shard_id, key, field));
+                invalidator.invalidate(field);
             }
             Some(HashIndexFiled(()))
         }
@@ -1005,6 +1006,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     } else {
         let mut applied = 0usize;
         let mut highest_ordinal: Option<Option<u64>> = None;
+        let mut invalidator = None;
         for (field, value) in &entries {
             let existing_ordinal = crate::engine::state::resident_element_name_address(
                 shard, "hash", &key, field,
@@ -1055,7 +1057,9 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
                     true,
                     address,
                 );
-                invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, field));
+                invalidator
+                    .get_or_insert_with(|| HashFieldCacheInvalidator::new(cache, shard_id, &key))
+                    .invalidate(field);
                 applied += 1;
             }
         }
