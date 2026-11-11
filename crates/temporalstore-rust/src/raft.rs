@@ -6201,12 +6201,15 @@ fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
         // whose buckets nothing can account for.
         match image.routing_range {
             Some(routing_range) => {
-                let _ = engine.install_index_bytes(
+                match engine.install_index_bytes_in_empty_wal(
                     snapshot.shard_id,
                     &image.index_bytes,
                     routing_range,
-                );
-                engine.load_shard(snapshot.shard_id);
+                ) {
+                    Ok(()) => engine.load_shard(snapshot.shard_id),
+                    Err(err) => tracing::error!(shard_id = snapshot.shard_id,
+                        error = %err, "snapshot index could not be installed into the fresh engine"),
+                }
             }
             None => {
                 tracing::error!(

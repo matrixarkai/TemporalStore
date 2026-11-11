@@ -275,11 +275,9 @@ fn checkpoint_capture_precedes_the_storage_barrier() {
             assert!(result.status.ok, "{:?}", result.status);
         };
         write(&engine, "early");
-        if async_storage {
-            assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
-                .applied_wal_sequence.unwrap_or(0), 0);
-        }
         let captured_sequence = engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence;
+        assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+            .applied_wal_sequence, Some(captured_sequence));
         let writer = std::sync::Arc::clone(&engine);
         let injected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let did_inject = std::sync::Arc::clone(&injected);
@@ -310,10 +308,8 @@ fn checkpoint_capture_precedes_the_storage_barrier() {
         assert!(captured.string_address("early").is_some());
         assert!(captured.string_address("late").is_none(), "{kind} captured a write after its data sync");
         assert!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].string_address("late").is_some());
-        if !async_storage {
-            assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence,
-                Some(live_sequence), "{kind} must not roll back a concurrent writer's anchor");
-        }
+        assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence,
+            Some(live_sequence), "{kind} must not roll back a concurrent writer's anchor");
         drop(engine);
         let restored = reclaim_dump_engine(dir.path(), kind);
         restored.load_shard(RECLAIM_DUMP_SHARD);

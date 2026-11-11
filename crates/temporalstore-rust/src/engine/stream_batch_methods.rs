@@ -1939,6 +1939,7 @@ impl TemporalEngine {
                         sync,
                     )
                     .map(|(record, log_id)| {
+                        shard.note_wal_application(record.sequence, record.sequence);
                         // Materialization and the commit barrier are independent. A durable
                         // shared-row batch can still need these locations after cache eviction.
                         let has_wal_resident_blocks = record.outcomes.iter().any(|item| {
@@ -1980,8 +1981,22 @@ impl TemporalEngine {
                     })
             } else {
                 self.wal_store
-                    .append_batch_atomic(shard_id, wal_commands, sync)
-                    .map(|_| ())
+                    .append_batch_atomic_carried(shard_id, wal_commands, sync, staged_blocks)
+                    .map(|(records, carrier)| {
+                        if let (Some(first), Some(last)) = (records.first(), records.last()) {
+                            shard.note_wal_application(first.sequence, last.sequence);
+                            if let Some(log_id) = carrier {
+                                let locations = super::block_in_wal::register_record_with_outcomes(
+                                    &self.block_store, shard_id, &last.staged_blocks, &[],
+                                    log_id, last.sequence, &self.wal_store,
+                                );
+                                for folded in locations {
+                                    shard.wal_resident_blocks.insert(folded,
+                                        super::state::WalResidentBlock { log_id, sequence: last.sequence });
+                                }
+                            }
+                        }
+                    })
             };
             if let Err(err) = batch_result {
                 if sync {
@@ -2002,28 +2017,17 @@ impl TemporalEngine {
             }
             // Block/index materialization stays deferred to the background dump in
             // async and bulk modes (index_log/persist already no-op under bulk).
-            if persist_index_delta {
-                // Anchor the served index to the WAL sequence it reflects (see the
-                // single-command path) so shard load replays only records after it. Under
-                // flat append read the O(1) cached last sequence instead of `stats()` (which
-                // rescans the whole WAL file); without it the exact `stats()` value is kept.
+            if persist_index_delta && shard.checkpoint_wal_sequence().is_some() {
+                // The append receipts establish the applied boundary without
+                // consulting a log tail that may include unapplied records.
                 // Where this batch STARTS in the log, taken before the anchor moves.
                 //
                 // The claim stamped below has to be the bucket's OLDEST undumped write, and for a
-                // batch that is the FIRST record it appended, not the last. The anchor still
-                // holding the previous write's position is one below that first record, so
-                // `+ 1` names it -- and when some other path wrote without anchoring, the value
+                // batch that is the FIRST record it appended, not the last. The previous
+                // anchor was captured before append -- and when some other path wrote without anchoring, the value
                 // is only lower, which retains more rather than less. A claim ABOVE a bucket's
                 // oldest undumped write is the direction that frees records it still needs.
-                let batch_first_wal_sequence = shard
-                    .applied_wal_sequence
-                    .unwrap_or_default()
-                    .saturating_add(1);
-                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
-                    self.wal_store.cached_last_sequence(shard_id)
-                } else {
-                    self.wal_store.stats(shard_id).last_sequence
-                });
+                let batch_first_wal_sequence = oldest_unindexed_sequence;
                 // The WAL half of what each bucket this batch dirtied holds over the log, stamped
                 // the way the single-command path stamps it (engine.rs, after its own append).
                 //
@@ -2485,7 +2489,7 @@ impl TemporalEngine {
             shard.publish_index_flush_countdown = shard
                 .publish_index_flush_countdown
                 .saturating_sub(published_key_count);
-            if shard.publish_index_flush_countdown == 0 {
+            if shard.publish_index_flush_countdown == 0 && shard.checkpoint_wal_sequence().is_some() {
                 shard.publish_index_flush_countdown =
                     self.visibility_publish_index_flush_interval();
                 let publication = self.checkpoint_publications.capture(shard_id);

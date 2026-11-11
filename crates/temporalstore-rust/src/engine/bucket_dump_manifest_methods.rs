@@ -80,7 +80,8 @@ impl TemporalEngine {
             (snapshot, Some(bytes), publication)
         } else {
             let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)
-                .ok_or_else(|| Status::error("shard_not_loaded", "shard is not loaded"))?;
+                .ok_or_else(|| Status::error("checkpoint_unavailable",
+                    "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
         };
         let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
