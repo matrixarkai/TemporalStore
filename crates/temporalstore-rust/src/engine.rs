@@ -48,6 +48,8 @@ mod seen_index_serde;
 mod bucket_dump_manifest_methods;
 #[path = "engine/wal_application.rs"]
 mod wal_application;
+#[path = "engine/maintenance_log.rs"]
+mod maintenance_log;
 mod storage_lifecycle_methods;
 pub use storage_lifecycle_methods::{
     eviction_sampler_buckets_scanned, reset_eviction_sampler_buckets_scanned,
