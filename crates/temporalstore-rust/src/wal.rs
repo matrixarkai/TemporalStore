@@ -409,17 +409,41 @@ pub(crate) fn every_result_can_be_found_again(
     outcomes: &[WalOutcomeItem],
     blocks: &[StagedBlock],
 ) -> bool {
+    let mut coverage = None;
+    let mut linear_scans = 0;
     outcomes.iter().all(|item| {
         item.deleted
             || item.ttl.is_some()
             || item.value.as_ref().map(|value| !value.is_empty()).unwrap_or(false)
-            || blocks.iter().any(|block| {
-                block.object_id == item.object_id
-                    && (block.element_name.as_deref() == item.element_name.as_deref()
-                        || block.element_name.is_none())
-            })
+            || {
+                // Keep small batches and early refusals allocation-free. Repeated searches
+                // over a larger batch share an index borrowing only staged identities.
+                if blocks.len() < 64 || linear_scans < 8 {
+                    linear_scans += 1;
+                    return blocks.iter().any(|block| {
+                        block.object_id == item.object_id
+                            && (block.element_name.as_deref() == item.element_name.as_deref()
+                                || block.element_name.is_none())
+                    });
+                }
+                let index = coverage.get_or_insert_with(|| {
+                    blocks
+                        .iter()
+                        .map(|block| (block.object_id, block.element_name.as_deref()))
+                        .collect::<HashSet<_>>()
+                });
+                index.contains(&(item.object_id, None))
+                    || item
+                        .element_name
+                        .as_deref()
+                        .is_some_and(|name| index.contains(&(item.object_id, Some(name))))
+            }
     })
 }
+
+#[cfg(test)]
+#[path = "wal_recovery_coverage_tests.rs"]
+mod recovery_coverage_tests;
 
 #[cfg(test)]
 mod every_result_can_be_found_again_tests {
