@@ -339,6 +339,7 @@ pub(super) enum Utf8ContainerRangeProjection {
 /// Immutable field names and membership shared by a homogeneous write batch.
 pub(super) struct SharedHashFields {
     names: Vec<std::sync::Arc<str>>,
+    sorted_names: Vec<std::sync::Arc<str>>,
     membership: std::collections::HashSet<std::sync::Arc<str>>,
 }
 
@@ -346,11 +347,20 @@ impl SharedHashFields {
     pub(super) fn new<'a>(fields: impl Iterator<Item = &'a str>) -> Option<Self> {
         let names: Vec<std::sync::Arc<str>> = fields.map(std::sync::Arc::from).collect();
         let membership: std::collections::HashSet<_> = names.iter().cloned().collect();
-        (membership.len() == names.len()).then_some(Self { names, membership })
+        if membership.len() != names.len() {
+            return None;
+        }
+        let mut sorted_names = names.clone();
+        sorted_names.sort_unstable();
+        Some(Self { names, sorted_names, membership })
     }
 
     pub(super) fn names(&self) -> &[std::sync::Arc<str>] {
         &self.names
+    }
+
+    pub(super) fn sorted_names(&self) -> &[std::sync::Arc<str>] {
+        &self.sorted_names
     }
 
     pub(super) fn matches<'a>(&self, fields: impl Iterator<Item = &'a str>) -> bool {

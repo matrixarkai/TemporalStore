@@ -18,6 +18,8 @@ fn shared_hash_fields_require_exact_unique_projection() {
     assert!(!fields.matches(["a", "b", "c"].into_iter()));
     assert!(fields.contains(""));
     assert!(!fields.contains("c"));
+    assert_eq!(fields.sorted_names().iter().map(|name| name.as_ref()).collect::<Vec<_>>(),
+        vec!["", "a", "b"]);
     assert!(SharedHashFields::new(["a", "a"].into_iter()).is_none());
     assert!(SharedHashFields::new(std::iter::empty()).unwrap().names().is_empty());
 }
@@ -93,8 +95,8 @@ fn apply_rows(engine: &TemporalEngine, fields: &[&str], generation: u8) {
 }
 
 fn payload(row: u8, field: &str, generation: u8) -> Vec<u8> {
-    let column = match field { "a" => 0, "b" => 1, "c" => 2, _ => unreachable!() };
-    vec![generation * 32 + row * 3 + column; 48]
+    let column = match field { "a" => 0, "b" => 1, "c" => 2, "d" => 3, _ => unreachable!() };
+    vec![generation * 32 + row * 4 + column; 48]
 }
 
 fn verify_rows(engine: &TemporalEngine, fields: &[(&str, u8)], block_count: usize) {
@@ -163,5 +165,71 @@ fn shared_hash_fields_overwrites_preserve_partial_rows_and_tombstones() {
         verify_rows(&recovered, &[("a", 2), ("b", 2)], 1);
         apply_rows(&recovered, &["a", "b", "c"], 3);
         verify_rows(&recovered, &[("a", 3), ("b", 3), ("c", 3)], 1);
+    }
+}
+
+#[test]
+fn shared_hash_fields_complete_overwrites_avoid_per_field_searches() {
+    use crate::engine::hash_field_map::{binary_search_count_for_test, reset_binary_search_count_for_test};
+    for width in [1, 3, 20, 64] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(64 * 1024 * 1024,
+            dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+        engine.load_shard(1);
+        let fields: Vec<_> = (0..width).rev().map(|i| format!("f{i:03}")).collect();
+        let key = "complete-row";
+        assert!(engine.execute(ExecuteRequest { shard_id: 1,
+            command: Command::HashMultiSet { key: key.to_string(),
+                entries: fields.iter().map(|name| (name.clone(), vec![7; 48])).collect() } }).status.ok);
+        let shared = SharedHashFields::new(fields.iter().map(String::as_str)).unwrap();
+        let mismatched = SharedHashFields::new(["not-a-field"].into_iter()).unwrap();
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&1).unwrap();
+        let existing = shard.bucket_index.hashes.get(key).unwrap();
+        let address = existing.values().next().unwrap().clone();
+        let handles: Vec<_> = existing.keys().cloned().collect();
+        let (start, end) = shard.routing_range();
+        let bucket = crate::engine::hashing::block_routing_bucket(key, start, end);
+        let object = crate::engine::stable_block_object_id(1, "hash", key);
+        for (hint, expected_searches) in [(Some(&shared), 0), (None, 2 * width),
+            (Some(&mismatched), 2 * width)] {
+            reset_binary_search_count_for_test();
+            install_packed_hash_block_at_bucket(shard, 1, bucket, object, key,
+                fields.iter().map(String::as_str), address.clone(), hint);
+            assert_eq!(binary_search_count_for_test(), expected_searches as u64,
+                "width {width}; exact full coverage must avoid searches, fallback is the control");
+            let existing = shard.bucket_index.hashes.get(key).unwrap();
+            assert_eq!(existing.len(), width);
+            for (before, after) in handles.iter().zip(existing.keys()) {
+                assert!(std::sync::Arc::ptr_eq(before, after), "canonical handles must be retained");
+            }
+            assert!(existing.values().all(|held| crate::engine::live_block_key(held)
+                == crate::engine::live_block_key(&address)));
+        }
+    }
+}
+
+#[test]
+fn shared_hash_fields_equal_width_partial_updates_do_not_replace_untouched_fields() {
+    for async_storage in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            let engine = TemporalEngine::with_local_dirs(64 * 1024 * 1024,
+                dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+            engine.load_shard(1);
+            engine
+        };
+        let engine = open();
+        assert!(engine.set_config(SetConfigRequest { shard_id: 1,
+            config: Config { version: 2, async_storage, ..Config::default() } }).ok);
+        apply_rows(&engine, &["a", "b", "c"], 0);
+        apply_rows(&engine, &["b", "d", "a"], 1);
+        verify_rows(&engine, &[("a", 1), ("b", 1), ("c", 0), ("d", 1)], 2);
+        apply_rows(&engine, &["d", "c", "b", "a"], 2);
+        verify_rows(&engine, &[("a", 2), ("b", 2), ("c", 2), ("d", 2)], 1);
+        engine.write_ahead_log_store().flush(1).unwrap();
+        drop(engine);
+        let recovered = open();
+        verify_rows(&recovered, &[("a", 2), ("b", 2), ("c", 2), ("d", 2)], 1);
     }
 }
