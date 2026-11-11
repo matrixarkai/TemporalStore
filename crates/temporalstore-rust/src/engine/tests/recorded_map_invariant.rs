@@ -213,6 +213,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "adopt_key",
         // Reads, all borrows.
         "get",
+        // A scalar read with a bounded derived cache; it cannot change resident model entries.
+        "highest_block_id",
         // IN SOURCE ORDER, which is what the matcher returns -- so an entry goes where its
         // DECLARATION is, not where it reads best in this list.
         // THE SAME SHAPE ONE LEVEL DOWN, and the same answer. `adopt_element_names` points

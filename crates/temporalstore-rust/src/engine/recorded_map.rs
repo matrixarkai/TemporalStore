@@ -73,10 +73,14 @@ use super::state::ShardState;
 use super::storage_bucket_internals::{BlockFiled, ObjectDeletionFiled};
 use super::{ElementMap, LiveBlockKey};
 
+#[path = "container_ordinal_cache.rs"]
+mod ordinals;
+use ordinals::{OrdinalCache, OrdinalSummary};
+
 /// What distinguishes one model kind from another, and nothing else.
 pub(super) trait RecordedKind: Sized + 'static {
     /// The elements of one object, which is the level-2 container.
-    type Elements: ElementMap;
+    type Elements: ElementMap<Value: super::CarriedValue> + AddressedElementMap;
 
     /// The model kind as the bucket index spells it. Spelled ONCE per kind here, so no arm can
     /// misspell it and no two arms can disagree.
@@ -146,7 +150,7 @@ pub(super) trait RepacksAfterDecode: RecordedKind {}
 /// `entries` is private to this module. That single fact is the invariant: `rustc` refuses a
 /// `&mut shard.<kind>.entries` from any other module, so the complete set of operations that can
 /// change a model map is the set declared here -- once, for every kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) struct RecordedMap<K: RecordedKind> {
     /// PRIVATE, AND THE WHOLE POINT. Do not add an accessor returning `&mut` to this.
     /// `engine::tests::recorded_map_invariant` fails if the module grows one.
@@ -158,12 +162,24 @@ pub(super) struct RecordedMap<K: RecordedKind> {
     /// that true for so long: the key could not be converted from outside this module, so the
     /// adoption had to arrive as a declared operation here. See `adopt_key` below.
     entries: HashMap<ModelKey, K::Elements>,
+    ordinals: OrdinalCache,
 }
+
+impl<K: RecordedKind> Clone for RecordedMap<K> where K::Elements: Clone {
+    fn clone(&self) -> Self { Self::from_decoded(self.entries.clone()) }
+}
+
+impl<K: RecordedKind> PartialEq for RecordedMap<K> where K::Elements: PartialEq {
+    fn eq(&self, other: &Self) -> bool { self.entries == other.entries }
+}
+
+impl<K: RecordedKind> Eq for RecordedMap<K> where K::Elements: Eq {}
 
 impl<K: RecordedKind> Default for RecordedMap<K> {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
+            ordinals: OrdinalCache::default(),
         }
     }
 }
@@ -691,6 +707,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         match self.entries.remove(object_key) {
             Some(value) => {
                 self.entries.insert(std::sync::Arc::clone(canonical), value);
+                self.ordinals.adopt_key(canonical);
                 true
             }
             None => false,
@@ -699,6 +716,25 @@ impl<K: RecordedKind> RecordedMap<K> {
 
     pub(super) fn get(&self, object_key: &str) -> Option<&K::Elements> {
         self.entries.get(object_key)
+    }
+
+    pub(super) fn highest_block_id(&self, object_key: &str) -> Option<u64> {
+        let Some((key, elements)) = self.entries.get_key_value(object_key) else {
+            #[cfg(test)]
+            super::state::SIBLING_SCAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        };
+        self.ordinals.highest(key, || {
+            #[cfg(test)]
+            super::state::SIBLING_SCAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut summary = OrdinalSummary::default();
+            elements.visit_addresses(|address| {
+                #[cfg(test)]
+                super::state::SIBLING_SCAN_ELEMENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(id) = address.block_id() { summary.insert(id); }
+            });
+            summary
+        })
     }
 
     /// Point every ELEMENT name in every entry at the pool's copy, and answer how many moved.
@@ -845,6 +881,12 @@ impl<K: RecordedKind> RecordedMap<K> {
         element: <K::Elements as ElementMap>::Element,
         value: <K::Elements as ElementMap>::Value,
     ) {
+        if self.ordinals.contains(object_key) {
+            let previous = self.entries.get(object_key)
+                .and_then(|elements| elements.element_address(&element))
+                .and_then(ElementEntry::block_id);
+            self.ordinals.replace(object_key, previous, super::CarriedValue::carried_address(&value).block_id());
+        }
         if let Some(elements) = self.entries.get_mut(object_key) {
             elements.insert_element(element, value);
             return;
@@ -886,14 +928,20 @@ impl<K: RecordedKind> RecordedMap<K> {
         let Some(elements) = self.entries.get_mut(&object_key[..]) else {
             return false;
         };
+        let previous = self.ordinals.contains(&object_key)
+            .then(|| elements.element_address(&element).and_then(ElementEntry::block_id))
+            .flatten();
         let removed = elements.remove_element(&element);
+        if removed { self.ordinals.replace(&object_key, previous, None); }
         if elements.is_empty_map() {
             self.entries.remove(&object_key[..]);
+            self.ordinals.invalidate(&object_key);
         }
         removed
     }
 
     fn remove_object(&mut self, recorded: RecordedObjectRemoval<K>) -> bool {
+        self.ordinals.invalidate(&recorded.object_key);
         self.entries.remove(&recorded.object_key[..]).is_some()
     }
 }
@@ -912,7 +960,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// `sets` from a hand-written impl, so neither named it -- and collapsing the two is what
     /// surfaced it as a path. Naming it is strictly better than a derive doing it silently.
     pub(super) fn from_decoded(entries: HashMap<ModelKey, K::Elements>) -> Self {
-        Self { entries }
+        Self { entries, ordinals: OrdinalCache::default() }
     }
 
     /// SHARED EXCEPTION 2 -- THE RECONCILE, where the durable index DECIDES and this map is the
@@ -939,6 +987,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         // hold, and it asks the VALUE for that address -- so the live-block filter needs this too.
         <K::Elements as ElementMap>::Value: super::CarriedValue,
     {
+        self.ordinals.clear();
         let persisted = std::mem::take(&mut self.entries);
         self.entries = super::storage_bucket_internals::fill_absent_elements(
             derived,
@@ -961,6 +1010,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     ) where
         <K::Elements as ElementMap>::Value: super::CarriedValue,
     {
+        self.ordinals.invalidate(object_key);
         super::merge_container_elements(&mut self.entries, object_key, carried, live, skipped);
     }
 
@@ -978,6 +1028,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     where
         K::Elements: RemovableElementMap,
     {
+        self.ordinals.invalidate(object_key);
         self.entries
             .get_mut(object_key)
             .map(|elements| elements.remove_element(element))
@@ -996,6 +1047,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     pub(super) fn element_values_mut(
         &mut self,
     ) -> impl Iterator<Item = (&str, ElementValuesMut<'_, K>)> {
+        self.ordinals.clear();
         self.entries
             .iter_mut()
             .map(|(object_key, elements)| (&**object_key, ElementValuesMut { elements }))
@@ -1112,6 +1164,7 @@ pub(super) trait IterableMutElementMap: ElementMap {
 /// the block is still live, and its entry is what keeps the siblings reachable. So the question has
 /// two halves, and [`AddressedElementMap::any_element_other_than_at`] is the second.
 pub(super) trait AddressedElementMap: ElementMap {
+    fn visit_addresses(&self, visit: impl FnMut(&ElementEntry));
     /// The address this map currently holds for `element`, if it holds the element at all.
     fn element_address(&self, element: &Self::Element) -> Option<&ElementEntry>;
 
@@ -1422,6 +1475,7 @@ where
 }
 
 impl AddressedElementMap for super::hash_field_map::HashFieldMap {
+    fn visit_addresses(&self, visit: impl FnMut(&ElementEntry)) { self.values().for_each(visit); }
     fn element_address(&self, element: &super::hash_field_map::FieldName) -> Option<&ElementEntry> {
         self.get(&element[..])
     }
@@ -1449,6 +1503,9 @@ where
     E: Ord + serde::de::DeserializeOwned,
     V: serde::de::DeserializeOwned + super::CarriedValue,
 {
+    fn visit_addresses(&self, mut visit: impl FnMut(&ElementEntry)) {
+        self.values().for_each(|value| visit(super::CarriedValue::carried_address(value)));
+    }
     fn element_address(&self, element: &E) -> Option<&ElementEntry> {
         self.get(element).map(super::CarriedValue::carried_address)
     }
@@ -1503,6 +1560,10 @@ impl<'de, K: RecordedKind> serde::Deserialize<'de> for RecordedMap<K> {
 #[path = "tests/shared_hash_fields.rs"]
 mod shared_hash_fields_tests;
 
+#[cfg(test)]
+#[path = "recorded_ordinal_tests.rs"]
+mod recorded_ordinal_tests;
+
 // TEST FIXTURES. `#[cfg(test)]`, so none of this exists in a shipped binary, and each is named
 // `_for_test` so a production use cannot be mistaken for an ordinary write.
 // ---------------------------------------------------------------------------------------------
@@ -1519,26 +1580,32 @@ impl<K: RecordedKind> RecordedMap<K> {
     }
 
     pub(super) fn insert_elements_for_test(&mut self, object_key: &str, elements: K::Elements) {
+        self.ordinals.invalidate(object_key);
         self.entries.insert(std::sync::Arc::from(object_key), elements);
     }
 
     pub(super) fn remove_for_test(&mut self, object_key: &str) -> Option<K::Elements> {
+        self.ordinals.invalidate(object_key);
         self.entries.remove(object_key)
     }
 
     pub(super) fn clear_for_test(&mut self) {
+        self.ordinals.clear();
         self.entries.clear();
     }
 
     pub(super) fn elements_mut_for_test(&mut self, object_key: &str) -> Option<&mut K::Elements> {
+        self.ordinals.invalidate(object_key);
         self.entries.get_mut(object_key)
     }
 
     pub(super) fn take_for_test(&mut self) -> HashMap<ModelKey, K::Elements> {
+        self.ordinals.clear();
         std::mem::take(&mut self.entries)
     }
 
     pub(super) fn restore_for_test(&mut self, entries: HashMap<ModelKey, K::Elements>) {
+        self.ordinals.clear();
         self.entries = entries;
     }
 }
