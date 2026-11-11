@@ -315,6 +315,22 @@ fn memory_catalog_write<'a>(
     }
 }
 
+fn memory_write_ack(response: &BatchExecuteResponse, expected: usize) -> Result<(), Status> {
+    if !response.status.ok {
+        return Err(response.status.clone());
+    }
+    if response.responses.len() != expected {
+        return Err(Status::error(
+            "memory_catalog_write_incomplete",
+            "memory mutation batch returned an incomplete response",
+        ));
+    }
+    if let Some(failed) = response.responses.iter().find(|response| !response.status.ok) {
+        return Err(failed.status.clone());
+    }
+    Ok(())
+}
+
 fn memory_tombstone_write<'a>(
     tenant_hash: u64,
     records: impl Iterator<Item = &'a MemoryRecord>,
@@ -827,16 +843,8 @@ impl ProxyService {
         }
         let expected_commands = commands.len();
         let stored = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-        if !stored.status.ok {
-            return crate::http::json_response(502, &stored.status);
-        }
-        if stored.responses.len() != expected_commands {
-            return crate::http::json_response(502, &Status::error(
-                "memory_catalog_write_incomplete", "memory catalog batch returned an incomplete response",
-            ));
-        }
-        if let Some(failed) = stored.responses.iter().find(|response| !response.status.ok) {
-            return crate::http::json_response(502, &failed.status);
+        if let Err(status) = memory_write_ack(&stored, expected_commands) {
+            return crate::http::json_response(502, &status);
         }
         crate::http::json_response(
             200,
@@ -1263,9 +1271,10 @@ impl ProxyService {
                 member: memory_order_member(record.updated_at_ms, &record.id),
             },
         ]);
+        let expected = commands.len();
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-        if !response.status.ok {
-            return crate::http::json_response(502, &response.status);
+        if let Err(status) = memory_write_ack(&response, expected) {
+            return crate::http::json_response(502, &status);
         }
         crate::http::json_response(200, &json!({"updated": true, "id": memory_id}))
     }
@@ -1335,6 +1344,7 @@ impl ProxyService {
                 increment: -1,
             }
         }));
+        let expected = commands.len();
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
         if !response.status.ok {
             let _ = self.batch_execute(BatchExecuteRequest {
@@ -1349,6 +1359,9 @@ impl ProxyService {
                 ],
             });
             return crate::http::json_response(502, &response.status);
+        }
+        if let Err(status) = memory_write_ack(&response, expected) {
+            return crate::http::json_response(502, &status);
         }
         crate::http::json_response(200, &json!({"deleted": true, "id": memory_id}))
     }
@@ -1516,6 +1529,17 @@ impl ProxyService {
         let delete_whole_scope = identity_members.is_empty() || identity_covers_scope;
         if delete_whole_scope {
             let deleted = total.unwrap_or_default();
+            let withdrawn = self.batch_execute(BatchExecuteRequest {
+                shard_id,
+                commands: vec![
+                    Command::StringDelete { key: memory_order_ready_key(tenant_hash) },
+                    Command::StringDelete { key: memory_identity_ready_key(tenant_hash) },
+                ],
+            });
+            if let Err(status) = memory_write_ack(&withdrawn, 2) {
+                return crate::http::json_response(502, &status);
+            }
+            self.memory_forget_indexes_ready(tenant_hash);
             let mut after = Vec::new();
             loop {
                 let identities = self.execute(ExecuteRequest {
@@ -1547,8 +1571,8 @@ impl ProxyService {
                             })
                             .collect(),
                     });
-                    if !response.status.ok {
-                        return crate::http::json_response(502, &response.status);
+                    if let Err(status) = memory_write_ack(&response, members.len()) {
+                        return crate::http::json_response(502, &status);
                     }
                 }
             }
@@ -1571,6 +1595,16 @@ impl ProxyService {
                 Command::StringDelete {
                     key: memory_identity_postings_key(tenant_hash),
                 },
+            ];
+            let expected = delete_commands.len();
+            let response = self.batch_execute(BatchExecuteRequest {
+                shard_id,
+                commands: delete_commands,
+            });
+            if let Err(status) = memory_write_ack(&response, expected) {
+                return crate::http::json_response(502, &status);
+            }
+            let marker_commands = vec![
                 Command::StringSet {
                     key: memory_order_ready_key(tenant_hash),
                     value: b"1".to_vec(),
@@ -1582,10 +1616,10 @@ impl ProxyService {
             ];
             let response = self.batch_execute(BatchExecuteRequest {
                 shard_id,
-                commands: delete_commands,
+                commands: marker_commands,
             });
-            if !response.status.ok {
-                return crate::http::json_response(502, &response.status);
+            if let Err(status) = memory_write_ack(&response, 2) {
+                return crate::http::json_response(502, &status);
             }
             self.memory_remember_indexes_ready(tenant_hash);
             return crate::http::json_response(200, &json!({"deleted": deleted}));
@@ -1676,6 +1710,7 @@ impl ProxyService {
                 }
             }));
             if !commands.is_empty() {
+                let expected = commands.len();
                 let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
                 if !response.status.ok {
                     let mut rollback = vec![memory_node_lookup_write(
@@ -1693,6 +1728,9 @@ impl ProxyService {
                         commands: rollback,
                     });
                     return crate::http::json_response(502, &response.status);
+                }
+                if let Err(status) = memory_write_ack(&response, expected) {
+                    return crate::http::json_response(502, &status);
                 }
             }
         }
@@ -1862,13 +1900,14 @@ impl ProxyService {
                         },
                     ]);
                 }
+                let expected = commands.len();
                 let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-                if response.status.ok {
-                    results.extend(page.iter().map(|(id, _, _, _, _)| json!({"memory_id": id})));
-                } else {
+                if let Err(status) = memory_write_ack(&response, expected) {
                     failed.extend(page.iter().map(|(id, _, _, _, _)| {
-                        json!({"memory_id": id, "status": 502, "body": response.status.message})
+                        json!({"memory_id": id, "status": 502, "code":status.code, "body": status.message})
                     }));
+                } else {
+                    results.extend(page.iter().map(|(id, _, _, _, _)| json!({"memory_id": id})));
                 }
             }
         }
@@ -1930,19 +1969,18 @@ impl ProxyService {
             return Ok(());
         }
 
-        let records = self.memory_read_all(tenant_hash);
+        let records = self.memory_read_all(tenant_hash)?;
         for page in records.chunks(MEMORY_CATALOG_PAGE_SIZE) {
-            let commands = page
+            let commands: Vec<_> = page
                 .iter()
                 .map(|record| Command::SetAdd {
                     key: memory_order_key(tenant_hash),
                     member: memory_order_member(record.updated_at_ms, &record.id),
                 })
                 .collect();
+            let expected = commands.len();
             let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-            if !response.status.ok {
-                return Err(response.status);
-            }
+            memory_write_ack(&response, expected)?;
         }
         let marker = self.execute(ExecuteRequest {
             shard_id,
@@ -1985,6 +2023,9 @@ impl ProxyService {
                     key: memory_catalog_key(tenant_hash),
                 },
             });
+            if !legacy.status.ok {
+                return Err(legacy.status);
+            }
             if matches!(legacy.response, CommandResponse::Integer { value: 0 }) {
                 let initialized = self.batch_execute(BatchExecuteRequest {
                     shard_id: self.context_shard_id(tenant_hash),
@@ -1999,9 +2040,7 @@ impl ProxyService {
                         },
                     ],
                 });
-                if !initialized.status.ok {
-                    return Err(initialized.status);
-                }
+                memory_write_ack(&initialized, 2)?;
                 self.memory_remember_indexes_ready(tenant_hash);
                 return Ok(());
             }
@@ -2083,7 +2122,7 @@ impl ProxyService {
             ));
         }
 
-        let records = self.memory_read_all(tenant_hash);
+        let records = self.memory_read_all(tenant_hash)?;
         let mut counts = BTreeMap::<Vec<u8>, u64>::new();
         counts.insert(MEMORY_TOTAL_MEMBER.to_vec(), records.len() as u64);
         for record in &records {
@@ -2099,20 +2138,18 @@ impl ProxyService {
                 score: count as f64,
             });
             if commands.len() == MEMORY_CATALOG_PAGE_SIZE {
+                let expected = commands.len();
                 let response = self.batch_execute(BatchExecuteRequest {
                     shard_id,
                     commands: std::mem::take(&mut commands),
                 });
-                if !response.status.ok {
-                    return Err(response.status);
-                }
+                memory_write_ack(&response, expected)?;
             }
         }
         if !commands.is_empty() {
+            let expected = commands.len();
             let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-            if !response.status.ok {
-                return Err(response.status);
-            }
+            memory_write_ack(&response, expected)?;
         }
         let mut groups = BTreeMap::<(String, String, String), Vec<MemoryRecord>>::new();
         for record in records {
@@ -2142,10 +2179,9 @@ impl ProxyService {
                         member: posting_field.as_bytes().to_vec(),
                     }
                 }));
+                let expected = commands.len();
                 let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-                if !response.status.ok {
-                    return Err(response.status);
-                }
+                memory_write_ack(&response, expected)?;
             }
         }
         let marker = self.execute(ExecuteRequest {
@@ -2359,7 +2395,7 @@ impl ProxyService {
         records
     }
 
-    fn memory_read_all(&self, tenant_hash: u64) -> Vec<MemoryRecord> {
+    fn memory_read_all(&self, tenant_hash: u64) -> Result<Vec<MemoryRecord>, Status> {
         let shard_id = self.context_shard_id(tenant_hash);
         let response = self.batch_execute(BatchExecuteRequest {
             shard_id,
@@ -2372,6 +2408,7 @@ impl ProxyService {
                 },
             ],
         });
+        memory_write_ack(&response, 2)?;
         let mut responses = response.responses.into_iter();
         let catalog = responses.next().map(|response| response.response);
         let tombstones = match responses.next().map(|response| response.response) {
@@ -2379,15 +2416,22 @@ impl ProxyService {
                 .into_iter()
                 .map(|(field, _)| field)
                 .collect::<HashSet<_>>(),
-            _ => HashSet::new(),
+            _ => return Err(Status::error("invalid_memory_catalog_response", "expected catalog tombstones")),
         };
         match catalog {
             Some(CommandResponse::HashEntries { entries }) => entries
                 .into_iter()
                 .filter(|(field, _)| !tombstones.contains(field))
-                .filter_map(|(_, bytes)| MemoryRecord::decode(&bytes))
+                .map(|(id, bytes)| {
+                    let record = MemoryRecord::decode(&bytes).ok_or_else(||
+                        Status::error("invalid_memory_catalog_record", "catalog record cannot be decoded"))?;
+                    if record.id != id || tenant_hash_from_memory_id(&id) != Some(tenant_hash) {
+                        return Err(Status::error("invalid_memory_catalog_identity", "catalog record identity mismatch"));
+                    }
+                    Ok(record)
+                })
                 .collect(),
-            _ => Vec::new(),
+            _ => Err(Status::error("invalid_memory_catalog_response", "expected catalog entries")),
         }
     }
 }
@@ -2420,6 +2464,10 @@ mod explicit_tests;
 #[cfg(test)]
 #[path = "memory_read_error_tests.rs"]
 mod read_error_tests;
+
+#[cfg(test)]
+#[path = "memory_write_ack_tests.rs"]
+mod write_ack_tests;
 
 #[cfg(test)]
 mod tests {
