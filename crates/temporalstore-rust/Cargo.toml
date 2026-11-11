@@ -20,6 +20,7 @@ prost = "0.13"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
 base64 = "0.22"
+bloomfilter = { version = "3.0.2", default-features = false }
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
 matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "4f116c89255ddb38738391465166c9cf368e381a", features = ["rocksdb-ssd"] }
