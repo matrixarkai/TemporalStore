@@ -3049,22 +3049,26 @@ impl LocalWriteAheadLogStore {
     pub fn info(&self, shard_id: ShardId) -> Result<WriteAheadLogInfo, WriteAheadLogError> {
         let inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let path = write_ahead_log_path(&inner.root, shard_id);
+        let (tail_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
         if !path.exists() {
+            let sealed_bytes = wal_all_segment_bytes(&inner.root, shard_id);
             return Ok(WriteAheadLogInfo {
                 shard_id,
                 path,
+                current_sequence: tail_sequence,
+                length_bytes: sealed_bytes,
+                persistent_length_bytes: sealed_bytes,
                 format_version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                 ..WriteAheadLogInfo::default()
             });
         }
-        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
         let (_, header_len) = read_wal_base(&path)?;
         let mut tally = WalReadTally::start();
         let mut file = open_wal_read(&path, &mut tally)?;
         file.seek(SeekFrom::Start(header_len))?;
         let mut reader = BufReader::new(file);
         let mut start_sequence = 0_u64;
-        let mut current_sequence = 0_u64;
+        let mut current_sequence = tail_sequence;
         let mut records = 0_usize;
         // Read BYTE lines, not String lines.
         //
@@ -3279,6 +3283,10 @@ fn wal_segment_bytes() -> u64 {
 /// Rolling threshold when nothing sets one. See [`wal_segment_bytes`] for how it was chosen.
 /// Zero is still accepted and still means "never roll".
 pub const DEFAULT_WAL_SEGMENT_BYTES: u64 = 256 * 1024;
+
+#[cfg(test)]
+#[path = "wal_info_roll_tests.rs"]
+mod info_roll_tests;
 
 thread_local! {
     /// Per-thread override of the rolling threshold.
