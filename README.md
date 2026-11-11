@@ -21,6 +21,26 @@ rather than a footnote.
 
 ## Choose the Serving Path
 
+### Start a native feature-serving node
+
+From a source checkout, use the single-node Compose configuration for the HTTP
+command surface used by the native Feast provider:
+
+```bash
+docker compose -f docker-compose.single-node.yml up --build -d
+curl -fsS http://127.0.0.1:17102/health
+```
+
+The command endpoint is port 17102; it is not the RESP endpoint in the separate
+Docker quick start below. Install and configure the provider using its
+[setup guide](integrations/feast/feast_temporalstore_command/README.md).
+Its latest-value API is an online store, not a replacement for Feast's offline
+store or materialization engine. History is opt-in and increases stored work.
+The Compose deployment retains data in a named volume; `down` stops it without
+deleting that volume. Do not add `-v` unless the stored data is disposable.
+
+### Select a component
+
 | Workload | Entry point | Deployment decision |
 |---|---|---|
 | Feast materialization and online reads | [Feast integration](integrations/feast) | Select the provider and write acknowledgement policy; preserve timestamp ordering and expiry semantics. |
@@ -32,6 +52,15 @@ For performance results, distinguish accepted writes from stale conditional writ
 from rows, and resident reads from storage misses. Keep payloads, batch widths, concurrency,
 durability, maintenance, and replica counts explicit. Allocation reductions and compressed
 wire bytes do not by themselves establish device write amplification or maximum service QPS.
+
+The other independently usable Apache-2.0 projects are
+[MatrixObject](https://github.com/matrixarkai/MatrixObject) for object storage,
+[MatrixArk](https://github.com/matrixarkai/matrixark) for context workflows,
+[MatrixCache](https://github.com/matrixarkai/matrixcache) for embedded caching,
+[MatrixRaft](https://github.com/matrixarkai/matrixraft) for consensus, and
+[MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) for an executable
+ads-serving demonstration. These repositories are not a list of mandatory
+services to start alongside TemporalStore.
 
 ## Is this the store for your problem?
 
