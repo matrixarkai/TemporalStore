@@ -19,6 +19,20 @@ rather than a footnote.
 
 ---
 
+## Choose the Serving Path
+
+| Workload | Entry point | Deployment decision |
+|---|---|---|
+| Feast materialization and online reads | [Feast integration](integrations/feast) | Select the provider and write acknowledgement policy; preserve timestamp ordering and expiry semantics. |
+| Context ingestion, retrieval, and feedback | [MatrixArk runtime](https://github.com/matrixarkai/matrixark) and the [Python client](#python-llm-context-client) | Configure storage and model providers separately; installing an SDK does not start either service. |
+| Replicated serving | [Cluster deployment](#deploy-laptop--replicated-cluster) | Choose the replication mode and read consistency before interpreting latency or durability. |
+| Embedded cache or consensus | [MatrixCache](https://github.com/matrixarkai/matrixcache) and [MatrixRaft](https://github.com/matrixarkai/matrixraft) | These are reusable libraries, not additional mandatory network services. |
+
+For performance results, distinguish accepted writes from stale conditional writes, requests
+from rows, and resident reads from storage misses. Keep payloads, batch widths, concurrency,
+durability, maintenance, and replica counts explicit. Allocation reductions and compressed
+wire bytes do not by themselves establish device write amplification or maximum service QPS.
+
 ## Is this the store for your problem?
 
 | You are building | This store | Read on |
