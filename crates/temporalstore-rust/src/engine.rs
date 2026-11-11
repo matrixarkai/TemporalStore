@@ -7907,10 +7907,9 @@ pub(crate) struct CacheSweepCounts {
     pub batched_calls: std::sync::atomic::AtomicU64,
     /// Dropped keys those calls were handed, counted INSIDE the primitive.
     pub keys_batched: std::sync::atomic::AtomicU64,
-    /// `MultiLayerCache::keys_for_shard` snapshots -- the batched pass's single walk.
+    /// Batched record-key lookup passes, one per invalidation round.
     pub listings: std::sync::atomic::AtomicU64,
-    /// Cache entries those listings stepped over, summed. Zero unless armed, and read from the
-    /// SAME three tier lengths as `entries_walked`, so the two are commensurable.
+    /// Candidate keys actually visited by those lookups, summed. Zero unless armed.
     pub entries_listed: std::sync::atomic::AtomicU64,
     /// Matching keys those snapshots returned for the shard. The key-only API does not inspect
     /// filesystem metadata. Always counted -- it is a `Vec::len()`, not a probe.
@@ -8005,19 +8004,13 @@ impl CacheSweepCounts {
             .fetch_add(keys, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Counted immediately BEFORE the listing it describes, from the same three tier lengths
-    /// `note_sweep` reads -- so a listing and a sweep are priced in the same unit and the ratio
-    /// between them means something.
-    fn note_listing(&self, cache: &MultiLayerCache) {
+    /// Count actual candidate visits, not the population of unrelated cache tiers.
+    fn note_listing(&self, entries_examined: usize) {
         self.listings
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.armed.load(std::sync::atomic::Ordering::Relaxed) {
-            let listed = cache
-                .item_count_for_tier(matrixcache::CacheTier::Memory)
-                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Pmem))
-                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Ssd));
             self.entries_listed
-                .fetch_add(listed as u64, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(entries_examined as u64, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -8131,9 +8124,8 @@ fn invalidate_record_all(
 /// repeating the walk. `a_key_the_shard_has_dropped_is_never_still_answered_out_of_the_cache` is
 /// what holds that.
 ///
-/// The key-only snapshot avoids the per-entry filesystem probes and diagnostic allocations of
-/// `entries_for_shard`. It still walks the tier key sets once per round, but only copies and
-/// deduplicates matching keys.
+/// Record-scoped indexes visit only the requested hash and feature selectors. Payload pages
+/// retain their physical keys and are neither copied nor scanned by this invalidation pass.
 /// GENERIC OVER THE KEY TYPE, and only because its two call sites hold their round's keys in
 /// different containers: `delete_drop` collects `Arc<str>` object keys off the live block entries,
 /// and the expiry sweep collects `String` keys out of `due_window`. Converting either one to suit
@@ -8153,7 +8145,9 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
     let dropped = keys
         .iter()
         .map(|key| key.as_ref())
-        .collect::<std::collections::BTreeSet<&str>>();
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let mut batch = Vec::with_capacity(keys.len().saturating_mul(2));
     for key in keys {
         for named in named_record_keys(shard_id, key.as_ref()) {
@@ -8161,13 +8155,16 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
             batch.push(named);
         }
     }
-    counts.note_listing(cache);
-    let listed = cache.keys_for_shard_matching(shard_id, |entry| {
-        SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_ref())
-            && dropped.contains(entry.record_key.as_ref())
-    });
-    counts.note_listed_entries(listed.len() as u64);
-    batch.extend(listed);
+    let mut examined = 0usize;
+    let mut returned = 0usize;
+    for namespace in SWEPT_RECORD_NAMESPACES {
+        let snapshot = cache.keys_for_records(shard_id, namespace, &dropped);
+        examined = examined.saturating_add(snapshot.entries_examined);
+        returned = returned.saturating_add(snapshot.keys.len());
+        batch.extend(snapshot.keys);
+    }
+    counts.note_listing(examined);
+    counts.note_listed_entries(returned as u64);
     cache.invalidate_batch(&batch).unwrap_or(0)
 }
 
