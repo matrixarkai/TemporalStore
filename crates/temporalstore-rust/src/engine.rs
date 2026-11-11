@@ -7912,7 +7912,7 @@ pub(crate) struct CacheSweepCounts {
     /// Cache entries those listings stepped over, summed. Zero unless armed, and read from the
     /// SAME three tier lengths as `entries_walked`, so the two are commensurable.
     pub entries_listed: std::sync::atomic::AtomicU64,
-    /// Unique keys those snapshots returned for the shard. The key-only API does not inspect
+    /// Matching keys those snapshots returned for the shard. The key-only API does not inspect
     /// filesystem metadata. Always counted -- it is a `Vec::len()`, not a probe.
     pub entries_returned: std::sync::atomic::AtomicU64,
 }
@@ -8118,7 +8118,7 @@ fn invalidate_record_all(
 /// `invalidate_record` and filters them by shard alone, so it is a superset of what every one of
 /// the round's per-key sweeps could have matched; the predicate here re-applies the other two
 /// halves of that filter (`namespace` and `record_key`) that `invalidate_record` applies inline.
-/// The snapshot returns the original `CacheKey` fields directly, without reconstructing keys
+/// The snapshot filters before copying and returns only matching `CacheKey` fields, without reconstructing keys
 /// from diagnostic strings. Both arms take their namespaces from `SWEPT_RECORD_NAMESPACES` and their named keys
 /// from `named_record_keys`, so neither list can drift from the other. And a key the round did
 /// NOT drop is not in the set, so its entries are left cached -- which is the same thing N
@@ -8132,7 +8132,8 @@ fn invalidate_record_all(
 /// what holds that.
 ///
 /// The key-only snapshot avoids the per-entry filesystem probes and diagnostic allocations of
-/// `entries_for_shard`. It still walks and deduplicates the tier key sets once per round.
+/// `entries_for_shard`. It still walks the tier key sets once per round, but only copies and
+/// deduplicates matching keys.
 /// GENERIC OVER THE KEY TYPE, and only because its two call sites hold their round's keys in
 /// different containers: `delete_drop` collects `Arc<str>` object keys off the live block entries,
 /// and the expiry sweep collects `String` keys out of `due_window`. Converting either one to suit
@@ -8161,15 +8162,12 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
         }
     }
     counts.note_listing(cache);
-    let listed = cache.keys_for_shard(shard_id);
-    counts.note_listed_entries(listed.len() as u64);
-    for entry in listed {
-        if SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_ref())
+    let listed = cache.keys_for_shard_matching(shard_id, |entry| {
+        SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_ref())
             && dropped.contains(entry.record_key.as_ref())
-        {
-            batch.push(entry);
-        }
-    }
+    });
+    counts.note_listed_entries(listed.len() as u64);
+    batch.extend(listed);
     cache.invalidate_batch(&batch).unwrap_or(0)
 }
 
