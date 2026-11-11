@@ -16,6 +16,8 @@ use crate::types::CommandResponse;
 const MEMORY_BATCH_LIMIT: usize = 1_000;
 const MEMORY_CATALOG_PAGE_SIZE: usize = 512;
 const MEMORY_UPDATE_PAGE_SIZE: usize = 128;
+// Postings contain batches of memories, so cap posting fan-out before hydration.
+const MEMORY_IDENTITY_POSTINGS_PER_PAGE: usize = 1;
 const MEMORY_IDENTITY_INDEX_VERSION: &[u8] = b"3";
 const MEMORY_TOTAL_MEMBER: &[u8] = b"\0total";
 
@@ -291,6 +293,18 @@ fn memory_catalog_write<'a>(
         key: memory_catalog_key(tenant_hash),
         entries: records
             .map(|record| (record.id.clone(), record.encode()))
+            .collect(),
+    }
+}
+
+fn memory_tombstone_write<'a>(
+    tenant_hash: u64,
+    records: impl Iterator<Item = &'a MemoryRecord>,
+) -> Command {
+    Command::HashMultiSet {
+        key: memory_tombstone_key(tenant_hash),
+        entries: records
+            .map(|record| (record.id.clone(), b"1".to_vec()))
             .collect(),
     }
 }
@@ -1244,17 +1258,12 @@ impl ProxyService {
             if candidates.is_empty() {
                 continue;
             }
-            let delete_commands = candidates
-                .iter()
-                .map(|(_, record)| Command::HashSet {
-                    key: memory_tombstone_key(tenant_hash),
-                    field: record.id.clone(),
-                    value: b"1".to_vec(),
-                })
-                .collect();
-            let removals = self.batch_execute(BatchExecuteRequest {
+            let removals = self.execute(ExecuteRequest {
                 shard_id,
-                commands: delete_commands,
+                command: memory_tombstone_write(
+                    tenant_hash,
+                    candidates.iter().map(|(_, record)| record),
+                ),
             });
             if !removals.status.ok {
                 return crate::http::json_response(502, &removals.status);
@@ -1262,14 +1271,14 @@ impl ProxyService {
             let mut removed_records = Vec::new();
             let mut removed_postings = BTreeMap::<Vec<u8>, MemoryRecord>::new();
             let mut identity_counts = BTreeMap::<Vec<u8>, i64>::new();
-            for ((posting, record), _) in candidates.into_iter().zip(removals.responses) {
+            for (posting, record) in candidates {
                 removed_postings
                     .entry(posting)
                     .or_insert_with(|| record.clone());
-                removed_records.push(record.clone());
                 for member in memory_identity_members(&record) {
                     *identity_counts.entry(member).or_default() -= 1;
                 }
+                removed_records.push(record);
                 deleted += 1;
             }
             let mut commands = Vec::new();
@@ -1800,6 +1809,21 @@ impl ProxyService {
         after: &[u8],
         limit: usize,
     ) -> (Vec<u8>, Vec<(Vec<u8>, MemoryRecord)>) {
+        self.memory_identity_postings_page(
+            tenant_hash,
+            identity_member,
+            after,
+            limit.clamp(1, MEMORY_IDENTITY_POSTINGS_PER_PAGE),
+        )
+    }
+
+    fn memory_identity_postings_page(
+        &self,
+        tenant_hash: u64,
+        identity_member: &[u8],
+        after: &[u8],
+        limit: usize,
+    ) -> (Vec<u8>, Vec<(Vec<u8>, MemoryRecord)>) {
         let response = self.execute(ExecuteRequest {
             shard_id: self.context_shard_id(tenant_hash),
             command: Command::SetScan {
@@ -1812,6 +1836,9 @@ impl ProxyService {
             CommandResponse::Members { members } => members,
             _ => return (Vec::new(), Vec::new()),
         };
+        if postings.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
         let next_after = postings.last().cloned().unwrap_or_default();
         let fields = postings
             .iter()
@@ -1940,6 +1967,10 @@ fn json_status_ok(body: &[u8]) -> bool {
         .and_then(|ok| ok.as_bool())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+#[path = "memory_identity_page_tests.rs"]
+mod identity_page_tests;
 
 #[cfg(test)]
 mod tests {
