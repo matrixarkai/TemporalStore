@@ -19,6 +19,17 @@ rather than a footnote.
 
 ---
 
+## Guide
+
+| Task | Section |
+|---|---|
+| Pick a provider and start a serving node | [Serving paths](#choose-the-serving-path) |
+| Choose sequence, feature, or context operations | [Workload guide](#is-this-the-store-for-your-problem) |
+| Check constraints before choosing the store | [Limitations](#what-this-store-is-bad-at) |
+| Use RESP locally | [Docker quick start](#quick-start-single-node-docker) |
+| Understand persistence and feature writes | [Architecture](#architecture) |
+| Build from source | [Build instructions](#build--test-from-source) |
+
 ## Choose the Serving Path
 
 ### Start a native feature-serving node
