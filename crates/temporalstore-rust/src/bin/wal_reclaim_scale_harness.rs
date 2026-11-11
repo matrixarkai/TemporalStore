@@ -113,8 +113,8 @@ fn main() {
     );
 
     // ---- sample log ids ---------------------------------------------------
-    // scan yields physical offsets; log_id_at converts to the addressing space that survives
-    // reclaim. With nothing reclaimed yet the two coincide, which the assertion below pins.
+    // Scans already return stable log ids across all pieces. Converting them as active-file
+    // offsets would add the active piece's base a second time after the first roll.
     // Scan in bounded windows and keep only the probes. Materializing the whole log here would
     // make the harness itself the biggest allocation in the process, which is exactly the thing
     // being measured.
@@ -133,15 +133,10 @@ fn main() {
         if stride == 0 {
             stride = (options.records / options.samples.max(1)).max(1);
         }
-        for (physical, line) in &window {
+        for (log_id, line) in &window {
             if seen % stride == 0 {
-                let log_id = store.log_id_at(shard, *physical).expect("log_id_at");
-                assert_eq!(
-                    log_id, *physical,
-                    "before any reclaim a log id is the physical offset"
-                );
                 probes.push(Probe {
-                    log_id,
+                    log_id: *log_id,
                     sequence: decode_wal_line(line).expect("decode").sequence,
                     bytes: line.clone(),
                 });
@@ -166,7 +161,7 @@ fn main() {
     println!("\n-- reclaim rounds");
     println!(
         "   {:>5} {:>12} {:>10} {:>14} {:>12}",
-        "round", "retain_from", "kept", "reclaim_ms", "base_offset"
+        "round", "retain_from", "piece_kept", "reclaim_ms", "piece_base"
     );
     for round in 1..=options.reclaims {
         let retain_from = (round * per_round) as u64;
@@ -193,7 +188,6 @@ fn main() {
         // Every probe must either resolve to exactly the bytes it named, or resolve to nothing
         // because its record was reclaimed. Anything else is the silent failure this design
         // exists to prevent.
-        let base = store.base_offset(shard).expect("base_offset");
         for probe in &probes {
             match store
                 .read_at_log_id(shard, probe.log_id, probe.bytes.len() as u64)
@@ -214,14 +208,14 @@ fn main() {
                     }
                 }
                 None => {
-                    if probe.log_id < base {
+                    if probe.sequence < report.effective_retain_from_sequence {
                         correctly_gone += 1;
                     } else {
                         // A live log id must never read as absent.
                         resurrected += 1;
                         eprintln!(
-                            "   LOST round {round}: log_id {} (sequence {}) is at or above base {base} but did not resolve",
-                            probe.log_id, probe.sequence
+                            "   LOST round {round}: log_id {} (sequence {}) is at or above retain sequence {} but did not resolve",
+                            probe.log_id, probe.sequence, report.effective_retain_from_sequence
                         );
                     }
                 }
