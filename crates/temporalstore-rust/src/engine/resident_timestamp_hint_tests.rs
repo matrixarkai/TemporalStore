@@ -241,7 +241,9 @@ fn hint_population_cost_is_resident_metadata_not_a_payload_cache_budget() {
         map.insert_element_for_test(key, field.clone(), address(1));
     }
     let probe = crate::alloc_probe::Probe::start();
-    for key in &keys { map.remember_timestamp(key, "ts", Some((1, 0))); }
+    for key in &keys {
+        map.remember_timestamp_value(key, "ts", TimestampHintValue::from_bytes(&[0x08, 1]));
+    }
     let reading = probe.stop();
     assert_eq!(map.timestamp_hints.len(), map.len());
     assert!(reading.allocs < 32, "keys and names must not be allocated per hint: {reading:?}");
@@ -251,4 +253,142 @@ fn hint_population_cost_is_resident_metadata_not_a_payload_cache_budget() {
              keys.len(), map.timestamp_hints.len(), map.timestamp_hints.capacity(),
              std::mem::size_of::<(ModelKey, TimestampHint)>(), reading.alloc_bytes,
              retained_bytes, reading.allocs);
+}
+
+fn project(engine: &TemporalEngine, key: &str, fields: &[&str]) -> Vec<Option<Vec<u8>>> {
+    let bytes = engine.batch_hash_multi_get_compact_msgpack(crate::types::BatchHashMultiGetRequest {
+        shard_id: 1, keys: vec![key.into()], fields: fields.iter().map(|field| field.to_string()).collect(),
+    });
+    let mut result: crate::types::BatchHashMultiGetResponse = rmp_serde::from_slice(&bytes).unwrap();
+    assert!(result.status.ok && result.errors.is_empty(), "{result:?}");
+    assert_eq!(result.rows.len(), 1);
+    result.rows.remove(0).0
+}
+
+#[test]
+fn exact_bytes_are_source_bound_and_not_recreated_from_the_parsed_timestamp() {
+    let mut map = map();
+    let raw = [0x08, 0x8a, 0, 0x18, 7];
+    map.remember_timestamp_value("row", "ts", TimestampHintValue::from_bytes(&raw));
+    assert_eq!(map.cached_timestamp("row", "ts"), Some(Some((10, 0))));
+    assert_eq!(map.cached_timestamp_bytes("row", "ts"), Some(raw.as_slice()));
+    assert_eq!(map.cached_timestamp_bytes("row", "other"), None);
+    assert_eq!(map.cached_timestamp_bytes("missing", "ts"), None);
+    assert_eq!(map.clone().cached_timestamp_bytes("row", "ts"), None);
+    map.insert_element_for_test("row", std::sync::Arc::from("ts"), address(2));
+    assert_eq!(map.cached_timestamp_bytes("row", "ts"), None);
+    map.remember_timestamp_value("row", "ts", TimestampHintValue::from_bytes(&[]));
+    assert_eq!(map.cached_timestamp_bytes("row", "ts"), Some([].as_slice()));
+    assert_eq!(map.cached_timestamp("row", "ts"), Some(Some((0, 0))));
+    map.replay_remove_element("row", &std::sync::Arc::from("ts"));
+    assert_eq!(map.cached_timestamp_bytes("row", "ts"), None);
+}
+
+#[test]
+fn raw_point_and_projected_reads_preserve_unknown_noncanonical_empty_and_malformed_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    for (index, raw) in [vec![0x08, 10, 0x18, 7], vec![0x08, 0x8a, 0], Vec::new(), vec![0xff]].into_iter().enumerate() {
+        assert_eq!(conditional(&engine, 1000 + index as i64,
+            vec![("ts".into(), raw.clone()), ("v".into(), vec![index as u8; 48])]), 1);
+        evict_payload_caches(&engine);
+        assert_eq!(execute(&engine, Command::HashGet { key: "row".into(), field: "ts".into() }),
+                   CommandResponse::Bytes { value: Some(raw.clone()) });
+        assert_eq!(execute(&engine, Command::HashMultiGet { key: "row".into(), fields: vec!["ts".into()] }),
+                   CommandResponse::Values { values: vec![Some(raw.clone())] });
+        assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw.clone())]);
+        assert_eq!(project(&engine, "row", &["ts", "ts", "v", "missing"]),
+                   vec![Some(raw.clone()), Some(raw), Some(vec![index as u8; 48]), None]);
+    }
+}
+
+#[test]
+fn inline_limit_keeps_large_timestamp_reads_on_the_exact_storage_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    for length in [24, 25, 64, 65, 128] {
+        let mut raw = stamp(10);
+        let payload = length - raw.len() - 2;
+        raw.extend([0x1a, payload as u8]);
+        raw.resize(length, b'x');
+        assert_eq!(conditional(&engine, 1000, vec![("ts".into(), raw.clone()), ("v".into(), vec![1; 48])]), 1);
+        {
+            let shards = engine.shards.read().unwrap();
+            let hashes = &shards.get(&1).unwrap().bucket_index.hashes;
+            assert_eq!(hashes.cached_timestamp_bytes("row", "ts"), (length <= 24).then_some(raw.as_slice()));
+        }
+        evict_payload_caches(&engine);
+        assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw.clone())]);
+        assert_eq!(conditional(&engine, 5, vec![("ts".into(), stamp(5))]), 0);
+        assert_eq!(execute(&engine, Command::HashGet { key: "row".into(), field: "ts".into() }),
+                   CommandResponse::Bytes { value: Some(raw) });
+    }
+}
+
+#[test]
+fn raw_hint_reads_follow_ordinary_replacement_deletion_and_stale_fallback_learning() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    assert_eq!(conditional(&engine, 10, vec![("ts".into(), stamp(10)), ("v".into(), vec![1; 48])]), 1);
+    let raw = vec![0x08, 90, 0x18, 9];
+    execute(&engine, Command::HashMultiSet { key: "row".into(), entries: vec![("ts".into(), raw.clone())] });
+    evict_payload_caches(&engine);
+    assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw.clone())]);
+    assert_eq!(conditional(&engine, 50, vec![("ts".into(), stamp(50))]), 0);
+    evict_payload_caches(&engine);
+    {
+        let shards = engine.shards.read().unwrap();
+        assert_eq!(shards.get(&1).unwrap().bucket_index.hashes.cached_timestamp_bytes("row", "ts"), Some(raw.as_slice()));
+    }
+    assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw)]);
+    execute(&engine, Command::HashDelete { key: "row".into(), field: "ts".into() });
+    assert_eq!(project(&engine, "row", &["ts"]), vec![None]);
+    execute(&engine, Command::CommonDelete { key: "row".into() });
+    assert_eq!(conditional(&engine, 1, vec![("ts".into(), stamp(1))]), 1);
+    assert_eq!(project(&engine, "row", &["ts"]), vec![Some(stamp(1))]);
+}
+
+#[test]
+fn raw_hint_reads_respect_expiry_and_survive_restart_without_persisting_hints() {
+    struct Clock;
+    impl Drop for Clock { fn drop(&mut self) { crate::engine::set_replay_clock_ms(None); } }
+    let _clock = Clock;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    crate::engine::set_replay_clock_ms(Some(100000));
+    execute(&engine, Command::HashMultiSetIfTimestampOlder {
+        key: "row".into(), timestamp_field: "ts".into(), timestamp_seconds: 10, timestamp_nanos: 0,
+        ttl_ms: Some(10), entries: vec![("ts".into(), stamp(10)), ("v".into(), vec![1; 48])],
+    });
+    assert_eq!(project(&engine, "row", &["ts"]), vec![Some(stamp(10))]);
+    crate::engine::set_replay_clock_ms(Some(100020));
+    assert_eq!(project(&engine, "row", &["ts"]), vec![None]);
+    assert_eq!(execute(&engine, Command::HashGet { key: "row".into(), field: "ts".into() }),
+               CommandResponse::Bytes { value: None });
+    let raw = vec![0x08, 10, 0x18, 7];
+    assert_eq!(conditional(&engine, 20, vec![("ts".into(), raw.clone())]), 1);
+    crate::engine::set_replay_clock_ms(None);
+    engine.write_ahead_log_store().flush(1).unwrap();
+    drop(engine);
+    let engine = open(dir.path());
+    assert!(engine.shards.read().unwrap().get(&1).unwrap().bucket_index.hashes.timestamp_hints.is_empty());
+    assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw)]);
+}
+
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn inline_timestamp_updates_allocate_no_payload_buffers() {
+    let mut map = map();
+    map.remember_timestamp_value("row", "ts", TimestampHintValue::from_bytes(&[0x08, 1]));
+    let probe = crate::alloc_probe::Probe::start();
+    for seconds in 0..1000 {
+        let raw = [0x08, (seconds % 128) as u8];
+        map.remember_timestamp_value("row", "ts", TimestampHintValue::from_bytes(&raw));
+        assert_eq!(map.cached_timestamp_bytes("row", "ts"), Some(raw.as_slice()));
+        assert_eq!(map.cached_timestamp("row", "ts"), Some(Some(((seconds % 128) as i64, 0))));
+    }
+    let reading = probe.stop();
+    assert_eq!(reading.allocs, 0);
+    println!("INLINE_TIMESTAMP_UPDATES updates=1000 allocations={} entry_bytes={}", reading.allocs,
+             std::mem::size_of::<(ModelKey, TimestampHint)>());
 }

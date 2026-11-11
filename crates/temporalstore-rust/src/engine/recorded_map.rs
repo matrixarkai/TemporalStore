@@ -171,7 +171,39 @@ struct TimestampHint {
     // User-field data only, never an index or WAL ordering stamp.
     field: super::hash_field_map::FieldName,
     address: ElementEntry,
-    value: Option<(i64, i32)>,
+    value: TimestampHintValue,
+}
+
+#[derive(Debug)]
+pub(super) enum TimestampHintValue {
+    Inline { bytes: [u8; 24], length: u8 },
+    Parsed(Option<(i64, i32)>),
+}
+
+impl TimestampHintValue {
+    pub(super) fn from_bytes(value: &[u8]) -> Self {
+        if value.len() <= 24 {
+            let mut bytes = [0; 24];
+            bytes[..value.len()].copy_from_slice(value);
+            Self::Inline { bytes, length: value.len() as u8 }
+        } else {
+            Self::Parsed(super::execute_on_shard::decode_hash_timestamp(value))
+        }
+    }
+
+    pub(super) fn parsed(&self) -> Option<(i64, i32)> {
+        match self {
+            Self::Inline { bytes, length } => super::execute_on_shard::decode_hash_timestamp(&bytes[..*length as usize]),
+            Self::Parsed(value) => *value,
+        }
+    }
+
+    pub(super) fn raw_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Inline { bytes, length } => Some(&bytes[..*length as usize]),
+            Self::Parsed(_) => None,
+        }
+    }
 }
 
 impl<K: RecordedKind> Clone for RecordedMap<K> where K::Elements: Clone {
@@ -1264,15 +1296,23 @@ pub(super) struct HashKind;
 
 impl RecordedMap<HashKind> {
     /// A hint is usable only while the resident field still names the same immutable block.
-    pub(super) fn cached_timestamp(&self, object_key: &str, field: &str) -> Option<Option<(i64, i32)>> {
+    fn timestamp_hint(&self, object_key: &str, field: &str) -> Option<&TimestampHint> {
         let hint = self.timestamp_hints.get(object_key)?;
         if &*hint.field != field { return None; }
         let current = self.entries.get(object_key)?.get(field)?;
-        (current == &hint.address).then_some(hint.value)
+        (current == &hint.address).then_some(hint)
+    }
+
+    pub(super) fn cached_timestamp(&self, object_key: &str, field: &str) -> Option<Option<(i64, i32)>> {
+        self.timestamp_hint(object_key, field).map(|hint| hint.value.parsed())
+    }
+
+    pub(super) fn cached_timestamp_bytes(&self, object_key: &str, field: &str) -> Option<&[u8]> {
+        self.timestamp_hint(object_key, field)?.value.raw_bytes()
     }
 
     /// At most one comparator per resident hash; clone/serialization do not carry these hints.
-    pub(super) fn remember_timestamp(&mut self, object_key: &str, field: &str, value: Option<(i64, i32)>) {
+    pub(super) fn remember_timestamp_value(&mut self, object_key: &str, field: &str, value: TimestampHintValue) {
         let Some((key, fields)) = self.entries.get_key_value(object_key) else { return };
         let Some((name, address)) = fields.named_entry(field) else { return };
         if let Some(hint) = self.timestamp_hints.get_mut(object_key) {
@@ -1669,6 +1709,13 @@ mod recorded_ordinal_tests;
 #[cfg(test)]
 #[path = "resident_timestamp_hint_tests.rs"]
 mod resident_timestamp_hint_tests;
+
+#[cfg(test)]
+impl RecordedMap<HashKind> {
+    fn remember_timestamp(&mut self, object_key: &str, field: &str, value: Option<(i64, i32)>) {
+        self.remember_timestamp_value(object_key, field, TimestampHintValue::Parsed(value));
+    }
+}
 
 // TEST FIXTURES. `#[cfg(test)]`, so none of this exists in a shipped binary, and each is named
 // `_for_test` so a production use cannot be mistaken for an ordinary write.

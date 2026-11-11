@@ -101,6 +101,7 @@ fn exposed_surface(source: &str) -> Vec<String> {
         .filter(|line| {
             line.starts_with("pub(super) fn ")
                 || line.starts_with("pub(super) struct ")
+                || line.starts_with("pub(super) enum ")
                 || line.starts_with("pub(super) trait ")
         })
         .map(|line| {
@@ -108,6 +109,7 @@ fn exposed_surface(source: &str) -> Vec<String> {
                 .trim_start_matches("pub(super) ")
                 .trim_start_matches("fn ")
                 .trim_start_matches("struct ")
+                .trim_start_matches("enum ")
                 .trim_start_matches("trait ");
             let end = after
                 .find(|c: char| !(c.is_alphanumeric() || c == '_'))
@@ -120,6 +122,7 @@ fn exposed_surface(source: &str) -> Vec<String> {
 /// THE SURFACE IS THE INVARIANT, SO THE SURFACE IS PINNED BY NAME -- ONCE, FOR EVERY KIND.
 #[test]
 fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
+    assert_eq!(exposed_surface("pub(super) enum ReadValue { Empty }"), vec!["ReadValue"]);
     // CONTROLS on the matchers.
     assert!(
         !mutable_borrows_of_the_inner_map(PLANTED_HATCH).is_empty(),
@@ -183,6 +186,11 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "ReplaysInstallsUnrecorded",
         "RepacksAfterDecode",
         "RecordedMap",
+        // Immutable derived values: inline bytes or a parsed comparator, never model entries.
+        "TimestampHintValue",
+        "from_bytes",
+        "parsed",
+        "raw_bytes",
         // The proofs. Generic, each carrying the identity of what was recorded.
         "RecordedElement",
         "RecordedElementRemoval",
@@ -278,7 +286,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // Derived comparator reads and updates only. Neither lends mutable model entries or
         // changes payloads, serialized state, or ordering records; every hit checks its source.
         "cached_timestamp",
-        "remember_timestamp",
+        "cached_timestamp_bytes",
+        "remember_timestamp_value",
         "SetKind",
         "ZSetKind",
         "ListKind",

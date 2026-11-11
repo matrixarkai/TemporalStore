@@ -251,13 +251,16 @@ off. The backend is resolved before the engine is built, and publishes the reaso
 chose. `TS_CACHE_MEMORY_BYTES` (16 MiB default) bounds the general payload cache,
 not the resident indexes or total process memory.
 
-Conditional hash writes additionally retain at most one parsed timestamp hint per
-resident hash. Each hint is bound to its field and current immutable source address;
+Conditional hash writes additionally retain at most one timestamp hint per resident
+hash. Short stored timestamps, up to 24 bytes, are retained exactly inline; larger
+values keep a parsed comparator. Each hint is bound to its field and current immutable source address;
 expiry is checked first, and a changed source uses the normal storage path. These
 derived hints reuse index-owned key and field-name handles, are omitted from clone
 and serialization, and add resident metadata outside the payload-cache budget.
-They avoid payload reads for valid timestamp comparisons, not ordinary feature reads
-or raw timestamp projections. See the [hint implementation](crates/temporalstore-rust/src/engine/recorded_map.rs)
+They avoid payload reads for valid timestamp comparisons and exact single-field
+timestamp reads. Ordinary feature projections still use the payload path. Raw
+timestamp results preserve unknown fields, noncanonical encodings, and malformed
+bytes rather than being recreated from the comparator. See the [hint implementation](crates/temporalstore-rust/src/engine/recorded_map.rs)
 and [allocation and source-identity checks](crates/temporalstore-rust/src/engine/resident_timestamp_hint_tests.rs).
 
 **Blocks are packed**, so one window read of adjacent instants typically decodes one block, and a
