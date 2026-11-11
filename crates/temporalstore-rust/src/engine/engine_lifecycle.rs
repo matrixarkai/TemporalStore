@@ -2653,6 +2653,15 @@ impl TemporalEngine {
         shard_id: ShardId,
         wanted: impl Fn(u64) -> bool,
     ) -> usize {
+        self.materialize_resident_blocks_with_before_publish(shard_id, wanted, |_| {})
+    }
+
+    pub(super) fn materialize_resident_blocks_with_before_publish(
+        &self,
+        shard_id: ShardId,
+        wanted: impl Fn(u64) -> bool,
+        mut before_publish: impl FnMut(&str),
+    ) -> usize {
         // The range is read under the same guard as the addresses, so a block is read and
         // rewritten under the bucket the shard is actually loaded on.
         let (addresses, start_routing_bucket, end_routing_bucket): (
@@ -2716,9 +2725,15 @@ impl TemporalEngine {
             ) else {
                 continue;
             };
+            before_publish(&key);
             {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 if let Some(shard) = shards.get_mut(&shard_id) {
+                    // The slab write ran without the shard lock. A writer or deleter may
+                    // have superseded the captured address while it was in flight.
+                    if shard.string_address(&key).as_ref() != Some(&address) {
+                        continue;
+                    }
                     let stored_key = shard
                         .bucket_index
                         .any_shared_object_key(key.as_str())
@@ -2742,14 +2757,12 @@ impl TemporalEngine {
                     shard
                         .wal_resident_blocks
                         .remove(&super::block_in_wal::wal_resident_key(object_id, None));
+                    // Keep retirement under the same lock as publication, so it cannot
+                    // remove a registration installed by a subsequent writer.
+                    super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
+                    moved += 1;
                 }
             }
-            // Retire the registration too. It is what pins the WAL retention floor, and a floor
-            // held by a block that is now in the block store stops reclaim for no reason.
-            // `None` for the same reason the removal above passes it: this loop retires string
-            // blocks, which ARE their whole object.
-            super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
-            moved += 1;
         }
         moved
     }
