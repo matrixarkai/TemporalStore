@@ -1215,6 +1215,56 @@ class OnlineStoreTest(unittest.TestCase):
             for i in ids
         ]
 
+    def test_latest_row_timestamp_bytes_are_reused_only_within_each_batch(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        serializations = []
+
+        class CountedTimestamp:
+            def __init__(self):
+                self.proto = Timestamp()
+
+            def __getattr__(self, name):
+                return getattr(self.proto, name)
+
+            def SerializeToString(self):
+                serializations.append((self.proto.seconds, self.proto.nanos))
+                return self.proto.SerializeToString()
+
+        with mock.patch("feast_temporalstore_command.online_store.Timestamp", CountedTimestamp):
+            self.store.online_write_batch(self.config, self.view, self._timestamp_rows(20), None)
+            self.assertEqual(serializations, [(20, 0)])
+            self.store.online_write_batch(self.config, self.view, self._timestamp_rows(30), None)
+            self.assertEqual(serializations, [(20, 0), (30, 0)])
+        self.assertEqual(len(client.current), 8)
+        self.assertTrue(all(Timestamp.FromString(raw).seconds == 30 for raw in client.current.values()))
+
+    def test_prepared_rows_preserve_proto_bytes_and_newest_duplicate_values(self):
+        from datetime import timedelta
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._timestamp_client()
+        base = self.datetime.fromtimestamp(20, self.timezone.utc)
+        unknown = ValueProto.FromString(b"\xf8\x07\x01")
+        values = [ValueProto(bytes_val=b""), ValueProto(int64_val=-1), unknown,
+                  ValueProto(), ValueProto(int32_val=0)]
+        rows = [(self._entity_key(index), {"trips": value},
+                 base + timedelta(microseconds=index), None)
+                for index, value in enumerate(values)]
+        newest = ValueProto(bytes_val=b"newest")
+        rows.append((self._entity_key(1), {"trips": newest}, base + timedelta(seconds=1), None))
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        fields, prepared, _ttl = client.conditional_calls[-1]
+        self.assertEqual(fields, ["_ts:stats", "stats:trips"])
+        self.assertEqual(len(prepared), len(values))
+        for index, (key, seconds, nanos, encoded) in enumerate(prepared):
+            expected = newest if index == 1 else values[index]
+            self.assertEqual(key, self.store._entity_hash_key(self.config, self._entity_key(index)))
+            self.assertEqual(encoded[1], expected.SerializeToString())
+            self.assertEqual(encoded[0], Timestamp(seconds=seconds, nanos=nanos).SerializeToString())
+
     def _train_timestamp_prefetch(self, client):
         for seconds in (20, 10):
             self.store.online_write_batch(
