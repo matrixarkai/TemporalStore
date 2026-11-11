@@ -22,7 +22,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 base64 = "0.22"
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
-matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "05e035173dcf7e288d5ad28595d0a6635e989bf9", features = ["rocksdb-ssd"] }
+matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "4f116c89255ddb38738391465166c9cf368e381a", features = ["rocksdb-ssd"] }
 matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "b2c9f5a832ba9e7c5b23f970f3b57730e0cec50f", optional = true }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
