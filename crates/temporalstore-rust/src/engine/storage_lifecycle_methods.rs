@@ -198,6 +198,35 @@ pub fn reset_storage_plan_build_counts() {
     WAL_RECLAIM_PLAN_BUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(test)]
+thread_local! {
+    static DUMP_RANK_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn oldest_dirty_buckets(
+    summaries: &[BucketStorageSummary],
+    claims: &BTreeMap<u32, (u64, u64)>,
+) -> Vec<u32> {
+    let mut ranked = Vec::with_capacity(summaries.len().min(claims.len()));
+    for summary in summaries {
+        #[cfg(test)]
+        DUMP_RANK_LOOKUPS.with(|count| count.set(count.get() + 1));
+        if let Some(&(wal, _)) = claims.get(&summary.routing_bucket) {
+            let oldest = if wal == 0 { u64::MAX } else { wal };
+            ranked.push((oldest, summary.last_dump_sequence, summary.routing_bucket));
+        }
+    }
+    // Bucket ID is the final key, so equal ranks have identical output IDs. No stable sort
+    // or repeated claim lookup is needed inside the comparator.
+    ranked.sort_unstable();
+    // Borrow here so the result does not inherit a tuple-sized allocation through Vec reuse.
+    ranked.iter().map(|&(_, _, bucket)| bucket).collect()
+}
+
+#[cfg(test)]
+#[path = "planning_order_tests.rs"]
+mod planning_order_tests;
+
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -298,10 +327,6 @@ impl TemporalEngine {
         // THE BUCKET'S OWN FLAG DECIDES WHETHER IT IS DUMPED. The error this can make is the SAFE
         // one: a bucket reading dirty that holds nothing is a bucket dumped for no reason, where
         // the opposite -- a dirty bucket read as clean -- is undumped state no round would pick up.
-        let mut dirty_bucket_summaries = dirty_bucket_source
-            .iter()
-            .filter(|summary| dirty_claims.contains_key(&summary.routing_bucket))
-            .collect::<Vec<_>>();
         // Oldest undumped write first: the bucket that has held the log longest is dumped first.
         //
         // `last_dump_sequence` answers "is this bucket in the newest dump manifest" (see the note
@@ -321,22 +346,7 @@ impl TemporalEngine {
         // Read off the dirty claims the plan already took under its one lock acquisition. This was
         // a second lock and a `HashMap` over every bucket, consulted only for the dirty summaries
         // selected above -- which are exactly the buckets `dirty_claims` names.
-        let first_dirty_rank = |routing_bucket: u32| -> u64 {
-            match dirty_claims.get(&routing_bucket).map(|(wal, _index_log)| *wal) {
-                Some(0) | None => u64::MAX,
-                Some(sequence) => sequence,
-            }
-        };
-        dirty_bucket_summaries.sort_by(|left, right| {
-            first_dirty_rank(left.routing_bucket)
-                .cmp(&first_dirty_rank(right.routing_bucket))
-                .then_with(|| left.last_dump_sequence.cmp(&right.last_dump_sequence))
-                .then_with(|| left.routing_bucket.cmp(&right.routing_bucket))
-        });
-        let dirty_buckets = dirty_bucket_summaries
-            .iter()
-            .map(|summary| summary.routing_bucket)
-            .collect::<Vec<_>>();
+        let dirty_buckets = oldest_dirty_buckets(dirty_bucket_source, &dirty_claims);
         let latest_bucket_dump_manifest =
             latest_bucket_dump_manifest_shared_at(&self.index_dir, request.shard_id);
         let latest_dump_wal_sequence = latest_bucket_dump_manifest
