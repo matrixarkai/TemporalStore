@@ -1668,6 +1668,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // these four arms is already standing on exactly one, so it says so once.
         for (key, mut addresses) in shard.bucket_index.hashes.element_values_mut() {
             let routing_bucket = bucket_of(key);
+            // Mixed WAL batches also register physical frames for read fallback. Their
+            // locations can retire after this round's barrier, even if no rewrite was needed.
+            if !shard.wal_resident_blocks.is_empty() {
+                let object_id = stable_block_object_id(shard_id, "hash", key);
+                for (field, address) in addresses.iter_mut() {
+                    if !crate::wal_record::is_wal_resident(address.block_slab_id())
+                        && shard.wal_resident_blocks.contains_key(
+                            &super::block_in_wal::wal_resident_key(object_id, Some(field.as_ref())),
+                        )
+                    {
+                        rewrite_stats.retired_container_wal_blocks.push((object_id, field.to_string()));
+                    }
+                }
+            }
             compact_container_blocks_batched(
                 &self.block_store,
                 &self.cache,

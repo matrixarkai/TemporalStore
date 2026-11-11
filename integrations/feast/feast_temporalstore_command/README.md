@@ -335,6 +335,22 @@ PYTEST_PLUGINS=feast_temporalstore_command.feast_online_store_creator \
 
 ## Wire-format notes worth knowing before you measure anything
 
+The shared-field write routes separate WAL durability from block materialization.
+With synchronous storage, a successful response still waits for the batch's WAL
+barrier. Under default recovery, packed frames below 8 KiB can remain WAL-backed
+under WAL retention instead of being written immediately to a block slab and a
+served-index delta. Cache eviction resolves these frames through retained WAL
+records. Larger frames use physical storage; legacy recovery and explicit
+physical-storage quotas keep the physical write path. No timestamp-ordering
+check or synchronous acknowledgement barrier is disabled.
+
+Checkpoint images can retain WAL-backed locations. Reclamation keeps their
+carrying records until durable materialization makes those locations unnecessary.
+
+Measure checkpoint/materialization cost and retained WAL alongside foreground
+latency. Deferring work is not evidence that cumulative write amplification has
+fallen, and a short run may finish before background materialization occurs.
+
 For large materializations, measure the whole corpus rather than extrapolating
 from a small, hot read set. The benchmark's `--write-batch` controls rows per
 Feast write call; the adapter also bounds command count and encoded request

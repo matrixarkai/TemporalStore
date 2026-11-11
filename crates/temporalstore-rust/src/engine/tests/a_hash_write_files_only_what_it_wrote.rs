@@ -376,6 +376,118 @@ fn grouped_packed_hash_replays_multiple_frames_of_one_object_in_one_record() {
     }
 }
 
+#[test]
+fn durable_shared_rows_defer_materialization_but_commit_their_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    grouped_row(&engine, &["a0", "a1", "b0"], 1);
+    grouped_row(&engine, &["a0", "a1"], 2);
+    assert_eq!(engine.block_store.stats().writes, 0);
+    let stats = engine.write_ahead_log_store().stats(1);
+    assert!(stats.last_sequence > 0);
+    assert_eq!(stats.last_flushed_sequence, stats.last_sequence);
+    assert!(engine.registration_count_for_test(1) > 0);
+    engine.cache.invalidate_shard(1).unwrap();
+    let expected = grouped_values(&engine);
+    assert_eq!(expected["a0"], vec![2; 48]);
+    assert_eq!(expected["b0"], vec![1; 48]);
+    drop(engine);
+    let recovered = engine_on(dir.path());
+    assert_eq!(grouped_values(&recovered), expected);
+    recovered.compact_shard_blocks(1).unwrap();
+    assert!(recovered.block_store.stats().writes > 0);
+    assert_eq!(recovered.registration_count_for_test(1), 0);
+    drop(recovered);
+    assert_eq!(grouped_values(&engine_on(dir.path())), expected);
+}
+
+#[test]
+fn durable_shared_rows_keep_physical_storage_quota_accounting() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config { version: 2, maxmemory_bytes: Some(64 * 1024 * 1024), ..Config::default() },
+    }).ok);
+    grouped_row(&engine, &["a0", "a1"], 1);
+    assert!(engine.block_store.stats().writes > 0);
+    assert_eq!(engine.registration_count_for_test(1), 0);
+    assert_eq!(grouped_values(&engine)["a1"], vec![1; 48]);
+}
+
+#[test]
+fn durable_shared_rows_do_not_ack_a_failed_wal_commit() {
+    use crate::types::{BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    grouped_row(&engine, &["a0"], 1);
+    let path = dir.path().join("indexes/wals/shard-1.wal.bin");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let (response, _) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
+        shard_id: 1, fields: vec!["a0".to_string()], ttl_ms: None,
+        rows: vec![BatchHashMultiSetRow("other".to_string(), vec![BatchHashMultiSetValue(vec![2; 48])])],
+    });
+    assert!(!response.status.ok);
+    assert_eq!(response.status.code, "wal_commit_failed");
+    assert_eq!(response.applied, 0);
+}
+
+#[test]
+fn durable_shared_rows_recover_mixed_large_and_wal_resident_frames() {
+    use crate::types::{BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let (response, _) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
+        shard_id: 1, fields: vec!["payload".to_string()], ttl_ms: None,
+        rows: vec![
+            BatchHashMultiSetRow("large".to_string(), vec![BatchHashMultiSetValue(vec![9; 16 * 1024])]),
+            BatchHashMultiSetRow("small".to_string(), vec![BatchHashMultiSetValue(vec![7; 48])]),
+        ],
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    assert_eq!(response.applied, 2);
+    assert_eq!(engine.block_store.stats().writes, 1);
+    engine.cache.invalidate_shard(1).unwrap();
+    drop(engine);
+    let recovered = engine_on(dir.path());
+    for (key, expected) in [("large", vec![9; 16 * 1024]), ("small", vec![7; 48])] {
+        let response = recovered.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashGet { key: key.to_string(), field: "payload".to_string() },
+        });
+        assert!(response.status.ok);
+        let CommandResponse::Bytes { value } = response.response else { panic!("hash bytes") };
+        assert_eq!(value, Some(expected));
+    }
+    recovered.compact_shard_blocks(1).unwrap();
+    assert_eq!(recovered.registration_count_for_test(1), 0);
+}
+
+#[test]
+fn durable_shared_rows_keep_latest_fallback_through_size_transitions() {
+    use crate::types::{BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue};
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    let object_id = stable_block_object_id(1, "hash", "sized");
+    for (generation, width) in [(1, 48), (2, 16 * 1024), (3, 48), (4, 16 * 1024)] {
+        let expected = vec![generation; width];
+        let (response, _) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
+            shard_id: 1, fields: vec!["payload".to_string()], ttl_ms: None,
+            rows: vec![BatchHashMultiSetRow("sized".to_string(), vec![BatchHashMultiSetValue(expected.clone())])],
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+        let frame = super::super::block_in_wal::read_block(&engine.block_store, 1, object_id, Some("payload"))
+            .expect("latest carried frame remains available");
+        match super::super::container_blocks::select_container_element(&frame, "payload") {
+            super::super::container_blocks::ContainerElementRead::Found(value) => assert_eq!(value, expected),
+            _ => panic!("latest field must be in the carried frame"),
+        }
+    }
+    engine.compact_shard_blocks(1).unwrap();
+    assert_eq!(engine.registration_count_for_test(1), 0);
+}
+
 fn timestamp_bytes(seconds: i64) -> Vec<u8> {
     use prost::Message;
     #[derive(Clone, PartialEq, Message)]
