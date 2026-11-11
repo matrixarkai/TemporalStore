@@ -353,6 +353,45 @@ fn packed_hash_sync_sweeps_each_readded_field_tombstone_only() {
     assert_eq!(live, live_before);
 }
 
+#[test]
+fn batch_hash_delete_files_no_live_blocks_and_keeps_surviving_fields() {
+    for whole in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_on(dir.path());
+        for index in 0..128 {
+            hset(&engine, "h", index, 24);
+        }
+        let before = crate::engine::storage_bucket_internals::bucket_block_upserts();
+        let response = with_whole_object_sync(whole, || {
+            engine.batch_execute(crate::types::BatchExecuteRequest {
+                shard_id: 1,
+                commands: (0..64).map(|index| Command::HashDelete {
+                    key: "h".into(),
+                    field: format!("f{index:03}"),
+                }).collect(),
+            })
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.responses.len(), 64);
+        assert!(response.responses.iter().all(|r| r.status.ok));
+        let filed = crate::engine::storage_bucket_internals::bucket_block_upserts() - before;
+        if whole {
+            assert!(filed > 0, "the control must exercise whole-object filing");
+        } else {
+            assert_eq!(filed, 0);
+        }
+        let CommandResponse::HashEntries { entries } = run(
+            &engine, Command::HashGetAll { key: "h".into() },
+        ) else { panic!("expected surviving fields") };
+        assert_eq!(entries.len(), 64);
+        for (field, value) in entries {
+            let index = field[1..].parse::<usize>().unwrap();
+            assert!((64..128).contains(&index));
+            assert_eq!(value, vec![b'a' + (index % 26) as u8; 24]);
+        }
+    }
+}
+
 /// Allocation and profiler driver, not a gate: `HASH_E=<fields> HASH_K=<deletes> HASH_WHOLE=1`
 /// forces the whole-object sync. Run under `valgrind --tool=callgrind
 /// --toggle-collect='*hash_delete_span*'` for instructions.

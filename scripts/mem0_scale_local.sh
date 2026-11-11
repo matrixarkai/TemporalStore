@@ -6,14 +6,19 @@ set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work_dir="$repo/target/mem0-scale-local"
 port_base=18700
+bin_dir=""
 skip_build=0
 keep_data=0
 workload=()
 while (($#)); do
   case "$1" in
-    --work-dir|--port-base)
+    --work-dir|--port-base|--bin-dir)
       (($# >= 2)) || { echo "Missing value for $1" >&2; exit 2; }
-      if [[ $1 == --work-dir ]]; then work_dir=$2; else port_base=$2; fi
+      case "$1" in
+        --work-dir) work_dir=$2 ;;
+        --port-base) port_base=$2 ;;
+        --bin-dir) bin_dir=$2 ;;
+      esac
       shift 2 ;;
     --skip-build) skip_build=1; shift ;;
     --keep-data) keep_data=1; shift ;;
@@ -21,7 +26,7 @@ while (($#)); do
       (($# >= 2)) || { echo "Missing value for $1" >&2; exit 2; }
       workload+=("$1" "$2"); shift 2 ;;
     --help)
-      printf '%s\n' 'Usage: scripts/mem0_scale_local.sh [--work-dir DIR] [--port-base PORT] [--skip-build] [--keep-data] [workload options]' \
+      printf '%s\n' 'Usage: scripts/mem0_scale_local.sh [--work-dir DIR] [--port-base PORT] [--skip-build] [--bin-dir DIR] [--keep-data] [workload options]' \
         'Workload options: --records --batch-size --tenant-shards --users --searches --payload-bytes --provider-json' \
         'Results: report.json, source.json, and three service logs in the work directory.' \
         'The isolated data directory must be absent; it is removed on exit unless --keep-data is set.'
@@ -29,6 +34,10 @@ while (($#)); do
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
+[[ -z $bin_dir || $skip_build == 1 ]] || {
+  echo '--bin-dir requires --skip-build' >&2; exit 2;
+}
+if [[ -n $bin_dir ]]; then bin_dir=$(realpath -e -- "$bin_dir"); fi
 [[ $port_base =~ ^[0-9]+$ ]] && ((port_base >= 1024 && port_base <= 65533)) || {
   echo 'Port base must be between 1024 and 65533' >&2; exit 2;
 }
@@ -60,7 +69,11 @@ if (( ! skip_build )); then
     echo 'Tracked source changed during the build; rerun against a stable checkout' >&2; exit 1;
   }
 fi
-bin=$(realpath -- "$CARGO_TARGET_DIR")/release
+if [[ -n $bin_dir ]]; then
+  bin=$(realpath -- "$bin_dir")
+else
+  bin=$(realpath -- "$CARGO_TARGET_DIR")/release
+fi
 for executable in server proxy metaserver mem0_scale_harness; do test -x "$bin/$executable"; done
 printf '{"checkout_revision":"%s","tracked_diff_sha256":"%s","build_skipped":%s}\n' \
   "$revision" "$diff_hash" "$([[ $skip_build == 1 ]] && echo true || echo false)" > "$work_dir/source.json"

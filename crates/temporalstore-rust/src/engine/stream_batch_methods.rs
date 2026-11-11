@@ -1671,6 +1671,7 @@ impl TemporalEngine {
                         | Command::HashMultiSet { .. }
                         | Command::HashMultiSetIfTimestampOlder { .. }
                         | Command::HashIncrBy { .. }
+                        | Command::HashDelete { .. }
                 );
                 let written_element_names = (!hash_command || persist_index_delta)
                     .then(|| command_upsert_element_names(command_for_post_write_ref, shard))
@@ -1725,6 +1726,10 @@ impl TemporalEngine {
                     false
                 } else {
                     let narrow_hash = match command_for_post_write_ref {
+                        // Removal already updates the index; it files no new live block.
+                        Command::HashDelete { .. } => {
+                            crate::engine::storage_bucket_internals::hash_delete_maintained()
+                        }
                         Command::HashSet { key, field, .. }
                         | Command::HashIncrBy { key, field, .. } => {
                             match shared_row_routing_bucket {
