@@ -121,6 +121,8 @@ mod hll;
 mod block_in_wal;
 pub(crate) use block_in_wal::clear_store_registrations;
 mod checkpoint_publication;
+#[cfg(test)]
+mod checkpoint_page_cost;
 #[path = "engine/engine_storage_state.rs"]
 mod state;
 mod hash_field_map;
