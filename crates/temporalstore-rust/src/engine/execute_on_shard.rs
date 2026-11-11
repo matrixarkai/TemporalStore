@@ -804,6 +804,8 @@ fn release_hash_entry_payloads(entries: &mut [(String, Vec<u8>)]) {
     }
 }
 
+pub(super) struct PackedHashIndexFiled(());
+
 fn write_packed_hash_entries(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -816,16 +818,16 @@ fn write_packed_hash_entries(
     entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
-) -> (bool, Vec<(String, Vec<u8>)>) {
+) -> (Option<PackedHashIndexFiled>, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = if fields_are_unique {
         entries
     } else {
         deduplicate_hash_entries(entries)
     };
     if packed_entries.is_empty() {
-        return (false, packed_entries);
+        return (None, packed_entries);
     }
-    let block_ordinal = shard
+    let block_ordinal = || shard
         .bucket_index
         .hashes
         .get(key)
@@ -855,7 +857,7 @@ fn write_packed_hash_entries(
         async_storage,
         block_ordinal,
     );
-    let mutated = match address {
+    let filed = match address {
         Ok(address) => {
             super::recorded_map::install_packed_hash_block_at_bucket(
                 shard, shard_id, routing_bucket, object_id, key,
@@ -864,12 +866,12 @@ fn write_packed_hash_entries(
             for (field, _) in &packed_entries {
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, key, field));
             }
-            !packed_entries.is_empty()
+            Some(PackedHashIndexFiled(()))
         }
-        Err(_) => false,
+        Err(_) => None,
     };
     release_hash_entry_payloads(&mut packed_entries);
-    (mutated, packed_entries)
+    (filed, packed_entries)
 }
 
 pub(super) fn execute_hash_multi_set_reusing_metadata(
@@ -886,7 +888,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
 ) -> (ExecuteOutcome, Command) {
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
-    execute_hash_multi_set_reusing_metadata_at_bucket(
+    let (outcome, command, _) = execute_hash_multi_set_reusing_metadata_at_bucket(
         cache,
         block_store,
         shard_id,
@@ -899,7 +901,8 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
         entries,
         false,
         None,
-    )
+    );
+    (outcome, command)
 }
 
 pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
@@ -915,7 +918,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     mut entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
-) -> (ExecuteOutcome, Command) {
+) -> (ExecuteOutcome, Command, Option<PackedHashIndexFiled>) {
     remove_if_expired(shard, &key);
     let contains_large_value =
         !pack_projection && entries.iter().any(|(_, value)| value.len() >= 8 * 1024);
@@ -924,8 +927,8 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     // projection reader fetches that shared address once on both storage modes. Generic hash
     // writes retain their per-field representation; a large value still selects the packed
     // layout on every path so its scalar siblings stay with it under pressure.
-    let mutated = if pack_projection || contains_large_value {
-        let (mutated, returned_entries) = write_packed_hash_entries(
+    let (mutated, index_filed) = if pack_projection || contains_large_value {
+        let (filed, returned_entries) = write_packed_hash_entries(
             cache,
             block_store,
             shard_id,
@@ -939,7 +942,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             shared_fields,
         );
         entries = returned_entries;
-        mutated
+        (filed.is_some(), filed)
     } else {
         let mut applied = 0usize;
         let mut highest_ordinal: Option<Option<u64>> = None;
@@ -998,7 +1001,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             }
         }
         release_hash_entry_payloads(&mut entries);
-        applied > 0
+        (applied > 0, None)
     };
 
     (
@@ -1007,6 +1010,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             mutated,
         },
         Command::HashMultiSet { key, entries },
+        index_filed,
     )
 }
 
@@ -1027,7 +1031,7 @@ pub(super) fn execute_packed_conditional_hash_write(
 ) -> (ExecuteOutcome, Command) {
     let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
     let object_id = stable_block_object_id(shard_id, "hash", &key);
-    execute_packed_conditional_hash_write_at_bucket(
+    let (outcome, command, _) = execute_packed_conditional_hash_write_at_bucket(
         cache,
         block_store,
         shard_id,
@@ -1043,7 +1047,8 @@ pub(super) fn execute_packed_conditional_hash_write(
         entries,
         false,
         None,
-    )
+    );
+    (outcome, command)
 }
 
 pub(super) fn execute_packed_conditional_hash_write_at_bucket(
@@ -1062,7 +1067,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
-) -> (ExecuteOutcome, Command) {
+) -> (ExecuteOutcome, Command, Option<PackedHashIndexFiled>) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
         .bucket_index
@@ -1101,6 +1106,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
                 ttl_ms,
                 entries: metadata_entries,
             },
+            None,
         );
     }
 
@@ -1110,7 +1116,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         .find(|(field, _)| field == &timestamp_field)
         .filter(|(_, value)| value.len() <= 64)
         .map(|(_, value)| value.clone());
-    let (packed_mutated, metadata_entries) = write_packed_hash_entries(
+    let (index_filed, metadata_entries) = write_packed_hash_entries(
         cache,
         block_store,
         shard_id,
@@ -1123,6 +1129,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         fields_are_unique,
         shared_fields,
     );
+    let packed_mutated = index_filed.is_some();
     mutated |= packed_mutated;
     if packed_mutated {
         if let Some(value) = timestamp_value {
@@ -1148,6 +1155,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
             ttl_ms,
             entries: metadata_entries,
         },
+        index_filed,
     )
 }
 
@@ -1177,6 +1185,10 @@ pub(super) fn apply_hash_expiry(
         false,
     );
 }
+
+#[cfg(test)]
+#[path = "tests/packed_hash_completion.rs"]
+mod packed_hash_completion_tests;
 
 #[cfg(test)]
 mod packed_hash_entry_tests {
