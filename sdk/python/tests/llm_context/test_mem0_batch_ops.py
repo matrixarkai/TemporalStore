@@ -50,6 +50,27 @@ class MemoryBatchTest(unittest.TestCase):
         self.assertEqual([("/memories/batch/delete", {"memories": entries})],
                          self.recorder.calls)
 
+    def test_update_forwards_provider_and_metadata(self) -> None:
+        original = mem0._put_json
+        self.addCleanup(lambda: setattr(mem0, "_put_json", original))
+        mem0._put_json = self.recorder
+        provider = {"provider_kind": "ollama", "embedding_model": "all-minilm"}
+        self.client.update("m1", "Updated", provider=provider, metadata={"verified": True})
+        self.assertEqual([("/memories/m1", {
+            "memory_id": "m1", "data": "Updated", "provider": provider,
+            "metadata": {"verified": True},
+        })], self.recorder.calls)
+
+    def test_batch_update_forwards_provider_without_rewriting_entries(self) -> None:
+        provider = {"provider_kind": "ollama", "embedding_model": "all-minilm"}
+        override = {"provider_kind": "ollama", "embedding_model": "second-encoder"}
+        entries = [{"memory_id": "m1", "text": "Updated", "provider": override}]
+        self.client.batch_update(entries, provider=provider)
+        self.assertEqual([("/memories/batch/update", {
+            "memories": entries, "provider": provider,
+        })], self.recorder.calls)
+        self.assertIs(entries[0]["provider"], override)
+
     def test_batches_refuse_more_than_the_limit(self) -> None:
         entries = [{"memory_id": str(i)} for i in range(mem0.MEM0_BATCH_LIMIT + 1)]
         with self.assertRaises(ValueError):

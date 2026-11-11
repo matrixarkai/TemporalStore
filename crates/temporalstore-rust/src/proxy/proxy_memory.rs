@@ -90,6 +90,8 @@ struct MemoryUpdateRequest {
     data: String,
     #[serde(default)]
     metadata: Option<Value>,
+    #[serde(default)]
+    provider: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +105,8 @@ struct MemoryFeedbackRequest {
 struct MemoryBatchRequest {
     #[serde(default)]
     memories: Vec<Value>,
+    #[serde(default)]
+    provider: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1143,7 +1147,7 @@ impl ProxyService {
             start_time_ms: 0,
             end_time_ms: 0,
             max_events: Some(1),
-            provider: None,
+            provider: request.provider,
         };
         let (extract_status, extract_body) = self.context_extract(extract);
         if extract_status != 200 || !json_status_ok(&extract_body) {
@@ -1605,7 +1609,7 @@ impl ProxyService {
         }
         let mut results = Vec::with_capacity(request.memories.len());
         let mut failed = Vec::new();
-        let mut grouped = BTreeMap::<u64, Vec<(String, MemoryUpdateRequest)>>::new();
+        let mut grouped = BTreeMap::<(u64, String), Vec<(String, MemoryUpdateRequest)>>::new();
         for value in request.memories {
             let id = value
                 .get("memory_id")
@@ -1620,6 +1624,11 @@ impl ProxyService {
                     .unwrap_or_default()
                     .to_string(),
                 metadata: value.get("metadata").cloned(),
+                provider: value
+                    .get("provider")
+                    .filter(|provider| !provider.is_null())
+                    .cloned()
+                    .or_else(|| request.provider.clone()),
             };
             if id.is_empty() {
                 failed.push(json!({"error": "memory_id is required"}));
@@ -1630,12 +1639,19 @@ impl ProxyService {
                 continue;
             };
             grouped
-                .entry(tenant_hash)
+                .entry((
+                    tenant_hash,
+                    update
+                        .provider
+                        .as_ref()
+                        .map(Value::to_string)
+                        .unwrap_or_default(),
+                ))
                 .or_default()
                 .push((id.to_string(), update));
         }
 
-        for (tenant_hash, updates) in grouped {
+        for ((tenant_hash, _), updates) in grouped {
             if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
                 for (id, _) in updates {
                     failed.push(json!({"memory_id": id, "status": 502, "body": status.message}));
@@ -1645,6 +1661,9 @@ impl ProxyService {
 
             let ids: Vec<String> = updates.iter().map(|(id, _)| id.clone()).collect();
             let records = self.memory_read_many(tenant_hash, &ids);
+            let provider = updates
+                .first()
+                .and_then(|(_, update)| update.provider.clone());
             let mut planned = Vec::with_capacity(updates.len());
             for ((id, update), record) in updates.into_iter().zip(records) {
                 let Some(mut record) = record else {
@@ -1703,7 +1722,7 @@ impl ProxyService {
                 start_time_ms: 0,
                 end_time_ms: 0,
                 max_events: Some(planned.len()),
-                provider: None,
+                provider,
             };
             let (extract_status, extract_body) = self.context_extract(extract);
             if extract_status != 200 || !json_status_ok(&extract_body) {
@@ -2301,6 +2320,10 @@ mod identity_page_tests;
 #[cfg(test)]
 #[path = "memory_filtered_list_tests.rs"]
 mod filtered_list_tests;
+
+#[cfg(test)]
+#[path = "memory_update_provider_tests.rs"]
+mod update_provider_tests;
 
 #[cfg(test)]
 mod tests {
