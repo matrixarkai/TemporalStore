@@ -301,6 +301,15 @@ work out of the foreground, not out of the storage lifecycle. Retained file size
 cumulative write amplification, and local process-restart checks are not power-loss or
 multi-host qualification. These changes do not establish a new cross-store speedup.
 
+Small identified asynchronous blocks remain log-backed when their payload leaves the memory cache.
+The existing large-value placement policy is unchanged. Location entries are index metadata, not
+retained payload buffers. Foreground relocation is opt-in through a positive
+`TS_WAL_RESIDENT_BLOCKS` value (`TS_WAL_RESIDENT_PAGES` remains an alias); unset or zero does
+not create slab copies merely because the locator count grows. Cache payload-byte limits still
+apply. The read path also retains at most eight decoded WAL records, so cache byte statistics
+are not a bound on complete process RSS. Portable export and maintenance relocation remain
+separate operations, and needed WAL records stay retained until their dependencies are gone.
+
 ```yaml
 # feature_store.yaml, command-surface plugin
 project: my_project

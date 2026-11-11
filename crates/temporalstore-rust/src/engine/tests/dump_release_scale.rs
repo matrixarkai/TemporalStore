@@ -76,10 +76,9 @@
 //! `backpressure` appears only on the ingestion-stream and writeback paths, `shed` only in a
 //! comment about follower divergence, and `throttle`, `slow_down`, `over_limit`, `too_many`,
 //! `admission_control` and any spelling of dump-lag appear nowhere in the dump path at all. The
-//! one mechanism that reacts to the dump falling behind is `TS_WAL_RESIDENT_BLOCKS` (default
-//! 4,096), and it reacts by making the WRITER do more work -- a sweep that materializes the
-//! oldest log-resident blocks, taken on the write path after the ack. It bounds a set; it does not
-//! slow, refuse or report anything.
+//! optional `TS_WAL_RESIDENT_BLOCKS` policy makes the WRITER relocate old log-backed blocks.
+//! It is unset by default: locations are index metadata, not cache-resident payloads. Explicit
+//! relocation still runs on the write path, but is not a byte-based cache or admission policy.
 //!
 //! THE WRITE-AHEAD LOG HALF USED TO RELEASE NOTHING, AND SAID SO IN THE SAME WORDS AS SUCCESS.
 //! At both corpus sizes the dump's WAL reclaim reported `0 -> 0 bytes, 0 records` against a log

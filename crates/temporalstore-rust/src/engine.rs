@@ -357,38 +357,28 @@ pub struct TemporalEngine {
 }
 
 
-/// How many times a sweep has moved blocks out, for tests that need to know the bound fired
+/// How many times an explicit foreground policy moved blocks out, for tests that need to know it fired
 /// rather than that the count merely happened to stay low.
 pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// TS_WAL_RESIDENT_BLOCKS: how many log-resident blocks one shard may hold before the oldest are
-/// written out to the block store. Zero disables the bound entirely. `TS_WAL_RESIDENT_PAGES` is
-/// the previous spelling and is still read.
+/// Optional foreground relocation threshold. Both spellings remain supported; zero or an
+/// unset setting leaves log-backed values in their existing durable records.
 ///
-/// Resident blocks are bounded because an unbounded set costs twice. Each one is a registration,
-/// which is memory; each one also pins `min_registered_sequence`, and reclaim may not truncate
-/// below the lowest registration — so a set that only grows is a log that can never be reclaimed
-/// whatever the retention policy says. Measured on an ingest of distinct keys, registrations
-/// tracked writes ONE FOR ONE: 200 writes 200 held, 1200 writes 1200 held.
-///
-/// The default is deliberately generous. The recent ones are worth keeping where they are: a block
-/// written moments ago is the one a read is most likely to want, and its bytes are already in the
-/// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
+/// Registrations contain locations, not retained payloads. Their count follows indexed live
+/// identities, while the payload cache enforces its byte capacity independently. Moving every
+/// old location to a slab just because the index grew duplicates needed log data without
+/// freeing a reclaimable record. Maintenance handles relocation pressure separately.
 fn wal_resident_block_limit() -> usize {
-    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 4096)
+    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 0)
 }
 
 #[cfg(test)]
 mod wal_resident_env_name_tests {
     /// The previous spelling of this bound must keep configuring it.
     ///
-    /// Nothing errors when a variable stops being read. `TS_WAL_RESIDENT_PAGES` sets a CEILING on
-    /// how far behind the dump may fall, and the default is deliberately generous -- so a
-    /// deployment that lowered it on purpose and then silently got 4096 back would hold far more
-    /// in the log than it asked to, with no message anywhere. The value asserted is 64, which
-    /// differs from the default, because reading the previous name has to be distinguishable from
-    /// falling through to it.
+    /// An operator's explicit relocation policy must keep working under either spelling.
+    /// Unset is different from an explicit limit, and the current spelling wins over the alias.
     #[test]
     fn the_previous_wal_resident_env_name_still_bounds_the_set() {
         let keys = ["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"];
@@ -396,6 +386,7 @@ mod wal_resident_env_name_tests {
             std::env::remove_var(key);
         }
         let default_limit = super::wal_resident_block_limit();
+        assert_eq!(default_limit, 0, "payload cache capacity is not a locator-count limit");
 
         std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
         assert_eq!(
@@ -420,6 +411,10 @@ mod wal_resident_env_name_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine/log_backed_string_tests.rs"]
+mod log_backed_string_tests;
 
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
@@ -1686,7 +1681,7 @@ impl TemporalEngine {
                 };
             }
         }
-        // Locks are released and the barrier is done: a safe point to bound the resident set.
+        // Locks are released and the barrier is done: apply an explicit relocation policy.
         // Not inside the write lock -- moving a block takes the same lock -- and not before the
         // barrier, because the write this call is acking must reach disk first.
         // This sweep only materializes strings; container writes cannot add a block it can retire.

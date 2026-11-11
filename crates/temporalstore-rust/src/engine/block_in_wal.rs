@@ -199,6 +199,7 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
 /// The sequence is what lets WAL reclaim coexist with these registrations: a registered block's
 /// only durable copy is its record, so reclaim must never truncate below the lowest registered
 /// sequence (see [`min_registered_sequence`]).
+// Locator-only metadata; payload bytes belong to the byte-bounded cache or a temporary read.
 // The final count is zero when an index-only registration has not read its carrying record.
 type Registration = std::sync::Arc<(LocalWriteAheadLogStore, u64, u64, usize, Option<usize>)>;
 
@@ -984,4 +985,11 @@ fn record_lru() -> &'static Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Ve
     static LRU: OnceLock<Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedBlock>)>>> =
         OnceLock::new();
     LRU.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+pub(super) fn decoded_record_cache_shape_for_test() -> (usize, usize) {
+    let cache = record_lru().lock().unwrap();
+    (cache.len(), cache.iter().flat_map(|(_, _, _, blocks)| blocks)
+        .map(|block| block.bytes.len()).sum())
 }
