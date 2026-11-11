@@ -12,7 +12,8 @@ use temporalstore_rust::context_workflow::{
     context_pipeline_manage_report, context_workflow_state_report, default_context_model_providers,
     context_provider_from_env, embed_drainer_config_from_env, embed_drainer_enabled,
     extract_context, ingest_extract_context,
-    inject_context, retrieve_context, run_embed_drainer_loop, ContextExtractRequest,
+    inject_context, retrieve_context, retrieve_context_from_nodes, run_embed_drainer_loop,
+    ContextExtractRequest,
     ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
     ContextRetrieveRequest,
 };
@@ -1171,6 +1172,12 @@ fn main() {
             ("POST", "/context/retrieve") => {
                 match parse_json::<ContextRetrieveRequest>(&request.body) {
                     Ok(req) => json_response(200, &retrieve_context(&engine, req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/context/retrieve/nodes") => {
+                match parse_json::<ContextRetrieveRequest>(&request.body) {
+                    Ok(req) => json_response(200, &retrieve_context_from_nodes(&engine, req)),
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }

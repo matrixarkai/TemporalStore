@@ -2017,16 +2017,26 @@ pub(crate) fn extract_context_gated_prepared(
     )
 }
 
+/// Stable node identity shared by extraction and candidate routing.
+pub fn context_source_node_hash(
+    tenant_hash: u64,
+    source_kind: ContextSourceKind,
+    source_id: &str,
+) -> u64 {
+    stable_hash64(&format!("{tenant_hash}:{}:{source_id}", source_kind as u8))
+}
+
 pub(crate) fn prepare_context_gated_prepared(
     request: ContextExtractRequest,
     gate_l1: bool,
     summaries: ContextExtractSummaries,
     embedding_outcome: Option<ContextEmbeddingOutcome>,
 ) -> PreparedContextExtract {
-    let node_hash = stable_hash64(&format!(
-        "{}:{}:{}",
-        request.tenant_hash, request.source_kind as u8, request.source_id
-    ));
+    let node_hash = context_source_node_hash(
+        request.tenant_hash,
+        request.source_kind,
+        &request.source_id,
+    );
     let event_id_hash = context_event_id_hash(&request.source_id, &request.body);
     prepare_context_gated_prepared_with_ids(
         request,
@@ -2389,7 +2399,23 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
 
 pub fn retrieve_context(
     engine: &TemporalEngine,
+    request: ContextRetrieveRequest,
+) -> ContextRetrieveReport {
+    retrieve_context_candidates(engine, request, false)
+}
+
+/// Retrieve only from the supplied node set, including when that set is empty.
+pub fn retrieve_context_from_nodes(
+    engine: &TemporalEngine,
+    request: ContextRetrieveRequest,
+) -> ContextRetrieveReport {
+    retrieve_context_candidates(engine, request, true)
+}
+
+fn retrieve_context_candidates(
+    engine: &TemporalEngine,
     mut request: ContextRetrieveRequest,
+    restrict_nodes: bool,
 ) -> ContextRetrieveReport {
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
@@ -2429,6 +2455,17 @@ pub fn retrieve_context(
     let include_l1 = tiers.contains(&ContextTier::L1);
     let include_l2 = tiers.contains(&ContextTier::L2);
     let mut node_hashes = std::mem::take(&mut request.node_hashes);
+    if restrict_nodes && node_hashes.is_empty() {
+        return ContextRetrieveReport {
+            status: Status::ok(),
+            blocks,
+            node_count,
+            event_count,
+            query_understanding_debug,
+            fanout_plan,
+            parity: context_pipeline_parity_evidence(),
+        };
+    }
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding_shared(&retrieval_provider, &request.query)
     {
@@ -2455,7 +2492,7 @@ pub fn retrieve_context(
         context_embedding_model_hash(request.provider.embedding_model.trim());
     // A caller may omit node ids and let the compact embedding index provide a bounded
     // tenant-wide candidate set. Text is not hydrated until after this selection.
-    if node_hashes.is_empty() {
+    if !restrict_nodes && node_hashes.is_empty() {
         let candidate_limit = request
             .max_summary_nodes
             .max(request.max_event_nodes)
@@ -2482,7 +2519,7 @@ pub fn retrieve_context(
     // The durable recency index bounds cold storage reads. The compact hot index may know older
     // nodes that are stronger semantic matches, so let a small number re-enter as candidates.
     // Their cached scores are not final: the normal node fetch and rerank below still apply.
-    if node_hashes.len() >= CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT {
+    if !restrict_nodes && node_hashes.len() >= CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT {
         let hot_candidate_limit = request
             .max_summary_nodes
             .max(request.max_event_nodes)

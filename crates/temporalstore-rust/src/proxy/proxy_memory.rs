@@ -18,7 +18,7 @@ const MEMORY_CATALOG_PAGE_SIZE: usize = 512;
 const MEMORY_UPDATE_PAGE_SIZE: usize = 128;
 // Postings contain batches of memories, so cap posting fan-out before hydration.
 const MEMORY_IDENTITY_POSTINGS_PER_PAGE: usize = 1;
-const MEMORY_LIST_IDENTITY_CANDIDATE_LIMIT: usize = 4_096;
+const MEMORY_IDENTITY_CANDIDATE_LIMIT: usize = 4_096;
 const MEMORY_IDENTITY_INDEX_VERSION: &[u8] = b"3";
 const MEMORY_TOTAL_MEMBER: &[u8] = b"\0total";
 
@@ -759,17 +759,66 @@ impl ProxyService {
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
         let limit = request.limit.unwrap_or(10).clamp(1, 100);
+        let scoped_records = if identity.user_id.is_empty()
+            && identity.agent_id.is_empty()
+            && identity.run_id.is_empty()
+        {
+            None
+        } else {
+            self.memory_ranked_identity_records(
+                tenant_hash,
+                &identity,
+                MEMORY_IDENTITY_CANDIDATE_LIMIT,
+                MEMORY_IDENTITY_CANDIDATE_LIMIT,
+            )
+        };
+        let node_hashes: Vec<u64> = scoped_records
+            .as_ref()
+            .map(|records| {
+                records
+                    .iter()
+                    .map(|record| {
+                        crate::context_workflow::context_source_node_hash(
+                            tenant_hash,
+                            crate::context_workflow::ContextSourceKind::Chat,
+                            if record.context_ref.is_empty() {
+                                &record.id
+                            } else {
+                                &record.context_ref
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let node_sources = scoped_records.as_ref().map(|records| {
+            node_hashes
+                .iter()
+                .copied()
+                .zip(records.iter().map(|record| {
+                    if record.context_ref.is_empty() {
+                        record.id.as_str()
+                    } else {
+                        record.context_ref.as_str()
+                    }
+                }))
+                .collect::<HashMap<_, _>>()
+        });
         let retrieval = context::ProxyContextRetrieveRequest {
             scope,
             query: request.query,
             start_time_ms: 0,
             end_time_ms: 0,
             max_events: Some(limit.saturating_mul(4)),
-            node_hashes: Vec::new(),
+            node_hashes,
             provider: request.provider,
             include_debug: false,
         };
-        let (status, body) = self.context_retrieve(retrieval);
+        let (status, body) = if scoped_records.is_some() {
+            self.context_retrieve_from_nodes(retrieval)
+        } else {
+            self.context_retrieve(retrieval)
+        };
         if status != 200 {
             return (status, body);
         }
@@ -783,7 +832,18 @@ impl ProxyService {
                     )
                 }
             };
-        let blocks = report.blocks;
+        let mut blocks = report.blocks;
+        if let Some(sources) = &node_sources {
+            blocks.retain_mut(|block| {
+                let Some(source) = sources.get(&block.node_hash) else {
+                    return false;
+                };
+                block.source_ref.clear();
+                block.source_ref.push_str(source);
+                true
+            });
+        }
+        drop(node_sources);
         let mut ids = Vec::with_capacity(blocks.len());
         let mut seen = HashSet::with_capacity(blocks.len());
         for block in &blocks {
@@ -792,7 +852,15 @@ impl ProxyService {
                 ids.push(memory_id.to_string());
             }
         }
-        let hydrated = self.memory_read_many(tenant_hash, &ids);
+        let hydrated = if let Some(records) = scoped_records {
+            let mut records = records
+                .into_iter()
+                .map(|record| (record.id.clone(), record))
+                .collect::<HashMap<_, _>>();
+            ids.iter().map(|id| records.remove(id)).collect()
+        } else {
+            self.memory_read_many(tenant_hash, &ids)
+        };
         let records = ids
             .into_iter()
             .zip(hydrated)
@@ -806,25 +874,23 @@ impl ProxyService {
                 break;
             }
             let memory_id = memory_catalog_id_from_context_ref(&block.source_ref);
-            let record = records.get(memory_id);
-            if tenant_hash_from_memory_id(&block.source_ref).is_some() && record.is_none() {
+            let Some(record) = records.get(memory_id) else {
+                continue;
+            };
+            let current_ref = if record.context_ref.is_empty() {
+                record.id.as_str()
+            } else {
+                record.context_ref.as_str()
+            };
+            if current_ref != block.source_ref || !emitted.insert(record.id.clone()) {
                 continue;
             }
-            if let Some(record) = record {
-                let current_ref = if record.context_ref.is_empty() {
-                    record.id.as_str()
-                } else {
-                    record.context_ref.as_str()
-                };
-                if current_ref != block.source_ref || !emitted.insert(record.id.clone()) {
-                    continue;
-                }
-            }
             let rank = results.len();
-            let mut metadata = record
-                .map(|record| record.metadata.clone())
-                .filter(Value::is_object)
-                .unwrap_or_else(|| json!({}));
+            let mut metadata = if record.metadata.is_object() {
+                record.metadata.clone()
+            } else {
+                json!({})
+            };
             if let Some(map) = metadata.as_object_mut() {
                 map.insert("record_type".into(), json!(block.record_type));
                 map.insert("tier".into(), json!(block.tier));
@@ -833,12 +899,12 @@ impl ProxyService {
                 map.insert("event_time_ms".into(), json!(block.event_time_ms));
             }
             results.push(json!({
-                "id": record.map(|record| record.id.as_str()).unwrap_or(memory_id),
-                "memory": record.map(|record| record.memory.as_str()).unwrap_or(&block.text),
+                "id": record.id,
+                "memory": record.memory,
                 "metadata": metadata,
                 "score": 1.0 - (rank as f64 / (limit.max(1) as f64 + 1.0)),
-                "created_at": record.map(|record| record.created_at_ms),
-                "updated_at": record.map(|record| record.updated_at_ms),
+                "created_at": record.created_at_ms,
+                "updated_at": record.updated_at_ms,
             }));
         }
         crate::http::json_response(200, &json!({"results": results}))
@@ -872,9 +938,12 @@ impl ProxyService {
             .collect::<Vec<_>>();
         let mut after = first.after;
         if records.len() < limit && first.candidate_count == MEMORY_CATALOG_PAGE_SIZE {
-            if let Some(indexed) =
-                self.memory_list_from_identity(tenant_hash, &identity, limit, limit - records.len())
-            {
+            if let Some(indexed) = self.memory_ranked_identity_records(
+                tenant_hash,
+                &identity,
+                limit,
+                limit - records.len(),
+            ) {
                 let count = indexed.len();
                 return crate::http::json_response(
                     200,
@@ -904,7 +973,7 @@ impl ProxyService {
         crate::http::json_response(200, &json!({"results": records, "memories": count}))
     }
 
-    fn memory_list_from_identity(
+    fn memory_ranked_identity_records(
         &self,
         tenant_hash: u64,
         identity: &MemoryIdentity,
@@ -962,7 +1031,7 @@ impl ProxyService {
             })
             .min_by_key(|(_, count)| *count)?;
         if matched > total
-            || matched > MEMORY_LIST_IDENTITY_CANDIDATE_LIMIT
+            || matched > MEMORY_IDENTITY_CANDIDATE_LIMIT
             || (matched > MEMORY_CATALOG_PAGE_SIZE
                 && (matched as u128) * (matched as u128) > (total as u128) * (remaining as u128))
         {
@@ -972,7 +1041,7 @@ impl ProxyService {
         let mut budget = matched
             .saturating_mul(2)
             .max(MEMORY_CATALOG_PAGE_SIZE)
-            .min(MEMORY_LIST_IDENTITY_CANDIDATE_LIMIT);
+            .min(MEMORY_IDENTITY_CANDIDATE_LIMIT);
         let mut after = Vec::new();
         let mut seen = HashSet::new();
         let mut ranked = BTreeMap::new();

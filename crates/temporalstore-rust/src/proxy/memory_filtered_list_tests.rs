@@ -10,6 +10,7 @@ use std::sync::Arc;
 enum Index {
     Normal,
     Unknown,
+    Anonymous,
     Oversized,
     Missing,
     Malformed,
@@ -26,6 +27,8 @@ struct Reads {
     max_page: AtomicUsize,
     counts: AtomicUsize,
     postings: AtomicUsize,
+    scoped_searches: AtomicUsize,
+    tenant_searches: AtomicUsize,
 }
 
 fn scope() -> MemoryScope {
@@ -85,7 +88,7 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
                             _ => total,
                         };
                         CommandResponse::Bytes {
-                            value: (!matches!(mode, Index::Unknown))
+                            value: (!matches!(mode, Index::Unknown | Index::Anonymous))
                                 .then(|| count.to_string().into_bytes()),
                         }
                     }
@@ -168,6 +171,70 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
                 }
             };
             match request.path.as_str() {
+                "/context/retrieve/nodes" | "/context/retrieve" => {
+                    use crate::context_workflow::*;
+                    let body: ContextRetrieveRequest = parse_json(&request.body).unwrap();
+                    let scoped = request.path.ends_with("/nodes");
+                    let ordinals = if scoped {
+                        seen.scoped_searches.fetch_add(1, Ordering::Relaxed);
+                        let expected = (0..8)
+                            .map(|ordinal| {
+                                context_source_node_hash(
+                                    tenant,
+                                    ContextSourceKind::Chat,
+                                    &record(tenant, ordinal).context_ref,
+                                )
+                            })
+                            .collect::<HashSet<_>>();
+                        assert!(body.node_hashes.iter().all(|node| expected.contains(node)));
+                        if body.node_hashes.is_empty() {
+                            Vec::new()
+                        } else {
+                            assert_eq!(body.node_hashes.len(), 8);
+                            (0..8).rev().collect::<Vec<_>>()
+                        }
+                    } else {
+                        seen.tenant_searches.fetch_add(1, Ordering::Relaxed);
+                        assert!(body.node_hashes.is_empty());
+                        (8..12).collect::<Vec<_>>()
+                    };
+                    let blocks = ordinals
+                        .into_iter()
+                        .map(|ordinal| {
+                            let row = record(tenant, ordinal);
+                            ContextBlock {
+                                record_type: "context_event".into(),
+                                uri: "memory".into(),
+                                tier: ContextTier::L2,
+                                node_hash: context_source_node_hash(
+                                    tenant,
+                                    ContextSourceKind::Chat,
+                                    &row.context_ref,
+                                ),
+                                event_time_ms: row.updated_at_ms,
+                                text: row.memory,
+                                estimated_tokens: 128,
+                                source_ref: if scoped || matches!(mode, Index::Anonymous) {
+                                    String::new()
+                                } else {
+                                    row.context_ref
+                                },
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    json_response(
+                        200,
+                        &ContextRetrieveReport {
+                            status: Status::ok(),
+                            node_count: blocks.len(),
+                            event_count: blocks.len(),
+                            blocks,
+                            query_understanding_debug: ContextQueryUnderstandingDebug::default(),
+                            fanout_plan: ContextFanoutPlanReport::default(),
+                            parity: context_pipeline_parity_evidence(),
+                        },
+                    )
+                }
                 "/execute" => {
                     let body: ExecuteRequest = parse_json(&request.body).unwrap();
                     json_response(200, &answer(body.command))
@@ -322,4 +389,63 @@ fn list_ranking_retains_only_the_limit_and_prefers_newer_versions() {
         4
     );
     assert_eq!(ranked.first_key_value().unwrap().1.updated_at_ms, 10_000);
+}
+
+#[test]
+fn selective_search_uses_identity_nodes_before_retrieval_and_reuses_catalog_rows() {
+    for total in [4096, 16384] {
+        let (proxy, reads) = fixture(total, Index::Normal);
+        proxy.inner.memory_indexes_ready.write().unwrap().clear();
+        let (status, body) = proxy.memory_search(MemoryQueryRequest {
+            scope: scope(),
+            identity: MemoryIdentity {
+                user_id: "alice".into(),
+                ..MemoryIdentity::default()
+            },
+            query: "preference".into(),
+            limit: Some(4),
+            ..MemoryQueryRequest::default()
+        });
+        assert_eq!(status, 200);
+        let result: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["results"].as_array().unwrap().len(), 4);
+        assert_eq!(reads.scoped_searches.load(Ordering::Relaxed), 1);
+        assert_eq!(reads.tenant_searches.load(Ordering::Relaxed), 0);
+        assert_eq!(reads.catalog.load(Ordering::Relaxed), 8);
+        assert!(result["results"].as_array().unwrap().iter().all(|row| {
+            usize::from_str_radix(row["id"].as_str().unwrap().split_once('-').unwrap().1, 16)
+                .unwrap()
+                < 8
+        }));
+    }
+}
+
+#[test]
+fn empty_identity_intersection_stays_empty_and_missing_counts_keep_fallback() {
+    for (mode, run, expected_scoped, expected_fields) in [
+        (Index::Normal, "run-b", 1, 8),
+        (Index::Unknown, "", 0, 4),
+        (Index::Anonymous, "", 0, 0),
+    ] {
+        let (proxy, reads) = fixture(4096, mode);
+        let (status, body) = proxy.memory_search(MemoryQueryRequest {
+            scope: scope(),
+            identity: MemoryIdentity {
+                user_id: "alice".into(),
+                run_id: run.into(),
+                ..MemoryIdentity::default()
+            },
+            query: "preference".into(),
+            limit: Some(4),
+            ..MemoryQueryRequest::default()
+        });
+        assert_eq!(status, 200);
+        let result: Value = serde_json::from_slice(&body).unwrap();
+        assert!(result["results"].as_array().unwrap().is_empty());
+        assert_eq!(
+            reads.scoped_searches.load(Ordering::Relaxed),
+            expected_scoped
+        );
+        assert_eq!(reads.catalog.load(Ordering::Relaxed), expected_fields);
+    }
 }

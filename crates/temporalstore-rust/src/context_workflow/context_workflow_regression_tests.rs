@@ -6,6 +6,9 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
+#[path = "scoped_retrieval_tests.rs"]
+mod scoped_retrieval_tests;
+
 #[test]
 fn bounded_summary_selection_matches_full_ranking() {
     for count in [0, 1, 7, 8, 64, 4096] {
@@ -57,7 +60,20 @@ fn context_source_provider_inherits_only_when_omitted() {
     assert_eq!(report.extracts[0].provider.embedding_model, "batch-vector-space");
 }
 
-fn test_engine() -> TemporalEngine {
+struct TestEngine {
+    engine: TemporalEngine,
+    _dir: tempfile::TempDir,
+}
+
+impl std::ops::Deref for TestEngine {
+    type Target = TemporalEngine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
+}
+
+fn test_engine() -> TestEngine {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -66,7 +82,7 @@ fn test_engine() -> TemporalEngine {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    engine
+    TestEngine { engine, _dir: dir }
 }
 
 // shared-corpus: context_retrieval_batch_node_summary_lookup
