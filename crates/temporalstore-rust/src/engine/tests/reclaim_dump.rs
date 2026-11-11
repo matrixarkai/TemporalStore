@@ -329,6 +329,78 @@ fn checkpoint_capture_precedes_the_storage_barrier() {
 }
 
 #[test]
+fn resident_materialization_does_not_replace_a_newer_write() {
+    resident_materialization_race(false);
+}
+
+#[test]
+fn resident_materialization_does_not_resurrect_a_deleted_key() {
+    resident_materialization_race(true);
+}
+
+fn resident_materialization_race(delete: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "materialize-race");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..crate::control::Config::default()
+        },
+    }).ok);
+    let write = |value: &[u8]| {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringSet { key: "contended".into(), value: value.to_vec() },
+        }).status.ok);
+    };
+    write(b"old");
+    let mut injected = false;
+    let mut registrations_after_mutation = 0;
+    let moved = engine.materialize_resident_blocks_with_before_publish(
+        RECLAIM_DUMP_SHARD, |_| true, |key| {
+            assert_eq!(key, "contended");
+            if delete {
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::StringDelete { key: key.into() },
+                }).status.ok);
+            } else {
+                write(b"new");
+            }
+            registrations_after_mutation = engine.registration_count_for_test(RECLAIM_DUMP_SHARD);
+            injected = true;
+        },
+    );
+    assert!(injected);
+    assert_eq!(moved, 0, "a superseded copy must not be published");
+    let remaining = usize::from(!delete);
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), registrations_after_mutation);
+    let check = |engine: &TemporalEngine| {
+        engine.cache.invalidate_shard(RECLAIM_DUMP_SHARD).unwrap();
+        let result = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringGet { key: "contended".into() },
+        });
+        assert!(result.status.ok);
+        assert_eq!(result.response, CommandResponse::Bytes {
+            value: (!delete).then(|| b"new".to_vec()),
+        });
+    };
+    check(&engine);
+    assert_eq!(engine.materialize_oldest_resident_blocks(RECLAIM_DUMP_SHARD, 0), remaining);
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD),
+        if delete { registrations_after_mutation } else { 0 });
+    check(&engine);
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "materialize-race");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    check(&restored);
+}
+
+#[test]
 fn cache_eviction_does_not_create_unindexed_slab_copies() {
     let dir = tempfile::tempdir().unwrap();
     let engine = reclaim_dump_engine(dir.path(), "no-copy");
