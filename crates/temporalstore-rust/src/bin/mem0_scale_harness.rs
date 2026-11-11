@@ -78,6 +78,22 @@ struct Report {
 struct Timings {
     values: BTreeMap<String, Vec<u128>>,
     errors: BTreeMap<String, usize>,
+    emitted_failure_markers: usize,
+}
+
+fn failure_marker(name: &str, request: usize, elapsed_us: u128, emitted: &mut usize) -> Option<String> {
+    if *emitted >= 8 {
+        return None;
+    }
+    *emitted += 1;
+    let phase = if !name.is_empty() && name.len() <= 64
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        name
+    } else {
+        "unknown"
+    };
+    Some(format!("mem0-scale phase={phase} failed_request={request} elapsed_us={elapsed_us}"))
 }
 
 impl Timings {
@@ -87,12 +103,16 @@ impl Timings {
         started: Instant,
         result: &Result<T, impl std::fmt::Display>,
     ) {
-        self.values
-            .entry(name.to_string())
-            .or_default()
-            .push(started.elapsed().as_micros());
+        let elapsed_us = started.elapsed().as_micros();
+        let values = self.values.entry(name.to_string()).or_default();
+        values.push(elapsed_us);
         if result.is_err() {
             *self.errors.entry(name.to_string()).or_default() += 1;
+            if let Some(marker) = failure_marker(
+                name, values.len(), elapsed_us, &mut self.emitted_failure_markers,
+            ) {
+                eprintln!("{marker}");
+            }
         }
     }
 
@@ -762,6 +782,24 @@ fn parse_options() -> Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failure_markers_are_bounded_and_do_not_echo_untrusted_labels() {
+        let mut emitted = 0;
+        let marker = failure_marker("metadata_batch_update", 17, 210_000, &mut emitted).unwrap();
+        assert_eq!(marker, "mem0-scale phase=metadata_batch_update failed_request=17 elapsed_us=210000");
+        for name in ["private memory\ncontents", "", &"x".repeat(65)] {
+            let marker = failure_marker(name, 1, 2, &mut emitted).unwrap();
+            assert_eq!(marker, "mem0-scale phase=unknown failed_request=1 elapsed_us=2");
+        }
+        for _ in 4..8 {
+            assert!(failure_marker("get", 1, 2, &mut emitted).is_some());
+        }
+        for _ in 0..100 {
+            assert!(failure_marker("get", 1, 2, &mut emitted).is_none());
+        }
+        assert_eq!(emitted, 8);
+    }
 
     #[test]
     fn partial_batches_and_unapplied_mutations_do_not_pass_the_workload() {
