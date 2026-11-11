@@ -91,13 +91,12 @@ pub(crate) struct DeleteDropGuardNanos {
     pub total: std::sync::atomic::AtomicU64,
     /// `collect_live_block_entries` + the victim-bucket filter: O(shard).
     pub collect: std::sync::atomic::AtomicU64,
-    /// `delete_record`, once per key: the in-memory removal from the shard index. This is the
-    /// only half of the drop loop that actually needs the shard guard.
+    /// Preparing deletion groups and applying their logged exact-record removals.
     pub delete: std::sync::atomic::AtomicU64,
     /// `invalidate_record_all`, once per key. Takes `&MultiLayerCache` and a key and touches
     /// NOTHING on the shard -- so what it costs is charged to a guard it does not need.
     pub invalidate: std::sync::atomic::AtomicU64,
-    /// The per-key WAL tombstone loop, including the mirror hand-off: once per dropped key.
+    /// Bounded deletion WAL batches and mirror hand-off, excluding in-memory apply time.
     pub wal_append: std::sync::atomic::AtomicU64,
     /// Reading the sequence the round anchors `applied_wal_sequence` to: once per round.
     pub anchor: std::sync::atomic::AtomicU64,
@@ -2364,6 +2363,7 @@ impl TemporalEngine {
             }
         }
         let mut dropped_object_count = 0usize;
+        let mut deletion_log_failed = false;
         // NO MEMORY-PRESSURE STAGE REACHES THIS BRANCH ANY MORE, and that is a property of the
         // callers rather than of a default. Both stage entry points -- the periodic loop
         // (`data_node/runtime_storage.rs`) and the on-demand cycle (`storage_manager_cycle.rs`) --
@@ -2419,16 +2419,17 @@ impl TemporalEngine {
                     })
                     .collect::<BTreeSet<_>>();
                 DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.collect, phase);
-                // The two halves of the drop loop are timed SEPARATELY because they need
-                // different things: `delete_record` mutates the shard and cannot leave this
-                // guard, while `invalidate_record_all` is handed `&self.cache` and a key and
-                // never touches `shard` at all.
+                // Capture exact deletion groups here; apply them after their WAL frame lands.
+                // Both preparation and apply are charged to the deletion phase, separately
+                // from the cache pass, which does not mutate shard state.
                 let mut deleted_keys = Vec::new();
+                let mut deletions = Vec::new();
                 for key in object_keys {
                     let phase = std::time::Instant::now();
-                    let removed = delete_record(shard, &key);
+                    let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, &key);
                     DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.delete, phase);
-                    if removed {
+                    if let Some(deletion) = removed {
+                        deletions.push(deletion);
                         dropped_object_count = dropped_object_count.saturating_add(1);
                         deleted_keys.push(key);
                     }
@@ -2469,8 +2470,8 @@ impl TemporalEngine {
                     // the deletion (a) invisible to followers (never replicated), and (b) under
                     // MATRIXARK_BULK_INGEST -- where persist_index_bytes is a no-op -- neither
                     // persisted NOR recoverable from the WAL, so the key resurrected on reload when
-                    // replay reapplied the earlier SET. Emit a CommonDelete tombstone per dropped
-                    // key (buffered/unfsynced, mirroring the expiry sweep) and anchor
+                    // replay reapplied the earlier SET. Emit bounded exact-record tombstone
+                    // batches (buffered/unfsynced, matching the expiry sweep) and anchor
                     // applied_wal_sequence past them so replay observes the deletion instead of the
                     // stale write. (eviction never deletes -- it only dumps and drops from cache -- so
                     // there is no analog; this aligns the Rust-only delete_drop path with the
@@ -2479,30 +2480,34 @@ impl TemporalEngine {
                         let phase = std::time::Instant::now();
                         // ONE mirror lookup for the whole run -- same reasoning as the expiry
                         // sweep, and this loop is inside the shard-table write guard too.
-                        let mirror = self.maintenance_mirror_sink();
-                        for key in &deleted_keys {
-                            let command = Command::CommonDelete { key: key.clone().to_string() };
-                            let appended =
-                                self.wal_store
-                                    .append_with_sync(shard_id, command.clone(), false);
-                            // COUNTED HERE, under the guard, one per dropped key.
+                        let result = self.append_maintenance_deletions(shard_id, shard, deletions, || {
                             EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            // Same reasoning as the expiry sweep: a drop that deletes is a
-                            // deletion, and it has to reach every log a successor may replay.
-                            if let Ok(record) = appended {
-                                shard.note_wal_application(record.sequence, record.sequence);
-                                if let Some(sink) = mirror.as_ref() {
-                                    sink.record_write(shard_id, &command);
-                                }
-                            }
+                        });
+                        dropped_object_count = result.removed_keys;
+                        DELETE_DROP_GUARD_NANOS.delete.fetch_add(result.apply_ns,
+                            std::sync::atomic::Ordering::Relaxed);
+                        DELETE_DROP_GUARD_NANOS.wal_append.fetch_add(
+                            (phase.elapsed().as_nanos() as u64).saturating_sub(result.apply_ns),
+                            std::sync::atomic::Ordering::Relaxed);
+                        if let Some(err) = result.error {
+                            tracing::error!(shard_id, error = %err.message,
+                                "delete eviction could not record its complete mutation set");
+                            deletion_log_failed = true;
                         }
-                        DELETE_DROP_GUARD_NANOS
-                            .add_since(&DELETE_DROP_GUARD_NANOS.wal_append, phase);
                         let phase = std::time::Instant::now();
                         // The receipts, not the current log tail, identify what this
                         // guarded state includes.
                         DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.anchor, phase);
+                    } else {
+                        let phase = std::time::Instant::now();
+                        dropped_object_count = 0;
+                        for deletion in deletions {
+                            let mut removed = false;
+                            for record in deletion.records() { removed |= delete_record_exact(shard, record); }
+                            dropped_object_count += usize::from(removed);
+                        }
+                        DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.delete, phase);
                     }
                     // Stamp here so the clone carries the current on-disk shape, then hand
                     // the snapshot out; the encode and both writes happen below, unlocked.
@@ -2522,7 +2527,7 @@ impl TemporalEngine {
                     // the compaction flush beside this one states: "An expiry sweep and a
                     // delete_drop eviction both write a WAL tombstone per key before they flush,
                     // so a flush that lands late, lands stale, or never lands is re-derived by
-                    // replay." The `CommonDelete` tombstones went in above, under this guard, and
+                    // replay." The exact-record tombstones went in above, under this guard, and
                     // `applied_wal_sequence` is anchored past them, so a skipped checkpoint costs
                     // a longer replayed WAL suffix and nothing else.
                     //
@@ -2587,7 +2592,8 @@ impl TemporalEngine {
             bucket_index_bytes_before,
             bucket_index_bytes_after,
             cooldown: pressure_after >= pressure_before,
-            skipped_reason: String::new(),
+            skipped_reason: if deletion_log_failed { "maintenance_log_append_failed".to_string() }
+                else { String::new() },
         }
     }
 }
@@ -3018,11 +3024,8 @@ mod eviction_round_scale {
     /// which read the file as monotonic in sequence.
     ///
     /// So the append IS the ordering, and the one order-independent thing (the fsync) is already
-    /// out -- these records take none. What remains available is BATCHING, which keeps every
-    /// record under the guard and takes one sequence for the round rather than N; that needs a
-    /// multi-key delete command, and there is none, so it is a replicated wire-format change and
-    /// not a tidy-up. Priced before being declined: with the loop moved out anyway, as a mutant,
-    /// the hold fell from 769 ms to 540 ms at 4,000 keys -- 29.8%.
+    /// out -- these records take none. Bounded result batches now share one append and sequence
+    /// among several deleted records, without moving sequence assignment outside this guard.
     ///
     /// And the loop is not where the hold mostly goes:
     /// `where_a_delete_drop_rounds_shard_guard_hold_actually_goes` splits it, and the largest
@@ -3076,15 +3079,15 @@ mod eviction_round_scale {
             large_dropped > small_dropped,
             "the two corpora must differ in dropped keys, got {small_dropped} and {large_dropped}",
         );
-        // ONE RECORD PER DROPPED KEY, asserted as equality rather than as a bound: the claim is
-        // that this loop appends per key, and "at least one" would also pass on a single record.
+        // This fixture has one record per key and keys far below the byte target.
+        // The count is the exact number of bounded result batches, not just nonzero.
         assert_eq!(
-            small_appends, small_dropped as u64,
+            small_appends, small_dropped.div_ceil(crate::engine::maintenance_log::MAX_DELETION_ITEMS) as u64,
             "a delete_drop round appended {small_appends} WAL records under the guard for \
              {small_dropped} dropped keys",
         );
         assert_eq!(
-            large_appends, large_dropped as u64,
+            large_appends, large_dropped.div_ceil(crate::engine::maintenance_log::MAX_DELETION_ITEMS) as u64,
             "a delete_drop round appended {large_appends} WAL records under the guard for \
              {large_dropped} dropped keys",
         );

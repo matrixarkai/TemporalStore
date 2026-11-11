@@ -64,13 +64,12 @@ pub(crate) struct ExpiryGuardNanos {
     pub total: std::sync::atomic::AtomicU64,
     /// `ensure_expiry_order` + both `due_window` reads: choosing what the round will expire.
     pub select: std::sync::atomic::AtomicU64,
-    /// `delete_record`, once per due key: the in-memory removal from the shard index. This is the
-    /// only part of the removal that actually needs the shard guard.
+    /// Preparing deletion groups and applying their logged exact-record removals.
     pub delete: std::sync::atomic::AtomicU64,
     /// The record-cache pass. ONE `invalidate_records_all_batched` per round; it is handed
     /// `&MultiLayerCache` and a key slice and touches NOTHING on the shard.
     pub invalidate: std::sync::atomic::AtomicU64,
-    /// The per-key WAL tombstone loop, including the one mirror lookup it takes first.
+    /// Bounded deletion WAL batches and the mirror hand-off, excluding in-memory apply time.
     pub wal_append: std::sync::atomic::AtomicU64,
     /// Building the checkpoint the unlocked flush is handed: once per round.
     pub checkpoint: std::sync::atomic::AtomicU64,
@@ -1094,13 +1093,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // Both paths delete from retained metadata; neither reloads payloads or bucket indexes.
         let loaded_for_expire = 0usize;
         let mut expired_keys: Vec<String> = Vec::new();
+        let mut deletions = Vec::new();
         let mut pending_index_flush: Option<ExpiryIndexCheckpoint> = None;
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 let phase = std::time::Instant::now();
-                let removed = delete_record(shard, key);
+                let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
                 EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
-                if removed {
+                if let Some(deletion) = removed {
+                    deletions.push(deletion);
                     expired_records_removed += 1;
                     expired_keys.push(key.clone());
                 }
@@ -1112,9 +1113,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
             if *expires_at <= now {
                 if request.load_cold_buckets {
                     let phase = std::time::Instant::now();
-                    let removed = delete_record(shard, key);
+                    let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
                     EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
-                    if removed {
+                    if let Some(deletion) = removed {
+                        deletions.push(deletion);
                         expired_records_removed += 1;
                         expired_keys.push(key.clone());
                     } else {
@@ -1168,8 +1170,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         if expired_records_removed > 0 {
             // Expiry IS a logged,
-            // replicated delete. Emit a WAL tombstone per expired key -- buffered and
-            // unfsynced, mirroring the fire-and-forget commit -- so followers and WAL
+            // replicated delete. Batch exact-record tombstones into buffered, unfsynced
+            // WAL frames, preserving the fire-and-forget commit, so followers and WAL
             // replay observe the deletion instead of relying on each node running its own
             // sweep with its own clock/enable_expire. Then anchor the served snapshot past
             // the tombstones so a restart does not resurrect the key by replaying the
@@ -1184,23 +1186,22 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 // the whole run ONE destination, where a sink swapped mid-loop would split a
                 // single round's tombstones across two mirrors and leave neither complete.
                 let phase = std::time::Instant::now();
-                let mirror = self.maintenance_mirror_sink();
-                for key in &expired_keys {
-                    let command = Command::CommonDelete { key: key.clone() };
-                    let appended = self
-                        .wal_store
-                        .append_with_sync(request.shard_id, command.clone(), false);
-                    // An expiry is a real deletion, so it has to reach every log that a
-                    // successor might replay -- not only this node's.
-                    if let Ok(record) = appended {
-                        shard.note_wal_application(record.sequence, record.sequence);
-                        if let Some(sink) = mirror.as_ref() {
-                            sink.record_write(request.shard_id, &command);
-                        }
-                    }
+                let result = self.append_maintenance_deletions(request.shard_id, shard, deletions, || {});
+                EXPIRY_GUARD_NANOS.delete.fetch_add(result.apply_ns, std::sync::atomic::Ordering::Relaxed);
+                EXPIRY_GUARD_NANOS.wal_append.fetch_add(
+                    (phase.elapsed().as_nanos() as u64).saturating_sub(result.apply_ns),
+                    std::sync::atomic::Ordering::Relaxed);
+                if let Some(error) = result.error { return Err(error); }
+                expired_records_removed = result.removed_keys;
+            } else {
+                let phase = std::time::Instant::now();
+                expired_records_removed = 0;
+                for deletion in deletions {
+                    let mut removed = false;
+                    for record in deletion.records() { removed |= delete_record_exact(shard, record); }
+                    expired_records_removed += usize::from(removed);
                 }
-                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.wal_append, phase);
-                // Each successful receipt above advances only state actually applied.
+                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
             }
             let phase = std::time::Instant::now();
             // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
@@ -1218,7 +1219,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // concurrent storage cycle can see blocks these deletes freed, call their slabs
             // stale and reclaim them while the durable index still names them. Both are
             // recoverable HERE and only here, because an expiry IS a logged delete: every key
-            // above emitted a `CommonDelete` to the WAL before this point, so a checkpoint that
+            // above has an exact-record result in the WAL before this point, so a checkpoint that
             // lands stale (or never lands at all) leaves an anchor BEHIND the tombstones, and
             // replay re-derives exactly the deletions it describes. Landing behind a newer
             // checkpoint rewinds the anchor, which holds more log than needed and never less.

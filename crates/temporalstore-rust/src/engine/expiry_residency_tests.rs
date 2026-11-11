@@ -209,8 +209,20 @@ fn mixed_expiry_scale(live_counts: &[usize], cache_bytes: usize) {
         assert_eq!(engine.block_store.stats().bytes_read, before_reads);
         assert_eq!(
             engine.wal_store.cached_last_sequence(1) - before_sequence,
-            (COLD + HOT) as u64
+            (1 + COLD / 8) as u64
         );
+        let start = engine.wal_store.log_id_after_sequence(1, before_sequence).unwrap();
+        let (records, truncated) = engine.wal_store.scan_decoded(1, start, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated);
+        let mut removal_count = 0;
+        let removals = records.iter().filter(|(_, record)| record.sequence > before_sequence)
+            .flat_map(|(_, record)| record.outcomes.iter()).map(|item| {
+                assert!(item.kind == "record" && item.deleted && item.meta);
+                removal_count += 1;
+                item.object_key.clone()
+            }).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(removal_count, COLD + HOT);
+        assert_eq!(removals, cold_keys.iter().chain(&hot_keys).cloned().collect());
         let index_bytes = engine.index_log_store.stats(1).bytes_written - before_index;
         assert!(index_bytes > 0);
         let baseline = *baseline_bytes.get_or_insert(index_bytes);

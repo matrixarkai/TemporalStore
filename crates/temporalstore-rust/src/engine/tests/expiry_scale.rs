@@ -1053,16 +1053,23 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
         report.expired_records_removed
     );
 
-    // The tombstones are real: one WAL record per expired key, appended before the checkpoint.
+    // The tombstones are real: one bounded result frame covers these five expired keys.
     let wal_after = engine.wal_store.stats(1).last_sequence;
     assert_eq!(
         wal_after.saturating_sub(wal_before),
-        DUE_KEYS as u64,
-        "the round appended {} WAL records for {DUE_KEYS} expired keys, expected one \
-         CommonDelete each -- without them the anchor assertion below is comparing against \
-         nothing",
+        1,
+        "the round appended {} WAL frames for {DUE_KEYS} expired keys, expected one bounded batch",
         wal_after.saturating_sub(wal_before)
     );
+    let (logged, _) = engine.wal_store.scan_decoded(1, 0, u64::MAX, u64::MAX).unwrap();
+    let tombstones = logged.iter().filter(|(_, record)| record.sequence > wal_before)
+        .flat_map(|(_, record)| record.outcomes.iter()).collect::<Vec<_>>();
+    assert_eq!(tombstones.len(), DUE_KEYS);
+    let logged_keys = tombstones.iter().map(|item| {
+        assert!(item.kind == "record" && item.deleted && item.meta);
+        item.object_key.clone()
+    }).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(logged_keys, (0..DUE_KEYS).map(|index| format!("zzz-due-{index:04}")).collect());
 
     let records = engine
         .index_log_store
