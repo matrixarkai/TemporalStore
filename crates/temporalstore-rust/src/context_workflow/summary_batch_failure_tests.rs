@@ -14,6 +14,7 @@ enum ResponseMode {
     Partial,
     Malformed,
     MalformedEnvelope,
+    CrossSource,
 }
 
 fn endpoint(mode: ResponseMode) -> (ContextModelProviderConfig, Arc<AtomicUsize>) {
@@ -24,6 +25,28 @@ fn endpoint(mode: ResponseMode) -> (ContextModelProviderConfig, Arc<AtomicUsize>
     std::thread::spawn(move || {
         serve_listener(listener, move |request| {
             assert_eq!(request.path, "/api/chat");
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let schema = &body["format"];
+            assert_eq!(schema["additionalProperties"], false);
+            let batch_sources = body["messages"][1]["content"]
+                .as_str()
+                .and_then(|prompt| prompt.strip_prefix(CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX))
+                .map(|source_json| serde_json::from_str::<Vec<Value>>(source_json).unwrap());
+            if let Some(sources) = batch_sources.as_ref() {
+                let items = &schema["properties"]["items"];
+                assert_eq!(items["minItems"], sources.len());
+                assert_eq!(items["maxItems"], sources.len());
+                assert_eq!(
+                    items["items"]["properties"]["source_index"]["maximum"],
+                    sources.len() - 1
+                );
+                assert_eq!(
+                    items["items"]["properties"]["l1"]["maxLength"],
+                    MAX_SUMMARY_L1_CHARS
+                );
+            } else {
+                assert_eq!(schema["properties"]["l1"]["maxLength"], MAX_SUMMARY_L1_CHARS);
+            }
             let ordinal = observed.fetch_add(1, Ordering::Relaxed);
             if ordinal == 0 && matches!(mode, ResponseMode::MalformedEnvelope) {
                 return (200, b"{invalid".to_vec());
@@ -42,6 +65,10 @@ fn endpoint(mode: ResponseMode) -> (ContextModelProviderConfig, Arc<AtomicUsize>
                     }]})
                     .to_string(),
                     ResponseMode::Malformed => "{invalid".into(),
+                    ResponseMode::CrossSource => json!({"items":[
+                        {"source_index":0,"l0":"first source","l1":batch_sources.as_ref().unwrap()[1]["body"],"entities":[]},
+                        {"source_index":1,"l0":"second source","l1":"second synthesis","entities":[]}
+                    ]}).to_string(),
                     ResponseMode::Unavailable
                     | ResponseMode::Slow
                     | ResponseMode::MalformedEnvelope => unreachable!(),
@@ -82,6 +109,38 @@ fn requests(provider: &ContextModelProviderConfig, count: usize) -> Vec<ContextE
             provider: provider.clone(),
         })
         .collect()
+}
+
+#[test]
+fn cross_source_batch_copy_retries_only_the_contaminated_item() {
+    let (provider, calls) = endpoint(ResponseMode::CrossSource);
+    let mut sources = requests(&provider, 2);
+    sources[1].body = "I prefer Rust services and local durable storage.".into();
+    let results = context_summaries_for_extract_batch(&provider, &sources.iter().collect::<Vec<_>>());
+    assert_eq!(results[0].as_ref().unwrap().l0, "single source");
+    assert_eq!(results[1].as_ref().unwrap().l0, "second source");
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn verbatim_copy_guard_keeps_shared_evidence_and_checks_entity_fields() {
+    let provider = ContextModelProviderConfig::default();
+    let mut sources = requests(&provider, 2);
+    let mut item = ContextSummaryBatchItem {
+        source_index: 0,
+        l0: sources[0].body.clone(),
+        l1: sources[0].body.clone(),
+        entities: Vec::new(),
+    };
+    assert!(!summary_batch_copies_other_source(&item, &[&sources[0], &sources[1]]));
+    sources[1].body = "I prefer Rust services and local durable storage.".into();
+    item.entities.push(ContextExtractedEntity {
+        kind: "fact".into(), name: "copied".into(), value: sources[1].body.clone(),
+    });
+    assert!(summary_batch_copies_other_source(&item, &[&sources[0], &sources[1]]));
+    let shared = sources[1].body.clone();
+    sources[0].body.push_str(&shared);
+    assert!(!summary_batch_copies_other_source(&item, &[&sources[0], &sources[1]]));
 }
 
 #[test]

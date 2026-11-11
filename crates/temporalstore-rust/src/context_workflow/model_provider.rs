@@ -11,11 +11,13 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::*;
 
-const CONTEXT_SUMMARY_SYSTEM_PROMPT: &str = "You generate TemporalStore ContextNode traversal summaries and durable entities. Be faithful to the supplied source; prefer current state and resolved contradictions; never invent facts. l0 is a compact routing abstract; l1 is a richer synthesis whose length scales to the source's information. entities contains at most eight durable facts, decisions, preferences, constraints, tasks, people, organizations, or projects; omit transient chatter and unsupported inference.";
-const CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX: &str = "Generate an independent hierarchical summary and durable entity set for every source below. Return one item for every source_index and preserve each ordinal exactly. l0 is a routing abstract of at most 220 characters. For rich_source=true, l1 is a semantic synthesis of at most 1200 characters; otherwise l1 is one distilled fact line of at most 220 characters. entities contains at most eight objects with kind, name, and value. Do not combine facts between sources or invent facts. Sources: ";
+const CONTEXT_SUMMARY_SYSTEM_PROMPT: &str = "You generate TemporalStore ContextNode traversal summaries and durable entities. Be faithful to the supplied source; prefer current state and resolved contradictions; never invent facts. l0 is a compact routing abstract; l1 is a richer synthesis whose length scales to the source's information. Extract supported durable facts into entities, not only into summaries; use an empty entities array only when the source has no durable information. Classify stated personal choices as kind=preference, settled choices as kind=decision, and requirements as kind=constraint. entities contains at most eight durable facts, decisions, preferences, constraints, tasks, people, organizations, or projects; omit transient chatter and unsupported inference.";
+const CONTEXT_SUMMARY_BATCH_PROMPT_PREFIX: &str = "Generate an independent hierarchical summary and durable entity set for every source below. Return one complete item for every source_index and preserve each ordinal exactly. Each item's l0, l1, and entities must ALL describe ONLY the body with that source_index. Complete every field for one source before processing the next source. Never put one source in l0 and another source in l1 or entities. l0 is a routing abstract of at most 220 characters. For rich_source=true, l1 is a semantic synthesis of at most 1200 characters; otherwise l1 is one distilled fact line of at most 220 characters. For a thin source, l1 may repeat its own l0 rather than borrowing another source's facts. entities contains at most eight objects with kind, name, and value. Do not combine facts between sources or invent facts. Sources: ";
 const DEFAULT_EMBED_MAX_BATCH_ITEMS: usize = 128;
 const DEFAULT_EMBED_MAX_INPUT_BYTES: usize = 64 * 1024;
 const DEFAULT_EMBED_MAX_REQUEST_BYTES: usize = 512 * 1024;
+const MAX_SUMMARY_L0_CHARS: usize = 220;
+const MAX_SUMMARY_L1_CHARS: usize = 1_200;
 const MAX_EXTRACTED_ENTITIES_PER_SOURCE: usize = 8;
 const MAX_EXTRACTED_ENTITY_NAME_BYTES: usize = 256;
 const MAX_EXTRACTED_ENTITY_VALUE_BYTES: usize = 1_024;
@@ -391,7 +393,7 @@ pub(crate) fn context_summaries_for_extract_batch(
         let output = client.generate_structured_output::<ContextSummaryBatchOutput>(
             CONTEXT_SUMMARY_SYSTEM_PROMPT,
             &prompt,
-            context_summary_batch_schema(),
+            &context_summary_batch_schema(chunk.len()),
         );
         if let Some(error) = output
             .as_ref()
@@ -420,6 +422,9 @@ pub(crate) fn context_summaries_for_extract_batch(
                     continue;
                 }
                 if item.l0.trim().is_empty() || item.l1.trim().is_empty() {
+                    continue;
+                }
+                if summary_batch_copies_other_source(&item, chunk) {
                     continue;
                 }
                 let request = chunk[item.source_index];
@@ -452,6 +457,28 @@ pub(crate) fn context_summaries_for_extract_batch(
         .into_iter()
         .map(|result| result.expect("every summary request is completed"))
         .collect()
+}
+
+fn summary_batch_copies_other_source(
+    item: &ContextSummaryBatchItem,
+    sources: &[&ContextExtractRequest],
+) -> bool {
+    let Some(own) = sources.get(item.source_index) else {
+        return true;
+    };
+    sources.iter().enumerate().any(|(index, source)| {
+        let body = source.body.trim();
+        // Reject clear verbatim leakage, not short common phrases or legitimate shared evidence.
+        index != item.source_index
+            && body.len() >= 32
+            && !own.body.contains(body)
+            && std::iter::once(item.l0.as_str())
+                .chain(std::iter::once(item.l1.as_str()))
+                .chain(item.entities.iter().flat_map(|entity| {
+                    [entity.name.as_str(), entity.value.as_str()]
+                }))
+                .any(|text| text.contains(body))
+    })
 }
 
 /// The embedding provider a deployment has configured, read from the environment.
@@ -1274,9 +1301,10 @@ fn context_summary_schema() -> &'static Value {
     SCHEMA.get_or_init(|| {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
-                "l0": { "type": "string" },
-                "l1": { "type": "string" },
+                "l0": { "type": "string", "maxLength": MAX_SUMMARY_L0_CHARS },
+                "l1": { "type": "string", "maxLength": MAX_SUMMARY_L1_CHARS },
                 "entities": context_entities_schema()
             },
             "required": ["l0", "l1", "entities"]
@@ -1284,44 +1312,51 @@ fn context_summary_schema() -> &'static Value {
     })
 }
 
-fn context_summary_batch_schema() -> &'static Value {
-    static SCHEMA: OnceLock<Value> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
+fn context_summary_batch_schema(item_count: usize) -> Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "items": {
+                "type": "array",
+                "minItems": item_count,
+                "maxItems": item_count,
                 "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "source_index": { "type": "integer" },
-                            "l0": { "type": "string" },
-                            "l1": { "type": "string" },
-                            "entities": context_entities_schema()
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "source_index": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": item_count.saturating_sub(1)
                         },
-                        "required": ["source_index", "l0", "l1", "entities"]
-                    }
+                        "l0": { "type": "string", "maxLength": MAX_SUMMARY_L0_CHARS },
+                        "l1": { "type": "string", "maxLength": MAX_SUMMARY_L1_CHARS },
+                        "entities": context_entities_schema()
+                    },
+                    "required": ["source_index", "l0", "l1", "entities"]
                 }
             },
-            "required": ["items"]
-        })
+        },
+        "required": ["items"]
     })
 }
 
 fn context_entities_schema() -> Value {
+    // Schema lengths count characters; normalization still enforces the UTF-8 byte limits.
     serde_json::json!({
         "type": "array",
         "maxItems": MAX_EXTRACTED_ENTITIES_PER_SOURCE,
         "items": {
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "kind": {
                     "type": "string",
                     "enum": ["person", "organization", "project", "preference", "decision", "constraint", "task", "fact"]
                 },
-                "name": { "type": "string" },
-                "value": { "type": "string" }
+                "name": { "type": "string", "maxLength": MAX_EXTRACTED_ENTITY_NAME_BYTES },
+                "value": { "type": "string", "maxLength": MAX_EXTRACTED_ENTITY_VALUE_BYTES }
             },
             "required": ["kind", "name", "value"]
         }
@@ -1396,8 +1431,52 @@ pub(crate) fn parse_provider_summary_content(
 }
 
 #[cfg(test)]
+#[path = "model_output_live_tests.rs"]
+mod model_output_live_tests;
+
+#[cfg(test)]
 mod entity_extraction_tests {
     use super::*;
+
+    fn assert_bounded_summary(schema: &Value) {
+        assert_eq!(schema["additionalProperties"], false);
+        let properties = &schema["properties"];
+        assert_eq!(properties["l0"]["maxLength"], MAX_SUMMARY_L0_CHARS);
+        assert_eq!(properties["l1"]["maxLength"], MAX_SUMMARY_L1_CHARS);
+        let entities = &properties["entities"];
+        assert_eq!(entities["maxItems"], MAX_EXTRACTED_ENTITIES_PER_SOURCE);
+        assert_eq!(entities["items"]["additionalProperties"], false);
+        assert_eq!(
+            entities["items"]["properties"]["name"]["maxLength"],
+            MAX_EXTRACTED_ENTITY_NAME_BYTES
+        );
+        assert_eq!(
+            entities["items"]["properties"]["value"]["maxLength"],
+            MAX_EXTRACTED_ENTITY_VALUE_BYTES
+        );
+    }
+
+    #[test]
+    fn single_summary_schema_bounds_generated_fields() {
+        assert_bounded_summary(context_summary_schema());
+    }
+
+    #[test]
+    fn batch_summary_schema_is_bounded_to_its_actual_source_window() {
+        for count in [0usize, 1, 2, 64, 257] {
+            let schema = context_summary_batch_schema(count);
+            assert_eq!(schema["additionalProperties"], false);
+            let items = &schema["properties"]["items"];
+            assert_eq!(items["minItems"], count);
+            assert_eq!(items["maxItems"], count);
+            assert_eq!(items["items"]["properties"]["source_index"]["minimum"], 0);
+            assert_eq!(
+                items["items"]["properties"]["source_index"]["maximum"],
+                count.saturating_sub(1)
+            );
+            assert_bounded_summary(&items["items"]);
+        }
+    }
 
     #[test]
     fn extracted_entities_are_deduplicated_and_capped() {
