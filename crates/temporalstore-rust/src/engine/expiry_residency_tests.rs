@@ -161,7 +161,7 @@ fn mixed_expiry_scale(live_counts: &[usize]) {
             assert!(shard.expires_at_ms().is_empty());
         }
         eprintln!("EXPIRY_RESIDENCY live={live} expired={} cold={COLD} hot={HOT} index_bytes={index_bytes} model_visits=0 payload_reads=0 elapsed_us={elapsed_us}", COLD + HOT);
-        eprintln!("EXPIRY_PHASE live={live} hold_us={} select_us={} delete_us={} invalidate_us={} wal_us={} checkpoint_us={} cache_listings={listings} cache_rows={cache_rows}", hold_ns / 1000, select_ns / 1000, delete_ns / 1000, invalidate_ns / 1000, wal_ns / 1000, checkpoint_ns / 1000);
+        eprintln!("EXPIRY_PHASE live={live} hold_us={} select_us={} delete_us={} invalidate_us={} wal_us={} checkpoint_us={} cache_listings={listings} cache_keys_copied={cache_rows}", hold_ns / 1000, select_ns / 1000, delete_ns / 1000, invalidate_ns / 1000, wal_ns / 1000, checkpoint_ns / 1000);
         engine.wal_store.flush(1).unwrap();
         drop(engine);
         let restored = engine_at(dir.path(), "cache-b");
