@@ -3,7 +3,7 @@
 
 //! Memory-client HTTP compatibility built on TemporalStore context primitives.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,7 @@ const MEMORY_CATALOG_PAGE_SIZE: usize = 512;
 const MEMORY_UPDATE_PAGE_SIZE: usize = 128;
 // Postings contain batches of memories, so cap posting fan-out before hydration.
 const MEMORY_IDENTITY_POSTINGS_PER_PAGE: usize = 1;
+const MEMORY_LIST_IDENTITY_CANDIDATE_LIMIT: usize = 4_096;
 const MEMORY_IDENTITY_INDEX_VERSION: &[u8] = b"3";
 const MEMORY_TOTAL_MEMBER: &[u8] = b"\0total";
 
@@ -116,6 +117,13 @@ struct MemoryRecord {
     run_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
+}
+
+#[derive(Default)]
+struct MemoryRecordPage {
+    after: Vec<u8>,
+    rows: Vec<(Vec<u8>, MemoryRecord)>,
+    candidate_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -411,6 +419,35 @@ fn memory_order_member(updated_at_ms: u64, memory_id: &str) -> Vec<u8> {
     member.extend_from_slice(&u64::MAX.saturating_sub(updated_at_ms).to_be_bytes());
     member.extend_from_slice(memory_id.as_bytes());
     member
+}
+
+fn memory_list_keep_best(
+    ranked: &mut BTreeMap<Vec<u8>, MemoryRecord>,
+    retained: &mut HashMap<String, Vec<u8>>,
+    record: MemoryRecord,
+    limit: usize,
+) {
+    let key = memory_order_member(record.updated_at_ms, &record.id);
+    if let Some(previous) = retained.get(&record.id) {
+        if previous <= &key {
+            return;
+        }
+        let previous = retained.remove(&record.id).expect("retained memory key");
+        ranked.remove(&previous);
+    }
+    if ranked.len() == limit
+        && ranked
+            .last_key_value()
+            .is_some_and(|(worst, _)| worst <= &key)
+    {
+        return;
+    }
+    retained.insert(record.id.clone(), key.clone());
+    ranked.insert(key, record);
+    if ranked.len() > limit {
+        let (_, removed) = ranked.pop_last().expect("nonempty ranked memories");
+        retained.remove(&removed.id);
+    }
 }
 
 fn memory_id_from_order_member(member: &[u8]) -> Option<String> {
@@ -825,16 +862,36 @@ impl ProxyService {
         if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
             return crate::http::json_response(502, &status);
         }
-        let mut records = Vec::with_capacity(limit.min(MEMORY_CATALOG_PAGE_SIZE));
-        let mut after = Vec::new();
-        while records.len() < limit {
-            let (next_after, page) =
-                self.memory_order_page(tenant_hash, &after, MEMORY_CATALOG_PAGE_SIZE);
-            if next_after.is_empty() {
+        let first = self.memory_order_page(tenant_hash, &[], MEMORY_CATALOG_PAGE_SIZE);
+        let mut records = first
+            .rows
+            .into_iter()
+            .map(|(_, record)| record)
+            .filter(|record| record.matches(&identity))
+            .take(limit)
+            .collect::<Vec<_>>();
+        let mut after = first.after;
+        if records.len() < limit && first.candidate_count == MEMORY_CATALOG_PAGE_SIZE {
+            if let Some(indexed) =
+                self.memory_list_from_identity(tenant_hash, &identity, limit, limit - records.len())
+            {
+                let count = indexed.len();
+                return crate::http::json_response(
+                    200,
+                    &json!({"results": indexed, "memories": count}),
+                );
+            }
+        }
+        if first.candidate_count < MEMORY_CATALOG_PAGE_SIZE {
+            after.clear();
+        }
+        while records.len() < limit && !after.is_empty() {
+            let page = self.memory_order_page(tenant_hash, &after, MEMORY_CATALOG_PAGE_SIZE);
+            if page.after.is_empty() {
                 break;
             }
-            after = next_after;
-            for (_, record) in page {
+            after = page.after;
+            for (_, record) in page.rows {
                 if record.matches(&identity) {
                     records.push(record);
                     if records.len() == limit {
@@ -845,6 +902,117 @@ impl ProxyService {
         }
         let count = records.len();
         crate::http::json_response(200, &json!({"results": records, "memories": count}))
+    }
+
+    fn memory_list_from_identity(
+        &self,
+        tenant_hash: u64,
+        identity: &MemoryIdentity,
+        limit: usize,
+        remaining: usize,
+    ) -> Option<Vec<MemoryRecord>> {
+        let members = [
+            memory_identity_member(b'u', &identity.user_id),
+            memory_identity_member(b'a', &identity.agent_id),
+            memory_identity_member(b'r', &identity.run_id),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        if members.is_empty() {
+            return None;
+        }
+        let mut commands = vec![Command::ZSetScore {
+            key: memory_identity_key(tenant_hash),
+            member: MEMORY_TOTAL_MEMBER.to_vec(),
+        }];
+        commands.extend(members.iter().map(|member| Command::ZSetScore {
+            key: memory_identity_key(tenant_hash),
+            member: member.clone(),
+        }));
+        let counts = self.batch_execute(BatchExecuteRequest {
+            shard_id: self.context_shard_id(tenant_hash),
+            commands,
+        });
+        if !counts.status.ok {
+            return None;
+        }
+        let count = |response: &ExecuteResponse| -> Option<usize> {
+            if !response.status.ok {
+                return None;
+            }
+            let CommandResponse::Bytes { value: Some(value) } = &response.response else {
+                return None;
+            };
+            let value = std::str::from_utf8(value).ok()?.parse::<f64>().ok()?;
+            (value.is_finite()
+                && value >= 0.0
+                && value.fract() == 0.0
+                && value <= usize::MAX as f64)
+                .then_some(value as usize)
+        };
+        let total = count(counts.responses.first()?)?;
+        let (member, matched) = members
+            .into_iter()
+            .zip(counts.responses.iter().skip(1))
+            .filter_map(|(member, response)| {
+                count(response)
+                    .filter(|count| *count > 0)
+                    .map(|count| (member, count))
+            })
+            .min_by_key(|(_, count)| *count)?;
+        if matched > total
+            || matched > MEMORY_LIST_IDENTITY_CANDIDATE_LIMIT
+            || (matched as u128) * (matched as u128) > (total as u128) * (remaining as u128)
+        {
+            return None;
+        }
+
+        let mut budget = matched
+            .saturating_mul(2)
+            .max(MEMORY_CATALOG_PAGE_SIZE)
+            .min(MEMORY_LIST_IDENTITY_CANDIDATE_LIMIT);
+        let mut after = Vec::new();
+        let mut seen = HashSet::new();
+        let mut ranked = BTreeMap::new();
+        let mut retained = HashMap::new();
+        loop {
+            let page = self.memory_identity_postings_page_with_budget(
+                tenant_hash,
+                &member,
+                &after,
+                MEMORY_IDENTITY_POSTINGS_PER_PAGE,
+                Some(budget.min(MEMORY_CATALOG_PAGE_SIZE)),
+            )?;
+            if page.after.is_empty() {
+                break;
+            }
+            if page.after <= after {
+                return None;
+            }
+            after = page.after;
+            budget = budget.checked_sub(page.candidate_count)?;
+            for (_, record) in page.rows {
+                let (kind, value) = member.split_first()?;
+                let selected = match kind {
+                    b'u' => record.user_id.as_bytes(),
+                    b'a' => record.agent_id.as_bytes(),
+                    b'r' => record.run_id.as_bytes(),
+                    _ => return None,
+                };
+                if selected == value {
+                    seen.insert(record.id.clone());
+                }
+                if record.matches(identity) {
+                    memory_list_keep_best(&mut ranked, &mut retained, record, limit);
+                }
+            }
+        }
+        // Missing, stale, or concurrently changing postings cannot establish a complete list.
+        if seen.len() != matched {
+            return None;
+        }
+        Some(ranked.into_values().collect())
     }
 
     fn memory_update(&self, memory_id: &str, request: MemoryUpdateRequest) -> (u16, Vec<u8>) {
@@ -1769,12 +1937,7 @@ impl ProxyService {
         marker.status.ok.then_some(()).ok_or(marker.status)
     }
 
-    fn memory_order_page(
-        &self,
-        tenant_hash: u64,
-        after: &[u8],
-        limit: usize,
-    ) -> (Vec<u8>, Vec<(Vec<u8>, MemoryRecord)>) {
+    fn memory_order_page(&self, tenant_hash: u64, after: &[u8], limit: usize) -> MemoryRecordPage {
         let response = self.execute(ExecuteRequest {
             shard_id: self.context_shard_id(tenant_hash),
             command: Command::SetScan {
@@ -1785,8 +1948,9 @@ impl ProxyService {
         });
         let members = match response.response {
             CommandResponse::Members { members } => members,
-            _ => return (Vec::new(), Vec::new()),
+            _ => return MemoryRecordPage::default(),
         };
+        let candidate_count = members.len();
         let next_after = members.last().cloned().unwrap_or_default();
         let keyed_ids: Vec<(Vec<u8>, String)> = members
             .iter()
@@ -1799,7 +1963,11 @@ impl ProxyService {
             .zip(records)
             .filter_map(|((member, _), record)| record.map(|record| (member, record)))
             .collect();
-        (next_after, rows)
+        MemoryRecordPage {
+            after: next_after,
+            rows,
+            candidate_count,
+        }
     }
 
     fn memory_identity_page(
@@ -1824,6 +1992,25 @@ impl ProxyService {
         after: &[u8],
         limit: usize,
     ) -> (Vec<u8>, Vec<(Vec<u8>, MemoryRecord)>) {
+        self.memory_identity_postings_page_with_budget(
+            tenant_hash,
+            identity_member,
+            after,
+            limit,
+            None,
+        )
+        .map(|page| (page.after, page.rows))
+        .unwrap_or_default()
+    }
+
+    fn memory_identity_postings_page_with_budget(
+        &self,
+        tenant_hash: u64,
+        identity_member: &[u8],
+        after: &[u8],
+        limit: usize,
+        budget: Option<usize>,
+    ) -> Option<MemoryRecordPage> {
         let response = self.execute(ExecuteRequest {
             shard_id: self.context_shard_id(tenant_hash),
             command: Command::SetScan {
@@ -1832,18 +2019,24 @@ impl ProxyService {
                 limit: limit.clamp(1, 10_000),
             },
         });
+        if budget.is_some() && !response.status.ok {
+            return None;
+        }
         let postings = match response.response {
             CommandResponse::Members { members } => members,
-            _ => return (Vec::new(), Vec::new()),
+            _ => return None,
         };
         if postings.is_empty() {
-            return (Vec::new(), Vec::new());
+            return Some(MemoryRecordPage::default());
         }
         let next_after = postings.last().cloned().unwrap_or_default();
         let fields = postings
             .iter()
             .filter_map(|posting| std::str::from_utf8(posting).ok().map(str::to_owned))
             .collect::<Vec<_>>();
+        if budget.is_some() && fields.len() != postings.len() {
+            return None;
+        }
         let response = self.execute(ExecuteRequest {
             shard_id: self.context_shard_id(tenant_hash),
             command: Command::HashMultiGet {
@@ -1851,10 +2044,27 @@ impl ProxyService {
                 fields,
             },
         });
+        if budget.is_some() && !response.status.ok {
+            return None;
+        }
         let values = match response.response {
             CommandResponse::Values { values } => values,
-            _ => return (Vec::new(), Vec::new()),
+            _ => return None,
         };
+        let candidate_count = values
+            .iter()
+            .flatten()
+            .fold(0usize, |count, value| count.saturating_add(value.len() / 8));
+        if let Some(budget) = budget {
+            if candidate_count > budget
+                || values.len() != postings.len()
+                || values
+                    .iter()
+                    .any(|value| value.as_ref().map_or(true, |value| value.len() % 8 != 0))
+            {
+                return None;
+            }
+        }
         let keyed_ids = postings
             .into_iter()
             .zip(values)
@@ -1879,7 +2089,11 @@ impl ProxyService {
             .zip(records)
             .filter_map(|((posting, _), record)| record.map(|record| (posting, record)))
             .collect();
-        (next_after, rows)
+        Some(MemoryRecordPage {
+            after: next_after,
+            rows,
+            candidate_count,
+        })
     }
 
     fn memory_read_one(&self, tenant_hash: u64, memory_id: &str) -> Option<MemoryRecord> {
@@ -1971,6 +2185,10 @@ fn json_status_ok(body: &[u8]) -> bool {
 #[cfg(test)]
 #[path = "memory_identity_page_tests.rs"]
 mod identity_page_tests;
+
+#[cfg(test)]
+#[path = "memory_filtered_list_tests.rs"]
+mod filtered_list_tests;
 
 #[cfg(test)]
 mod tests {

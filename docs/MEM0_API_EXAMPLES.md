@@ -109,6 +109,16 @@ exact-target recall. Per-route sample counts are included; management routes wit
 not establish a reliable tail-latency distribution. Storage bytes are measured after management
 operations, not at the peak of ingestion.
 
+## Filtered listing
+
+Filtered `/memories/list` calls keep the initial ordered-page fast path. If that page cannot
+fill the result limit, selective queries can use existing identity postings instead of walking
+the rest of the tenant catalog. The indexed attempt hydrates at most 512 candidates per page
+and 4,096 in total, retaining only the requested newest results. Timestamp ties retain the
+existing memory-id ordering. Dense queries need no identity lookup when the first page suffices.
+Unavailable counts, incomplete or malformed postings, and exceeded candidate budgets fall back
+to the ordered scan. This adds no persisted index or migration.
+
 ## Local model allocation check
 
 The embedding client validates the complete batch plan before making model calls. An invalid
