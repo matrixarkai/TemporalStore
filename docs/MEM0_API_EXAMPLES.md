@@ -80,6 +80,15 @@ curl -sS http://127.0.0.1:17000/memories -H 'Content-Type: application/json' -d 
 ```
 
 Single and batch updates encode the supplied memory directly without summary-model calls.
+Metadata-only updates skip all model calls and context writes, retain the current context
+revision and embedding, and update the catalog, history, and list ordering. They remain
+available during an encoder outage; in a mixed batch, a content-encoding failure does not
+prevent independent metadata-only entries from committing.
+The Python client accepts `memory.update(id, metadata={"category":"storage"})` without
+supplying text, or `memory.update(id, text="New memory text")` to replace content.
+Pass `--metadata-updates 200` to `scripts/mem0_scale_local.sh` to measure repeated
+single and 16-memory batch metadata updates separately. The driver verifies that the
+sampled memory retains its text and context revision and exposes the latest metadata.
 Use the same encoder configuration for add, update, and search. Explicit ingestion and updates
 use a versioned protobuf proxy-to-data-node request and acknowledgment. An unsupported endpoint,
 invalid acknowledgment, or incomplete source commit fails without falling back to inference.

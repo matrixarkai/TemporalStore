@@ -1203,29 +1203,33 @@ impl ProxyService {
         if request.data.trim().is_empty() && request.metadata.is_none() {
             return self.memory_bad_request("update requires data or metadata".to_string());
         }
+        let content_updated = !request.data.trim().is_empty();
         let now = now_ms().max(record.updated_at_ms.saturating_add(1));
-        if !request.data.trim().is_empty() {
+        if content_updated {
             record.memory = request.data;
         }
         if let Some(metadata) = request.metadata {
             record.metadata = metadata;
         }
         record.updated_at_ms = now;
-        record.context_ref = memory_context_ref(&record.id, now);
         let shard_id = self.context_shard_id(tenant_hash);
-        if let Err(response) = self.memory_store_explicit_records(
-            context::ProxyContextScope {
-                tenant_id: record.tenant_id.clone(),
-                account_id: record.account_id.clone(),
-                user_id: record.user_id.clone(),
-                session_id: record.run_id.clone(),
-            }, tenant_hash, std::iter::once(&record), request.provider,
-        ) {
-            return response;
+        let mut commands = Vec::with_capacity(6);
+        if content_updated {
+            record.context_ref = memory_context_ref(&record.id, now);
+            if let Err(response) = self.memory_store_explicit_records(
+                context::ProxyContextScope {
+                    tenant_id: record.tenant_id.clone(),
+                    account_id: record.account_id.clone(),
+                    user_id: record.user_id.clone(),
+                    session_id: record.run_id.clone(),
+                }, tenant_hash, std::iter::once(&record), request.provider,
+            ) {
+                return response;
+            }
+            commands.push(memory_node_lookup_remove(tenant_hash, old_node_hash));
+            commands.push(memory_node_lookup_write(tenant_hash, std::iter::once(&record)));
         }
-        let commands = vec![
-            memory_node_lookup_remove(tenant_hash, old_node_hash),
-            memory_node_lookup_write(tenant_hash, std::iter::once(&record)),
+        commands.extend([
             Command::HashSet {
                 key: memory_catalog_key(tenant_hash),
                 field: record.id.clone(),
@@ -1253,7 +1257,7 @@ impl ProxyService {
                 key: memory_order_key(tenant_hash),
                 member: memory_order_member(record.updated_at_ms, &record.id),
             },
-        ];
+        ]);
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
         if !response.status.ok {
             return crate::http::json_response(502, &response.status);
@@ -1679,7 +1683,7 @@ impl ProxyService {
         }
         let mut results = Vec::with_capacity(request.memories.len());
         let mut failed = Vec::new();
-        let mut grouped = BTreeMap::<(u64, String), Vec<(String, MemoryUpdateRequest)>>::new();
+        let mut grouped = BTreeMap::<(u64, Option<String>), Vec<(String, MemoryUpdateRequest)>>::new();
         for value in request.memories {
             let id = value
                 .get("memory_id")
@@ -1711,17 +1715,17 @@ impl ProxyService {
             grouped
                 .entry((
                     tenant_hash,
-                    update
-                        .provider
-                        .as_ref()
-                        .map(Value::to_string)
-                        .unwrap_or_default(),
+                    (!update.data.trim().is_empty()).then(|| {
+                        update.provider.as_ref().map(Value::to_string).unwrap_or_default()
+                    }),
                 ))
                 .or_default()
                 .push((id.to_string(), update));
         }
 
-        for ((tenant_hash, _), updates) in grouped {
+        for ((tenant_hash, provider_key), updates) in grouped {
+            // Metadata-only work is independent of model availability, including in mixed batches.
+            let content_updated = provider_key.is_some();
             if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
                 for (id, _) in updates {
                     failed.push(json!({"memory_id": id, "status": 502, "body": status.message}));
@@ -1755,7 +1759,9 @@ impl ProxyService {
                     record.metadata = metadata;
                 }
                 record.updated_at_ms = now;
-                record.context_ref = memory_context_ref(&record.id, now);
+                if content_updated {
+                    record.context_ref = memory_context_ref(&record.id, now);
+                }
                 planned.push((id, old_order_member, old_node_hash, record, now));
             }
             if planned.is_empty() {
@@ -1763,20 +1769,22 @@ impl ProxyService {
             }
 
             let shard_id = self.context_shard_id(tenant_hash);
-            let scope_record = &planned[0].3;
-            if let Err((extract_status, extract_body)) = self.memory_store_explicit_records(
-                context::ProxyContextScope {
-                    tenant_id: scope_record.tenant_id.clone(),
-                    account_id: scope_record.account_id.clone(),
-                    user_id: scope_record.user_id.clone(),
-                    session_id: scope_record.run_id.clone(),
-                }, tenant_hash, planned.iter().map(|(_, _, _, record, _)| record), provider,
-            ) {
-                let body = String::from_utf8_lossy(&extract_body);
-                for (id, _, _, _, _) in planned {
-                    failed.push(json!({"memory_id": id, "status": extract_status, "body": body}));
+            if content_updated {
+                let scope_record = &planned[0].3;
+                if let Err((extract_status, extract_body)) = self.memory_store_explicit_records(
+                    context::ProxyContextScope {
+                        tenant_id: scope_record.tenant_id.clone(),
+                        account_id: scope_record.account_id.clone(),
+                        user_id: scope_record.user_id.clone(),
+                        session_id: scope_record.run_id.clone(),
+                    }, tenant_hash, planned.iter().map(|(_, _, _, record, _)| record), provider,
+                ) {
+                    let body = String::from_utf8_lossy(&extract_body);
+                    for (id, _, _, _, _) in planned {
+                        failed.push(json!({"memory_id": id, "status": extract_status, "body": body}));
+                    }
+                    continue;
                 }
-                continue;
             }
 
             for page in planned.chunks(MEMORY_UPDATE_PAGE_SIZE) {
@@ -1785,15 +1793,19 @@ impl ProxyService {
                     tenant_hash,
                     page.iter().map(|(_, _, _, record, _)| record),
                 ));
-                commands.push(memory_node_lookup_write(
-                    tenant_hash,
-                    page.iter().map(|(_, _, _, record, _)| record),
-                ));
+                if content_updated {
+                    commands.push(memory_node_lookup_write(
+                        tenant_hash,
+                        page.iter().map(|(_, _, _, record, _)| record),
+                    ));
+                }
                 for (sequence, (id, old_order_member, old_node_hash, record, now)) in
                     page.iter().enumerate()
                 {
+                    if content_updated {
+                        commands.push(memory_node_lookup_remove(tenant_hash, *old_node_hash));
+                    }
                     commands.extend([
-                        memory_node_lookup_remove(tenant_hash, *old_node_hash),
                         Command::HashSet {
                             key: memory_history_key(tenant_hash, id),
                             field: history_field(*now, sequence as u64),

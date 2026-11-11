@@ -13,6 +13,17 @@ fn fixture() -> (
     Arc<Mutex<Vec<Value>>>,
     Vec<String>,
 ) {
+    fixture_with_encoder_failure(false)
+}
+
+fn fixture_with_encoder_failure(
+    fail_encoder: bool,
+) -> (
+    tempfile::TempDir,
+    ProxyService,
+    Arc<Mutex<Vec<Value>>>,
+    Vec<String>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let engine = Arc::new(crate::engine::TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
@@ -69,13 +80,27 @@ fn fixture() -> (
                 &engine.batch_execute(parse_json(&request.body).unwrap()),
             ),
             "/context/ingest_explicit" => {
-                let decoded = crate::context_workflow::ingest_wire::decode_request(&request.body).unwrap();
+                let decoded =
+                    crate::context_workflow::ingest_wire::decode_request(&request.body).unwrap();
                 let count = decoded.sources.len();
                 captured
                     .lock()
                     .unwrap()
                     .push(serde_json::to_value(decoded).unwrap());
-                (200, crate::context_workflow::ingest_wire::encode_response(Status::ok(), count, 0))
+                if fail_encoder {
+                    return (
+                        200,
+                        crate::context_workflow::ingest_wire::encode_response(
+                            Status::error("encoder_unavailable", "injected encoder outage"),
+                            0,
+                            count,
+                        ),
+                    );
+                }
+                (
+                    200,
+                    crate::context_workflow::ingest_wire::encode_response(Status::ok(), count, 0),
+                )
             }
             _ => panic!("unexpected path: {}", request.path),
         })
@@ -93,10 +118,15 @@ fn fixture() -> (
 
 fn provider(name: &str, encoder: &str) -> Value {
     serde_json::to_value(crate::ContextModelProviderConfig {
-        provider_name: name.into(), provider_kind: crate::ContextProviderKind::Ollama,
-        base_url: "http://127.0.0.1:11434".into(), model: "qwen2.5:3b".into(),
-        embedding_model: encoder.into(), mock_mode: false, ..Default::default()
-    }).unwrap()
+        provider_name: name.into(),
+        provider_kind: crate::ContextProviderKind::Ollama,
+        base_url: "http://127.0.0.1:11434".into(),
+        model: "qwen2.5:3b".into(),
+        embedding_model: encoder.into(),
+        mock_mode: false,
+        ..Default::default()
+    })
+    .unwrap()
 }
 
 #[test]
@@ -162,7 +192,109 @@ fn memory_updates_without_provider_keep_server_default_selection() {
     assert_eq!(proxy.memory_batch_update(batch).0, 200);
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
-    assert!(calls
+    assert!(calls.iter().all(|call| call["provider"]
+        == serde_json::to_value(crate::ContextModelProviderConfig::default()).unwrap()));
+}
+
+#[test]
+fn metadata_only_update_keeps_context_identity_and_requires_no_encoder() {
+    let (_dir, proxy, calls, ids) = fixture_with_encoder_failure(true);
+    let before = proxy.memory_read_one(TENANT, &ids[0]).unwrap();
+    let request = serde_json::from_value(json!({
+        "metadata":{"category":"durable"}, "provider":"not a model configuration"
+    }))
+    .unwrap();
+    let (status, body) = proxy.memory_update(&ids[0], request);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert!(calls.lock().unwrap().is_empty());
+    let after = proxy.memory_read_one(TENANT, &ids[0]).unwrap();
+    assert_eq!(after.memory, before.memory);
+    assert_eq!(after.context_ref, before.context_ref);
+    assert_eq!(
+        memory_record_node_hash(TENANT, &after),
+        memory_record_node_hash(TENANT, &before)
+    );
+    assert_eq!(after.metadata, json!({"category":"durable"}));
+    assert_eq!(after.created_at_ms, before.created_at_ms);
+    assert!(after.updated_at_ms > before.updated_at_ms);
+    assert_eq!(
+        (after.user_id, after.agent_id, after.run_id),
+        (before.user_id, before.agent_id, before.run_id)
+    );
+    let (status, body) = proxy.memory_history(&ids[0]);
+    assert_eq!(status, 200);
+    let history: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(history["results"][0]["event"], "UPDATE");
+    assert_eq!(
+        history["results"][0]["metadata"],
+        json!({"category":"durable"})
+    );
+}
+
+#[test]
+fn mixed_batch_commits_metadata_when_content_encoder_is_unavailable() {
+    let (_dir, proxy, calls, ids) = fixture_with_encoder_failure(true);
+    let original = ids
         .iter()
-        .all(|call| call["provider"] == serde_json::to_value(crate::ContextModelProviderConfig::default()).unwrap()));
+        .map(|id| proxy.memory_read_one(TENANT, id).unwrap())
+        .collect::<Vec<_>>();
+    let request = serde_json::from_value(json!({
+        "provider":provider("offline", "encoder"),
+        "memories":[
+            {"memory_id":ids[0],"metadata":{"category":"first"}},
+            {"memory_id":ids[1],"text":"changed content"},
+            {"memory_id":ids[2],"metadata":{}},
+            {"memory_id":ids[3],"data":" \n ","metadata":{"category":"fourth"},"provider":"unused"},
+            {"memory_id":ids[4]}
+        ]
+    }))
+    .unwrap();
+    let (status, body) = proxy.memory_batch_update(request);
+    assert_eq!(status, 200);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["updated"], 3);
+    assert_eq!(body["failed"].as_array().unwrap().len(), 2);
+    assert!(body["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["memory_id"] == ids[1] && row["status"] == 502));
+    assert!(body["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["memory_id"] == ids[4] && row["status"] == 400));
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(calls[0]["sources"][0]["body"], "changed content");
+    for (ordinal, before) in original.iter().enumerate() {
+        let after = proxy.memory_read_one(TENANT, &ids[ordinal]).unwrap();
+        assert_eq!(after.memory, before.memory);
+        assert_eq!(after.context_ref, before.context_ref);
+        if matches!(ordinal, 0 | 2 | 3) {
+            assert!(after.updated_at_ms > before.updated_at_ms);
+        } else {
+            assert_eq!(after, *before);
+        }
+    }
+    assert_eq!(
+        proxy.memory_read_one(TENANT, &ids[2]).unwrap().metadata,
+        json!({})
+    );
+}
+
+#[test]
+fn metadata_only_batch_does_not_call_any_model() {
+    let (_dir, proxy, calls, ids) = fixture_with_encoder_failure(true);
+    let request = serde_json::from_value(json!({
+        "provider":"unused",
+        "memories":ids.iter().map(|id| json!({"memory_id":id,"metadata":{"tag":"updated"}})).collect::<Vec<_>>()
+    })).unwrap();
+    let (status, body) = proxy.memory_batch_update(request);
+    assert_eq!(status, 200);
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["updated"], ids.len());
+    assert_eq!(body["failed"], json!([]));
+    assert!(calls.lock().unwrap().is_empty());
 }

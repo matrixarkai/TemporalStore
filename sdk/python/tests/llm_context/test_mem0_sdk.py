@@ -162,6 +162,21 @@ class MemorySdkTest(unittest.TestCase):
         request = _Handler.requests[0]
         self.assertEqual("Bearer temporal-token", request["authorization"])
 
+    def test_metadata_only_update_omits_content(self) -> None:
+        memory = Memory(base_url=self.base_url)
+        self.assertTrue(memory.update("731", metadata={})["updated"])
+        self.assertEqual({"memory_id": "731", "metadata": {}}, _Handler.requests[0]["body"])
+
+    def test_update_accepts_text_keyword_and_preserves_whitespace(self) -> None:
+        memory = Memory(base_url=self.base_url)
+        self.assertTrue(memory.update("731", text="  exact text\n")["updated"])
+        self.assertEqual("  exact text\n", _Handler.requests[0]["body"]["data"])
+
+    def test_update_requires_content_or_metadata_before_network(self) -> None:
+        with self.assertRaises(ValueError):
+            Memory(base_url=self.base_url).update("731")
+        self.assertEqual([], _Handler.requests)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -459,11 +459,17 @@ class Memory:
         return _get_json(self._base_url, self._api_key,
                          f"/memories/{quote(str(memory_id), safe='')}", self._timeout)
 
-    def update(self, memory_id: str, data: str, **kw: Any) -> Json:
-        """Update a memory's content (mem0 ``update``). Implemented server-side as a supersede: the
-        new ``data`` is ingested in the memory's own scope and the old id is tombstoned, so a later
-        ``search`` / ``get_all`` returns the new version."""
-        body: Json = {"memory_id": str(memory_id), "data": data}
+    def update(self, memory_id: str, data: Optional[str] = None, **kw: Any) -> Json:
+        """Update content or metadata under the same memory id. Metadata-only updates retain
+        the existing context revision and embeddings without calling a model."""
+        text = kw.get("text")
+        if text is not None:
+            data = text
+        if data is None and kw.get("metadata") is None:
+            raise ValueError("update requires data or metadata")
+        body: Json = {"memory_id": str(memory_id)}
+        if data is not None:
+            body["data"] = data
         for field in ("metadata", "provider"):
             if kw.get(field) is not None:
                 body[field] = kw[field]
