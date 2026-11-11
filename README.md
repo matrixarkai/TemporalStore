@@ -242,14 +242,23 @@ per aggregate.
 
 **The tiers.** A point read resolves its address in the **DRAM-resident index** — in-process, no
 I/O, no cache call — then fetches bytes from the **memory cache tier**, falling through to a local
-**block slab** (or to the log, for a block still resident there) only on a miss. The resident index
-holds addresses, never values. A **disk tier** exists but is only switched on where it spans a real
-distance: with shared storage the durable copy is on another machine, so a local disk tier closes
+**block slab** (or to the log, for a block still resident there) only on a miss. The primary resident
+index holds addresses rather than feature payloads. A **disk tier** exists but is only switched on
+where it spans a real distance: with shared storage the durable copy is on another machine, so a local disk tier closes
 milliseconds; with consensus replication the durable copy is this node's own disk, where the tier
 would be a third copy of bytes the operating system already serves from the same device, so it is
 off. The backend is resolved before the engine is built, and publishes the reason it chose what it
-chose. The budget is `TS_CACHE_MEMORY_BYTES` (16 MiB default), and it is the only one: the
-resident index named above takes no cache call, so there is no second cache to bound.
+chose. `TS_CACHE_MEMORY_BYTES` (16 MiB default) bounds the general payload cache,
+not the resident indexes or total process memory.
+
+Conditional hash writes additionally retain at most one parsed timestamp hint per
+resident hash. Each hint is bound to its field and current immutable source address;
+expiry is checked first, and a changed source uses the normal storage path. These
+derived hints reuse index-owned key and field-name handles, are omitted from clone
+and serialization, and add resident metadata outside the payload-cache budget.
+They avoid payload reads for valid timestamp comparisons, not ordinary feature reads
+or raw timestamp projections. See the [hint implementation](crates/temporalstore-rust/src/engine/recorded_map.rs)
+and [allocation and source-identity checks](crates/temporalstore-rust/src/engine/resident_timestamp_hint_tests.rs).
 
 **Blocks are packed**, so one window read of adjacent instants typically decodes one block, and a
 multi-point read memoizes each block for the duration of the query.
