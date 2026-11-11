@@ -2480,6 +2480,7 @@ pub(super) fn release_bucket_blocks(
     // `refuse` is a set of counters with no ordering, and `released_buckets` is still pushed in
     // candidate order.
     let mut derived: Option<BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>>> = None;
+    let mut names_by_bucket = None;
     let lookup_established = !shard.bucket_index.names_no_object_blocks();
     // The shard's own range, for the per-block routing term below.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
@@ -2517,10 +2518,24 @@ pub(super) fn release_bucket_blocks(
         // All four asked each block which object it belonged to. The projection is OWNED, so it
         // outlives the immutable borrow of the bucket and is still in hand when the un-filing
         // further down takes the index mutably.
-        let names = crate::engine::state::block_identities_in(
-            bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
-        );
+        // Keep only owned candidate identities across mutations. A successful release removes
+        // lookup rows local to that bucket, so it cannot change another candidate's identities.
+        let names = names_by_bucket.get_or_insert_with(|| {
+            let keys = crate::engine::state::BlockKeysByPosition::from_parts(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+            );
+            wanted.iter().filter_map(|routing_bucket| {
+                shard.bucket_index.bucket_map.get(routing_bucket)
+                    .filter(|node| {
+                        node.in_memory() && !node.loading() && !node.dirty()
+                            && !node.deleted() && !node.block_index.is_empty()
+                    })
+                    .map(|node| {
+                        (*routing_bucket, crate::engine::state::block_identities_in(node, &keys))
+                    })
+            }).collect::<BTreeMap<_, _>>()
+        }).get(&routing_bucket).expect("candidate bucket was read above");
         let block_refusal = bucket.block_index.iter().find_map(|(handle, block)| {
             let Some(beside) = names.get(handle) else {
                 // A BLOCK THE INDEX CANNOT NAME REFUSES THE RELEASE, and `LookupNotLocal` is
@@ -9036,6 +9051,46 @@ mod release_walk_scale {
             landed.len(),
         );
         (shard, landed)
+    }
+
+    #[test]
+    fn a_release_batch_builds_at_most_one_identity_projection() {
+        for count in [64, 512] {
+            for victims in [1, 4, 16] {
+                let (mut shard, landed) = shard_with(count);
+                let candidates = &landed[..victims];
+                let (outcome, builds) =
+                    crate::engine::state::measure_block_identity_builds_for_test(|| {
+                        release_bucket_blocks(&mut shard, candidates)
+                    });
+                assert_eq!(outcome.refused_buckets, 0, "{outcome:?}");
+                assert_eq!(outcome.released_blocks, victims);
+                assert_eq!(outcome.released_buckets.len(), victims);
+                assert!(builds <= 1, "records={count} victims={victims} builds={builds}");
+                println!("records={count} victims={victims} identity_builds={builds}");
+                for &bucket in candidates {
+                    assert!(reload_released_bucket(&mut shard, 1, bucket));
+                    assert_eq!(shard.bucket_index.bucket_map.get(&bucket).unwrap().block_index.len(), 1);
+                }
+                assert_eq!(shard.strings().len(), count as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn a_dirty_release_batch_builds_no_identity_projection() {
+        let (mut shard, landed) = shard_with(64);
+        let candidates = &landed[..16];
+        for bucket in candidates {
+            shard.bucket_index.bucket_map.get_mut(bucket).unwrap().set_dirty(true);
+        }
+        let (outcome, builds) =
+            crate::engine::state::measure_block_identity_builds_for_test(|| {
+                release_bucket_blocks(&mut shard, candidates)
+            });
+        assert_eq!(outcome.refused_buckets, candidates.len());
+        assert_eq!(outcome.released_blocks, 0);
+        assert_eq!(builds, 0);
     }
 
     /// What one release of the SAME four victims costs out of a store of `buckets`.
