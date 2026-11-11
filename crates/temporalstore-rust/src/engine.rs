@@ -1273,7 +1273,8 @@ impl TemporalEngine {
                 };
             let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
                 && !object_keys.is_empty()
-                && (narrow_hash_sync
+                && (matches!(&command, Command::SetAdd { .. })
+                    || narrow_hash_sync
                     || object_keys.iter().all(|object_key| {
                         storage_bucket_internals::sync_context_blocks_for_object(
                             shard,
@@ -7846,6 +7847,8 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
         let from_lookup = lookup.get(kind, object_key);
         for entry in from_row.into_iter().chain(from_lookup) {
         for block_ref in entry.iter() {
+            #[cfg(test)]
+            storage_bucket_internals::note_set_write_scan(true);
             let Some(mut bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
                 continue;
             };

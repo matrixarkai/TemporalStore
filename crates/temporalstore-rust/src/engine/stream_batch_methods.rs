@@ -1373,6 +1373,7 @@ impl TemporalEngine {
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
         // does not make the others' identities uncarryable.
         let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
+        let mut dirty_propagation_keys = BTreeSet::new();
         let shared_hash_fields = command_source.shared_hash_entries()
             .filter(|_| reuse_hash_command_metadata)
             .and_then(|entries| super::container_blocks::SharedHashFields::new(
@@ -1729,20 +1730,13 @@ impl TemporalEngine {
                         // routing bucket it computes on the next line. Inserting it here as well
                         // was redundant when the set was flat and is wrong now: this site does
                         // not know the bucket, and a key filed without one belongs to no bucket.
-                        if let Some(routing_bucket) = shared_row_routing_bucket {
-                            crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket(
-                                shard,
-                                object_key,
-                                routing_bucket,
-                            );
-                        } else {
-                            mark_object_dirty(
-                                shard,
-                                object_key,
-                                start_routing_bucket,
-                                end_routing_bucket,
-                            );
-                        }
+                        let routing_bucket = shared_row_routing_bucket.unwrap_or_else(|| {
+                            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+                        });
+                        crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
+                            shard, object_key, routing_bucket,
+                        );
+                        dirty_propagation_keys.insert(object_key.to_string());
                     }
                 }
                 // The same maintenance the single-command path does. An ingest's writes are
@@ -1753,8 +1747,10 @@ impl TemporalEngine {
                 // Same two guards: every touched key must report that it synced, or the rebuild
                 // still runs; and an empty bucket_map still rebuilds, because maintenance updates
                 // an index rather than constructing one.
-                let maintained_bucket_index = if hash_index_filed.is_some() {
-                    // The hash writer already filed the applied fields and swept tombstones.
+                let maintained_bucket_index = if hash_index_filed.is_some()
+                    || matches!(command_for_post_write_ref, Command::SetAdd { .. })
+                {
+                    // These writers already filed the applied elements and swept tombstones.
                     true
                 } else if shard.bucket_index.bucket_map.is_empty() {
                     false
@@ -1881,6 +1877,10 @@ impl TemporalEngine {
                 command_source.recycle(command, outcome.mutated);
             }
             results.push_success(outcome.response);
+        }
+        // Readers cannot observe the batch until this shard write guard is released.
+        for key in dirty_propagation_keys {
+            push_object_dirty_onto_its_existing_blocks(shard, &key);
         }
         if mutated_any {
             if rebuilt_bucket_index {

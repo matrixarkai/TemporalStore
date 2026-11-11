@@ -306,6 +306,41 @@ pub(super) fn install_element<K: RecordedKind>(
 ) where
     K::Elements: AddressedElementMap,
 {
+    install_element_with_policy::<false, K>(
+        shard, shard_id, object_key, element_name, element, value, dirty, address,
+    );
+}
+
+/// Only for a frame just returned by an append, never for replay or refiling an existing address.
+pub(super) fn install_appended_element<K: RecordedKind>(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+    element_name: Option<String>,
+    element: <K::Elements as ElementMap>::Element,
+    value: <K::Elements as ElementMap>::Value,
+    dirty: bool,
+    address: ElementEntry,
+) where
+    K::Elements: AddressedElementMap,
+{
+    install_element_with_policy::<true, K>(
+        shard, shard_id, object_key, element_name, element, value, dirty, address,
+    );
+}
+
+fn install_element_with_policy<const APPENDED: bool, K: RecordedKind>(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+    element_name: Option<String>,
+    element: <K::Elements as ElementMap>::Element,
+    value: <K::Elements as ElementMap>::Value,
+    dirty: bool,
+    address: ElementEntry,
+) where
+    K::Elements: AddressedElementMap,
+{
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = super::hashing::block_routing_bucket(
         object_key,
@@ -313,7 +348,7 @@ pub(super) fn install_element<K: RecordedKind>(
         end_routing_bucket,
     );
     let object_id = super::stable_block_object_id(shard_id, K::KIND, object_key);
-    install_element_at_bucket::<K>(
+    install_element_at_bucket_with_policy::<APPENDED, K>(
         shard,
         shard_id,
         routing_bucket,
@@ -329,6 +364,26 @@ pub(super) fn install_element<K: RecordedKind>(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn install_element_at_bucket<K: RecordedKind>(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    routing_bucket: u32,
+    object_id: u64,
+    object_key: &str,
+    element_name: Option<String>,
+    element: <K::Elements as ElementMap>::Element,
+    value: <K::Elements as ElementMap>::Value,
+    dirty: bool,
+    address: ElementEntry,
+) where
+    K::Elements: AddressedElementMap,
+{
+    install_element_at_bucket_with_policy::<false, K>(
+        shard, shard_id, routing_bucket, object_id, object_key, element_name, element, value, dirty, address,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_element_at_bucket_with_policy<const APPENDED: bool, K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,
     routing_bucket: u32,
@@ -362,6 +417,11 @@ pub(super) fn install_element_at_bucket<K: RecordedKind>(
     };
     // THE RECORD FIRST. The proof below cannot be built without the witness this returns, so
     // deleting this call is a compile error rather than a silent unrecorded write.
+    let replaced = if APPENDED && replaces.is_none() {
+        super::storage_bucket_internals::ReplacedBlock::Appended
+    } else {
+        super::storage_bucket_internals::ReplacedBlock::of(replaces)
+    };
     let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed_at_bucket(
         shard,
         shard_id,
@@ -373,7 +433,7 @@ pub(super) fn install_element_at_bucket<K: RecordedKind>(
         address,
         dirty,
         outcome_value,
-        super::storage_bucket_internals::ReplacedBlock::of(replaces),
+        replaced,
     );
     // THEN THE MUTATION, through the proof.
     K::resident(shard).install(RecordedElement::<K> {
