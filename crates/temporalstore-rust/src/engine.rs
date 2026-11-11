@@ -4144,12 +4144,13 @@ fn collect_command_index_items_with_policy<const COALESCE_TOMBSTONES: bool>(
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
+        let projected = identities.in_bucket(bucket);
         for (block_ref_key, block) in &bucket.block_index {
             // BOTH SOURCES, THROUGH THE ONE DOOR: the lookup names a live block by position, and
             // this bucket's own tombstone rows name a deleted one. A block neither names is
             // skipped, and the skip is refused outside the window that explains it -- a report is
             // not the durability path, where the same state is a refusal.
-            let Some(beside) = identities.identity_of(bucket, *block_ref_key, block) else {
+            let Some(beside) = projected.identity_of(*block_ref_key, block) else {
                 debug_assert!(
                     identities.names_no_position(),
                     "bucket {} holds a block the index cannot name while the lookup DOES name \

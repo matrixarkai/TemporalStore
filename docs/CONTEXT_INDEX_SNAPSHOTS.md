@@ -21,6 +21,12 @@ Key-scoped identity projections build only their position lookup. They do not al
 handle-only fallback used by full-shard validation to find misplaced blocks. Full-shard
 validation retains both indexes, and keyed live/deleted identity results remain unchanged.
 
+Snapshot collection, bucket identity projection, and base-index encoding build a temporary
+address lookup for each bucket's deleted identities. Previously, each deleted block scanned
+the tombstone vector again. The lookup preserves the first matching row for duplicate block
+addresses, costs linear temporary space in retained tombstones, and is dropped after the
+bucket walk. It adds no resident index or persisted fields.
+
 The built snapshot is bounded by live rows plus deleted coverage groups, instead of by all
 past deleted versions. The underlying walk still visits retained physical entries, and live
 history can still grow. Further work is required for a fully incremental batch index path;
