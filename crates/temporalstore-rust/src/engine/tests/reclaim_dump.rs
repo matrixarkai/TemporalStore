@@ -653,6 +653,113 @@ fn failed_dump_publication_keeps_registration_retirements_pending() {
 }
 
 #[test]
+fn a_partial_dump_keeps_released_bucket_slabs_and_restores_without_the_source_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "released-slab");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    write_one_at_a_time(&engine, &["released-live".into()]);
+    assert_eq!(engine.materialize_synthetic_blocks(RECLAIM_DUMP_SHARD), 1);
+    assert!(engine.block_store.prepare_next_slab_with_target(1).unwrap().is_some());
+    write_one_at_a_time(&engine, &["still-resident".into()]);
+    assert_eq!(engine.materialize_synthetic_blocks(RECLAIM_DUMP_SHARD), 1);
+    let released_bucket = engine.routing_bucket_for_key(RECLAIM_DUMP_SHARD, "released-live");
+    let resident_bucket = engine.routing_bucket_for_key(RECLAIM_DUMP_SHARD, "still-resident");
+    assert_ne!(released_bucket, resident_bucket);
+    let released_slab = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .string_address("released-live").unwrap().block_slab_id();
+    let resident_slab = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .string_address("still-resident").unwrap().block_slab_id();
+    assert_ne!(released_slab, resident_slab);
+    let first = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &first);
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let released = storage_bucket_internals::release_bucket_blocks(
+            shards.get_mut(&RECLAIM_DUMP_SHARD).unwrap(), &[released_bucket],
+        );
+        assert_eq!(released.released_blocks, 1);
+        assert_eq!(released.released_buckets, vec![released_bucket]);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let exported = decode_index_bytes(&engine.export_index_bytes(RECLAIM_DUMP_SHARD).unwrap()).unwrap();
+    assert_eq!(collect_live_block_entries(&exported).len(), 2,
+        "served-index export must also carry released block indexes");
+    let manifest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, [resident_bucket]).unwrap();
+    assert_eq!(manifest.bucket_ids, vec![resident_bucket]);
+    assert!(manifest.block_slab_ids.contains(&released_slab),
+        "the complete dump image must retain the released bucket's slab");
+    assert!(manifest.block_slab_ids.contains(&resident_slab));
+    engine.validate_bucket_dump_manifest(&manifest).unwrap();
+    assert!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .bucket_index.released_buckets.contains(&released_bucket),
+        "checkpoint capture must not reload the live shard");
+    drop(engine);
+
+    // Only the slabs and this manifest reach the destination, not the source WAL or cache.
+    let restored = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("restore-cache"), dir.path().join("released-slab-blocks"),
+        dir.path().join("restore-indexes"),
+    );
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restored.wal_store.stats_without_rescan(RECLAIM_DUMP_SHARD).last_sequence, 0);
+    restored.install_bucket_dump_manifest(&manifest).unwrap();
+    for key in ["released-live", "still-resident"] {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: key.into() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+    }
+}
+
+#[test]
+fn checkpoint_capture_restores_released_indexes_in_one_model_pass() {
+    checkpoint_released_bucket_scan_case(2_000);
+}
+
+#[test]
+#[ignore = "large checkpoint capture guard"]
+fn checkpoint_capture_restores_released_indexes_at_scale() {
+    checkpoint_released_bucket_scan_case(100_000);
+}
+
+fn checkpoint_released_bucket_scan_case(count: usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "release-scan");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    let keys = reclaim_dump_keys(count);
+    write_as_batches(&engine, &keys, 500);
+    let manifest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &manifest);
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&RECLAIM_DUMP_SHARD).unwrap();
+        let buckets = shard.bucket_index.bucket_map.keys().copied().take(64).collect::<Vec<_>>();
+        assert_eq!(buckets.len(), 64);
+        let outcome = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
+        assert_eq!(outcome.released_buckets.len(), 64, "{outcome:?}");
+    }
+    storage_bucket_internals::reset_model_map_addresses_visited();
+    let (snapshot, _) = engine.capture_shard_checkpoint(RECLAIM_DUMP_SHARD).unwrap();
+    let visited = storage_bucket_internals::model_map_addresses_visited();
+    assert_eq!(visited, count as u64, "capture must inspect the model maps once, not per bucket");
+    assert!(snapshot.bucket_index.released_buckets.is_empty());
+    let decoded = decode_index_bytes(&serialize_index(&snapshot)).unwrap();
+    assert_eq!(collect_live_block_entries(&decoded).len(), count);
+    assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .bucket_index.released_buckets.len(), 64);
+    eprintln!("checkpoint objects={count} released_buckets=64 model_addresses_visited={visited}");
+}
+
+#[test]
 fn slab_backed_dumps_do_not_pin_obsolete_wal_placements() {
     let dir = tempfile::tempdir().unwrap();
     let engine = reclaim_dump_engine(dir.path(), "retire-slab-backed");

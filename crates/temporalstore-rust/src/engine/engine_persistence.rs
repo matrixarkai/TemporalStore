@@ -87,6 +87,10 @@ impl TemporalEngine {
         } else {
             self.wal_store.stats_without_rescan(shard_id).last_sequence
         });
+        drop(shards);
+        // Release markers are memory-only. Persist complete block indexes in the owned
+        // image without undoing eviction in the live shard or holding its read guard.
+        storage_bucket_internals::restore_released_buckets_in_checkpoint(&mut snapshot, shard_id);
         Some((snapshot, publication))
     }
 
@@ -140,13 +144,17 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> Result<Vec<u8>, std::io::Error> {
         if !bulk_ingest_mode() {
-            if let Some(shard) = self
-                .shards
-                .read()
-                .expect("engine lock poisoned")
-                .get(&shard_id)
-            {
-                return Ok(serialize_index(shard));
+            let shards = self.shards.read().expect("engine lock poisoned");
+            if let Some(shard) = shards.get(&shard_id) {
+                if shard.bucket_index.released_buckets.is_empty() {
+                    return Ok(serialize_index(shard));
+                }
+                let mut snapshot = shard.clone();
+                drop(shards);
+                storage_bucket_internals::restore_released_buckets_in_checkpoint(
+                    &mut snapshot, shard_id,
+                );
+                return Ok(serialize_index(&snapshot));
             }
         }
         fs::read(self.index_path(shard_id))
