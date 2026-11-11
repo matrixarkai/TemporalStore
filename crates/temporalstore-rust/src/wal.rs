@@ -1500,6 +1500,17 @@ impl LocalWriteAheadLogStore {
         outcomes: Vec<WalOutcomeItem>,
         staged_blocks: Vec<StagedBlock>,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+        self.append_for_group_commit_with_location(shard_id, command, outcomes, staged_blocks)
+            .map(|(record, _)| record)
+    }
+
+    pub(crate) fn append_for_group_commit_with_location(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        outcomes: Vec<WalOutcomeItem>,
+        staged_blocks: Vec<StagedBlock>,
+    ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         // Acquiring the append lock creates the directory the first time it opens the lock
         // file; doing it again on every append was a syscall to learn something unchanged.
@@ -1533,6 +1544,8 @@ impl LocalWriteAheadLogStore {
         // record is not yet durable); the coalesced barrier advances it once it reaches disk.
         let report = append_record_locked(&mut inner, &rec, false, None)?;
         inner.stats.last_sequence = report.current_sequence;
+        let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
+        let log_id = base.saturating_add(report.offset.saturating_sub(header_len));
         // Roll after the record lands, as the single-record path does. This is only safe because
         // sealing a piece now fsyncs its contents: the barrier this record is waiting for opens
         // the piece being WRITTEN, which after a roll is the new one, so without that fsync the
@@ -1548,7 +1561,7 @@ impl LocalWriteAheadLogStore {
         }
         // `inner` + `_append_lock` drop here so a concurrent writer can append while this
         // writer's (later, lock-released) group-commit fsync is in flight.
-        Ok(rec)
+        Ok((rec, log_id))
     }
 
     /// Phase 2 of a two-phase durable commit: the coalesced durable barrier for a sequence
@@ -1682,14 +1695,25 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         commands: Vec<Command>,
         sync: bool,
+        staged_blocks: Vec<StagedBlock>,
+    ) -> Result<(Vec<WriteAheadLogRecord>, Option<u64>), WriteAheadLogError> {
+        self.append_batch_atomic_recorded(shard_id, commands, sync, staged_blocks, Vec::new())
+    }
+
+    pub(crate) fn append_batch_atomic_recorded(
+        &self,
+        shard_id: ShardId,
+        commands: Vec<Command>,
+        sync: bool,
         mut staged_blocks: Vec<StagedBlock>,
+        mut staged_outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(Vec<WriteAheadLogRecord>, Option<u64>), WriteAheadLogError> {
         if commands.len() <= 1 {
             let mut records = Vec::with_capacity(commands.len());
             let mut carrier = None;
             if let Some(command) = commands.into_iter().next() {
                 let (record, log_id) = self.append_with_outcomes(
-                    shard_id, command, sync, staged_blocks, Vec::new(),
+                    shard_id, command, sync, staged_blocks, staged_outcomes,
                 )?;
                 records.push(record);
                 carrier = Some(log_id);
@@ -1750,14 +1774,17 @@ impl LocalWriteAheadLogStore {
                     shard_id,
                     sequence: seq,
                     metadata: Some(metadata),
-                    // No results on this path, so the operation is what replay has.
+                    // Commands remain present. The last record also captures the full
+                    // batch's outcomes so its carried frames have exact addresses.
                     command: Some(command),
                     // The final record commits the entire batch. Carry derived pages
                     // there even when replay uses commands rather than outcomes.
                     staged_blocks: if index + 1 == batch_size as usize {
                         std::mem::take(&mut staged_blocks)
                     } else { Vec::new() },
-                    outcomes: Vec::new(),
+                    outcomes: if index + 1 == batch_size as usize {
+                        std::mem::take(&mut staged_outcomes)
+                    } else { Vec::new() },
                 };
                 // Buffer every record (sync=false); the single durability barrier below covers
                 // the whole batch. append_record_locked keeps last_flushed_sequence honest -- it

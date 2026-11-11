@@ -1547,19 +1547,19 @@ where
         // registry -- so an index carrying one names a place the restoring node cannot reach, and
         // that read returns nothing with no error. Materialising them first means the index names
         // only slabs this checkpoint actually uploads.
-        let materialised = engine.materialize_synthetic_blocks(shard_id);
-        if materialised > 0 {
-            tracing::info!(
+        let image = engine.export_portable_checkpoint_index(shard_id)?;
+        let local_slabs: std::collections::BTreeSet<_> = block_store.slab_ids()?.into_iter().collect();
+        if let Some(missing) = image.block_slab_ids.iter().find(|id| !local_slabs.contains(id)) {
+            return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
                 shard_id,
-                blocks = materialised,
-                "materialised in-process-only blocks so the checkpoint index can travel"
-            );
+                block_slab_id: *missing,
+            });
         }
         block_store.sync_durable()?;
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
         let index_key = format!("{prefix}index/shard.index.json");
-        let index = engine.export_index_bytes(shard_id)?;
+        let index = image.index_bytes;
         self.object_store
             .put(&index_key, Bytes::from(index.clone()))
             .await?;
@@ -1597,24 +1597,9 @@ where
             });
         }
 
-        // Completeness barrier: every slab the served index actually references must be covered by
-        // an uploaded slab before the manifest is written, so a restore never resolves a live block
-        // to a slab that is absent from the checkpoint. A SYNTHETIC address is folded into the
-        // exported index rather than a durable slab, so it is excluded.
-        //
-        // ASK `is_wal_resident`, DO NOT RESTATE THE SENTINEL. This skipped a local
-        // `const HOT_BLOCK_SLAB_ID: u64 = u64::MAX`, and the engine's sentinel is
-        // `u32::MAX as u64` -- it moved to the top of the 32-bit range (see the note on
-        // `wal_record::WAL_LOG_SLAB_ID`) and this copy did not move with it. So the exclusion
-        // matched NOTHING: every live hot block fell through to the check below and failed the
-        // barrier with `CheckpointSlabNotDurable`, which refuses a checkpoint that is in fact
-        // complete. A second home for a constant is wrong even when it agrees, because only one
-        // of the two gets updated; `is_wal_resident` is the one home, and it answers for BOTH
-        // synthetic sentinels -- `WAL_LOG_SLAB_ID` was equally unskipped here.
-        for referenced in engine.live_block_slab_ids(shard_id) {
-            if crate::wal_record::is_wal_resident(referenced) {
-                continue;
-            }
+        // Check the exact captured image, not a later live view. A log-only address
+        // is not embedded payload and cannot be omitted from a portable checkpoint.
+        for referenced in image.block_slab_ids {
             if !uploaded_slab_ids.contains(&referenced) {
                 return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
                     shard_id,
@@ -1623,7 +1608,6 @@ where
             }
         }
 
-        let (start_routing_bucket, end_routing_bucket) = engine.shard_routing_range(shard_id);
         let manifest = SharedStoreCheckpointManifest {
             cluster_id: self.cluster_id.clone(),
             shard_id,
@@ -1632,10 +1616,7 @@ where
             created_at_ms: now_ms(),
             // The range this node serves the shard on, which is the range the checkpointed index
             // was built on: one function decides both where a write is filed and what this says.
-            routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
-                start_routing_bucket,
-                end_routing_bucket,
-            }),
+            routing_range: Some(image.routing_range),
             index_key,
             index_byte_size: index.len() as u64,
             index_sha256: sha256_hex(&index),
@@ -5675,6 +5656,10 @@ fn now_ms() -> u64 {
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "shared_portable_checkpoint_tests.rs"]
+mod portable_checkpoint_tests;
 
 #[cfg(test)]
 mod tests {

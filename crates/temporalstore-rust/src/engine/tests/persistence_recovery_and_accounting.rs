@@ -1048,6 +1048,15 @@ fn delete_drop_eviction_emits_a_wal_delete_marker_and_does_not_resurrect() {
 
 #[test]
 fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
+    truncated_slab_compaction_recovers_on_restart(true);
+}
+
+#[test]
+fn compaction_repairs_a_truncated_slab_from_its_wal_frame() {
+    truncated_slab_compaction_recovers_on_restart(false);
+}
+
+fn truncated_slab_compaction_recovers_on_restart(inject_failure: bool) {
     // CP4 regression. A mid-compaction read failure used to return with the in-memory index
     // half-advanced (relocated blocks point at the fresh slab) but UNPERSISTED, so it diverged from
     // the on-disk index -- and the independent reclaim path could then physically purge a
@@ -1057,7 +1066,8 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     //
     // Setup: k1 (string, relocated FIRST by compact_shard_blocks) lives in an earlier slab; k2 (hash,
     // relocated after) lives in a later slab. We corrupt ONLY the latest slab (k2's), so compaction
-    // relocates k1 (vacating its old slab) and then FAILS reading k2. A tiny cache forces the reads
+    // relocates k1 (vacating its old slab). An injected read failure prevents WAL repair for k2
+    // in the partial-publication case; otherwise the WAL repairs its slab. A tiny cache forces reads
     // to hit disk. Assert the on-disk index CHANGED -- i.e. the relocated partial state was durably
     // persisted (it stays byte-identical without the fix).
     let dir = tempfile::tempdir().unwrap();
@@ -1115,10 +1125,14 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     let k2_slab = slabs.last().expect("at least two block slabs after the roll").clone();
     fs::write(&k2_slab, b"").unwrap();
 
+    if inject_failure {
+        crate::engine::fail_only_compaction_block_read_at_for_test(Some(1));
+    }
     let result = engine.compact_shard_blocks(1);
+    crate::engine::fail_only_compaction_block_read_at_for_test(None);
     assert!(
-        result.is_err(),
-        "compaction must fail when a live block's slab is unreadable, got {result:?}"
+        result.is_err() == inject_failure,
+        "compaction must report an injected failure, or repair from WAL, got {result:?}"
     );
     let index_after = fs::read(engine.index_path(1)).unwrap();
     assert_ne!(
@@ -1126,6 +1140,23 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
         "a partial-failure compaction must durably persist the relocated partial index (CP4), \
          so the volatile and on-disk indexes cannot diverge and let reclaim purge a needed slab"
     );
+    if inject_failure {
+        assert!(engine.wal_resident_block_count(1) > 0,
+            "the unmoved, unreadable hash slab must retain its WAL fallback");
+    }
+    drop(engine);
+    let restored = TemporalEngine::with_local_dirs(
+        16, dir.path().join("cache-restored"), &blocks, &indexes,
+    );
+    restored.load_shard(1);
+    for (command, expected) in [
+        (Command::StringGet { key: "k1".into() }, b"v1".to_vec()),
+        (Command::HashGet { key: "h".into(), field: "f".into() }, b"v2".to_vec()),
+    ] {
+        let response = restored.execute(ExecuteRequest { shard_id: 1, command });
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(expected) });
+    }
 }
 
 #[test]

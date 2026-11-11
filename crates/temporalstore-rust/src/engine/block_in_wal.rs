@@ -45,6 +45,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::types::ShardId;
 use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 
+#[path = "wal_physical_blocks.rs"]
+mod physical;
+
 #[cfg(test)]
 thread_local! {
     static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -289,7 +292,7 @@ fn select_registration_names<'a>(
     RegistrationNames::Owned(registration_names(block, packed, pool))
 }
 
-pub(super) fn hash_outcome_blocks(
+pub(super) fn outcome_block_bindings(
     outcomes: &[crate::wal::WalOutcomeItem],
     blocks: &[StagedBlock],
 ) -> HashMap<(u64, super::LiveBlockKey), usize> {
@@ -297,7 +300,7 @@ pub(super) fn hash_outcome_blocks(
     // an address per field, so pair only distinct addresses with the carried frames.
     let mut addresses = HashMap::<u64, Vec<(super::LiveBlockKey, bool)>>::new();
     let mut seen = std::collections::HashSet::new();
-    for item in outcomes.iter().filter(|item| item.kind == "hash") {
+    for item in outcomes {
         if let Some(address) = item.resolved_address() {
             let key = super::live_block_key(&address);
             if seen.insert((item.object_id, key)) {
@@ -500,8 +503,19 @@ fn register_record_locations(
     let mut pool = std::collections::HashSet::new();
     let names: Vec<_> = staged_blocks.iter()
         .map(|block| select_registration_names(block, &packed, projection, &mut pool)).collect();
-    let expected = names.iter().map(RegistrationNames::len).sum();
+    let physical_blocks = physical::bindings(outcomes, staged_blocks);
+    let physical_indices: std::collections::HashSet<_> = physical_blocks.iter().map(|(_, index)| *index).collect();
+    let names: Vec<_> = names.into_iter().enumerate().map(|(index, names)| {
+        if physical_indices.contains(&index) {
+            RegistrationNames::Owned(Vec::new())
+        } else { names }
+    }).collect();
+    let expected = names.iter().map(RegistrationNames::len).sum::<usize>() + physical_blocks.len();
     let mut folded = Vec::with_capacity(expected);
+    for (key, index) in physical_blocks {
+        let location = Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
+        folded.push(physical::install(block_store, shard_id, key, location));
+    }
     if let Ok(mut map) = registry().lock() {
         let entries = map.shard_mut(block_store.store_id(), shard_id);
         for (index, (block, names)) in staged_blocks.iter().zip(names).enumerate() {
@@ -566,6 +580,8 @@ pub(super) fn register_from_record(
         .iter()
         .map(|(folded, _)| *folded)
         .collect::<std::collections::BTreeSet<_>>();
+    let recovered = physical::recover(block_store, shard_id, store, log_id, &record, &wanted);
+    for folded in recovered { wanted.remove(&folded); }
     let packed = packed_objects(&record.outcomes);
     let mut pool = std::collections::HashSet::new();
     let names: Vec<_> = record.staged_blocks.iter().map(|block| {
@@ -610,10 +626,12 @@ pub(super) fn min_registered_sequence(
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
     let map = registry().lock().ok()?;
-    map.entries(block_store.store_id(), shard_id)
+    let logical = map.entries(block_store.store_id(), shard_id)
         .filter(|(_, location)| location.0.same_log(store))
         .map(|(_, location)| location.2)
-        .min()
+        .min();
+    logical.into_iter().chain(physical::locations(block_store, shard_id).into_iter()
+        .filter(|location| location.0.same_log(store)).map(|location| location.2)).min()
 }
 
 /// A necessary relocation-pressure signal, not permission to reclaim any record.
@@ -626,7 +644,8 @@ pub(super) fn registered_record_span_has_holes(
 ) -> bool {
     let Ok(map) = registry().lock() else { return false };
     let mut records = std::collections::BTreeMap::<u64, (usize, usize)>::new();
-    for (_, location) in map.entries(block_store.store_id(), shard_id) {
+    let physical = physical::locations(block_store, shard_id);
+    for location in map.entries(block_store.store_id(), shard_id).map(|(_, location)| location).chain(physical.iter()) {
         let (log, _, sequence, expected, _) = &**location;
         if !log.same_log(store) {
             continue;
@@ -682,15 +701,30 @@ pub(super) fn registration_count(
         return 0;
     };
     let owner = block_store.store_id();
-    map.shard(owner, shard_id).map_or(0, HashMap::len)
+    map.shard(owner, shard_id).map_or(0, HashMap::len) + physical::count(block_store, shard_id)
 }
 
 pub(super) struct RegistrationRetirement {
     pub folded_key: u64,
     pub log_id: u64,
     pub sequence: u64,
-    block: BlockKey,
+    block: RetirementKey,
     location: Registration,
+}
+
+enum RetirementKey {
+    Logical(BlockKey),
+    Physical(physical::PhysicalKey),
+}
+
+pub(super) fn unreferenced_physical_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    store: &LocalWriteAheadLogStore,
+    shard: &super::ShardState,
+    retain_live_real_frames: bool,
+) -> Vec<RegistrationRetirement> {
+    physical::retirements(block_store, shard_id, store, shard, retain_live_real_frames)
 }
 
 /// Propose removals; the caller must publish an image that no longer needs them first.
@@ -711,16 +745,17 @@ pub(super) fn unreferenced_registrations(
             }
             Some(RegistrationRetirement {
                 folded_key, log_id: location.1, sequence: location.2,
-                block: block.clone(), location: location.clone(),
+                block: RetirementKey::Logical(block.clone()), location: location.clone(),
             })
         })
         .collect();
     if !candidates.is_empty() {
         // Folded placement keys are hashes. Preserve a collision with any retained object.
-        let protected: std::collections::HashSet<_> = map.entries(owner, shard_id)
+        let mut protected: std::collections::HashSet<_> = map.entries(owner, shard_id)
             .filter(|((object_id, _), _)| retained_objects.contains(object_id))
             .map(|((object_id, name), _)| wal_resident_key(*object_id, name.as_deref()))
             .collect();
+        protected.extend(physical::folded_keys(block_store, shard_id));
         candidates.retain(|candidate| !protected.contains(&candidate.folded_key));
     }
     candidates
@@ -735,11 +770,15 @@ pub(super) fn retire_unchanged_registrations(
     let Ok(mut map) = registry().lock() else { return; };
     let owner = block_store.store_id();
     for retirement in retirements {
+        let RetirementKey::Logical(block) = &retirement.block else {
+            physical::retire(block_store, shard_id, retirement);
+            continue;
+        };
         let unchanged = map.shard(owner, shard_id)
-            .and_then(|entries| entries.get(&retirement.block))
+            .and_then(|entries| entries.get(block))
             .is_some_and(|current| std::sync::Arc::ptr_eq(current, &retirement.location));
         if unchanged {
-            map.remove(owner, shard_id, &retirement.block);
+            map.remove(owner, shard_id, block);
         }
     }
 }
@@ -769,6 +808,7 @@ pub(super) fn deregister(
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
 /// re-derives whatever it needs.
 pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id: ShardId) {
+    physical::clear_shard(block_store.store_id(), shard_id);
     if let Ok(mut map) = registry().lock() {
         let owner = block_store.store_id();
         map.remove_shard(owner, shard_id);
@@ -776,6 +816,7 @@ pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id
 }
 
 pub(crate) fn clear_store_registrations(owner: usize) {
+    physical::clear_store(owner);
     if let Ok(mut map) = registry().lock() {
         map.stores.remove(&owner);
     }
@@ -921,7 +962,30 @@ pub(super) fn read_block(
             .or_else(|| entries.get(&block_key(object_id, None)))?
             .clone()
     };
-    let (store, log_id, _, _, index) = &*location;
+    read_registration(&location, shard_id, object_id, element_name)
+}
+
+pub(super) fn read_block_at(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    object_id: u64,
+    element_name: Option<&str>,
+    address: &crate::block_store::ElementEntry,
+) -> Option<Vec<u8>> {
+    match physical::lookup(block_store, shard_id, object_id, super::live_block_key(address)) {
+        Some(Some(location)) => read_registration(&location, shard_id, object_id, element_name),
+        Some(None) => None,
+        None => read_block(block_store, shard_id, object_id, element_name),
+    }
+}
+
+fn read_registration(
+    location: &Registration,
+    shard_id: ShardId,
+    object_id: u64,
+    element_name: Option<&str>,
+) -> Option<Vec<u8>> {
+    let (store, log_id, _, _, index) = &**location;
     // One batch record carries many blocks, and an ingest reads several of the fields its own
     // batch just wrote -- so the same record used to be pread and re-parsed once per block. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
