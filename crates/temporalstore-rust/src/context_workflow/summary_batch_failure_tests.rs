@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 enum ResponseMode {
+    Isolated,
+    SlowSuccess,
     Unavailable,
     Slow,
     Partial,
@@ -57,7 +59,16 @@ fn endpoint(mode: ResponseMode) -> (ContextModelProviderConfig, Arc<AtomicUsize>
                 }
                 return json_response(503, &json!({"error":"provider unavailable"}));
             }
-            let content = if ordinal == 0 {
+            let content = if matches!(mode, ResponseMode::Isolated | ResponseMode::SlowSuccess) {
+                if matches!(mode, ResponseMode::SlowSuccess) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                assert!(batch_sources.is_none());
+                let source: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+                assert!(source.get("source_id").is_none());
+                assert!(source.get("source_index").is_none());
+                json!({"l0":source["body"],"l1":source["body"],"entities":[]}).to_string()
+            } else if ordinal == 0 {
                 match mode {
                     ResponseMode::Partial => json!({"items":[{
                         "source_index":0,"l0":"batch source","l1":"batch synthesis",
@@ -69,7 +80,9 @@ fn endpoint(mode: ResponseMode) -> (ContextModelProviderConfig, Arc<AtomicUsize>
                         {"source_index":0,"l0":"first source","l1":batch_sources.as_ref().unwrap()[1]["body"],"entities":[]},
                         {"source_index":1,"l0":"second source","l1":"second synthesis","entities":[]}
                     ]}).to_string(),
-                    ResponseMode::Unavailable
+                    ResponseMode::Isolated
+                    | ResponseMode::SlowSuccess
+                    | ResponseMode::Unavailable
                     | ResponseMode::Slow
                     | ResponseMode::MalformedEnvelope => unreachable!(),
                 }
@@ -116,7 +129,11 @@ fn cross_source_batch_copy_retries_only_the_contaminated_item() {
     let (provider, calls) = endpoint(ResponseMode::CrossSource);
     let mut sources = requests(&provider, 2);
     sources[1].body = "I prefer Rust services and local durable storage.".into();
-    let results = context_summaries_for_extract_batch(&provider, &sources.iter().collect::<Vec<_>>());
+    let results = context_summaries_for_extract_batch_with_limit(
+        &provider,
+        &sources.iter().collect::<Vec<_>>(),
+        32,
+    );
     assert_eq!(results[0].as_ref().unwrap().l0, "single source");
     assert_eq!(results[1].as_ref().unwrap().l0, "second source");
     assert_eq!(calls.load(Ordering::Relaxed), 2);
@@ -132,15 +149,26 @@ fn verbatim_copy_guard_keeps_shared_evidence_and_checks_entity_fields() {
         l1: sources[0].body.clone(),
         entities: Vec::new(),
     };
-    assert!(!summary_batch_copies_other_source(&item, &[&sources[0], &sources[1]]));
+    assert!(!summary_batch_copies_other_source(
+        &item,
+        &[&sources[0], &sources[1]]
+    ));
     sources[1].body = "I prefer Rust services and local durable storage.".into();
     item.entities.push(ContextExtractedEntity {
-        kind: "fact".into(), name: "copied".into(), value: sources[1].body.clone(),
+        kind: "fact".into(),
+        name: "copied".into(),
+        value: sources[1].body.clone(),
     });
-    assert!(summary_batch_copies_other_source(&item, &[&sources[0], &sources[1]]));
+    assert!(summary_batch_copies_other_source(
+        &item,
+        &[&sources[0], &sources[1]]
+    ));
     let shared = sources[1].body.clone();
     sources[0].body.push_str(&shared);
-    assert!(!summary_batch_copies_other_source(&item, &[&sources[0], &sources[1]]));
+    assert!(!summary_batch_copies_other_source(
+        &item,
+        &[&sources[0], &sources[1]]
+    ));
 }
 
 #[test]
@@ -197,7 +225,7 @@ fn partial_summary_batch_retries_only_the_missing_source() {
     let (provider, calls) = endpoint(ResponseMode::Partial);
     let requests = requests(&provider, 2);
     let borrowed = requests.iter().collect::<Vec<_>>();
-    let results = context_summaries_for_extract_batch(&provider, &borrowed);
+    let results = context_summaries_for_extract_batch_with_limit(&provider, &borrowed, 32);
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].as_ref().unwrap().l0, "batch source");
     assert_eq!(results[1].as_ref().unwrap().l0, "single source");
@@ -210,13 +238,52 @@ fn malformed_summary_content_keeps_individual_source_recovery() {
         let (provider, calls) = endpoint(mode);
         let requests = requests(&provider, 2);
         let borrowed = requests.iter().collect::<Vec<_>>();
-        let results = context_summaries_for_extract_batch(&provider, &borrowed);
+        let results = context_summaries_for_extract_batch_with_limit(&provider, &borrowed, 32);
         assert_eq!(results.len(), 2);
         assert!(results
             .iter()
             .all(|result| result.as_ref().unwrap().l0 == "single source"));
         assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
+}
+
+#[test]
+fn independent_sources_have_separate_model_inputs_and_keep_their_original_links() {
+    let (provider, calls) = endpoint(ResponseMode::Isolated);
+    let mut sources = requests(&provider, 2);
+    sources[1].body = "I prefer Rust services and local durable storage.".into();
+    let results = context_summaries_for_extract_batch_with_limit(
+        &provider,
+        &sources.iter().collect::<Vec<_>>(),
+        1,
+    );
+    assert_eq!(results.len(), 2);
+    for (result, source) in results.iter().zip(&sources) {
+        let summary = result.as_ref().unwrap();
+        assert_eq!(summary.l0, source.body);
+        assert_eq!(summary.l1, source.body);
+        assert!(summary
+            .l2_ref
+            .ends_with(&format!("/source/{}", source.source_id)));
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn isolated_source_calls_share_a_window_budget_instead_of_a_timeout_per_source() {
+    let (mut provider, calls) = endpoint(ResponseMode::SlowSuccess);
+    provider.timeout_ms = 25;
+    let sources = requests(&provider, 32);
+    let started = std::time::Instant::now();
+    let results = context_summaries_for_extract_batch_with_limit(
+        &provider,
+        &sources.iter().collect::<Vec<_>>(),
+        1,
+    );
+    assert_eq!(results.len(), 32);
+    assert!(results.iter().any(Result::is_err));
+    assert!(calls.load(Ordering::Relaxed) <= 3);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
 }
 
 #[test]
