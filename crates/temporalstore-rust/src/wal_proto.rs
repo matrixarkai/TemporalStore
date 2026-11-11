@@ -1181,6 +1181,85 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     })
 }
 
+/// Encode a complete binary frame while retaining the caller's output allocation.
+pub(crate) fn encode_binary_frame_into(
+    record: &WriteAheadLogRecord,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    out.clear();
+    let result = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::LogRecord, || {
+        let prepared = prepare(record)?;
+        if !compress_records_enabled() || prepared.parts.len < COMPRESSION_MIN_BYTES {
+            return crate::log_framing::encode_framed_into(
+                prepared.payload_len(), |out| prepared.put(record, out), out,
+            ).map_err(|err| err.to_string())?;
+        }
+        let parts = prepared.parts;
+        ENCODE_SCRATCH.with(|cell| {
+            let mut scratch = cell.borrow_mut();
+            scratch.clear();
+            reserve_encode_capacity(&mut scratch, parts.len);
+            let result = (|| {
+                parts.put(record, &mut scratch)?;
+                if compress_payload_into(&scratch, out) {
+                    crate::log_framing::frame_binary_body_in_place(COMPRESSED_RAW_PAYLOAD_MARKER, out);
+                    Ok(())
+                } else {
+                    // The failed compression trial already encoded the record; do not encode it twice.
+                    crate::log_framing::encode_framed_into(scratch.len() + 1,
+                        |out| {
+                            out.push(RAW_PAYLOAD_MARKER);
+                            out.extend_from_slice(&scratch);
+                            Ok::<(), String>(())
+                        }, out,
+                    ).map_err(|err| err.to_string())?
+                }
+            })();
+            if scratch.capacity() > MAX_ENCODE_SCRATCH_BYTES {
+                *scratch = Vec::new();
+            }
+            result
+        })
+    });
+    if result.is_err() {
+        out.clear();
+    }
+    result
+}
+
+fn reserve_encode_capacity(out: &mut Vec<u8>, required: usize) {
+    if out.capacity() < required {
+        let step = 64 * 1024;
+        let capacity = if required <= step {
+            required.next_power_of_two()
+        } else {
+            required.div_ceil(step).saturating_mul(step)
+        };
+        // Avoid doubling a nearly full scratch past its retention limit for a few extra bytes.
+        out.reserve_exact(capacity.saturating_sub(out.len()));
+    }
+}
+
+fn compress_payload_into(encoded: &[u8], out: &mut Vec<u8>) -> bool {
+    out.clear();
+    if encoded.len() < COMPRESSION_MIN_BYTES {
+        return false;
+    }
+    reserve_encode_capacity(out, zstd::zstd_safe::compress_bound(encoded.len())
+        + crate::log_framing::MAX_BINARY_HEADER_BYTES + 1);
+    RECORD_COMPRESSOR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = zstd::bulk::Compressor::new(COMPRESSION_LEVEL).ok();
+        }
+        slot.as_mut()?.compress_to_buffer(encoded, out).ok()
+    }).is_some_and(|written| written < encoded.len())
+}
+
+#[cfg(test)]
+#[path = "wal_proto_frame_buffer_tests.rs"]
+mod frame_buffer_tests;
+
 fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let parts = record_parts(record)?;
     if compress_records_enabled() && parts.len >= COMPRESSION_MIN_BYTES {
