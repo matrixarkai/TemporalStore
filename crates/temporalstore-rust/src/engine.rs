@@ -7186,6 +7186,33 @@ fn append_value(
     )
 }
 
+// Strings have a complete WAL-carried value and an explicit portable-export relocation path.
+// Cache admission must not decide whether their durable payload needs a second slab copy.
+fn append_string_value(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    bytes: &[u8],
+    object_id: u64,
+    routing_bucket: u32,
+    async_storage: bool,
+) -> Result<ElementEntry, BlockStoreError> {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+        append_value_inner(
+            cache,
+            block_store,
+            shard_id,
+            bytes,
+            Some(object_id),
+            None,
+            Some(routing_bucket),
+            async_storage,
+            u32::MAX as usize,
+            || 0,
+        )
+    })
+}
+
 /// The same append, saying WHICH block of its object this is.
 ///
 /// The ordinal is threaded all the way to `append_block_of_object`, and that matters rather than
@@ -7222,6 +7249,7 @@ fn append_value_of_object(
             element_name,
             routing_bucket,
             async_storage,
+            8 * 1024 - 1,
             || block_ordinal,
         )
     })
@@ -7250,6 +7278,7 @@ fn append_owned_value_of_object(
                 None,
                 Some(routing_bucket),
                 true,
+                8 * 1024 - 1,
                 block_ordinal,
             )
         });
@@ -7297,12 +7326,12 @@ fn append_value_inner(
     element_name: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
+    log_frame_limit: usize,
     block_ordinal: impl FnOnce() -> u32,
 ) -> Result<ElementEntry, BlockStoreError> {
-    // Large async values can evict thousands of smaller hot blocks before a dump.
-    // Anonymous values also need a real address: without an identity they cannot be
-    // staged or resolved through the WAL after their cache entry is gone.
-    let hot_offset = if async_storage && bytes.len() < 8 * 1024 && object_id.is_some() {
+    // Only strings opt into large log frames; other models keep their existing placement.
+    // Anonymous blocks cannot be resolved through a WAL locator after cache eviction.
+    let hot_offset = if async_storage && bytes.len() <= log_frame_limit && object_id.is_some() {
         reserve_hot_block_offset(&HOT_BLOCK_OFFSET)
     } else {
         None

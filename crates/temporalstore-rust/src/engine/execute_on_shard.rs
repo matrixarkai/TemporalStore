@@ -1499,15 +1499,13 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "string", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
+            if let Ok(address) = append_string_value(
                 cache,
                 block_store,
                 shard_id,
                 &value,
-                Some(object_id),
-                // A string block IS its whole object: the `None` the object id above carries.
-                None,
-                Some(routing_bucket),
+                object_id,
+                routing_bucket,
                 async_storage,
             ) {
                 upsert_bucket_index_block(
@@ -1542,15 +1540,13 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "string", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
+            if let Ok(address) = append_string_value(
                 cache,
                 block_store,
                 shard_id,
                 &value,
-                Some(object_id),
-                // A string block IS its whole object.
-                None,
-                Some(routing_bucket),
+                object_id,
+                routing_bucket,
                 async_storage,
             ) {
                 upsert_bucket_index_block(
@@ -1631,15 +1627,13 @@ pub(crate) fn execute_on_shard(
                 let object_id = stable_block_object_id(shard_id, "string", &key);
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                if let Ok(address) = append_value(
+                if let Ok(address) = append_string_value(
                     cache,
                     block_store,
                     shard_id,
                     &value,
-                    Some(object_id),
-                    // A string block IS its whole object.
-                    None,
-                    Some(routing_bucket),
+                    object_id,
+                    routing_bucket,
                     async_storage,
                 ) {
                     upsert_bucket_index_block(
