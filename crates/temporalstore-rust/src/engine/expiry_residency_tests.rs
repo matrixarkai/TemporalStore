@@ -4,8 +4,12 @@
 use super::*;
 
 fn engine_at(root: &std::path::Path, cache: &str) -> TemporalEngine {
+    engine_with_cache(root, cache, 64 * 1024)
+}
+
+fn engine_with_cache(root: &std::path::Path, cache: &str, cache_bytes: usize) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
-        64 * 1024,
+        cache_bytes,
         root.join(cache),
         root.join("blocks"),
         root.join("indexes"),
@@ -46,6 +50,21 @@ fn live_value(index: usize) -> Vec<u8> {
     value
 }
 
+fn directory_bytes(root: &std::path::Path) -> u64 {
+    std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let metadata = entry.metadata().unwrap();
+            if metadata.is_dir() {
+                directory_bytes(&entry.path())
+            } else {
+                metadata.len()
+            }
+        })
+        .sum()
+}
+
 fn seed(engine: &TemporalEngine, commands: Vec<Command>) {
     for chunk in commands.chunks(1000) {
         let response = engine.batch_execute(crate::types::BatchExecuteRequest {
@@ -56,13 +75,13 @@ fn seed(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-fn mixed_expiry_scale(live_counts: &[usize]) {
+fn mixed_expiry_scale(live_counts: &[usize], cache_bytes: usize) {
     const COLD: usize = 32;
     const HOT: usize = 4;
     let mut baseline_bytes = None;
     for &live in live_counts {
         let dir = tempfile::tempdir().unwrap();
-        let engine = engine_at(dir.path(), "cache-a");
+        let engine = engine_with_cache(dir.path(), "cache-a", cache_bytes);
         seed(
             &engine,
             (0..live)
@@ -98,14 +117,48 @@ fn mixed_expiry_scale(live_counts: &[usize]) {
         );
         let dump = engine.create_bucket_dump_manifest(1, []).unwrap();
         engine.clear_dumped_bucket_dirty_state(1, &dump);
+        drop(dump);
+        if cache_bytes >= 128 * 1024 * 1024 {
+            for index in 0..live {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("live-{index:08}"),
+                    },
+                });
+                assert!(response.status.ok);
+                assert_eq!(
+                    response.response,
+                    CommandResponse::Bytes {
+                        value: Some(live_value(index))
+                    }
+                );
+            }
+        }
+        let released_blocks;
         {
             let mut shards = engine.shards.write().unwrap();
             let shard = shards.get_mut(&1).unwrap();
             let buckets: Vec<_> = cold_buckets.iter().copied().collect();
             let result = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
             assert_eq!(result.released_buckets, buckets);
+            released_blocks = result.released_blocks;
+        }
+        let cache_entries = engine
+            .cache
+            .item_count_for_tier(matrixcache::CacheTier::Memory);
+        let cache_memory_bytes = engine.cache.stats().memory_bytes;
+        if cache_bytes >= 128 * 1024 * 1024 {
+            assert!(
+                cache_entries >= live,
+                "resident cache has {cache_entries} entries for {live} live values"
+            );
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
+        engine.wal_store.flush(1).unwrap();
+        let before_files = directory_bytes(dir.path());
+        let before_wal_bytes = engine.wal_store.info(1).unwrap().length_bytes;
+        let before_encoded_bytes = engine.wal_store.raw_stats(1).bytes_written;
         let before_sequence = engine.wal_store.cached_last_sequence(1);
         let before_index = engine.index_log_store.stats(1).bytes_written;
         let before_reads = engine.block_store.stats().bytes_read;
@@ -115,7 +168,9 @@ fn mixed_expiry_scale(live_counts: &[usize]) {
         let phases = &recovery_sweep_compact::EXPIRY_GUARD_NANOS;
         phases.reset();
         let started = std::time::Instant::now();
+        let hot_started = std::time::Instant::now();
         let blocked = sweep(&engine, false);
+        let hot_stage_ns = hot_started.elapsed().as_nanos();
         assert_eq!(blocked.expired_records_removed, HOT);
         assert_eq!(blocked.hot_buckets_scanned, HOT);
         assert_eq!(blocked.cold_buckets_scanned, 8);
@@ -131,14 +186,23 @@ fn mixed_expiry_scale(live_counts: &[usize]) {
                 assert!(!shard.strings().contains_key(key.as_str()));
             }
         }
+        let mut cold_stage_ns = 0;
         for _ in 0..COLD / 8 {
+            let cold_started = std::time::Instant::now();
             let report = sweep(&engine, true);
+            cold_stage_ns += cold_started.elapsed().as_nanos();
             assert_eq!(report.expired_records_removed, 8);
             assert_eq!(report.hot_buckets_scanned, 0);
             assert_eq!(report.cold_buckets_scanned, 8);
             assert_eq!(report.loaded_for_expire, 0);
         }
         let elapsed_us = started.elapsed().as_micros();
+        let barrier = std::time::Instant::now();
+        engine.wal_store.flush(1).unwrap();
+        let barrier_us = barrier.elapsed().as_micros();
+        let file_delta = directory_bytes(dir.path()) as i64 - before_files as i64;
+        let wal_bytes = engine.wal_store.info(1).unwrap().length_bytes - before_wal_bytes;
+        let wal_encoded_bytes = engine.wal_store.raw_stats(1).bytes_written - before_encoded_bytes;
         let (hold_ns, select_ns, delete_ns, invalidate_ns, wal_ns, checkpoint_ns) = phases.read();
         let (_, _, listings, _, cache_rows) = CACHE_SWEEP_COUNTS.read_batched();
         assert_eq!(storage_bucket_internals::model_map_addresses_visited(), 0);
@@ -160,11 +224,11 @@ fn mixed_expiry_scale(live_counts: &[usize]) {
             assert_eq!(shard.strings().len(), live);
             assert!(shard.expires_at_ms().is_empty());
         }
-        eprintln!("EXPIRY_RESIDENCY live={live} expired={} cold={COLD} hot={HOT} index_bytes={index_bytes} model_visits=0 payload_reads=0 elapsed_us={elapsed_us}", COLD + HOT);
+        eprintln!("EXPIRY_RESIDENCY live={live} expired={} cold={COLD} hot={HOT} index_bytes={index_bytes} wal_file_length_delta={wal_bytes} wal_encoded_bytes={wal_encoded_bytes} file_delta={file_delta} model_visits=0 payload_reads=0 elapsed_us={elapsed_us} hot_stage_ns={hot_stage_ns} cold_stage_ns={cold_stage_ns} barrier_us={barrier_us} rounds=5 cache_capacity={cache_bytes} cache_entries={cache_entries} cache_memory_bytes={cache_memory_bytes} released_blocks={released_blocks}", COLD + HOT);
         eprintln!("EXPIRY_PHASE live={live} hold_us={} select_us={} delete_us={} invalidate_us={} wal_us={} checkpoint_us={} cache_listings={listings} cache_keys_copied={cache_rows}", hold_ns / 1000, select_ns / 1000, delete_ns / 1000, invalidate_ns / 1000, wal_ns / 1000, checkpoint_ns / 1000);
         engine.wal_store.flush(1).unwrap();
         drop(engine);
-        let restored = engine_at(dir.path(), "cache-b");
+        let restored = engine_with_cache(dir.path(), "cache-b", cache_bytes);
         {
             let shards = restored.shards.read().unwrap();
             let shard = &shards[&1];
@@ -178,7 +242,14 @@ fn mixed_expiry_scale(live_counts: &[usize]) {
             }
         }
         if live > 0 {
-            for index in [0, live / 2, live - 1] {
+            for index in 0..live {
+                if cache_bytes < 128 * 1024 * 1024
+                    && index != 0
+                    && index != live / 2
+                    && index != live - 1
+                {
+                    continue;
+                }
                 let response = restored.execute(ExecuteRequest {
                     shard_id: 1,
                     command: Command::StringGet {
@@ -193,19 +264,33 @@ fn mixed_expiry_scale(live_counts: &[usize]) {
                     }
                 );
             }
+            eprintln!(
+                "EXPIRY_RESTORE live={live} verified={} cache_capacity={cache_bytes}",
+                if cache_bytes >= 128 * 1024 * 1024 {
+                    live
+                } else {
+                    3
+                }
+            );
         }
     }
 }
 
 #[test]
 fn mixed_hot_and_cold_expiry_keeps_due_work_independent_of_live_population() {
-    mixed_expiry_scale(&[0, 2000, 20_000]);
+    mixed_expiry_scale(&[0, 2000, 20_000], 64 * 1024);
 }
 
 #[test]
 #[ignore = "release-scale maintenance validation"]
 fn mixed_hot_and_cold_expiry_at_a_hundred_thousand_live_objects() {
-    mixed_expiry_scale(&[0, 100_000]);
+    mixed_expiry_scale(&[0, 100_000], 64 * 1024);
+}
+
+#[test]
+#[ignore = "large resident-cache expiry measurement"]
+fn mixed_hot_and_cold_expiry_with_a_large_resident_cache() {
+    mixed_expiry_scale(&[0, 100_000], 128 * 1024 * 1024);
 }
 
 #[test]
