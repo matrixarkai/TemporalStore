@@ -1192,25 +1192,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         .append_with_sync(request.shard_id, command.clone(), false);
                     // An expiry is a real deletion, so it has to reach every log that a
                     // successor might replay -- not only this node's.
-                    if appended.is_ok() {
+                    if let Ok(record) = appended {
+                        shard.note_wal_application(record.sequence, record.sequence);
                         if let Some(sink) = mirror.as_ref() {
                             sink.record_write(request.shard_id, &command);
                         }
                     }
                 }
                 EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.wal_append, phase);
-                // Anchor off the O(1) CACHED last sequence, not `stats()` -- the same change, for
-                // the same reason, as the `delete_drop` round's anchor in
-                // `storage_lifecycle_methods.rs`. `stats()` takes a full-file rescan plus a walk
-                // of every sealed piece, and it was taking them under this write guard, right
-                // after this sweep's own appends. The write path reads the cached value under
-                // flat append; both logged-deletion paths now do too, so neither is the copy
-                // that kept the cost.
-                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
-                    self.wal_store.cached_last_sequence(request.shard_id)
-                } else {
-                    self.wal_store.stats(request.shard_id).last_sequence
-                });
+                // Each successful receipt above advances only state actually applied.
             }
             let phase = std::time::Instant::now();
             // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
@@ -1260,7 +1250,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // anchor has folded the deletions. A delta that lands late or never leaves the anchor
             // BEHIND the tombstones, and WAL replay re-derives exactly these deletions. Neither
             // direction can leave a key resurrected.
-            pending_index_flush = Some(
+            pending_index_flush = shard.checkpoint_wal_sequence().map(|_| {
                 if self
                     .expiry_index_flush_whole
                     .load(std::sync::atomic::Ordering::Relaxed)
@@ -1304,8 +1294,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         key_states: super::capture_key_states(shard, &delta_keys),
                         applied_wal_sequence: shard.applied_wal_sequence,
                     }))
-                },
-            );
+                }
+            });
             EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
         }
         // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
@@ -1495,6 +1485,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
         shard: &mut ShardState,
         stats: &CompactionRewriteStats,
     ) -> Result<Vec<u8>, Status> {
+        if shard.checkpoint_wal_sequence().is_none() {
+            return Err(Status::error("checkpoint_wal_apply_incomplete",
+                "cannot publish compacted state with an unapplied WAL prefix"));
+        }
         let mut removed = Vec::new();
         for (object_id, element_name) in &stats.retired_container_wal_blocks {
             let key = super::block_in_wal::wal_resident_key(*object_id, Some(element_name));

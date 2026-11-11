@@ -72,6 +72,33 @@ pub fn reset_index_load_path_counts() {
 }
 
 impl TemporalEngine {
+    /// Raft state images move materialized state into a fresh engine-WAL namespace.
+    /// The source engine's sequence does not identify any record in that new log.
+    pub(crate) fn install_index_bytes_in_empty_wal(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+        routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp,
+    ) -> Result<(), std::io::Error> {
+        if self.shards.read().expect("engine lock poisoned").contains_key(&shard_id)
+            || self.wal_store.stats_without_rescan(shard_id).last_sequence != 0
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "a rebased index requires an unloaded shard and an empty local WAL"));
+        }
+        let mut snapshot = decode_index_bytes(bytes)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        if snapshot.bucket_index.bucket_map.values().any(|bucket| {
+            bucket.block_index.values().any(|block| crate::wal_record::is_wal_resident(block.address.block_slab_id()))
+        }) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "an imported physical image cannot depend on source WAL frames"));
+        }
+        snapshot.applied_wal_sequence = Some(0);
+        snapshot.wal_resident_blocks.clear();
+        self.install_index_bytes(shard_id, &serialize_index(&snapshot), routing_range)
+    }
+
     // The image and watermark share one guarded view. Encode the owned snapshot only
     // after releasing the guard, so serialization and sync do not block serving reads.
     pub(super) fn capture_shard_checkpoint(
@@ -80,13 +107,10 @@ impl TemporalEngine {
     ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
+        let anchor = shard.checkpoint_wal_sequence()?;
         let publication = self.checkpoint_publications.capture(shard_id);
         let mut snapshot = shard.clone();
-        snapshot.applied_wal_sequence = Some(if bulk_ingest_mode() {
-            shard.applied_wal_sequence.unwrap_or(0)
-        } else {
-            self.wal_store.stats_without_rescan(shard_id).last_sequence
-        });
+        snapshot.applied_wal_sequence = Some(anchor);
         drop(shards);
         // Release markers are memory-only. Persist complete block indexes in the owned
         // image without undoing eviction in the live shard or holding its read guard.
@@ -146,6 +170,10 @@ impl TemporalEngine {
         if !bulk_ingest_mode() {
             let shards = self.shards.read().expect("engine lock poisoned");
             if let Some(shard) = shards.get(&shard_id) {
+                if shard.checkpoint_wal_sequence().is_none() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
+                        "checkpoint state has an unapplied WAL prefix"));
+                }
                 if shard.bucket_index.released_buckets.is_empty() {
                     return Ok(serialize_index(shard));
                 }
@@ -542,6 +570,7 @@ impl TemporalEngine {
             let mut shards = self.shards.write().expect("engine lock poisoned");
             match shards.get_mut(&shard_id) {
                 Some(shard) => {
+                    let Some(applied_anchor) = shard.checkpoint_wal_sequence() else { return; };
                     if promote_model_maps_to_bucket_index_authority(
                         shard_id,
                         shard,
@@ -564,11 +593,7 @@ impl TemporalEngine {
                     // written by the live process, so it pins the anchor to the WAL
                     // sequence observed before the batch began and lets restart
                     // replay the interleaved tail.
-                    let default_anchor = if bulk_ingest_mode() {
-                        self.wal_store.stats(shard_id).last_sequence
-                    } else {
-                        self.wal_store.stats_without_rescan(shard_id).last_sequence
-                    };
+                    let default_anchor = applied_anchor;
                     let anchor = std::env::var("MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE")
                         .ok()
                         .and_then(|value| value.trim().parse::<u64>().ok())

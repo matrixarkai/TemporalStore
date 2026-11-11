@@ -2490,7 +2490,8 @@ impl TemporalEngine {
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             // Same reasoning as the expiry sweep: a drop that deletes is a
                             // deletion, and it has to reach every log a successor may replay.
-                            if appended.is_ok() {
+                            if let Ok(record) = appended {
+                                shard.note_wal_application(record.sequence, record.sequence);
                                 if let Some(sink) = mirror.as_ref() {
                                     sink.record_write(shard_id, &command);
                                 }
@@ -2499,26 +2500,8 @@ impl TemporalEngine {
                         DELETE_DROP_GUARD_NANOS
                             .add_since(&DELETE_DROP_GUARD_NANOS.wal_append, phase);
                         let phase = std::time::Instant::now();
-                        // Anchor off the O(1) CACHED last sequence, not `stats()`. `stats()`
-                        // takes a full-file `last_wal_sequence_at` rescan plus a walk of every
-                        // sealed piece, and it was taking them HERE -- inside the shard-table
-                        // write guard, after this round's own appends, where a serving read waits
-                        // on it. The write path stopped doing exactly this (engine.rs, and the
-                        // batch path in stream_batch_methods.rs) and reads the cached value under
-                        // flat append; the two logged-deletion paths did not follow.
-                        //
-                        // The value is the same one: the cache is advanced by every append on
-                        // this store, the appends above are this round's own, and no other writer
-                        // can have appended in between because appending takes this same guard
-                        // (engine.rs: "WAL sequence order still equals in-memory apply order
-                        // because the reservation + byte-append stay under this same lock").
-                        // Without flat append the exact `stats()` value is kept, which is the
-                        // same conditional the write path uses.
-                        shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
-                            self.wal_store.cached_last_sequence(shard_id)
-                        } else {
-                            self.wal_store.stats(shard_id).last_sequence
-                        });
+                        // The receipts, not the current log tail, identify what this
+                        // guarded state includes.
                         DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.anchor, phase);
                     }
                     // Stamp here so the clone carries the current on-disk shape, then hand
@@ -2549,7 +2532,7 @@ impl TemporalEngine {
                     shard.index_flush_countdown = shard
                         .index_flush_countdown
                         .saturating_sub(dropped_object_count as u64);
-                    if shard.index_flush_countdown == 0 {
+                    if shard.index_flush_countdown == 0 && shard.checkpoint_wal_sequence().is_some() {
                         shard.index_flush_countdown = self.logged_deletion_index_flush_interval();
                         let phase = std::time::Instant::now();
                         // THE CLONE ONLY EXISTS FOR THE ENCODE. It is here so the encode and both
@@ -3371,14 +3354,8 @@ mod eviction_round_scale {
         );
     }
 
-    /// THE CONTROL for the anchor above, and it is a control in the strict sense: it drives the
-    /// SAME round through the SAME probe and differs only in the one condition the narrowing is
-    /// allowed to depend on.
-    ///
-    /// Without flat append the log's cached sequence is not authoritative, so the anchor must
-    /// still take the exact `stats()` value -- rescan and all. A narrowing that dropped the scan
-    /// unconditionally would satisfy the assertion above while being wrong here, and a probe that
-    /// only ever ran the flat arm could not tell the two apart.
+    /// Successful append receipts remain authoritative when flat append is disabled.
+    /// The round must keep the exact applied boundary without a separate tail scan.
     #[test]
     fn without_flat_append_the_delete_drop_anchor_still_takes_the_exact_sequence() {
         let (_dir, engine) = engine_with(200);
@@ -3395,9 +3372,9 @@ mod eviction_round_scale {
             "the control must have dropped keys, or it constrains nothing: {report:?}",
         );
         assert_eq!(
-            stats_scans, 1,
-            "with the log's length cache refused, the anchor must fall back to the exact \
-             scanning stats() read; took {stats_scans} scans for {} dropped keys",
+            stats_scans, 0,
+            "the round must anchor from its append receipts without a tail scan; \
+             took {stats_scans} scans for {} dropped keys",
             report.dropped_object_count,
         );
         // And the anchor must actually name this round's own tombstones, in either arm. A
@@ -3405,7 +3382,7 @@ mod eviction_round_scale {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let anchored = shards
             .get(&1)
-            .and_then(|shard| shard.applied_wal_sequence)
+            .and_then(|shard| shard.checkpoint_wal_sequence())
             .expect("the round must have anchored");
         drop(shards);
         assert_eq!(
@@ -3464,11 +3441,8 @@ mod eviction_round_scale {
         );
     }
 
-    /// THE CONTROL FOR THE SECOND COPY, and it exists because its absence was found by a mutant
-    /// rather than by reading. `delete_drop` had a non-flat control from the start; the expiry
-    /// sweep did not, so a mutation that dropped the sweep's `stats()` fallback entirely -- making
-    /// it read a sequence the log does not vouch for when the length cache is refused -- passed
-    /// the whole selection. One of two copies guarded is how the other copy keeps the defect.
+    /// Even without flat append, successful append receipts establish the exact applied
+    /// sequence. A separate tail scan would add work and could cover unapplied records.
     #[test]
     fn without_flat_append_the_expiry_sweeps_anchor_still_takes_the_exact_sequence() {
         let (_dir, engine) = engine_with(200);
@@ -3496,15 +3470,15 @@ mod eviction_round_scale {
             "the control must have expired keys, or it constrains nothing: {report:?}",
         );
         assert_eq!(
-            stats_scans, 1,
-            "with the log's length cache refused, the sweep's anchor must fall back to the exact \
-             scanning stats() read; took {stats_scans} scans for {} expired keys",
+            stats_scans, 0,
+            "the sweep must anchor from its append receipts without a tail scan; \
+             took {stats_scans} scans for {} expired keys",
             report.expired_records_removed,
         );
         let shards = engine.shards.read().expect("engine lock poisoned");
         let anchored = shards
             .get(&1)
-            .and_then(|shard| shard.applied_wal_sequence)
+            .and_then(|shard| shard.checkpoint_wal_sequence())
             .expect("the sweep must have anchored");
         drop(shards);
         assert_eq!(

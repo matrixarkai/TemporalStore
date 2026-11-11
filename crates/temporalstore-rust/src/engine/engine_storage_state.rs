@@ -591,6 +591,10 @@ pub(super) struct ShardState {
     /// replay); a missing index file replays the whole retained WAL onto empty state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) applied_wal_sequence: Option<u64>,
+    /// An applied record skipped an unapplied log prefix. Only replay can establish
+    /// a complete state boundary again; do not publish this in-memory image.
+    #[serde(skip)]
+    pub(super) wal_apply_discontinuous: bool,
     /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
     /// bucket. In-memory and ephemeral (serde-skipped, like context_dirty_index); on
     /// restart every bucket resets to 0 (== never touched == evicted first), which
@@ -10048,6 +10052,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
+        wal_apply_discontinuous: _,
         index_format_version: _,
         // The bucket index's own containers are owned elsewhere and are deliberately left alone
         // here, so this pass cannot be blamed for a change in them.

@@ -1662,16 +1662,33 @@ impl LocalWriteAheadLogStore {
         commands: Vec<Command>,
         sync: bool,
     ) -> Result<Vec<WriteAheadLogRecord>, WriteAheadLogError> {
+        self.append_batch_atomic_carried(shard_id, commands, sync, Vec::new())
+            .map(|(records, _)| records)
+    }
+
+    pub(crate) fn append_batch_atomic_carried(
+        &self,
+        shard_id: ShardId,
+        commands: Vec<Command>,
+        sync: bool,
+        mut staged_blocks: Vec<StagedBlock>,
+    ) -> Result<(Vec<WriteAheadLogRecord>, Option<u64>), WriteAheadLogError> {
         if commands.len() <= 1 {
             let mut records = Vec::with_capacity(commands.len());
+            let mut carrier = None;
             if let Some(command) = commands.into_iter().next() {
-                records.push(self.append_with_sync(shard_id, command, sync)?);
+                let (record, log_id) = self.append_with_outcomes(
+                    shard_id, command, sync, staged_blocks, Vec::new(),
+                )?;
+                records.push(record);
+                carrier = Some(log_id);
             }
-            return Ok(records);
+            return Ok((records, carrier));
         }
         let batch_id = next_batch_id();
         let batch_size = commands.len() as u32;
         let mut records = Vec::with_capacity(commands.len());
+        let mut carrier = None;
         let last_sequence;
         let mut batch_end: Option<u64> = None;
         {
@@ -1724,7 +1741,11 @@ impl LocalWriteAheadLogStore {
                     metadata: Some(metadata),
                     // No results on this path, so the operation is what replay has.
                     command: Some(command),
-                    staged_blocks: Vec::new(),
+                    // The final record commits the entire batch. Carry derived pages
+                    // there even when replay uses commands rather than outcomes.
+                    staged_blocks: if index + 1 == batch_size as usize {
+                        std::mem::take(&mut staged_blocks)
+                    } else { Vec::new() },
                     outcomes: Vec::new(),
                 };
                 // Buffer every record (sync=false); the single durability barrier below covers
@@ -1738,6 +1759,10 @@ impl LocalWriteAheadLogStore {
                     Some((&mut batch_file, &mut batch_physical)),
                 )?;
                 inner.stats.last_sequence = report.current_sequence;
+                if index + 1 == batch_size as usize {
+                    let (base, header_len) = cached_wal_base(&mut inner, shard_id)?;
+                    carrier = Some(base.saturating_add(report.offset.saturating_sub(header_len)));
+                }
                 batch_end = Some(report.persistent_bytes);
                 records.push(rec);
             }
@@ -1758,7 +1783,7 @@ impl LocalWriteAheadLogStore {
             // group-commit barrier keeps the durable-watermark bookkeeping consistent.
             self.group_commit_sync(shard_id, last_sequence)?;
         }
-        Ok(records)
+        Ok((records, carrier))
     }
 
     /// The durable barrier, taking its batch window from configuration.

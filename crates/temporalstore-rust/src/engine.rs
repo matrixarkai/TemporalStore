@@ -46,6 +46,8 @@ mod set_index_serde;
 mod zset_index_serde;
 mod seen_index_serde;
 mod bucket_dump_manifest_methods;
+#[path = "engine/wal_application.rs"]
+mod wal_application;
 mod storage_lifecycle_methods;
 pub use storage_lifecycle_methods::{
     eviction_sampler_buckets_scanned, reset_eviction_sampler_buckets_scanned,
@@ -1458,6 +1460,9 @@ impl TemporalEngine {
                 };
                 match append_result {
                     Ok(deferred_seq) => {
+                        if let Some(sequence) = appended_sequence {
+                            shard.note_wal_application(sequence, sequence);
+                        }
                         // The index carries where each staged block landed, so a reload can hand
                         // the mapping back rather than leaving the address unresolvable until a
                         // full replay re-derives the block.
@@ -1529,19 +1534,11 @@ impl TemporalEngine {
                     }
                 }
             }
-            if !config.async_storage && !bulk_ingest_mode() && !replaying_wal() {
-                // Anchor the (in-memory) served index to the WAL sequence it now reflects, so a
-                // later load replays only records written after this point (the
-                // dumped-log-id anchor read back on load). Reading the sequence via `stats()`
-                // triggers a full-file `last_wal_sequence_at` rescan -- an O(records)-per-write cost
-                // under this lock (stack-sampling shows it dominates a warm ingest). Under
-                // flat append anchor off the O(1) cached last sequence (authoritative right after
-                // this write's append) instead; without it the exact `stats()` value is kept.
-                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() || coalesced_apply_batch_active() {
-                    self.wal_store.cached_last_sequence(request.shard_id)
-                } else {
-                    self.wal_store.stats(request.shard_id).last_sequence
-                });
+            if !config.async_storage && !bulk_ingest_mode() && !replaying_wal()
+                && shard.checkpoint_wal_sequence().is_some()
+            {
+                // The append receipt above is the state boundary; a cached or
+                // rescanned tail may include records this shard has not applied.
                 // Append ONLY the blocks this write changed (O(delta)) to the index-log,
                 // advancing the index-log sequence and populating the served-index delta
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
