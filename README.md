@@ -596,6 +596,23 @@ Foundation ─ MatrixCache (multi-layer cache) · MatrixRaft (Rust Raft consensu
 Storage backend (auto) ─ object store → shared filesystem → local + Raft
 ```
 
+### Feature-serving write path
+
+The native Feast path shares field names across a batch and checks event timestamps
+on the serving node. Binary conditional requests borrow value bytes through admission
+and timestamp checks; rejected stale rows do not allocate owned per-feature payloads
+on that path. Accepted rows are encoded into owned packed frames. Complete-row
+overwrites reuse resident field identities and avoid repeated field searches; partial
+updates, older encodings, and mirrored writes retain their compatible paths.
+
+These are allocation and bookkeeping reductions, not weaker acknowledgement rules.
+Synchronous writes still wait for their durability barrier, stale conditional writes
+do not renew TTL, and WAL-backed values remain subject to safe materialization and
+reclamation ordering. Start with the [command provider guide](integrations/feast/feast_temporalstore_command/README.md)
+for configuration and the [benchmark guide](docs/feast_online_store_benchmark.md)
+for matched workloads. Lower copy counts alone do not establish higher saturated
+QPS, lower tail latency, or lower cumulative device writes.
+
 Related Apache-2.0 repositories, public and open to anyone in the world to use, fork and
 contribute to:
 [TemporalStore](https://github.com/matrixarkai/TemporalStore) (engine) ·

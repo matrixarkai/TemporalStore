@@ -141,14 +141,32 @@ default to 4,096 commands and remain capped at 4 MiB of encoded request data.
 Nodes without either binary write route are detected once per client and use
 `/batch_write` or `/batch_execute`:
 
-* **`skip_dedup: false` (default)** — read each row's stored `_ts` field, then
-  write only the rows whose event time is newer. The number of round trips is
-  bounded by batch size, not by the number of rows. This stops an out-of-order materialization
-  moving a feature backwards, and it also deduplicates *within* the call, so
-  two rows sharing an entity key keep the newer one regardless of which was
-  queued last.
-* **`skip_dedup: true`** — skips the timestamp read. Right for an initial load or an
-  append-only pipeline whose rows arrive in order.
+* **`skip_dedup: false` (default)** — the common latest-only, shared-layout path
+  atomically compares the stored event timestamp and writes newer rows on the
+  server, without a preliminary timestamp read. History, teardown tracking,
+  mixed layouts, and older-node fallbacks use a separate timestamp projection
+  and write path; that read-then-write fallback is not an atomic conditional
+  update across concurrent writers. Within a call, rows sharing an entity key
+  retain the newest queued latest value rather than the last arrival.
+* **`skip_dedup: true`** — disables stored-timestamp suppression and uses the
+  unconditional write path. Use it only when input ordering is guaranteed;
+  an older materialization can otherwise replace a newer stored value.
+
+### Payload copies and persistence
+
+The serving node borrows binary conditional-request values until admission and
+timestamp checks finish, then encodes accepted rows into owned packed frames.
+Stale rows avoid owned per-feature payload buffers on this path. Older encodings,
+duplicate-row requests, and mirrored writes can use the owned compatibility path.
+Complete-row overwrite bookkeeping reuses resident field identities; partial
+updates retain the general field-update path.
+
+Small packed rows can remain WAL-backed until safe materialization. This does
+not turn synchronous acknowledgement into asynchronous persistence. Deferred
+materialization, retained file size, cumulative write amplification, and serving
+latency are different measurements; use the
+[benchmark guide](../../../docs/feast_online_store_benchmark.md) before drawing
+cross-store throughput conclusions.
 
 ### `write_feature_history`
 

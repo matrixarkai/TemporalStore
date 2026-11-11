@@ -187,15 +187,23 @@ The benchmark drives both arms through Feast itself, so the only difference betw
 `online_store` block. It reports `get_online_features` p50/p99, materialization throughput, and
 bytes on disk per feature row with the denominator named in the output.
 
-**No numbers are published here yet, and that is deliberate.** The machine this was developed on
-was running a load average between 89 and 109 on 16 cores throughout, with 8.3 GB of disk free —
-too little to install Feast's dependency tree and a Redis alongside it. A p99 taken under that
-load is a measurement of the load. The benchmark therefore reads the load average before and after
-every phase, prints it beside every figure, and **exits non-zero with the latency labelled
-`PROVISIONAL` when the peak exceeds `--max-load`**, so a loaded run cannot be mistaken for a quiet
-one. Run both arms on an idle box and the table fills itself in.
+Use the [benchmark guide](../../docs/feast_online_store_benchmark.md) for the
+current runner, dependencies, matched payloads, durability settings, and result
+interpretation. Report initial materialization, overwrites, stale replay, and
+reads separately. Batch rows/s is not read requests/s, a serial loop is not a
+saturation measurement, and retained files are not cumulative device writes.
+Keep source identity, client versions, concurrency, and host load with every
+result; do not promote a loaded or unmatched run into a general speed claim.
 
-What is verified today: the command coverage table above, both server findings, and the encoding,
-which carries 6 tests that need neither Feast nor a running store. What is not: an end-to-end run
-against a live Feast and a live TemporalStore, and therefore the method signatures against the
-installed `OnlineStore` abstract base class.
+From the repository root, run the offline checks with:
+
+```bash
+python integrations/feast/run_tests.py
+```
+
+The runner reports executed and skipped counts. Install Feast to exercise the
+provider tier; without it, the wire/client checks still run but provider checks
+are skipped. Live conformance additionally needs a running data node; set
+`FEAST_CONFORMANCE_REQUIRED=1` in an environment configured for that node to
+refuse a skipped live tier. An offline pass alone does not qualify distributed
+durability, power-loss recovery, or serving performance.
