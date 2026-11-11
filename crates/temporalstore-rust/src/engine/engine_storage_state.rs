@@ -6819,6 +6819,36 @@ impl BucketNode {
         });
     }
 
+    /// Replace a reconstructed row list, preserving first position and last address per identity.
+    pub(super) fn rebuild_tombstone_elements(&mut self, mut rows: Vec<TombstoneElement>) {
+        let mut positions = HashMap::new();
+        let mut kept = 0;
+        for read in 0..rows.len() {
+            let row = &rows[read];
+            let identity = (row.model_id, Arc::clone(&row.object_key), Arc::clone(&row.element_name));
+            match positions.entry(identity) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let index: usize = *entry.get();
+                    rows[index].block = rows[read].block;
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(kept);
+                    rows.swap(kept, read);
+                    kept += 1;
+                }
+            }
+        }
+        if kept < rows.len() {
+            rows.truncate(kept);
+            rows.shrink_to_fit();
+        }
+        self.tombstone_elements = if rows.is_empty() {
+            TombstoneElements::default()
+        } else {
+            TombstoneElements(Some(Box::new(rows)))
+        };
+    }
+
     /// The block the tombstone for this element names, if this bucket holds one.
     pub(super) fn tombstone_element_block(
         &self,
