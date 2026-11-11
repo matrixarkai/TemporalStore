@@ -12,6 +12,48 @@ fn reset_visits() {
 }
 
 #[test]
+fn empty_retirement_scan_visits_each_registration_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = crate::block_store::BlockStore::new(dir.path().join("blocks"));
+    let wal = LocalWriteAheadLogStore::new(dir.path().join("wal"));
+    let retained: std::collections::HashSet<_> = (1..=10).collect();
+    for object in &retained {
+        register_at(&blocks, 1, *object, None, *object, *object, &wal);
+    }
+    reset_visits();
+    assert!(unreferenced_registrations(&blocks, 1, &wal, &retained).is_empty());
+    assert_eq!(visits(), retained.len());
+}
+
+#[test]
+fn checkpoint_retirement_preserves_replacements_collisions_and_other_logs() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = crate::block_store::BlockStore::new(dir.path().join("blocks"));
+    let wal = LocalWriteAheadLogStore::new(dir.path().join("wal"));
+    let other = LocalWriteAheadLogStore::new(dir.path().join("other-wal"));
+    let collision = wal_resident_key(7, Some("field"));
+    for (object, name, store) in [
+        (1, None, &wal), (2, None, &wal), (7, Some("field"), &wal),
+        (collision, None, &wal), (9, None, &other),
+    ] {
+        register_at(&blocks, 1, object, name, 10, 10, store);
+    }
+    register_at(&blocks, 2, 2, None, 10, 10, &wal);
+    let retained = std::collections::HashSet::from([1, collision]);
+    let candidates = unreferenced_registrations(&blocks, 1, &wal, &retained);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].folded_key, 2);
+    register_at(&blocks, 1, 2, None, 20, 20, &wal);
+    retire_unchanged_registrations(&blocks, 1, &candidates);
+    assert_eq!(registration_count(&blocks, 1), 5);
+    let candidates = unreferenced_registrations(&blocks, 1, &wal, &retained);
+    retire_unchanged_registrations(&blocks, 1, &candidates);
+    assert_eq!(registration_count(&blocks, 1), 4);
+    assert_eq!(registration_count(&blocks, 2), 1);
+    assert_eq!(min_registered_sequence(&blocks, 1, &other), Some(10));
+}
+
+#[test]
 fn count_and_retention_queries_do_not_visit_other_namespaces() {
     let dir = tempfile::tempdir().unwrap();
     let blocks = crate::block_store::BlockStore::new(dir.path().join("blocks"));

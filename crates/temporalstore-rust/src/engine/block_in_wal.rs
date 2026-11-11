@@ -679,6 +679,65 @@ pub(super) fn registration_count(
     map.shard(owner, shard_id).map_or(0, HashMap::len)
 }
 
+pub(super) struct RegistrationRetirement {
+    pub folded_key: u64,
+    pub log_id: u64,
+    pub sequence: u64,
+    block: BlockKey,
+    location: Registration,
+}
+
+/// Propose removals; the caller must publish an image that no longer needs them first.
+pub(super) fn unreferenced_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    store: &LocalWriteAheadLogStore,
+    retained_objects: &std::collections::HashSet<u64>,
+) -> Vec<RegistrationRetirement> {
+    let Ok(map) = registry().lock() else { return Vec::new(); };
+    let owner = block_store.store_id();
+    let mut candidates: Vec<_> = map.entries(owner, shard_id)
+        .filter_map(|(block, location)| {
+            let folded_key = wal_resident_key(block.0, block.1.as_deref());
+            if retained_objects.contains(&block.0) || !location.0.same_log(store)
+            {
+                return None;
+            }
+            Some(RegistrationRetirement {
+                folded_key, log_id: location.1, sequence: location.2,
+                block: block.clone(), location: location.clone(),
+            })
+        })
+        .collect();
+    if !candidates.is_empty() {
+        // Folded placement keys are hashes. Preserve a collision with any retained object.
+        let protected: std::collections::HashSet<_> = map.entries(owner, shard_id)
+            .filter(|((object_id, _), _)| retained_objects.contains(object_id))
+            .map(|((object_id, name), _)| wal_resident_key(*object_id, name.as_deref()))
+            .collect();
+        candidates.retain(|candidate| !protected.contains(&candidate.folded_key));
+    }
+    candidates
+}
+
+/// Called under the shard guard after durable publication. Never remove a replacement.
+pub(super) fn retire_unchanged_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    retirements: &[RegistrationRetirement],
+) {
+    let Ok(mut map) = registry().lock() else { return; };
+    let owner = block_store.store_id();
+    for retirement in retirements {
+        let unchanged = map.shard(owner, shard_id)
+            .and_then(|entries| entries.get(&retirement.block))
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &retirement.location));
+        if unchanged {
+            map.remove(owner, shard_id, &retirement.block);
+        }
+    }
+}
+
 /// Retire one object's registration.
 ///
 /// Called when its block stops being log-resident -- materialised into the block store, so the

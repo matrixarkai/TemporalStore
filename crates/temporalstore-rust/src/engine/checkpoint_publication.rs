@@ -115,6 +115,15 @@ impl CheckpointPublications {
         write()
     }
 
+    /// Check a completed publication without waiting for another publisher's I/O.
+    pub(super) fn is_current_after_publish(&self, captured: &CheckpointPublication) -> bool {
+        let Some(revision) = captured.revision.checked_add(1) else { return false; };
+        self.states.lock().expect("checkpoint map lock poisoned")
+            .get(&captured.shard_id)
+            .is_some_and(|state| Arc::ptr_eq(state, &captured.state)
+                && state.revision.load(Ordering::Acquire) == revision)
+    }
+
     pub(super) fn forget(&self, shard_id: ShardId) {
         let state = self
             .states
@@ -138,6 +147,23 @@ impl CheckpointPublications {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_completed_publication_is_current_only_until_replaced_or_forgotten() {
+        let publications = CheckpointPublications::default();
+        let first = publications.capture(1);
+        assert!(!publications.is_current_after_publish(&first));
+        assert!(publications.publish(&first, || Ok(())).unwrap().is_some());
+        assert!(publications.is_current_after_publish(&first));
+        let next = publications.capture(1);
+        assert!(publications.publish(&next, || Ok(())).unwrap().is_some());
+        assert!(!publications.is_current_after_publish(&first));
+        assert!(publications.is_current_after_publish(&next));
+        publications.forget(1);
+        assert!(!publications.is_current_after_publish(&next));
+        let _ = publications.capture(1);
+        assert!(!publications.is_current_after_publish(&next));
+    }
 
     #[test]
     fn captures_do_not_wait_for_checkpoint_io() {

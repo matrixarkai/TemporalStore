@@ -665,6 +665,37 @@ pub fn bucket_dump_manifest_memo_len() -> usize {
 pub(super) fn clear_bucket_dump_manifest_parse_memo() {
     MANIFEST_PARSE_MEMO.with(|memo| memo.borrow_mut().clear());
     MANIFEST_DIGEST_MEMO.with(|memo| memo.borrow_mut().clear());
+    MANIFEST_WAL_FLOOR_MEMO.with(|memo| memo.borrow_mut().clear());
+}
+
+type ManifestWalFloor = Result<Option<u64>, ()>;
+
+thread_local! {
+    static MANIFEST_WAL_FLOOR_MEMO: std::cell::RefCell<Vec<(std::sync::Weak<BucketDumpManifest>, ManifestWalFloor)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Like the digest memo, a retained allocation identifies immutable manifest bytes.
+pub(super) fn manifest_wal_floor_memoised(
+    manifest: &std::sync::Arc<BucketDumpManifest>,
+    compute: impl FnOnce() -> ManifestWalFloor,
+) -> ManifestWalFloor {
+    let enabled = manifest_parse_memo_enabled();
+    let allocation = std::sync::Arc::downgrade(manifest);
+    if enabled {
+        let cached = MANIFEST_WAL_FLOOR_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.retain(|(manifest, _)| manifest.strong_count() > 0);
+            memo.iter().find(|(held, _)| std::sync::Weak::ptr_eq(held, &allocation))
+                .map(|(_, floor)| *floor)
+        });
+        if let Some(floor) = cached { return floor; }
+    }
+    let floor = compute();
+    if enabled {
+        MANIFEST_WAL_FLOOR_MEMO.with(|memo| memo.borrow_mut().push((allocation, floor)));
+    }
+    floor
 }
 
 struct ManifestDigestEntry {
