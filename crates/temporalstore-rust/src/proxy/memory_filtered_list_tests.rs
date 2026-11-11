@@ -16,6 +16,7 @@ enum Index {
     Duplicate,
     Stalled,
     Tombstone,
+    DeadPrefix,
 }
 
 #[derive(Default)]
@@ -72,12 +73,14 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
                     Command::ZSetScore { member, .. } => {
                         seen.counts.fetch_add(1, Ordering::Relaxed);
                         let count = match member.as_slice() {
+                            MEMORY_TOTAL_MEMBER if matches!(mode, Index::DeadPrefix) => 8,
                             MEMORY_TOTAL_MEMBER => {
                                 total - usize::from(matches!(mode, Index::Tombstone))
                             }
                             b"ualice" | b"rrun-a" => {
                                 8 - usize::from(matches!(mode, Index::Tombstone))
                             }
+                            b"ubob" | b"rrun-b" if matches!(mode, Index::DeadPrefix) => 0,
                             b"ubob" | b"rrun-b" => total - 8,
                             _ => total,
                         };
@@ -141,8 +144,9 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
                                 if catalog {
                                     Some(record(tenant, ordinal).encode())
                                 } else {
-                                    (ordinal == 0 && matches!(mode, Index::Tombstone))
-                                        .then(|| vec![1])
+                                    ((ordinal == 0 && matches!(mode, Index::Tombstone))
+                                        || (ordinal >= 8 && matches!(mode, Index::DeadPrefix)))
+                                    .then(|| vec![1])
                                 }
                             })
                             .collect::<Vec<_>>();
@@ -241,6 +245,16 @@ fn dense_and_small_memory_lists_keep_the_first_page_fast_path() {
         assert_eq!(reads.counts.load(Ordering::Relaxed), 0);
         assert_eq!(reads.postings.load(Ordering::Relaxed), 0);
     }
+}
+
+#[test]
+fn small_identity_listing_skips_a_large_deleted_order_prefix() {
+    let (proxy, reads) = fixture(4_096, Index::DeadPrefix);
+    assert_eq!(list(&proxy, "alice", "")["memories"], 4);
+    assert_eq!(
+        reads.catalog.load(Ordering::Relaxed),
+        MEMORY_CATALOG_PAGE_SIZE + 8
+    );
 }
 
 #[test]

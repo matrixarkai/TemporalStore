@@ -963,7 +963,8 @@ impl ProxyService {
             .min_by_key(|(_, count)| *count)?;
         if matched > total
             || matched > MEMORY_LIST_IDENTITY_CANDIDATE_LIMIT
-            || (matched as u128) * (matched as u128) > (total as u128) * (remaining as u128)
+            || (matched > MEMORY_CATALOG_PAGE_SIZE
+                && (matched as u128) * (matched as u128) > (total as u128) * (remaining as u128))
         {
             return None;
         }
