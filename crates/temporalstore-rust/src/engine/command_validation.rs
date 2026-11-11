@@ -1331,7 +1331,36 @@ pub(super) fn cached_bytes_with<R>(
 mod borrowed_cache_tests;
 
 pub(super) fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
-    if cache.peek(&key) {
-        let _ = cache.invalidate(&key);
+    invalidate_if_cached_ref(cache, &key);
+}
+
+#[inline]
+fn invalidate_if_cached_ref(cache: &MultiLayerCache, key: &CacheKey) {
+    if cache.peek(key) {
+        let _ = cache.invalidate(key);
     }
 }
+
+/// Reuse one detached key while invalidating fields of the same hash record.
+pub(super) struct HashFieldCacheInvalidator<'a> {
+    cache: &'a MultiLayerCache,
+    key: CacheKey,
+}
+
+impl<'a> HashFieldCacheInvalidator<'a> {
+    pub(super) fn new(cache: &'a MultiLayerCache, shard_id: ShardId, key: &str) -> Self {
+        Self { cache, key: CacheKey::hash(shard_id, key, "") }
+    }
+
+    #[inline]
+    pub(super) fn invalidate(&mut self, field: &str) {
+        let selector = self.key.selector.to_mut();
+        selector.clear();
+        selector.push_str(field);
+        invalidate_if_cached_ref(self.cache, &self.key);
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/hash_invalidation_keys.rs"]
+mod hash_invalidation_key_tests;
