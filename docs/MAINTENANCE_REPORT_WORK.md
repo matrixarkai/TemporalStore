@@ -14,10 +14,17 @@ This is a CPU/temporary-memory tradeoff, not a reduction in resident index size.
 Only the current bucket's deleted identities are indexed; the map is dropped
 before the next bucket. The existing whole-shard entry vector is unchanged.
 
+Live-only mutations also preserve already-reconciled tombstone rows. A known fresh
+append, or removal of an actual live block, updates layout counts immediately
+without rebuilding the deleted-block membership set. Deleted-block removal,
+tombstone sweeps, unknown/replayed installs, and rebuilds keep full reconciliation.
+This does not defer work across commands or weaken the final bucket invariants.
+
 ## Checks
 
 ```bash
 cargo test -p temporalstore-rust --lib maintenance_tombstone_walk_tests -- --test-threads=1
+cargo test -p temporalstore-rust --lib live_block_layout_tests -- --test-threads=1
 cargo test -p temporalstore-rust --lib bucket_filing_range -- --test-threads=1
 cargo test -p temporalstore-rust --lib reclaim -- --test-threads=1
 cargo test -p temporalstore-rust --lib proxy::memory -- --test-threads=1

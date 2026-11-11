@@ -4738,13 +4738,13 @@ pub(super) fn drop_vacated_live_block(
     for block_ref in targets {
         let removed = if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) {
             let removed = bucket.block_index.remove(&block_ref.block_ref_key,
-                &mut shard.bucket_index.block_slab_live, crate::engine::state::StaleCause::Removed).is_some();
-            if removed {
+                &mut shard.bucket_index.block_slab_live, crate::engine::state::StaleCause::Removed);
+            if let Some(removed) = &removed {
                 bucket.set_dirty(true);
                 bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-                classify_bucket_layout_in_place(&mut bucket);
+                classify_bucket_layout_after_block_removal(&mut bucket, removed);
             }
-            removed
+            removed.is_some()
         } else { false };
         if removed {
             shard.bucket_index.remove_object_block_lookup_ref(kind, object_key, None, &block_ref);
@@ -5414,15 +5414,14 @@ fn upsert_bucket_index_block_inner(
                     &block_ref.block_ref_key,
                     &mut shard.bucket_index.block_slab_live,
                     crate::engine::state::StaleCause::Overwrite,
-                )
-                .is_some();
-            if removed {
+                );
+            if let Some(removed) = &removed {
                 // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THIS OBJECT,
                 // answered from its slot above rather than by naming every block in the bucket.
                 if !buckets_still_holding.contains(&block_ref.routing_bucket) {
                     bucket.object_index.remove(&object_id);
                 }
-                classify_bucket_layout_in_place(&mut bucket);
+                classify_bucket_layout_after_block_removal(&mut bucket, removed);
             }
         }
     }
@@ -5547,12 +5546,20 @@ fn upsert_bucket_index_block_inner(
         // the whole defect; this is the same line, on the per-element door.
         bucket.deleted_object_index.remove(&object_id);
         // The handle the map assigns is what the lookup records, so the two cannot disagree.
+        let blocks_before_insert = bucket.block_index.len();
         block_ref_key = bucket.insert_block(
             &filed_object_key,
             block_index.clone(),
             &mut shard.bucket_index.block_slab_live,
         );
-        classify_bucket_layout_in_place(&mut bucket);
+        if matches!(replaces, ReplacedBlock::Appended)
+            && bucket.block_index.len() > blocks_before_insert
+        {
+            // This frame is fresh. Any deleted block swept above was already reconciled there.
+            classify_bucket_layout_preserving_tombstones(&mut bucket);
+        } else {
+            classify_bucket_layout_in_place(&mut bucket);
+        }
         touched_buckets.push(routing_bucket);
     }
     shard
@@ -5995,14 +6002,36 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 /// inserts, superseding overwrites, expiries and deletes. Reconstruct paths, which build
 /// `bucket_map` from block entries where nothing maintained the set, keep the full rebuild.
 pub(super) fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
-    // THE TOMBSTONE ROWS ARE PUT BACK IN STEP HERE, which is the lighter of the two passes every
-    // bucket mutation funnels through. A row whose block carries no deleted entry any more
-    // describes a tombstone that is gone, and deriving that from the blocks is what keeps the rows
-    // from being a second statement of the entries that can drift from them. Early-returns on an
-    // empty row list, so a bucket that has never had a removal pays one `is_empty`.
+    // Reconcile when a mutation can orphan a marker. Live-only additions/removals use the
+    // narrower layout update below: they cannot invalidate an already-reconciled deleted row.
     bucket.reconcile_tombstone_elements();
+    #[cfg(test)]
+    TOMBSTONE_LAYOUT_PASSES.with(|count| count.set(count.get() + 1));
+    classify_bucket_layout_preserving_tombstones(bucket);
+}
+
+// Only for mutations that leave every existing tombstone's deleted block present.
+fn classify_bucket_layout_preserving_tombstones(bucket: &mut BucketNode) {
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
+
+fn classify_bucket_layout_after_block_removal(bucket: &mut BucketNode, removed: &BlockIndex) {
+    if removed.deleted() {
+        classify_bucket_layout_in_place(bucket);
+    } else {
+        // Removing a live block cannot orphan a row that names a deleted block.
+        classify_bucket_layout_preserving_tombstones(bucket);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TOMBSTONE_LAYOUT_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+#[path = "live_block_layout_tests.rs"]
+mod live_block_layout_tests;
 
 /// Blocks visited by `update_bucket_layout`, attributed to the CALL SITE that asked for it.
 ///
