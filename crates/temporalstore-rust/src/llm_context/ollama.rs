@@ -363,12 +363,20 @@ impl OllamaProvider {
             });
         }
 
+        // Validate the complete input plan before spending inference on its prefix.
+        let mut batch_ends = Vec::with_capacity(texts.len().div_ceil(self.config.max_batch_items));
+        let mut start = 0usize;
+        while start < texts.len() {
+            let end = self.embedding_batch_end(texts, start)?;
+            batch_ends.push(end);
+            start = end;
+        }
+
         let mut dimensions = 0usize;
         let mut values = Vec::new();
         let mut request_body = Vec::new();
         let mut start = 0usize;
-        while start < texts.len() {
-            let end = self.embedding_batch_end(texts, start)?;
+        for end in batch_ends {
             let request = OllamaEmbedRequest {
                 model: &self.config.embedding_model,
                 input: &texts[start..end],
@@ -404,7 +412,6 @@ impl OllamaProvider {
                 }
                 if dimensions == 0 {
                     dimensions = vector.len();
-                    values.reserve(texts.len().saturating_mul(dimensions));
                 } else if vector.len() != dimensions {
                     return Err(OllamaError::EmbeddingDimensions {
                         expected: dimensions,

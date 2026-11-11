@@ -108,3 +108,27 @@ low-latency searches. This checks candidate availability and bounds, not semanti
 exact-target recall. Per-route sample counts are included; management routes with one sample do
 not establish a reliable tail-latency distribution. Storage bytes are measured after management
 operations, not at the peak of ingestion.
+
+## Local model allocation check
+
+The embedding client validates the complete batch plan before making model calls. An invalid
+tail therefore does not spend inference on earlier inputs in that call. Output assembly reuses
+the first response buffer without reserving and discarding a second full output matrix.
+
+Run the offline allocation and admission regressions with:
+
+```bash
+cargo test --release -p temporalstore-rust --test ollama_embedding_allocation -- --nocapture
+```
+
+For an embedding-only check against an already installed Ollama model:
+
+```bash
+TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL=all-minilm \
+  cargo test --release -p temporalstore-rust --test ollama_embedding_allocation \
+  embedding_output_reserves_aggregate_storage_once_with_live_model -- --ignored --nocapture
+```
+
+This diagnostic writes no stored memories and does not change the serving model. Its counters
+measure output-sized allocation requests on the caller thread, not process RSS, model quality,
+or end-to-end extraction/retrieval performance.
