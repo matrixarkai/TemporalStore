@@ -393,6 +393,7 @@ fn written_hash_fields<'a, 'b>(
 }
 
 pub(super) fn install_packed_hash_block_at_bucket<'a>(
+    cache: &matrixcache::MultiLayerCache,
     shard: &mut ShardState,
     shard_id: ShardId,
     routing_bucket: u32,
@@ -440,6 +441,13 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
     } else {
         super::storage_bucket_internals::ReplacedBlock::none()
     };
+    // Only frames unused by surviving fields are retired; partial updates keep shared frames.
+    replaces.visit(|(slab, offset, length)| {
+        super::command_validation::invalidate_if_cached(
+            cache,
+            matrixcache::CacheKey::page_with_slot(shard_id, slab, offset, length, Some(routing_bucket)),
+        );
+    });
     // Replay expands the framed block into every field; one filed outcome records the whole row.
     let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed_at_bucket(
         shard,

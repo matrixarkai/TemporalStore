@@ -194,7 +194,7 @@ fn shared_hash_fields_complete_overwrites_avoid_per_field_searches() {
         for (hint, expected_searches) in [(Some(&shared), 0), (None, 2 * width),
             (Some(&mismatched), 2 * width)] {
             reset_binary_search_count_for_test();
-            install_packed_hash_block_at_bucket(shard, 1, bucket, object, key,
+            install_packed_hash_block_at_bucket(&engine.cache, shard, 1, bucket, object, key,
                 fields.iter().map(String::as_str), address.clone(), hint);
             assert_eq!(binary_search_count_for_test(), expected_searches as u64,
                 "width {width}; exact full coverage must avoid searches, fallback is the control");

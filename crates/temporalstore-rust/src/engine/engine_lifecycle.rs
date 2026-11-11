@@ -2160,7 +2160,7 @@ impl TemporalEngine {
                 let routing_bucket = super::hashing::block_routing_bucket(&item.object_key, start, end);
                 let object_id = super::stable_block_object_id(shard_id, "hash", &item.object_key);
                 super::recorded_map::install_packed_hash_block_at_bucket(
-                    shard, shard_id, routing_bucket, object_id, &item.object_key,
+                    &self.cache, shard, shard_id, routing_bucket, object_id, &item.object_key,
                     fields.iter().map(String::as_str), address, None,
                 );
                 true

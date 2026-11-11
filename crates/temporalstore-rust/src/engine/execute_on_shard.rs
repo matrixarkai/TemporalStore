@@ -918,7 +918,7 @@ fn write_packed_hash_entries(
     let filed = match address {
         Ok(address) => {
             super::recorded_map::install_packed_hash_block_at_bucket(
-                shard, shard_id, routing_bucket, object_id, key,
+                cache, shard, shard_id, routing_bucket, object_id, key,
                 packed_entries.iter().map(|(field, _)| field.as_str()), address, shared_fields,
             );
             let mut invalidator = HashFieldCacheInvalidator::new(cache, shard_id, key);

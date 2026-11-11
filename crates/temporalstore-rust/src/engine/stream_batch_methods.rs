@@ -10,6 +10,14 @@ use serde::ser::SerializeSeq;
 #[path = "hash_batch_filed_tests.rs"]
 mod hash_batch_filed_tests;
 
+#[cfg(all(test, feature = "alloc-probe"))]
+#[path = "tests/feature_batch_cost.rs"]
+mod feature_batch_cost_tests;
+
+#[cfg(test)]
+#[path = "tests/packed_hash_cache_reclaim.rs"]
+mod packed_hash_cache_reclaim_tests;
+
 #[cfg(test)]
 thread_local! {
     static HASH_BATCH_EXPANSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
