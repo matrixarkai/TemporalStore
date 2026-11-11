@@ -1632,6 +1632,7 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     }
     write_keys(&engine, 1, seed);
     engine.flush_shard_index(1);
+    let seeded_index = std::fs::read(engine.index_path(1)).expect("the seeded index reads");
 
     /// (the WAL anchor of the manifest that is newest in INDEX-LOG order, the highest WAL anchor
     /// over every manifest on disk). Equal on a shard whose two manifest orderings agree; the
@@ -1831,6 +1832,12 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     observe(&engine, "reclaimed after expiry");
     cycle(&engine);
     observe(&engine, "settled");
+
+    // Current reclaim publication refreshes the base before authorizing collection. Restore
+    // the earlier durable base explicitly so the cold-load probe must use the newer manifest,
+    // rather than relying on the normal cycle to leave that older ordering on disk.
+    std::fs::write(engine.index_path(1), seeded_index).expect("restore the earlier base image");
+    observe(&engine, "earlier base with settled manifest");
 
     // VACUITY GUARD, on the scan rather than on any one state. If the base index file's anchor
     // had tracked the frontier the whole way, the base alone would have covered every reclaim and

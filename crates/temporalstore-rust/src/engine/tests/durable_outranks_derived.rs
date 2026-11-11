@@ -2753,14 +2753,15 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         fields.len()
     );
 
-    // REPLAYED INTO A STORE THAT DOES NOT HAVE THE BLOCKS. The log is rebuilt from the records and
-    // the block directory is NOT copied, so the address route fails the way async storage makes it
-    // fail in the wild -- the block is simply not there.
+    // Neither the new store nor its replay input has a readable block. Named blocks carried by
+    // current records would otherwise satisfy the lookup despite the missing slab directory.
     let into = tempfile::tempdir().unwrap();
     let fresh = engine_on(into.path());
     let log = fresh.write_ahead_log_store();
     for record in &records {
-        log.append_replayed_record(record.clone())
+        let mut record = record.clone();
+        record.staged_blocks.clear();
+        log.append_replayed_record(record)
             .expect("the replayed record appends");
     }
     crate::engine::lifecycle::reset_outcome_element_name_sources();
@@ -2802,6 +2803,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         expected, held,
         "the replay restored {held:?} and the write touched {expected:?}"
     );
+    assert_eq!(from_block, 0, "the fixture must leave no readable block");
     assert!(
         from_element_name >= fields.len() as u64,
         "the fallback reports {from_element_name} resolutions from the outcome's own name for {} \

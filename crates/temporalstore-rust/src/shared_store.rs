@@ -10380,15 +10380,15 @@ mod tests {
         // Counting from before load makes the assertion robust to warm-on-load either way.
         let reads_before = follower.block_store().stats().reads;
         follower.load_shard(1);
+        let disk_read = follower.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "disk-key".to_string(),
+            },
+        });
+        assert!(disk_read.status.ok, "checkpoint read failed: {disk_read:?}");
         assert_eq!(
-            follower
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::StringGet {
-                        key: "disk-key".to_string()
-                    },
-                })
-                .response,
+            disk_read.response,
             CommandResponse::Bytes {
                 value: Some(b"disk-value".to_vec())
             }

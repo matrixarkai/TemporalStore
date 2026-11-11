@@ -122,6 +122,8 @@ mod block_in_wal;
 pub(crate) use block_in_wal::clear_store_registrations;
 mod checkpoint_publication;
 #[cfg(test)]
+mod replay_scratch;
+#[cfg(test)]
 mod checkpoint_page_cost;
 #[path = "engine/engine_storage_state.rs"]
 mod state;
@@ -1324,13 +1326,9 @@ impl TemporalEngine {
             // commit). Block/index materialization stays deferred to dump.
             // Drain what this execution recorded, on EVERY path -- not only the ones that go
             // on to append. Staging happens during execution, but the append below is guarded,
-            // so any write that does not reach it left its items sitting in the thread's
-            // buffer for whatever wrote next on that thread to adopt as its own. Replay is the
-            // loud case: it re-executes commands with `replaying_wal()` true, stages an item
-            // for everything it re-applies, and appends none of it -- so the first write after
-            // a recovery inherited the recovery's items and recorded them as changes it had
-            // made itself. A later replay then installs them, and if one cannot be applied it
-            // aborts the whole shard load, taking unrelated keys down with it.
+            // so any write that does not reach it must leave nothing for the next write on
+            // this thread to adopt. Replay emits no outgoing outcomes at the staging boundary;
+            // other no-append paths still need this drain.
             // Nothing can be staged while recording is off, because the staging function is
             // where that is now decided -- so there is nothing left here to clear.
             let mut staged_outcomes = block_in_wal::take_outcomes();
