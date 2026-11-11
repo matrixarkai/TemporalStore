@@ -9077,39 +9077,11 @@ pub(super) fn resident_highest_block_id(
     model_id: &str,
     object_key: &str,
 ) -> Option<u64> {
-    #[cfg(test)]
-    SIBLING_SCAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    // TWO BODIES, SO A RELEASE BUILD IS BYTE-IDENTICAL TO WHAT IT WAS. The counted one exists only
-    // under `cfg(test)`; the shipped one is the expression this function has always had. An
-    // instrument that costs the write path two atomic increments per container insert would be
-    // paying for its own measurement forever, on a path this arm exists to show is already too
-    // expensive.
-    #[cfg(test)]
-    fn highest<'a>(addresses: impl Iterator<Item = &'a ElementEntry>) -> Option<u64> {
-        let mut examined = 0u64;
-        let highest = addresses
-            .inspect(|_| examined += 1)
-            .filter_map(ElementEntry::block_id)
-            .max();
-        SIBLING_SCAN_ELEMENTS.fetch_add(examined, std::sync::atomic::Ordering::Relaxed);
-        highest
-    }
-    #[cfg(not(test))]
-    fn highest<'a>(addresses: impl Iterator<Item = &'a ElementEntry>) -> Option<u64> {
-        addresses.filter_map(ElementEntry::block_id).max()
-    }
     match model_id {
-        "hash" => highest(shard.bucket_index.hashes.get(object_key)?.values()),
-        "set" => highest(shard.bucket_index.sets.get(object_key)?.values()),
-        "zset" => highest(
-            shard
-                .bucket_index.zsets
-                .get(object_key)?
-                .values()
-                .map(|(_, address)| address),
-        ),
-        "list" => highest(shard.bucket_index.lists.get(object_key)?.values()),
+        "hash" => shard.bucket_index.hashes.highest_block_id(object_key),
+        "set" => shard.bucket_index.sets.highest_block_id(object_key),
+        "zset" => shard.bucket_index.zsets.highest_block_id(object_key),
+        "list" => shard.bucket_index.lists.highest_block_id(object_key),
         _ => None,
     }
 }
