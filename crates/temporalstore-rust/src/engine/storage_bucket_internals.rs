@@ -1285,7 +1285,7 @@ fn note_live_block_scan(count: usize) {
     }
 }
 
-fn note_bucket_block_visits(count: usize) {
+pub(super) fn note_bucket_block_visits(count: usize) {
     BUCKET_BLOCK_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
     STAGE_BUCKET_BLOCK_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 }

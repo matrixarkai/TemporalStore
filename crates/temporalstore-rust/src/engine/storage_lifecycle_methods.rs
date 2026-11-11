@@ -1549,7 +1549,7 @@ impl TemporalEngine {
 
     pub fn apply_storage_wal_reclaim(
         &self,
-        plan: StorageWalReclaimPlan,
+        mut plan: StorageWalReclaimPlan,
     ) -> StorageWalReclaimReport {
         if !plan.safe_to_reclaim {
             return StorageWalReclaimReport {
@@ -1571,11 +1571,52 @@ impl TemporalEngine {
             plan.shard_id,
             plan.durable_bucket_generation_frontier_wal_sequence,
         );
-        match super::block_in_wal::min_registered_sequence(
+        let manifests = match list_bucket_dump_manifests_shared_at(&self.index_dir, plan.shard_id) {
+            Ok(manifests) => manifests,
+            Err(_) => {
+                plan.blocker_reasons.push("retained_dump_listing_unreadable".into());
+                return StorageWalReclaimReport {
+                    plan, applied: false, ..StorageWalReclaimReport::default()
+                };
+            },
+        };
+        let mut manifest_floor = None;
+        for manifest in &manifests {
+            let floor = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
+                let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
+                let floor = snapshot.wal_resident_blocks.values().map(|placement| placement.sequence).min();
+                let mut visited = 0;
+                let indexed_wal = snapshot.bucket_index.bucket_map.values()
+                    .flat_map(|bucket| bucket.block_index.values()).any(|block| {
+                        visited += 1;
+                        crate::wal_record::is_wal_resident(block.address.block_slab_id())
+                    });
+                storage_bucket_internals::note_bucket_block_visits(visited);
+                let needs_wal = indexed_wal
+                    || storage_bucket_internals::collect_model_live_block_entries(&snapshot).iter().any(|entry| {
+                    crate::wal_record::is_wal_resident(entry.address.block_slab_id())
+                });
+                // Placement metadata can outlive its frames. A legacy frame without
+                // a placement, however, cannot prove a narrower retention floor.
+                Ok(if needs_wal { Some(floor.unwrap_or(0)) } else { None })
+            });
+            match floor {
+                Ok(Some(sequence)) => manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence))),
+                Ok(None) => {},
+                Err(()) => {
+                    plan.blocker_reasons.push(format!("retained_dump_index_unreadable:{}", manifest.manifest_id));
+                    return StorageWalReclaimReport {
+                        plan, applied: false, ..StorageWalReclaimReport::default()
+                    };
+                },
+            }
+        }
+        let registered_floor = super::block_in_wal::min_registered_sequence(
             &self.block_store,
             plan.shard_id,
             &self.wal_store,
-        ) {
+        );
+        match registered_floor.into_iter().chain(manifest_floor).min() {
             Some(sequence) => self.wal_store.set_block_retention_floor(plan.shard_id, sequence),
             None => self.wal_store.clear_block_retention_floor(plan.shard_id),
         }

@@ -1164,7 +1164,7 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
 ///
 /// rust-internal: prices the engine's own maintenance walk, no product behaviour
 #[test]
-fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
+fn summary_walk_measurement_tracks_the_combined_summary_entry_point() {
     let mut rows: Vec<(usize, u64, u64, usize)> = Vec::new();
 
     for records in [SMALL, LARGE] {
@@ -1191,9 +1191,14 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
         // under. The per-site tally is keyed by `file:line` of the caller, so calling the walk on
         // its own with the tally cleared makes the key SELF-LOCATING: exactly one site is charged
         // and it is this walk's. Nothing below has to hard-code a line number that drifts.
+        let full = full_live_block_summaries(shard, start, end);
         crate::engine::reset_live_block_scan_entries();
         crate::engine::reset_live_block_scan_sites();
-        let full = full_live_block_summaries(shard, start, end);
+        // The cycle uses the combined summary/digest entry point. Calibrate that
+        // call site while keeping the standalone summary as the membership oracle.
+        let _ = crate::engine::storage_reporting::bucket_summaries_and_digests(
+            1, shard, start, end, true,
+        );
         let one_walk = crate::engine::live_block_scan_entries();
         let charged = crate::engine::live_block_scan_sites_snapshot();
         assert_eq!(
@@ -1230,7 +1235,9 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
         // different quantities, and the first form of this assertion did exactly that (39,860
         // charged against 20,000 returned). `one_walk` was charged by the SAME call under the
         // SAME shard state a moment ago, so it is the plant this span can recover exactly.
-        let _ = full_live_block_summaries(shard, start, end);
+        let _ = crate::engine::storage_reporting::bucket_summaries_and_digests(
+            1, shard, start, end, true,
+        );
         let recovered = crate::engine::live_block_scan_entries();
         assert_eq!(
             recovered, one_walk,

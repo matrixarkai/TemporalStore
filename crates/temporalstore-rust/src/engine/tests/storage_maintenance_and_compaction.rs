@@ -2044,7 +2044,7 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
 
 // shared-corpus: storage_data_structure_api_parity
 #[test]
-fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surfaces() {
+fn storage_api_readiness_requires_a_durable_dump() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2076,6 +2076,9 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     });
     assert!(response.status.ok, "{response:?}");
 
+    let initial = engine.storage_data_structure_api_parity_report(1);
+    assert!(!initial.storage_manager_merged_dump_load_api_ready);
+    engine.create_bucket_dump_manifest(1, []).unwrap();
     let report = engine.storage_data_structure_api_parity_report(1);
     assert!(report.ready, "{report:?}");
     assert!(report.bucket_object_block_authority_ready);
@@ -3038,34 +3041,43 @@ fn expiry_sweep_removes_expired_records_without_lazy_read() {
 }
 
 #[test]
-fn string_get_uses_memory_cache() {
+fn string_get_populates_cache_once_then_hits_memory() {
     let dir = tempfile::tempdir().unwrap();
     let cache = MultiLayerCache::new(1024, dir.path());
     let engine = TemporalEngine::new(cache.clone());
     engine.load_shard(1);
-    engine.execute(ExecuteRequest {
+    let write = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
             key: "k".to_string(),
             value: b"v".to_vec(),
         },
     });
-    engine.execute(ExecuteRequest {
+    assert!(write.status.ok);
+    cache.invalidate_shard(1).unwrap();
+    let before = cache.stats();
+    let cold_read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
             key: "k".to_string(),
         },
     });
-    engine.execute(ExecuteRequest {
+    assert!(cold_read.status.ok);
+    assert_eq!(cold_read.response, CommandResponse::Bytes { value: Some(b"v".to_vec()) });
+    let cold = cache.stats();
+    assert_eq!(cold.misses, before.misses + 1);
+    assert!(cold.puts > before.puts);
+    let warm_read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
             key: "k".to_string(),
         },
     });
-    let stats = cache.stats();
-    assert_eq!(stats.misses, 2);
-    assert!(stats.memory_hits >= 1);
-    assert!(stats.puts >= 2);
+    assert!(warm_read.status.ok);
+    assert_eq!(warm_read.response, CommandResponse::Bytes { value: Some(b"v".to_vec()) });
+    let warm = cache.stats();
+    assert_eq!(warm.misses, cold.misses);
+    assert!(warm.memory_hits > cold.memory_hits);
 }
 
 // shared-corpus: context_dirty_coalescing_is_visible
