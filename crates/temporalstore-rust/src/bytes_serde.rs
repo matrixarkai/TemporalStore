@@ -78,6 +78,49 @@ pub(crate) mod binary {
     }
 }
 
+pub(crate) mod borrowed_binary {
+    use super::*;
+    use std::borrow::Cow;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Cow<'de, [u8]>, D::Error> {
+        deserializer.deserialize_any(BorrowedOrOwned)
+    }
+
+    struct BorrowedOrOwned;
+
+    impl<'de> Visitor<'de> for BorrowedOrOwned {
+        type Value = Cow<'de, [u8]>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            EitherShape.expecting(formatter)
+        }
+
+        fn visit_borrowed_bytes<E: Error>(self, value: &'de [u8]) -> Result<Self::Value, E> {
+            Ok(Cow::Borrowed(value))
+        }
+
+        fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+            Ok(Cow::Owned(value.to_vec()))
+        }
+
+        fn visit_byte_buf<E: Error>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+            Ok(Cow::Owned(value))
+        }
+
+        fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+            EitherShape.visit_str(value).map(Cow::Owned)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+            EitherShape.visit_seq(seq).map(Cow::Owned)
+        }
+    }
+}
+
 pub(crate) struct EitherShape;
 
 impl<'de> Visitor<'de> for EitherShape {

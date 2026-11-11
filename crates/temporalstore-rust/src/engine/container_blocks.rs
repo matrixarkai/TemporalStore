@@ -571,16 +571,17 @@ where
     K: AsRef<[u8]>,
     V: AsRef<[u8]>,
 {
+    encode_utf8_container_iter(items.iter().map(|(key, value)| (key.as_ref(), value.as_ref())))
+}
+
+pub(super) fn encode_utf8_container_iter<'a>(
+    items: impl Iterator<Item = (&'a [u8], &'a [u8])> + Clone + ExactSizeIterator,
+) -> Vec<u8> {
     encode_live_container_block(
         ElementKeySpelling::Utf8,
         items.len(),
-        items
-            .iter()
-            .map(|(key, value)| (key.as_ref(), value.as_ref())),
-        items
-            .iter()
-            .map(|(key, value)| key.as_ref().len() + value.as_ref().len() + 6)
-            .sum(),
+        items.clone(),
+        items.map(|(key, value)| key.len() + value.len() + 6).sum(),
     )
 }
 

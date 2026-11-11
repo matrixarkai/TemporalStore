@@ -147,7 +147,7 @@ fn packed_hash_completion_marker_excludes_empty_and_scalar_writes() {
     assert!(outcome.mutated && filed.is_some());
     let (outcome, _, filed) = execute_packed_conditional_hash_write_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true,
-        key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None);
+        key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None, None);
     assert!(outcome.mutated && filed.is_none(), "expiry alone is not a completed packed write");
     let _ = crate::engine::block_in_wal::take_outcomes();
 }

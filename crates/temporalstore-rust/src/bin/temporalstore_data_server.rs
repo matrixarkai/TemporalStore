@@ -25,7 +25,7 @@ use temporalstore_rust::data_node::{
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    get_bytes_with_headers, json_response, msgpack_response, parse_json, parse_msgpack, post_json,
+    get_bytes_with_headers, json_response, msgpack_response, parse_json, parse_msgpack, parse_msgpack_borrowed, post_json,
     post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
     HttpRequestOptions, StreamAction, StreamTransfer,
 };
@@ -42,7 +42,7 @@ use temporalstore_rust::raft::{
 };
 use temporalstore_rust::types::{
     BatchExecuteRequest, BatchHashMultiGetRequest, BatchHashMultiSetRequest,
-    BatchHashTimestampSetRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
+    BorrowedHashTimestampRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
     ReplicatedExecuteRequest, ShardId, Status,
 };
 use temporalstore_rust::{
@@ -1109,13 +1109,13 @@ fn main() {
             }
             ("POST", "/batch_hash_timestamp_set_msgpack")
             | ("POST", "/batch_hash_timestamp_set_ttl_msgpack") => {
-                match parse_msgpack::<BatchHashTimestampSetRequest>(&request.body) {
+                match parse_msgpack_borrowed::<BorrowedHashTimestampRequest<'_>>(&request.body) {
                     Ok(req)
                         if req.rows.len() <= 4096
                             && req.fields.len() <= 4096
                             && req.rows.len().saturating_mul(req.fields.len()) <= 1_000_000 =>
                     {
-                        msgpack_response(200, &runtime.batch_hash_timestamp_set(req))
+                        msgpack_response(200, &runtime.batch_hash_timestamp_set_borrowed(req))
                     }
                     Ok(_) => json_response(
                         400,

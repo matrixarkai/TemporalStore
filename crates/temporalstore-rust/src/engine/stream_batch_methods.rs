@@ -86,6 +86,8 @@ fn push_array_len(body: &mut Vec<u8>, len: usize) -> bool {
     true
 }
 
+use crate::types::{BorrowedHashTimestampRequest, BorrowedHashTimestampRow, BorrowedHashValue};
+
 enum BatchCommandSource<'a> {
     Commands(std::vec::IntoIter<Command>),
     SharedHashRows {
@@ -99,6 +101,14 @@ enum BatchCommandSource<'a> {
         timestamp_field: Option<String>,
         ttl_ms: Option<u64>,
         rows: std::vec::IntoIter<BatchHashTimestampSetRow>,
+        completed_keys: &'a mut Vec<String>,
+    },
+    BorrowedTimestampRows {
+        entries: Vec<(String, Vec<u8>)>,
+        timestamp_field: Option<String>,
+        ttl_ms: Option<u64>,
+        rows: std::vec::IntoIter<BorrowedHashTimestampRow<'a>>,
+        current_values: Vec<BorrowedHashValue<'a>>,
         completed_keys: &'a mut Vec<String>,
     },
 }
@@ -219,11 +229,22 @@ impl BatchCommandSource<'_> {
             Self::Commands(commands) => commands.len(),
             Self::SharedHashRows { rows, .. } => rows.len(),
             Self::SharedTimestampRows { rows, .. } => rows.len(),
+            Self::BorrowedTimestampRows { rows, .. } => rows.len(),
         }
     }
 
     fn next_command(&mut self) -> Option<Command> {
         match self {
+            Self::BorrowedTimestampRows { entries, timestamp_field, ttl_ms, rows, current_values, .. } => {
+                let BorrowedHashTimestampRow(key, seconds, nanos, values) = rows.next()?;
+                debug_assert_eq!(entries.len(), values.len());
+                *current_values = values;
+                Some(Command::HashMultiSetIfTimestampOlder {
+                    key, timestamp_field: timestamp_field.take().expect("timestamp field recycled"),
+                    timestamp_seconds: seconds, timestamp_nanos: nanos, ttl_ms: *ttl_ms,
+                    entries: std::mem::take(entries),
+                })
+            }
             Self::Commands(commands) => commands.next(),
             Self::SharedHashRows { entries, rows, .. } => {
                 let BatchHashMultiSetRow(key, values) = rows.next()?;
@@ -289,6 +310,11 @@ impl BatchCommandSource<'_> {
                 timestamp_field,
                 completed_keys,
                 ..
+            } | Self::BorrowedTimestampRows {
+                entries: shared_entries,
+                timestamp_field,
+                completed_keys,
+                ..
             } => {
                 let Command::HashMultiSetIfTimestampOlder {
                     key,
@@ -307,6 +333,9 @@ impl BatchCommandSource<'_> {
                 }
             }
         }
+        if let Self::BorrowedTimestampRows { current_values, .. } = self {
+            current_values.clear();
+        }
     }
 
     fn recycles_commands(&self) -> bool {
@@ -315,8 +344,16 @@ impl BatchCommandSource<'_> {
 
     fn shared_hash_entries(&self) -> Option<&[(String, Vec<u8>)]> {
         match self {
-            Self::SharedHashRows { entries, .. } | Self::SharedTimestampRows { entries, .. } => Some(entries),
+            Self::SharedHashRows { entries, .. } | Self::SharedTimestampRows { entries, .. }
+            | Self::BorrowedTimestampRows { entries, .. } => Some(entries),
             Self::Commands(_) => None,
+        }
+    }
+
+    fn borrowed_hash_values(&self) -> Option<&[BorrowedHashValue<'_>]> {
+        match self {
+            Self::BorrowedTimestampRows { current_values, .. } => Some(current_values),
+            _ => None,
         }
     }
 
@@ -1157,6 +1194,24 @@ impl TemporalEngine {
         (response, completed_keys)
     }
 
+    pub(crate) fn batch_execute_borrowed_hash_rows(
+        &self,
+        request: BorrowedHashTimestampRequest<'_>,
+    ) -> (BatchConditionalWriteResponse, Vec<String>) {
+        if !crate::wal::wal_data_only_enabled() {
+            return self.batch_execute_packed_hash_rows(request.into_owned());
+        }
+        let mut completed_keys = Vec::with_capacity(request.rows.len());
+        let response = self.batch_execute_inner(request.shard_id,
+            BatchCommandSource::BorrowedTimestampRows {
+                entries: request.fields.into_iter().map(|field| (field, Vec::new())).collect(),
+                timestamp_field: Some(request.timestamp_field), ttl_ms: request.ttl_ms,
+                rows: request.rows.into_iter(), current_values: Vec::new(),
+                completed_keys: &mut completed_keys,
+            }, true, None, Some(true)).into_compact();
+        (response, completed_keys)
+    }
+
     fn batch_execute_inner(
         &self,
         shard_id: ShardId,
@@ -1310,7 +1365,16 @@ impl TemporalEngine {
             .filter(|_| reuse_hash_command_metadata)
             .and_then(|entries| super::container_blocks::SharedHashFields::new(
                 entries.iter().map(|(field, _)| field.as_str())));
-        while let Some(command) = command_source.next_command() {
+        while let Some(mut command) = command_source.next_command() {
+            if !reuse_hash_command_metadata {
+                if let (Command::HashMultiSetIfTimestampOlder { entries, .. }, Some(values)) =
+                    (&mut command, command_source.borrowed_hash_values())
+                {
+                    for ((_, slot), value) in entries.iter_mut().zip(values) {
+                        *slot = value.0.to_vec();
+                    }
+                }
+            }
             let write_command = is_write_command(&command);
             if readonly && write_command {
                 results.push_error(Status::error(
@@ -1498,6 +1562,7 @@ impl TemporalEngine {
                             entries,
                             true,
                             shared_hash_fields.as_ref(),
+                            command_source.borrowed_hash_values(),
                         );
                     (outcome, Some(metadata), filed)
                 }
