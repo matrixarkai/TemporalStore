@@ -3680,6 +3680,8 @@ pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
 /// every leaf. It rides the load rather than a timer or a flag, because the load is the moment the
 /// whole structure is in hand and already paid for.
 pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
+    #[cfg(test)]
+    bucket_dump_manifest_methods::note_checkpoint_decode();
     // WRAPPED RATHER THAN EDITED PER ARM, so that a second payload added later is packed without
     // anyone having to remember to.
     let mut state = decode_index_bytes_inner(bytes)?;

@@ -4,6 +4,20 @@
 //! Bucket-dump manifest lifecycle methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static CHECKPOINT_DECODES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn note_checkpoint_decode() {
+    CHECKPOINT_DECODES.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+#[path = "dump_checkpoint_capture_tests.rs"]
+mod capture_tests;
+
 /// Fault seam: stop `apply_bucket_dump_manifest_prune_with_retention_refs` dead between its two
 /// phases, as a crash there would.
 ///
@@ -51,7 +65,7 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let (mut index_bytes, publication) = if bulk_ingest_mode() {
+        let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
             let publication = {
                 let shards = self.shards.read().expect("engine lock poisoned");
                 if !shards.contains_key(&shard_id) {
@@ -61,14 +75,14 @@ impl TemporalEngine {
             };
             let bytes = self.export_index_bytes(shard_id)
                 .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
-            (bytes, publication)
+            let snapshot = crate::engine::decode_index_bytes(&bytes)
+                .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+            (snapshot, Some(bytes), publication)
         } else {
             let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)
                 .ok_or_else(|| Status::error("shard_not_loaded", "shard is not loaded"))?;
-            (serialize_index(&snapshot), publication)
+            (snapshot, None, publication)
         };
-        let mut dump_index_state = crate::engine::decode_index_bytes(&index_bytes)
-            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
         let mut retained_objects = dump_live_block_entries.iter()
             .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
@@ -124,9 +138,15 @@ impl TemporalEngine {
                 for retirement in &retirements {
                     dump_index_state.wal_resident_blocks.remove(&retirement.folded_key);
                 }
-                index_bytes = serialize_index(&dump_index_state);
+                // Retirement used to re-encode a decoded image, whose field stamp
+                // had been filled from the container header.
+                dump_index_state.index_format_version = SHARD_INDEX_FORMAT_VERSION;
+                captured_bytes = None;
             }
         }
+        // Keep the owned capture until its final form is ready. Encoding and then
+        // decoding it here used to duplicate every model map and repack its trees.
+        let index_bytes = captured_bytes.unwrap_or_else(|| serialize_index(&dump_index_state));
         let index_sha256 = sha256_hex_bytes(&index_bytes);
         // Capture first, then sync, then publish. A writer can advance the served index
         // while the barrier runs; capturing afterwards could publish data it did not cover.
@@ -181,6 +201,9 @@ impl TemporalEngine {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
+        // Dirty-object bookkeeping is process-local and was absent from the decoded
+        // checkpoint previously used for this durable report.
+        dump_index_state.dirty_objects.clear();
         let object_lifecycle = object_lifecycle_report_from_entries(
             shard_id,
             &dump_index_state,
