@@ -136,7 +136,7 @@ fn default_string_writes_bound_cache_without_slab_materialization() {
 }
 
 #[test]
-fn large_async_strings_keep_physical_placement_and_portable_restore() {
+fn large_async_strings_keep_log_placement_until_portable_export() {
     let _policy = DefaultRelocationPolicy::enter();
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "cache-large");
@@ -157,8 +157,7 @@ fn large_async_strings_keep_physical_placement_and_portable_restore() {
         );
         assert!(engine.cache.stats().memory_bytes <= 64 * 1024);
     }
-    let slab_bytes = engine.block_store.stats().bytes_written;
-    assert!(slab_bytes > 0);
+    assert_eq!(engine.block_store.stats().bytes_written, 0);
     assert_eq!(engine.registration_count_for_test(1), 4);
     engine.cache.invalidate_shard(1).unwrap();
     for index in 0..4u8 {
@@ -178,8 +177,28 @@ fn large_async_strings_keep_physical_placement_and_portable_restore() {
         );
         assert!(engine.cache.stats().memory_bytes <= 64 * 1024);
     }
-    assert_eq!(engine.block_store.stats().bytes_written, slab_bytes);
-    assert_eq!(engine.materialize_synthetic_blocks(1), 0);
+    assert_eq!(engine.block_store.stats().bytes_written, 0);
+    drop(engine);
+    let engine = engine_at(dir.path(), "cache-large-reopened");
+    for index in 0..4u8 {
+        expected[0] = index;
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("large-{index}"),
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(expected.clone())
+            }
+        );
+    }
+    assert_eq!(engine.block_store.stats().bytes_written, 0);
+    assert_eq!(engine.materialize_synthetic_blocks(1), 4);
+    assert!(engine.block_store.stats().bytes_written > 0);
     let portable = engine.create_bucket_dump_manifest(1, []).unwrap();
     drop(engine);
     let target = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
@@ -260,4 +279,136 @@ fn overwrites_replace_locators_and_dump_retires_deleted_objects() {
     engine.cache.invalidate_shard(1).unwrap();
     get(&engine, 0, WRITES - KEYS);
     assert_eq!(engine.block_store.stats().bytes_written, 0);
+}
+
+#[test]
+fn string_write_variants_keep_log_placement_across_the_old_size_boundary() {
+    let _policy = DefaultRelocationPolicy::enter();
+    const CLOCK: u64 = 4_000_000_000_000;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "variants-a");
+    let _clock = ReplayClockGuard::enter(Some(CLOCK));
+    let mut expected = Vec::new();
+    for variant in 0..3 {
+        for size in [8191usize, 8192, 8193, 128 * 1024] {
+            let key = format!("variant-{variant}-{size}");
+            let value: Vec<u8> = (0..size)
+                .map(|i| (i.wrapping_mul(17) % 251) as u8)
+                .collect();
+            let command = match variant {
+                0 => Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                1 => Command::StringSetEx {
+                    key: key.clone(),
+                    value: value.clone(),
+                    ttl_ms: 60_000,
+                },
+                _ => Command::StringSetConditional {
+                    key: key.clone(),
+                    value: value.clone(),
+                    ttl_ms: Some(60_000),
+                    condition: crate::types::StringSetCondition::IfNotExists,
+                    return_old: false,
+                    keep_ttl: false,
+                },
+            };
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command,
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+            let address = engine.string_block_address(1, &key).unwrap();
+            assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
+            assert_eq!(address.length() as usize, size);
+            expected.push((variant, key, value));
+        }
+    }
+    assert_eq!(engine.block_store.stats().bytes_written, 0);
+    assert!(engine.cache.stats().memory_bytes <= 64 * 1024);
+    engine.create_bucket_dump_manifest(1, []).unwrap();
+    assert_eq!(engine.block_store.stats().bytes_written, 0);
+    drop(engine);
+
+    let restored = engine_at(dir.path(), "variants-b");
+    let _restored_clock = ReplayClockGuard::enter(Some(CLOCK));
+    restored.cache.invalidate_shard(1).unwrap();
+    for (variant, key, value) in &expected {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: key.clone() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(value.clone())
+            }
+        );
+        if *variant != 0 {
+            let response = restored.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonTtl { key: key.clone() },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Integer { value: 60_000 }
+            );
+        }
+    }
+    assert_eq!(restored.block_store.stats().bytes_written, 0);
+    assert!(restored.cache.stats().memory_bytes <= 64 * 1024);
+
+    let _expired_clock = ReplayClockGuard::enter(Some(CLOCK + 60_000));
+    for (variant, key, _) in expected {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExists { key },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::Integer {
+                value: i64::from(variant == 0)
+            }
+        );
+    }
+}
+
+#[test]
+fn other_append_paths_keep_their_existing_large_frame_placement() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "placement-controls");
+    let bytes = vec![b'v'; 8192];
+    block_in_wal::take_staged();
+    for object_id in [None, Some(42)] {
+        let address = append_value(
+            &engine.cache,
+            &engine.block_store,
+            1,
+            &bytes,
+            object_id,
+            Some("field"),
+            Some(0),
+            true,
+        )
+        .unwrap();
+        assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+    }
+    let address = append_owned_value_of_object(
+        &engine.cache,
+        &engine.block_store,
+        1,
+        bytes.clone(),
+        43,
+        0,
+        true,
+        || 1,
+    )
+    .unwrap();
+    assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+    let address =
+        append_string_value(&engine.cache, &engine.block_store, 1, &bytes, 44, 0, false).unwrap();
+    assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+    block_in_wal::take_staged();
 }
