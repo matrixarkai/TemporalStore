@@ -13,6 +13,9 @@ use thiserror::Error;
 use crate::block_store::ElementEntry;
 use crate::types::ShardId;
 
+#[path = "index_log_compression_policy.rs"]
+mod compression_policy;
+
 /// Counters for the scale probes, tests only.
 ///
 /// Every quantity here is a COUNT, not a duration. This box sits between load 2 and load 30 for
@@ -408,9 +411,9 @@ pub struct IndexAnchorRecord {
 /// Measured on a one-box log of 14.4 MB: 24.8% of the bytes were long decimal ids and the
 /// six most repeated key strings were another 20%, and the whole file compressed 11.1x.
 ///
-/// A reader always understands this codec; a writer only emits it when asked, so a store
-/// can be rolled forward and back without a format migration. An older binary refuses it
-/// as an unknown codec rather than misreading it, which is what the codec byte is for.
+/// Reading this codec is unconditional. The writer is opt-in and
+/// can be disabled explicitly. A binary without codec support refuses it as unknown rather
+/// than misreading it; disabling future compression does not rewrite existing records.
 pub(crate) const INDEX_LOG_CODEC_MSGPACK_ZSTD: u8 = 2;
 
 /// Payload codec: the protobuf schema of the design being followed, in its superset form
@@ -436,19 +439,12 @@ pub(crate) const INDEX_LOG_CODEC_PROTOBUF: u8 = 3;
 /// Both append paths go through here so the whole-index record and the delta record cannot
 /// drift into different shapes -- the reader tells them apart by their fields, which only
 /// works while both are encoded the same way.
-/// Whether new index-log payloads are written compressed. Off by default.
+/// Compression remains opt-in; its level and minimum record size are configurable.
 ///
 /// Reading codec 2 is unconditional; only writing it is gated, so a store can be rolled
 /// forward and back without a migration.
-fn index_log_compression_enabled() -> bool {
-    matches!(
-        std::env::var("TS_INDEX_LOG_COMPRESSION_ENABLED")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+fn index_log_compression_policy() -> compression_policy::CompressionPolicy {
+    compression_policy::CompressionPolicy::from_env()
 }
 
 /// Whether new DELTA records are written in the protobuf codec. OFF by default.
@@ -500,17 +496,6 @@ fn encode_delta_protobuf_into(
     Ok(())
 }
 
-/// Payloads below this many bytes are stored uncompressed.
-///
-/// zstd on a very small record spends a frame header to save little; the block tier draws
-/// the same line at 256 bytes for the same reason.
-fn index_log_compression_min_bytes() -> usize {
-    std::env::var("TS_INDEX_LOG_COMPRESSION_MIN_BYTES")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .unwrap_or(256)
-}
-
 /// The same encoding, into a buffer the caller owns and reuses.
 ///
 /// [`encode_index_payload`] built the record in one vector and then copied the whole thing into a
@@ -554,8 +539,9 @@ pub(crate) fn encode_index_payload_into<T: serde::Serialize>(
     // `out` is the container byte plus the packed record, so the packed length -- the number the
     // two conditions below are written in terms of -- is one less than it.
     let packed_len = out.len() - 1;
-    if index_log_compression_enabled() && packed_len >= index_log_compression_min_bytes() {
-        if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], 3) {
+    let compression = index_log_compression_policy();
+    if compression.should_compress(packed_len) {
+        if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], compression.level()) {
             // Only when it actually helps, and the comparison is between the PACKED forms,
             // exactly as it was: both shapes carry one container byte, so comparing `squeezed`
             // against `packed_len` and comparing the two whole payloads are the same test.
@@ -601,8 +587,9 @@ pub(crate) fn encode_index_payload<T: serde::Serialize>(
             "index-log record could not be packed: {error}"
         )));
     }
-    if index_log_compression_enabled() && packed.len() >= index_log_compression_min_bytes() {
-        if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), 3) {
+    let compression = index_log_compression_policy();
+    if compression.should_compress(packed.len()) {
+        if let Ok(squeezed) = zstd::stream::encode_all(packed.as_slice(), compression.level()) {
             // Only when it actually helps: a record that does not compress would otherwise pay
             // the frame overhead for nothing.
             if squeezed.len() < packed.len() {
