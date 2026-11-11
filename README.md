@@ -367,6 +367,14 @@ apply. The read path also retains at most eight decoded WAL records, so cache by
 are not a bound on complete process RSS. Portable export and maintenance relocation remain
 separate operations, and needed WAL records stay retained until their dependencies are gone.
 
+Binary WAL records that cross block boundaries use a packed envelope and checksummed
+continuation footers. Raw scans preserve the complete physical bytes, so byte-based cursors
+and retained log IDs remain stable through prefix reclaim. Tail recovery starts at the last
+closed block or its crossing record. Existing records remain readable, but older binaries
+cannot read newly packed records. Pause writes and maintenance during a mixed-version
+rollout, upgrade every replay reader, then resume. Downgrade requires restoring an
+older-format backup.
+
 ```yaml
 # feature_store.yaml, command-surface plugin
 project: my_project

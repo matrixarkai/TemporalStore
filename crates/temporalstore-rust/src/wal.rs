@@ -105,15 +105,27 @@ pub fn encode_wal_line_for_test(
 }
 
 
-/// Read one record's bytes AS FRAMED, or `None` at the end of the records.
-///
-/// Lives in `log_framing` now, because the served-index log needs exactly this reader for
-/// exactly this reason and a second copy of the rule would be free to drift from this one.
-fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
-    crate::log_framing::read_raw_record(reader)
+#[path = "wal/packed_frames.rs"]
+mod packed_frames;
+
+/// Read one complete physical record, including any continuation envelope and footer slots.
+fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<packed_frames::ReadRecord>> {
+    packed_frames::read(reader)
 }
 
+#[cfg(test)]
+#[path = "wal/packed_frame_tests.rs"]
+mod packed_frame_tests;
+
 pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+    let unpacked;
+    let line = if line.first() == Some(&packed_frames::MAGIC) {
+        unpacked = packed_frames::unpack(&mut std::io::Cursor::new(line))?
+            .ok_or_else(|| WriteAheadLogError::Corruption("packed WAL frame is incomplete".to_string()))?;
+        unpacked.bytes.as_slice()
+    } else {
+        line
+    };
     let payload = crate::log_framing::decode_line(line)?;
     // Which protobuf shape a payload is in is a property of the payload, never of configuration: a
     // log written across a flag change still reads end to end. A payload that names none of them is
@@ -2308,7 +2320,7 @@ impl LocalWriteAheadLogStore {
                 // the newline when it is not, so one loop walks a log holding both. The
                 // preallocated zero run that trails the records ends the loop from inside the
                 // reader: no frame can start with a zero byte.
-                let Some(line) = read_raw_record(&mut reader)? else {
+                let Some(packed_frames::ReadRecord { bytes: line, physical_bytes: read }) = read_raw_record(&mut reader)? else {
                     // a scan must cross block boundaries: the zeros here are either the padding
                     // before a closed block's footer, with records continuing after it, or the
                     // reservation past the end. The footer is what tells them apart, and reading
@@ -2327,7 +2339,6 @@ impl LocalWriteAheadLogStore {
                         None => break,
                     }
                 };
-                let read = line.len();
                 if read == 0 {
                     break;
                 }
@@ -2562,12 +2573,12 @@ impl LocalWriteAheadLogStore {
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(physical))?;
         let mut reader = BufReader::with_capacity(1024, file);
-        let raw = crate::log_framing::read_raw_record(&mut reader)?;
-        if let Some(bytes) = raw.as_ref() {
+        let raw = read_raw_record(&mut reader)?;
+        if let Some(record) = raw.as_ref() {
             inner.stats.reads += 1;
-            inner.stats.bytes_read += bytes.len() as u64;
+            inner.stats.bytes_read += record.physical_bytes;
         }
-        Ok(raw)
+        Ok(raw.map(|record| record.bytes))
     }
 
     /// Reclaim this shard's WAL prefix below `retain_from_sequence`, never going past what the
@@ -2698,7 +2709,7 @@ impl LocalWriteAheadLogStore {
                     break;
                 }
             }
-            let Some(line) = read_raw_record(&mut reader)? else {
+            let Some(packed_frames::ReadRecord { bytes: line, physical_bytes: read }) = read_raw_record(&mut reader)? else {
                 // Padding before a closed block's footer, or the end. The footer decides.
                 match block_is_closed(&mut reader, cursor, header_len, walk_until)? {
                     Some(next) => {
@@ -2708,7 +2719,6 @@ impl LocalWriteAheadLogStore {
                     None => break,
                 }
             };
-            let read = line.len();
             if read == 0 {
                 break;
             }
@@ -2718,7 +2728,11 @@ impl LocalWriteAheadLogStore {
             // with `binary record is incomplete` -- so a log whose records happen to end in that
             // byte reclaimed nothing at all, and the caller's `.ok()` rendered it as success.
             // `info_at`'s walk already applied this rule; this one did not.
-            let trimmed = crate::log_framing::record_body(line.as_slice());
+            let trimmed = if line.first() == Some(&packed_frames::MAGIC) {
+                line.as_slice()
+            } else {
+                crate::log_framing::record_body(line.as_slice())
+            };
             if !trimmed.iter().all(|byte| byte.is_ascii_whitespace()) {
                 records_before += 1;
                 if split.is_some() {
@@ -3086,7 +3100,7 @@ impl LocalWriteAheadLogStore {
             // against a block's last record is read as a record, and the counts and sequences
             // reported here describe a log that stops at the first such boundary.
             info_at = skip_block_footer_if_due(&mut reader, info_at, info_header_len)?;
-            let Some(mut line) = read_raw_record(&mut reader)? else {
+            let Some(packed_frames::ReadRecord { bytes: mut line, physical_bytes }) = read_raw_record(&mut reader)? else {
                 match block_is_closed(&mut reader, info_at, info_header_len, info_len)? {
                     Some(next) => {
                         info_at = next;
@@ -3095,10 +3109,11 @@ impl LocalWriteAheadLogStore {
                     None => break,
                 }
             };
-            info_at = info_at.saturating_add(line.len() as u64);
+            info_at = info_at.saturating_add(physical_bytes);
             // Only a text record carries a trailing newline; a binary frame ends where its
             // declared length ends, and trimming it would take a byte of the payload.
-            if line.first() != Some(&crate::log_framing::FRAME_MAGIC_V3) {
+            if line.first() != Some(&crate::log_framing::FRAME_MAGIC_V3)
+                && line.first() != Some(&packed_frames::MAGIC) {
                 while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
                     line.pop();
                 }
@@ -4511,12 +4526,8 @@ fn append_record_locked_on(
         let payload = encode_wal_payload(record)?;
         crate::log_framing::encode_record_into(&payload, &mut bytes);
     }
-    // Close the block if this record will not fit in what is left of it, and start the next.
-    //
-    // A record is never split across the boundary: the one that does not fit moves whole into
-    // the next block. That wastes the tail of a block -- bounded by the largest record -- and
-    // buys a reader that never has to reassemble anything, which is the trade a log makes when
-    // its own footer is the thing keeping recovery cheap.
+    // Binary frames can span footer slots. Only a short remainder that cannot hold the
+    // packed header is padded; delimited and already occupied layouts retain their old path.
     let mut close_block_and_advance: Option<(u64, Vec<u8>)> = None;
     if shard_uses_blocks(inner, record.shard_id, &path)? {
         let (_, header_len) = cached_wal_base(inner, record.shard_id)?;
@@ -4535,21 +4546,30 @@ fn append_record_locked_on(
             // fall back to walking it, which is correct and only unoptimised.
             let slot_is_free = relative <= data_end;
             if relative + bytes.len() as u64 > data_end && slot_is_free {
-                // What this block ends up describing: the last record that STARTED in it.
-                let (last_offset, last_sequence) = inner
-                    .block_last_record_by_shard
-                    .get(&record.shard_id)
-                    .copied()
-                    .unwrap_or((offset, record.sequence.saturating_sub(1)));
-                let slot = encode_block_footer(
-                    index,
-                    (relative.saturating_sub(index * WAL_BLOCK_BYTES)) as u32,
-                    last_offset,
-                    last_sequence,
-                    0,
-                );
-                close_block_and_advance = Some((header_len + block_footer_at(index), slot));
-                offset = header_len + (index + 1) * WAL_BLOCK_BYTES;
+                let packable = bytes.first() == Some(&crate::log_framing::FRAME_MAGIC_V3)
+                    && u32::try_from(bytes.len()).is_ok();
+                if packable && data_end - relative > packed_frames::HEADER_BYTES as u64 {
+                    bytes = packed_frames::pack(&bytes, offset, header_len, record.sequence);
+                } else {
+                    // Close after the last complete record before moving past a short tail.
+                    let (last_offset, last_sequence) = inner
+                        .block_last_record_by_shard
+                        .get(&record.shard_id)
+                        .copied()
+                        .unwrap_or((offset, record.sequence.saturating_sub(1)));
+                    let slot = encode_block_footer(
+                        index,
+                        (relative.saturating_sub(index * WAL_BLOCK_BYTES)) as u32,
+                        last_offset,
+                        last_sequence,
+                        0,
+                    );
+                    close_block_and_advance = Some((header_len + block_footer_at(index), slot));
+                    offset = header_len + (index + 1) * WAL_BLOCK_BYTES;
+                    if packable && bytes.len() as u64 > WAL_BLOCK_BYTES - WAL_BLOCK_FOOTER_BYTES {
+                        bytes = packed_frames::pack(&bytes, offset, header_len, record.sequence);
+                    }
+                }
             }
             // When the slot is occupied nothing happens at all: no footer, and no advance
             // either. Advancing was the first attempt and it lost every record written
@@ -4968,7 +4988,8 @@ fn block_is_closed<R: std::io::BufRead + std::io::Seek>(
     if slot_at + WAL_BLOCK_FOOTER_BYTES <= len {
         reader.seek(SeekFrom::Start(slot_at))?;
         let mut slot = vec![0u8; WAL_BLOCK_FOOTER_BYTES as usize];
-        if reader.read_exact(&mut slot).is_ok() && decode_block_footer(&slot).is_some() {
+        if reader.read_exact(&mut slot).is_ok() && decode_block_footer(&slot)
+            .is_some_and(|footer| footer.last_record_left_size == 0) {
             let next = header_len + (index + 1) * WAL_BLOCK_BYTES;
             if next >= len {
                 return Ok(None);
@@ -5029,7 +5050,8 @@ fn displaced_block_footer_end<R: std::io::BufRead + std::io::Seek>(
         return Ok(None);
     };
     let end = start + WAL_BLOCK_FOOTER_BYTES as usize;
-    if end > bytes.len() || decode_block_footer(&bytes[start..end]).is_none() {
+    if end > bytes.len() || !decode_block_footer(&bytes[start..end])
+        .is_some_and(|footer| footer.last_record_left_size == 0) {
         return Ok(None);
     }
     let next = at + end as u64;
@@ -5104,7 +5126,7 @@ fn first_wal_sequence_in(path: &Path) -> Result<Option<u64>, WriteAheadLogError>
     if record_end >= len {
         return Ok(None);
     }
-    let Some(raw) = read_raw_record(&mut reader)? else {
+    let Some(packed_frames::ReadRecord { bytes: raw, .. }) = read_raw_record(&mut reader)? else {
         return Ok(None);
     };
     if raw.is_empty() || raw.iter().all(|byte| byte.is_ascii_whitespace()) {
@@ -5130,7 +5152,7 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
         if record_end >= len {
             break;
         }
-        let Some(raw) = read_raw_record(&mut reader)? else {
+        let Some(packed_frames::ReadRecord { bytes: raw, physical_bytes }) = read_raw_record(&mut reader)? else {
             // No record here. In a CLOSED block that means padding before its footer and the
             // records go on in the next one; in the open block it means the end.
             match block_is_closed(&mut reader, record_end, header_len, len)? {
@@ -5146,7 +5168,7 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
         }
         // A blank line carries nothing and is skipped, exactly as the windowed scan skips it.
         if raw.iter().all(|byte| byte.is_ascii_whitespace()) {
-            record_end = record_end.saturating_add(raw.len() as u64);
+            record_end = record_end.saturating_add(physical_bytes);
             continue;
         }
         // A record that will not decode is one of two different things, and conflating them
@@ -5157,7 +5179,7 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
         match decode_wal_line(&raw) {
             Ok(record) => {
                 last_sequence = last_sequence.max(record.sequence);
-                record_end = record_end.saturating_add(raw.len() as u64);
+                record_end = record_end.saturating_add(physical_bytes);
             }
             Err(err) => {
                 let at_end = {
@@ -5185,13 +5207,13 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
 /// Blocks fix that by making the answer writable in advance: every block ends with a footer
 /// naming the last record that started inside it, and because blocks are a fixed size, block N's
 /// footer is at a computed offset. Reopening reads the last footer present -- one seek, one small
-/// read -- and then walks only the final, still-open block. The walk stops being the file and
-/// becomes at most one block.
-const WAL_BLOCK_BYTES: u64 = 128 * 1024;
+/// read -- and then walks only the final, still-open block. A continuation footer points back
+/// to its crossing record, so a large tail costs that record plus at most one block.
+const WAL_BLOCK_BYTES: u64 = crate::stream_format::BLOCK_SIZE as u64;
 
 /// Reserved at the end of every block for its footer. The encoded footer is far smaller; the
 /// slot is fixed so that the arithmetic above stays arithmetic.
-const WAL_BLOCK_FOOTER_BYTES: u64 = 128;
+const WAL_BLOCK_FOOTER_BYTES: u64 = crate::stream_format::FOOTER_SIZE as u64;
 
 /// Marks a footer slot that has actually been written, so a slot inside preallocated zeros is
 /// not mistaken for a footer describing block zero.
@@ -5247,23 +5269,43 @@ fn encode_block_footer(
     use prost::Message;
     let footer = crate::storage_descriptor::BlockFooter {
         magic: WAL_BLOCK_FOOTER_MAGIC,
-        version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+        version: 2,
         timestamp_ms: current_time_ms(),
         block_crc,
         block_number: index,
         block_end,
         last_record_offset,
-        // Records never straddle a block here: one that does not fit starts the next block
-        // instead. That is what keeps this field zero and the reader free of the case.
+        // This footer follows complete records, not a packed-frame continuation.
         last_record_left_size: 0,
         last_record_sequence,
         client_token: Vec::new(),
         truncated_offset: 0,
     };
+    encode_block_footer_message(&footer)
+}
+
+// Version two authenticates continuation metadata and stores a backward distance rather
+// than a file offset, so prefix reclaim can copy a packed record without changing it.
+fn encode_partial_block_footer(index: u64, back: u64, left: u32, sequence: u64) -> Vec<u8> {
+    encode_block_footer_message(&crate::storage_descriptor::BlockFooter {
+        magic: WAL_BLOCK_FOOTER_MAGIC,
+        version: 2,
+        timestamp_ms: current_time_ms(),
+        block_number: index,
+        block_end: (WAL_BLOCK_BYTES - WAL_BLOCK_FOOTER_BYTES) as u32,
+        last_record_offset: back,
+        last_record_left_size: left,
+        last_record_sequence: sequence,
+        ..Default::default()
+    })
+}
+
+fn encode_block_footer_message(footer: &crate::storage_descriptor::BlockFooter) -> Vec<u8> {
+    use prost::Message;
     let message = footer.encode_to_vec();
     assert!(
-        message.len() as u64 + 2 <= WAL_BLOCK_FOOTER_BYTES,
-        "a block footer must fit its slot: {} + 2 > {}",
+        message.len() as u64 + 2 + 4 <= WAL_BLOCK_FOOTER_BYTES,
+        "a block footer must fit its slot: {} + 6 > {}",
         message.len(),
         WAL_BLOCK_FOOTER_BYTES
     );
@@ -5276,6 +5318,11 @@ fn encode_block_footer(
     slot.extend_from_slice(&(message.len() as u16).to_le_bytes());
     slot.extend_from_slice(&message);
     slot.resize(WAL_BLOCK_FOOTER_BYTES as usize, 0);
+    if footer.version == 2 {
+        let crc = crate::checksum::crc32c(&slot[..slot.len() - 4]);
+        let end = slot.len();
+        slot[end - 4..].copy_from_slice(&crc.to_le_bytes());
+    }
     slot
 }
 
@@ -5291,8 +5338,17 @@ fn decode_block_footer(slot: &[u8]) -> Option<crate::storage_descriptor::BlockFo
         return None;
     }
     let footer = crate::storage_descriptor::BlockFooter::decode(&slot[2..2 + declared]).ok()?;
-    if footer.magic != WAL_BLOCK_FOOTER_MAGIC {
+    if footer.magic != WAL_BLOCK_FOOTER_MAGIC
+        || !matches!(footer.version, 1 | 2)
+        || (footer.version == 1 && footer.last_record_left_size != 0) {
         return None;
+    }
+    if footer.version == 2 {
+        let end = slot.len();
+        let expected = u32::from_le_bytes(slot[end - 4..].try_into().ok()?);
+        if crate::checksum::crc32c(&slot[..end - 4]) != expected {
+            return None;
+        }
     }
     Some(footer)
 }
@@ -5341,6 +5397,12 @@ fn footer_tail_hint(path: &Path) -> Result<Option<(u64, u64)>, WriteAheadLogErro
     let Some((index, footer)) = last_written_footer(&mut file, header_len, file_len)? else {
         return Ok(None);
     };
+    if footer.version == 2 && footer.last_record_left_size > 0 {
+        let at = header_len + block_footer_at(index);
+        return Ok(at.checked_sub(footer.last_record_offset)
+            .filter(|from| *from >= header_len)
+            .map(|from| (footer.last_record_sequence, from)));
+    }
     Ok(Some((
         footer.last_record_sequence,
         header_len + (index + 1) * WAL_BLOCK_BYTES,
@@ -5369,7 +5431,7 @@ fn last_wal_sequence_forward_from(
         if record_end >= len {
             break;
         }
-        let Some(raw) = read_raw_record(&mut reader)? else {
+        let Some(packed_frames::ReadRecord { bytes: raw, physical_bytes }) = read_raw_record(&mut reader)? else {
             // No record here. In a CLOSED block that means padding before its footer and the
             // records go on in the next one; in the open block it means the end.
             match block_is_closed(&mut reader, record_end, header_len, len)? {
@@ -5384,13 +5446,13 @@ fn last_wal_sequence_forward_from(
             break;
         }
         if raw.iter().all(|byte| byte.is_ascii_whitespace()) {
-            record_end = record_end.saturating_add(raw.len() as u64);
+            record_end = record_end.saturating_add(physical_bytes);
             continue;
         }
         match decode_wal_line(&raw) {
             Ok(record) => {
                 last_sequence = last_sequence.max(record.sequence);
-                record_end = record_end.saturating_add(raw.len() as u64);
+                record_end = record_end.saturating_add(physical_bytes);
             }
             Err(err) => {
                 let at_end = {
