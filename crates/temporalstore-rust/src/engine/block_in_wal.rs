@@ -943,8 +943,8 @@ pub(super) fn read_block(
     // Read the carrying frame once, without fetching unrelated records after it or retrying
     // overlapping windows when a large record exceeds the initial read size.
     let bytes = store.read_frame_at_log_id(shard_id, *log_id).ok()??;
-    let record = decode_wal_line(&bytes).ok()?;
-    let blocks = cache_record(store, shard_id, *log_id, record.staged_blocks);
+    let blocks = crate::wal::decode_carried_blocks(&bytes).ok()?;
+    let blocks = cache_record(store, shard_id, *log_id, blocks);
     if let Some(index) = index {
         return blocks.get(*index).filter(|block| block.object_id == object_id)
             .map(|block| block.bytes.clone());

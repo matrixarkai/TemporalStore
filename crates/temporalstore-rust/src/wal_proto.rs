@@ -1321,6 +1321,22 @@ fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
 
 /// Decode a payload this module wrote. The caller has already checked the marker byte.
 pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
+    record_from_proto(decode_message(payload)?)
+}
+
+/// Read carried data without rebuilding outcomes that only recovery consumes.
+pub(crate) fn decode_carried_blocks(payload: &[u8]) -> Result<Vec<StagedBlock>, String> {
+    let message = decode_message(payload)?;
+    // Commands and omitted identities can supply a block's identity. Keep their full restore
+    // path, including its validation, instead of guessing at an implied object id.
+    if message.command.is_some() || message.staged_blocks.iter().any(|block| block.object_id.is_none()) {
+        return record_from_proto(message).map(|record| record.staged_blocks);
+    }
+    let _ = message.metadata.map(metadata_from_proto).transpose()?;
+    Ok(staged_blocks_from_proto(message.staged_blocks, None))
+}
+
+fn decode_message(payload: &[u8]) -> Result<v1::EngineWalRecord, String> {
     let body = &payload[1..];
     let marker = payload.first().copied();
     let escaped = marker == Some(BINARY_PAYLOAD_MARKER)
@@ -1341,7 +1357,10 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     } else {
         framed
     };
-    let message = v1::EngineWalRecord::decode(bytes).map_err(|err| err.to_string())?;
+    v1::EngineWalRecord::decode(bytes).map_err(|err| err.to_string())
+}
+
+fn record_from_proto(message: v1::EngineWalRecord) -> Result<WriteAheadLogRecord, String> {
     // Absent is a legitimate record now, not a malformed one: it carries results instead.
     let command = match message.command.and_then(|command| command.kind) {
         Some(kind) => Some(
@@ -1385,22 +1404,23 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
         sequence: message.sequence,
         command,
         metadata: message.metadata.map(metadata_from_proto).transpose()?,
-        staged_blocks: message
-            .staged_blocks
-            .into_iter()
-            .map(|block| StagedBlock {
-                object_id: block.object_id.or(implied).unwrap_or_default(),
-                // Never defaulted the way the object id is. An absent element name MEANS the block is
-                // its whole object, and inventing one would make a string block claim to be an
-                // element; an absent one on a record written before this field existed means the
-                // same thing that record has always meant.
-                element_name: block.element_name.map(std::sync::Arc::from),
-                bytes: block.block,
-            })
-            .collect(),
+        staged_blocks: staged_blocks_from_proto(message.staged_blocks, implied),
         outcomes,
     })
 }
+
+fn staged_blocks_from_proto(blocks: Vec<v1::WalStagedBlock>, implied: Option<u64>) -> Vec<StagedBlock> {
+    blocks.into_iter().map(|block| StagedBlock {
+        object_id: block.object_id.or(implied).unwrap_or_default(),
+        // An absent name denotes the whole object, not an unnamed container element.
+        element_name: block.element_name.map(std::sync::Arc::from),
+        bytes: block.block,
+    }).collect()
+}
+
+#[cfg(test)]
+#[path = "wal_carried_read_tests.rs"]
+mod carried_read_tests;
 
 
 #[cfg(test)]
