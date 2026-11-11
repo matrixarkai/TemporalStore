@@ -4309,12 +4309,39 @@ impl ReplacedBlock {
         block.map_or(Self::None, |block| Self::One(super::live_block_key(&block)))
     }
 
-    pub(super) fn from_keys(mut keys: impl Iterator<Item = super::LiveBlockKey>) -> Self {
-        let Some(first) = keys.next() else { return Self::None };
-        let Some(second) = keys.next() else { return Self::One(first) };
-        let mut held = HashSet::from([first, second]);
-        held.extend(keys);
-        Self::Many(held)
+    pub(super) fn from_keys(keys: impl Iterator<Item = super::LiveBlockKey>) -> Self {
+        let mut held = Self::None;
+        for key in keys {
+            match &mut held {
+                Self::None => held = Self::One(key),
+                Self::One(first) if *first == key => {},
+                Self::One(first) => held = Self::Many(HashSet::from([*first, key])),
+                Self::Many(keys) => { keys.insert(key); },
+            }
+        }
+        held
+    }
+
+    pub(super) fn remove(&mut self, key: super::LiveBlockKey) {
+        match self {
+            Self::None => {},
+            Self::One(held) if *held == key => *self = Self::None,
+            Self::One(_) => {},
+            Self::Many(keys) => {
+                keys.remove(&key);
+                if keys.len() <= 1 {
+                    *self = keys.iter().next().copied().map_or(Self::None, Self::One);
+                }
+            }
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::One(_) => false,
+            Self::Many(keys) => keys.is_empty(),
+        }
     }
 
     /// NO PAGE REPLACED, SPELLED RATHER THAN DEFAULTED. A filer that cannot know -- a projection
@@ -4338,14 +4365,14 @@ pub(super) fn sweep_packed_hash_tombstones(
     shard: &mut ShardState,
     routing_bucket: u32,
     object_key: &str,
-    fields: &HashSet<&str>,
+    contains_field: impl Fn(&str) -> bool,
 ) {
     let kind = stored_model_kind("hash");
     let swept: HashSet<_> = shard.bucket_index.bucket_map.get(&routing_bucket)
         .into_iter()
         .flat_map(|bucket| bucket.tombstone_elements.iter())
         .filter(|row| row.object_key.as_ref() == object_key && row.model_id == kind
-            && fields.contains(row.element_name.as_ref()))
+            && contains_field(row.element_name.as_ref()))
         .map(|row| row.block)
         .collect();
     if swept.is_empty() {
@@ -4593,6 +4620,38 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
         let _ = shard
             .bucket_index
             .remove_object_from_block_lookup(model_id.as_str(), object_key);
+    }
+}
+
+/// Retire only the vacated data block; deletion markers and sibling blocks stay filed.
+pub(super) fn drop_vacated_live_block(
+    shard: &mut ShardState,
+    kind: &str,
+    object_key: &str,
+    address: &ElementEntry,
+) {
+    let target = super::live_block_key(address);
+    let targets: Vec<_> = shard.bucket_index.object_block_refs(kind, object_key).into_iter()
+        .flat_map(|refs| refs.iter())
+        .filter(|block_ref| shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)
+            .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+            .is_some_and(|block| !block.deleted() && super::live_block_key(&block.address) == target))
+        .cloned().collect();
+    for block_ref in targets {
+        let removed = if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) {
+            let removed = bucket.block_index.remove(&block_ref.block_ref_key,
+                &mut shard.bucket_index.block_slab_live, crate::engine::state::StaleCause::Removed).is_some();
+            if removed {
+                bucket.set_dirty(true);
+                bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+                classify_bucket_layout_in_place(&mut bucket);
+            }
+            removed
+        } else { false };
+        if removed {
+            shard.bucket_index.remove_object_block_lookup_ref(kind, object_key, None, &block_ref);
+            shard.buckets_pending_flag_refresh.insert(block_ref.routing_bucket);
+        }
     }
 }
 

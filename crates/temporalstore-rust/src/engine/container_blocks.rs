@@ -336,6 +336,32 @@ pub(super) enum Utf8ContainerRangeProjection {
     Corrupt(String),
 }
 
+/// Immutable field names and membership shared by a homogeneous write batch.
+pub(super) struct SharedHashFields {
+    names: Vec<std::sync::Arc<str>>,
+    membership: std::collections::HashSet<std::sync::Arc<str>>,
+}
+
+impl SharedHashFields {
+    pub(super) fn new<'a>(fields: impl Iterator<Item = &'a str>) -> Option<Self> {
+        let names: Vec<std::sync::Arc<str>> = fields.map(std::sync::Arc::from).collect();
+        let membership: std::collections::HashSet<_> = names.iter().cloned().collect();
+        (membership.len() == names.len()).then_some(Self { names, membership })
+    }
+
+    pub(super) fn names(&self) -> &[std::sync::Arc<str>] {
+        &self.names
+    }
+
+    pub(super) fn matches<'a>(&self, fields: impl Iterator<Item = &'a str>) -> bool {
+        self.names.iter().map(|name| name.as_ref()).eq(fields)
+    }
+
+    pub(super) fn contains(&self, field: &str) -> bool {
+        self.membership.contains(field)
+    }
+}
+
 /// The requested-name index shared by every row in one hash projection batch.
 pub(super) struct Utf8ProjectionPlan<'a> {
     element_names: &'a [String],
