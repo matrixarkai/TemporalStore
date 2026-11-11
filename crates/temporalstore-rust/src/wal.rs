@@ -409,17 +409,49 @@ pub(crate) fn every_result_can_be_found_again(
     outcomes: &[WalOutcomeItem],
     blocks: &[StagedBlock],
 ) -> bool {
-    outcomes.iter().all(|item| {
-        item.deleted
-            || item.ttl.is_some()
-            || item.value.as_ref().map(|value| !value.is_empty()).unwrap_or(false)
-            || blocks.iter().any(|block| {
-                block.object_id == item.object_id
-                    && (block.element_name.as_deref() == item.element_name.as_deref()
-                        || block.element_name.is_none())
-            })
+    let mut required = outcomes.iter().filter(|item| {
+        !item.deleted
+            && item.ttl.is_none()
+            && !item.value.as_ref().is_some_and(|value| !value.is_empty())
+    });
+    let matches = |item: &WalOutcomeItem, block: &StagedBlock| {
+        block.object_id == item.object_id
+            && (block.element_name.as_deref() == item.element_name.as_deref()
+                || block.element_name.is_none())
+    };
+    if blocks.len() < 512 {
+        return required.all(|item| blocks.iter().any(|block| matches(item, block)));
+    }
+    let mut coverage = None;
+    let mut linear_scans = 0;
+    required.all(|item| {
+        if linear_scans < 8 {
+            linear_scans += 1;
+            return blocks.iter().any(|block| matches(item, block));
+        }
+        // Some(None) remembers a refused allocation, retaining the scan without retries.
+        let index = coverage.get_or_insert_with(|| {
+            let mut index = HashSet::new();
+            index.try_reserve(blocks.len()).ok()?;
+            index.extend(blocks.iter().map(|block| (block.object_id, block.element_name.as_deref())));
+            Some(index)
+        });
+        match index {
+            Some(index) => {
+                index.contains(&(item.object_id, None))
+                    || item
+                        .element_name
+                        .as_deref()
+                        .is_some_and(|name| index.contains(&(item.object_id, Some(name))))
+            },
+            None => blocks.iter().any(|block| matches(item, block)),
+        }
     })
 }
+
+#[cfg(test)]
+#[path = "wal_recovery_coverage_tests.rs"]
+mod recovery_coverage_tests;
 
 #[cfg(test)]
 mod every_result_can_be_found_again_tests {
