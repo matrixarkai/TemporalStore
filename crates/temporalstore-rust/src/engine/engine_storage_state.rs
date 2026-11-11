@@ -6564,9 +6564,16 @@ pub(super) struct TombstoneElement {
 /// empty the vector puts it back to `None` so the two cannot both be reachable with different
 /// behaviour.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct TombstoneElements(Option<Box<Vec<TombstoneElement>>>);
+pub(super) struct TombstoneElements(Option<Box<tombstone_identity_filter::TombstoneRows>>);
+
+#[path = "tombstone_identity_filter.rs"]
+mod tombstone_identity_filter;
 
 impl TombstoneElements {
+    fn from_rows(rows: Vec<TombstoneElement>) -> Self {
+        if rows.is_empty() { Self::default() }
+        else { Self(Some(Box::new(tombstone_identity_filter::TombstoneRows::new(rows)))) }
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.0.as_ref().is_none_or(|rows| rows.is_empty())
     }
@@ -6579,12 +6586,26 @@ impl TombstoneElements {
         self.0.iter().flat_map(|rows| rows.iter())
     }
 
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut TombstoneElement> {
-        self.0.iter_mut().flat_map(|rows| rows.iter_mut())
+    fn update_block(&mut self, model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        object_key: &str, element_name: &str, block: (u64, u64, u64)) -> bool
+    {
+        self.0.as_mut().is_some_and(|rows| rows.update_block(model_id, object_key, element_name, block))
+    }
+
+    fn find(&self, model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        object_key: &str, element_name: &str) -> Option<&TombstoneElement>
+    {
+        self.0.as_ref()?.find(model_id, object_key, element_name)
+    }
+
+    fn may_contain(&self, model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        object_key: &str, element_name: &str) -> bool
+    {
+        self.0.as_ref().is_some_and(|rows| rows.may_contain(model_id, object_key, element_name))
     }
 
     fn push(&mut self, row: TombstoneElement) {
-        self.0.get_or_insert_with(Box::default).push(row);
+        self.0.get_or_insert_with(|| Box::new(tombstone_identity_filter::TombstoneRows::new(Vec::new()))).push(row);
     }
 
     /// Retain, and DROP THE ALLOCATION when nothing is left, so `None` is the only spelling of
@@ -6622,11 +6643,7 @@ impl<'de> Deserialize<'de> for TombstoneElements {
         D: serde::Deserializer<'de>,
     {
         let rows: Vec<TombstoneElement> = Deserialize::deserialize(deserializer)?;
-        Ok(if rows.is_empty() {
-            Self(None)
-        } else {
-            Self(Some(Box::new(rows)))
-        })
+        Ok(Self::from_rows(rows))
     }
 }
 
@@ -6851,12 +6868,7 @@ impl BucketNode {
         address: &ElementEntry,
     ) {
         let block = tombstone_block_key(address);
-        if let Some(row) = self.tombstone_elements.iter_mut().find(|row| {
-            row.model_id == model_id
-                && &*row.object_key == &**object_key
-                && &*row.element_name == element_name
-        }) {
-            row.block = block;
+        if self.tombstone_elements.update_block(model_id, object_key, element_name, block) {
             return;
         }
         self.tombstone_elements.push(TombstoneElement {
@@ -6891,11 +6903,7 @@ impl BucketNode {
             rows.truncate(kept);
             rows.shrink_to_fit();
         }
-        self.tombstone_elements = if rows.is_empty() {
-            TombstoneElements::default()
-        } else {
-            TombstoneElements(Some(Box::new(rows)))
-        };
+        self.tombstone_elements = TombstoneElements::from_rows(rows);
     }
 
     /// The block the tombstone for this element names, if this bucket holds one.
@@ -6906,12 +6914,7 @@ impl BucketNode {
         element_name: &str,
     ) -> Option<(u64, u64, u64)> {
         self.tombstone_elements
-            .iter()
-            .find(|row| {
-                row.model_id == model_id
-                    && &*row.object_key == object_key
-                    && &*row.element_name == element_name
-            })
+            .find(model_id, object_key, element_name)
             .map(|row| row.block)
     }
 
@@ -6931,6 +6934,7 @@ impl BucketNode {
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
         element_name: &str,
     ) {
+        if !self.tombstone_elements.may_contain(model_id, object_key, element_name) { return; }
         self.tombstone_elements.retain(|row| {
             !(row.model_id == model_id
                 && &*row.object_key == object_key
