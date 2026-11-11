@@ -2036,6 +2036,12 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // THE IDENTITY COMES FROM BESIDE THE BLOCK, once for the walk. `shard` is immutable here.
     let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+        // Preserve the scalar lookup's first match without rescanning all tombstones per block.
+        // This borrowed map lives for one bucket only, not for the shard's lifetime.
+        let mut deleted_keys = HashMap::new();
+        for row in bucket.tombstone_elements.iter() {
+            deleted_keys.entry(row.block).or_insert(&row.object_key);
+        }
         for (handle, block) in bucket.block_index.iter() {
             // A ROW THIS WALK CANNOT NAME IS NOT EMITTED. `LiveBlockEntry::object_key` is the
             // whole point of the row -- five readers downstream key off it -- so a row carrying
@@ -2049,9 +2055,13 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             // would hand that check an empty set and have it report a damaged index as healthy.
             // So: the position index first, for a deleted block's tombstone row as well, then the
             // handle index for a live block the lookup names somewhere else.
-            let beside = identities
-                .identity_of(bucket, *handle, block)
-                .map(|named| named.object_key)
+            let beside = if block.deleted() {
+                deleted_keys.get(&live_block_key(&block.address)).copied()
+            } else {
+                identities
+                    .identity_of(bucket, *handle, block)
+                    .map(|named| named.object_key)
+            }
                 .or_else(|| identities.identity_anywhere(*handle).map(|(_, key)| key));
             let Some(beside) = beside else {
                 debug_assert!(
@@ -9302,6 +9312,81 @@ mod release_walk_scale {
     }
 }
 
+
+#[cfg(test)]
+mod maintenance_tombstone_walk_tests {
+    use super::*;
+    use crate::engine::state::{BlockIndex, BucketNode, TombstoneElement};
+
+    #[test]
+    fn report_walk_preserves_first_deleted_identity_across_buckets() {
+        for count in [0usize, 1, 128, 2048] {
+            let mut shard = ShardState::default();
+            for bucket_id in [23, 42] {
+                let mut bucket = BucketNode {
+                    routing_bucket: bucket_id,
+                    ..BucketNode::default()
+                };
+                let mut rows = Vec::new();
+                for index in 0..count {
+                    let key: Arc<str> = Arc::from(format!("deleted-{bucket_id}-{index}"));
+                    // Equal physical addresses in different buckets must not share identities.
+                    let address = ElementEntry::from_parts(7, index as u64 * 64, 64, None, None);
+                    rows.push(TombstoneElement {
+                        object_key: key.clone(),
+                        model_id: StoredModelKind::Set,
+                        element_name: Arc::from("member"),
+                        block: live_block_key(&address),
+                    });
+                    bucket.block_index.insert_released(
+                        &key,
+                        BlockIndex::new(StoredModelKind::Set, address.clone(), false, true),
+                    );
+                    rows.push(TombstoneElement {
+                        object_key: Arc::from("later-duplicate"),
+                        model_id: StoredModelKind::Set,
+                        element_name: Arc::from(format!("duplicate-{index}")),
+                        block: live_block_key(&address),
+                    });
+                }
+                bucket.rebuild_tombstone_elements(rows);
+                shard.bucket_index.bucket_map.insert(bucket_id, bucket);
+            }
+            let entries = collect_bucket_index_live_block_entries(&shard);
+            assert_eq!(entries.len(), count * 2);
+            for entry in entries {
+                assert!(entry.deleted);
+                let bucket_id = entry.filed_bucket().unwrap();
+                let bucket = shard.bucket_index.bucket_map.get(&bucket_id).unwrap();
+                let scalar = bucket.tombstone_element_at(&entry.address).unwrap();
+                assert_eq!(entry.object_key, scalar.object_key);
+                assert_eq!(entry.object_key.as_ref(), format!(
+                    "deleted-{bucket_id}-{}", entry.address.offset() / 64
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn report_walk_still_names_live_blocks_filed_in_the_wrong_bucket() {
+        let mut shard = ShardState::default();
+        let mut bucket = BucketNode { routing_bucket: 23, ..BucketNode::default() };
+        let address = ElementEntry::from_parts(7, 0, 64, None, None);
+        let handle = bucket.block_index.insert_released(
+            "misfiled", BlockIndex::new(StoredModelKind::Set, address, false, false),
+        );
+        shard.bucket_index.object_block_lookup.file(
+            &Arc::from("set"), &Arc::from("misfiled"),
+            crate::engine::state::BlockLookupRef { routing_bucket: 42, block_ref_key: handle },
+        );
+        shard.bucket_index.bucket_map.insert(23, bucket);
+        let entries = collect_bucket_index_live_block_entries(&shard);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].object_key.as_ref(), "misfiled");
+        assert_eq!(entries[0].filed_bucket(), Some(23));
+        assert!(!entries[0].deleted);
+    }
+}
 
 /// Which live-block walks the scan counter can see.
 ///
