@@ -116,3 +116,20 @@ fn binary_frame_buffer_avoids_the_compressed_output_allocation() {
             previous.allocs, current.allocs, previous.alloc_bytes, current.alloc_bytes, new_output.len());
     }
 }
+
+#[test]
+fn binary_frame_buffer_small_growth_stays_below_the_scratch_retention_limit() {
+    let mut buffer = Vec::new();
+    reserve_encode_capacity(&mut buffer, 700_000);
+    let pointer = buffer.as_ptr();
+    for length in [700_001, 700_127, 710_000, 720_896] {
+        buffer.clear();
+        reserve_encode_capacity(&mut buffer, length);
+        buffer.resize(length, 13);
+        assert_eq!(buffer.as_ptr(), pointer);
+        assert!(buffer.capacity() <= 1024 * 1024);
+    }
+    buffer.clear();
+    reserve_encode_capacity(&mut buffer, 720_897);
+    assert_eq!(buffer.capacity(), 12 * 64 * 1024);
+}

@@ -1198,7 +1198,7 @@ pub(crate) fn encode_binary_frame_into(
         ENCODE_SCRATCH.with(|cell| {
             let mut scratch = cell.borrow_mut();
             scratch.clear();
-            scratch.reserve(parts.len);
+            reserve_encode_capacity(&mut scratch, parts.len);
             let result = (|| {
                 parts.put(record, &mut scratch)?;
                 if compress_payload_into(&scratch, out) {
@@ -1227,12 +1227,25 @@ pub(crate) fn encode_binary_frame_into(
     result
 }
 
+fn reserve_encode_capacity(out: &mut Vec<u8>, required: usize) {
+    if out.capacity() < required {
+        let step = 64 * 1024;
+        let capacity = if required <= step {
+            required.next_power_of_two()
+        } else {
+            required.div_ceil(step).saturating_mul(step)
+        };
+        // Avoid doubling a nearly full scratch past its retention limit for a few extra bytes.
+        out.reserve_exact(capacity.saturating_sub(out.len()));
+    }
+}
+
 fn compress_payload_into(encoded: &[u8], out: &mut Vec<u8>) -> bool {
     out.clear();
     if encoded.len() < COMPRESSION_MIN_BYTES {
         return false;
     }
-    out.reserve(zstd::zstd_safe::compress_bound(encoded.len())
+    reserve_encode_capacity(out, zstd::zstd_safe::compress_bound(encoded.len())
         + crate::log_framing::MAX_BINARY_HEADER_BYTES + 1);
     RECORD_COMPRESSOR.with(|cell| {
         let mut slot = cell.borrow_mut();
