@@ -15,6 +15,7 @@ use temporalstore_rust::http::{get_json_with_options, post_json_with_options, Ht
 
 #[derive(Debug)]
 struct Options {
+    infer: bool,
     addr: String,
     records: usize,
     batch_size: usize,
@@ -51,6 +52,7 @@ struct ProcessMetric {
 
 #[derive(Debug, Serialize)]
 struct Report {
+    infer: bool,
     tenant_id: String,
     requested_records: usize,
     ingested_records: usize,
@@ -139,6 +141,7 @@ fn main() {
     }
 
     let ingest_started = Instant::now();
+    let mut progress_at = ingest_started;
     for batch_start in (0..options.records).step_by(options.batch_size) {
         let batch_end = (batch_start + options.batch_size).min(options.records);
         let batch_number = batch_start / options.batch_size;
@@ -153,6 +156,7 @@ fn main() {
             })
             .collect::<Vec<_>>();
         let mut body = json!({
+            "infer": options.infer,
             "messages": messages,
             "scope": {"tenant_id": batch_tenant, "account_id": "scale-account"},
             "user_id": user,
@@ -179,6 +183,11 @@ fn main() {
                 sampled_ids.extend(ids.into_iter().take(remaining));
             }
             Err(error) => failures.push(format!("add batch {batch_start}: {error}")),
+        }
+        if progress_at.elapsed() >= Duration::from_secs(30) || batch_end == options.records {
+            eprintln!("mem0-scale phase=ingest infer={} acknowledged={} requested={} failed_batches={}",
+                options.infer, ingested_records, options.records, failures.len());
+            progress_at = Instant::now();
         }
     }
     let ingest_elapsed = ingest_started.elapsed();
@@ -324,6 +333,7 @@ fn main() {
 
     let stored_bytes = options.data_root.as_deref().map(directory_bytes);
     let report = Report {
+        infer: options.infer,
         tenant_id,
         requested_records: options.records,
         ingested_records,
@@ -645,6 +655,7 @@ fn parse_options() -> Options {
         .or_else(|| std::env::var("TS_MEM0_PROVIDER_JSON").ok())
         .map(|raw| serde_json::from_str(&raw).expect("--provider-json must be valid JSON"));
     Options {
+        infer: value("--infer").map(|raw| raw.parse::<bool>().expect("--infer must be true or false")).unwrap_or(true),
         addr: value("--addr").unwrap_or_else(|| "127.0.0.1:17000".to_string()),
         records: number("--records", 100_000).max(1),
         batch_size: number("--batch-size", 64).clamp(1, 1_000),

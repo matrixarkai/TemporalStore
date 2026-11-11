@@ -307,10 +307,10 @@ class Memory:
 
     def add(self, messages: Any, *, user_id: Optional[str] = None,
             agent_id: Optional[str] = None, run_id: Optional[str] = None,
-            metadata: Optional[Json] = None, provider: Optional[str] = None,
+            metadata: Optional[Json] = None, provider: Optional[str | Json] = None,
             expires_at: Optional[float] = None, ttl: Optional[float] = None,
             identity_key: Optional[str] = None, truth_class: Optional[str] = None,
-            finalize: bool = True, **kw: Any) -> Json:
+            finalize: bool = True, infer: bool = True, **kw: Any) -> Json:
         """Ingest ``messages`` (mem0 ``add``). Maps ``run_id`` -> ``session_id``
         and ``agent_id`` -> ``scope.agent_id``; accepts a bare string.
 
@@ -337,7 +337,9 @@ class Memory:
         the idle commit close it, which is cheaper per call.
 
         Extra kwargs are ignored for mem0 signature compatibility."""
-        normalized = _normalize_messages(messages, provider)
+        normalized = _normalize_messages(messages, provider if isinstance(provider, str) else None)
+        if len(normalized) > MEM0_BATCH_LIMIT:
+            raise ValueError(f"add accepts at most {MEM0_BATCH_LIMIT} messages")
         # finalize so extraction runs INLINE and the memory is searchable when add returns.
         # Without it the gateway treats this as a streaming ingest and schedules an
         # idle-commit on a debounce (stream_idle_commit_timeout_ms, 1000ms by default),
@@ -353,6 +355,10 @@ class Memory:
         # the debounce).
         body: Json = {"kind": "message", "messages": normalized,
                       "finalize": bool(finalize)}
+        if not infer:
+            body["infer"] = False
+        if isinstance(provider, dict):
+            body["provider"] = provider
         scope = _scope_from_identity(user_id, agent_id, run_id)
         if scope:
             body["scope"] = scope

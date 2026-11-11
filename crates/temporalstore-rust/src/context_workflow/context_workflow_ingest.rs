@@ -9,7 +9,11 @@ const CONTEXT_DURABLE_SOURCE_BATCH: usize = 16;
 // Bound summaries and embedding matrices retained between model calls and durable commits.
 // The embedding planner subdivides this window by provider item and byte limits because a source
 // contributes node, event, and zero to eight entity rows.
-const CONTEXT_MODEL_SOURCE_WINDOW: usize = 64;
+pub(super) const CONTEXT_MODEL_SOURCE_WINDOW: usize = 64;
+
+#[cfg(test)]
+#[path = "explicit_ingest_tests.rs"]
+mod explicit_ingest_tests;
 
 fn persist_prepared_context_batch(
     engine: &TemporalEngine,
@@ -65,6 +69,7 @@ fn process_context_source_window(
     engine: &TemporalEngine,
     shard_id: ShardId,
     gate_l1: bool,
+    infer: bool,
     sources: Vec<ContextExtractRequest>,
     extracts: &mut Vec<ContextExtractReport>,
     failed_sources: &mut Vec<ContextIngestSourceFailure>,
@@ -94,7 +99,14 @@ fn process_context_source_window(
             .iter()
             .map(|source_index| &sources[*source_index])
             .collect::<Vec<_>>();
-        let results = context_extract_summaries_with_fallback_batch(&requests);
+        let results = if infer {
+            context_extract_summaries_with_fallback_batch(&requests)
+        } else {
+            // Build local routing views while retaining the real encoder configuration.
+            requests.iter().map(|source| {
+                Ok(mock_context_summaries(source.provider.clone(), source))
+            }).collect()
+        };
         for (source_index, result) in source_indexes.into_iter().zip(results) {
             summary_results[source_index] = Some(result);
         }
@@ -166,7 +178,10 @@ fn process_context_source_window(
                 let source_index = source_indexes[chunk_end];
                 let (source, summaries, node_hash, event_id_hash) = &prepared_sources[source_index];
                 let emit_l1 = !gate_l1 || context_source_warrants_l1(&source.body);
-                let node_embedding_text = if emit_l1 {
+                let node_embedding_text = if !infer {
+                    // Explicit memories encode their raw text once for both routing and evidence.
+                    source.body.as_str()
+                } else if emit_l1 {
                     summaries.l1.as_str()
                 } else {
                     summaries.l0.as_str()
@@ -325,7 +340,17 @@ pub fn ingest_extract_context_with_l1_gate(
 ) -> ContextIngestExtractReport {
     let source_count = request.sources.len();
     let sources = std::mem::take(&mut request.sources);
-    ingest_extract_context_from_sources(engine, request, source_count, sources, gate_l1)
+    ingest_extract_context_from_sources(engine, request, source_count, sources, gate_l1, true)
+}
+
+/// Store explicit memories without model inference, retaining the configured encoder and WAL.
+pub fn ingest_context_without_inference(
+    engine: &TemporalEngine,
+    mut request: ContextIngestExtractRequest,
+) -> ContextIngestExtractReport {
+    let source_count = request.sources.len();
+    let sources = std::mem::take(&mut request.sources);
+    ingest_extract_context_from_sources(engine, request, source_count, sources, true, false)
 }
 
 fn ingest_extract_context_from_sources(
@@ -334,6 +359,7 @@ fn ingest_extract_context_from_sources(
     source_count: usize,
     sources: impl IntoIterator<Item = ContextExtractRequest>,
     gate_l1: bool,
+    infer: bool,
 ) -> ContextIngestExtractReport {
     // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
     // Context* write would otherwise rebuild the first-index over every live block in the shard --
@@ -382,6 +408,7 @@ fn ingest_extract_context_from_sources(
                 engine,
                 request.shard_id,
                 gate_l1,
+                infer,
                 source_window,
                 &mut extracts,
                 &mut failed_sources,
@@ -394,6 +421,7 @@ fn ingest_extract_context_from_sources(
             engine,
             request.shard_id,
             gate_l1,
+            infer,
             validated_sources,
             &mut extracts,
             &mut failed_sources,
@@ -627,6 +655,7 @@ pub fn ingest_resource_skill_context(
         source_count,
         sources,
         false,
+        true,
     );
     let mut fanout = ContextResourceSkillModelFanoutReport {
         node_count: ingest.extracts.len(),

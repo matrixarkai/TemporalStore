@@ -65,6 +65,9 @@ use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 use bytes::Bytes;
 use tracing::{debug, error, info, warn};
 
+#[path = "server/context_explicit_route.rs"]
+mod context_explicit_route;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
     #[serde(default)]
@@ -653,9 +656,13 @@ fn main() {
     let handler_replicator = shard_replicator.clone();
     let handler_block_runtime = Arc::clone(&blob_runtime);
     let stream_chunk_bytes = blob_chunk_bytes;
+    let stream_context_engine = engine.clone();
     if let Err(err) = serve_with_stream_handler(
         &addr,
         move |head, transfer| {
+            if let StreamAction::Handled = context_explicit_route::handle(&stream_context_engine, head, transfer) {
+                return StreamAction::Handled;
+            }
             handle_blob_stream(
                 head,
                 transfer,
