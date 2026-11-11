@@ -1452,9 +1452,9 @@ impl TemporalEngine {
                     config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
-            let (outcome, returned_post_write) = match command {
+            let (outcome, returned_post_write, packed_index_filed) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
-                    let (outcome, metadata) =
+                    let (outcome, metadata, filed) =
                         execute_on_shard::execute_hash_multi_set_reusing_metadata_at_bucket(
                             &self.cache,
                             &self.block_store,
@@ -1470,7 +1470,7 @@ impl TemporalEngine {
                             true,
                             shared_hash_fields.as_ref(),
                         );
-                    (outcome, Some(metadata))
+                    (outcome, Some(metadata), filed)
                 }
                 Command::HashMultiSetIfTimestampOlder {
                     key,
@@ -1480,7 +1480,7 @@ impl TemporalEngine {
                     ttl_ms,
                     entries,
                 } if reuse_consumed_metadata => {
-                    let (outcome, metadata) =
+                    let (outcome, metadata, filed) =
                         execute_on_shard::execute_packed_conditional_hash_write_at_bucket(
                             &self.cache,
                             &self.block_store,
@@ -1499,7 +1499,7 @@ impl TemporalEngine {
                             true,
                             shared_hash_fields.as_ref(),
                         );
-                    (outcome, Some(metadata))
+                    (outcome, Some(metadata), filed)
                 }
                 command => (
                     execute_on_shard(
@@ -1519,6 +1519,7 @@ impl TemporalEngine {
                         shard,
                         command,
                     ),
+                    None,
                     None,
                 ),
             };
@@ -1652,7 +1653,10 @@ impl TemporalEngine {
                 // Same two guards: every touched key must report that it synced, or the rebuild
                 // still runs; and an empty bucket_map still rebuilds, because maintenance updates
                 // an index rather than constructing one.
-                let maintained_bucket_index = if shard.bucket_index.bucket_map.is_empty() {
+                let maintained_bucket_index = if packed_index_filed.is_some() {
+                    // The packed writer already filed the complete frame and swept its fields.
+                    true
+                } else if shard.bucket_index.bucket_map.is_empty() {
                     false
                 } else {
                     let narrow_hash = match command_for_post_write_ref {

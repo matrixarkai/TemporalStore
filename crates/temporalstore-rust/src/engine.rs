@@ -7227,7 +7227,7 @@ fn append_value_of_object(
             element_name,
             routing_bucket,
             async_storage,
-            block_ordinal,
+            || block_ordinal,
         )
     })
 }
@@ -7242,27 +7242,29 @@ fn append_owned_value_of_object(
     object_id: u64,
     routing_bucket: u32,
     async_storage: bool,
-    block_ordinal: u32,
+    block_ordinal: impl FnOnce() -> u32,
 ) -> Result<ElementEntry, BlockStoreError> {
     if async_storage {
-        return append_value_of_object(
-            cache,
-            block_store,
-            shard_id,
-            &bytes,
-            Some(object_id),
-            None,
-            Some(routing_bucket),
-            true,
-            block_ordinal,
-        );
+        return crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+            append_value_inner(
+                cache,
+                block_store,
+                shard_id,
+                &bytes,
+                Some(object_id),
+                None,
+                Some(routing_bucket),
+                true,
+                block_ordinal,
+            )
+        });
     }
     let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
         block_store.append_block_of_object(
             &bytes,
             Some(object_id),
             Some(routing_bucket),
-            block_ordinal,
+            block_ordinal(),
         )
     })?;
     block_in_wal::stage_owned(object_id, None, bytes);
@@ -7300,7 +7302,7 @@ fn append_value_inner(
     element_name: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
-    block_ordinal: u32,
+    block_ordinal: impl FnOnce() -> u32,
 ) -> Result<ElementEntry, BlockStoreError> {
     // Large async values can evict thousands of smaller hot blocks before a dump.
     // Anonymous values also need a real address: without an identity they cannot be
@@ -7331,7 +7333,7 @@ fn append_value_inner(
             bytes,
             object_id,
             routing_bucket,
-            block_ordinal,
+            block_ordinal(),
         );
     }
     // Tickets fit the address word's 32-bit offset. Exhaustion selects the physical append
