@@ -4378,6 +4378,14 @@ impl ReplacedBlock {
         }
     }
 
+    pub(super) fn visit(&self, mut visit: impl FnMut(super::LiveBlockKey)) {
+        match self {
+            Self::None => {},
+            Self::One(key) => visit(*key),
+            Self::Many(keys) => keys.iter().copied().for_each(visit),
+        }
+    }
+
     /// NO PAGE REPLACED, SPELLED RATHER THAN DEFAULTED. A filer that cannot know -- a projection
     /// rebuilding an object's live set from scratch, a tombstone, a whole-object restate -- says so
     /// at its call site instead of leaving a reader to infer it from an absent argument.
