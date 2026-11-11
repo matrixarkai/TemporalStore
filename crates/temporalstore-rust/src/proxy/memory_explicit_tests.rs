@@ -228,6 +228,49 @@ fn default_memory_add_keeps_inference_route_and_explicit_system_only_is_empty() 
 }
 
 #[test]
+fn metadata_updates_keep_the_embedded_revision_searchable() {
+    let fixture = fixture(0);
+    let (status, added) = add(
+        &fixture,
+        json!({"infer":false,"messages":"Keep the durable retrieval memory."}),
+    );
+    assert_eq!(status, 200, "{added}");
+    let id = added["results"][0]["id"].as_str().unwrap();
+    let before = fixture.proxy.memory_read_one(fixture.tenant, id).unwrap();
+    let (status, body) = fixture.proxy.memory_update(
+        id,
+        serde_json::from_value(json!({"metadata":{"category":"first"}})).unwrap(),
+    );
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let (status, body) = fixture.proxy.memory_batch_update(
+        serde_json::from_value(json!({
+            "memories":[{"memory_id":id,"metadata":{"category":"latest"}}]
+        })).unwrap(),
+    );
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["updated"], 1);
+    let after = fixture.proxy.memory_read_one(fixture.tenant, id).unwrap();
+    assert_eq!(after.context_ref, before.context_ref);
+    assert_eq!(after.memory, before.memory);
+    assert!(after.updated_at_ms > before.updated_at_ms);
+    assert_eq!(fixture.explicit.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.inputs.lock().unwrap().len(), 1);
+    let (status, body) = fixture.proxy.memory_search(
+        serde_json::from_value(json!({
+            "scope":{"tenant_id":"explicit","account_id":"test"},"user_id":"alice",
+            "query":"durable retrieval memory","limit":1,"provider":fixture.provider
+        })).unwrap(),
+    );
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let found: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(found["results"][0]["id"], id);
+    assert_eq!(found["results"][0]["metadata"]["category"], "latest");
+    assert_eq!(fixture.inferred.load(Ordering::Relaxed), 0);
+    assert_eq!(fixture.chats.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn explicit_memory_rejects_bad_ack_old_server_and_failed_catalog_writes() {
     for mode in 1..=4 {
         let fixture = fixture(mode);

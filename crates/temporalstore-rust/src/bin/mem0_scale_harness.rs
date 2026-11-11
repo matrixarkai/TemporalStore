@@ -22,6 +22,7 @@ struct Options {
     tenant_shards: usize,
     users: usize,
     searches: usize,
+    metadata_updates: usize,
     payload_bytes: usize,
     out: PathBuf,
     data_root: Option<PathBuf>,
@@ -56,11 +57,15 @@ struct Report {
     tenant_id: String,
     requested_records: usize,
     ingested_records: usize,
+    metadata_update_rounds: usize,
     tenant_shards: usize,
     payload_bytes: u64,
     elapsed_ms: u128,
     ingest_records_per_sec: f64,
     stored_bytes: Option<u64>,
+    stored_bytes_after_ingest: Option<u64>,
+    stored_bytes_before_metadata_updates: Option<u64>,
+    stored_bytes_after_metadata_updates: Option<u64>,
     storage_amplification: Option<f64>,
     api: BTreeMap<String, ApiMetric>,
     harness_process: ProcessMetric,
@@ -191,6 +196,9 @@ fn main() {
         }
     }
     let ingest_elapsed = ingest_started.elapsed();
+    let stored_bytes_after_ingest = options.data_root.as_deref().map(directory_bytes);
+    let mut stored_bytes_before_metadata_updates = None;
+    let mut stored_bytes_after_metadata_updates = None;
 
     for query_index in 0..options.searches {
         let record_index = query_record_index(options.records, options.batch_size, query_index);
@@ -233,6 +241,50 @@ fn main() {
         "/memories/users",
         &list,
     );
+
+    if options.metadata_updates > 0 {
+        if let Some(id) = sampled_ids.first() {
+            let path = format!("/memories/{id}");
+            let baseline = get_json_with_options::<Value>(&options.addr, &path, request_options())
+                .map_err(|error| error.to_string())
+                .and_then(validate_response);
+            match baseline {
+                Ok(before) if before["id"] == *id => {
+                    let ids = sampled_ids.iter().take(16).collect::<Vec<_>>();
+                    stored_bytes_before_metadata_updates = options.data_root.as_deref().map(directory_bytes);
+                    for round in 0..options.metadata_updates {
+                        measure_post_checked(
+                            &mut timings, &mut failures, "metadata_update", &options.addr,
+                            &format!("/memories/{id}/update"),
+                            &json!({"metadata":{"workload":"metadata-single","round":round}}),
+                            |value| if value["updated"] == true { Ok(()) } else { Err("metadata update acknowledgment missing".into()) },
+                        );
+                        measure_post_checked(
+                            &mut timings, &mut failures, "metadata_batch_update", &options.addr,
+                            "/memories/batch/update",
+                            &json!({"memories":ids.iter().map(|id| json!({
+                                "memory_id":id,"metadata":{"workload":"metadata-batch","round":round}
+                            })).collect::<Vec<_>>()}),
+                            |value| if value["updated"].as_u64() == Some(ids.len() as u64) {
+                                Ok(())
+                            } else { Err("metadata batch acknowledgment incomplete".into()) },
+                        );
+                    }
+                    stored_bytes_after_metadata_updates = options.data_root.as_deref().map(directory_bytes);
+                    let verified = get_json_with_options::<Value>(&options.addr, &path, request_options())
+                        .map_err(|error| error.to_string())
+                        .and_then(|after| validate_metadata_revision(&before, &after, options.metadata_updates - 1));
+                    if let Err(error) = verified {
+                        failures.push(format!("metadata verification: {error}"));
+                    }
+                }
+                Ok(_) => failures.push("metadata baseline returned an unexpected memory".into()),
+                Err(error) => failures.push(format!("metadata baseline: {error}")),
+            }
+        } else {
+            failures.push("metadata workload requires an acknowledged memory".into());
+        }
+    }
 
     if let Some(id) = sampled_ids.first() {
         measure_get(
@@ -337,12 +389,16 @@ fn main() {
         tenant_id,
         requested_records: options.records,
         ingested_records,
+        metadata_update_rounds: options.metadata_updates,
         tenant_shards: options.tenant_shards,
         payload_bytes,
         elapsed_ms: started.elapsed().as_millis(),
         ingest_records_per_sec: ingested_records as f64
             / ingest_elapsed.as_secs_f64().max(0.000_001),
         stored_bytes,
+        stored_bytes_after_ingest,
+        stored_bytes_before_metadata_updates,
+        stored_bytes_after_metadata_updates,
         storage_amplification: stored_bytes.map(|bytes| bytes as f64 / payload_bytes.max(1) as f64),
         api: timings.finish(),
         harness_process: harness_sampler.finish(),
@@ -465,6 +521,21 @@ fn validate_response(response: Value) -> Result<Value, String> {
         return Err(message.to_string());
     }
     Ok(response)
+}
+
+fn validate_metadata_revision(before: &Value, after: &Value, round: usize) -> Result<(), String> {
+    for field in ["id", "memory", "context_ref"] {
+        if before.get(field).and_then(Value::as_str).is_none()
+            || before.get(field) != after.get(field) {
+            return Err(format!("metadata update changed or omitted {field}"));
+        }
+    }
+    if after["metadata"]["workload"] != "metadata-batch"
+        || after["metadata"]["round"].as_u64() != Some(round as u64)
+    {
+        return Err("latest metadata is not readable".into());
+    }
+    Ok(())
 }
 
 fn scope_body(tenant_id: &str) -> Value {
@@ -662,6 +733,7 @@ fn parse_options() -> Options {
         tenant_shards: number("--tenant-shards", 1).max(1),
         users: number("--users", 1_000).max(1),
         searches: number("--searches", 100).max(1),
+        metadata_updates: number("--metadata-updates", 0).min(100_000),
         payload_bytes: number("--payload-bytes", 512).max(64),
         out: value("--out")
             .map(PathBuf::from)
@@ -696,6 +768,21 @@ mod tests {
         assert!(validate_response(json!({"updated":true})).is_ok());
         assert!(validate_response(json!({"updated":2,"failed":[]})).is_ok());
         assert!(validate_response(json!({"deleted":2,"failed":[]})).is_ok());
+    }
+
+    #[test]
+    fn metadata_checks_reject_revision_changes_and_stale_reads() {
+        let before = json!({"id":"m1","memory":"unchanged","context_ref":"revision-1"});
+        let mut after = before.clone();
+        after["metadata"] = json!({"workload":"metadata-batch","round":199});
+        assert!(validate_metadata_revision(&before, &after, 199).is_ok());
+        for field in ["id", "memory", "context_ref"] {
+            let mut changed = after.clone();
+            changed[field] = json!("changed");
+            assert!(validate_metadata_revision(&before, &changed, 199).is_err());
+            assert!(validate_metadata_revision(&json!({}), &after, 199).is_err());
+        }
+        assert!(validate_metadata_revision(&before, &after, 200).is_err());
     }
 
     #[test]
