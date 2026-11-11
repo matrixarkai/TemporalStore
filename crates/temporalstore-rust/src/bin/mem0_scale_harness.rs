@@ -233,13 +233,17 @@ fn main() {
             &options.addr,
             &format!("/memories/{id}"),
         );
+        let mut update = json!({"data": "updated scale memory with retrieval marker"});
+        if let Some(provider) = &options.provider {
+            update["provider"] = provider.clone();
+        }
         measure_post(
             &mut timings,
             &mut failures,
             "update",
             &options.addr,
             &format!("/memories/{id}/update"),
-            &json!({"data": "updated scale memory with retrieval marker"}),
+            &update,
         );
         measure_get(
             &mut timings,
@@ -268,13 +272,17 @@ fn main() {
         .iter()
         .map(|id| json!({"memory_id": id, "text": "batch updated scale memory"}))
         .collect::<Vec<_>>();
+    let mut batch_update = json!({"memories": updates});
+    if let Some(provider) = &options.provider {
+        batch_update["provider"] = provider.clone();
+    }
     measure_post(
         &mut timings,
         &mut failures,
         "batch_update",
         &options.addr,
         "/memories/batch/update",
-        &json!({"memories": updates}),
+        &batch_update,
     );
     measure_post(
         &mut timings,
@@ -419,6 +427,19 @@ fn request_options() -> HttpRequestOptions {
 }
 
 fn validate_response(response: Value) -> Result<Value, String> {
+    if response
+        .get("failed")
+        .and_then(Value::as_array)
+        .is_some_and(|failed| !failed.is_empty())
+    {
+        return Err("batch response contains failed operations".into());
+    }
+    if ["updated", "deleted"]
+        .iter()
+        .any(|field| response.get(*field).and_then(Value::as_bool) == Some(false))
+    {
+        return Err("mutation was not applied".into());
+    }
     let top_level_error = response.get("ok").and_then(Value::as_bool) == Some(false);
     let status_error = response
         .get("status")
@@ -651,6 +672,20 @@ fn parse_options() -> Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_batches_and_unapplied_mutations_do_not_pass_the_workload() {
+        for response in [
+            json!({"updated":1,"failed":[{"memory_id":"m2","status":502}]}),
+            json!({"updated":false}),
+            json!({"deleted":false}),
+        ] {
+            assert!(validate_response(response).is_err());
+        }
+        assert!(validate_response(json!({"updated":true})).is_ok());
+        assert!(validate_response(json!({"updated":2,"failed":[]})).is_ok());
+        assert!(validate_response(json!({"deleted":2,"failed":[]})).is_ok());
+    }
 
     #[test]
     fn query_targets_follow_ingest_batches_including_the_short_tail() {

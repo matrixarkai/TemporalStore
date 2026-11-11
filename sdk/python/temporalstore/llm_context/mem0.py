@@ -458,6 +458,9 @@ class Memory:
         new ``data`` is ingested in the memory's own scope and the old id is tombstoned, so a later
         ``search`` / ``get_all`` returns the new version."""
         body: Json = {"memory_id": str(memory_id), "data": data}
+        for field in ("metadata", "provider"):
+            if kw.get(field) is not None:
+                body[field] = kw[field]
         return _put_json(self._base_url, self._api_key,
                          f"/memories/{quote(str(memory_id), safe='')}", body, self._timeout)
 
@@ -516,8 +519,11 @@ class Memory:
                 raise ValueError("each batch_update entry must be a dict with a memory_id")
             if not entry.get("memory_id"):
                 raise ValueError("each batch_update entry requires memory_id")
+        body: Json = {"memories": entries}
+        if kw.get("provider") is not None:
+            body["provider"] = kw["provider"]
         return _post_json(self._base_url, self._api_key, "/memories/batch/update",
-                          {"memories": entries}, self._timeout)
+                          body, self._timeout)
 
     def batch_delete(self, memories: Any, **kw: Any) -> Json:
         """Delete many memories in one call (mem0 ``batch_delete``).

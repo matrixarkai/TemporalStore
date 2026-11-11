@@ -61,6 +61,18 @@ Other routes:
 | `POST` | `/memories/delete_all` |
 | `POST` | `/memories/reset` |
 
+## Model Selection On Updates
+
+Single-memory updates accept the same optional `provider` object as add and search. Batch
+updates accept a top-level `provider`; individual entries can override it. Entries using
+different providers are extracted in separate groups, so one encoder configuration cannot
+be applied to another entry accidentally. A null entry-level provider inherits the batch
+provider. Omitting provider selection keeps the server default.
+
+When selecting an Ollama model per request, send the same provider configuration on add,
+update, and search. Updates do not infer or persist credentials or model settings in the
+memory catalog. The scale driver forwards its configured provider to both update routes.
+
 ## Large-corpus profiling
 
 Run an isolated local metadata, data, and proxy process from this repository:
