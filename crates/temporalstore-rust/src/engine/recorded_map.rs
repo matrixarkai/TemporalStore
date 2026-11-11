@@ -407,14 +407,24 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
     };
     super::storage_bucket_internals::reload_released_bucket(shard, shard_id, routing_bucket);
     let existing = shard.bucket_index.hashes.get(object_key);
+    let shared = shared.filter(|shared| shared.matches(fields.clone()));
+    let complete = existing.zip(shared).is_some_and(|(existing, shared)| {
+        existing.len() == shared.names().len()
+            && existing.keys().map(|name| name.as_ref())
+                .eq(shared.sorted_names().iter().map(|name| name.as_ref()))
+    });
     let mut written = None;
     let replaces = if let Some(existing) = existing {
         let landing = super::live_block_key(&address);
-        let mut vacated = super::storage_bucket_internals::ReplacedBlock::from_keys(fields.clone()
-            .filter_map(|field| existing.get(field))
-            .map(super::live_block_key)
-            .filter(|key| *key != landing));
-        if !vacated.is_empty() {
+        let mut vacated = if complete {
+            super::storage_bucket_internals::ReplacedBlock::from_keys(existing.values()
+                .map(super::live_block_key).filter(|key| *key != landing))
+        } else {
+            super::storage_bucket_internals::ReplacedBlock::from_keys(fields.clone()
+                .filter_map(|field| existing.get(field))
+                .map(super::live_block_key).filter(|key| *key != landing))
+        };
+        if !complete && !vacated.is_empty() {
             let names = written_hash_fields(fields.clone(), shared);
             for (field, old) in existing.iter() {
                 if !names.contains(field.as_ref()) {
@@ -453,7 +463,7 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
             shard, routing_bucket, object_key, |field| written.contains(field),
         );
     }
-    install_packed_hash_fields(shard, object_key, fields, address, filed);
+    install_packed_hash_fields(shard, object_key, fields, address, filed, complete);
 }
 
 fn install_packed_hash_fields<'a>(
@@ -462,7 +472,17 @@ fn install_packed_hash_fields<'a>(
     fields: impl Iterator<Item = &'a str>,
     address: ElementEntry,
     _filed: BlockFiled,
+    complete: bool,
 ) {
+    // Exact names were checked under this exclusive shard borrow before the block was filed.
+    if complete {
+        if let Some(existing) = HashKind::resident(shard).entries.get_mut(object_key) {
+            for held in existing.values_mut() {
+                *held = address.clone();
+            }
+            return;
+        }
+    }
     for field in fields {
         let handle = super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
         HashKind::resident(shard).install_into(object_key, handle, address.clone());
