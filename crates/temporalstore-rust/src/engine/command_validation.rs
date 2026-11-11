@@ -1294,7 +1294,7 @@ struct BorrowedCachedBytes<'a> {
     value: Option<&'a [u8]>,
 }
 
-fn decode_borrowed_cached_bytes(bytes: &[u8]) -> Option<Option<&[u8]>> {
+pub(super) fn decode_borrowed_cached_bytes(bytes: &[u8]) -> Option<Option<&[u8]>> {
     let response = rmp_serde::from_slice::<BorrowedCachedBytes<'_>>(bytes).ok()?;
     (response.kind == "bytes").then_some(response.value)
 }

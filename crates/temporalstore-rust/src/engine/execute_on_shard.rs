@@ -554,7 +554,13 @@ pub(super) enum ProjectedHashValues {
 #[cfg(test)]
 thread_local! {
     static PROJECTED_VALUE_VISITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PROJECTED_FIELD_CACHE_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PROJECTED_FRAME_FETCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
+
+#[cfg(test)]
+#[path = "tests/projected_field_cache.rs"]
+mod projected_field_cache_tests;
 
 #[cfg(test)]
 pub(crate) fn reset_projected_value_visits_for_test() {
@@ -654,6 +660,44 @@ pub(super) fn execute_hash_multi_get_projected(
     let Some(hash_fields) = shard.bucket_index.hashes.get(key) else {
         return ProjectedHashValues::Missing(fields.len());
     };
+    // Point reads and conditional writes share this invalidated-under-lock field cache.
+    // An indexed field must still exist; negative, old or malformed cache entries do
+    // not replace the authoritative packed-row lookup.
+    if let [field] = fields {
+        if hash_fields.get(field).is_some() {
+            let cached = crate::alloc_probe::in_class(
+                crate::alloc_probe::AllocClass::CacheRead,
+                || cache.get_shared(&CacheKey::hash(shard_id, key, field)),
+            );
+            if let Ok(Some(frame)) = cached {
+                if let Some(Some(value)) =
+                    super::command_validation::decode_borrowed_cached_bytes(&frame)
+                {
+                    let range = if value.is_empty() {
+                        Some(0..0)
+                    } else {
+                        (value.as_ptr() as usize)
+                            .checked_sub(frame.as_ptr() as usize)
+                            .and_then(|start| {
+                                start.checked_add(value.len())
+                                    .filter(|end| *end <= frame.len())
+                                    .map(|end| start..end)
+                            })
+                    };
+                    if let Some(range) = range {
+                        #[cfg(test)]
+                        PROJECTED_FIELD_CACHE_HITS.with(|count| {
+                            count.set(count.get().saturating_add(1));
+                        });
+                        return ProjectedHashValues::Shared {
+                            frame,
+                            ranges: vec![Some(range)],
+                        };
+                    }
+                }
+            }
+        }
+    }
     // A packed row gives every present field the same address. Detect that common case
     // without allocating a per-command address map, fetch its frame once, and project all
     // requested fields from the retained bytes. Distinct legacy/per-field addresses keep
@@ -687,6 +731,8 @@ pub(super) fn execute_hash_multi_get_projected(
     }
     if !distinct_addresses {
         if let Some((address, first_field)) = shared {
+            #[cfg(test)]
+            PROJECTED_FRAME_FETCHES.with(|count| count.set(count.get().saturating_add(1)));
             let frame = read_block_frame_shared(
                 cache,
                 block_store,
@@ -740,6 +786,10 @@ pub(super) fn execute_hash_multi_get_projected(
                 .iter()
                 .map(|field| {
                     hash_fields.get(field).and_then(|address| {
+                        #[cfg(test)]
+                        PROJECTED_FRAME_FETCHES.with(|count| {
+                            count.set(count.get().saturating_add(1));
+                        });
                         read_block_bytes(
                             cache,
                             block_store,
