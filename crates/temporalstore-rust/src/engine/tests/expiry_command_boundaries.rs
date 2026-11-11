@@ -549,105 +549,11 @@ fn expire_on_a_key_whose_deadline_is_exactly_now_is_refused() {
 // FIVE: and the same discarded-answer shape, everywhere it could occur.
 // =====================================================================================
 
-/// Every `drop_if_expired` call in `execute_on_shard` accumulates into `mutated`.
-///
-/// WHY THIS SITS BESIDE A BEHAVIOURAL TEST RATHER THAN INSTEAD OF ONE. The test at the top of
-/// this file kills the discarded answer in ONE arm, `CommonTtl`, by counting what the report
-/// maintains. There are 36 call sites. Standing up a behavioural case for each would need a
-/// constructed `Command` per arm, and the arms that could not be constructed generically would
-/// have to be listed and excused -- which is an exemption list, and an exemption list is a
-/// hiding place. This asks something uniform instead, which no call site has grounds to be
-/// excused from, so it needs no list at all.
-///
-/// WHY THE PROPERTY IS UNIFORM. `drop_if_expired` exists to REPORT. It wraps
-/// `remove_if_expired` and adds the cache invalidation, and it returns whether it collected
-/// anything for exactly one purpose: so the caller can fold it into `mutated`. A call that
-/// throws the answer away has kept the collection and dropped the record of it, which is the
-/// one thing the wrapper is for. That is why there is nothing to exempt here -- unlike bare
-/// `remove_if_expired`, which is called in two honest shapes (tested and discarded) and so
-/// could not carry a claim like this one without a list of excuses.
-///
-/// WHAT IT CANNOT SEE. This reads source text, so a rewrite that changed how the
-/// accumulation is spelled would blind it. The denominator below is the answer to that: a
-/// changed spelling collapses the call-site count and fails the vacuity floor loudly rather
-/// than reading clean.
+/// Each command expiry result must be reflected in mutation reporting. The syntax-tree guard
+/// accepts accumulation, initialization, and checked branches that report a removal. It rejects
+/// discarded results and raw record removal outside the cache-aware helper, and plants a
+/// discarded-result control to verify the detector.
 #[test]
 fn every_drop_if_expired_call_accumulates_into_the_mutation_report() {
-    const SOURCE: &str = include_str!("../execute_on_shard.rs");
-    const CALL: &str = "drop_if_expired(";
-    const DEFINITION: &str = "fn drop_if_expired(";
-    const ACCUMULATE: &str = "mutated |= drop_if_expired(";
-
-    /// (call sites seen, sites that discard the answer with their line numbers)
-    fn scan(source: &str) -> (usize, Vec<(usize, String)>) {
-        let mut sites = 0usize;
-        let mut discarding = Vec::new();
-        for (index, line) in source.lines().enumerate() {
-            if !line.contains(CALL) || line.contains(DEFINITION) {
-                continue;
-            }
-            sites += 1;
-            if !line.contains(ACCUMULATE) {
-                discarding.push((index + 1, line.trim().to_string()));
-            }
-        }
-        (sites, discarding)
-    }
-
-    // ---- DENOMINATOR ------------------------------------------------------------------
-    let definitions = SOURCE.lines().filter(|l| l.contains(DEFINITION)).count();
-    assert_eq!(
-        1, definitions,
-        "VACUITY: `{DEFINITION}` was found {definitions} times, not once. This guard is not \
-         reading the file it thinks it is.",
-    );
-
-    let (sites, discarding) = scan(SOURCE);
-    assert!(
-        sites > 20,
-        "VACUITY: the scan found only {sites} calls to `drop_if_expired`. Either the helper was \
-         renamed or the arms stopped using it, and this guard is watching nothing. The count is \
-         the point: it must fail here rather than read clean on an empty scan.",
-    );
-
-    // ---- POSITIVE CONTROL: the scan really can see a discarded answer -----------------
-    // Planted into a COPY of the source, in the spelling the real weakening used. Without
-    // this, a scan that matched nothing would report zero discarding sites and be mistaken
-    // for a result.
-    let planted = SOURCE.replacen(ACCUMULATE, "let _ = drop_if_expired(", 1);
-    assert_ne!(
-        SOURCE, planted,
-        "POSITIVE CONTROL: nothing was planted, so the control proves nothing",
-    );
-    let (planted_sites, planted_discarding) = scan(&planted);
-    assert_eq!(
-        sites, planted_sites,
-        "POSITIVE CONTROL: planting must not change how many call sites are seen \
-         ({sites} before, {planted_sites} after)",
-    );
-    assert_eq!(
-        1,
-        planted_discarding.len(),
-        "POSITIVE CONTROL: exactly one planted `let _ = drop_if_expired(..)` must be caught, \
-         and {} were. The detector cannot see the shape it exists to catch.",
-        planted_discarding.len(),
-    );
-
-    // ---- THE CLAIM --------------------------------------------------------------------
-    assert!(
-        discarding.is_empty(),
-        "{} of {sites} `drop_if_expired` calls throw away what they collected:\n{}\n\n\
-         `drop_if_expired` returns whether it removed an expired record so the caller can fold \
-         it into `mutated`, and `mutated` is the condition on the block that keeps the shard's \
-         block index and its durable record in step with what just left memory. A call whose \
-         answer is discarded still collects the record and still drops its cached copy, so no \
-         command's reply changes and nothing else in the suite notices -- the record simply \
-         leaves memory with nothing recording that it did.",
-        discarding.len(),
-        discarding
-            .iter()
-            .map(|(line, text)| format!("  execute_on_shard.rs:{line}: {text}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    );
+    super::deadline_source_guards::assert_mutation_reports(include_str!("../execute_on_shard.rs"));
 }

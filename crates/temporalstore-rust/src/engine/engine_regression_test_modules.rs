@@ -31,6 +31,9 @@ mod part3;
 mod part4;
 #[path = "tests/expiry_scale.rs"]
 mod expiry_scale;
+
+#[path = "tests/deadline_source_guards.rs"]
+mod deadline_source_guards;
 #[path = "tests/a_container_write_asks_its_own_slot.rs"]
 mod a_container_write_asks_its_own_slot;
 #[path = "tests/reclaim_dump.rs"]

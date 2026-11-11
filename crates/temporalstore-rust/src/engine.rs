@@ -6349,9 +6349,20 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
 
     // The key as given. `BTreeMap<String, _>` looks up by `&str`, so this needs no owned copy.
     if expired(shard, key, now) {
-        removed |= delete_record_exact(shard, key);
+        if delete_record_exact(shard, key) {
+            removed = true;
+            removed_record(key);
+        }
     }
 
+    remove_if_expired_with(shard, key, |_| {})
+}
+
+fn remove_if_expired_with(
+    shard: &mut ShardState,
+    key: &str,
+    mut removed_record: impl FnMut(&str),
+) -> bool {
     if key.starts_with("control_state:") {
         return removed;
     }
@@ -6370,7 +6381,10 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
         candidate.push(':');
         candidate.push_str(key);
         if expired(shard, &candidate, now) {
-            removed |= delete_record_exact(shard, &candidate);
+            if delete_record_exact(shard, &candidate) {
+                removed = true;
+                removed_record(&candidate);
+            }
         }
     }
     removed

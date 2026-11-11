@@ -128,6 +128,7 @@ path = "src/bin/native_persistence_workflow.rs"
 [dev-dependencies]
 async-trait = "0.1"
 fastcdc = { version = "5.0", default-features = false }
+syn = { version = "2", features = ["full", "visit"] }
 tempfile = "=3.10.1"
 
 [[bin]]

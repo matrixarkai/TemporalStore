@@ -4,6 +4,9 @@
 use super::*;
 use crate::types::BatchHashMultiSetValue;
 
+#[path = "lazy_expiry_cache.rs"]
+mod lazy_expiry_cache;
+
 #[test]
 fn maintenance_record_lookup_preserves_mixed_models_and_unrelated_pages() {
     let dir = tempfile::tempdir().unwrap();
