@@ -12,6 +12,10 @@ use std::time::Duration;
 #[path = "http_chunked.rs"]
 mod chunked;
 
+#[cfg(test)]
+#[path = "http_pooled_deadline_tests.rs"]
+mod pooled_deadline_tests;
+
 /// Idle read timeout for a kept-alive server connection. A persistent client
 /// connection parks here between requests; if nothing arrives for this long the
 /// server reaps the connection (the client transparently reconnects).
@@ -784,33 +788,48 @@ fn is_retryable_request_error(err: &HttpError) -> bool {
     }
 }
 
+struct PooledConnection {
+    stream: TcpStream,
+    io_timeout_ms: u64,
+}
+
 thread_local! {
     /// Per-thread pool of idle keep-alive sockets, keyed by destination address.
     /// Thread-local keeps the hot path lock-free; each worker reuses its own
     /// connections instead of paying a TCP handshake + server thread spawn per op.
-    static CLIENT_CONN_POOL: RefCell<HashMap<String, Vec<TcpStream>>> =
+    static CLIENT_CONN_POOL: RefCell<HashMap<String, Vec<PooledConnection>>> =
         RefCell::new(HashMap::new());
 }
 
-fn pool_take(addr: &str) -> Option<TcpStream> {
-    CLIENT_CONN_POOL.with(|pool| pool.borrow_mut().get_mut(addr).and_then(Vec::pop))
+fn pool_take(addr: &str, options: HttpRequestOptions) -> Result<Option<TcpStream>, HttpError> {
+    let connection = CLIENT_CONN_POOL.with(|pool| pool.borrow_mut().get_mut(addr).and_then(Vec::pop));
+    let Some(connection) = connection else { return Ok(None) };
+    // A destination can serve short native calls and longer model calls. Socket timeouts belong
+    // to this request, not the request that originally opened the pooled connection.
+    if connection.io_timeout_ms != options.io_timeout_ms {
+        let timeout = Some(Duration::from_millis(options.io_timeout_ms));
+        connection.stream.set_read_timeout(timeout)?;
+        connection.stream.set_write_timeout(timeout)?;
+    }
+    Ok(Some(connection.stream))
 }
 
-fn pool_put(addr: &str, stream: TcpStream) {
+fn pool_put(addr: &str, stream: TcpStream, options: HttpRequestOptions) {
     CLIENT_CONN_POOL.with(|pool| {
         let mut pool = pool.borrow_mut();
+        let connection = PooledConnection { stream, io_timeout_ms: options.io_timeout_ms };
         // Look the bucket up by `&str` first. `entry` needs an owned key, so reaching for it
         // straight away allocated the address on EVERY request to find a bucket that is already
         // there -- a new bucket happens once per address, not once per request. `pool_take` on
         // the line above has always looked up by borrow.
         if let Some(bucket) = pool.get_mut(addr) {
             if bucket.len() < CLIENT_POOL_MAX_PER_ADDR {
-                bucket.push(stream);
+                bucket.push(connection);
             }
             // else: drop the socket (bucket full)
             return;
         }
-        pool.entry(addr.to_string()).or_default().push(stream);
+        pool.entry(addr.to_string()).or_default().push(connection);
     });
 }
 
@@ -1031,10 +1050,10 @@ fn request_raw_once(
     // Fast path: reuse a pooled keep-alive socket. A pooled socket may have been
     // reaped by the server's idle timeout, so on any failure we discard it and
     // fall back to a fresh connection (transparent to the caller).
-    if let Some(mut stream) = pool_take(addr) {
+    if let Some(mut stream) = pool_take(addr, options)? {
         match exchange_once(&mut stream, addr, method, path, body, extra_headers, options) {
             Ok(response) => {
-                pool_put(addr, stream);
+                pool_put(addr, stream, options);
                 return Ok(response);
             }
             // A pooled socket the server reaped fails immediately -- a reset, a broken pipe,
@@ -1053,7 +1072,7 @@ fn request_raw_once(
     }
     let mut stream = connect_fresh(addr, options)?;
     let response = exchange_once(&mut stream, addr, method, path, body, extra_headers, options)?;
-    pool_put(addr, stream);
+    pool_put(addr, stream, options);
     Ok(response)
 }
 
@@ -1065,7 +1084,7 @@ fn request_streaming_json_once<Res: DeserializeOwned>(
     extra_headers: &str,
     options: HttpRequestOptions,
 ) -> Result<Res, HttpError> {
-    if let Some(mut stream) = pool_take(addr) {
+    if let Some(mut stream) = pool_take(addr, options)? {
         match exchange_streaming_json_once(
             &mut stream,
             addr,
@@ -1076,7 +1095,7 @@ fn request_streaming_json_once<Res: DeserializeOwned>(
             options,
         ) {
             Ok(response) => {
-                pool_put(addr, stream);
+                pool_put(addr, stream, options);
                 return Ok(response);
             }
             Err(err) if timed_out(&err) || matches!(err, HttpError::Json(_)) => return Err(err),
@@ -1093,7 +1112,7 @@ fn request_streaming_json_once<Res: DeserializeOwned>(
         extra_headers,
         options,
     )?;
-    pool_put(addr, stream);
+    pool_put(addr, stream, options);
     Ok(response)
 }
 
