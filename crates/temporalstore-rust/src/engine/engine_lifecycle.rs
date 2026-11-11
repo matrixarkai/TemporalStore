@@ -507,6 +507,9 @@ impl TemporalEngine {
         block_store: BlockStore,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
+        for namespace in SWEPT_RECORD_NAMESPACES {
+            cache.enable_record_key_index(namespace);
+        }
         let index_dir = index_dir.into();
         let wal_store = LocalWriteAheadLogStore::new(index_dir.join("wals"));
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));

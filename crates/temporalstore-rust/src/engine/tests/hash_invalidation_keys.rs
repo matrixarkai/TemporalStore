@@ -5,6 +5,53 @@ use super::*;
 use crate::types::BatchHashMultiSetValue;
 
 #[test]
+fn maintenance_record_lookup_preserves_mixed_models_and_unrelated_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+        16 * 1024 * 1024, dir.path().join("cache"), dir.path().join("blocks"),
+        dir.path().join("indexes"), BlockStoreOptions::default(), false,
+    );
+    let cache = &engine.cache;
+    let mut wanted = Vec::new();
+    let mut survivors = Vec::new();
+    for shard_id in [1, 2] {
+        for record in ["due", "live"] {
+            for namespace in SWEPT_RECORD_NAMESPACES {
+                for selector in ["first", "second"] {
+                    let key = CacheKey { shard_id, namespace: (*namespace).into(),
+                        record_key: record.into(), selector: selector.into() };
+                    cache.put(key.clone(), vec![1; 16]).unwrap();
+                    if shard_id == 1 && record == "due" { wanted.push(key); }
+                    else { survivors.push(key); }
+                }
+            }
+            for key in named_record_keys(shard_id, record) {
+                cache.put(key.clone(), vec![2; 16]).unwrap();
+                if shard_id == 1 && record == "due" { wanted.push(key); }
+                else { survivors.push(key); }
+            }
+        }
+    }
+    for index in 0..4096 {
+        let page = CacheKey { shard_id: 1, namespace: "page".into(),
+            record_key: format!("page-{index}").into(), selector: "data".into() };
+        cache.put(page.clone(), vec![3; 16]).unwrap();
+        survivors.push(page);
+    }
+    for key in wanted.iter().chain(&survivors) { assert!(cache.peek(key)); }
+    let counts = CacheSweepCounts::zeroed();
+    counts.set_armed(true);
+    invalidate_records_all_batched(cache, 1, &["due", "due"], &counts);
+    assert_eq!(counts.read_batched(), (1, 2, 1, 4, 4));
+    assert_eq!(counts.read().3, 4);
+    for key in &wanted { assert!(!cache.peek(key), "not invalidated: {key:?}"); }
+    for key in &survivors { assert!(cache.peek(key), "over-invalidated: {key:?}"); }
+    counts.reset();
+    invalidate_records_all_batched(cache, 1, &["due"], &counts);
+    assert_eq!(counts.read_batched(), (1, 1, 1, 0, 0));
+}
+
+#[test]
 fn scratch_invalidation_keeps_record_shard_namespace_and_field_boundaries() {
     let dir = tempfile::tempdir().unwrap();
     let cache = MultiLayerCache::new(1024 * 1024, dir.path());
