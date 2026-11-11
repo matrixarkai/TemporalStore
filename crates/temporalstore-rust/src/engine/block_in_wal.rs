@@ -382,7 +382,8 @@ pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u6
 /// are two entries, not one, and which of them a read wants is a question the object id cannot be
 /// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
 /// INSIDE that record -- which is why [`StagedBlock::element_name`] exists as well.
-type ShardRegistrations = HashMap<BlockKey, Registration>;
+// Hash randomization is process-local; persisted block identities keep their stable hash.
+type ShardRegistrations = HashMap<BlockKey, Registration, ahash::RandomState>;
 
 #[derive(Default)]
 struct RegistrationRegistry {
@@ -436,6 +437,10 @@ fn registry() -> &'static Mutex<RegistrationRegistry> {
 #[cfg(test)]
 #[path = "registration_scope_tests.rs"]
 mod registration_scope_tests;
+
+#[cfg(test)]
+#[path = "registration_hash_tests.rs"]
+mod registration_hash_tests;
 
 /// Note that the blocks in `record` live in the record at `log_id`, carried by the WAL record
 /// at `sequence`.
