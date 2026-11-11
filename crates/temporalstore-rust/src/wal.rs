@@ -4446,6 +4446,16 @@ fn append_record_locked(
     append_record_locked_on(inner, record, sync, known_offset, None)
 }
 
+fn recycle_encode_scratch(inner: &mut WriteAheadLogInner, bytes: Vec<u8>) {
+    // Compression reserves for the input bound; retain at most twice the final frame or 1 MiB.
+    let useful_capacity = bytes.len().saturating_mul(2).max(1024 * 1024);
+    inner.encode_scratch = if bytes.capacity() <= useful_capacity { bytes } else { Vec::new() };
+}
+
+#[cfg(test)]
+#[path = "wal_frame_reuse_tests.rs"]
+mod frame_reuse_tests;
+
 /// The same append, optionally writing through a handle the caller already opened.
 ///
 /// Only the atomic batch passes one. It holds the append lock and the `inner` lock across its
@@ -4488,45 +4498,14 @@ fn append_record_locked_on(
     // Taken out and returned below: framing borrows the buffer while the rest of `inner` is still
     // needed, and `mem::take` is the cheap way to say that without splitting the struct.
     let mut bytes = std::mem::take(&mut inner.encode_scratch);
-    // BOTH flags, not just the first. The fused path writes the RAW marker and unescaped
-    // protobuf, which is what the length-prefixed frame wants and what the LINE frame cannot
-    // take: a line frame has to escape the newlines out of the payload first, and carries a
-    // different marker to say so. Fusing on `binary_records` alone wrote raw bytes into a line
-    // frame, and a value containing a newline then split into two unreadable records --
-    // `what_each_frame_costs_on_disk` toggles the frame flag precisely to catch that, and did.
-    // Compression is excluded from the borrowing writer deliberately: it reserves
-    // the frame from a length the payload does not have yet. See `encode`.
-    if crate::log_framing::binary_frame_enabled()
-        && !crate::wal_proto::compress_records_enabled()
-    {
-        // The payload lands directly in the frame. Building it separately meant carrying the
-        // record twice -- once into its own buffer and once into this one -- and at a four
-        // kilobyte value the second copy was four kilobytes of pure duplication.
-        let prepared = crate::wal_proto::prepare(record).map_err(|err| {
-            WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
-        })?;
-        let written = crate::log_framing::encode_framed_into(
-            prepared.payload_len(),
-            |out| prepared.put(record, out),
-            &mut bytes,
-        );
-        match written {
-            // The record wrote a different number of bytes than it measured. The frame declares
-            // its length up front, so writing it would make every record after it unreadable --
-            // fail the append instead, with the buffer already cleared.
-            Err(mismatch) => {
-                inner.encode_scratch = bytes;
-                return Err(WriteAheadLogError::Corruption(format!(
-                    "engine wal record framing failed: {mismatch}"
-                )));
-            }
-            Ok(Err(err)) => {
-                inner.encode_scratch = bytes;
-                return Err(WriteAheadLogError::Corruption(format!(
-                    "engine wal record encode failed: {err}"
-                )));
-            }
-            Ok(Ok(())) => {}
+    // Binary frames can reuse their output even when compression determines the final length.
+    // Line frames still require escaped payload bytes and retain their existing encoder.
+    if crate::log_framing::binary_frame_enabled() {
+        if let Err(err) = crate::wal_proto::encode_binary_frame_into(record, &mut bytes) {
+            recycle_encode_scratch(inner, bytes);
+            return Err(WriteAheadLogError::Corruption(format!(
+                "engine wal record encode failed: {err}"
+            )));
         }
     } else {
         let payload = encode_wal_payload(record)?;
@@ -4735,7 +4714,7 @@ fn append_record_locked_on(
     // Give the buffer back with its capacity, which is the whole reason it was borrowed. An early
     // return above simply drops it and the next append allocates once -- correct either way, just
     // not free that once.
-    inner.encode_scratch = bytes;
+    recycle_encode_scratch(inner, bytes);
     Ok(WriteAheadLogAppendReport {
         shard_id: record.shard_id,
         requested_sequence: record.sequence,
