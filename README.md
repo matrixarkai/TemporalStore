@@ -628,6 +628,18 @@ the resident field index. Misses and unsupported encodings retain the full-frame
 path. This avoids fetching and decoding a packed row for an eligible cached field;
 it does not make all projections cache hits or remove TTL and invalidation checks.
 
+Hash writes reuse an invalidation-key buffer across a row's fields, while retaining
+the existing per-field cache checks and invalidation rules. WAL-backed reads share
+decoded immutable batches through a cache bounded to eight records, identified by
+WAL instance, shard, and log ID. Publishing a decoded batch does not clone every
+payload; cache hits acquire shared ownership before copying the selected block
+outside the cache lock. Concurrent fills reuse the same cached record, and evicted
+batches are released outside that lock.
+
+The decoded-record limit is a record count, not a byte budget. Cold reads still
+fetch and decode a carrying WAL frame, and returned blocks still copy their bytes.
+These changes do not make the read path zero-copy or reclaim persistent WAL data.
+
 These are allocation and bookkeeping reductions, not weaker acknowledgement rules.
 Synchronous writes still wait for their durability barrier, stale conditional writes
 do not renew TTL, and WAL-backed values remain subject to safe materialization and
