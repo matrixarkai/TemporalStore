@@ -14,6 +14,10 @@ struct HashTimestamp {
     nanos: i32,
 }
 
+pub(super) fn decode_hash_timestamp(bytes: &[u8]) -> Option<(i64, i32)> {
+    <HashTimestamp as prost::Message>::decode(bytes).ok().map(|value| (value.seconds, value.nanos))
+}
+
 #[derive(Clone, PartialEq, prost::Message)]
 struct FeatureProtoNumber {
     #[prost(oneof = "feature_proto_number::Value", tags = "3, 4")]
@@ -664,6 +668,13 @@ pub(super) fn execute_hash_multi_get_projected(
     projection_plan: &container_blocks::Utf8ProjectionPlan<'_>,
     projection_scratch: &mut container_blocks::Utf8ProjectionScratch,
 ) -> ProjectedHashValues {
+    if let [field] = fields {
+        if let Some(bytes) = shard.bucket_index.hashes.cached_timestamp_bytes(key, field) {
+            #[cfg(test)]
+            PROJECTED_FIELD_CACHE_HITS.with(|count| count.set(count.get().saturating_add(1)));
+            return ProjectedHashValues::Owned(vec![Some(bytes.to_vec())]);
+        }
+    }
     let Some(hash_fields) = shard.bucket_index.hashes.get(key) else {
         return ProjectedHashValues::Missing(fields.len());
     };
@@ -1144,7 +1155,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
 ) -> (ExecuteOutcome, Command, Option<HashIndexFiled>) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let timestamp_hint = shard.bucket_index.hashes.cached_timestamp(&key, &timestamp_field);
-    let stored_timestamp = timestamp_hint.unwrap_or_else(|| shard
+    let loaded_timestamp = timestamp_hint.is_none().then(|| shard
         .bucket_index
         .hashes
         .get(&key)
@@ -1161,13 +1172,12 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
                         BlockIdentity::of(shard_id, "hash", &key, Some(timestamp_field.as_str())),
                         Some(routing_bucket),
                     ).and_then(|frame| select_container_value(&frame, &timestamp_field))
-            }, |timestamp| timestamp.and_then(|timestamp|
-                <HashTimestamp as prost::Message>::decode(timestamp).ok()))
-        })
-        .map(|timestamp| (timestamp.seconds, timestamp.nanos)));
+            }, |timestamp| timestamp.map(super::recorded_map::TimestampHintValue::from_bytes))
+        })).flatten();
+    let stored_timestamp = timestamp_hint.unwrap_or_else(|| loaded_timestamp.as_ref().and_then(|value| value.parsed()));
     if stored_timestamp.is_some_and(|stored| stored >= (timestamp_seconds, timestamp_nanos)) {
-        if timestamp_hint.is_none() {
-            shard.bucket_index.hashes.remember_timestamp(&key, &timestamp_field, stored_timestamp);
+        if let Some(value) = loaded_timestamp {
+            shard.bucket_index.hashes.remember_timestamp_value(&key, &timestamp_field, value);
         }
         let mut metadata_entries = entries;
         release_hash_entry_payloads(&mut metadata_entries);
@@ -1193,9 +1203,13 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     let timestamp_value = match borrowed_values {
         Some(values) => entries.iter().zip(values).rev()
             .find(|((field, _), _)| field == &timestamp_field)
-            .map(|(_, value)| value.0.as_ref()).filter(|value| value.len() <= 64).map(<[u8]>::to_vec),
+            .map(|(_, value)| value.0.as_ref()).filter(|value| value.len() <= 64)
+            .map(|value| (super::recorded_map::TimestampHintValue::from_bytes(value),
+                (value.len() > 24).then(|| value.to_vec()))),
         None => entries.iter().rev().find(|(field, _)| field == &timestamp_field)
-            .filter(|(_, value)| value.len() <= 64).map(|(_, value)| value.clone()),
+            .filter(|(_, value)| value.len() <= 64)
+            .map(|(_, value)| (super::recorded_map::TimestampHintValue::from_bytes(value),
+                (value.len() > 24).then(|| value.clone()))),
     };
     let (index_filed, metadata_entries) = write_packed_hash_entries(
         cache,
@@ -1214,12 +1228,12 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     let packed_mutated = index_filed.is_some();
     mutated |= packed_mutated;
     if packed_mutated {
-        if let Some(value) = timestamp_value {
-            let parsed = <HashTimestamp as prost::Message>::decode(value.as_slice()).ok()
-                .map(|stamp| (stamp.seconds, stamp.nanos));
-            shard.bucket_index.hashes.remember_timestamp(&key, &timestamp_field, parsed);
-            if let Some(encoded) = encode_cached_response(&CommandResponse::Bytes { value: Some(value) }) {
-                cache.put_memory_only(CacheKey::hash(shard_id, &key, &timestamp_field), encoded);
+        if let Some((value, large_raw_value)) = timestamp_value {
+            shard.bucket_index.hashes.remember_timestamp_value(&key, &timestamp_field, value);
+            if let Some(value) = large_raw_value {
+                if let Some(encoded) = encode_cached_response(&CommandResponse::Bytes { value: Some(value) }) {
+                    cache.put_memory_only(CacheKey::hash(shard_id, &key, &timestamp_field), encoded);
+                }
             }
         }
     }
@@ -1847,6 +1861,12 @@ pub(crate) fn execute_on_shard(
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            if let Some(value) = shard.bucket_index.hashes.cached_timestamp_bytes(&key, &field) {
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: Some(value.to_vec()) },
                     mutated,
                 };
             }

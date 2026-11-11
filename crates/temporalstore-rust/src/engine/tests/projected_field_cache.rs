@@ -66,7 +66,7 @@ fn timestamp_projection_reuses_seeded_fields_and_has_a_frame_fetch_control() {
             key: key.clone(), timestamp_field: "timestamp".into(),
             timestamp_seconds: 20, timestamp_nanos: 7, ttl_ms: None, entries,
         });
-        assert!(engine.cache.get_shared(&CacheKey::hash(1, &key, "timestamp")).unwrap().is_some());
+        assert!(engine.cache.get_shared(&CacheKey::hash(1, &key, "timestamp")).unwrap().is_none());
         keys.push(key);
     }
     let req = request(keys.clone(), &["timestamp"]);
@@ -80,6 +80,14 @@ fn timestamp_projection_reuses_seeded_fields_and_has_a_frame_fetch_control() {
 
     for key in &keys {
         engine.cache.invalidate(&CacheKey::hash(1, key, "timestamp")).unwrap();
+    }
+    reset_counts();
+    assert_eq!(engine.batch_hash_multi_get_compact_msgpack(req.clone()), hot);
+    assert_eq!(counts(), (32, 0), "inline bytes survive primary payload-cache eviction");
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let hashes = &mut shards.get_mut(&1).unwrap().bucket_index.hashes;
+        *hashes = hashes.clone();
     }
     reset_counts();
     let control = engine.batch_hash_multi_get_compact_msgpack(req);
