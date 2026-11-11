@@ -45,6 +45,8 @@ fn live_ollama_summary_keeps_durable_facts_in_entities() {
     let preference = source(&provider, "preference", "I prefer Rust for Cedar services.");
     let started = std::time::Instant::now();
     let single = context_summaries_for_extract(&provider, &preference).unwrap();
+    assert!(single.l0.to_lowercase().contains("rust"), "{single:?}");
+    assert!(single.l1.to_lowercase().contains("rust"), "{single:?}");
     assert!(entity_text(&single).contains("rust"), "{single:?}");
     assert!(single
         .entities
@@ -65,6 +67,17 @@ fn live_ollama_summary_keeps_durable_facts_in_entities() {
     let facts = entity_text(deployment_summary);
     assert!(facts.contains("friday"), "{deployment_summary:?}");
     assert!(facts.contains("temporalstore"), "{deployment_summary:?}");
+    assert!(
+        deployment_summary.l1.to_lowercase().contains("friday"),
+        "{deployment_summary:?}"
+    );
+    assert!(
+        deployment_summary
+            .l1
+            .to_lowercase()
+            .contains("temporalstore"),
+        "{deployment_summary:?}"
+    );
     assert!(!facts.contains("rust"), "{deployment_summary:?}");
     assert!(
         entity_text(preference_summary).contains("rust"),
@@ -82,4 +95,29 @@ fn live_ollama_summary_keeps_durable_facts_in_entities() {
         "{preference_summary:?}"
     );
     println!("batch_summary_ms={}", started.elapsed().as_millis());
+
+    let constraints = source(
+        &provider,
+        "constraints",
+        "Use TemporalStore code only for memory ingestion and retrieval. Store repositories in Ubuntu local folders. Optimize CPU and memory usage for large corpora.",
+    );
+    let started = std::time::Instant::now();
+    let summary = context_summaries_for_extract(&provider, &constraints).unwrap();
+    let supported = entity_text(&summary);
+    for fact in ["temporalstore", "ubuntu", "cpu", "memory"] {
+        assert!(supported.contains(fact), "missing {fact}: {summary:?}");
+    }
+    for definition in [
+        "routing abstract",
+        "semantic synthesis",
+        "field definitions",
+    ] {
+        assert!(
+            !summary.l0.contains(definition) && !summary.l1.contains(definition),
+            "{summary:?}"
+        );
+    }
+    assert!(!summary.l0.trim_start().starts_with('{'), "{summary:?}");
+    assert!(!summary.l1.trim_start().starts_with('{'), "{summary:?}");
+    println!("constraint_summary_ms={}", started.elapsed().as_millis());
 }
