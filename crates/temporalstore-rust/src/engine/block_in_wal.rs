@@ -48,6 +48,7 @@ use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 #[cfg(test)]
 thread_local! {
     static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static REGISTRATION_QUERY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -380,11 +381,60 @@ pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u6
 /// are two entries, not one, and which of them a read wants is a question the object id cannot be
 /// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
 /// INSIDE that record -- which is why [`StagedBlock::element_name`] exists as well.
-fn registry() -> &'static Mutex<HashMap<(usize, ShardId, BlockKey), Registration>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, BlockKey), Registration>>> =
-        OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+type ShardRegistrations = HashMap<BlockKey, Registration>;
+
+#[derive(Default)]
+struct RegistrationRegistry {
+    stores: HashMap<usize, HashMap<ShardId, ShardRegistrations>>,
 }
+
+impl RegistrationRegistry {
+    fn shard(&self, owner: usize, shard: ShardId) -> Option<&ShardRegistrations> {
+        self.stores.get(&owner)?.get(&shard)
+    }
+
+    fn shard_mut(&mut self, owner: usize, shard: ShardId) -> &mut ShardRegistrations {
+        self.stores.entry(owner).or_default().entry(shard).or_default()
+    }
+
+    fn entries(&self, owner: usize, shard: ShardId)
+        -> impl Iterator<Item = (&BlockKey, &Registration)>
+    {
+        self.shard(owner, shard).into_iter().flat_map(|entries| entries.iter()).inspect(|_| {
+            #[cfg(test)]
+            REGISTRATION_QUERY_VISITS.with(|count| count.set(count.get() + 1));
+        })
+    }
+
+    fn remove_shard(&mut self, owner: usize, shard: ShardId) {
+        if let Some(shards) = self.stores.get_mut(&owner) {
+            shards.remove(&shard);
+            if shards.is_empty() {
+                self.stores.remove(&owner);
+            }
+        }
+    }
+
+    fn remove(&mut self, owner: usize, shard: ShardId, key: &BlockKey) {
+        let empty = self.stores.get_mut(&owner).and_then(|shards| shards.get_mut(&shard))
+            .map(|entries| {
+                entries.remove(key);
+                entries.is_empty()
+            }).unwrap_or(false);
+        if empty {
+            self.remove_shard(owner, shard);
+        }
+    }
+}
+
+fn registry() -> &'static Mutex<RegistrationRegistry> {
+    static REGISTRY: OnceLock<Mutex<RegistrationRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(RegistrationRegistry::default()))
+}
+
+#[cfg(test)]
+#[path = "registration_scope_tests.rs"]
+mod registration_scope_tests;
 
 /// Note that the blocks in `record` live in the record at `log_id`, carried by the WAL record
 /// at `sequence`.
@@ -448,11 +498,12 @@ fn register_record_locations(
     let expected = names.iter().map(RegistrationNames::len).sum();
     let mut folded = Vec::with_capacity(expected);
     if let Ok(mut map) = registry().lock() {
+        let entries = map.shard_mut(block_store.store_id(), shard_id);
         for (index, (block, names)) in staged_blocks.iter().zip(names).enumerate() {
             let location = std::sync::Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
             let mut install = |name: Option<std::sync::Arc<str>>| {
                 folded.push(wal_resident_key(block.object_id, name.as_deref()));
-                map.insert((block_store.store_id(), shard_id, (block.object_id, name)), location.clone());
+                entries.insert((block.object_id, name), location.clone());
             };
             match names {
                 RegistrationNames::Shared(fields) => {
@@ -482,8 +533,8 @@ pub(super) fn register_at(
     store: &LocalWriteAheadLogStore,
 ) {
     if let Ok(mut map) = registry().lock() {
-        map.insert(
-            (block_store.store_id(), shard_id, block_key(object_id, element_name)),
+        map.shard_mut(block_store.store_id(), shard_id).insert(
+            block_key(object_id, element_name),
             std::sync::Arc::new((store.clone(), log_id, sequence, 0, None)),
         );
     }
@@ -531,7 +582,8 @@ pub(super) fn register_from_record(
             let folded = wal_resident_key(block.object_id, name.as_deref());
             if wanted.contains(&folded) {
                 found.insert(folded);
-                map.insert((block_store.store_id(), shard_id, (block.object_id, name)), location.clone());
+                map.shard_mut(block_store.store_id(), shard_id)
+                    .insert((block.object_id, name), location.clone());
             }
         }
     }
@@ -553,10 +605,8 @@ pub(super) fn min_registered_sequence(
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
     let map = registry().lock().ok()?;
-    map.iter()
-        .filter(|((owner, shard, _), location)| {
-            *owner == block_store.store_id() && *shard == shard_id && location.0.same_log(store)
-        })
+    map.entries(block_store.store_id(), shard_id)
+        .filter(|(_, location)| location.0.same_log(store))
         .map(|(_, location)| location.2)
         .min()
 }
@@ -571,9 +621,9 @@ pub(super) fn registered_record_span_has_holes(
 ) -> bool {
     let Ok(map) = registry().lock() else { return false };
     let mut records = std::collections::BTreeMap::<u64, (usize, usize)>::new();
-    for ((owner, shard, _), location) in map.iter() {
+    for (_, location) in map.entries(block_store.store_id(), shard_id) {
         let (log, _, sequence, expected, _) = &**location;
-        if *owner != block_store.store_id() || *shard != shard_id || !log.same_log(store) {
+        if !log.same_log(store) {
             continue;
         }
         let record = records.entry(*sequence).or_insert((0, *expected));
@@ -612,9 +662,8 @@ pub(super) fn oldest_registered_objects(
     };
     let owner = block_store.store_id();
     let mut entries: Vec<(u64, BlockKey)> = map
-        .iter()
-        .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
-        .map(|((_, _, block), location)| (location.2, block.clone()))
+        .entries(owner, shard_id)
+        .map(|(block, location)| (location.2, block.clone()))
         .collect();
     entries.sort_unstable();
     entries
@@ -628,9 +677,7 @@ pub(super) fn registration_count(
         return 0;
     };
     let owner = block_store.store_id();
-    map.keys()
-        .filter(|(store_id, shard, _)| *store_id == owner && *shard == shard_id)
-        .count()
+    map.shard(owner, shard_id).map_or(0, HashMap::len)
 }
 
 /// Retire one object's registration.
@@ -646,11 +693,11 @@ pub(super) fn deregister(
     element_name: Option<&str>,
 ) {
     if let Ok(mut map) = registry().lock() {
-        map.remove(&(
+        map.remove(
             block_store.store_id(),
             shard_id,
-            block_key(object_id, element_name),
-        ));
+            &block_key(object_id, element_name),
+        );
     }
 }
 
@@ -660,13 +707,13 @@ pub(super) fn deregister(
 pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id: ShardId) {
     if let Ok(mut map) = registry().lock() {
         let owner = block_store.store_id();
-        map.retain(|(store_id, shard, _), _| !(*store_id == owner && *shard == shard_id));
+        map.remove_shard(owner, shard_id);
     }
 }
 
 pub(crate) fn clear_store_registrations(owner: usize) {
     if let Ok(mut map) = registry().lock() {
-        map.retain(|(store_id, _, _), _| *store_id != owner);
+        map.stores.remove(&owner);
     }
 }
 
@@ -683,7 +730,7 @@ fn registrations_live_until_the_final_store_owner_is_dropped() {
     drop(blocks);
     assert_eq!(registration_count(&clone, 1), 1);
     drop(clone);
-    assert!(!registry().lock().unwrap().keys().any(|(id, _, _)| *id == owner));
+    assert!(!registry().lock().unwrap().stores.contains_key(&owner));
     let next = crate::block_store::BlockStore::new(dir.path().join("next"));
     assert_ne!(next.store_id(), owner);
     assert_eq!(registration_count(&next, 1), 0);
@@ -743,9 +790,8 @@ mod shared_registration_tests {
 
     fn assert_shared_rows(engine: &crate::engine::TemporalEngine) {
         let owner = engine.block_store.store_id();
-        let entries: Vec<_> = registry().lock().unwrap().iter()
-            .filter(|((id, shard, _), _)| *id == owner && *shard == 1)
-            .map(|((_, _, (object, name)), location)| (*object, name.clone(), location.clone()))
+        let entries: Vec<_> = registry().lock().unwrap().entries(owner, 1)
+            .map(|((object, name), location)| (*object, name.clone(), location.clone()))
             .collect();
         assert_eq!(entries.len(), 24);
         let allocations: HashSet<_> = entries.iter().map(|(_, name, _)|
@@ -806,8 +852,9 @@ pub(super) fn read_block(
     let location = {
         let map = registry().lock().ok()?;
         let owner = block_store.store_id();
-        map.get(&(owner, shard_id, block_key(object_id, element_name)))
-            .or_else(|| map.get(&(owner, shard_id, block_key(object_id, None))))?
+        let entries = map.shard(owner, shard_id)?;
+        entries.get(&block_key(object_id, element_name))
+            .or_else(|| entries.get(&block_key(object_id, None)))?
             .clone()
     };
     let (store, log_id, _, _, index) = &*location;
