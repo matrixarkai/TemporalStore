@@ -6325,6 +6325,14 @@ where
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
+    remove_if_expired_with(shard, key, |_| {})
+}
+
+fn remove_if_expired_with(
+    shard: &mut ShardState,
+    key: &str,
+    mut removed_record: impl FnMut(&str),
+) -> bool {
     // Use the replay-aware clock: during WAL replay this resolves to the per-record leader
     // timestamp so lazy expiry reproduces the leader's original branch. Using the real
     // restart clock here would let a key that was live at leader-time (and thus took the
@@ -6355,14 +6363,6 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
         }
     }
 
-    remove_if_expired_with(shard, key, |_| {})
-}
-
-fn remove_if_expired_with(
-    shard: &mut ShardState,
-    key: &str,
-    mut removed_record: impl FnMut(&str),
-) -> bool {
     if key.starts_with("control_state:") {
         return removed;
     }
