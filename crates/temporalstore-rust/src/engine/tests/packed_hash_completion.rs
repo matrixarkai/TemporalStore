@@ -106,7 +106,7 @@ fn packed_hash_completion_timestamp_rows_keep_stale_writes_inert() {
     assert!(response.status.ok);
     assert_eq!((response.applied, response.skipped), (1, 0));
     assert_eq!(bucket_block_upserts() - before, 0);
-    assert_eq!(binary_search_count_for_test(), 1, "only the timestamp condition needs a field lookup");
+    assert_eq!(binary_search_count_for_test(), 2, "the condition and its new source-bound hint each locate the timestamp field");
     reset_binary_search_count_for_test();
     let before = bucket_block_upserts();
     let response = engine.batch_execute_packed_hash_rows(request(15)).0;

@@ -568,6 +568,15 @@ fn cached_timestamp_checks_fall_back_after_eviction_and_restart() {
     engine.cache.invalidate(&CacheKey::hash(1, "grouped", "stamp")).unwrap();
     let before = engine.block_store.stats().reads;
     assert_eq!(cached_timestamp_write(&engine, 9, vec![("stamp".to_string(), timestamp_bytes(9))]), 0);
+    assert_eq!(engine.block_store.stats().reads, before, "a resident hint survives payload-cache eviction");
+    // Losing derived index hints must still take the storage fallback without changing data.
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&1).unwrap();
+        shard.bucket_index.hashes = shard.bucket_index.hashes.clone();
+    }
+    engine.cache.invalidate(&CacheKey::hash(1, "grouped", "stamp")).unwrap();
+    assert_eq!(cached_timestamp_write(&engine, 9, vec![("stamp".to_string(), timestamp_bytes(9))]), 0);
     assert!(engine.block_store.stats().reads > before);
     engine.write_ahead_log_store().flush(1).unwrap();
     drop(engine);

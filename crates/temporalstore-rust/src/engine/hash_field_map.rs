@@ -133,6 +133,10 @@ impl HashFieldMap {
         self.slot(field).ok().map(|at| &self.entries[at].1)
     }
 
+    pub(super) fn named_entry(&self, field: &str) -> Option<(&FieldName, &ElementEntry)> {
+        self.slot(field).ok().map(|at| (&self.entries[at].0, &self.entries[at].1))
+    }
+
     pub(super) fn get_mut(&mut self, field: &str) -> Option<&mut ElementEntry> {
         match self.slot(field) {
             Ok(at) => Some(&mut self.entries[at].1),
