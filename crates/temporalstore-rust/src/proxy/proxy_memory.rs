@@ -13,6 +13,10 @@ use super::*;
 use crate::sdk::v1::{LlmMemoryHistoryRecord, LlmMemoryRecord};
 use crate::types::CommandResponse;
 
+#[path = "memory_node_lookup.rs"]
+mod node_lookup;
+use node_lookup::*;
+
 const MEMORY_BATCH_LIMIT: usize = 1_000;
 const MEMORY_CATALOG_PAGE_SIZE: usize = 512;
 const MEMORY_UPDATE_PAGE_SIZE: usize = 128;
@@ -549,6 +553,12 @@ impl ProxyService {
                     Err(err) => self.memory_bad_request(err.to_string()),
                 })
             }
+            ("POST", "/memories/indexes/rebuild") => Some(
+                match parse_json::<MemoryNodeLookupRebuildRequest>(&request.body) {
+                    Ok(body) => self.memory_rebuild_node_lookup(body),
+                    Err(err) => self.memory_bad_request(err.to_string()),
+                },
+            ),
             ("POST", "/memories/users") => {
                 Some(match parse_json::<MemoryQueryRequest>(&request.body) {
                     Ok(body) => self.memory_users(body),
@@ -691,6 +701,7 @@ impl ProxyService {
         }
         let mut commands = Vec::with_capacity(records.len() * 3 + 3);
         commands.push(memory_catalog_write(tenant_hash, records.iter()));
+        commands.push(memory_node_lookup_write(tenant_hash, records.iter()));
         for (index, record) in records.iter().enumerate() {
             commands.push(Command::HashSet {
                 key: memory_history_key(tenant_hash, &record.id),
@@ -777,17 +788,7 @@ impl ProxyService {
             .map(|records| {
                 records
                     .iter()
-                    .map(|record| {
-                        crate::context_workflow::context_source_node_hash(
-                            tenant_hash,
-                            crate::context_workflow::ContextSourceKind::Chat,
-                            if record.context_ref.is_empty() {
-                                &record.id
-                            } else {
-                                &record.context_ref
-                            },
-                        )
-                    })
+                    .map(|record| memory_record_node_hash(tenant_hash, record))
                     .collect()
             })
             .unwrap_or_default();
@@ -842,6 +843,16 @@ impl ProxyService {
                 block.source_ref.push_str(source);
                 true
             });
+        } else {
+            let aliases = match self.memory_lookup_node_ids(tenant_hash, &blocks) {
+                Ok(aliases) => aliases,
+                Err(status) => return crate::http::json_response(502, &status),
+            };
+            for block in &mut blocks {
+                if let Some(id) = aliases.get(&block.node_hash) {
+                    block.source_ref.clone_from(id);
+                }
+            }
         }
         drop(node_sources);
         let mut ids = Vec::with_capacity(blocks.len());
@@ -859,7 +870,10 @@ impl ProxyService {
                 .collect::<HashMap<_, _>>();
             ids.iter().map(|id| records.remove(id)).collect()
         } else {
-            self.memory_read_many(tenant_hash, &ids)
+            match self.memory_read_many_checked(tenant_hash, &ids) {
+                Ok(records) => records,
+                Err(status) => return crate::http::json_response(502, &status),
+            }
         };
         let records = ids
             .into_iter()
@@ -877,12 +891,9 @@ impl ProxyService {
             let Some(record) = records.get(memory_id) else {
                 continue;
             };
-            let current_ref = if record.context_ref.is_empty() {
-                record.id.as_str()
-            } else {
-                record.context_ref.as_str()
-            };
-            if current_ref != block.source_ref || !emitted.insert(record.id.clone()) {
+            if memory_record_node_hash(tenant_hash, record) != block.node_hash
+                || !emitted.insert(record.id.clone())
+            {
                 continue;
             }
             let rank = results.len();
@@ -1096,6 +1107,7 @@ impl ProxyService {
             return crate::http::json_response(404, &json!({"updated": false, "id": memory_id}));
         };
         let old_order_member = memory_order_member(record.updated_at_ms, &record.id);
+        let old_node_hash = memory_record_node_hash(tenant_hash, &record);
         if request.data.trim().is_empty() && request.metadata.is_none() {
             return self.memory_bad_request("update requires data or metadata".to_string());
         }
@@ -1138,6 +1150,8 @@ impl ProxyService {
             return (extract_status, extract_body);
         }
         let commands = vec![
+            memory_node_lookup_remove(tenant_hash, old_node_hash),
+            memory_node_lookup_write(tenant_hash, std::iter::once(&record)),
             Command::HashSet {
                 key: memory_catalog_key(tenant_hash),
                 field: record.id.clone(),
@@ -1195,10 +1209,14 @@ impl ProxyService {
         if !removed.status.ok {
             return crate::http::json_response(502, &removed.status);
         }
-        if !matches!(removed.response, CommandResponse::Integer { value: 1 }) {
+        if !matches!(
+            removed.response,
+            CommandResponse::Empty | CommandResponse::Integer { value: 1 }
+        ) {
             return crate::http::json_response(200, &json!({"deleted": false, "id": memory_id}));
         }
         let mut commands = vec![
+            memory_node_lookup_remove(tenant_hash, memory_record_node_hash(tenant_hash, &record)),
             Command::HashSet {
                 key: memory_history_key(tenant_hash, memory_id),
                 field: history_field(now, 0),
@@ -1232,13 +1250,16 @@ impl ProxyService {
         }));
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
         if !response.status.ok {
-            let _ = self.execute(ExecuteRequest {
+            let _ = self.batch_execute(BatchExecuteRequest {
                 shard_id,
-                command: Command::HashSet {
-                    key: memory_catalog_key(tenant_hash),
-                    field: memory_id.to_string(),
-                    value: record.encode(),
-                },
+                commands: vec![
+                    Command::HashSet {
+                        key: memory_catalog_key(tenant_hash),
+                        field: memory_id.to_string(),
+                        value: record.encode(),
+                    },
+                    memory_node_lookup_write(tenant_hash, std::iter::once(&record)),
+                ],
             });
             return crate::http::json_response(502, &response.status);
         }
@@ -1434,6 +1455,9 @@ impl ProxyService {
                     key: memory_catalog_key(tenant_hash),
                 },
                 Command::StringDelete {
+                    key: memory_node_lookup_key(tenant_hash),
+                },
+                Command::StringDelete {
                     key: memory_tombstone_key(tenant_hash),
                 },
                 Command::StringDelete {
@@ -1520,6 +1544,9 @@ impl ProxyService {
                 deleted += 1;
             }
             let mut commands = Vec::new();
+            commands.extend(removed_records.iter().map(|record| {
+                memory_node_lookup_remove(tenant_hash, memory_record_node_hash(tenant_hash, record))
+            }));
             for (posting, record) in &removed_postings {
                 commands.extend(memory_identity_members(record).into_iter().map(|member| {
                     Command::SetRemove {
@@ -1549,15 +1576,19 @@ impl ProxyService {
             if !commands.is_empty() {
                 let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
                 if !response.status.ok {
+                    let mut rollback = vec![memory_node_lookup_write(
+                        tenant_hash,
+                        removed_records.iter(),
+                    )];
+                    rollback.extend(removed_records.into_iter().map(|record| {
+                        Command::HashDelete {
+                            key: memory_tombstone_key(tenant_hash),
+                            field: record.id,
+                        }
+                    }));
                     let _ = self.batch_execute(BatchExecuteRequest {
                         shard_id,
-                        commands: removed_records
-                            .into_iter()
-                            .map(|record| Command::HashDelete {
-                                key: memory_tombstone_key(tenant_hash),
-                                field: record.id.clone(),
-                            })
-                            .collect(),
+                        commands: rollback,
                     });
                     return crate::http::json_response(502, &response.status);
                 }
@@ -1626,6 +1657,7 @@ impl ProxyService {
                     continue;
                 }
                 let old_order_member = memory_order_member(record.updated_at_ms, &record.id);
+                let old_node_hash = memory_record_node_hash(tenant_hash, &record);
                 let now = now_ms().max(record.updated_at_ms.saturating_add(1));
                 if !update.data.trim().is_empty() {
                     record.memory = update.data.trim().to_string();
@@ -1635,17 +1667,17 @@ impl ProxyService {
                 }
                 record.updated_at_ms = now;
                 record.context_ref = memory_context_ref(&record.id, now);
-                planned.push((id, old_order_member, record, now));
+                planned.push((id, old_order_member, old_node_hash, record, now));
             }
             if planned.is_empty() {
                 continue;
             }
 
             let shard_id = self.context_shard_id(tenant_hash);
-            let scope_record = &planned[0].2;
+            let scope_record = &planned[0].3;
             let sources = planned
                 .iter()
-                .map(|(_, _, record, timestamp_ms)| {
+                .map(|(_, _, _, record, timestamp_ms)| {
                     json!({
                         "body": &record.memory,
                         "shard_id": shard_id,
@@ -1676,20 +1708,27 @@ impl ProxyService {
             let (extract_status, extract_body) = self.context_extract(extract);
             if extract_status != 200 || !json_status_ok(&extract_body) {
                 let body = String::from_utf8_lossy(&extract_body);
-                for (id, _, _, _) in planned {
+                for (id, _, _, _, _) in planned {
                     failed.push(json!({"memory_id": id, "status": extract_status, "body": body}));
                 }
                 continue;
             }
 
             for page in planned.chunks(MEMORY_UPDATE_PAGE_SIZE) {
-                let mut commands = Vec::with_capacity(page.len() * 4);
+                let mut commands = Vec::with_capacity(page.len() * 4 + 2);
                 commands.push(memory_catalog_write(
                     tenant_hash,
-                    page.iter().map(|(_, _, record, _)| record),
+                    page.iter().map(|(_, _, _, record, _)| record),
                 ));
-                for (sequence, (id, old_order_member, record, now)) in page.iter().enumerate() {
+                commands.push(memory_node_lookup_write(
+                    tenant_hash,
+                    page.iter().map(|(_, _, _, record, _)| record),
+                ));
+                for (sequence, (id, old_order_member, old_node_hash, record, now)) in
+                    page.iter().enumerate()
+                {
                     commands.extend([
+                        memory_node_lookup_remove(tenant_hash, *old_node_hash),
                         Command::HashSet {
                             key: memory_history_key(tenant_hash, id),
                             field: history_field(*now, sequence as u64),
@@ -1716,9 +1755,9 @@ impl ProxyService {
                 }
                 let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
                 if response.status.ok {
-                    results.extend(page.iter().map(|(id, _, _, _)| json!({"memory_id": id})));
+                    results.extend(page.iter().map(|(id, _, _, _, _)| json!({"memory_id": id})));
                 } else {
-                    failed.extend(page.iter().map(|(id, _, _, _)| {
+                    failed.extend(page.iter().map(|(id, _, _, _, _)| {
                         json!({"memory_id": id, "status": 502, "body": response.status.message})
                     }));
                 }
@@ -1980,11 +2019,14 @@ impl ProxyService {
         for group in groups.into_values() {
             for page in group.chunks(MEMORY_CATALOG_PAGE_SIZE) {
                 let posting_field = page[0].id.clone();
-                let mut commands = vec![Command::HashSet {
-                    key: memory_identity_postings_key(tenant_hash),
-                    field: posting_field.clone(),
-                    value: memory_identity_posting(page),
-                }];
+                let mut commands = vec![
+                    Command::HashSet {
+                        key: memory_identity_postings_key(tenant_hash),
+                        field: posting_field.clone(),
+                        value: memory_identity_posting(page),
+                    },
+                    memory_node_lookup_write(tenant_hash, page.iter()),
+                ];
                 commands.extend(memory_identity_members(&page[0]).into_iter().map(|member| {
                     Command::SetAdd {
                         key: memory_identity_records_key(tenant_hash, &member),

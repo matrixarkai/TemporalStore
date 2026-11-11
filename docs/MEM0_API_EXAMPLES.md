@@ -138,9 +138,45 @@ an identity-filtered vector search.
 Upgrade data servers to support `/context/retrieve/nodes` before upgrading proxies that use it.
 Search results must resolve to a visible, current Mem0 catalog record; anonymous context blocks
 are not returned as memories. With compact legacy data and unavailable identity candidates, the
-tenant-search fallback may underfill until a catalog-to-node lookup is available. Generic context
+tenant-search fallback may underfill when compact data has not had its node lookup backfilled. Generic context
 blocks remain available through the context API. The scale harness rejects empty and duplicate
 memory IDs rather than counting anonymous blocks as successful memory search candidates.
+
+## Compact Node Lookup
+
+New Mem0 writes maintain a durable node-to-memory hash. Each entry has a 16-character node hash
+and an eight-byte memory-ID suffix (24 payload bytes, excluding storage and wire overhead).
+The tenant prefix comes from the request scope. Updates replace the old node mapping; deletes
+and reset remove it. Catalog identity, tombstones, and current node hashes still validate every
+lookup result, so an old revision cannot return newly updated text.
+
+Unscoped searches and identities above the candidate budget resolve only the nodes selected by
+context retrieval. Their catalog hydration is bounded by that result set, not the tenant corpus.
+This lookup does not make tenant-wide vector selection identity-aware: very selective identities
+above the scoped budget can still underfill and need a filtered vector-selection path.
+
+Existing stores can backfill without putting a full catalog scan on the search path:
+
+```bash
+curl -s http://127.0.0.1:17000/memories/indexes/rebuild \
+  -H 'content-type: application/json' \
+  -d '{"scope":{"account_id":"account","tenant_id":"tenant"},"after":"","max_pages":1}'
+```
+
+Send the returned `next` string as `after` until `complete` is true. Each page reads at most 512
+ordered entries; a request defaults to one page and accepts at most 64. Cursor retries overwrite
+the same mappings. Writes are split into at most 128 mappings per backend call. Backfill validates
+response shapes and backend status before advancing the
+cursor. An uncertain write outcome can retry the identical map overwrite at most twice, with
+bounded backoff; `write_retries` reports how many retries occurred. Non-idempotent commands are
+not part of this retry path. The ordered index must already be ready; otherwise the route returns 409. Current Mem0
+stores create that index during normal ingestion. New writes maintain mappings during backfill;
+the lookup is persisted through TemporalStore's normal WAL and storage, with no external log.
+
+The local scale runner accepts `--skip-build --bin-dir /absolute/path/to/binaries` to use a
+captured set of `metaserver`, `server`, `proxy`, and `mem0_scale_harness` executables. This avoids
+switching binaries halfway through a run when other builds share the normal release directory.
+The runner records the SHA-256 of each executable in `binaries.sha256`.
 
 ## Local model allocation check
 

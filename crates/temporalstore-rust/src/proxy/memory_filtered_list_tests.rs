@@ -11,6 +11,10 @@ enum Index {
     Normal,
     Unknown,
     Anonymous,
+    Lookup,
+    BadLookup,
+    StaleLookup,
+    RetryLookup,
     Oversized,
     Missing,
     Malformed,
@@ -29,6 +33,11 @@ struct Reads {
     postings: AtomicUsize,
     scoped_searches: AtomicUsize,
     tenant_searches: AtomicUsize,
+    lookup_fields: AtomicUsize,
+    lookup_writes: AtomicUsize,
+    max_lookup_write: AtomicUsize,
+    lookup_write_calls: AtomicUsize,
+    retry_payload: std::sync::Mutex<Option<Vec<(String, Vec<u8>)>>>,
 }
 
 fn scope() -> MemoryScope {
@@ -65,6 +74,15 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
         })
         .collect::<Vec<_>>();
     order.sort();
+    let node_ids = (8..12)
+        .map(|ordinal| {
+            let row = record(tenant, ordinal);
+            (
+                format!("{:016x}", memory_record_node_hash(tenant, &row)),
+                memory_identity_record_member(&row.id),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let reads = Arc::new(Reads::default());
     let seen = Arc::clone(&reads);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -72,7 +90,60 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
     std::thread::spawn(move || {
         serve_listener(listener, move |request| {
             let answer = |command: Command| {
+                let mut status = Status::ok();
                 let response = match command {
+                    Command::StringGet { key } if key == memory_order_ready_key(tenant) => {
+                        CommandResponse::Bytes {
+                            value: Some(b"1".to_vec()),
+                        }
+                    }
+                    Command::HashMultiSet { key, entries }
+                        if key == memory_node_lookup_key(tenant) =>
+                    {
+                        assert!(entries
+                            .iter()
+                            .all(|(field, value)| field.len() == 16 && value.len() == 8));
+                        let call = seen.lookup_write_calls.fetch_add(1, Ordering::Relaxed);
+                        if matches!(mode, Index::RetryLookup) {
+                            if call == 0 {
+                                *seen.retry_payload.lock().unwrap() = Some(entries.clone());
+                                status =
+                                    Status::error("write_outcome_unknown", "injected after apply");
+                            } else if call == 1 {
+                                assert_eq!(
+                                    seen.retry_payload.lock().unwrap().as_ref(),
+                                    Some(&entries)
+                                );
+                            }
+                        }
+                        seen.lookup_writes
+                            .fetch_add(entries.len(), Ordering::Relaxed);
+                        seen.max_lookup_write
+                            .fetch_max(entries.len(), Ordering::Relaxed);
+                        CommandResponse::Integer {
+                            value: entries.len() as i64,
+                        }
+                    }
+                    Command::HashMultiGet { key, fields }
+                        if key == memory_node_lookup_key(tenant) =>
+                    {
+                        seen.lookup_fields
+                            .fetch_add(fields.len(), Ordering::Relaxed);
+                        CommandResponse::Values {
+                            values: fields
+                                .iter()
+                                .map(|field| {
+                                    if matches!(mode, Index::BadLookup) {
+                                        Some(vec![1])
+                                    } else if matches!(mode, Index::Lookup | Index::StaleLookup) {
+                                        node_ids.get(field).cloned()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect(),
+                        }
+                    }
                     Command::ZSetScore { member, .. } => {
                         seen.counts.fetch_add(1, Ordering::Relaxed);
                         let count = match member.as_slice() {
@@ -145,7 +216,11 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
                                     usize::from_str_radix(id.split_once('-').unwrap().1, 16)
                                         .unwrap();
                                 if catalog {
-                                    Some(record(tenant, ordinal).encode())
+                                    let mut row = record(tenant, ordinal);
+                                    if ordinal == 8 && matches!(mode, Index::StaleLookup) {
+                                        row.context_ref = memory_context_ref(&row.id, 10000);
+                                    }
+                                    Some(row.encode())
                                 } else {
                                     ((ordinal == 0 && matches!(mode, Index::Tombstone))
                                         || (ordinal >= 8 && matches!(mode, Index::DeadPrefix)))
@@ -165,10 +240,7 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
                     }
                     command => panic!("unexpected command: {command:?}"),
                 };
-                ExecuteResponse {
-                    status: Status::ok(),
-                    response,
-                }
+                ExecuteResponse { status, response }
             };
             match request.path.as_str() {
                 "/context/retrieve/nodes" | "/context/retrieve" => {
@@ -214,7 +286,14 @@ fn fixture(total: usize, mode: Index) -> (ProxyService, Arc<Reads>) {
                                 event_time_ms: row.updated_at_ms,
                                 text: row.memory,
                                 estimated_tokens: 128,
-                                source_ref: if scoped || matches!(mode, Index::Anonymous) {
+                                source_ref: if scoped
+                                    || matches!(
+                                        mode,
+                                        Index::Anonymous
+                                            | Index::Lookup
+                                            | Index::BadLookup
+                                            | Index::StaleLookup
+                                    ) {
                                     String::new()
                                 } else {
                                     row.context_ref
@@ -448,4 +527,205 @@ fn empty_identity_intersection_stays_empty_and_missing_counts_keep_fallback() {
         );
         assert_eq!(reads.catalog.load(Ordering::Relaxed), expected_fields);
     }
+}
+
+#[test]
+fn large_identity_and_unscoped_searches_hydrate_only_the_selected_catalog_rows() {
+    for total in [8192, 32768] {
+        for user in ["", "bob"] {
+            let (proxy, reads) = fixture(total, Index::Lookup);
+            let (status, body) = proxy.memory_search(MemoryQueryRequest {
+                scope: scope(),
+                identity: MemoryIdentity {
+                    user_id: user.into(),
+                    ..MemoryIdentity::default()
+                },
+                query: "topic".into(),
+                limit: Some(4),
+                ..MemoryQueryRequest::default()
+            });
+            assert_eq!(status, 200);
+            let result: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(result["results"].as_array().unwrap().len(), 4);
+            assert!(result["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| !row["id"].as_str().unwrap().is_empty()));
+            assert_eq!(reads.lookup_fields.load(Ordering::Relaxed), 4);
+            assert_eq!(reads.catalog.load(Ordering::Relaxed), 4);
+            assert_eq!(reads.scoped_searches.load(Ordering::Relaxed), 0);
+        }
+    }
+}
+
+#[test]
+fn corrupt_lookup_values_fail_closed_and_old_revision_nodes_do_not_return_new_memory() {
+    for (mode, status, count) in [(Index::BadLookup, 502, 0), (Index::StaleLookup, 200, 3)] {
+        let (proxy, _) = fixture(8192, mode);
+        let (code, body) = proxy.memory_search(MemoryQueryRequest {
+            scope: scope(),
+            identity: MemoryIdentity {
+                user_id: "bob".into(),
+                ..MemoryIdentity::default()
+            },
+            query: "topic".into(),
+            limit: Some(4),
+            ..MemoryQueryRequest::default()
+        });
+        assert_eq!(code, status);
+        let response: Value = serde_json::from_slice(&body).unwrap();
+        if code == 200 {
+            assert_eq!(response["results"].as_array().unwrap().len(), count);
+        } else {
+            assert_eq!(response["code"], "invalid_memory_node_lookup");
+        }
+    }
+}
+
+#[test]
+fn node_lookup_backfill_is_bounded_and_cursor_retries_are_idempotent() {
+    for total in [8192, 32768] {
+        let (proxy, reads) = fixture(total, Index::Normal);
+        let request = |after: &str| {
+            serde_json::from_value(json!({
+                "scope":{"tenant_id":"tenant","account_id":"account"},"after":after,
+            }))
+            .unwrap()
+        };
+        let (status, body) = proxy.memory_rebuild_node_lookup(request(""));
+        assert_eq!(status, 200);
+        let first: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(first["scanned"], MEMORY_CATALOG_PAGE_SIZE);
+        assert_eq!(first["indexed"], MEMORY_CATALOG_PAGE_SIZE);
+        assert_eq!(first["complete"], false);
+        let cursor = first["next"].as_str().unwrap();
+        assert!(!cursor.is_empty());
+        let second = proxy.memory_rebuild_node_lookup(request(cursor));
+        let retry = proxy.memory_rebuild_node_lookup(request(cursor));
+        assert_eq!(second, retry);
+        assert_eq!(
+            reads.lookup_writes.load(Ordering::Relaxed),
+            MEMORY_CATALOG_PAGE_SIZE * 3
+        );
+        assert_eq!(
+            reads.max_lookup_write.load(Ordering::Relaxed),
+            MEMORY_UPDATE_PAGE_SIZE
+        );
+        assert_eq!(
+            reads.max_page.load(Ordering::Relaxed),
+            MEMORY_CATALOG_PAGE_SIZE
+        );
+    }
+}
+
+#[test]
+fn node_lookup_payload_is_compact_and_tracks_current_revisions() {
+    let mut row = record(42, 1);
+    let first_node = memory_record_node_hash(42, &row);
+    let Command::HashMultiSet { entries, .. } = memory_node_lookup_write(42, std::iter::once(&row))
+    else {
+        panic!("expected packed lookup");
+    };
+    assert_eq!(entries[0].0.len() + entries[0].1.len(), 24);
+    assert_eq!(
+        memory_id_from_identity_record_member(42, &entries[0].1),
+        Some(row.id.clone())
+    );
+    row.context_ref = memory_context_ref(&row.id, 10000);
+    assert_ne!(memory_record_node_hash(42, &row), first_node);
+    assert!(matches!(
+        memory_node_lookup_remove(42, first_node),
+        Command::HashDelete { .. }
+    ));
+}
+
+#[test]
+fn node_lookup_backfill_retries_only_the_identical_idempotent_write() {
+    let (proxy, reads) = fixture(8192, Index::RetryLookup);
+    let request = serde_json::from_value(json!({
+        "scope":{"tenant_id":"tenant","account_id":"account"},
+    }))
+    .unwrap();
+    let (status, body) = proxy.memory_rebuild_node_lookup(request);
+    assert_eq!(status, 200);
+    let report: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(report["indexed"], MEMORY_CATALOG_PAGE_SIZE);
+    assert_eq!(report["write_retries"], 1);
+    assert_eq!(reads.lookup_write_calls.load(Ordering::Relaxed), 5);
+    assert_eq!(
+        reads.lookup_writes.load(Ordering::Relaxed),
+        MEMORY_CATALOG_PAGE_SIZE + MEMORY_UPDATE_PAGE_SIZE
+    );
+}
+
+#[test]
+fn memory_delete_accepts_engine_empty_success_and_removes_node_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Arc::new(crate::engine::TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    ));
+    let proxy = ProxyService::new(ProxyOptions {
+        context_shard_count: 1,
+        route_cache_ttl_ms: 600_000,
+        topology_check_interval_ms: u64::MAX,
+        ..ProxyOptions::default()
+    });
+    let tenant = 42;
+    let shard_id = proxy.context_shard_id(tenant);
+    engine.load_shard(shard_id);
+    let row = record(tenant, 1);
+    for command in [
+        memory_catalog_write(tenant, std::iter::once(&row)),
+        memory_node_lookup_write(tenant, std::iter::once(&row)),
+    ] {
+        assert!(
+            engine
+                .execute(ExecuteRequest { shard_id, command })
+                .status
+                .ok
+        );
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let serving_engine = Arc::clone(&engine);
+    std::thread::spawn(move || {
+        let _dir = dir;
+        serve_listener(listener, move |request| match request.path.as_str() {
+            "/execute" => json_response(
+                200,
+                &serving_engine.execute(parse_json(&request.body).unwrap()),
+            ),
+            "/batch_execute" => json_response(
+                200,
+                &serving_engine.batch_execute(parse_json(&request.body).unwrap()),
+            ),
+            _ => panic!("unexpected path: {}", request.path),
+        })
+        .unwrap();
+    });
+    proxy.client().insert_cached_route_for_test(shard_id, addr);
+    proxy.memory_remember_indexes_ready(tenant);
+    let (status, body) = proxy.memory_delete(&row.id);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let response: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(response["deleted"], true);
+    assert!(proxy.memory_read_one(tenant, &row.id).is_none());
+    let lookup = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::HashGet {
+            key: memory_node_lookup_key(tenant),
+            field: format!("{:016x}", memory_record_node_hash(tenant, &row)),
+        },
+    });
+    assert!(lookup.status.ok);
+    assert!(matches!(
+        lookup.response,
+        CommandResponse::Bytes { value: None }
+    ));
+    let (status, _) = proxy.memory_delete(&row.id);
+    assert_eq!(status, 404);
 }
