@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -468,6 +468,16 @@ fn require_search_candidates(response: &Value, limit: usize) -> Result<(), Strin
             rows.len()
         ));
     }
+    let mut ids = HashSet::with_capacity(rows.len());
+    for row in rows {
+        let id = row["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| "search returned a memory without an id".to_string())?;
+        if !ids.insert(id) {
+            return Err("search returned duplicate memory ids".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -661,7 +671,12 @@ mod tests {
     fn empty_or_unbounded_searches_do_not_pass_the_workload() {
         assert!(require_search_candidates(&json!({}), 10).is_err());
         assert!(require_search_candidates(&json!({"results": []}), 10).is_err());
-        assert!(require_search_candidates(&json!({"results": [{}]}), 10).is_ok());
+        assert!(require_search_candidates(&json!({"results": [{}]}), 10).is_err());
+        assert!(require_search_candidates(&json!({"results": [{"id":""}]}), 10).is_err());
+        assert!(
+            require_search_candidates(&json!({"results": [{"id":"a"}, {"id":"a"}]}), 10).is_err()
+        );
+        assert!(require_search_candidates(&json!({"results": [{"id":"a"}]}), 10).is_ok());
         assert!(require_search_candidates(&json!({"results": vec![json!({}); 11]}), 10).is_err());
     }
 }

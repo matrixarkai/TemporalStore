@@ -675,6 +675,21 @@ impl ProxyService {
 
     /// Forward a `ContextRetrieveRequest` to the owning datanode.
     pub(super) fn context_retrieve(&self, request: ProxyContextRetrieveRequest) -> (u16, Vec<u8>) {
+        self.context_retrieve_candidates(request, false)
+    }
+
+    pub(super) fn context_retrieve_from_nodes(
+        &self,
+        request: ProxyContextRetrieveRequest,
+    ) -> (u16, Vec<u8>) {
+        self.context_retrieve_candidates(request, true)
+    }
+
+    fn context_retrieve_candidates(
+        &self,
+        request: ProxyContextRetrieveRequest,
+        restrict_nodes: bool,
+    ) -> (u16, Vec<u8>) {
         self.inner
             .context_retrieve_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -710,7 +725,12 @@ impl ProxyService {
             Ok(addr) => addr,
             Err(resp) => return resp,
         };
-        self.context_forward_to(&server_addr, "/context/retrieve", &body)
+        let path = if restrict_nodes {
+            "/context/retrieve/nodes"
+        } else {
+            "/context/retrieve"
+        };
+        self.context_forward_to(&server_addr, path, &body)
     }
 
     /// Read the buffered `raw_event` records (HGETALL) back into extract sources.

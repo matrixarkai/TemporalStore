@@ -119,6 +119,29 @@ existing memory-id ordering. Dense queries need no identity lookup when the firs
 Unavailable counts, incomplete or malformed postings, and exceeded candidate budgets fall back
 to the ordered scan. This adds no persisted index or migration.
 
+## Identity-scoped search
+
+Selective `/memories/search` requests use existing identity postings to find their node candidates
+before context retrieval. The indexed attempt uses the same 512-candidate page and 4,096-candidate
+total limits as filtered listing. The data server's `/context/retrieve/nodes` route treats its node
+set as a strict constraint: an empty set remains empty, and unrelated hot nodes are not added.
+Catalog rows already read for identity validation are reused when rendering results. Empty scoped
+queries skip query embedding entirely. Searches do not initiate an index rebuild.
+Mem0 IDs are resolved from these catalog rows and their current node hashes, not from deprecated
+source fields omitted by compact persisted nodes. This keeps the IDs usable by get/update/delete
+without restoring redundant hot lineage fields. Ordinary
+context retrieval retains automatic tenant candidate selection. Unavailable or incomplete indexes
+and over-budget identities
+retain the existing tenant-search fallback, so this does not yet make large identity populations
+an identity-filtered vector search.
+
+Upgrade data servers to support `/context/retrieve/nodes` before upgrading proxies that use it.
+Search results must resolve to a visible, current Mem0 catalog record; anonymous context blocks
+are not returned as memories. With compact legacy data and unavailable identity candidates, the
+tenant-search fallback may underfill until a catalog-to-node lookup is available. Generic context
+blocks remain available through the context API. The scale harness rejects empty and duplicate
+memory IDs rather than counting anonymous blocks as successful memory search candidates.
+
 ## Local model allocation check
 
 The embedding client validates the complete batch plan before making model calls. An invalid
