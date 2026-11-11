@@ -4,6 +4,20 @@
 //! Storage physical-index / object-manager / feature-block layout report helpers, split from engine.rs.
 use super::*;
 
+/// The deletion total without materializing block identities or ownership reports.
+/// Compaction only consumes this field of the unfiltered lifecycle report.
+pub(super) fn storage_delete_marked_object_count(shard: &ShardState) -> u64 {
+    shard
+        .dirty_objects
+        .iter()
+        .filter(|key| !record_exists(shard, key))
+        .count() as u64
+}
+
+#[cfg(test)]
+#[path = "delete_marked_count_tests.rs"]
+mod delete_marked_count_tests;
+
 pub(super) fn storage_object_lifecycle_report(
     shard_id: ShardId,
     shard: &ShardState,
