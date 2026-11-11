@@ -272,7 +272,19 @@ pub fn context_block_target_bytes() -> usize {
 }
 
 pub fn effective_block_slab_target_bytes() -> u64 {
-    StorageTuningConfig::from_env().effective_slab_target_bytes()
+    try_slab_target_from_getter(|name| std::env::var(name).ok())
+        .unwrap_or_else(|message| panic!("{message}"))
+}
+
+fn try_slab_target_from_getter(get: impl Fn(&str) -> Option<String>) -> Result<u64, String> {
+    // Keep live reads, alias precedence and address validation without unrelated lookups.
+    StorageTuningConfig::try_from_getter(|name| match name {
+        TS_BLOCK_SLAB_TARGET_BYTES
+        | TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME
+        | TS_STREAM_MAX_BLOB_SIZE => get(name),
+        _ => None,
+    })
+    .map(StorageTuningConfig::effective_slab_target_bytes)
 }
 
 /// Undumped index-log threshold (bytes) that triggers a background catalog/index dump under
@@ -324,6 +336,10 @@ fn parse_bool(value: Option<String>, default: bool) -> bool {
         .and_then(crate::env_flag::parse_bool)
         .unwrap_or(default)
 }
+
+#[cfg(test)]
+#[path = "storage_config_slab_tests.rs"]
+mod slab_target_tests;
 
 #[cfg(test)]
 mod tests {
