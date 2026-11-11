@@ -89,6 +89,9 @@ supplying text, or `memory.update(id, text="New memory text")` to replace conten
 Pass `--metadata-updates 200` to `scripts/mem0_scale_local.sh` to measure repeated
 single and 16-memory batch metadata updates separately. The driver verifies that the
 sampled memory retains its text and context revision and exposes the latest metadata.
+Footprint snapshots after ingestion and before/after metadata updates separate corpus
+storage from update growth. The final `storage_amplification` includes all mutations and
+retained history in the run, not just ingestion bytes.
 Use the same encoder configuration for add, update, and search. Explicit ingestion and updates
 use a versioned protobuf proxy-to-data-node request and acknowledgment. An unsupported endpoint,
 invalid acknowledgment, or incomplete source commit fails without falling back to inference.

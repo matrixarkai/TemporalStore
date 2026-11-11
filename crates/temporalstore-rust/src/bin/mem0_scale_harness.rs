@@ -63,6 +63,9 @@ struct Report {
     elapsed_ms: u128,
     ingest_records_per_sec: f64,
     stored_bytes: Option<u64>,
+    stored_bytes_after_ingest: Option<u64>,
+    stored_bytes_before_metadata_updates: Option<u64>,
+    stored_bytes_after_metadata_updates: Option<u64>,
     storage_amplification: Option<f64>,
     api: BTreeMap<String, ApiMetric>,
     harness_process: ProcessMetric,
@@ -193,6 +196,9 @@ fn main() {
         }
     }
     let ingest_elapsed = ingest_started.elapsed();
+    let stored_bytes_after_ingest = options.data_root.as_deref().map(directory_bytes);
+    let mut stored_bytes_before_metadata_updates = None;
+    let mut stored_bytes_after_metadata_updates = None;
 
     for query_index in 0..options.searches {
         let record_index = query_record_index(options.records, options.batch_size, query_index);
@@ -245,6 +251,7 @@ fn main() {
             match baseline {
                 Ok(before) if before["id"] == *id => {
                     let ids = sampled_ids.iter().take(16).collect::<Vec<_>>();
+                    stored_bytes_before_metadata_updates = options.data_root.as_deref().map(directory_bytes);
                     for round in 0..options.metadata_updates {
                         measure_post_checked(
                             &mut timings, &mut failures, "metadata_update", &options.addr,
@@ -263,6 +270,7 @@ fn main() {
                             } else { Err("metadata batch acknowledgment incomplete".into()) },
                         );
                     }
+                    stored_bytes_after_metadata_updates = options.data_root.as_deref().map(directory_bytes);
                     let verified = get_json_with_options::<Value>(&options.addr, &path, request_options())
                         .map_err(|error| error.to_string())
                         .and_then(|after| validate_metadata_revision(&before, &after, options.metadata_updates - 1));
@@ -388,6 +396,9 @@ fn main() {
         ingest_records_per_sec: ingested_records as f64
             / ingest_elapsed.as_secs_f64().max(0.000_001),
         stored_bytes,
+        stored_bytes_after_ingest,
+        stored_bytes_before_metadata_updates,
+        stored_bytes_after_metadata_updates,
         storage_amplification: stored_bytes.map(|bytes| bytes as f64 / payload_bytes.max(1) as f64),
         api: timings.finish(),
         harness_process: harness_sampler.finish(),
