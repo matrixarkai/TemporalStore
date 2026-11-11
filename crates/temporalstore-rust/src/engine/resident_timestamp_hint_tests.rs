@@ -245,8 +245,10 @@ fn hint_population_cost_is_resident_metadata_not_a_payload_cache_budget() {
     let reading = probe.stop();
     assert_eq!(map.timestamp_hints.len(), map.len());
     assert!(reading.allocs < 32, "keys and names must not be allocated per hint: {reading:?}");
+    let retained_bytes = reading.alloc_bytes as i64 - reading.free_bytes as i64;
+    assert!(retained_bytes >= (keys.len() * std::mem::size_of::<(ModelKey, TimestampHint)>()) as i64);
     println!("TIMESTAMP_HINT_POPULATION rows={} entries={} capacity={} entry_bytes={} allocated_bytes={} retained_requested_bytes={} allocations={}",
              keys.len(), map.timestamp_hints.len(), map.timestamp_hints.capacity(),
              std::mem::size_of::<(ModelKey, TimestampHint)>(), reading.alloc_bytes,
-             reading.outstanding(), reading.allocs);
+             retained_bytes, reading.allocs);
 }
