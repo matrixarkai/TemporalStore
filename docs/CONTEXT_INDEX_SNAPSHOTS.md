@@ -27,6 +27,16 @@ the tombstone vector again. The lookup preserves the first matching row for dupl
 addresses, costs linear temporary space in retained tombstones, and is dropped after the
 bucket walk. It adds no resident index or persisted fields.
 
+Mixed batches may keep incremental semantics when a set removal vacates its old physical
+block. The existing upsert record carries a deleted-address item for that old block plus the
+other commands' live upserts, under the same batch WAL anchor and one index-log append.
+After all commands run, both resident set membership and the bucket index must confirm that
+the old block is no longer live. Shared or revived blocks, expiry/membership shrink, and
+unsupported mutations retain the snapshot path. The decoder and record format are unchanged.
+Hash rewrites also carry retirement items for old blocks only after their remaining fields
+and physical index confirm vacancy. Shared packed blocks remain until their last field moves,
+so recovered live-block sets match the serving engine rather than retaining orphan entries.
+
 The built snapshot is bounded by live rows plus deleted coverage groups, instead of by all
 past deleted versions. The underlying walk still visits retained physical entries, and live
 history can still grow. Further work is required for a fully incremental batch index path;

@@ -339,4 +339,220 @@ fn index_log_fold_preserves_membership_and_packed_hash_values() {
         .unwrap();
         assert_eq!(bytes, expected);
     }
+    assert_live_blocks_match(&engine, &folded);
+}
+
+fn assert_live_blocks_match(engine: &TemporalEngine, folded: &ShardState) {
+    let live = |shard: &ShardState| {
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .flat_map(|(bucket, node)| {
+                node.block_index
+                    .iter()
+                    .filter(|(_, block)| !block.deleted())
+                    .map(move |(_, block)| {
+                        (*bucket, block.model_id(), live_block_key(&block.address))
+                    })
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    let shards = engine.shards.read().unwrap();
+    assert_eq!(live(folded), live(shards.get(&SHARD).unwrap()));
+}
+
+#[test]
+fn pure_hash_rewrites_retire_only_vacated_blocks() {
+    let (_dir, engine, _base) = fixture(0);
+    for index in 0..32 {
+        apply(
+            &engine,
+            vec![Command::HashSet {
+                key: "catalog".into(),
+                field: "changing".into(),
+                value: index.to_string().into_bytes(),
+            }],
+        );
+    }
+    let folded = engine.load_index_checked(SHARD, false).unwrap().unwrap();
+    assert_live_blocks_match(&engine, &folded);
+    assert!(folded
+        .bucket_index
+        .hashes
+        .get("catalog")
+        .unwrap()
+        .get("untouched")
+        .is_some());
+    let records = engine
+        .index_log_store()
+        .read_delta_records(SHARD, 0)
+        .unwrap();
+    let last = records.last().unwrap();
+    assert!(last.upsert);
+    assert_eq!(last.items.len(), 2);
+    assert_eq!(last.items.iter().filter(|item| item.deleted).count(), 1);
+}
+
+#[test]
+fn mixed_metadata_batch_records_only_changed_blocks() {
+    let (_dir, engine, _base) = fixture(128);
+    let records = engine
+        .index_log_store()
+        .read_delta_records(SHARD, 0)
+        .unwrap();
+    let last = records.last().unwrap();
+    assert!(last.upsert);
+    assert_eq!(last.items.len(), 5);
+    assert_eq!(last.items.iter().filter(|item| item.deleted).count(), 2);
+    assert_eq!(
+        last.items
+            .iter()
+            .filter(|item| item.object_key.as_ref() == "history")
+            .count(),
+        1
+    );
+    let snapshot = rows::<true>(
+        &engine,
+        &["order".into(), "catalog".into(), "history".into()],
+    );
+    assert!(snapshot.len() > 128);
+    println!(
+        "mixed_batch incremental_rows={} snapshot_rows={}",
+        last.items.len(),
+        snapshot.len()
+    );
+}
+
+#[test]
+fn a_live_physical_block_cannot_be_encoded_as_removed() {
+    let (_dir, engine, _base) = fixture(0);
+    let command = Command::SetRemove {
+        key: "order".into(),
+        member: b"hot-0".to_vec(),
+    };
+    let item = {
+        let shards = engine.shards.read().unwrap();
+        let shard = shards.get(&SHARD).unwrap();
+        let item =
+            stream_batch_methods::capture_set_removal(shard, SHARD, &command, 0, u32::MAX).unwrap();
+        assert!(!stream_batch_methods::retired_block_is_vacated(
+            shard, &item
+        ));
+        item
+    };
+    apply(&engine, vec![command]);
+    let shards = engine.shards.read().unwrap();
+    assert!(stream_batch_methods::retired_block_is_vacated(
+        shards.get(&SHARD).unwrap(),
+        &item
+    ));
+    drop(shards);
+    let folded = engine.load_index_checked(SHARD, false).unwrap().unwrap();
+    let members = folded.bucket_index.sets.get("order").unwrap();
+    assert_eq!(members.len(), 16);
+    assert!(members.get(&b"hot-0".to_vec()).is_none());
+}
+
+#[test]
+fn removed_member_can_be_readded_in_the_same_incremental_batch() {
+    let (_dir, engine, _base) = fixture(32);
+    apply(
+        &engine,
+        vec![
+            Command::SetRemove {
+                key: "order".into(),
+                member: b"hot-32".to_vec(),
+            },
+            Command::SetAdd {
+                key: "order".into(),
+                member: b"hot-32".to_vec(),
+            },
+        ],
+    );
+    let records = engine
+        .index_log_store()
+        .read_delta_records(SHARD, 0)
+        .unwrap();
+    let last = records.last().unwrap();
+    assert!(last.upsert);
+    assert_eq!(last.items.len(), 2);
+    let folded = engine.load_index_checked(SHARD, false).unwrap().unwrap();
+    let members = folded.bucket_index.sets.get("order").unwrap();
+    assert_eq!(members.len(), 17);
+    assert!(members.get(&b"hot-32".to_vec()).is_some());
+    assert!(members.get(&b"hot-0".to_vec()).is_none());
+    check_values(&engine, 32);
+}
+
+#[test]
+fn unsupported_deletion_keeps_snapshot_fallback() {
+    let (_dir, engine, _base) = fixture(32);
+    apply(
+        &engine,
+        vec![
+            Command::SetRemove {
+                key: "order".into(),
+                member: b"hot-32".to_vec(),
+            },
+            Command::SetAdd {
+                key: "order".into(),
+                member: b"hot-33".to_vec(),
+            },
+            Command::HashDelete {
+                key: "catalog".into(),
+                field: "untouched".into(),
+            },
+        ],
+    );
+    let records = engine
+        .index_log_store()
+        .read_delta_records(SHARD, 0)
+        .unwrap();
+    assert!(!records.last().unwrap().upsert);
+    let folded = engine.load_index_checked(SHARD, false).unwrap().unwrap();
+    let members = folded.bucket_index.sets.get("order").unwrap();
+    assert_eq!(members.len(), 17);
+    assert!(members.get(&b"hot-33".to_vec()).is_some());
+    assert!(members.get(&b"hot-32".to_vec()).is_none());
+    assert!(folded
+        .bucket_index
+        .hashes
+        .get("catalog")
+        .unwrap()
+        .get("untouched")
+        .is_none());
+}
+
+#[test]
+fn expired_set_removal_keeps_snapshot_fallback() {
+    let (_dir, engine, _base) = fixture(32);
+    apply(
+        &engine,
+        vec![Command::CommonExpire {
+            key: "order".into(),
+            ttl_ms: 0,
+        }],
+    );
+    apply(
+        &engine,
+        vec![
+            Command::SetRemove {
+                key: "order".into(),
+                member: b"hot-32".to_vec(),
+            },
+            Command::HashSet {
+                key: "catalog".into(),
+                field: "changing".into(),
+                value: b"expired".to_vec(),
+            },
+        ],
+    );
+    let records = engine
+        .index_log_store()
+        .read_delta_records(SHARD, 0)
+        .unwrap();
+    assert!(!records.last().unwrap().upsert);
+    let folded = engine.load_index_checked(SHARD, false).unwrap().unwrap();
+    assert!(folded.bucket_index.sets.get("order").is_none());
 }
