@@ -11,6 +11,7 @@ keywords = ["temporalstore", "database", "storage", "raft", "memory"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
+ahash = "0.8"
 async-trait = "0.1"
 bytes = "1"
 rmp-serde = "1.3"
