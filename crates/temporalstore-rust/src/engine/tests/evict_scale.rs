@@ -9,7 +9,8 @@
 //! tests run the same round two orders of magnitude further out and print the ratio beside the
 //! corpus ratio, so each term names itself.
 //!
-//! THE RESULT, at 20,000 and 200,000 objects with the shipped batch limit of 16 victims:
+//! HISTORICAL RESULT before cached resident-size accounting, at 20,000 and 200,000 objects with
+//! the shipped batch limit of 16 victims:
 //!
 //! ```text
 //!                                     20,000        200,000     ratio   corpus ratio 10.00x
@@ -34,8 +35,10 @@
 //!     watched this path, `BUCKET_SCOPED_MODEL_ENTRIES`, charges only what the walk EMITS, which
 //!     is bounded by the victims -- so the audit row for a whole-store term read as a batch-sized
 //!     term at every size ever measured.
-//!   * the pressure gate reads `bucket_index_resident_bytes` before the round and again after it,
-//!     and each read walks every node and every resident block in the bucket index.
+//!   * resident-size accounting now caches its total on the bucket map. A cold read visits each
+//!     node once; guarded mutations maintain the total and bulk mutable access invalidates it.
+//!     The historical table above predates this cache. The counter now charges actual nodes,
+//!     not the number of blocks represented by their constant-time length reads.
 //!
 //! AND IT IS UNDER THE SHARD-TABLE WRITE GUARD. `apply_storage_eviction` takes `shards.write()`
 //! and calls `release_bucket_blocks` inside it, so the whole-store walk is an interval every
@@ -257,7 +260,7 @@ struct RoundCost {
     /// Model-map blocks the round MATERIALIZED. The batch-sized term, and the only one that had a
     /// counter before this file.
     model_emitted: u64,
-    /// Bucket-index nodes and blocks the two resident-bytes reads walked.
+    /// Actual nodes visited by cold resident-size censuses; warm reads visit none.
     resident_visits: u64,
     /// Whole-store live-block entries materialized anywhere in the round.
     live_scan: u64,
@@ -811,9 +814,8 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
         large.recency_cloned
     );
 
-    // THE SUBJECT. Both walks are proportional to the store, so both ratios must reach the corpus
-    // ratio. A fix that bounds either one turns this red, which is the point: the number is
-    // recorded so that it cannot change silently.
+    // The model-map derivation remains whole-store. Resident-size reads can initialize their
+    // cache once, but must not repeat a census on both sides of this refusing round.
     let visits_ratio = ratio(small_releasing.model_visits, large_releasing.model_visits);
     assert!(
         visits_ratio >= corpus * 0.9,
@@ -823,25 +825,11 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
         small_releasing.model_visits,
         large_releasing.model_visits
     );
-    let resident_ratio = ratio(small.resident_visits, large.resident_visits);
-    assert!(
-        resident_ratio >= corpus * 0.9,
-        "bucket-index visits grew {resident_ratio:.2}x over a {corpus:.2}x corpus ({} -> {}); the \
-         pressure gate reads resident bytes before the round and after it, and each read walks \
-         the whole index",
-        small.resident_visits,
-        large.resident_visits
-    );
 
     // THE ATTRIBUTION, AS AN EXACT IDENTITY RATHER THAN A RESIDUAL.
     //
-    // A round at the shipped setting makes EXACTLY ONE pass over the model maps -- the release's
-    // -- and EXACTLY TWO reads of the bucket index, one on each side of the actuator. Both are
-    // asserted against the store's own size rather than against a sum of the probe rows, so an
-    // unattributed walk added later cannot hide inside a tolerance: it shows up as a whole extra
-    // pass. The allocation table in `what_an_eviction_round_costs_on_a_large_store_in_both_\
-    // victim_regimes` cannot do this job -- the pass is borrow-only and allocates NOTHING, which
-    // is why every allocation row there is flat while these counters are not.
+    // The release still derives model identities once. The resident-size counter charges only
+    // actual cold-census node visits; resident_size_cache separately guards warm reads at zero.
     for arm in [&small_releasing, &large_releasing] {
         assert_eq!(
             arm.model_visits, arm.records as u64,
@@ -857,12 +845,10 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
         );
     }
     for arm in [&small, &large] {
-        let expected_index_reads = 2 * (arm.buckets as u64 + arm.records as u64);
-        assert_eq!(
-            arm.resident_visits, expected_index_reads,
-            "a round over {} records visited {} bucket-index entries; two reads of an index \
-             holding {} nodes and {} blocks is {expected_index_reads} exactly",
-            arm.records, arm.resident_visits, arm.buckets, arm.records
+        assert!(
+            arm.resident_visits <= arm.buckets as u64,
+            "resident accounting revisited {} nodes for {} buckets",
+            arm.resident_visits, arm.buckets
         );
     }
 

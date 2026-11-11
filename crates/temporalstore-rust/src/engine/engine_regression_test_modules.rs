@@ -118,6 +118,8 @@ mod promote_precondition;
 mod alloc_class_scale;
 #[path = "tests/evict_scale.rs"]
 mod evict_scale;
+#[path = "tests/resident_size_cache.rs"]
+mod resident_size_cache;
 #[path = "tests/reclaiming_space_is_its_own_pass.rs"]
 mod reclaiming_space_is_its_own_pass;
 #[path = "tests/cache_invalidation_cost.rs"]

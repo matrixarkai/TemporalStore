@@ -1890,10 +1890,23 @@ pub fn reset_bucket_node_scan_visits() {
 ///
 /// NOT SERIALIZED, and not a field of anything that is: it is derived from the flags, which are.
 /// A `OnceLock` so a read through `&self` can fill it and a `&mut self` operation can drop it.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub(super) struct BucketMap {
     nodes: BTreeMap<u32, BucketNode>,
     dirty: std::sync::OnceLock<BTreeSet<u32>>,
+    // Process-local accounting follows guarded mutations; bulk mutable access invalidates it.
+    resident_block_heap: std::sync::OnceLock<u64>,
+}
+
+impl Clone for BucketMap {
+    fn clone(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            dirty: self.dirty.clone(),
+            // Cloned vectors may have less capacity than their source buffers.
+            resident_block_heap: std::sync::OnceLock::new(),
+        }
+    }
 }
 
 impl BucketMap {
@@ -1954,12 +1967,28 @@ impl BucketMap {
 
     pub(super) fn get_mut(&mut self, routing_bucket: &u32) -> Option<BucketMut<'_>> {
         let node = self.nodes.get_mut(routing_bucket)?;
+        let was_block_heap = self.resident_block_heap.get()
+            .map(|_| node.block_index.resident_heap_bytes()).unwrap_or_default();
         Some(BucketMut {
             was_dirty: node.dirty(),
             routing_bucket: *routing_bucket,
+            was_block_heap,
             node,
             dirty: &mut self.dirty,
+            resident_block_heap: &mut self.resident_block_heap,
         })
+    }
+
+    /// Cached heap bytes and the node visits needed to initialize them, if any.
+    pub(super) fn resident_block_heap_bytes(&self) -> (u64, u64) {
+        let mut visits = 0u64;
+        let bytes = *self.resident_block_heap.get_or_init(|| {
+            self.nodes.values().fold(0u64, |bytes, node| {
+                visits = visits.saturating_add(1);
+                bytes.saturating_add(node.block_index.resident_heap_bytes())
+            })
+        });
+        (bytes, visits)
     }
 
     pub(super) fn range<R: std::ops::RangeBounds<u32>>(
@@ -1976,7 +2005,13 @@ impl BucketMap {
 
     pub(super) fn insert(&mut self, routing_bucket: u32, node: BucketNode) -> Option<BucketNode> {
         let now_dirty = node.dirty();
+        let block_heap = node.block_index.resident_heap_bytes();
         let replaced = self.nodes.insert(routing_bucket, node);
+        if let Some(bytes) = self.resident_block_heap.get_mut() {
+            *bytes = bytes.saturating_sub(replaced.as_ref()
+                .map(|node| node.block_index.resident_heap_bytes()).unwrap_or_default())
+                .saturating_add(block_heap);
+        }
         if let Some(set) = self.dirty.get_mut() {
             if now_dirty {
                 set.insert(routing_bucket);
@@ -1989,6 +2024,10 @@ impl BucketMap {
 
     pub(super) fn remove(&mut self, routing_bucket: &u32) -> Option<BucketNode> {
         let removed = self.nodes.remove(routing_bucket);
+        if let Some(bytes) = self.resident_block_heap.get_mut() {
+            *bytes = bytes.saturating_sub(removed.as_ref()
+                .map(|node| node.block_index.resident_heap_bytes()).unwrap_or_default());
+        }
         if let Some(set) = self.dirty.get_mut() {
             set.remove(routing_bucket);
         }
@@ -1998,6 +2037,7 @@ impl BucketMap {
     pub(super) fn clear(&mut self) {
         self.nodes.clear();
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::from(0);
     }
 
     /// Every node mutably, and the dirty set DISCARDED: a sweep can set or clear the flag on any
@@ -2006,6 +2046,7 @@ impl BucketMap {
         &mut self,
     ) -> std::collections::btree_map::ValuesMut<'_, u32, BucketNode> {
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::new();
         self.nodes.values_mut()
     }
 
@@ -2014,11 +2055,13 @@ impl BucketMap {
         &mut self,
     ) -> std::collections::btree_map::IterMut<'_, u32, BucketNode> {
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::new();
         self.nodes.iter_mut()
     }
 
     pub(super) fn retain(&mut self, keep: impl FnMut(&u32, &mut BucketNode) -> bool) {
         self.dirty = std::sync::OnceLock::new();
+        self.resident_block_heap = std::sync::OnceLock::new();
         self.nodes.retain(keep);
     }
 }
@@ -2057,6 +2100,8 @@ impl<'a> IntoIterator for &'a BucketMap {
 pub(super) struct BucketMut<'a> {
     node: &'a mut BucketNode,
     dirty: &'a mut std::sync::OnceLock<BTreeSet<u32>>,
+    resident_block_heap: &'a mut std::sync::OnceLock<u64>,
+    was_block_heap: u64,
     routing_bucket: u32,
     was_dirty: bool,
 }
@@ -2076,6 +2121,10 @@ impl std::ops::DerefMut for BucketMut<'_> {
 
 impl Drop for BucketMut<'_> {
     fn drop(&mut self) {
+        if let Some(bytes) = self.resident_block_heap.get_mut() {
+            *bytes = bytes.saturating_sub(self.was_block_heap)
+                .saturating_add(self.node.block_index.resident_heap_bytes());
+        }
         let now_dirty = self.node.dirty();
         if now_dirty == self.was_dirty {
             return;
