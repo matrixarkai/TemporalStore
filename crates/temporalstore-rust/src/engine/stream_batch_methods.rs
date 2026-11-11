@@ -7,6 +7,10 @@ use crate::types::{BatchConditionalWriteResponse, BatchWriteError};
 use serde::ser::SerializeSeq;
 
 #[cfg(test)]
+#[path = "hash_batch_filed_tests.rs"]
+mod hash_batch_filed_tests;
+
+#[cfg(test)]
 thread_local! {
     static HASH_BATCH_EXPANSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -1516,7 +1520,7 @@ impl TemporalEngine {
                     config.feature_max_size,
                 );
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
-            let (outcome, returned_post_write, packed_index_filed) = match command {
+            let (outcome, returned_post_write, hash_index_filed) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
                     let (outcome, metadata, filed) =
                         execute_on_shard::execute_hash_multi_set_reusing_metadata_at_bucket(
@@ -1565,6 +1569,28 @@ impl TemporalEngine {
                             command_source.borrowed_hash_values(),
                         );
                     (outcome, Some(metadata), filed)
+                }
+                Command::HashMultiSet { key, entries } => {
+                    // Preserve the per-execute hints normally published by execute_on_shard.
+                    shard.control_coalesce_persist = config.control_coalesce_persist_enabled();
+                    shard.control_state_max_size = config.control_state_max_size();
+                    shard.control_distinct_sketch = config.control_distinct_sketch_enabled();
+                    shard.set_listing_from_map = config.set_listing_from_map_enabled();
+                    let (outcome, _, filed) =
+                        execute_on_shard::execute_hash_multi_set_reusing_metadata(
+                            &self.cache,
+                            &self.block_store,
+                            shard_id,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            shard,
+                            config.async_storage,
+                            false,
+                            key,
+                            entries,
+                        );
+                    // Keep the original retained command for WAL and post-write metadata.
+                    (outcome, None, filed)
                 }
                 command => (
                     execute_on_shard(
@@ -1719,8 +1745,8 @@ impl TemporalEngine {
                 // Same two guards: every touched key must report that it synced, or the rebuild
                 // still runs; and an empty bucket_map still rebuilds, because maintenance updates
                 // an index rather than constructing one.
-                let maintained_bucket_index = if packed_index_filed.is_some() {
-                    // The packed writer already filed the complete frame and swept its fields.
+                let maintained_bucket_index = if hash_index_filed.is_some() {
+                    // The hash writer already filed the applied fields and swept tombstones.
                     true
                 } else if shard.bucket_index.bucket_map.is_empty() {
                     false

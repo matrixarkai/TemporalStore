@@ -128,6 +128,22 @@ exact-target recall. Per-route sample counts are included; management routes wit
 not establish a reliable tail-latency distribution. Storage bytes are measured after management
 operations, not at the peak of ingestion.
 
+## Index Maintenance
+
+Generic batched hash writes retain evidence that the writer filed the applied fields. They
+skip duplicate post-write filing while preserving the existing per-field layout, WAL payloads,
+and storage mode. This does not pack small catalog records into larger read units.
+
+Tombstone reconciliation uses sorted temporary addresses rather than a tree. The allocation
+probe for 8,192 deleted blocks measured 608,144 allocation bytes and 759 calls for the tree,
+versus 196,608 bytes and 12 calls for the compact lookup. These are helper allocation
+measurements, not process RSS or endpoint latency. Reproduce them with:
+
+```bash
+cargo test -p temporalstore-rust --features alloc-probe --lib \
+  tombstone_reconcile_cost_tests -- --test-threads=1 --nocapture
+```
+
 ## Filtered listing
 
 Filtered `/memories/list` calls keep the initial ordered-page fast path. If that page cannot

@@ -6879,16 +6879,22 @@ impl BucketNode {
         if self.tombstone_elements.is_empty() {
             return;
         }
-        let blocks: std::collections::BTreeSet<(u64, u64, u64)> = self
+        let mut blocks: Vec<(u64, u64, u64)> = self
             .block_index
             .values()
             .filter(|block| block.deleted())
             .map(|block| tombstone_block_key(&block.address))
             .collect();
+        blocks.sort_unstable();
+        blocks.dedup();
         self.tombstone_elements
-            .retain(|row| blocks.contains(&row.block));
+            .retain(|row| blocks.binary_search(&row.block).is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "tombstone_reconcile_cost_tests.rs"]
+mod tombstone_reconcile_cost_tests;
 
 /// THE STORED SPELLING, WRITTEN OUT BY HAND BECAUSE THE DECLARATION NO LONGER MATCHES IT.
 ///
