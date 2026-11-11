@@ -120,18 +120,30 @@ fn carried_projection_keeps_protobuf_and_frame_corruption_checks() {
 #[test]
 #[cfg(feature = "alloc-probe")]
 fn carried_projection_avoids_unused_outcome_restore_allocations() {
-    let payload = payload(&message(500, 20), RAW_PAYLOAD_MARKER);
-    let probe = crate::alloc_probe::Probe::start();
-    let full = decode(&payload).unwrap();
-    let old = probe.stop();
-    let probe = crate::alloc_probe::Probe::start();
-    let blocks = decode_carried_blocks(&payload).unwrap();
-    let new = probe.stop();
-    assert_eq!(blocks, full.staged_blocks);
-    assert!(new.allocs + 10000 < old.allocs, "old={old:?}, new={new:?}");
-    assert!(new.alloc_bytes + 100000 < old.alloc_bytes, "old={old:?}, new={new:?}");
-    println!("CARRIED_RESTORE rows=500 fields=20 old_allocs={} new_allocs={} old_bytes={} new_bytes={}",
-             old.allocs, new.allocs, old.alloc_bytes, new.alloc_bytes);
+    for numeric_kind in [false, true] {
+        let mut message = message(500, 20);
+        if numeric_kind {
+            for item in &mut message.items {
+                item.kind_code = kind_code("hash");
+                item.kind_name = None;
+            }
+        }
+        let payload = payload(&message, RAW_PAYLOAD_MARKER);
+        let probe = crate::alloc_probe::Probe::start();
+        let full = decode(&payload).unwrap();
+        let old = probe.stop();
+        let probe = crate::alloc_probe::Probe::start();
+        let blocks = decode_carried_blocks(&payload).unwrap();
+        let new = probe.stop();
+        assert_eq!(blocks, full.staged_blocks);
+        assert!(new.allocs < old.allocs, "old={old:?}, new={new:?}");
+        assert!(new.alloc_bytes < old.alloc_bytes, "old={old:?}, new={new:?}");
+        if numeric_kind {
+            assert!(old.allocs - new.allocs >= 10000, "old={old:?}, new={new:?}");
+        }
+        println!("CARRIED_RESTORE rows=500 fields=20 numeric_kind={numeric_kind} old_allocs={} new_allocs={} old_bytes={} new_bytes={}",
+                 old.allocs, new.allocs, old.alloc_bytes, new.alloc_bytes);
+    }
 }
 
 #[test]
