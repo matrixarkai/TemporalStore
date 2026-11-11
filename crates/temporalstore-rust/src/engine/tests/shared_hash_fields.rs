@@ -67,6 +67,7 @@ fn shared_hash_fields_retirement_matches_set_operations() {
         let mut selected = ReplacedBlock::from_keys(keys.into_iter());
         for key in (0..30).map(|index| (index % 5, index % 3, 48)) {
             let actual: HashSet<_> = match &selected {
+                ReplacedBlock::Appended => panic!("physical-key selection cannot claim a fresh append"),
                 ReplacedBlock::None => HashSet::new(),
                 ReplacedBlock::One(key) => HashSet::from([*key]),
                 ReplacedBlock::Many(keys) => { assert!(keys.len() > 1); keys.clone() },

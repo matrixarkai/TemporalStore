@@ -4,6 +4,23 @@
 //! Storage snapshot/sample reporting + bucket-index maintenance internals, split from engine.rs.
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
+
+#[cfg(test)]
+thread_local! {
+    static SET_WRITE_SCANS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+pub(super) fn note_set_write_scan(dirty: bool) {
+    SET_WRITE_SCANS.with(|counts| {
+        let (supersede, propagation) = counts.get();
+        counts.set((supersede + u64::from(!dirty), propagation + u64::from(dirty)));
+    });
+}
+
+#[cfg(test)]
+#[path = "set_batch_work_tests.rs"]
+mod set_batch_work_tests;
 use crate::engine::reports::StageWalkCharges;
 use std::sync::Arc;
 
@@ -1428,6 +1445,22 @@ pub(super) fn mark_object_dirty_at_bucket(
     object_key: &str,
     routing_bucket: u32,
 ) {
+    mark_object_dirty_at_bucket_with_policy::<true>(shard, object_key, routing_bucket);
+}
+
+pub(super) fn mark_object_dirty_at_bucket_deferred(
+    shard: &mut ShardState,
+    object_key: &str,
+    routing_bucket: u32,
+) {
+    mark_object_dirty_at_bucket_with_policy::<false>(shard, object_key, routing_bucket);
+}
+
+fn mark_object_dirty_at_bucket_with_policy<const PROPAGATE: bool>(
+    shard: &mut ShardState,
+    object_key: &str,
+    routing_bucket: u32,
+) {
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
     // ONE COPY OF THE CHARACTERS -- see `DirtyObjectIndex::insert_shared`. The handle is read out
@@ -1440,7 +1473,9 @@ pub(super) fn mark_object_dirty_at_bucket(
     // PUSHED, NOT PULLED -- see `push_object_dirty_onto_its_existing_blocks`. This is the second of
     // exactly two sites that mark an object dirty, and the invariant the tests pin is that BOTH
     // push: a mark that does not reach its blocks leaves the bucket reading clean.
-    super::push_object_dirty_onto_its_existing_blocks(shard, object_key);
+    if PROPAGATE {
+        super::push_object_dirty_onto_its_existing_blocks(shard, object_key);
+    }
     let mut bucket = shard
         .bucket_index
         .bucket_map
@@ -4344,6 +4379,7 @@ pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
 pub(super) enum ReplacedBlock {
     #[default]
     None,
+    Appended,
     One(super::LiveBlockKey),
     Many(HashSet<super::LiveBlockKey>),
 }
@@ -4357,7 +4393,7 @@ impl ReplacedBlock {
         let mut held = Self::None;
         for key in keys {
             match &mut held {
-                Self::None => held = Self::One(key),
+                Self::None | Self::Appended => held = Self::One(key),
                 Self::One(first) if *first == key => {},
                 Self::One(first) => held = Self::Many(HashSet::from([*first, key])),
                 Self::Many(keys) => { keys.insert(key); },
@@ -4368,7 +4404,7 @@ impl ReplacedBlock {
 
     pub(super) fn remove(&mut self, key: super::LiveBlockKey) {
         match self {
-            Self::None => {},
+            Self::None | Self::Appended => {},
             Self::One(held) if *held == key => *self = Self::None,
             Self::One(_) => {},
             Self::Many(keys) => {
@@ -4382,7 +4418,7 @@ impl ReplacedBlock {
 
     pub(super) fn is_empty(&self) -> bool {
         match self {
-            Self::None => true,
+            Self::None | Self::Appended => true,
             Self::One(_) => false,
             Self::Many(keys) => keys.is_empty(),
         }
@@ -4390,7 +4426,7 @@ impl ReplacedBlock {
 
     pub(super) fn visit(&self, mut visit: impl FnMut(super::LiveBlockKey)) {
         match self {
-            Self::None => {},
+            Self::None | Self::Appended => {},
             Self::One(key) => visit(*key),
             Self::Many(keys) => keys.iter().copied().for_each(visit),
         }
@@ -4406,7 +4442,7 @@ impl ReplacedBlock {
     /// Physical keys contain slab, offset and length, matching the entry's identity.
     fn contains(&self, key: super::LiveBlockKey) -> bool {
         match self {
-            Self::None => false,
+            Self::None | Self::Appended => false,
             Self::One(held) => *held == key,
             Self::Many(held) => held.contains(&key),
         }
@@ -5248,7 +5284,10 @@ fn upsert_bucket_index_block_inner(
     // then run after both loans end, exactly as before. Same defect and same remedy as the dirty
     // mark in #2239.
     let superseded: Option<Vec<crate::engine::state::BlockLookupRef>> = if names_a_block {
-        let mine = if lookup_enabled {
+        let mine = if matches!(replaces, ReplacedBlock::Appended) {
+            // The caller just appended this frame and no prior frame became vacant.
+            Some(Vec::new())
+        } else if lookup_enabled {
             shard
                 .bucket_index
                 .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
@@ -5256,6 +5295,8 @@ fn upsert_bucket_index_block_inner(
                     block_refs
                         .iter()
                         .filter(|block_ref| {
+                            #[cfg(test)]
+                            note_set_write_scan(false);
                             shard
                                 .bucket_index
                                 .bucket_map

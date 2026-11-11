@@ -1054,7 +1054,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
                 }
                 let field_handle =
                     super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
-                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &key,
@@ -1819,7 +1819,7 @@ pub(crate) fn execute_on_shard(
                 // bucket index's and is converted separately.
                 let field_handle =
                     super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
-                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &key,
@@ -2005,7 +2005,7 @@ pub(crate) fn execute_on_shard(
                 // bucket index's and is converted separately.
                 let field_handle =
                     super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
-                super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &key,
@@ -2286,7 +2286,7 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                super::recorded_map::install_element::<super::recorded_map::SetKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::SetKind>(
                     shard,
                     shard_id,
                     &key,

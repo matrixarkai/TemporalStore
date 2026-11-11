@@ -189,6 +189,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "RecordedObjectRemoval",
         // THE OPERATIONS, written once for every kind.
         "install_element",
+        // Fresh append placement still obtains a filing witness before changing the map.
+        "install_appended_element",
         "install_element_at_bucket",
         "install_packed_hash_block_at_bucket",
         "install_element_staged_only",
