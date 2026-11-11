@@ -118,6 +118,17 @@ fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Optio
 mod packed_frame_tests;
 
 pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+    decode_wal_payload(line, crate::wal_proto::decode)
+}
+
+pub(crate) fn decode_carried_blocks(line: &[u8]) -> Result<Vec<StagedBlock>, WriteAheadLogError> {
+    decode_wal_payload(line, crate::wal_proto::decode_carried_blocks)
+}
+
+fn decode_wal_payload<T>(
+    line: &[u8],
+    decode: impl FnOnce(&[u8]) -> Result<T, String>,
+) -> Result<T, WriteAheadLogError> {
     let unpacked;
     let line = if line.first() == Some(&packed_frames::MAGIC) {
         unpacked = packed_frames::unpack(&mut std::io::Cursor::new(line))?
@@ -135,7 +146,7 @@ pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLog
         || payload.first() == Some(&crate::wal_proto::COMPRESSED_RAW_PAYLOAD_MARKER)
         || payload.first() == Some(&crate::wal_proto::COMPRESSED_ESCAPED_PAYLOAD_MARKER)
     {
-        return crate::wal_proto::decode(payload).map_err(|err| {
+        return decode(payload).map_err(|err| {
             WriteAheadLogError::Corruption(format!("engine wal record decode failed: {err}"))
         });
     }
