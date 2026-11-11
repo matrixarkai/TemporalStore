@@ -1069,6 +1069,13 @@ fn read_block_bytes_for_container_element(
             }
             FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
         }
+        let only = FAIL_ONLY_BLOCK_READ_AT.with(|cell| cell.get());
+        if let Some(remaining) = only {
+            FAIL_ONLY_BLOCK_READ_AT.with(|cell| cell.set(remaining.checked_sub(1)));
+            if remaining == 0 {
+                return None;
+            }
+        }
     }
     read_block_bytes(
         cache,

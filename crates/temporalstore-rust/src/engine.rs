@@ -50,6 +50,8 @@ mod bucket_dump_manifest_methods;
 mod wal_application;
 #[path = "engine/maintenance_log.rs"]
 mod maintenance_log;
+#[path = "engine/portable_checkpoint.rs"]
+mod portable_checkpoint;
 mod storage_lifecycle_methods;
 pub use storage_lifecycle_methods::{
     eviction_sampler_buckets_scanned, reset_eviction_sampler_buckets_scanned,
@@ -166,6 +168,8 @@ use self::product_model::*;
 use self::reports::*;
 use self::command_validation::*;
 use self::compaction::*;
+#[cfg(test)]
+pub(crate) use self::compaction::fail_only_compaction_block_read_at_for_test;
 use self::hashing::*;
 use self::storage_reporting::*;
 use self::storage_bucket_internals::*;
@@ -1397,9 +1401,19 @@ impl TemporalEngine {
                 // by the append below, which is the first moment the log id exists.
                 let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
                     Vec::new();
+                let mut register_appended = |record: &crate::wal::WriteAheadLogRecord, log_id| {
+                    appended_sequence = Some(record.sequence);
+                    let locations = block_in_wal::register_record_with_outcomes(
+                        &self.block_store, request.shard_id, &record.staged_blocks,
+                        &record.outcomes, log_id, record.sequence, &self.wal_store,
+                    );
+                    wal_resident_updates.extend(locations.into_iter().map(|folded| (
+                        folded, crate::engine::state::WalResidentBlock { log_id, sequence: record.sequence },
+                    )));
+                };
                 let append_result = if concurrent_commit {
                     self.wal_store
-                        .append_for_group_commit(
+                        .append_for_group_commit_with_location(
                             request.shard_id,
                             command,
                             std::mem::take(&mut staged_outcomes),
@@ -1410,8 +1424,8 @@ impl TemporalEngine {
                                 std::mem::take(&mut carried_blocks)
                             },
                         )
-                        .map(|record| {
-                            appended_sequence = Some(record.sequence);
+                        .map(|(record, log_id)| {
+                            register_appended(&record, log_id);
                             Some(record.sequence)
                         })
                 } else {
@@ -1432,32 +1446,7 @@ impl TemporalEngine {
                             std::mem::take(&mut staged_outcomes),
                         )
                         .map(|(record, log_id)| {
-                            appended_sequence = Some(record.sequence);
-                            // Point every block this record carries at the record, keyed on the
-                            // object id the write derived -- which is what the stored address
-                            // carries, so a read finds it by identity rather than by timing.
-                            let locations = block_in_wal::register_record_with_outcomes(
-                                &self.block_store,
-                                request.shard_id,
-                                &record.staged_blocks,
-                                &record.outcomes,
-                                log_id,
-                                record.sequence,
-                                &self.wal_store,
-                            );
-                            // Same fact, written down where it survives this process.
-                            wal_resident_updates.extend(locations.into_iter().map(|folded| {
-                                (
-                                    // One entry per BLOCK, not per object: the record says which
-                                    // element each block is, and a record carrying several
-                                    // elements of one key files several entries here.
-                                    folded,
-                                    crate::engine::state::WalResidentBlock {
-                                        log_id,
-                                        sequence: record.sequence,
-                                    },
-                                )
-                            }));
+                            register_appended(&record, log_id);
                             None
                         })
                 };
@@ -8335,11 +8324,12 @@ fn read_block_frame_bytes_after_cache_miss(
     // Hot blocks are carried in the WAL. Cache eviction does not relocate them or create
     // unindexed slab copies; the registration continues to pin their durable record.
     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
-        if let Some(bytes) = block_in_wal::read_block(
+        if let Some(bytes) = block_in_wal::read_block_at(
             block_store,
             shard_id,
             identity.object_id(),
             identity.element_name(),
+            address,
         ) {
             let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
@@ -8364,11 +8354,12 @@ fn read_block_frame_bytes_after_cache_miss(
     //
     // Ordered after the block-store read, not before it: the durable copy is the common case and
     // a direct read, while this one resolves a log id and parses a record.
-    if let Some(bytes) = block_in_wal::read_block(
+    if let Some(bytes) = block_in_wal::read_block_at(
         block_store,
         shard_id,
         identity.object_id(),
         identity.element_name(),
+        address,
     ) {
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);

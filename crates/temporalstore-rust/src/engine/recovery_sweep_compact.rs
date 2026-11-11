@@ -1485,6 +1485,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         shard_id: ShardId,
         shard: &mut ShardState,
         stats: &CompactionRewriteStats,
+        target_block_slab_id: u64,
     ) -> Result<Vec<u8>, Status> {
         if shard.checkpoint_wal_sequence().is_none() {
             return Err(Status::error("checkpoint_wal_apply_incomplete",
@@ -1497,6 +1498,27 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 removed.push((key, placement));
             }
         }
+        // Only the new slab passed this round's durability barrier. Unmoved
+        // objects may still need their WAL fallback, including after a failed read.
+        let retained_objects = storage_bucket_internals::collect_model_live_block_entries(shard)
+            .into_iter()
+            .filter(|entry| entry.address.block_slab_id() != target_block_slab_id)
+            .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key))
+            .collect();
+        let mut retirements = super::block_in_wal::unreferenced_registrations(
+            &self.block_store, shard_id, &self.wal_store, &retained_objects,
+        );
+        retirements.extend(super::block_in_wal::unreferenced_physical_registrations(
+            &self.block_store, shard_id, &self.wal_store, shard, true,
+        ));
+        retirements.retain(|retirement| shard.wal_resident_blocks.get(&retirement.folded_key)
+            .is_some_and(|placement| placement.log_id == retirement.log_id
+                && placement.sequence == retirement.sequence));
+        for retirement in &retirements {
+            if let Some(placement) = shard.wal_resident_blocks.remove(&retirement.folded_key) {
+                removed.push((retirement.folded_key, placement));
+            }
+        }
         let bytes = super::serialize_index_stamped(shard);
         if let Err(err) = self.persist_index_bytes_durable(shard_id, &bytes) {
             shard.wal_resident_blocks.extend(removed);
@@ -1507,6 +1529,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.block_store, shard_id, *object_id, Some(element_name),
             );
         }
+        super::block_in_wal::retire_unchanged_registrations(&self.block_store, shard_id, &retirements);
         Ok(bytes)
     }
 
@@ -1523,7 +1546,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
     /// direct instruction -- and `Some` for "only the slabs named", which is what the
     /// periodic loop asks for. Everything else about a round is identical either way, so the two
     /// share one body and one set of rules about resuming, budgets and the write guard.
-    fn compact_shard_blocks_relocating(
+    pub(super) fn compact_shard_blocks_relocating(
         &self,
         shard_id: ShardId,
         budget_bytes: u64,
@@ -1680,20 +1703,6 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // these four arms is already standing on exactly one, so it says so once.
         for (key, mut addresses) in shard.bucket_index.hashes.element_values_mut() {
             let routing_bucket = bucket_of(key);
-            // Mixed WAL batches also register physical frames for read fallback. Their
-            // locations can retire after this round's barrier, even if no rewrite was needed.
-            if !shard.wal_resident_blocks.is_empty() {
-                let object_id = stable_block_object_id(shard_id, "hash", key);
-                for (field, address) in addresses.iter_mut() {
-                    if !crate::wal_record::is_wal_resident(address.block_slab_id())
-                        && shard.wal_resident_blocks.contains_key(
-                            &super::block_in_wal::wal_resident_key(object_id, Some(field.as_ref())),
-                        )
-                    {
-                        rewrite_stats.retired_container_wal_blocks.push((object_id, field.to_string()));
-                    }
-                }
-            }
             compact_container_blocks_batched(
                 &self.block_store,
                 &self.cache,
@@ -1986,7 +1995,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     ),
                 )
             })?;
-            let partial_index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats)?;
+            let partial_index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id)?;
             let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
             // Keep the round OPEN. A relocation that failed partway left work behind by
             // definition -- the blocks it had not reached yet are still on their old slabs -- and
@@ -2098,7 +2107,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // `FLUSH_PUBLISHED_UNDER_GUARD`.
         #[cfg(test)]
         note_compaction_flush_publish();
-        let index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats)?;
+        let index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id)?;
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
         let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
         let bucket_layout_transition_count =

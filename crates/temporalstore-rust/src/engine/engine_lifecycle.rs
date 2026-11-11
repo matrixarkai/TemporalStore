@@ -2892,9 +2892,7 @@ impl TemporalEngine {
                 crate::wal_record::is_wal_resident(block.address.block_slab_id())
             })
         });
-        if !needs_wal && !shard.bucket_index.bucket_map.is_empty() {
-            return Ok(());
-        }
+        let require_wal = needs_wal || shard.bucket_index.bucket_map.is_empty();
         let mut unresolved = std::collections::BTreeMap::<u64, Vec<(u64, u64)>>::new();
         for (folded, placement) in &shard.wal_resident_blocks {
             unresolved
@@ -2911,6 +2909,12 @@ impl TemporalEngine {
                 &placements,
                 &self.wal_store,
             ) {
+                // Fully materialized imports can carry optional placements from
+                // another log domain. Local placements still restore fallbacks
+                // for unreadable real slabs after a partial compaction.
+                if !require_wal {
+                    return Ok(());
+                }
                 return Err(Status::error(
                     "wal_resident_block_missing",
                     format!("shard {shard_id} cannot recover WAL-backed block at log id {log_id}"),
@@ -3177,7 +3181,7 @@ impl TemporalEngine {
                 // instead of silently recovering as nothing. The command cannot be dropped from the
                 // record until no accepted write can produce an empty one.
                 if !record.outcomes.is_empty() {
-                    let bindings = super::block_in_wal::hash_outcome_blocks(&record.outcomes, &record.staged_blocks);
+                    let bindings = super::block_in_wal::outcome_block_bindings(&record.outcomes, &record.staged_blocks);
                     for item in &record.outcomes {
                         let selected = item.resolved_address()
                             .and_then(|address| bindings.get(&(item.object_id, super::live_block_key(&address))))

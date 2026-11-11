@@ -117,6 +117,14 @@ impl TemporalEngine {
                         && placement.sequence == retirement.sequence)
             });
         }
+        retirements.extend(block_in_wal::unreferenced_physical_registrations(
+            &self.block_store, shard_id, &self.wal_store, &dump_index_state, false,
+        ));
+        retirements.retain(|retirement| {
+            dump_index_state.wal_resident_blocks.get(&retirement.folded_key)
+                .is_some_and(|placement| placement.log_id == retirement.log_id
+                    && placement.sequence == retirement.sequence)
+        });
         if !retirements.is_empty() {
             // A legacy or unnameable index is not proof that a frame is unused.
             let mut visited = 0;

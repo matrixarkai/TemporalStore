@@ -1981,13 +1981,13 @@ impl TemporalEngine {
                     })
             } else {
                 self.wal_store
-                    .append_batch_atomic_carried(shard_id, wal_commands, sync, staged_blocks)
+                    .append_batch_atomic_recorded(shard_id, wal_commands, sync, staged_blocks, staged_outcomes)
                     .map(|(records, carrier)| {
                         if let (Some(first), Some(last)) = (records.first(), records.last()) {
                             shard.note_wal_application(first.sequence, last.sequence);
                             if let Some(log_id) = carrier {
                                 let locations = super::block_in_wal::register_record_with_outcomes(
-                                    &self.block_store, shard_id, &last.staged_blocks, &[],
+                                    &self.block_store, shard_id, &last.staged_blocks, &last.outcomes,
                                     log_id, last.sequence, &self.wal_store,
                                 );
                                 for folded in locations {
