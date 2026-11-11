@@ -6,6 +6,85 @@ use super::*;
 use crate::types::{BatchConditionalWriteResponse, BatchWriteError};
 use serde::ser::SerializeSeq;
 
+pub(super) fn capture_set_removal(
+    shard: &ShardState,
+    shard_id: ShardId,
+    command: &Command,
+    start: u32,
+    end: u32,
+) -> Option<crate::index_log::IndexItem> {
+    let Command::SetRemove { key, member } = command else { return None };
+    let address = shard.bucket_index.sets.get(key)?.get(member)?.clone();
+    Some(retired_block_item(shard_id, "set", key, address, start, end))
+}
+
+fn retired_block_item(shard_id: ShardId, kind: &str, key: &str, address: ElementEntry, start: u32, end: u32)
+    -> crate::index_log::IndexItem
+{
+    let block = state::BlockIndex::new(
+        storage_bucket_internals::stored_model_kind(kind), address.clone(), false, true,
+    );
+    crate::index_log::IndexItem {
+        kind: crate::index_log::IndexItemKind::Block,
+        routing_bucket: block_routing_bucket(key, start, end),
+        block_ref_key: state::block_index_written_key(key, &block),
+        object_key: Arc::from(key),
+        model_id: kind.to_string(),
+        object_id: stable_block_object_id(shard_id, kind, key),
+        deleted: true,
+        entry: Some(address),
+    }
+}
+
+fn capture_rewritten_hash_blocks(shard: &ShardState, shard_id: ShardId, command: &Command, start: u32, end: u32)
+    -> Vec<crate::index_log::IndexItem>
+{
+    let mut items = Vec::new();
+    let mut capture = |key: &str, field: &str| {
+        if let Some(address) = shard.bucket_index.hashes.get(key).and_then(|fields| fields.get(field)) {
+            items.push(retired_block_item(shard_id, "hash", key, address.clone(), start, end));
+        }
+    };
+    match command {
+        Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => capture(key, field),
+        Command::HashMultiSet { key, entries }
+        | Command::HashMultiSetWithTtl { key, entries, .. }
+        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
+            for (field, _) in entries { capture(key, field); }
+        }
+        _ => {},
+    }
+    items
+}
+
+pub(super) fn retired_block_is_vacated(shard: &ShardState, item: &crate::index_log::IndexItem) -> bool {
+    let Some(address) = item.entry.as_ref() else { return false };
+    // The resident membership is authoritative even while a bucket's derived blocks are released.
+    let referenced = match item.model_id.as_str() {
+        "set" => shard.bucket_index.sets.get(item.object_key.as_ref()).is_some_and(|members| {
+            members.iter().any(|(_, current)| live_block_key(current) == live_block_key(address))
+        }),
+        "hash" => shard.bucket_index.hashes.get(item.object_key.as_ref()).is_some_and(|fields| {
+            fields.iter().any(|(_, current)| live_block_key(current) == live_block_key(address))
+        }),
+        _ => return false,
+    };
+    if referenced { return false; }
+    let kind = storage_bucket_internals::stored_model_kind(&item.model_id);
+    let block = state::BlockIndex::new(
+        kind, address.clone(), false, true,
+    );
+    let handle = state::block_index_handle(&item.object_key, &block);
+    match shard.bucket_index.bucket_map.get(&item.routing_bucket)
+        .and_then(|bucket| bucket.block_index.get(&handle))
+    {
+        None => true,
+        Some(current) => current.deleted()
+            && current.model_id() == kind
+            && live_block_key(&current.address) == live_block_key(address),
+    }
+}
+
 #[cfg(test)]
 #[path = "hash_batch_filed_tests.rs"]
 mod hash_batch_filed_tests;
@@ -1368,6 +1447,8 @@ impl TemporalEngine {
         // one non-upsert write downgrades the whole record to snapshot semantics.
         let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
+        let mut batch_set_removals = Vec::new();
+        let mut batch_rewritten_hash_blocks = Vec::new();
         // Every container element any command in this batch added or replaced. Unlike the
         // element names above this is never downgraded to `None`: it is a list of elements, not a
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
@@ -1527,6 +1608,12 @@ impl TemporalEngine {
                     shard,
                     config.feature_max_size,
                 );
+            let removed_set_block = persist_index_delta.then(|| capture_set_removal(
+                shard, shard_id, &command, start_routing_bucket, end_routing_bucket,
+            )).flatten();
+            let rewritten_hash_blocks = if persist_index_delta {
+                capture_rewritten_hash_blocks(shard, shard_id, &command, start_routing_bucket, end_routing_bucket)
+            } else { Vec::new() };
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
             let (outcome, returned_post_write, hash_index_filed) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
@@ -1831,6 +1918,14 @@ impl TemporalEngine {
                             }))
                 };
                 if persist_index_delta {
+                    batch_rewritten_hash_blocks.extend(rewritten_hash_blocks);
+                    let written_element_names = if let Some(item) = removed_set_block {
+                        // Validate physical vacancy after ALL commands, including any re-adds.
+                        batch_set_removals.push(item);
+                        Some(Vec::new())
+                    } else {
+                        written_element_names
+                    };
                     match (&mut batch_upsert_element_names, written_element_names) {
                         (Some(collected), Some(element_names)) => collected.extend(element_names),
                         (state, _) => *state = None,
@@ -2047,17 +2142,26 @@ impl TemporalEngine {
                 // Append the blocks this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
+                if !batch_set_removals.is_empty()
+                    && (batch_membership_shrank || !batch_set_removals.iter()
+                        .all(|item| retired_block_is_vacated(shard, item)))
+                {
+                    batch_upsert_element_names = None;
+                }
                 let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
-                    Some(element_names) => (
-                        collect_upsert_index_items(
+                    Some(element_names) => {
+                        let mut items = batch_set_removals;
+                        items.extend(batch_rewritten_hash_blocks.into_iter()
+                            .filter(|item| retired_block_is_vacated(shard, item)));
+                        items.extend(collect_upsert_index_items(
                             shard,
                             shard_id,
                             element_names,
                             start_routing_bucket,
                             end_routing_bucket,
-                        ),
-                        true,
-                    ),
+                        ));
+                        (items, true)
+                    },
                     None => (
                         collect_command_index_items(
                             shard,

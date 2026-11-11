@@ -1412,6 +1412,26 @@ pub(super) struct BlockKeysByPosition<'a> {
     restricted: bool,
 }
 
+/// A borrowed identity projection for a complete bucket walk. Deleted identities are indexed
+/// once instead of rescanning the tombstone vector for every deleted block. No resident state
+/// or persisted representation is added.
+pub(super) struct BucketBlockKeys<'a, 'k> {
+    keys: &'k BlockKeysByPosition<'a>,
+    routing_bucket: u32,
+    deleted: std::collections::HashMap<(u64, u64, u64), &'a Arc<str>>,
+}
+
+impl<'a> BucketBlockKeys<'a, '_> {
+    pub(super) fn identity_of(&self, handle: u64, block: &BlockIndex) -> Option<BlockObjectIdentity<'a>> {
+        let object_key = if block.deleted() {
+            *self.deleted.get(&tombstone_block_key(&block.address))?
+        } else {
+            self.keys.live_identity(self.routing_bucket, handle)?.1
+        };
+        Some(BlockObjectIdentity { object_key })
+    }
+}
+
 #[cfg(test)]
 mod bucket_projection_tests {
     use super::*;
@@ -1440,6 +1460,85 @@ mod bucket_projection_tests {
             }
         }
     }
+
+    #[test]
+    fn keyed_projection_builds_only_the_position_index() {
+        let objects = BTreeMap::new();
+        let mut lookup = ObjectBlockLookup::default();
+        let kind = Arc::<str>::from("hash");
+        for (key, count) in [("large", 4096u64), ("outside", 16)] {
+            for index in 0..count {
+                lookup.file(&kind, &Arc::from(key), BlockLookupRef {
+                    routing_bucket: (index % 64) as u32,
+                    block_ref_key: index + if key == "outside" { 4096 } else { 0 },
+                });
+            }
+        }
+        let full = BlockKeysByPosition::from_parts(&objects, &lookup);
+        let scoped = BlockKeysByPosition::from_parts_for_keys(&objects, &lookup, ["large"]);
+        assert_eq!(full.by_position.len(), 4112);
+        assert_eq!(full.by_handle.len(), 4112);
+        assert_eq!(scoped.by_position.len(), 4096);
+        assert_eq!(scoped.by_handle.capacity(), 0);
+        for (position, identity) in &scoped.by_position {
+            assert_eq!(Some(identity), full.by_position.get(position));
+            assert_eq!(full.identity_anywhere(position.1), Some(*identity));
+        }
+        let empty = BlockKeysByPosition::from_parts_for_keys(&objects, &lookup, ["missing"]);
+        assert!(empty.by_position.is_empty());
+        assert_eq!(empty.by_handle.capacity(), 0);
+    }
+
+    #[test]
+    fn bucket_projection_matches_scalar_tombstone_lookup_in_one_pass() {
+        use super::super::storage_bucket_internals::StoredModelKind;
+        for count in [0usize, 1, 32, 512] {
+            let objects = BTreeMap::new();
+            let mut lookup = ObjectBlockLookup::default();
+            lookup.file(&Arc::from("set"), &Arc::from("live"), BlockLookupRef {
+                routing_bucket: 23, block_ref_key: 99999,
+            });
+            let keys = BlockKeysByPosition::from_parts(&objects, &lookup);
+            let mut node = BucketNode { routing_bucket: 23, ..BucketNode::default() };
+            let mut blocks = Vec::new();
+            for index in 0..count {
+                let address = ElementEntry::from_parts(7, index as u64 * 64, 64, None, None);
+                node.tombstone_elements.push(TombstoneElement {
+                    object_key: Arc::from(format!("deleted-{index}")),
+                    model_id: StoredModelKind::Set,
+                    element_name: Arc::from(format!("member-{index}")),
+                    block: tombstone_block_key(&address),
+                });
+                blocks.push(BlockIndex::new(StoredModelKind::Set, address, false, true));
+            }
+            if let Some(first) = blocks.first() {
+                node.tombstone_elements.push(TombstoneElement {
+                    object_key: Arc::from("later-duplicate"),
+                    model_id: StoredModelKind::Set,
+                    element_name: Arc::from("duplicate"),
+                    block: tombstone_block_key(&first.address),
+                });
+            }
+            let projected = keys.in_bucket(&node);
+            assert_eq!(projected.deleted.len(), count);
+            let mut scalar_rows = 0usize;
+            for block in &blocks {
+                let before = keys.identity_of(&node, 0, block).unwrap();
+                let after = projected.identity_of(0, block).unwrap();
+                assert_eq!(before.object_key, after.object_key);
+                scalar_rows += node.tombstone_elements.iter()
+                    .position(|row| row.block == tombstone_block_key(&block.address)).unwrap() + 1;
+            }
+            assert_eq!(scalar_rows, count * (count + 1) / 2);
+            let address = ElementEntry::from_parts(9, 0, 64, None, None);
+            let live = BlockIndex::new(StoredModelKind::Set, address.clone(), false, false);
+            assert_eq!(projected.identity_of(99999, &live).unwrap().object_key.as_ref(), "live");
+            assert!(projected.identity_of(99998, &live).is_none());
+            let missing = BlockIndex::new(StoredModelKind::Set, address, false, true);
+            assert!(projected.identity_of(0, &missing).is_none());
+            println!("tombstones={count} scalar_rows={scalar_rows} indexed_rows={}", node.tombstone_elements.len());
+        }
+    }
 }
 
 thread_local! {
@@ -1466,6 +1565,15 @@ pub(super) fn measure_block_identity_builds_for_test<T>(work: impl FnOnce() -> T
 }
 
 impl<'a> BlockKeysByPosition<'a> {
+    pub(super) fn in_bucket<'k>(&'k self, node: &'a BucketNode) -> BucketBlockKeys<'a, 'k> {
+        let mut deleted = std::collections::HashMap::new();
+        for row in node.tombstone_elements.iter() {
+            // Match the scalar reader's first row when multiple elements name one block.
+            deleted.entry(row.block).or_insert(&row.object_key);
+        }
+        BucketBlockKeys { keys: self, routing_bucket: node.routing_bucket, deleted }
+    }
+
     /// REACHABLE FROM THE SIBLING MODULE THAT DERIVES, not only from this file's encoder.
     ///
     /// It was private while the only builder was `CoreIndex::serialize` one screen below. The
@@ -1570,6 +1678,9 @@ impl<'a> BlockKeysByPosition<'a> {
     /// block -- and are named by the tombstone row the removal filed in the bucket, which
     /// [`Self::identity_of`] reads from the node. Restricting the inversion cannot change what
     /// those answer.
+    ///
+    /// Key-scoped callers ask only about filed positions. Leave the handle-only fallback empty,
+    /// as the bucket-scoped builder does; only the full builder serves misplaced-block checks.
     pub(super) fn from_parts_for_keys<'k>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
@@ -1580,14 +1691,12 @@ impl<'a> BlockKeysByPosition<'a> {
     ) -> Self {
         KEYED_INVERSIONS.with(|cell| cell.set(cell.get().saturating_add(1)));
         let mut by_position = std::collections::HashMap::new();
-        let mut by_handle = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
             for block_ref in refs.iter() {
                 by_position.insert(
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
-                by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
             }
         };
         for key in keys {
@@ -1607,7 +1716,7 @@ impl<'a> BlockKeysByPosition<'a> {
         }
         Self {
             by_position,
-            by_handle,
+            by_handle: std::collections::HashMap::new(),
             restricted: true,
         }
     }
@@ -1718,10 +1827,11 @@ pub(super) fn block_identities_in(
     node: &BucketNode,
     keys: &BlockKeysByPosition<'_>,
 ) -> std::collections::HashMap<u64, Arc<str>> {
+    let projected = keys.in_bucket(node);
     node.block_index
         .iter()
         .filter_map(|(handle, block)| {
-            keys.identity_of(node, *handle, block)
+            projected.identity_of(*handle, block)
                 .map(|beside| (*handle, Arc::clone(beside.object_key)))
         })
         .collect()
@@ -4922,10 +5032,11 @@ where
     use serde::ser::{Error as _, SerializeMap};
     let mut entries: Vec<(String, BlockEntryAt<'_>)> =
         Vec::with_capacity(node.block_index.len());
+    let projected = keys.in_bucket(node);
     for (handle, block) in node.block_index.iter() {
         // THROUGH THE ONE DOOR, so the encoder and the readers cannot disagree about where an
         // identity comes from.
-        let Some(beside) = keys.identity_of(node, *handle, block) else {
+        let Some(beside) = projected.identity_of(*handle, block) else {
             return Err(S::Error::custom(format!(
                 "bucket {} holds a block whose stored key would name no object, so this index is \
                  not writable: deleted={}, and the inversion {}",

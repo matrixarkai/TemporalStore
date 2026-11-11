@@ -420,6 +420,10 @@ mod log_backed_string_tests;
 #[path = "engine/expiry_residency_tests.rs"]
 mod expiry_residency_tests;
 
+#[cfg(test)]
+#[path = "engine/tests/snapshot_tombstone_rows.rs"]
+mod snapshot_tombstone_rows;
+
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
 fn wal_resident_block_floor(limit: usize) -> usize {
@@ -4082,6 +4086,18 @@ fn collect_command_index_items_for(
     end_routing_bucket: u32,
     only: Option<(&str, Option<&str>)>,
 ) -> Vec<crate::index_log::IndexItem> {
+    collect_command_index_items_with_policy::<true>(
+        shard, command_keys, start_routing_bucket, end_routing_bucket, only,
+    )
+}
+
+fn collect_command_index_items_with_policy<const COALESCE_TOMBSTONES: bool>(
+    shard: &ShardState,
+    command_keys: &[String],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    only: Option<(&str, Option<&str>)>,
+) -> Vec<crate::index_log::IndexItem> {
     use std::collections::BTreeSet;
     // A REMOVAL THAT NAMES ITS ELEMENT STATES NO ROW, so nothing below can emit one. Every block of
     // the object is filtered out when a name is asked for (see the filter in the walk), and the
@@ -4123,16 +4139,18 @@ fn collect_command_index_items_for(
         keys.iter().copied(),
     );
     let mut items = Vec::new();
+    let mut tombstone_coverage = std::collections::HashSet::new();
     for routing_bucket in buckets {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
+        let projected = identities.in_bucket(bucket);
         for (block_ref_key, block) in &bucket.block_index {
             // BOTH SOURCES, THROUGH THE ONE DOOR: the lookup names a live block by position, and
             // this bucket's own tombstone rows name a deleted one. A block neither names is
             // skipped, and the skip is refused outside the window that explains it -- a report is
             // not the durability path, where the same state is a refusal.
-            let Some(beside) = identities.identity_of(bucket, *block_ref_key, block) else {
+            let Some(beside) = projected.identity_of(*block_ref_key, block) else {
                 debug_assert!(
                     identities.names_no_position(),
                     "bucket {} holds a block the index cannot name while the lookup DOES name \
@@ -4154,6 +4172,15 @@ fn collect_command_index_items_for(
                 if block.model_id().as_str() != kind || element_name.is_some() {
                     continue;
                 }
+            }
+            // Snapshot replay ignores deleted addresses but still needs the key's coverage.
+            // Retain that coverage once per bucket/model without copying every old tombstone.
+            if COALESCE_TOMBSTONES && block.deleted()
+                && !tombstone_coverage.insert((
+                    routing_bucket, block.model_id(), Arc::clone(beside.object_key),
+                ))
+            {
+                continue;
             }
             items.push(crate::index_log::IndexItem {
                 kind: crate::index_log::IndexItemKind::Block,
