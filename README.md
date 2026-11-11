@@ -614,6 +614,19 @@ on that path. Accepted rows are encoded into owned packed frames. Complete-row
 overwrites reuse resident field identities and avoid repeated field searches; partial
 updates, older encodings, and mirrored writes retain their compatible paths.
 
+The command provider can learn a per-thread stale-traffic hint with
+`adaptive_timestamp_prefetch: true` (default). It pre-reads timestamps when recent
+batches are mostly stale, skipping rejected rows before feature serialization;
+eligible survivors still use the server's atomic conditional route. The hint stores
+no timestamps or values and resets on client close. A return to fresh traffic can
+cost one extra read; mixed-layout and older-node fallbacks keep their documented
+read-then-write concurrency limits.
+
+Single-field hash projections can reuse a positive field-cache buffer after checking
+the resident field index. Misses and unsupported encodings retain the full-frame
+path. This avoids fetching and decoding a packed row for an eligible cached field;
+it does not make all projections cache hits or remove TTL and invalidation checks.
+
 These are allocation and bookkeeping reductions, not weaker acknowledgement rules.
 Synchronous writes still wait for their durability barrier, stale conditional writes
 do not renew TTL, and WAL-backed values remain subject to safe materialization and
