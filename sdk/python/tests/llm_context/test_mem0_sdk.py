@@ -108,6 +108,23 @@ class MemorySdkTest(unittest.TestCase):
         self.assertEqual("731", result["results"][0]["id"])
         self.assertEqual("ADD", result["results"][0]["event"])
 
+    def test_add_forwards_explicit_mode_and_encoder_configuration(self) -> None:
+        provider = {"provider_kind": "ollama", "embedding_model": "installed-encoder",
+                    "mock_mode": False}
+        messages = [{"role": "assistant", "name": "cedar", "content": "  raw memory\n"}]
+        Memory(base_url=self.base_url).add(messages, user_id="alice", infer=False,
+                                         provider=provider)
+        request = _Handler.requests[0]
+        self.assertEqual("/memories", request["path"])
+        self.assertIs(request["body"]["infer"], False)
+        self.assertEqual(provider, request["body"]["provider"])
+        self.assertEqual(messages, request["body"]["messages"])
+
+    def test_add_rejects_oversized_batches_without_network_calls(self) -> None:
+        with self.assertRaises(ValueError):
+            Memory(base_url=self.base_url).add([{"role": "user", "content": "memory"}] * 1001)
+        self.assertEqual([], _Handler.requests)
+
     def test_search_maps_limit_and_flattens_context_pack(self) -> None:
         result = Memory(base_url=self.base_url).search(
             "theme preference", user_id="alice", limit=4

@@ -45,6 +45,7 @@ mod benchmark;
 mod embed_drainer;
 #[path = "context_workflow/context_workflow_ingest.rs"]
 mod ingest;
+pub mod ingest_wire;
 mod model_provider;
 #[path = "context_workflow/context_query_scoring.rs"]
 mod query;
@@ -62,6 +63,7 @@ pub use embed_drainer::{
     run_embed_drainer_loop, EmbedDrainReport, EmbedDrainerConfig,
 };
 pub use ingest::{
+    ingest_context_without_inference,
     ingest_extract_context, ingest_extract_context_with_l1_gate, ingest_resource_skill_context,
     validate_resource_skill_secondary_indexes,
 };
@@ -2239,7 +2241,13 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
     let embedding_model_hash = if embedding_deferred {
         0
     } else {
-        context_embedding_model_hash(&provider.embedding_model)
+        // An embedding fallback can differ from the provider used for summaries.
+        let model = if embedding_generation.embedding_model.is_empty() {
+            &provider.embedding_model
+        } else {
+            &embedding_generation.embedding_model
+        };
+        context_embedding_model_hash(model)
     };
     if !embedding_deferred {
         // embedding_inputs order is node text then event text, so the vectors line up with their

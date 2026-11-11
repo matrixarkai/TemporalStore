@@ -22,12 +22,12 @@ while (($#)); do
       shift 2 ;;
     --skip-build) skip_build=1; shift ;;
     --keep-data) keep_data=1; shift ;;
-    --records|--batch-size|--tenant-shards|--users|--searches|--payload-bytes|--provider-json)
+    --records|--batch-size|--tenant-shards|--users|--searches|--payload-bytes|--provider-json|--infer)
       (($# >= 2)) || { echo "Missing value for $1" >&2; exit 2; }
       workload+=("$1" "$2"); shift 2 ;;
     --help)
       printf '%s\n' 'Usage: scripts/mem0_scale_local.sh [--work-dir DIR] [--port-base PORT] [--skip-build] [--bin-dir DIR] [--keep-data] [workload options]' \
-        'Workload options: --records --batch-size --tenant-shards --users --searches --payload-bytes --provider-json' \
+        'Workload options: --records --batch-size --tenant-shards --users --searches --payload-bytes --provider-json --infer true|false' \
         'Results: report.json, source.json, and three service logs in the work directory.' \
         'The isolated data directory must be absent; it is removed on exit unless --keep-data is set.'
       exit 0 ;;

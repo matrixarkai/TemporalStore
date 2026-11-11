@@ -68,6 +68,8 @@ struct MemoryAddRequest {
     metadata: Value,
     #[serde(default)]
     provider: Option<Value>,
+    #[serde(default)]
+    infer: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -491,14 +493,17 @@ fn memory_context_ref(memory_id: &str, updated_at_ms: u64) -> String {
     format!("{memory_id}~{updated_at_ms:016x}")
 }
 
-fn normalized_messages(messages: MemoryMessages) -> Result<Vec<(String, String)>, String> {
+fn normalized_messages(
+    messages: MemoryMessages,
+    infer: bool,
+) -> Result<Vec<(String, String, Option<String>)>, String> {
     match messages {
         MemoryMessages::Text(text) => {
-            let text = text.trim().to_string();
-            if text.is_empty() {
+            let text = if infer { text.trim().to_string() } else { text };
+            if text.trim().is_empty() {
                 Err("messages must contain non-empty text".to_string())
             } else {
-                Ok(vec![("user".to_string(), text)])
+                Ok(vec![("user".to_string(), text, None)])
             }
         }
         MemoryMessages::Many(values) => {
@@ -506,24 +511,30 @@ fn normalized_messages(messages: MemoryMessages) -> Result<Vec<(String, String)>
             for value in values {
                 match value {
                     Value::String(text) if !text.trim().is_empty() => {
-                        out.push(("user".to_string(), text.trim().to_string()));
+                        let text = if infer { text.trim().to_string() } else { text };
+                        out.push(("user".to_string(), text, None));
                     }
                     Value::Object(map) => {
                         let role = map.get("role").and_then(Value::as_str).unwrap_or("user");
+                        if !infer && (role == "system" || map.get("role").and_then(Value::as_str).is_none()) {
+                            continue;
+                        }
                         let content = map
                             .get("content")
                             .or_else(|| map.get("text"))
                             .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .trim();
-                        if !content.is_empty() {
-                            out.push((role.to_string(), content.to_string()));
+                            .unwrap_or_default();
+                        if !content.trim().is_empty() {
+                            let content = if infer { content.trim() } else { content };
+                            let actor_id = map.get("name").and_then(Value::as_str)
+                                .filter(|name| !name.is_empty()).map(str::to_owned);
+                            out.push((role.to_string(), content.to_string(), actor_id));
                         }
                     }
                     _ => {}
                 }
             }
-            if out.is_empty() {
+            if out.is_empty() && infer {
                 Err("messages must contain non-empty text".to_string())
             } else {
                 Ok(out)
@@ -537,8 +548,39 @@ fn history_field(now: u64, sequence: u64) -> String {
 }
 
 impl ProxyService {
+    fn memory_store_explicit_records<'a>(
+        &self,
+        scope: context::ProxyContextScope,
+        tenant_hash: u64,
+        records: impl IntoIterator<Item = &'a MemoryRecord>,
+        provider: Option<Value>,
+    ) -> Result<(), (u16, Vec<u8>)> {
+        let provider = provider.map(serde_json::from_value::<crate::ContextModelProviderConfig>)
+            .transpose().map_err(|error| self.memory_bad_request(error.to_string()))?
+            .unwrap_or_default();
+        let shard_id = self.context_shard_id(tenant_hash);
+        let sources = records.into_iter().map(|record| crate::ContextExtractRequest {
+            shard_id, tenant_hash, source_kind: crate::ContextSourceKind::Chat,
+            source_id: non_empty(&record.context_ref, &record.id).to_owned(),
+            title: record.metadata["role"].as_str().unwrap_or("memory").to_owned(),
+            body: record.memory.clone(), timestamp_ms: record.updated_at_ms,
+            provider: crate::ContextModelProviderConfig { provider_name: String::new(), ..Default::default() },
+        }).collect::<Vec<_>>();
+        let end_time_ms = sources.iter().map(|source| source.timestamp_ms).max().unwrap_or(0).saturating_add(1);
+        let request = crate::ContextIngestExtractRequest {
+            shard_id, tenant_hash, query: String::new(), start_time_ms: 0,
+            end_time_ms, max_events: sources.len(), sources, provider,
+        };
+        self.context_store_explicit(&scope, request)
+    }
+
     pub(super) fn handle_memory_route(&self, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
         use crate::http::{json_response, parse_json};
+        if (request.path == "/memories" || request.path.starts_with("/memories/"))
+            && request.body.len() > crate::context_workflow::ingest_wire::EXPLICIT_MAX_BODY_BYTES
+        {
+            return Some(self.memory_bad_request("memory request exceeds 16 MiB body limit".into()));
+        }
 
         let static_response = match (request.method.as_str(), request.path.as_str()) {
             ("POST", "/memories") => Some(match parse_json::<MemoryAddRequest>(&request.body) {
@@ -640,10 +682,20 @@ impl ProxyService {
     }
 
     fn memory_add(&self, request: MemoryAddRequest) -> (u16, Vec<u8>) {
-        let messages = match normalized_messages(request.messages) {
+        let infer = request.infer.unwrap_or(true);
+        if !infer && !request.metadata.is_null() && !request.metadata.is_object() {
+            return self.memory_bad_request("metadata must be an object for explicit memories".into());
+        }
+        let messages = match normalized_messages(request.messages, infer) {
             Ok(messages) => messages,
             Err(err) => return self.memory_bad_request(err),
         };
+        if messages.is_empty() {
+            return crate::http::json_response(200, &json!({"results":[]}));
+        }
+        if messages.len() > MEMORY_BATCH_LIMIT {
+            return self.memory_bad_request(format!("add accepts at most {MEMORY_BATCH_LIMIT} messages"));
+        }
         let identity = request.scope.identity(&request.identity);
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
@@ -657,28 +709,42 @@ impl ProxyService {
             .context_ingest_sequence
             .fetch_add(messages.len() as u64, std::sync::atomic::Ordering::Relaxed);
         let mut records = Vec::with_capacity(messages.len());
-        let mut sources = Vec::with_capacity(messages.len());
-        for (index, (role, text)) in messages.into_iter().enumerate() {
+        let mut sources = if infer {
+            Vec::with_capacity(messages.len())
+        } else {
+            Vec::new()
+        };
+        let mut actor_ids = Vec::new();
+        for (index, (role, text, actor_id)) in messages.into_iter().enumerate() {
             let id = memory_id(tenant_hash, now, base_sequence + index as u64, &text);
-            sources.push(json!({
-                "body": text,
-                "shard_id": shard_id,
-                "source_id": id,
-                "source_kind": "chat",
-                "tenant_hash": tenant_hash,
-                "timestamp_ms": now + index as u64,
-                "title": role,
-            }));
+            if infer {
+                sources.push(json!({
+                    "body": text,
+                    "shard_id": shard_id,
+                    "source_id": id,
+                    "source_kind": "chat",
+                    "tenant_hash": tenant_hash,
+                    "timestamp_ms": now + index as u64,
+                    "title": role,
+                }));
+            }
+            let mut metadata = request.metadata.clone();
+            if !infer {
+                if metadata.is_null() {
+                    metadata = json!({});
+                }
+                let fields = metadata.as_object_mut().expect("explicit metadata is an object");
+                fields.insert("role".into(), Value::String(role));
+                if let Some(actor) = &actor_id {
+                    fields.insert("actor_id".into(), Value::String(actor.clone()));
+                }
+                actor_ids.push(actor_id);
+            }
             records.push(MemoryRecord {
                 context_ref: id.clone(),
                 id,
-                memory: sources
-                    .last()
-                    .and_then(|source| source.get("body"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                metadata: request.metadata.clone(),
+                memory: text,
+                metadata,
                 tenant_id: request.scope.tenant_id.clone(),
                 account_id: request.scope.account_id.clone(),
                 user_id: identity.user_id.clone(),
@@ -688,20 +754,26 @@ impl ProxyService {
                 updated_at_ms: now,
             });
         }
-        let extract = context::ProxyContextIngestRequest {
-            scope,
-            messages: Vec::new(),
-            sources,
-            records: Vec::new(),
-            query: String::new(),
-            start_time_ms: 0,
-            end_time_ms: 0,
-            max_events: Some(records.len().max(1)),
-            provider: request.provider,
-        };
-        let (status, body) = self.context_extract(extract);
-        if status != 200 || !json_status_ok(&body) {
-            return (status, body);
+        if infer {
+            let extract = context::ProxyContextIngestRequest {
+                scope,
+                messages: Vec::new(),
+                sources,
+                records: Vec::new(),
+                query: String::new(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: Some(records.len().max(1)),
+                provider: request.provider,
+            };
+            let (status, body) = self.context_extract(extract);
+            if status != 200 || !json_status_ok(&body) {
+                return (status, body);
+            }
+        } else {
+            if let Err(response) = self.memory_store_explicit_records(scope, tenant_hash, records.iter(), request.provider) {
+                return response;
+            }
         }
         let mut commands = Vec::with_capacity(records.len() * 3 + 3);
         commands.push(memory_catalog_write(tenant_hash, records.iter()));
@@ -753,18 +825,34 @@ impl ProxyService {
                 }
             }));
         }
+        let expected_commands = commands.len();
         let stored = self.batch_execute(BatchExecuteRequest { shard_id, commands });
         if !stored.status.ok {
             return crate::http::json_response(502, &stored.status);
         }
+        if stored.responses.len() != expected_commands {
+            return crate::http::json_response(502, &Status::error(
+                "memory_catalog_write_incomplete", "memory catalog batch returned an incomplete response",
+            ));
+        }
+        if let Some(failed) = stored.responses.iter().find(|response| !response.status.ok) {
+            return crate::http::json_response(502, &failed.status);
+        }
         crate::http::json_response(
             200,
             &json!({
-                "results": records.iter().map(|record| json!({
-                    "id": record.id,
-                    "memory": record.memory,
-                    "event": "ADD",
-                })).collect::<Vec<_>>()
+                "results": records.iter().enumerate().map(|(index, record)| {
+                    let mut result = json!({
+                        "id": record.id,
+                        "memory": record.memory,
+                        "event": "ADD",
+                    });
+                    if !infer {
+                        result["role"] = record.metadata["role"].clone();
+                        result["actor_id"] = json!(actor_ids.get(index).and_then(Option::as_deref));
+                    }
+                    result
+                }).collect::<Vec<_>>()
             }),
         )
     }
@@ -1117,7 +1205,7 @@ impl ProxyService {
         }
         let now = now_ms().max(record.updated_at_ms.saturating_add(1));
         if !request.data.trim().is_empty() {
-            record.memory = request.data.trim().to_string();
+            record.memory = request.data;
         }
         if let Some(metadata) = request.metadata {
             record.metadata = metadata;
@@ -1125,33 +1213,15 @@ impl ProxyService {
         record.updated_at_ms = now;
         record.context_ref = memory_context_ref(&record.id, now);
         let shard_id = self.context_shard_id(tenant_hash);
-        let extract = context::ProxyContextIngestRequest {
-            scope: context::ProxyContextScope {
+        if let Err(response) = self.memory_store_explicit_records(
+            context::ProxyContextScope {
                 tenant_id: record.tenant_id.clone(),
                 account_id: record.account_id.clone(),
                 user_id: record.user_id.clone(),
                 session_id: record.run_id.clone(),
-            },
-            messages: Vec::new(),
-            sources: vec![json!({
-                "body": &record.memory,
-                "shard_id": shard_id,
-                "source_id": &record.context_ref,
-                "source_kind": "chat",
-                "tenant_hash": tenant_hash,
-                "timestamp_ms": now,
-                "title": "memory",
-            })],
-            records: Vec::new(),
-            query: String::new(),
-            start_time_ms: 0,
-            end_time_ms: 0,
-            max_events: Some(1),
-            provider: request.provider,
-        };
-        let (extract_status, extract_body) = self.context_extract(extract);
-        if extract_status != 200 || !json_status_ok(&extract_body) {
-            return (extract_status, extract_body);
+            }, tenant_hash, std::iter::once(&record), request.provider,
+        ) {
+            return response;
         }
         let commands = vec![
             memory_node_lookup_remove(tenant_hash, old_node_hash),
@@ -1679,7 +1749,7 @@ impl ProxyService {
                 let old_node_hash = memory_record_node_hash(tenant_hash, &record);
                 let now = now_ms().max(record.updated_at_ms.saturating_add(1));
                 if !update.data.trim().is_empty() {
-                    record.memory = update.data.trim().to_string();
+                    record.memory = update.data;
                 }
                 if let Some(metadata) = update.metadata {
                     record.metadata = metadata;
@@ -1694,38 +1764,14 @@ impl ProxyService {
 
             let shard_id = self.context_shard_id(tenant_hash);
             let scope_record = &planned[0].3;
-            let sources = planned
-                .iter()
-                .map(|(_, _, _, record, timestamp_ms)| {
-                    json!({
-                        "body": &record.memory,
-                        "shard_id": shard_id,
-                        "source_id": &record.context_ref,
-                        "source_kind": "chat",
-                        "tenant_hash": tenant_hash,
-                        "timestamp_ms": timestamp_ms,
-                        "title": "memory",
-                    })
-                })
-                .collect();
-            let extract = context::ProxyContextIngestRequest {
-                scope: context::ProxyContextScope {
+            if let Err((extract_status, extract_body)) = self.memory_store_explicit_records(
+                context::ProxyContextScope {
                     tenant_id: scope_record.tenant_id.clone(),
                     account_id: scope_record.account_id.clone(),
                     user_id: scope_record.user_id.clone(),
                     session_id: scope_record.run_id.clone(),
-                },
-                messages: Vec::new(),
-                sources,
-                records: Vec::new(),
-                query: String::new(),
-                start_time_ms: 0,
-                end_time_ms: 0,
-                max_events: Some(planned.len()),
-                provider,
-            };
-            let (extract_status, extract_body) = self.context_extract(extract);
-            if extract_status != 200 || !json_status_ok(&extract_body) {
+                }, tenant_hash, planned.iter().map(|(_, _, _, record, _)| record), provider,
+            ) {
                 let body = String::from_utf8_lossy(&extract_body);
                 for (id, _, _, _, _) in planned {
                     failed.push(json!({"memory_id": id, "status": extract_status, "body": body}));
@@ -2326,6 +2372,10 @@ mod filtered_list_tests;
 mod update_provider_tests;
 
 #[cfg(test)]
+#[path = "memory_explicit_tests.rs"]
+mod explicit_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2499,13 +2549,13 @@ mod tests {
         let messages = normalized_messages(MemoryMessages::Many(vec![
             Value::String("one".into()),
             json!({"role": "assistant", "content": "two"}),
-        ]))
+        ]), true)
         .unwrap();
         assert_eq!(
             messages,
             vec![
-                ("user".into(), "one".into()),
-                ("assistant".into(), "two".into())
+                ("user".into(), "one".into(), None),
+                ("assistant".into(), "two".into(), None)
             ]
         );
     }

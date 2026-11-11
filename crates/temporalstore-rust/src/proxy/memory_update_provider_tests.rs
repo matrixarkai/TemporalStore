@@ -68,12 +68,14 @@ fn fixture() -> (
                 200,
                 &engine.batch_execute(parse_json(&request.body).unwrap()),
             ),
-            "/context/ingest_extract" => {
+            "/context/ingest_explicit" => {
+                let decoded = crate::context_workflow::ingest_wire::decode_request(&request.body).unwrap();
+                let count = decoded.sources.len();
                 captured
                     .lock()
                     .unwrap()
-                    .push(parse_json::<Value>(&request.body).unwrap());
-                json_response(200, &json!({"status":{"ok":true}}))
+                    .push(serde_json::to_value(decoded).unwrap());
+                (200, crate::context_workflow::ingest_wire::encode_response(Status::ok(), count, 0))
             }
             _ => panic!("unexpected path: {}", request.path),
         })
@@ -90,11 +92,11 @@ fn fixture() -> (
 }
 
 fn provider(name: &str, encoder: &str) -> Value {
-    json!({
-        "provider_name":name,"provider_kind":"ollama","mock_mode":false,
-        "base_url":"http://127.0.0.1:11434","model":"qwen2.5:3b",
-        "embedding_model":encoder
-    })
+    serde_json::to_value(crate::ContextModelProviderConfig {
+        provider_name: name.into(), provider_kind: crate::ContextProviderKind::Ollama,
+        base_url: "http://127.0.0.1:11434".into(), model: "qwen2.5:3b".into(),
+        embedding_model: encoder.into(), mock_mode: false, ..Default::default()
+    }).unwrap()
 }
 
 #[test]
@@ -162,5 +164,5 @@ fn memory_updates_without_provider_keep_server_default_selection() {
     assert_eq!(calls.len(), 2);
     assert!(calls
         .iter()
-        .all(|call| call.get("provider").is_none_or(Value::is_null)));
+        .all(|call| call["provider"] == serde_json::to_value(crate::ContextModelProviderConfig::default()).unwrap()));
 }

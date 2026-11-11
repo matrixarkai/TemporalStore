@@ -1936,3 +1936,63 @@ message LlmMemoryHistoryRecord {
   optional string feedback = 6;
   optional string feedback_reason = 7;
 }
+
+enum LlmContextProviderKind {
+  LLM_CONTEXT_PROVIDER_UNSPECIFIED = 0;
+  LLM_CONTEXT_PROVIDER_MOCK = 1;
+  LLM_CONTEXT_PROVIDER_OPEN_AI_COMPATIBLE = 2;
+  LLM_CONTEXT_PROVIDER_OLLAMA = 3;
+}
+
+enum LlmContextSourceKind {
+  LLM_CONTEXT_SOURCE_UNSPECIFIED = 0;
+  LLM_CONTEXT_SOURCE_DOCUMENT = 1;
+  LLM_CONTEXT_SOURCE_CHAT = 2;
+  LLM_CONTEXT_SOURCE_TICKET = 3;
+  LLM_CONTEXT_SOURCE_CODE = 4;
+  LLM_CONTEXT_SOURCE_INCIDENT = 5;
+  LLM_CONTEXT_SOURCE_USER_EVENT = 6;
+}
+
+message LlmContextProvider {
+  string provider_name = 1;
+  LlmContextProviderKind provider_kind = 2;
+  string base_url = 3;
+  string api_key_env = 4;
+  string model = 5;
+  string embedding_model = 6;
+  string vlm_model = 7;
+  uint64 timeout_ms = 8;
+  uint64 max_retries = 9;
+  LlmContextProvider fallback_provider = 10;
+  bool mock_mode = 11;
+}
+
+message LlmContextSource {
+  LlmContextSourceKind source_kind = 1;
+  string source_id = 2;
+  string title = 3;
+  string body = 4;
+  uint64 timestamp_ms = 5;
+  LlmContextProvider provider = 6;
+}
+
+// Explicit-memory ingestion never invokes a summary model. Its encoder remains configurable.
+message ContextExplicitIngestRequest {
+  uint32 protocol_version = 1;
+  uint64 shard_id = 2;
+  uint64 tenant_hash = 3;
+  repeated LlmContextSource sources = 4;
+  LlmContextProvider provider = 5;
+  uint64 start_time_ms = 6;
+  uint64 end_time_ms = 7;
+  uint64 max_events = 8;
+  string query = 9;
+}
+
+message ContextExplicitIngestResponse {
+  uint32 protocol_version = 1;
+  Status status = 2;
+  uint64 accepted = 3;
+  uint64 failed = 4;
+}

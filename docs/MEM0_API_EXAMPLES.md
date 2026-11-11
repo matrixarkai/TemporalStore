@@ -61,6 +61,44 @@ Other routes:
 | `POST` | `/memories/delete_all` |
 | `POST` | `/memories/reset` |
 
+## Explicit Memories
+
+Set `infer:false` on add when the supplied text is already a memory. This skips summary
+and entity inference while retaining the selected embedding model, durable context records,
+indexes, history, and retrieval. System-role turns are skipped; text whitespace, message role,
+and optional actor name are preserved. Without the flag, add retains its inferred path.
+Memory HTTP bodies are bounded to 16 MiB and add accepts at most 1,000 messages per call.
+
+```bash
+curl -sS http://127.0.0.1:17000/memories -H 'Content-Type: application/json' -d '{
+  "infer": false,
+  "user_id": "alice",
+  "messages": [{"role":"user","content":"Use durable local storage."}],
+  "provider": {"provider_kind":"ollama","mock_mode":false,
+    "base_url":"http://127.0.0.1:11434","embedding_model":"all-minilm"}
+}'
+```
+
+Single and batch updates encode the supplied memory directly without summary-model calls.
+Use the same encoder configuration for add, update, and search. Explicit ingestion and updates
+use a versioned protobuf proxy-to-data-node request and acknowledgment. An unsupported endpoint,
+invalid acknowledgment, or incomplete source commit fails without falling back to inference.
+The Mem0-compatible HTTP envelopes remain JSON; no JSON encoding is nested inside this new
+backend request. Existing inferred context routes are unchanged.
+The explicit endpoint validates source counts before protobuf message allocation and retains
+only one 64-source extraction-report window while building its compact acknowledgment.
+
+For the Python client, use `Memory().add(text, user_id="alice", infer=False, provider=config)`.
+Explicit-memory throughput is a separate workload mode, not an inferred-extraction result:
+
+```bash
+bash scripts/mem0_scale_local.sh --infer false --records 100000 --batch-size 128 \
+  --tenant-shards 1 --users 2 --searches 200 --payload-bytes 512
+```
+
+The report includes its `infer` mode. Progress counters describe benchmark acknowledgments,
+not ingested message contents. The serving path adds no external ingestion log.
+
 ## Model Selection On Updates
 
 Single-memory updates accept the same optional `provider` object as add and search. Batch
