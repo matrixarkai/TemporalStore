@@ -2818,6 +2818,17 @@ impl TemporalEngine {
         if shard.wal_resident_blocks.is_empty() {
             return Ok(());
         }
+        // A complete checkpoint can carry old placement metadata after its blocks moved to
+        // durable slabs. Such an image needs only those slabs, not the source node's WAL.
+        // Keep strict record validation whenever any served block still needs that WAL.
+        let needs_wal = shard.bucket_index.bucket_map.values().any(|bucket| {
+            bucket.block_index.values().any(|block| {
+                crate::wal_record::is_wal_resident(block.address.block_slab_id())
+            })
+        });
+        if !needs_wal && !shard.bucket_index.bucket_map.is_empty() {
+            return Ok(());
+        }
         let mut unresolved = std::collections::BTreeMap::<u64, Vec<(u64, u64)>>::new();
         for (folded, placement) in &shard.wal_resident_blocks {
             unresolved
@@ -2871,24 +2882,24 @@ impl TemporalEngine {
             self.shard_is_recovering(shard_id),
             std::sync::atomic::Ordering::SeqCst,
         );
-        // Replay both re-executes commands and installs recorded outcomes, and BOTH stage
-        // outcome items -- while replay itself never appends, so nothing ever takes them.
-        // What it leaves behind is picked up by the next write on this thread and written
-        // into that write's record as changes it made itself; a later replay then installs
-        // them, and a single one that cannot be applied aborts the whole shard load, taking
-        // unrelated keys down with it. Threads are reused across requests in a server and
-        // across tests here, so "the next write" is routinely someone else entirely.
-        //
-        // A guard rather than a drain at the end: every early return below leaks otherwise,
-        // and the interesting exits -- an unreadable scan, a refused outcome -- are early
-        // returns by construction.
-        struct DrainStagedOnExit;
+        // Reuse staging capacity between records, then release it on every exit, including
+        // scan errors and refused outcomes. Incoming record blocks are owned separately.
+        struct DrainStagedOnExit {
+            release_capacity: bool,
+        }
         impl Drop for DrainStagedOnExit {
             fn drop(&mut self) {
-                let _ = super::block_in_wal::take_outcomes();
+                #[cfg(test)]
+                super::replay_scratch::observe_staging();
+                if self.release_capacity {
+                    let _ = super::block_in_wal::take_outcomes();
+                    let _ = super::block_in_wal::take_staged();
+                } else {
+                    super::block_in_wal::begin_write();
+                }
             }
         }
-        let _drain_staged = DrainStagedOnExit;
+        let _drain_staged = DrainStagedOnExit { release_capacity: true };
 
         // A corrupt / unreadable WAL scan is DATA LOSS, not "nothing to replay": swallowing it
         // to Ok(()) would load the shard from the stale base index only, silently discarding
@@ -2919,8 +2930,7 @@ impl TemporalEngine {
         let _guard = WalReplayGuard::enter();
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
-        let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
-            Vec::new();
+        let mut wal_resident_updates = HashMap::<u64, crate::engine::state::WalResidentBlock>::new();
         let mut replayed_any = false;
 
         // The log is read in BOUNDED WINDOWS rather than all at once. An unbounded scan decoded
@@ -3027,7 +3037,10 @@ impl TemporalEngine {
             if !pending.is_empty() {
                 replayed_any = true;
             }
+            #[cfg(test)]
+            super::replay_scratch::observe_window(pending.len());
             for record in pending {
+                let _record_staging = DrainStagedOnExit { release_capacity: false };
                 // Strict sequence continuity, matching the WAL replay, which
                 // returns DataLoss and aborts Load on a hole in the retained WAL. A hole means
                 // a WAL record was lost (partial-GC crash / corruption); refuse the load
@@ -3083,6 +3096,10 @@ impl TemporalEngine {
                                 },
                             )
                         }));
+                        #[cfg(test)]
+                        super::replay_scratch::observe_placements(
+                            wal_resident_updates.len(), wal_resident_updates.capacity(),
+                        );
                     }
                 }
                 // A record that says what its write DID is installed, not re-executed. Re-executing
@@ -3193,6 +3210,17 @@ impl TemporalEngine {
                 expected = expected.saturating_add(1);
             }
 
+            // Publish placement metadata after each applied window. Repeated writes within
+            // the window retain only their latest location; none of this advances a durable
+            // replay frontier or publishes an index before the entire replay succeeds.
+            if !wal_resident_updates.is_empty() {
+                let mut shards = self.shards.write().expect("engine lock poisoned");
+                if let Some(shard) = shards.get_mut(&shard_id) {
+                    for (object_id, placement) in wal_resident_updates.drain() {
+                        shard.wal_resident_blocks.insert(object_id, placement);
+                    }
+                }
+            }
             if !more_to_come {
                 break;
             }
@@ -3219,14 +3247,6 @@ impl TemporalEngine {
             #[cfg(test)]
             restore_phase_probe::mark("index_fold");
             return Ok(());
-        }
-        if !wal_resident_updates.is_empty() {
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                for (object_id, placement) in wal_resident_updates {
-                    shard.wal_resident_blocks.insert(object_id, placement);
-                }
-            }
         }
         // Restore the latest config for post-recovery client writes: any config entries stamped
         // at/after the last replayed sequence (future-effective changes) were intentionally not

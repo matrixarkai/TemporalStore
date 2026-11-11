@@ -154,6 +154,12 @@ pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
 /// bucket-index primitive re-enters this class around the item it builds, so that one path is
 /// whole; a future caller that does not will have its item counted as its own class's cost.
 fn stage_outcome_inner(item: crate::wal::WalOutcomeItem) {
+    // Recovery installs already-durable input and never appends an outgoing record.
+    if super::replaying_wal() {
+        #[cfg(test)]
+        super::replay_scratch::observe_suppressed_outcome();
+        return;
+    }
     // Asked here rather than by each caller. Six of them asked it immediately before calling,
     // which is six chances to write a seventh that does not -- and the answer belongs with the
     // table that holds the result, not with the code that produced it.

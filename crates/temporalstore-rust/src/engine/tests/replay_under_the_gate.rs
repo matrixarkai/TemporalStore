@@ -358,7 +358,7 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
          item, and the write would never reach the index log",
     );
     assert_eq!(
-        hex::encode(member_bytes(0)),
+        "\u{1b}member-00000",
         element_name,
         "the element name is spelled {element_name}, not as the set arm decodes it"
     );
