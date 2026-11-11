@@ -40,7 +40,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::types::ShardId;
 use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
@@ -921,37 +921,25 @@ pub(super) fn read_block(
     // batch just wrote -- so the same record used to be pread and re-parsed once per block. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
     // stale: a superseding write registers a NEWER log_id and old entries simply age out.
-    if let Ok(cache) = record_lru().lock() {
-        // Keyed by (log identity, shard, log id) -- a log id is a byte offset within ONE log,
-        // so the same number names unrelated records in different engines' logs.
-        if let Some((_, _, _, blocks)) = cache
+    let cached = cached_record(store, shard_id, *log_id);
+    if let Some(blocks) = cached {
+        if let Some(index) = index {
+            return blocks.get(*index).filter(|block| block.object_id == object_id)
+                .map(|block| block.bytes.clone());
+        }
+        if let Some(block) = blocks
             .iter()
-            .find(|(s, shard, l, _)| *shard == shard_id && l == log_id && s.same_log(store))
+            .find(|block| names_block(block, object_id, element_name))
+            .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
         {
-            if let Some(index) = index {
-                return blocks.get(*index).filter(|block| block.object_id == object_id)
-                    .map(|block| block.bytes.clone());
-            }
-            if let Some(block) = blocks
-                .iter()
-                .find(|block| names_block(block, object_id, element_name))
-                .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
-            {
-                return Some(block.bytes.clone());
-            }
+            return Some(block.bytes.clone());
         }
     }
     // Read the carrying frame once, without fetching unrelated records after it or retrying
     // overlapping windows when a large record exceeds the initial read size.
     let bytes = store.read_frame_at_log_id(shard_id, *log_id).ok()??;
     let record = decode_wal_line(&bytes).ok()?;
-    let blocks = record.staged_blocks;
-    if let Ok(mut cache) = record_lru().lock() {
-        if cache.len() >= 8 {
-            cache.remove(0);
-        }
-        cache.push((store.clone(), shard_id, *log_id, blocks.clone()));
-    }
+    let blocks = cache_record(store, shard_id, *log_id, record.staged_blocks);
     if let Some(index) = index {
         return blocks.get(*index).filter(|block| block.object_id == object_id)
             .map(|block| block.bytes.clone());
@@ -981,15 +969,52 @@ fn names_block(block: &StagedBlock, object_id: u64, element_name: Option<&str>) 
 /// Tiny on purpose: the working set is "the record(s) the current request's batch just wrote".
 /// Entries cannot go stale: WAL records are immutable, a superseding write registers a newer
 /// log id, and the post-dump WAL sweep never truncates a registered record (its floor).
-fn record_lru() -> &'static Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedBlock>)>> {
-    static LRU: OnceLock<Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedBlock>)>>> =
-        OnceLock::new();
+type SharedRecordBlocks = Arc<Vec<StagedBlock>>;
+type CachedRecord = (LocalWriteAheadLogStore, ShardId, u64, SharedRecordBlocks);
+
+fn cached_record(store: &LocalWriteAheadLogStore, shard_id: ShardId, log_id: u64) -> Option<SharedRecordBlocks> {
+    let cache = record_lru().lock().ok()?;
+    cache.iter().find(|(s, shard, l, _)|
+        *shard == shard_id && *l == log_id && s.same_log(store))
+        .map(|(_, _, _, blocks)| Arc::clone(blocks))
+}
+
+fn cache_record(
+    store: &LocalWriteAheadLogStore,
+    shard_id: ShardId,
+    log_id: u64,
+    blocks: Vec<StagedBlock>,
+) -> SharedRecordBlocks {
+    let blocks = Arc::new(blocks);
+    let mut retired = None;
+    if let Ok(mut cache) = record_lru().lock() {
+        if let Some((_, _, _, existing)) = cache.iter().find(|(s, shard, l, _)|
+            *shard == shard_id && *l == log_id && s.same_log(store))
+        {
+            return Arc::clone(existing);
+        }
+        if cache.len() >= 8 {
+            retired = Some(cache.remove(0));
+        }
+        cache.push((store.clone(), shard_id, log_id, Arc::clone(&blocks)));
+    }
+    // Releasing a full decoded batch can free many payloads; keep it outside the cache lock.
+    drop(retired);
+    blocks
+}
+
+fn record_lru() -> &'static Mutex<Vec<CachedRecord>> {
+    static LRU: OnceLock<Mutex<Vec<CachedRecord>>> = OnceLock::new();
     LRU.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 #[cfg(test)]
 pub(super) fn decoded_record_cache_shape_for_test() -> (usize, usize) {
     let cache = record_lru().lock().unwrap();
-    (cache.len(), cache.iter().flat_map(|(_, _, _, blocks)| blocks)
+    (cache.len(), cache.iter().flat_map(|(_, _, _, blocks)| blocks.iter())
         .map(|block| block.bytes.len()).sum())
 }
+
+#[cfg(test)]
+#[path = "tests/shared_wal_record_cache.rs"]
+mod shared_wal_record_cache_tests;
