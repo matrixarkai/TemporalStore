@@ -8074,6 +8074,15 @@ pub(super) fn validate_bucket_ownership_index(
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    static OWNERSHIP_INDEX_BLOCK_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+#[path = "ownership_validation_lookup_tests.rs"]
+mod ownership_validation_lookup_tests;
+
 /// The same validation against live-block entries the caller ALREADY has.
 ///
 /// `collect_live_block_entries` materializes every live block in the shard, and callers that need
@@ -8087,6 +8096,31 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
     end_routing_bucket: u32,
 ) -> StorageBlockOwnershipValidation {
     let mut validation = StorageBlockOwnershipValidation::default();
+    let expected_buckets = entries
+        .iter()
+        .map(|entry| block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket))
+        .collect::<BTreeSet<_>>();
+    // Index each relevant bucket once rather than scanning its blocks for every entry.
+    // Keep exactly the fields checked below; generation and deletion were not presence filters.
+    let mut indexed_blocks = Vec::new();
+    for routing_bucket in expected_buckets {
+        if let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) {
+            indexed_blocks.extend(bucket.block_index.values().map(|block| {
+                #[cfg(test)]
+                OWNERSHIP_INDEX_BLOCK_VISITS.with(|visits| visits.set(visits.get() + 1));
+                (
+                    routing_bucket,
+                    block.model_id(),
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                    block.address.block_id(),
+                )
+            }));
+        }
+    }
+    indexed_blocks.sort_unstable();
+    indexed_blocks.dedup();
     for entry in entries {
         let expected_object_id = expected_live_block_object_id(shard_id, entry);
         let expected_routing_bucket =
@@ -8117,13 +8151,16 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
             .get(&expected_routing_bucket)
             .is_some_and(|bucket| {
                 bucket.object_index.contains(&expected_object_id)
-                    && bucket.block_index.values().any(|block| {
-                        block.address.block_slab_id() == entry.address.block_slab_id()
-                            && block.address.offset() == entry.address.offset()
-                            && block.address.length() == entry.address.length()
-                            && block.address.block_id() == expected_block_id
-                            && block.model_id() == entry.kind
-                    })
+                    && indexed_blocks
+                        .binary_search(&(
+                            expected_routing_bucket,
+                            entry.kind,
+                            entry.address.block_slab_id(),
+                            entry.address.offset(),
+                            entry.address.length(),
+                            expected_block_id,
+                        ))
+                        .is_ok()
             });
         if !bucket_block_present {
             validation.missing_owner_block_refs =
