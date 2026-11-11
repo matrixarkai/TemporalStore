@@ -50,8 +50,10 @@ retention**, not on the read.
 **10,000 points a series**, trimmed oldest-first on every append, and it is also the default *and
 the maximum* read bound — a `count` above it is clamped, so a long window cannot return more than
 the retained length. One append is hard-capped at 100,000 points. Whole-key TTL
-(`CommonExpire` / `CommonTtl`) is evaluated lazily on read and by a background sweep bounded at
-128 in-memory buckets and 8 on-store buckets a round, so expiry never becomes an unbounded scan.
+(`CommonExpire` / `CommonTtl`) is evaluated lazily on read and by a background sweep with default
+budgets of 100 hot and 5 cold expired-record candidates per round. Periodic cold expiry is enabled
+by default; `load_cold_buckets_for_expire: false` defers released objects. Metadata-only deletion
+does not reload their payloads or bucket indexes, and is not counted as a reload.
 
 **What the tail costs.** The term that grows with the shard is the resident index. Measured on the
 shipped routing range `0..1023`, one shard, single-block records:

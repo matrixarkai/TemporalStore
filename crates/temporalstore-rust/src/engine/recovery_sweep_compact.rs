@@ -169,6 +169,26 @@ struct ExpiryIndexDelta {
     applied_wal_sequence: Option<u64>,
 }
 
+fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
+    if shard.bucket_index.released_buckets.is_empty() {
+        return record_exists(shard, key);
+    }
+    let (start, end) = shard.routing_range();
+    let mut exists = false;
+    for record_key in associated_record_keys(key) {
+        if !record_exists_exact(shard, &record_key) {
+            continue;
+        }
+        exists = true;
+        // Released buckets retain model locators. Presence in those maps is not residency.
+        let bucket = block_routing_bucket(&record_key, start, end);
+        if shard.bucket_index.released_buckets.contains(&bucket) {
+            return false;
+        }
+    }
+    exists
+}
+
 impl TemporalEngine {
     /// Install a shard index received from elsewhere -- a snapshot, a checkpoint, a restore.
     ///
@@ -1060,18 +1080,19 @@ fn expiry_scan_budget(limit: usize) -> usize {
         crate::engine::ensure_expiry_order(shard);
         let hot_selected =
             crate::engine::due_window(shard, now, hot_limit, scan_budget, |key| {
-                record_exists(shard, key)
+                expiry_record_is_hot(shard, key)
             });
         let cold_selected =
             crate::engine::due_window(shard, now, cold_limit, scan_budget, |key| {
-                !record_exists(shard, key)
+                !expiry_record_is_hot(shard, key)
             });
         EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
         let next_hot_cursor: Option<String> = None;
         let next_cold_cursor: Option<String> = None;
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
-        let mut loaded_for_expire = 0usize;
+        // Both paths delete from retained metadata; neither reloads payloads or bucket indexes.
+        let loaded_for_expire = 0usize;
         let mut expired_keys: Vec<String> = Vec::new();
         let mut pending_index_flush: Option<ExpiryIndexCheckpoint> = None;
         for (key, expires_at) in hot_selected.iter() {
@@ -1090,7 +1111,6 @@ fn expiry_scan_budget(limit: usize) -> usize {
         for (key, expires_at) in cold_selected.iter() {
             if *expires_at <= now {
                 if request.load_cold_buckets {
-                    loaded_for_expire = loaded_for_expire.saturating_add(1);
                     let phase = std::time::Instant::now();
                     let removed = delete_record(shard, key);
                     EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);

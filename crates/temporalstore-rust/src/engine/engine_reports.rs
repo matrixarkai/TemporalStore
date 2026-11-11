@@ -298,6 +298,7 @@ pub struct ShardExpirySweepReport {
     pub scanned_records: usize,
     #[serde(default)]
     pub skipped_records: usize,
+    /// Actual payload or index reloads, excluding metadata-only expiry of released objects.
     #[serde(default)]
     pub loaded_for_expire: usize,
     #[serde(default)]
@@ -3436,7 +3437,8 @@ pub struct StorageManagerCycleRequest {
     pub expire_hot_cursor: Option<String>,
     #[serde(default)]
     pub expire_cold_cursor: Option<String>,
-    #[serde(default)]
+    /// Periodic expiry includes released buckets unless explicitly disabled.
+    #[serde(default = "default_storage_manager_stage_enabled")]
     pub load_cold_buckets_for_expire: bool,
     #[serde(default)]
     pub follower_replay_cursors: Vec<BucketDumpFollowerReplayCursor>,
@@ -3727,7 +3729,7 @@ impl Default for StorageManagerCycleRequest {
             max_expire_cold_buckets_per_round: DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
             expire_hot_cursor: None,
             expire_cold_cursor: None,
-            load_cold_buckets_for_expire: false,
+            load_cold_buckets_for_expire: true,
             follower_replay_cursors: Vec::new(),
             raft_snapshot_refs: Vec::new(),
             block_gc_shared_store_cursors: Vec::new(),
