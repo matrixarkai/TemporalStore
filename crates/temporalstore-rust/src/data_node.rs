@@ -58,6 +58,7 @@ use crate::types::{
 #[path = "data_node/data_node_lifecycle.rs"]
 mod lifecycle;
 mod dirty_tracking;
+mod borrowed_hash_rows;
 mod shard_lifecycle;
 mod task_execution;
 mod runtime_reports;

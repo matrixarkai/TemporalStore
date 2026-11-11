@@ -3245,6 +3245,63 @@ pub struct BatchHashTimestampSetRequest {
     pub rows: Vec<BatchHashTimestampSetRow>,
 }
 
+/// Binary requests can retain payload slices until the accepted row is encoded for storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct BorrowedHashValue<'a>(
+    #[serde(borrow, with = "crate::bytes_serde::borrowed_binary")]
+    pub std::borrow::Cow<'a, [u8]>,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BorrowedHashTimestampRow<'a>(
+    pub String,
+    pub i64,
+    pub i32,
+    #[serde(borrow)] pub Vec<BorrowedHashValue<'a>>,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BorrowedHashTimestampRequest<'a> {
+    pub shard_id: ShardId,
+    pub fields: Vec<String>,
+    pub timestamp_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(borrow)]
+    pub rows: Vec<BorrowedHashTimestampRow<'a>>,
+}
+
+impl BorrowedHashTimestampRequest<'_> {
+    pub fn into_owned(self) -> BatchHashTimestampSetRequest {
+        #[cfg(test)]
+        BORROWED_VALUE_MATERIALIZATIONS.with(|count| count.set(count.get()
+            + self.rows.iter().flat_map(|row| &row.3)
+                .filter(|value| matches!(value.0, std::borrow::Cow::Borrowed(_))).count()));
+        BatchHashTimestampSetRequest {
+            shard_id: self.shard_id, fields: self.fields, timestamp_field: self.timestamp_field,
+            ttl_ms: self.ttl_ms,
+            rows: self.rows.into_iter().map(|row| BatchHashTimestampSetRow(row.0, row.1, row.2,
+                row.3.into_iter().map(|value| BatchHashMultiSetValue(value.0.into_owned())).collect())).collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BORROWED_VALUE_MATERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_borrowed_value_materializations_for_test() {
+    BORROWED_VALUE_MATERIALIZATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn borrowed_value_materializations_for_test() -> usize {
+    BORROWED_VALUE_MATERIALIZATIONS.with(std::cell::Cell::get)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BatchConditionalWriteResponse {
     pub status: Status,

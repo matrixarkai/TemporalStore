@@ -340,6 +340,10 @@ pub fn parse_msgpack<T: DeserializeOwned>(body: &[u8]) -> Result<T, HttpError> {
     rmp_serde::from_slice(body).map_err(|err| HttpError::BadResponse(err.to_string()))
 }
 
+pub fn parse_msgpack_borrowed<'a, T: serde::Deserialize<'a>>(body: &'a [u8]) -> Result<T, HttpError> {
+    rmp_serde::from_slice(body).map_err(|err| HttpError::BadResponse(err.to_string()))
+}
+
 /// Like `parse_json`, but for a request type that BORROWS from the body.
 ///
 /// The caller keeps the body alive for as long as the parsed value, so serde can point at it

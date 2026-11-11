@@ -818,6 +818,7 @@ fn write_packed_hash_entries(
     entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
+    borrowed_values: Option<&[crate::types::BorrowedHashValue<'_>]>,
 ) -> (Option<PackedHashIndexFiled>, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = if fields_are_unique {
         entries
@@ -846,7 +847,14 @@ fn write_packed_hash_entries(
         .filter(|ordinal| *ordinal <= crate::block_store::MAX_ADDRESSABLE_BLOCK_ID)
         .and_then(|ordinal| u32::try_from(ordinal).ok())
         .unwrap_or(0);
-    let block = crate::engine::container_blocks::encode_utf8_container_block(&packed_entries);
+    let block = match borrowed_values {
+        Some(values) => {
+            debug_assert!(fields_are_unique && values.len() == packed_entries.len());
+            crate::engine::container_blocks::encode_utf8_container_iter(packed_entries.iter().zip(values)
+                .map(|((field, _), value)| (field.as_bytes(), value.0.as_ref())))
+        }
+        None => crate::engine::container_blocks::encode_utf8_container_block(&packed_entries),
+    };
     let address = super::append_owned_value_of_object(
         cache,
         block_store,
@@ -940,6 +948,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             entries,
             fields_are_unique,
             shared_fields,
+            None,
         );
         entries = returned_entries;
         (filed.is_some(), filed)
@@ -1047,6 +1056,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         entries,
         false,
         None,
+        None,
     );
     (outcome, command)
 }
@@ -1067,6 +1077,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
+    borrowed_values: Option<&[crate::types::BorrowedHashValue<'_>]>,
 ) -> (ExecuteOutcome, Command, Option<PackedHashIndexFiled>) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let stored_timestamp = shard
@@ -1112,10 +1123,13 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
 
     // Preserve the actual stored bytes, not the comparison argument: direct commands may
     // supply different timestamp bytes or duplicate fields (whose last value wins).
-    let timestamp_value = entries.iter().rev()
-        .find(|(field, _)| field == &timestamp_field)
-        .filter(|(_, value)| value.len() <= 64)
-        .map(|(_, value)| value.clone());
+    let timestamp_value = match borrowed_values {
+        Some(values) => entries.iter().zip(values).rev()
+            .find(|((field, _), _)| field == &timestamp_field)
+            .map(|(_, value)| value.0.as_ref()).filter(|value| value.len() <= 64).map(<[u8]>::to_vec),
+        None => entries.iter().rev().find(|(field, _)| field == &timestamp_field)
+            .filter(|(_, value)| value.len() <= 64).map(|(_, value)| value.clone()),
+    };
     let (index_filed, metadata_entries) = write_packed_hash_entries(
         cache,
         block_store,
@@ -1128,6 +1142,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         entries,
         fields_are_unique,
         shared_fields,
+        borrowed_values,
     );
     let packed_mutated = index_filed.is_some();
     mutated |= packed_mutated;
