@@ -7907,15 +7907,13 @@ pub(crate) struct CacheSweepCounts {
     pub batched_calls: std::sync::atomic::AtomicU64,
     /// Dropped keys those calls were handed, counted INSIDE the primitive.
     pub keys_batched: std::sync::atomic::AtomicU64,
-    /// `MultiLayerCache::entries_for_shard` listings -- the batched pass's single walk.
+    /// `MultiLayerCache::keys_for_shard` snapshots -- the batched pass's single walk.
     pub listings: std::sync::atomic::AtomicU64,
     /// Cache entries those listings stepped over, summed. Zero unless armed, and read from the
     /// SAME three tier lengths as `entries_walked`, so the two are commensurable.
     pub entries_listed: std::sync::atomic::AtomicU64,
-    /// Entries those listings RETURNED for the shard. This is the upper bound on the filesystem
-    /// `metadata()` calls the listing makes: `entries_for_shard` falls through to
-    /// `disk_path(&key).metadata()` for every returned entry the disk index does not hold, and
-    /// for no others. Always counted -- it is a `Vec::len()`, not a probe.
+    /// Unique keys those snapshots returned for the shard. The key-only API does not inspect
+    /// filesystem metadata. Always counted -- it is a `Vec::len()`, not a probe.
     pub entries_returned: std::sync::atomic::AtomicU64,
 }
 
@@ -8111,18 +8109,17 @@ fn invalidate_record_all(
 /// write guard that serving reads queue behind.
 ///
 /// WHAT IT DOES INSTEAD. The swept namespaces are the same for every key in the round, so the
-/// walk does not have to be repeated: one listing of the shard's cache, one membership test per
+/// walk does not have to be repeated: one key snapshot of the shard's cache, one membership test per
 /// entry against the round's dropped-key set, and one `invalidate_batch` for everything that
 /// matched plus the named keys. The cache is stepped over ONCE per round rather than twice per
 /// key, and the write lock inside the cache is taken once rather than 4N times.
 ///
-/// EXACTLY THE SAME SET, arm for arm. `entries_for_shard` chains the SAME three tier key sets as
+/// EXACTLY THE SAME SET, arm for arm. `keys_for_shard` chains the SAME three tier key sets as
 /// `invalidate_record` and filters them by shard alone, so it is a superset of what every one of
 /// the round's per-key sweeps could have matched; the predicate here re-applies the other two
 /// halves of that filter (`namespace` and `record_key`) that `invalidate_record` applies inline.
-/// `CacheEntryInfo` carries `shard_id`, `namespace`, `record_key` and `selector`, which is every
-/// field of a `CacheKey`, so the key each matched entry is rebuilt from is the key that was in
-/// the tier. Both arms take their namespaces from `SWEPT_RECORD_NAMESPACES` and their named keys
+/// The snapshot returns the original `CacheKey` fields directly, without reconstructing keys
+/// from diagnostic strings. Both arms take their namespaces from `SWEPT_RECORD_NAMESPACES` and their named keys
 /// from `named_record_keys`, so neither list can drift from the other. And a key the round did
 /// NOT drop is not in the set, so its entries are left cached -- which is the same thing N
 /// per-key sweeps do, and the direction that would be visible if this were wrong.
@@ -8134,11 +8131,8 @@ fn invalidate_record_all(
 /// repeating the walk. `a_key_the_shard_has_dropped_is_never_still_answered_out_of_the_cache` is
 /// what holds that.
 ///
-/// WHAT IT COSTS INSTEAD. `entries_for_shard` falls through to a filesystem `metadata()` for
-/// every entry it returns that the disk index does not hold, so the one pass carries C syscalls.
-/// `what_one_listing_of_the_shards_cache_costs_in_syscalls` measures C from outside the process
-/// and `one_batched_pass_walks_the_cache_once_instead_of_twice_per_dropped_key` puts it next to
-/// the entry visits it removes.
+/// The key-only snapshot avoids the per-entry filesystem probes and diagnostic allocations of
+/// `entries_for_shard`. It still walks and deduplicates the tier key sets once per round.
 /// GENERIC OVER THE KEY TYPE, and only because its two call sites hold their round's keys in
 /// different containers: `delete_drop` collects `Arc<str>` object keys off the live block entries,
 /// and the expiry sweep collects `String` keys out of `due_window`. Converting either one to suit
@@ -8167,23 +8161,13 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
         }
     }
     counts.note_listing(cache);
-    let listed = cache.entries_for_shard(shard_id);
+    let listed = cache.keys_for_shard(shard_id);
     counts.note_listed_entries(listed.len() as u64);
     for entry in listed {
-        if SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_str())
-            && dropped.contains(entry.record_key.as_str())
+        if SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_ref())
+            && dropped.contains(entry.record_key.as_ref())
         {
-            // THE LISTING AND THE KEY NO LONGER HOLD THE SAME TYPES, and that is deliberate
-            // on the cache side: `CacheEntryInfo` is a snapshot handed out by value, where an
-            // owned `String` is the honest type, while a `CacheKey` is built on every get and
-            // put and so holds a shared `Arc<str>` and a `Cow` that borrows for the literal
-            // selectors. Converting here pays once per swept entry, not per read.
-            batch.push(CacheKey {
-                shard_id,
-                record_key: std::sync::Arc::from(entry.record_key.as_str()),
-                namespace: std::borrow::Cow::Owned(entry.namespace),
-                selector: std::borrow::Cow::Owned(entry.selector),
-            });
+            batch.push(entry);
         }
     }
     cache.invalidate_batch(&batch).unwrap_or(0)
