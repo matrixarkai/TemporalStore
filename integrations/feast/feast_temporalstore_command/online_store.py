@@ -456,16 +456,21 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         shared_fields: Optional[Tuple[str, ...]] = None
         shared_layout = True
         layouts: Dict[Tuple[str, ...], Tuple[str, ...]] = {}
+        encoded_timestamp: Optional[Timestamp] = None
+        timestamp_bytes = b""
         for hash_key, proto_ts in latest_timestamps.items():
             serialized_values = latest_serialized_values.get(hash_key)
-            values = [proto_ts.SerializeToString()]
+            if proto_ts is not encoded_timestamp:
+                timestamp_bytes = proto_ts.SerializeToString()
+                encoded_timestamp = proto_ts
             if serialized_values is None:
                 row_values = latest_values[hash_key]
                 feature_names = tuple(row_values)
-                values.extend(value.SerializeToString() for value in row_values.values())
+                values = [value.SerializeToString() for value in row_values.values()]
             else:
                 feature_names = tuple(item[0] for item in serialized_values)
-                values.extend(item[2] for item in serialized_values)
+                values = [item[2] for item in serialized_values]
+            values.insert(0, timestamp_bytes)
             row_fields = layouts.get(feature_names)
             if row_fields is None:
                 row_fields = (ts_field,) + tuple(

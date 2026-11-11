@@ -17,6 +17,10 @@ Tests compare uncoalesced and coalesced snapshots through the existing decoder a
 including a snapshot containing only deletions. They also cover packed hash values,
 retained history, and restart recovery.
 
+Key-scoped identity projections build only their position lookup. They do not allocate the
+handle-only fallback used by full-shard validation to find misplaced blocks. Full-shard
+validation retains both indexes, and keyed live/deleted identity results remain unchanged.
+
 The built snapshot is bounded by live rows plus deleted coverage groups, instead of by all
 past deleted versions. The underlying walk still visits retained physical entries, and live
 history can still grow. Further work is required for a fully incremental batch index path;

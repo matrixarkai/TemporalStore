@@ -1440,6 +1440,34 @@ mod bucket_projection_tests {
             }
         }
     }
+
+    #[test]
+    fn keyed_projection_builds_only_the_position_index() {
+        let objects = BTreeMap::new();
+        let mut lookup = ObjectBlockLookup::default();
+        let kind = Arc::<str>::from("hash");
+        for (key, count) in [("large", 4096u64), ("outside", 16)] {
+            for index in 0..count {
+                lookup.file(&kind, &Arc::from(key), BlockLookupRef {
+                    routing_bucket: (index % 64) as u32,
+                    block_ref_key: index + if key == "outside" { 4096 } else { 0 },
+                });
+            }
+        }
+        let full = BlockKeysByPosition::from_parts(&objects, &lookup);
+        let scoped = BlockKeysByPosition::from_parts_for_keys(&objects, &lookup, ["large"]);
+        assert_eq!(full.by_position.len(), 4112);
+        assert_eq!(full.by_handle.len(), 4112);
+        assert_eq!(scoped.by_position.len(), 4096);
+        assert_eq!(scoped.by_handle.capacity(), 0);
+        for (position, identity) in &scoped.by_position {
+            assert_eq!(Some(identity), full.by_position.get(position));
+            assert_eq!(full.identity_anywhere(position.1), Some(*identity));
+        }
+        let empty = BlockKeysByPosition::from_parts_for_keys(&objects, &lookup, ["missing"]);
+        assert!(empty.by_position.is_empty());
+        assert_eq!(empty.by_handle.capacity(), 0);
+    }
 }
 
 thread_local! {
@@ -1570,6 +1598,9 @@ impl<'a> BlockKeysByPosition<'a> {
     /// block -- and are named by the tombstone row the removal filed in the bucket, which
     /// [`Self::identity_of`] reads from the node. Restricting the inversion cannot change what
     /// those answer.
+    ///
+    /// Key-scoped callers ask only about filed positions. Leave the handle-only fallback empty,
+    /// as the bucket-scoped builder does; only the full builder serves misplaced-block checks.
     pub(super) fn from_parts_for_keys<'k>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
@@ -1580,14 +1611,12 @@ impl<'a> BlockKeysByPosition<'a> {
     ) -> Self {
         KEYED_INVERSIONS.with(|cell| cell.set(cell.get().saturating_add(1)));
         let mut by_position = std::collections::HashMap::new();
-        let mut by_handle = std::collections::HashMap::new();
         let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
             for block_ref in refs.iter() {
                 by_position.insert(
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
-                by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
             }
         };
         for key in keys {
@@ -1607,7 +1636,7 @@ impl<'a> BlockKeysByPosition<'a> {
         }
         Self {
             by_position,
-            by_handle,
+            by_handle: std::collections::HashMap::new(),
             restricted: true,
         }
     }
