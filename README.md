@@ -287,6 +287,20 @@ Both store values identically (`ValueProto.SerializeToString()`) but **do not sh
 rows written through one are not readable through the other, so choose one per project rather than
 switching under a populated store.
 
+**Shared-row writes and durability.** The command path can keep small packed hash rows in
+the WAL instead of immediately materializing a separate block and served-index update for
+each row. In synchronous mode, acknowledgement still waits for the WAL commit; deferred
+materialization is not an asynchronous durability setting. Larger frames continue through
+the block path. Legacy recovery and memory-limited configurations keep their existing paths.
+Conditional timestamp checks reuse the bounded field cache, with storage lookup on a miss.
+
+WAL-backed locations remain readable across reload and checkpoint publication. Maintenance
+retires their registrations only after replacement data and index locations are durable;
+a checkpoint does not by itself mean the underlying WAL bytes can be reclaimed. This moves
+work out of the foreground, not out of the storage lifecycle. Retained file size is not
+cumulative write amplification, and local process-restart checks are not power-loss or
+multi-host qualification. These changes do not establish a new cross-store speedup.
+
 ```yaml
 # feature_store.yaml, command-surface plugin
 project: my_project
