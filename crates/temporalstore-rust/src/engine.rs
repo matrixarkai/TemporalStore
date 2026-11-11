@@ -416,6 +416,10 @@ mod wal_resident_env_name_tests {
 #[path = "engine/log_backed_string_tests.rs"]
 mod log_backed_string_tests;
 
+#[cfg(test)]
+#[path = "engine/expiry_residency_tests.rs"]
+mod expiry_residency_tests;
+
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
 fn wal_resident_block_floor(limit: usize) -> usize {
