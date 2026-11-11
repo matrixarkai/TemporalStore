@@ -1139,14 +1139,13 @@ pub fn reset_bucket_release_model_derivations() {
     BUCKET_RELEASE_MODEL_DERIVATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Bucket-index entries visited by [`bucket_index_resident_bytes`]: one per node plus one per
-/// resident block.
+/// Actual bucket nodes visited while initializing resident-size accounting.
 ///
 /// Deliberately its own counter rather than a site on [`BUCKET_BLOCK_INDEX_VISITS`]. That total
 /// is asserted on by existing guards around maintenance rounds, and folding a new walk into it
 /// would move their numbers without any of them being about this walk. What this one is for is
-/// the eviction round, which reads resident bytes twice -- once before its gate and once after
-/// its actuator -- and pays the whole bucket index each time.
+/// the eviction round, which reads resident bytes before and after its actuator. Warm reads use
+/// the maintained total; a bulk mutable borrow invalidates it and the next read rebuilds it.
 static BUCKET_INDEX_RESIDENT_BYTES_VISITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -2855,24 +2854,11 @@ pub(super) fn bucket_index_node_bytes(shard: &ShardState) -> u64 {
 ///      this index never owns them, so charging them here would double-count the model maps that
 ///      do.
 pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
-    let nodes = shard.bucket_index.bucket_map.len() as u64;
-    let mut blocks = 0u64;
-    let mut block_heap = 0u64;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        blocks = blocks.saturating_add(bucket.block_index.len() as u64);
-        block_heap = block_heap.saturating_add(bucket.block_index.resident_heap_bytes());
+    let (block_heap, visits) = shard.bucket_index.bucket_map.resident_block_heap_bytes();
+    if visits != 0 {
+        BUCKET_INDEX_RESIDENT_BYTES_VISITS
+            .fetch_add(visits, std::sync::atomic::Ordering::Relaxed);
     }
-    // One entry per node plus one per resident block, which is what the walk above touched.
-    // Charged here rather than at the call sites: the eviction round reaches this twice per
-    // round and the lifecycle plan reaches it again, and a charge at any one of those would
-    // describe a fraction of the walking that actually happens.
-    //
-    // UNCHANGED BY THE BLOCK-TERM FIX, ON PURPOSE. Both the old arithmetic and this one visit one
-    // node per bucket and read a length that is O(1) on every arm; neither has ever walked the
-    // blocks one by one. The charge names the entries the index HOLDS, which this change does not
-    // move, so the eviction round's pinned visit counts stay comparable across it.
-    BUCKET_INDEX_RESIDENT_BYTES_VISITS
-        .fetch_add(nodes.saturating_add(blocks), std::sync::atomic::Ordering::Relaxed);
     bucket_index_node_bytes(shard).saturating_add(block_heap)
 }
 

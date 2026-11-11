@@ -6561,6 +6561,8 @@ fn the_index_wire_keys_are_what_they_were() {
     // identity, so they vary with the test's keys rather than with the format.
     keys.retain(|key| !key.contains(':') && !key.chars().all(|c| c.is_ascii_digit()));
 
+    // The durable model tables and compact object rows are already in the index image.
+    // This recursive census includes their field names and this fixture's key/field names.
     let listed: Vec<&str> = keys.iter().map(String::as_str).collect();
     assert_eq!(
         listed,
@@ -6581,6 +6583,13 @@ fn the_index_wire_keys_are_what_they_were() {
             // an EMPTY block map.
             "block_index",
             "bucket_map",
+            "context_audit",
+            "context_child",
+            "context_compression",
+            "context_entity",
+            "context_event",
+            "context_index",
+            "context_summary",
             // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
             // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
@@ -6607,11 +6616,14 @@ fn the_index_wire_keys_are_what_they_were() {
             "deleted_object_index",
             "dirty",
             "dirty_generation",
+            "f",
+            "feature",
             // "g" is the LAST optional slot on an address. It is written on every one of them,
             // because a row is read by position in the index log and a field that vanishes when
             // empty moves every field behind it -- and because its PRESENCE is the meaning:
             // `ADDRESS_HAS_GENERATION` comes from whether this key is there.
             "g",
+            "hashes",
             // "h", the digest, is GONE, and so is "rs" further down. Both were written as nil for
             // the positional reason above, and neither was ever read. A key that carries no
             // meaning does not need the slot held open for it: `shorter_struct_against_an_existing_row`
@@ -6623,7 +6635,9 @@ fn the_index_wire_keys_are_what_they_were() {
             "l",
             // "last_dump_sequence" is gone on purpose: see this test's own note above.
             "layout",
+            "lists",
             "loading",
+            "m",
             // "log_backed" is GONE, and it is the only key this change removes. The entry shed the
             // flag nothing maintained -- the log-resident fact is derived from the address by an
             // accessor -- so the stored form is one key lighter.
@@ -6634,6 +6648,7 @@ fn the_index_wire_keys_are_what_they_were() {
             // own bucket. So neither appears in this list, and this list is what would have caught
             // them if they did.
             "meta_loaded",
+            "n",
             // "model_id" and "object_key" are GONE, and this list has been red since they went.
             // A block entry used to restate both as named fields; it now reads them back out of
             // the composite key it is filed under, which is the key's own second and first slots.
@@ -6645,15 +6660,23 @@ fn the_index_wire_keys_are_what_they_were() {
             // list's own rule.
             // "o" and "ps" are gone -- merged into "a" at the top of this list.
             "object_index",
+            "objects",
             "oi",
             // "page_index" is GONE from this list because the writer moved, not because the key
             // was retired: it is still ACCEPTED, and an index on disk that spells it still loads.
             // It is listed at the top under its canonical spelling.
             "pi",
+            "r",
             // "routing_slot" here is the BUCKET NODE's own key, not the address's retired "rs" --
             // two different things that read alike. The node still records which bucket it is.
             "routing_slot",
+            "sets",
+            "string",
             "ttl_ms",
+            "u",
+            "wire",
+            "wire-hash",
+            "zsets",
         ],
         "the index writes different keys than it did; a rename or a serde attribute reached the format"
     );

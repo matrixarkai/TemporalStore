@@ -998,12 +998,9 @@ for scale rather than as the threshold argument: the index is the term that grow
 
 /// WHAT THE GATE COSTS WHEN IT DECLINES -- the per-round price of switching `enable_evict` on.
 ///
-/// With the stage enabled, every maintenance round on every loaded shard computes the gate's input
-/// before it can decline. That input is built from `storage_cache_inspection_report`, whose listing
-/// is `MultiLayerCache::entries_for_shard`: it materialises and SORTS one entry per cached record
-/// and falls through to a filesystem `metadata()` for every entry the disk index does not hold.
-/// None of that is gate input -- the gate reads `.stats` (aggregate counters) and the bucket-index
-/// walk, and the per-entry `entries`/`bucket_summaries` are used only AFTER the gate opens.
+/// The gate reads the shard's maintained resident-index bytes. A warm, declining round should
+/// neither repeat a resident census nor list cache entries. The open-gate control must still
+/// see the cache listing needed by victim selection.
 ///
 /// COUNTED, NOT TIMED, on purpose: this box is shared and a wall-clock figure moves with whatever
 /// else is compiling, while a listing count does not. See the counter's own doc.
@@ -1013,8 +1010,8 @@ for scale rather than as the threshold argument: the index is the term that grow
 ///     cannot come from the stage being skipped for some other reason;
 ///   * the cache is warm and non-empty, asserted, so a zero listing count cannot come from there
 ///     being nothing to list;
-///   * both a must-find and a must-not-find number are checked -- the index walk must still happen
-///     (the gate needs it) and the cache listing must not.
+///   * the gate must read the same nonzero pressure as the earlier snapshot, while both the
+///     resident census and the cache listing must remain absent on the declining arm.
 #[test]
 fn the_declining_gate_pays_no_cache_listing() {
     const KEYS: usize = 4_000;
@@ -1128,12 +1125,13 @@ pressure_before={} threshold={}",
         eviction.selected_victims.len()
     );
 
-    // MUST BE FOUND: the gate's own input. The index walk is irreducible -- it IS the per-shard
-    // term the gate exists to read -- so a zero here would mean the gate is not reading the index
-    // at all and the whole signal has regressed.
-    assert!(
-        index_visits > 0,
-        "the round made no bucket-index resident walk, so the gate did not read its index term"
+    assert_eq!(
+        eviction.pressure_before, pressure.eviction_memory_pressure_bytes,
+        "the gate must still read the shard's resident-index pressure"
+    );
+    assert_eq!(
+        index_visits, 0,
+        "a warm declining gate must use the maintained resident-byte total"
     );
 
     // MUST NOT BE FOUND: the per-entry cache listing, which the gate does not need.
