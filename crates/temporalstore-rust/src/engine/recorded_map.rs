@@ -163,6 +163,15 @@ pub(super) struct RecordedMap<K: RecordedKind> {
     /// adoption had to arrive as a declared operation here. See `adopt_key` below.
     entries: HashMap<ModelKey, K::Elements>,
     ordinals: OrdinalCache,
+    timestamp_hints: HashMap<ModelKey, TimestampHint>,
+}
+
+#[derive(Debug)]
+struct TimestampHint {
+    // User-field data only, never an index or WAL ordering stamp.
+    field: super::hash_field_map::FieldName,
+    address: ElementEntry,
+    value: Option<(i64, i32)>,
 }
 
 impl<K: RecordedKind> Clone for RecordedMap<K> where K::Elements: Clone {
@@ -180,6 +189,7 @@ impl<K: RecordedKind> Default for RecordedMap<K> {
         Self {
             entries: HashMap::new(),
             ordinals: OrdinalCache::default(),
+            timestamp_hints: HashMap::new(),
         }
     }
 }
@@ -768,6 +778,9 @@ impl<K: RecordedKind> RecordedMap<K> {
             Some(value) => {
                 self.entries.insert(std::sync::Arc::clone(canonical), value);
                 self.ordinals.adopt_key(canonical);
+                if let Some(hint) = self.timestamp_hints.remove(object_key) {
+                    self.timestamp_hints.insert(canonical.clone(), hint);
+                }
                 true
             }
             None => false,
@@ -996,12 +1009,14 @@ impl<K: RecordedKind> RecordedMap<K> {
         if elements.is_empty_map() {
             self.entries.remove(&object_key[..]);
             self.ordinals.invalidate(&object_key);
+            self.timestamp_hints.remove(&object_key[..]);
         }
         removed
     }
 
     fn remove_object(&mut self, recorded: RecordedObjectRemoval<K>) -> bool {
         self.ordinals.invalidate(&recorded.object_key);
+        self.timestamp_hints.remove(&recorded.object_key[..]);
         self.entries.remove(&recorded.object_key[..]).is_some()
     }
 }
@@ -1020,7 +1035,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// `sets` from a hand-written impl, so neither named it -- and collapsing the two is what
     /// surfaced it as a path. Naming it is strictly better than a derive doing it silently.
     pub(super) fn from_decoded(entries: HashMap<ModelKey, K::Elements>) -> Self {
-        Self { entries, ordinals: OrdinalCache::default() }
+        Self { entries, ordinals: OrdinalCache::default(), timestamp_hints: HashMap::new() }
     }
 
     /// SHARED EXCEPTION 2 -- THE RECONCILE, where the durable index DECIDES and this map is the
@@ -1048,6 +1063,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         <K::Elements as ElementMap>::Value: super::CarriedValue,
     {
         self.ordinals.clear();
+        self.timestamp_hints = HashMap::new();
         let persisted = std::mem::take(&mut self.entries);
         self.entries = super::storage_bucket_internals::fill_absent_elements(
             derived,
@@ -1071,6 +1087,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         <K::Elements as ElementMap>::Value: super::CarriedValue,
     {
         self.ordinals.invalidate(object_key);
+        self.timestamp_hints.remove(object_key);
         super::merge_container_elements(&mut self.entries, object_key, carried, live, skipped);
     }
 
@@ -1244,6 +1261,31 @@ pub(super) trait AddressedElementMap: ElementMap {
 /// `shard.bucket_index.hashes` -- field name to block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct HashKind;
+
+impl RecordedMap<HashKind> {
+    /// A hint is usable only while the resident field still names the same immutable block.
+    pub(super) fn cached_timestamp(&self, object_key: &str, field: &str) -> Option<Option<(i64, i32)>> {
+        let hint = self.timestamp_hints.get(object_key)?;
+        if &*hint.field != field { return None; }
+        let current = self.entries.get(object_key)?.get(field)?;
+        (current == &hint.address).then_some(hint.value)
+    }
+
+    /// At most one comparator per resident hash; clone/serialization do not carry these hints.
+    pub(super) fn remember_timestamp(&mut self, object_key: &str, field: &str, value: Option<(i64, i32)>) {
+        let Some((key, fields)) = self.entries.get_key_value(object_key) else { return };
+        let Some((name, address)) = fields.named_entry(field) else { return };
+        if let Some(hint) = self.timestamp_hints.get_mut(object_key) {
+            hint.field = name.clone();
+            hint.address = address.clone();
+            hint.value = value;
+        } else {
+            self.timestamp_hints.insert(key.clone(), TimestampHint {
+                field: name.clone(), address: address.clone(), value,
+            });
+        }
+    }
+}
 
 impl RecordedKind for HashKind {
     type Elements = super::hash_field_map::HashFieldMap;
@@ -1624,6 +1666,10 @@ mod shared_hash_fields_tests;
 #[path = "recorded_ordinal_tests.rs"]
 mod recorded_ordinal_tests;
 
+#[cfg(test)]
+#[path = "resident_timestamp_hint_tests.rs"]
+mod resident_timestamp_hint_tests;
+
 // TEST FIXTURES. `#[cfg(test)]`, so none of this exists in a shipped binary, and each is named
 // `_for_test` so a production use cannot be mistaken for an ordinary write.
 // ---------------------------------------------------------------------------------------------
@@ -1646,11 +1692,13 @@ impl<K: RecordedKind> RecordedMap<K> {
 
     pub(super) fn remove_for_test(&mut self, object_key: &str) -> Option<K::Elements> {
         self.ordinals.invalidate(object_key);
+        self.timestamp_hints.remove(object_key);
         self.entries.remove(object_key)
     }
 
     pub(super) fn clear_for_test(&mut self) {
         self.ordinals.clear();
+        self.timestamp_hints = HashMap::new();
         self.entries.clear();
     }
 
@@ -1661,11 +1709,13 @@ impl<K: RecordedKind> RecordedMap<K> {
 
     pub(super) fn take_for_test(&mut self) -> HashMap<ModelKey, K::Elements> {
         self.ordinals.clear();
+        self.timestamp_hints = HashMap::new();
         std::mem::take(&mut self.entries)
     }
 
     pub(super) fn restore_for_test(&mut self, entries: HashMap<ModelKey, K::Elements>) {
         self.ordinals.clear();
+        self.timestamp_hints = HashMap::new();
         self.entries = entries;
     }
 }
