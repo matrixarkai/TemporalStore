@@ -20,6 +20,34 @@ pub(super) struct MaintenanceDeletion {
     records: Vec<String>,
 }
 
+/// Owned names for an exclusive deletion-only run. Removals cannot add or rename a block,
+/// so surviving handles keep these identities across the run's separately logged frames.
+pub(super) struct DeletionIdentityBatch {
+    names: BTreeMap<u32, HashMap<u64, std::sync::Arc<str>>>,
+}
+
+impl DeletionIdentityBatch {
+    fn capture(shard: &ShardState, buckets: &BTreeSet<u32>) -> Self {
+        let keys = state::BlockKeysByPosition::from_parts_for_buckets(
+            &shard.bucket_index.objects,
+            &shard.bucket_index.object_block_lookup,
+            buckets,
+        );
+        let names = buckets
+            .iter()
+            .filter_map(|routing_bucket| {
+                let bucket = shard.bucket_index.bucket_map.get(routing_bucket)?;
+                Some((*routing_bucket, state::block_identities_in(bucket, &keys)))
+            })
+            .collect();
+        Self { names }
+    }
+
+    pub(super) fn bucket(&self, routing_bucket: u32) -> Option<&HashMap<u64, std::sync::Arc<str>>> {
+        self.names.get(&routing_bucket)
+    }
+}
+
 pub(super) struct MaintenanceLogResult {
     pub(super) removed_keys: usize,
     pub(super) apply_ns: u64,
@@ -54,6 +82,12 @@ impl TemporalEngine {
         deletions: Vec<MaintenanceDeletion>,
         mut note_append: impl FnMut(),
     ) -> MaintenanceLogResult {
+        let buckets = deletions
+            .iter()
+            .flat_map(|deletion| deletion.records.iter())
+            .flat_map(|key| bucket_index_target_buckets_for_object_key(shard, key))
+            .collect::<BTreeSet<_>>();
+        let mut identities = None;
         let mirror = self.maintenance_mirror_sink();
         let (start, end) = shard.routing_range();
         let mut outcomes = Vec::new();
@@ -103,8 +137,11 @@ impl TemporalEngine {
                 }
             };
             let apply_started = std::time::Instant::now();
+            // Capture only after the first successful append, before any resident deletion.
+            let identities =
+                identities.get_or_insert_with(|| DeletionIdentityBatch::capture(shard, &buckets));
             for item in &record.outcomes {
-                delete_record_exact(shard, &item.object_key);
+                delete_record_exact_with_identity_batch(shard, &item.object_key, Some(identities));
             }
             shard.note_wal_application(record.sequence, record.sequence);
             let applied_ns = apply_started.elapsed().as_nanos() as u64;

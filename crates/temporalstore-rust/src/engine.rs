@@ -6403,6 +6403,14 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
+    delete_record_exact_with_identity_batch(shard, key, None)
+}
+
+fn delete_record_exact_with_identity_batch(
+    shard: &mut ShardState,
+    key: &str,
+    identities: Option<&maintenance_log::DeletionIdentityBatch>,
+) -> bool {
     let mut removed = false;
     // ONE MARK AUTHORISES EVERY RECORDED CONTAINER'S DROP, and that is why the witness is minted
     // here and handed out rather than minted inside each container's own operation.
@@ -6417,7 +6425,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     // one record genuinely authorises several mutations. Everywhere else a recorded container's
     // operation mints its own and the caller never sees it.
     let (marked, deletion) =
-        storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, key);
+        storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, key, identities);
     removed |= marked;
     // ONE MARK, FOUR DROPS, which is now every container kind. The witness is `Clone` precisely
     // so that one recorded object deletion can authorise each of them; minting per kind would file
@@ -6453,6 +6461,14 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
+    mark_bucket_index_object_deleted_with_identity_batch(shard, key, None)
+}
+
+fn mark_bucket_index_object_deleted_with_identity_batch(
+    shard: &mut ShardState,
+    key: &str,
+    identities: Option<&maintenance_log::DeletionIdentityBatch>,
+) -> bool {
     // NO SHARD, NOTHING TO MARK. The ids this removes are derived from (shard, kind, key), and a
     // state with no shard id has no bucket index built under one either.
     let Some(shard_id) = shard.shard_id() else {
@@ -6476,14 +6492,21 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         };
         let mut deleted_object_ids = BTreeSet::new();
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
-        let names = crate::engine::state::block_identities_in(
-            &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
-                &shard.bucket_index.objects,
-                &shard.bucket_index.object_block_lookup,
-                routing_bucket,
-            ),
-        );
+        let owned_names;
+        let names = match identities.and_then(|batch| batch.bucket(routing_bucket)) {
+            Some(names) => names,
+            None => {
+                owned_names = crate::engine::state::block_identities_in(
+                    &bucket,
+                    &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                        &shard.bucket_index.objects,
+                        &shard.bucket_index.object_block_lookup,
+                        routing_bucket,
+                    ),
+                );
+                &owned_names
+            }
+        };
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
             crate::engine::state::StaleCause::Removed,
@@ -6528,7 +6551,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             crate::engine::storage_bucket_internals::repair_object_index_against_its_blocks(
                 shard_id,
                 &mut bucket,
-                &names,
+                names,
             );
             crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(&mut bucket);
             // Moved below the prune, which touches `object_index` and never this field. Nothing
