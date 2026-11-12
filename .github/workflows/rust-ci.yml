@@ -126,6 +126,14 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Streamed bucket summary checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe streamed_bucket_summaries \
+            -- --test-threads=1 --nocapture 2>&1 | tee /tmp/streamed-bucket-summary-gate.log
+          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/streamed-bucket-summary-gate.log
+
       - name: Inferred memory fact checks
         timeout-minutes: 30
         run: |
