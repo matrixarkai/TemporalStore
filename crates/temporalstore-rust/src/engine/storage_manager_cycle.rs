@@ -753,6 +753,11 @@ impl TemporalEngine {
                         request.follower_replay_cursors.clone(),
                     ),
                 );
+                if let Some(error) = report.manifest_prune_report.as_ref()
+                    .and_then(|prune| prune.error.as_ref())
+                {
+                    errors.push(format!("index_gc: {}: {}", error.code, error.message));
+                }
                 report.refresh_public_lifecycle_metrics();
             }
         }
@@ -1112,7 +1117,12 @@ impl TemporalEngine {
                         .map(|report| report.applied)
                         .unwrap_or(false)),
             skipped: !request.enable_index_gc,
-            reason: if request.enable_index_gc {
+            reason: if let Some(error) = lifecycle_report.as_ref()
+                .and_then(|report| report.manifest_prune_report.as_ref())
+                .and_then(|prune| prune.error.as_ref())
+            {
+                format!("manifest prune failed: {}: {}", error.code, error.message)
+            } else if request.enable_index_gc {
                 "pruned obsolete manifests, rolled forward safe install markers, and applied thresholded index-log GC"
                     .to_string()
             } else {

@@ -48,6 +48,11 @@ mod seen_index_serde;
 mod bucket_dump_manifest_methods;
 #[path = "engine/wal_application.rs"]
 mod wal_application;
+mod context_series_index;
+mod wal_locator_wire;
+mod checkpoint_object_rows;
+#[cfg(test)]
+mod view_rebuild_log_tests;
 #[path = "engine/maintenance_log.rs"]
 mod maintenance_log;
 #[path = "engine/portable_checkpoint.rs"]
@@ -1015,7 +1020,7 @@ impl TemporalEngine {
                 start_routing_bucket,
                 end_routing_bucket,
             ) {
-                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+                reconcile_secondary_views_for_shard(&self.block_store, request.shard_id, shard, None);
             }
             // Mark the reconcile confirmed only once the shard actually holds model-map state:
             // `promote` returns false (without establishing anything) on an empty shard, so
@@ -1107,6 +1112,8 @@ impl TemporalEngine {
         // change at all). Keeping the millisecond itself is what lets those two be seen. See
         // `delta_key_state_change` below.
         let object_keys = command_object_keys(&command);
+        let context_before = context_series_index::ContextSeriesBefore::capture(shard, &object_keys);
+        let context_outcome_start = block_in_wal::staged_outcome_count();
         let membership_before = key_state_before(shard, &object_keys);
         let feature_trimmed_membership = command_will_trim_feature_membership(
             &command,
@@ -1279,11 +1286,13 @@ impl TemporalEngine {
                 && !object_keys.is_empty()
                 && (matches!(&command, Command::SetAdd { .. })
                     || narrow_hash_sync
-                    || object_keys.iter().all(|object_key| {
-                        storage_bucket_internals::sync_context_blocks_for_object(
+                    || object_keys.iter().enumerate().all(|(index, object_key)| {
+                        context_before.sync(
                             shard,
                             request.shard_id,
                             object_key,
+                            index,
+                            context_outcome_start,
                         )
                     }));
             let rebuilt_bucket_index = !maintained_bucket_index
@@ -3495,7 +3504,10 @@ const INDEX_CONTAINER_MAGIC: &[u8] = b"TSIDX\x01";
 /// the stream slides out of alignment. Tried directly here: the round-trip fails with "tag for
 /// enum is not valid, found 9". A self-describing encoding (field names, struct-as-map) keeps
 /// exactly the semantics JSON had, which is the only way those attributes stay honest.
-const INDEX_CODEC_ZSTD_MSGPACK: u8 = 2;
+// Codec 3 packs locators and single-block object rows. Codec 2 remains readable, so an upgrade does not
+// require replaying log records that a previous durable checkpoint already allowed reclaiming.
+const INDEX_CODEC_ZSTD_MSGPACK_LEGACY: u8 = 2;
+const INDEX_CODEC_ZSTD_MSGPACK: u8 = 3;
 
 /// Binary payloads carry the struct version they were written from, big-endian, right after the
 /// codec id. A name-free encoding read against a different struct does not fail, it MIS-READS --
@@ -3692,7 +3704,7 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
         .split_first()
         .ok_or_else(|| "served index container is truncated".to_string())?;
     match *codec {
-        INDEX_CODEC_ZSTD_MSGPACK => {
+        INDEX_CODEC_ZSTD_MSGPACK | INDEX_CODEC_ZSTD_MSGPACK_LEGACY => {
             if payload.len() < INDEX_BINARY_VERSION_BYTES {
                 return Err("served index binary payload is truncated".to_string());
             }

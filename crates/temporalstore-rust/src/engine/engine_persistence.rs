@@ -105,17 +105,34 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
+        self.capture_checkpoint_image(shard_id, false)
+            .map(|(snapshot, publication, _)| (snapshot, publication))
+    }
+
+    pub(super) fn capture_shard_checkpoint_with_wal_growth(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication, Option<crate::wal::WalDumpFence>)> {
+        self.capture_checkpoint_image(shard_id, true)
+    }
+
+    fn capture_checkpoint_image(
+        &self,
+        shard_id: ShardId,
+        capture_growth: bool,
+    ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication, Option<crate::wal::WalDumpFence>)> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
         let anchor = shard.checkpoint_wal_sequence()?;
         let publication = self.checkpoint_publications.capture(shard_id);
+        let growth = capture_growth.then(|| self.wal_store.capture_dump_fence(shard_id, anchor)).flatten();
         let mut snapshot = shard.clone();
         snapshot.applied_wal_sequence = Some(anchor);
         drop(shards);
         // Release markers are memory-only. Persist complete block indexes in the owned
         // image without undoing eviction in the live shard or holding its read guard.
         storage_bucket_internals::restore_released_buckets_in_checkpoint(&mut snapshot, shard_id);
-        Some((snapshot, publication))
+        Some((snapshot, publication, growth))
     }
 
     pub(super) fn index_path(&self, shard_id: ShardId) -> PathBuf {
@@ -290,7 +307,7 @@ impl TemporalEngine {
         // a corrupt index-log delta yields None here. The authoritative load path
         // (`load_shard_with`) calls `load_index_checked` instead so it can REFUSE the load on
         // corruption rather than silently serving a base-only prefix.
-        self.load_index_inner(shard_id, warm_cache, true)
+        self.load_index_inner(shard_id, warm_cache, true, true)
             .ok()
             .flatten()
     }
@@ -302,7 +319,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         warm_cache: bool,
     ) -> Result<Option<ShardState>, Status> {
-        self.load_index_inner(shard_id, warm_cache, true)
+        self.load_index_inner(shard_id, warm_cache, true, true)
     }
 
     /// Load ONLY the durable base snapshot (materialized at the last dump/unload), WITHOUT
@@ -318,9 +335,21 @@ impl TemporalEngine {
         warm_cache: bool,
     ) -> Option<ShardState> {
         // base_only never folds the delta log, so this never fails on delta corruption.
-        self.load_index_inner(shard_id, warm_cache, false)
+        self.load_index_inner(shard_id, warm_cache, false, true)
             .ok()
             .flatten()
+    }
+
+    /// Select the recovery image before restoring its log locations or rebuilding views.
+    pub(super) fn load_index_for_recovery(
+        &self,
+        shard_id: ShardId,
+        fold_deltas: bool,
+    ) -> Result<Option<ShardState>, Status> {
+        if fold_deltas && wal_single_barrier() {
+            return Err(Status::error("index_delta_not_durable", "single-barrier recovery cannot fold index deltas"));
+        }
+        self.load_index_inner(shard_id, false, fold_deltas, false)
     }
 
     fn load_index_inner(
@@ -328,6 +357,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         warm_cache: bool,
         fold_deltas: bool,
+        rebuild_views: bool,
     ) -> Result<Option<ShardState>, Status> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
@@ -401,7 +431,9 @@ impl TemporalEngine {
         } else {
             None
         };
-        reconcile_secondary_views_from_bucket_index(&self.block_store, &mut shard, warm);
+        if rebuild_views {
+            reconcile_secondary_views_for_shard(&self.block_store, shard_id, &mut shard, warm);
+        }
         // Reloaded data is durable, hence clean: clear the transient per-block/bucket
         // dirty flags that were persisted before unload (the durable dirty_generation
         // identity is preserved). refresh_bucket_runtime_flags below then recomputes
@@ -577,7 +609,7 @@ impl TemporalEngine {
                         start_routing_bucket,
                         end_routing_bucket,
                     ) {
-                        reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+                        reconcile_secondary_views_for_shard(&self.block_store, shard_id, shard, None);
                     }
                     rebuild_bucket_first_index(
                         shard_id,

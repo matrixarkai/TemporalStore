@@ -3838,6 +3838,8 @@ pub(crate) fn execute_on_shard(
                 None,
                 true,
             );
+            // The series slot owns the refs used to find and retire its blocks.
+            mutated |= mark_bucket_index_object_deleted(shard, &key);
             mutated |= shard.features_mut().remove(&key[..]).is_some();
             // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
             // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
@@ -3847,7 +3849,6 @@ pub(crate) fn execute_on_shard(
             // not when the key is re-created with the same number of points, which then answers
             // with the sums of the DELETED series.
             control_rollup::feature_forget(shard, &key);
-            mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -5175,11 +5176,11 @@ pub(crate) fn execute_on_shard(
             // left a key behind that every length and emptiness reader counted. The shared point
             // operation below keeps no empty series by construction: it takes the key out of the
             // map when the series ends up empty.
-            let already_written = first_write_only
-                && shard
+            let replacing_event = shard
                     .context_events()
                     .get(&*object_key)
                     .is_some_and(|series| series.get(event_id_hash).is_some());
+            let already_written = first_write_only && replacing_event;
             // Idempotence now tests the EVENT ID, which is what first_write_only actually means:
             // the same event written twice. Testing the timeline key made two different events
             // that collided in the low FANOUT bits of one millisecond look like a rewrite.
@@ -5229,11 +5230,14 @@ pub(crate) fn execute_on_shard(
                             event_id_hash,
                             Some(address),
                         );
-                        shard
+                        let timeline = shard
                             .context_event_timeline
                             .entry(std::sync::Arc::clone(&stored_key))
-                            .or_default()
-                            .insert(stored_timeline_key, event_id_hash);
+                            .or_default();
+                        if replacing_event {
+                            timeline.retain(|_, id| *id != event_id_hash);
+                        }
+                        timeline.insert(stored_timeline_key, event_id_hash);
                         mutated = true;
                     }
                 }
@@ -5276,11 +5280,11 @@ pub(crate) fn execute_on_shard(
             let event_id_hash = event.event_id_hash;
             // Read first, write through the pair afterwards -- see the note on the
             // `ContextWriteEvent` arm above for both halves of why.
-            let event_already_written = first_write_only
-                && shard
+            let replacing_event = shard
                     .context_events()
                     .get(&*event_object_key)
                     .is_some_and(|series| series.get(event_id_hash).is_some());
+            let event_already_written = first_write_only && replacing_event;
             // Same key discipline as ContextWriteEvent since the event rekey: the primary map
             // is keyed by EVENT ID (idempotence tests the id), the block stays timestamp-keyed,
             // and the time index maps the stored timeline key back to the id. This arm was
@@ -5336,11 +5340,14 @@ pub(crate) fn execute_on_shard(
                             event_id_hash,
                             Some(address),
                         );
-                        shard
+                        let timeline = shard
                             .context_event_timeline
                             .entry(std::sync::Arc::clone(&stored_key))
-                            .or_default()
-                            .insert(stored_timeline_key, event_id_hash);
+                            .or_default();
+                        if replacing_event {
+                            timeline.retain(|_, id| *id != event_id_hash);
+                        }
+                        timeline.insert(stored_timeline_key, event_id_hash);
                         mutated = true;
                     }
                 }

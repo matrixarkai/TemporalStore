@@ -81,7 +81,7 @@
 //! The headline is on the CONTAINER at the shipped routing range `0..1023`, with the amortised
 //! regime (~7.81 objects a bucket) asserted BEFORE anything is reported -- the unbounded range
 //! puts one bucket per object and is not what a deployment runs. Both container codecs are
-//! reported: codec 2 (msgpack) is what production writes, and codec 1 (JSON) is the surface
+//! reported: the current MessagePack codec is what production writes, and codec 1 (JSON) is the surface
 //! #2350's prediction was taken on, so that is the arm the prediction is checked against. Two key
 //! shapes at both ends, because padded keys measured 0.009 B/byte in one fixture -- an artefact of
 //! the fixture -- which is why no figure here is quoted on one shape.
@@ -225,6 +225,7 @@ struct Surfaces {
     container: usize,
     json_container: usize,
     slot_index_stream: usize,
+    identity_restatement_bytes: usize,
 }
 
 /// The pre-compression payload the shipped codec writes, pulled back out of the container.
@@ -280,9 +281,28 @@ impl Seeded {
             .sum();
         let container = crate::engine::encode_index_bytes(shard);
         let payload = msgpack_payload_of(&container);
+        if let Some(path) = std::env::var_os("TS_INDEX_COST_FIXTURE") {
+            let path = std::path::PathBuf::from(path).with_extension(self.shape.label());
+            std::fs::write(path, &payload).expect("write requested cost fixture");
+        }
         let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
         let value: serde_json::Value =
             serde_json::to_value(shard).expect("the index must serialize as a value");
+        assert_eq!(jlen(&value), json.len(), "the structured control must price the same JSON stream");
+        let mut restated = value.clone();
+        let mut restated_blocks = 0;
+        for bucket in restated["slot_index"]["bucket_map"].as_object_mut().unwrap().values_mut() {
+            for (key, block) in bucket["block_index"].as_object_mut().unwrap() {
+                let parts = crate::index_log::block_ref_key_parts(key).expect("canonical block key");
+                assert_eq!(parts.kind, "string", "this corpus contains only strings");
+                let fields = block.as_object_mut().unwrap();
+                assert!(fields.insert("object_key".into(), serde_json::json!(parts.object_key)).is_none(), "the entry already restates its object key");
+                assert!(fields.insert("model_id".into(), serde_json::json!(parts.kind)).is_none(), "the entry already restates its model");
+                restated_blocks += 1;
+            }
+        }
+        assert_eq!(restated_blocks, blocks, "every live block must participate in the control");
+        let identity_restatement_bytes = jlen(&restated).checked_sub(jlen(&value)).unwrap();
         // THE BLOCK INDEX, WITH THE OBJECT ROWS TAKEN BACK OUT.
         //
         // `objects` moved INTO `slot_index` at `SHARD_INDEX_FORMAT_VERSION` 30 -- it was a
@@ -314,6 +334,7 @@ impl Seeded {
             container: container.len(),
             json_container: json_container_bytes(&json),
             slot_index_stream,
+            identity_restatement_bytes,
         }
     }
 }
@@ -360,7 +381,7 @@ impl Surfaces {
         println!("  stream           (json)            {:>12} B  {:>9.3} B/obj", self.stream, self.stream as f64 / n);
         println!("  stream slot_index                  {:>12} B  {:>9.3} B/obj", self.slot_index_stream, self.slot_index_stream as f64 / n);
         println!("  payload          (msgpack)         {:>12} B  {:>9.3} B/obj", self.payload, self.payload as f64 / n);
-        println!("  container codec 2 (SHIPPED)        {:>12} B  {:>9.3} B/obj", self.container, self.container as f64 / n);
+        println!("  container codec {} (SHIPPED)        {:>12} B  {:>9.3} B/obj", crate::engine::INDEX_CODEC_ZSTD_MSGPACK, self.container, self.container as f64 / n);
         println!("  container codec 1 (json, #2350's)  {:>12} B  {:>9.3} B/obj", self.json_container, self.json_container as f64 / n);
     }
 }
@@ -1021,7 +1042,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
 /// # WHICH SURFACE EVERY NUMBER IS ON
 ///
 /// Four are printed and they are not interchangeable: the JSON stream, the msgpack payload, the
-/// SHIPPED container (codec 2), and the codec-1 container that #2350's prediction was taken on.
+/// SHIPPED container (current codec), and the codec-1 container that #2350's prediction was taken on.
 /// The prediction is checked against the codec-1 arm because that is the arm it was made on.
 ///
 /// Two key shapes, because a padded corpus is a lower bound on every compressed figure and a
@@ -1034,15 +1055,16 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         "\n################ THE ENTRY'S RESTATEMENT, PRICED ON THE SHIPPED ARTEFACT ################"
     );
     println!(
-        "  BEFORE is this module run on `ea5b278a9` with the production change absent and nothing \
-         else different -- same corpus, same range, same fixture code. The deltas below are a \
-         measurement of the change and not of a doctoring instrument."
+        "  BEFORE is this module run on `ea5b278a9`. The current tree includes subsequent index \
+         changes, so these historical limits are not an isolated attribution of one change. \
+         Both key shapes and every limit are checked before reporting a failure."
     );
     println!(
         "  {:<10} {:>12} {:>12} {:>12} {:>12} {:>12}",
         "shape", "surface", "before", "after", "saved", "share"
     );
     let mut checked = 0usize;
+    let mut failures = Vec::new();
     for (shape, before) in [
         (KeyShape::Padded, BEFORE_PADDED),
         (KeyShape::Scattered, BEFORE_SCATTERED),
@@ -1055,7 +1077,7 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
             ("stream", before.stream, surfaces.stream),
             ("slot_index", before.slot_index, surfaces.slot_index_stream),
             ("payload", before.payload, surfaces.payload),
-            ("container c2", before.container, surfaces.container),
+            ("container", before.container, surfaces.container),
             ("container c1", before.json_container, surfaces.json_container),
         ] {
             println!(
@@ -1063,16 +1085,17 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
                 shape.label(),
                 was as f64 / n,
                 now as f64 / n,
-                (was - now) as f64 / n,
-                100.0 * (was - now) as f64 / was as f64
+                (was as f64 - now as f64) / n,
+                100.0 * (was as f64 - now as f64) / was as f64
             );
-            assert!(
-                now < was,
+            if now >= was {
+                failures.push(format!(
                 "[CLAUSE the-entry-side-pays-on-the-artefact] on {} keys the {label} surface is \
                  {now} B after against {was} B before, so this change did not make it smaller -- a \
                  flip on any of the five surfaces is the finding changing rather than the fixture",
                 shape.label()
-            );
+                ));
+            }
             checked += 1;
         }
         // ---- THE STREAM SAVING IS EXACTLY THE 50.0 B/OBJECT #2350 PREDICTED ----
@@ -1098,13 +1121,13 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         // reads as coverage and cannot fire. The magnitude stays as a printed, dated observation.
         // To assert it again, re-capture `BEFORE_*` at a named sha in the same commit and say in
         // that commit that the number is dated rather than invariant.
-        let stream_saved = (before.stream - surfaces.stream) as f64 / n;
+        let stream_saved = (before.stream as f64 - surfaces.stream as f64) / n;
         println!(
             "  stream saving on {} keys: {stream_saved:.6} B/object -- DATED OBSERVATION, not asserted ({} predicted by #2350 against a `ea5b278a9` before)",
             shape.label(),
             PREDICTED_STREAM_SAVING
         );
-        // ---- AND THE CONTAINER SAVING AGAINST THE PREDICTED BAND, WHICH IT UNDERSHOOTS ----
+        // ---- THE ORIGINAL PROJECTION, RETAINED AS A DATED OBSERVATION ----
         //
         // #2350 predicted +2.34 to +2.96 for `object_key` and +0.26 to +0.37 for `model_id` on the
         // codec-1 container, which is +2.60 to +3.33 for the pair. Measured: 2.418 padded and
@@ -1113,19 +1136,17 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         // THE DIRECTION OF THE MISS IS WORTH MORE THAN THE SIZE OF IT. The counterfactual was a
         // delta between two `serde_json::Value` re-encodes, and a `Value` writes its keys SORTED
         // while the struct writes declaration order -- #2350 measured that reordering alone moving
-        // a compressed size 5%, and named its container arms a proxy good to within 15%. A
-        // counterfactual on a re-ordered document therefore prices a removal 5-7% optimistically,
-        // and that is the whole of this gap. The clause is a BAND and not an equality for exactly
-        // that reason, and it is asserted on both ends.
-        let container_saved = (before.json_container - surfaces.json_container) as f64 / n;
-        assert!(
-            (2.0..=3.33).contains(&container_saved),
-            "[CLAUSE the-prediction-closes] the codec-1 container saving on {} keys is \
-             {container_saved:.3} B/object, outside the 2.0 to 3.33 this change was costed \
-             against (#2350's +2.60 to +3.33 for the pair, less the 5-7% a `Value`-rebuilt \
-             counterfactual overstates by)",
-            shape.label()
-        );
+        // a compressed size 5%, and named its container arms a proxy good to within 15%.
+        // That forecast cannot bound a later whole-index improvement. The ten absolute ceilings
+        // above remain enforced, and the current-state control below isolates the removed fields
+        // without relying on compression or a cross-commit attribution.
+        let container_saved = (before.json_container as f64 - surfaces.json_container as f64) / n;
+        println!("  historical codec-1 saving on {} keys: {container_saved:.3} B/object; the original 2.0..3.33 projection priced an isolated field removal, not subsequent layout changes", shape.label());
+        // Reintroduce only the two removed fields into this exact state. Field ordering cannot
+        // affect an uncompressed byte count; both arms preserve every other field and value.
+        assert_eq!(surfaces.identity_restatement_bytes, 50 * surfaces.objects,
+            "[CLAUSE identity-only-control] the two restated fields must cost exactly50B per14-byte key");
+        println!("  identity-only control: {} blocks, {} extra stream bytes", surfaces.objects, surfaces.identity_restatement_bytes);
         drop(seeded);
     }
     assert_eq!(
@@ -1133,11 +1154,11 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         "[CLAUSE the-entry-side-pays-on-the-artefact] {checked} surface(s) were compared rather \
          than five on each of two key shapes"
     );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
     println!(
-        "\n  THE SHIPPED CODEC IS THE SMALLER SAVING, AND IT IS THE ONE THAT MATTERS. Codec 2 is \
-         what production writes; #2350's prediction was taken on codec 1 because that is the arm a \
-         counterfactual can re-encode byte-for-byte. The two disagree by about 0.5 B/object here, \
-         so a figure quoted on codec 1 is optimistic about the artefact by that much."
+        "\n  Production writes codec {}. Historical JSON-codec figures and current shipped bytes \
+         are separate surfaces and must not be quoted interchangeably.",
+        crate::engine::INDEX_CODEC_ZSTD_MSGPACK
     );
 }
 

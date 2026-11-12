@@ -10,9 +10,8 @@
 //! fold DOES deliver a `context_nodes` entry -- `the_third_door_stays_shut` drives
 //! `load_index_checked` and measures it arriving. What keeps that from being a live route is that
 //! no shipped configuration reaches the fold unless an operator turns on
-//! `TS_WAL_LEGACY_RECOVERY`: `load_shard_with` selects `load_index_base_only`
-//! (`fold_deltas: false`) under `if wal_single_barrier()`, and only its `else` reaches a
-//! fold-aware loader.
+//! `TS_WAL_LEGACY_RECOVERY`. Deferred startup loading also checks this at its own entry point,
+//! before allowing `fold_deltas: true`.
 //!
 //! So door 3's closure rests on a CALL-SITE SET staying closed, and nothing failed when it
 //! changed. This is that guard.
@@ -21,18 +20,17 @@
 //!
 //! The question was first put as "who calls `load_index_checked`", and answering exactly that
 //! would have produced an incomplete set with no way to notice. `fold_deltas` is a parameter of
-//! `load_index_inner`, and THREE wrappers pass it:
+//! `load_index_inner`, and four wrappers pass it:
 //!
 //! | wrapper | `fold_deltas` |
 //! |---|---|
 //! | `load_index` | **true** |
 //! | `load_index_checked` | **true** |
 //! | `load_index_base_only` | false |
+//! | `load_index_for_recovery` | caller choice, with an internal flag guard |
 //!
-//! `load_index_inner` has no other caller, so the set of fold-reaching entry points is CLOSED at
-//! two rather than merely long. This file checks the callers of both, and
-//! [`the_only_fold_reaching_loaders_are_the_two_this_census_knows_about`] fails if a third
-//! wrapper starts passing `true`.
+//! The AST census checks the actual fold argument, independently of the separate view-rebuild
+//! flag. It checks the callers of both unconditional wrappers and the internally guarded wrapper.
 //!
 //! # WHAT IS ASSERTED, AND WHICH HALF IS LOAD-BEARING
 //!
@@ -64,8 +62,10 @@ const FOLD_REACHING_CALLS: [&str; 2] = [".load_index(", ".load_index_checked("];
 /// `install_latest_manifest_if_newer_on_load` holds one too and is NOT itself inside that
 /// branch -- its gating comes from its callers, every production one of which is inside it, which
 /// is checked separately below. A new entry here is a new argument someone has to write down.
-const GATED_PRODUCTION_FUNCTIONS: [&str; 2] =
-    ["load_shard_with", "install_latest_manifest_if_newer_on_load"];
+const GATED_PRODUCTION_FUNCTIONS: [&str; 2] = [
+    "load_shard_with",
+    "install_latest_manifest_if_newer_on_load",
+];
 
 /// Does `line` contain `needle` as CODE rather than inside a string literal?
 ///
@@ -179,61 +179,176 @@ fn fn_name(trimmed: &str) -> String {
 /// than as "probably production", because an unreadable module chain is exactly the state in
 /// which a real caller could hide.
 fn module_chain_is_test_gated(file: &Path) -> Option<bool> {
-    let root = src_root();
-    let mut current = file.to_path_buf();
-    for _ in 0..12 {
-        let name = current.file_stem()?.to_str()?.to_string();
-        let dir = current.parent()?.to_path_buf();
-        if dir == root && (name == "lib" || name == "main") {
-            return Some(false);
-        }
-        let declaring = if dir == root {
-            root.join("lib.rs")
-        } else {
-            let dir_name = dir.file_name()?.to_str()?.to_string();
-            let sibling = dir.parent()?.join(format!("{dir_name}.rs"));
-            if sibling.exists() {
-                sibling
-            } else {
-                dir.join("mod.rs")
-            }
-        };
-        match declaration_is_cfg_test(&declaring, &name)? {
-            true => return Some(true),
-            false => current = declaring,
-        }
-    }
-    None
+    static GATES: std::sync::OnceLock<std::collections::BTreeMap<PathBuf, bool>> =
+        std::sync::OnceLock::new();
+    GATES
+        .get_or_init(|| module_gates(&src_root()))
+        .get(&file.canonicalize().ok()?)
+        .copied()
 }
 
-/// Does `declaring` hold `mod <name>;`, and is it preceded by `#[cfg(test)]`?
-///
-/// `None` when the declaration is not in that file at all -- which is a fact worth surfacing
-/// rather than defaulting, since it means the module chain is not what this census assumes.
-fn declaration_is_cfg_test(declaring: &Path, name: &str) -> Option<bool> {
-    let text = std::fs::read_to_string(declaring).ok()?;
-    let lines: Vec<&str> = text.lines().collect();
-    let needle = format!("mod {name};");
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        // `mod x;`, `pub mod x;`, `pub(crate) mod x;` -- the visibility is not the question.
-        if !trimmed.ends_with(&needle) {
-            continue;
-        }
-        let mut back = index;
-        while back > 0 {
-            back -= 1;
-            let above = lines[back].trim();
-            if above == "#[cfg(test)]" {
-                return Some(true);
+/// Follow declarations and path attributes, not filename guesses. Unknown files remain unknown.
+fn module_gates(root: &Path) -> std::collections::BTreeMap<PathBuf, bool> {
+    use std::collections::{BTreeMap, BTreeSet};
+    fn needs_test(meta: &syn::Meta) -> bool {
+        match meta {
+            syn::Meta::Path(path) => path.is_ident("test"),
+            syn::Meta::List(list) => {
+                let Ok(parts) = list.parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                ) else {
+                    return false;
+                };
+                if list.path.is_ident("all") {
+                    parts.iter().any(needs_test)
+                } else if list.path.is_ident("any") {
+                    !parts.is_empty() && parts.iter().all(needs_test)
+                } else {
+                    false
+                }
             }
-            if !above.starts_with("#[") && !above.starts_with("//") && !above.is_empty() {
-                break;
-            }
+            _ => false,
         }
-        return Some(false);
     }
-    None
+    fn items(
+        nodes: &[syn::Item],
+        module_dir: &Path,
+        attribute_dir: &Path,
+        gated: bool,
+        result: &mut BTreeMap<PathBuf, bool>,
+        visited: &mut BTreeSet<(PathBuf, bool)>,
+    ) {
+        for item in nodes {
+            if let syn::Item::Macro(include) = item {
+                if include.mac.path.is_ident("include") {
+                    if let Ok(name) = syn::parse2::<syn::LitStr>(include.mac.tokens.clone()) {
+                        let path = attribute_dir.join(name.value()).canonicalize().unwrap();
+                        if visited.insert((path.clone(), gated)) {
+                            result
+                                .entry(path.clone())
+                                .and_modify(|old| *old &= gated)
+                                .or_insert(gated);
+                            let parsed =
+                                syn::parse_file(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                            items(
+                                &parsed.items,
+                                module_dir,
+                                path.parent().unwrap(),
+                                gated,
+                                result,
+                                visited,
+                            );
+                        }
+                    }
+                }
+                continue;
+            }
+            let syn::Item::Mod(module) = item else {
+                continue;
+            };
+            let gated = gated
+                || module.attrs.iter().any(|attr| {
+                    attr.path().is_ident("cfg")
+                        && attr
+                            .parse_args::<syn::Meta>()
+                            .is_ok_and(|meta| needs_test(&meta))
+                });
+            let child_dir = module_dir.join(module.ident.to_string());
+            if let Some((_, content)) = &module.content {
+                items(content, &child_dir, &child_dir, gated, result, visited);
+                continue;
+            }
+            let explicit = module.attrs.iter().find_map(|attr| {
+                if !attr.path().is_ident("path") {
+                    return None;
+                }
+                let syn::Meta::NameValue(meta) = &attr.meta else {
+                    return None;
+                };
+                let syn::Expr::Lit(value) = &meta.value else {
+                    return None;
+                };
+                let syn::Lit::Str(value) = &value.lit else {
+                    return None;
+                };
+                Some(attribute_dir.join(value.value()))
+            });
+            let child = explicit.unwrap_or_else(|| {
+                let flat = child_dir.with_extension("rs");
+                if flat.is_file() {
+                    flat
+                } else {
+                    child_dir.join("mod.rs")
+                }
+            });
+            if child.is_file() {
+                file(&child, gated, result, visited);
+            }
+        }
+    }
+    fn file(
+        path: &Path,
+        gated: bool,
+        result: &mut BTreeMap<PathBuf, bool>,
+        visited: &mut BTreeSet<(PathBuf, bool)>,
+    ) {
+        let path = path.canonicalize().unwrap();
+        if !visited.insert((path.clone(), gated)) {
+            return;
+        }
+        result
+            .entry(path.clone())
+            .and_modify(|old| *old &= gated)
+            .or_insert(gated);
+        let parsed = syn::parse_file(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let parent = path.parent().unwrap();
+        let dir = match path.file_name().unwrap().to_str().unwrap() {
+            "lib.rs" | "main.rs" | "mod.rs" => parent.to_path_buf(),
+            _ => path.with_extension(""),
+        };
+        items(&parsed.items, &dir, parent, gated, result, visited);
+    }
+    let mut result = BTreeMap::new();
+    file(
+        &root.join("lib.rs"),
+        false,
+        &mut result,
+        &mut BTreeSet::new(),
+    );
+    result
+}
+
+#[test]
+fn module_gates_follow_renamed_files_and_test_declarations() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("checks")).unwrap();
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "#[path=\"renamed.rs\"] mod runtime; #[cfg(test)] #[path=\"tests_host.rs\"] mod checks;",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("renamed.rs"), "fn runtime() {}").unwrap();
+    std::fs::write(
+        dir.path().join("tests_host.rs"),
+        "include!(\"test_modules.rs\");",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("test_modules.rs"),
+        "#[path=\"checks/reader.rs\"] mod reader;",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("checks/reader.rs"), "fn reader() {}").unwrap();
+    let gates = module_gates(dir.path());
+    assert_eq!(
+        gates.get(&dir.path().join("renamed.rs").canonicalize().unwrap()),
+        Some(&false)
+    );
+    assert_eq!(
+        gates.get(&dir.path().join("checks/reader.rs").canonicalize().unwrap()),
+        Some(&true)
+    );
+    assert_eq!(gates.get(&dir.path().join("unknown.rs")), None);
 }
 
 /// Every call site of a fold-reaching loader under `src/`, classified.
@@ -324,7 +439,7 @@ fn fold_reaching_call_sites() -> Vec<CallSite> {
 /// deeper. So the three landmarks are unambiguous, and each one is checked for the text it is
 /// supposed to be rather than assumed from its position.
 fn wal_single_barrier_else_lines() -> (usize, usize) {
-    let path = src_root().join("engine").join("lifecycle.rs");
+    let path = src_root().join("engine").join("engine_lifecycle.rs");
     let text = std::fs::read_to_string(&path).expect("lifecycle.rs is readable");
     let lines: Vec<&str> = text.lines().collect();
 
@@ -338,9 +453,8 @@ fn wal_single_barrier_else_lines() -> (usize, usize) {
              changing this test. See `the_third_door_stays_shut` and #2152.",
         );
     let indent = lines[open].len() - lines[open].trim_start().len();
-    let at_same_indent = |line: &str| {
-        !line.trim().is_empty() && line.len() - line.trim_start().len() == indent
-    };
+    let at_same_indent =
+        |line: &str| !line.trim().is_empty() && line.len() - line.trim_start().len() == indent;
 
     let mut else_line = None;
     for (index, line) in lines.iter().enumerate().skip(open + 1) {
@@ -395,13 +509,13 @@ fn every_production_caller_of_a_fold_reaching_loader_is_flag_gated() {
     let sites = fold_reaching_call_sites();
     assert!(
         !sites.is_empty(),
-        "the census found NO call site of either fold-reaching loader. That is not a clean bill \
+        "the census found NO call site of either unconditional fold-reaching loader. That is not a clean bill \
          of health -- the matcher has stopped matching. The loaders are {FOLD_REACHING_CALLS:?} \
-         and they are called from `engine/engine_lifecycle.rs` at least twice."
+         and one is called from `engine/engine_lifecycle.rs`."
     );
 
     let (else_start, else_end) = wal_single_barrier_else_lines();
-    let lifecycle = src_root().join("engine").join("lifecycle.rs");
+    let lifecycle = src_root().join("engine").join("engine_lifecycle.rs");
 
     let mut production = Vec::new();
     let mut undetermined = Vec::new();
@@ -498,7 +612,7 @@ fn every_production_caller_of_a_fold_reaching_loader_is_flag_gated() {
     // The count, reported and cross-checked but NOT the load-bearing claim: a swap of a gated
     // caller for an un-gated one leaves it unchanged, which is why the gating is asserted above.
     assert_eq!(
-        2,
+        1,
         production.len(),
         "the number of production callers of a fold-reaching loader moved. This is the weaker \
          half of this test -- the gating above is what matters -- but a change here means the \
@@ -557,51 +671,118 @@ fn production_callers_of(name: &str) -> Vec<(PathBuf, usize, String)> {
     out
 }
 
-/// THE SET OF FOLD-REACHING WRAPPERS IS CLOSED AT TWO.
-///
-/// `load_index_inner` takes `fold_deltas`, and this fails if a third wrapper starts passing
-/// `true` -- which would be a fold-reaching entry point the census above does not look at, and
-/// therefore a hole in exactly the shape that made the first version of this enumeration
-/// incomplete.
+/// Every wrapper that can fold is declared, including the internally guarded recovery loader.
 #[test]
-fn the_only_fold_reaching_loaders_are_the_two_this_census_knows_about() {
-    let path = src_root().join("engine").join("persistence.rs");
-    let text = std::fs::read_to_string(&path).expect("persistence.rs is readable");
-    let lines: Vec<&str> = text.lines().collect();
-
-    let mut passing_true = Vec::new();
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") || !contains_outside_string(line, "load_index_inner(") {
-            continue;
+fn the_fold_reaching_loaders_have_declared_gates() {
+    use syn::visit::Visit;
+    #[derive(Default)]
+    struct Calls(Vec<Vec<syn::Expr>>);
+    impl<'ast> Visit<'ast> for Calls {
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            if call.method == "load_index_inner" {
+                self.0.push(call.args.iter().cloned().collect());
+            }
+            syn::visit::visit_expr_method_call(self, call);
         }
-        if !line.contains("true") {
+    }
+    fn named(expr: &syn::Expr, name: &str) -> bool {
+        matches!(expr, syn::Expr::Path(path) if path.path.is_ident(name))
+    }
+    fn boolean(expr: &syn::Expr, value: bool) -> bool {
+        matches!(expr, syn::Expr::Lit(lit) if matches!(&lit.lit, syn::Lit::Bool(b) if b.value == value))
+    }
+    fn guarded(method: &syn::ImplItemFn) -> bool {
+        let [syn::Stmt::Expr(syn::Expr::If(gate), _), syn::Stmt::Expr(syn::Expr::MethodCall(tail), None)] =
+            method.block.stmts.as_slice()
+        else {
+            return false;
+        };
+        let syn::Expr::Binary(condition) = gate.cond.as_ref() else {
+            return false;
+        };
+        let syn::Expr::Call(flag) = condition.right.as_ref() else {
+            return false;
+        };
+        let [syn::Stmt::Expr(syn::Expr::Return(returned), _)] = gate.then_branch.stmts.as_slice()
+        else {
+            return false;
+        };
+        let Some(syn::Expr::Call(error)) = returned.expr.as_deref() else {
+            return false;
+        };
+        let args: Vec<_> = tail.args.iter().collect();
+        matches!(condition.op, syn::BinOp::And(_))
+            && named(&condition.left, "fold_deltas")
+            && named(&flag.func, "wal_single_barrier")
+            && flag.args.is_empty()
+            && named(&error.func, "Err")
+            && gate.else_branch.is_none()
+            && tail.method == "load_index_inner"
+            && args.len() == 4
+            && named(args[0], "shard_id")
+            && boolean(args[1], false)
+            && named(args[2], "fold_deltas")
+            && boolean(args[3], false)
+    }
+    let path = src_root().join("engine").join("engine_persistence.rs");
+    let file = syn::parse_file(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut folding = Vec::new();
+    let mut deferred = None;
+    for item in file.items {
+        let syn::Item::Impl(item) = item else {
             continue;
-        }
-        // The wrapper this call sits in.
-        let mut function = String::from("<none>");
-        for back in (0..index).rev() {
-            let candidate = lines[back].trim_start();
-            if is_fn_decl(candidate) {
-                function = fn_name(candidate);
-                break;
+        };
+        for method in item.items {
+            let syn::ImplItem::Fn(method) = method else {
+                continue;
+            };
+            let mut calls = Calls::default();
+            calls.visit_block(&method.block);
+            for args in calls.0 {
+                assert_eq!(args.len(), 4, "classify the new loader signature");
+                if boolean(&args[2], false) {
+                    continue;
+                }
+                let name = method.sig.ident.to_string();
+                if !boolean(&args[2], true) {
+                    assert_eq!(
+                        name, "load_index_for_recovery",
+                        "unknown conditional fold wrapper"
+                    );
+                    assert!(guarded(&method), "conditional folding must refuse single-barrier mode before calling the loader");
+                    deferred = Some(method.clone());
+                }
+                folding.push(name);
             }
         }
-        passing_true.push(function);
     }
-    passing_true.sort();
-    passing_true.dedup();
-
+    folding.sort();
     assert_eq!(
-        vec!["load_index", "load_index_checked"],
-        passing_true,
-        "the set of wrappers passing `fold_deltas: true` to `load_index_inner` has changed. The \
-         census in this file only looks at `load_index` and `load_index_checked`, so a third \
-         fold-reaching wrapper is a caller set nobody is checking -- which is precisely the hole \
-         that made the first version of this enumeration incomplete (it asked about \
-         `load_index_checked` alone and missed `load_index`). Add the new wrapper to \
-         FOLD_REACHING_CALLS and re-derive its callers."
+        folding,
+        [
+            "load_index",
+            "load_index_checked",
+            "load_index_for_recovery"
+        ]
     );
+    let method = deferred.expect("deferred recovery loader was not inspected");
+    let mut mutant = method.clone();
+    mutant.block.stmts.remove(0);
+    assert!(!guarded(&mutant), "removing the gate must fail");
+    let mut mutant = method;
+    if let syn::Stmt::Expr(syn::Expr::If(gate), _) = &mut mutant.block.stmts[0] {
+        gate.then_branch.stmts.clear();
+    }
+    assert!(
+        !guarded(&mutant),
+        "a gate without an early return must fail"
+    );
+    let callers = production_callers_of("load_index_for_recovery");
+    assert_eq!(callers.len(), 2, "classify new recovery-loader callers");
+    for (path, _, function) in callers {
+        assert_eq!(path, src_root().join("engine").join("engine_lifecycle.rs"));
+        assert_eq!(function, "load_shard_with");
+    }
 }
 
 /// WHAT THE FLAG'S READER DOES WITH WHAT AN OPERATOR MIGHT ACTUALLY WRITE.
@@ -689,7 +870,10 @@ fn no_spelling_of_off_turns_the_legacy_recovery_flag_on() {
 #[test]
 fn the_call_site_matcher_sees_code_and_not_strings() {
     assert!(
-        contains_outside_string("        let loaded = self.load_index(shard_id, warm);", ".load_index("),
+        contains_outside_string(
+            "        let loaded = self.load_index(shard_id, warm);",
+            ".load_index("
+        ),
         "the matcher no longer sees a real call, so the census above would report no call sites \
          at all and its emptiness check is the only thing standing between that and a pass"
     );

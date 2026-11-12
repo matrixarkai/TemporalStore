@@ -18,6 +18,14 @@ pub(super) fn note_checkpoint_decode() {
 #[path = "dump_checkpoint_capture_tests.rs"]
 mod capture_tests;
 
+#[cfg(test)]
+#[path = "dump_growth_tests.rs"]
+mod growth_tests;
+
+#[cfg(test)]
+#[path = "dump_prune_failure_tests.rs"]
+mod prune_failure_tests;
+
 /// Fault seam: stop `apply_bucket_dump_manifest_prune_with_retention_refs` dead between its two
 /// phases, as a crash there would.
 ///
@@ -65,7 +73,7 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
+        let (mut dump_index_state, mut captured_bytes, publication, growth) = if bulk_ingest_mode() {
             let publication = {
                 let shards = self.shards.read().expect("engine lock poisoned");
                 if !shards.contains_key(&shard_id) {
@@ -77,13 +85,16 @@ impl TemporalEngine {
                 .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
             let snapshot = crate::engine::decode_index_bytes(&bytes)
                 .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
-            (snapshot, Some(bytes), publication)
+            let growth = self.wal_store.capture_dump_fence(shard_id, snapshot.applied_wal_sequence.unwrap_or(0));
+            (snapshot, Some(bytes), publication, growth)
         } else {
-            let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)
+            let (snapshot, publication, growth) = self.capture_shard_checkpoint_with_wal_growth(shard_id)
                 .ok_or_else(|| Status::error("checkpoint_unavailable",
                     "shard is unloaded or its WAL application is incomplete"))?;
-            (snapshot, None, publication)
+            (snapshot, None, publication, growth)
         };
+        #[cfg(test)]
+        growth_tests::after_capture()?;
         let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
         let mut retained_objects = dump_live_block_entries.iter()
             .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
@@ -261,7 +272,9 @@ impl TemporalEngine {
         manifest.checksum = manifest_checksum;
         let published = self.checkpoint_publications.publish(&publication, || {
             self.persist_bucket_dump_manifest(&manifest)?;
-            self.wal_store.mark_dumped(shard_id);
+            if let Some(fence) = &growth {
+                self.wal_store.mark_dumped_through(fence);
+            }
             Ok(())
         }).map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         if published.is_none() {
@@ -290,12 +303,9 @@ impl TemporalEngine {
                 }
             }
         }
-        // The manifest is durable from here, so this shard's log is dumped up to its current
-        // durable length. Marked AFTER the write and behind its `?`, never before: a watermark
-        // that ran ahead of the manifest would let a restart mid-dump skip records the failed
-        // dump never captured. Only this path marks it -- a MERGED manifest consolidates
-        // existing dumps and its coverage is bounded by its sources, so it makes nothing newer
-        // dumped and must not reset the growth counter.
+        // Only growth observed with this image was retired after durable publication.
+        // A barrier may have synced later writes, but the image does not cover them.
+        // Merged manifests consolidate existing coverage and retire no newer growth.
         // The index-log is bounded by the storage-manager's consumer-aware index GC (see
         // `storage_wal_reclaim_plan` / `run_storage_manager_cycle`), which retains from the
         // durable dump frontier -- the min anchor across durable manifests, held back by any
@@ -583,11 +593,24 @@ impl TemporalEngine {
         follower_cursors: impl IntoIterator<Item = BucketDumpFollowerReplayCursor>,
         raft_snapshot_refs: impl IntoIterator<Item = BucketDumpRaftSnapshotRef>,
     ) -> BucketDumpManifestPruneReport {
-        let plan = self.bucket_dump_manifest_prune_plan_with_retention_refs(
+        let mut plan = match bucket_dump_manifest_prune_plan_at(
+            &self.index_dir,
             shard_id,
-            follower_cursors,
-            raft_snapshot_refs,
-        );
+            &follower_cursors.into_iter().collect::<Vec<_>>(),
+            &raft_snapshot_refs.into_iter().collect::<Vec<_>>(),
+        ) {
+            Ok(plan) => plan,
+            Err(err) => return BucketDumpManifestPruneReport {
+                shard_id,
+                plan: BucketDumpManifestPrunePlan {
+                    shard_id,
+                    reasons: vec![format!("slot_dump_prune_plan_failed:{err}")],
+                    ..BucketDumpManifestPrunePlan::default()
+                },
+                error: Some(Status::error("slot_dump_prune_plan_failed", err.to_string())),
+                ..BucketDumpManifestPruneReport::default()
+            },
+        };
         // DETACH FIRST, THEN UNLINK. Pruning an ancestor leaves whatever survives pointing at a
         // manifest that is no longer there, which `bucket_dump_manifest_chain_issues` reports as
         // `missing_parent_manifest` -- indistinguishable from real corruption, and a
@@ -617,7 +640,10 @@ impl TemporalEngine {
             .cloned()
             .collect::<BTreeSet<_>>();
         if !pruned_manifest_ids.is_empty() {
-            if let Ok(surviving) = list_bucket_dump_manifests_at(&self.index_dir, shard_id) {
+            let detached = (|| -> Result<(), std::io::Error> {
+                #[cfg(test)]
+                prune_failure_tests::before_scan();
+                let surviving = list_bucket_dump_manifests_at(&self.index_dir, shard_id)?;
                 for mut manifest in surviving {
                     let parent_pruned = manifest
                         .parent_manifest_id
@@ -629,12 +655,27 @@ impl TemporalEngine {
                     manifest.parent_manifest_id = None;
                     // Detached from its pruned parent, so the checksum is re-derived.
                     manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
-                    let detached_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest);
-                    if let Ok(checksum) = detached_checksum {
-                        manifest.checksum = checksum;
-                        let _ = self.persist_bucket_dump_manifest(&manifest);
-                    }
+                    manifest.checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)
+                        .map_err(|status| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("manifest checksum failed: {status:?}"),
+                        ))?;
+                    #[cfg(test)]
+                    prune_failure_tests::before_write(&manifest);
+                    self.persist_bucket_dump_manifest(&manifest)?;
                 }
+                Ok(())
+            })();
+            if let Err(err) = detached {
+                // A partial detach is safe to retry; deleting any parents is not.
+                plan.reasons.push(format!("slot_dump_prune_detach_failed:{err}"));
+                return BucketDumpManifestPruneReport {
+                    shard_id,
+                    plan,
+                    removed_manifest_ids: Vec::new(),
+                    removed_marker_files: 0,
+                    error: Some(Status::error("slot_dump_prune_detach_failed", err.to_string())),
+                };
             }
         }
         // The crash window itself. See `stop_bucket_dump_prune_after_first_phase_for_test`.
@@ -646,6 +687,7 @@ impl TemporalEngine {
                     plan,
                     removed_manifest_ids: Vec::new(),
                     removed_marker_files: 0,
+                    error: None,
                 };
             }
         }
@@ -676,6 +718,7 @@ impl TemporalEngine {
             plan,
             removed_manifest_ids,
             removed_marker_files,
+            error: None,
         }
     }
 
@@ -1563,31 +1606,10 @@ impl TemporalEngine {
         }
         let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
-        // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
-        // ownership. `rebuild_bucket_block_ownership` clears the bucket map and repopulates it
-        // from the model maps, so running it against a state whose `hashes` map never survived
-        // serialization would drop every hash block from the restored index -- and that index is
-        // what gets persisted durably below.
+        // Merge the durable hash membership without clearing any decoded block entries.
         rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
-        // THE WHOLE RANGE HERE IS LOAD-BEARING, and it is the one place in this change where
-        // that is true. `restored` is a DECODED MANIFEST INDEX -- a whole-shard image, written by
-        // whatever routing range the SOURCE shard ran on, whose blocks already carry explicit
-        // routing buckets from that range. `rebuild_bucket_block_ownership` does not merely place
-        // unrouted blocks by the range it is given, it also FILTERS on it
-        // (`routing_bucket < start || routing_bucket > end` -> `continue`), so handing it the
-        // INSTALLING shard's range silently deletes every block whose source bucket falls outside
-        // it.
-        //
-        // Not hypothetical: a cross-range restore is what
-        // `storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc` drives --
-        // source on `load_shard` (0..u32::MAX), restore target on `0..16_383` -- and passing the
-        // target's range here made it read `merged-a` back as None. A whole-shard image must be
-        // installed whole; narrowing it is data loss, not reconciliation.
-        //
-        // The unrouted blocks this leaves filed outside the target's range are the known residual,
-        // and they are recoverable: the addresses stay unrouted, so a later rebuild over the live
-        // model maps re-derives their placement from the shard's own range.
-        rebuild_bucket_block_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        // The decoded block index is the durable authority. Rebuilding it from empty
+        // load-derived context maps here would discard their frames before WAL resolution.
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
@@ -1648,11 +1670,7 @@ impl TemporalEngine {
             {
                 info.recovering = true;
             }
-            // Stamped with the TARGET's own range, not the image's. The whole-range rebuild above
-            // is what keeps this image whole and must stay; what the stamp decides is where the
-            // NEXT write files a block, and the comment above already records that the unrouted
-            // residual is meant to come back into range under the shard's own range. Nothing that
-            // is already filed moves: this places, it does not filter.
+            // The target's stamp places future writes; decoded source blocks stay filed whole.
             self.install_shard_state(manifest.shard_id, restored);
         }
         // Persist the manifest BEFORE the replay. If the replay below fails, the durable state
@@ -1675,6 +1693,12 @@ impl TemporalEngine {
             //
             // A log holding nothing past the anchor replays nothing and costs a scan.
             self.rehydrate_wal_resident_blocks(manifest.shard_id)?;
+            {
+                let mut shards = self.shards.write().expect("engine lock poisoned");
+                let shard = shards.get_mut(&manifest.shard_id).expect("installed shard exists");
+                reconcile_secondary_views_for_shard(&self.block_store, manifest.shard_id, shard, None);
+                rebuild_bucket_block_ownership(manifest.shard_id, shard, 0, u32::MAX);
+            }
             if let Err(status) =
                 self.replay_wal_into_shard(manifest.shard_id, manifest.wal_sequence)
             {

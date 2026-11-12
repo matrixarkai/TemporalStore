@@ -23,8 +23,9 @@
 //! points. That is the same argument #2016 made for `hashes` -- "THE CONSOLATION THE OTHER THREE ARMS
 //! RELY ON DOES NOT EXIST HERE" -- reaching two more maps by a different route.
 //!
-//! So the fixtures below CLEAR the durable map before reconciling, which is not a trick: it is what a
-//! load does for a `skip_serializing` map, every time.
+//! The fixtures remove the derived series but retain its block ownership in the index's fallback
+//! lookup. Clearing the consolidated object table alone would also erase the identities needed to
+//! find the blocks, making both arms perform no reads.
 //!
 //! # HOW THE READ IS MADE TO FAIL, AND WHY THERE IS NO SEAM
 //!
@@ -146,6 +147,38 @@ fn rebuilt_points(shard: &ShardState, key: &str) -> usize {
     shard.features().get(key).map(|s| s.len()).unwrap_or(0)
 }
 
+fn forget_series_preserving_blocks(shard: &mut ShardState, key: &str) {
+    let before = shard.bucket_index.object_element_name_block_refs;
+    let refs = shard
+        .bucket_index
+        .object_block_refs("feature", key)
+        .expect("the seeded series owns blocks")
+        .clone();
+    shard
+        .bucket_index
+        .remove_object_block_lookup_entry("feature", key, None);
+    shard.features_mut().remove(key);
+    let model: std::sync::Arc<str> = "feature".into();
+    let object: std::sync::Arc<str> = key.into();
+    for block_ref in refs.iter() {
+        assert!(shard
+            .bucket_index
+            .object_block_lookup
+            .file(&model, &object, block_ref.clone(),));
+    }
+    // Relocation, not deletion: keep the index's ownership accounting unchanged.
+    shard.bucket_index.object_element_name_block_refs = before;
+    assert_eq!(
+        refs.len(),
+        shard
+            .bucket_index
+            .object_block_refs("feature", key)
+            .unwrap()
+            .len()
+    );
+    assert!(!shard.features().contains_key(key));
+}
+
 /// rust-internal: drives the engine's own command surface
 #[test]
 fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_some() {
@@ -163,9 +196,7 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
         "DENOMINATOR: {blocks} live blocks, so this control is a zero because nothing was read"
     );
 
-    // What a `skip_serializing` map always looks like on load: empty. So the rebuild below is the
-    // only source of the series, which is what makes the fault arm in the next test a loss.
-    shard.features_mut().clear();
+    forget_series_preserving_blocks(shard, "clean");
 
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
@@ -212,7 +243,7 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     // ARM A -- the same store, read cleanly. This is what the fault arm is compared against, and it
     // is the SAME fixture rather than a second one that might differ for another reason.
     crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
-    shard.features_mut().clear();
+    forget_series_preserving_blocks(shard, "torn");
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
         shard,
@@ -229,7 +260,7 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
         "DENOMINATOR: {torn} block files torn, so arm B read a healthy store and is arm A again"
     );
     crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
-    shard.features_mut().clear();
+    forget_series_preserving_blocks(shard, "torn");
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
         shard,
@@ -247,7 +278,10 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
          {torn_decode_failures} undecodable, over {torn} torn files; key present = {key_present}"
     );
 
-    assert_eq!(0, clean_failures, "arm A reported failures on a healthy store");
+    assert_eq!(
+        0, clean_failures,
+        "arm A reported failures on a healthy store"
+    );
     assert_eq!(
         POINTS as usize, clean_points,
         "arm A recovered {clean_points} of {POINTS}"
