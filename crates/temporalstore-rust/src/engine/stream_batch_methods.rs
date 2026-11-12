@@ -14,6 +14,9 @@ use projected_batch_snapshot::ProjectedBatchSnapshot;
 #[path = "tests/projected_read_snapshot.rs"]
 mod projected_read_snapshot_tests;
 
+#[path = "mixed_hash_batch_delta.rs"]
+mod mixed_hash_batch_delta;
+
 #[cfg(test)]
 #[path = "tests/shared_row_commit.rs"]
 mod shared_row_commit_tests;
@@ -1390,6 +1393,12 @@ impl TemporalEngine {
         // one non-upsert write downgrades the whole record to snapshot semantics.
         let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
+        let mut batch_hash_snapshot_keys = BTreeSet::new();
+        let mut batch_hash_split_safe = matches!(&command_source, BatchCommandSource::Commands(commands)
+            if mixed_hash_batch_delta::can_split(commands.as_slice())
+                && mixed_hash_batch_delta::keys_have_no_deadlines(shard, commands.as_slice()));
+        let mut batch_hash_predecessors = mixed_hash_batch_delta::HashPredecessors::default();
+        let mut batch_set_predecessors = mixed_hash_batch_delta::SetPredecessors::default();
         // Every container element any command in this batch added or replaced. Unlike the
         // element names above this is never downgraded to `None`: it is a list of elements, not a
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
@@ -1550,6 +1559,12 @@ impl TemporalEngine {
                     shard,
                     config.feature_max_size,
                 );
+            if persist_index_delta && batch_hash_split_safe {
+                let blocked = batch_hash_snapshot_keys.len();
+                batch_hash_predecessors.capture(shard, shard_id, &command, &mut batch_hash_snapshot_keys);
+                batch_hash_split_safe = batch_hash_snapshot_keys.len() == blocked
+                    && batch_set_predecessors.capture(shard, shard_id, &command);
+            }
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
             let (outcome, returned_post_write, hash_index_filed) = match command {
                 Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
@@ -2083,7 +2098,17 @@ impl TemporalEngine {
                 // Append the blocks this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
+                let mixed_hash_delta = batch_hash_split_safe
+                    .then(|| mixed_hash_batch_delta::MixedHashBatchDelta::new(
+                        shard,
+                        &batch_touched_container_elements,
+                        batch_hash_predecessors,
+                        batch_set_predecessors,
+                    ))
+                    .flatten();
+                let (items, upsert_record) = if let Some(plan) = mixed_hash_delta {
+                    (plan.items(shard_id, shard, start_routing_bucket, end_routing_bucket), true)
+                } else { match batch_upsert_element_names.as_ref() {
                     Some(element_names) => (
                         collect_upsert_index_items(
                             shard,
@@ -2103,7 +2128,7 @@ impl TemporalEngine {
                         ),
                         false,
                     ),
-                };
+                }};
                 // Capturing serializes every entry the per-key maps hold for each key, so
                 // appending to a posting of length N serialized all N -- 99.5% of the index log
                 // on a real corpus (3.53 GB against 16 MB for the same 20,001 messages). A write
@@ -2122,18 +2147,9 @@ impl TemporalEngine {
                     shard,
                     &batch_touched_container_elements,
                 ));
-                let appended_index_log_sequence = self
-                    .index_log_store
-                    .append_delta(
-                        shard_id,
-                        items,
-                        key_states,
-                        shard.applied_wal_sequence,
-                        None,
-                        upsert_record,
-                        // Non-blocking on the raft apply path (raft log is the durability
-                        // source).
-                        !raft_applying(),
+                let appended_index_log_sequence = self.index_log_store.append_delta(
+                        shard_id, items, key_states, shard.applied_wal_sequence,
+                        None, upsert_record, !raft_applying(),
                     )
                     .unwrap_or(0);
                 // The index-log half, and it is a SEPARATE half: the plan keeps two frontiers
