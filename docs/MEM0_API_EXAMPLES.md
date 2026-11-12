@@ -175,6 +175,10 @@ corpus, optionally partitions it across tenant scopes, ingests generated context
 normal extraction path, runs retrieval and every management route, and writes latency, throughput,
 process CPU/RSS, and optional on-disk amplification measurements.
 
+Add `--crud-rounds 128` for repeated management-API samples instead of single
+smoke requests. [Repeated CRUD workloads](MEM0_REPEATED_CRUD.md) describes fixture
+sizes, correctness checks and the separate `crud_*` metrics.
+
 ```bash
 cargo run --release -p temporalstore-rust --bin mem0_scale_harness -- \
   --addr 127.0.0.1:17000 \
