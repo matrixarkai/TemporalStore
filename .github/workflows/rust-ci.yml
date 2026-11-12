@@ -134,6 +134,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/bucket-summary-snapshot-gate.log
           grep -q 'test result: ok\. 6 passed; 0 failed;' /tmp/bucket-summary-snapshot-gate.log
 
+      - name: Checkpoint capture checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe state::checkpoint_capture::tests:: \\
+            -- --test-threads=1 2>&1 | tee /tmp/checkpoint-capture-gate.log
+          grep -q 'test result: ok\\. 3 passed; 0 failed;' /tmp/checkpoint-capture-gate.log
+
       - name: Memory API route checks
         timeout-minutes: 30
         run: |

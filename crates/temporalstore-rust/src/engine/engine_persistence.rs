@@ -109,9 +109,10 @@ impl TemporalEngine {
         let shard = shards.get(&shard_id)?;
         let anchor = shard.checkpoint_wal_sequence()?;
         let publication = self.checkpoint_publications.capture(shard_id);
-        let mut snapshot = shard.clone();
-        snapshot.applied_wal_sequence = Some(anchor);
+        let captured = shard.capture_for_checkpoint();
         drop(shards);
+        let mut snapshot = captured.finish();
+        snapshot.applied_wal_sequence = Some(anchor);
         // Release markers are memory-only. Persist complete block indexes in the owned
         // image without undoing eviction in the live shard or holding its read guard.
         storage_bucket_internals::restore_released_buckets_in_checkpoint(&mut snapshot, shard_id);
@@ -177,8 +178,9 @@ impl TemporalEngine {
                 if shard.bucket_index.released_buckets.is_empty() {
                     return Ok(serialize_index(shard));
                 }
-                let mut snapshot = shard.clone();
+                let captured = shard.capture_for_checkpoint();
                 drop(shards);
+                let mut snapshot = captured.finish();
                 storage_bucket_internals::restore_released_buckets_in_checkpoint(
                     &mut snapshot, shard_id,
                 );
@@ -563,7 +565,7 @@ impl TemporalEngine {
         // the two numbers out and drops the guard before it returns, so no path ever HOLDS one of
         // these locks while acquiring the other.
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
-        let (mut snapshot, previous_anchor, anchor, publication) = {
+        let (captured, previous_anchor, anchor, publication) = {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map blocks into bucket_index, rebuild the secondary views, refresh
             // runtime flags, then clone for encoding outside the write lock.
@@ -611,11 +613,12 @@ impl TemporalEngine {
                         })
                         .unwrap_or(default_anchor);
                     let publication = self.checkpoint_publications.capture(shard_id);
-                    (shard.clone(), shard.applied_wal_sequence, anchor, publication)
+                    (shard.capture_for_checkpoint(), shard.applied_wal_sequence, anchor, publication)
                 }
                 None => return,
             }
         };
+        let mut snapshot = captured.finish();
         snapshot.applied_wal_sequence = Some(anchor);
         let index_bytes = serialize_index(&snapshot);
         drop(snapshot);
