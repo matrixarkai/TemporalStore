@@ -24,6 +24,9 @@ use crate::block_store::ElementEntry;
 use crate::sdk::v1;
 use crate::wal::{StagedBlock, WalOutcomeItem, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
 
+#[path = "wal_indexed.rs"]
+pub(crate) mod indexed;
+
 /// Marks a payload as protobuf.
 ///
 /// A text payload always starts with `{`, so one byte separates the two and a log written before
@@ -225,6 +228,9 @@ fn decompress_payload(framed: &[u8]) -> Result<Vec<u8>, String> {
 
 /// The decompressed length this frame declares, when it declares one this will size for.
 fn declared_inflated_len(framed: &[u8]) -> Option<usize> {
+    if let Some(length) = indexed::inflated_len(framed) {
+        return capacity_within_bound(length);
+    }
     capacity_within_bound(zstd::zstd_safe::get_frame_content_size(framed).ok()??)
 }
 
@@ -1094,6 +1100,15 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
 
 impl RecordParts<'_> {
     fn put(&self, record: &WriteAheadLogRecord, out: &mut Vec<u8>) -> Result<(), String> {
+        self.put_header(record, out)?;
+        let implied = implied_staged_object_id(record);
+        for block in &record.staged_blocks {
+            crate::raft::wal_proto::put_staged_block(6, block, implied, out);
+        }
+        Ok(())
+    }
+
+    fn put_header(&self, record: &WriteAheadLogRecord, out: &mut Vec<u8>) -> Result<(), String> {
         crate::raft::wal_proto::put_varint_field(1, record.shard_id, out);
         crate::raft::wal_proto::put_varint_field(2, record.sequence, out);
         if let Some(command) = self.command.as_ref() {
@@ -1104,10 +1119,6 @@ impl RecordParts<'_> {
         self.tail.encode(out).map_err(|err| err.to_string())?;
         for (item, derived) in record.outcomes.iter().zip(self.items.iter()) {
             put_wal_item(5, item, derived, out);
-        }
-        let implied = implied_staged_object_id(record);
-        for block in &record.staged_blocks {
-            crate::raft::wal_proto::put_staged_block(6, block, implied, out);
         }
         Ok(())
     }
@@ -1195,6 +1206,11 @@ pub(crate) fn encode_binary_frame_into(
             ).map_err(|err| err.to_string())?;
         }
         let parts = prepared.parts;
+        if indexed::eligible(record, parts.len) {
+            indexed::encode(record, &parts, out)?;
+            crate::log_framing::frame_binary_body_in_place(COMPRESSED_RAW_PAYLOAD_MARKER, out);
+            return Ok(());
+        }
         ENCODE_SCRATCH.with(|cell| {
             let mut scratch = cell.borrow_mut();
             scratch.clear();

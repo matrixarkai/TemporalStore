@@ -985,7 +985,7 @@ fn read_registration(
     object_id: u64,
     element_name: Option<&str>,
 ) -> Option<Vec<u8>> {
-    let (store, log_id, _, _, index) = &**location;
+    let (store, log_id, sequence, _, index) = &**location;
     // One batch record carries many blocks, and an ingest reads several of the fields its own
     // batch just wrote -- so the same record used to be pread and re-parsed once per block. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
@@ -1006,7 +1006,15 @@ fn read_registration(
     }
     // Read the carrying frame once, without fetching unrelated records after it or retrying
     // overlapping windows when a large record exceeds the initial read size.
-    let bytes = store.read_frame_at_log_id(shard_id, *log_id).ok()??;
+    let bytes = if let Some(index) = index {
+        match store.read_carried_block_at_log_id(shard_id, *log_id, *sequence, *index,
+                                               object_id, element_name).ok()?? {
+            crate::wal::CarriedBlockRead::Block(bytes) => return Some(bytes),
+            crate::wal::CarriedBlockRead::Record(bytes) => bytes,
+        }
+    } else {
+        store.read_frame_at_log_id(shard_id, *log_id).ok()??
+    };
     let blocks = crate::wal::decode_carried_blocks(&bytes).ok()?;
     let blocks = cache_record(store, shard_id, *log_id, blocks);
     if let Some(index) = index {

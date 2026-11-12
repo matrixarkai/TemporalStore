@@ -9,6 +9,7 @@ impl Settings {
     fn binary(compressed: bool) -> Self {
         let mut previous = Vec::new();
         for (key, value) in [("TS_WAL_BINARY_FRAME", "1"),
+                             ("TS_WAL_INDEXED_BLOCKS", "0"),
                              ("TS_WAL_COMPRESS_RECORDS", if compressed { "1" } else { "0" })] {
             previous.push((key, std::env::var_os(key)));
             std::env::set_var(key, value);
