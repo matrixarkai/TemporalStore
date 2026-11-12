@@ -2264,6 +2264,8 @@ pub(crate) fn execute_on_shard(
             // here would allocate a copy whose only use is to be compared and discarded.
             let field_handle =
                 super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
+            let existed = shard.bucket_index.hashes.get(&key)
+                .is_some_and(|fields| fields.contains_key(&field));
             mutated |= super::recorded_map::remove_element::<super::recorded_map::HashKind>(
                 cache,
                 block_store,
@@ -2277,7 +2279,7 @@ pub(crate) fn execute_on_shard(
                 async_storage,
             );
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
-            CommandResponse::Empty
+            CommandResponse::Integer { value: i64::from(existed) }
         }
         Command::SetAdd { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);

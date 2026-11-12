@@ -161,6 +161,15 @@ fn fixture(
                     return json_response(200,&result);
                 }
                 let ordinal = seen.batches.fetch_add(1,Ordering::Relaxed)+1;
+                if matches!(fault, Fault::DeleteNoop)
+                    && batch.commands.iter().all(|command| matches!(command,
+                        Command::HashDelete { key, .. } if key == &memory_catalog_key(tenant))) {
+                    let mut result = engine.batch_execute(batch);
+                    for response in &mut result.responses {
+                        response.response = CommandResponse::Integer { value: 0 };
+                    }
+                    return json_response(200, &result);
+                }
                 for command in &batch.commands {
                     if matches!(command,Command::StringSet {key,..} if key==&memory_order_ready_key(tenant)||key==&memory_identity_ready_key(tenant)) {
                         seen.ready_writes.fetch_add(1,Ordering::Relaxed);
@@ -235,7 +244,7 @@ fn batch_delete_ack_rejects_a_concurrent_noop() {
     assert_eq!(body["failed"].as_array().unwrap().len(), 1);
     assert_eq!(body["failed"][0]["status"], 409);
     assert_eq!(body["failed"][0]["code"], "memory_delete_not_applied");
-    assert_eq!(seen.batches.load(Ordering::Relaxed), 0);
+    assert_eq!(seen.batches.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -267,13 +276,153 @@ fn delete_cleanup_failure_preserves_scoped_tombstones() {
 
 #[test]
 fn delete_cleanup_failure_stays_failed_in_batch_response() {
-    let (_dir, proxy, id, tenant, seen) = fixture(Fault::CleanupAppliedUnknown, 1, true);
+    let (_dir, proxy, id, tenant, seen) = fixture(Fault::CleanupAppliedUnknown, 2, true);
     let (status, body) = call(&proxy, "POST", "/memories/batch/delete".into(),
         json!({"memories":[id]}));
     assert_eq!(status, 200);
     assert_eq!(body["deleted"], 0);
     assert_eq!(body["failed"][0]["code"], "write_outcome_unknown");
     assert!(proxy.memory_read_one_checked(tenant, &id).unwrap().is_none());
+    assert_eq!(seen.batches.load(Ordering::Relaxed), 2);
+}
+
+fn seed_delete_page(proxy: &ProxyService, tenant: u64, id: &str, seen: &Observed, count: usize) -> Vec<String> {
+    let original = proxy.memory_read_one_checked(tenant, id).unwrap().unwrap();
+    let mut ids = vec![id.to_owned()];
+    let mut commands = Vec::new();
+    for index in 1..count {
+        let mut record = original.clone();
+        record.id = format!("{tenant:016x}-{:016x}", index + 2);
+        record.context_ref = record.id.clone();
+        ids.push(record.id.clone());
+        commands.extend([
+            memory_catalog_write(tenant, std::iter::once(&record)),
+            memory_node_lookup_write(tenant, std::iter::once(&record)),
+            Command::SetAdd { key: memory_order_key(tenant), member: memory_order_member(1, &record.id) },
+            Command::ZSetCountAdjust { key: memory_identity_key(tenant), member: MEMORY_TOTAL_MEMBER.to_vec(), increment: 1 },
+        ]);
+        for member in memory_identity_members(&record) {
+            commands.push(Command::ZSetCountAdjust { key: memory_identity_key(tenant), member, increment: 1 });
+        }
+    }
+    assert!(seen.engine.as_ref().unwrap().batch_execute(BatchExecuteRequest {
+        shard_id: proxy.context_shard_id(tenant), commands,
+    }).status.ok);
+    ids
+}
+
+#[test]
+fn batch_delete_pages_storage_counts_actual_removals() {
+    let (_dir, proxy, id, tenant, seen) = fixture(Fault::CleanupRejected, usize::MAX, true);
+    let ids = seed_delete_page(&proxy, tenant, &id, &seen, 2);
+    let engine = seen.engine.as_ref().unwrap();
+    let command = |field: &str| Command::HashDelete {
+        key: memory_catalog_key(tenant), field: field.to_owned(),
+    };
+    for expected in [1, 0] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: proxy.context_shard_id(tenant), command: command(&id),
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Integer { value: expected });
+    }
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: proxy.context_shard_id(tenant),
+        commands: vec![command(&ids[1]), command(&ids[1]), command("missing")],
+    });
+    assert!(response.status.ok);
+    for (child, expected) in response.responses.iter().zip([1, 0, 0]) {
+        assert!(child.status.ok);
+        assert_eq!(child.response, CommandResponse::Integer { value: expected });
+    }
+    assert_eq!(response.responses.len(), 3);
+}
+
+#[test]
+fn batch_delete_pages_share_mutation_calls_and_keep_unrelated_records() {
+    for count in [16, MEMORY_UPDATE_PAGE_SIZE + 1] {
+        let (_dir, proxy, id, tenant, seen) = fixture(Fault::CleanupRejected, usize::MAX, true);
+        let ids = seed_delete_page(&proxy, tenant, &id, &seen, count);
+        let (status, body) = call(&proxy, "POST", "/memories/batch/delete".into(), json!({"memories":ids}));
+        assert_eq!(status, 200);
+        assert_eq!(body["deleted"], count, "{body}");
+        assert!(body["failed"].as_array().unwrap().is_empty(), "{body}");
+        assert_eq!(seen.batches.load(Ordering::Relaxed), 2 * count.div_ceil(MEMORY_UPDATE_PAGE_SIZE));
+        assert!(proxy.memory_read_many_checked(tenant, &ids).unwrap().iter().all(Option::is_none));
+        let bob = format!("{tenant:016x}-0000000000000002");
+        assert!(proxy.memory_read_one_checked(tenant, &bob).unwrap().is_some());
+        let response = seen.engine.as_ref().unwrap().execute(ExecuteRequest {
+            shard_id: proxy.context_shard_id(tenant), command: Command::ZSetScore {
+                key: memory_identity_key(tenant), member: MEMORY_TOTAL_MEMBER.to_vec(),
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(b"1".to_vec()) });
+        let (status, history) = call(&proxy, "GET", format!("/memories/{id}/history"), json!({}));
+        assert_eq!(status, 200);
+        assert_eq!(history["results"][0]["event"], "DELETE");
+    }
+}
+
+#[test]
+fn batch_delete_pages_reject_duplicates_and_missing_ids() {
+    let (_dir, proxy, id, tenant, seen) = fixture(Fault::CleanupRejected, usize::MAX, true);
+    let missing = format!("{tenant:016x}-ffffffffffffffff");
+    let (_, body) = call(&proxy, "POST", "/memories/batch/delete".into(),
+        json!({"memories":[id, id, missing]}));
+    assert_eq!(body["deleted"], 1);
+    let failed = body["failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 2);
+    assert!(failed.iter().any(|row| row["code"] == "duplicate_memory_id"));
+    assert!(failed.iter().any(|row| row["code"] == "memory_not_found"));
+    assert_eq!(seen.batches.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn batch_delete_pages_unknown_primary_is_not_acknowledged_or_compensated() {
+    let (_dir, proxy, id, tenant, seen) = fixture(Fault::CleanupAppliedUnknown, 1, true);
+    let ids = seed_delete_page(&proxy, tenant, &id, &seen, 16);
+    let (_, body) = call(&proxy, "POST", "/memories/batch/delete".into(), json!({"memories":ids}));
+    assert_eq!(body["deleted"], 0);
+    assert_eq!(body["failed"].as_array().unwrap().len(), 16);
+    assert!(body["failed"].as_array().unwrap().iter().all(|row| row["code"] == "write_outcome_unknown"));
+    assert_eq!(seen.batches.load(Ordering::Relaxed), 1);
+    assert!(proxy.memory_read_many_checked(tenant, &ids).unwrap().iter().all(Option::is_none));
+}
+
+#[test]
+fn batch_delete_pages_only_cleanup_confirmed_children() {
+    let (_dir, proxy, id, tenant, seen) = fixture(Fault::AppliedUnknown, 1, true);
+    let ids = seed_delete_page(&proxy, tenant, &id, &seen, 2);
+    let (_, body) = call(&proxy, "POST", "/memories/batch/delete".into(), json!({"memories":ids}));
+    assert_eq!(body["deleted"], 1, "{body}");
+    assert_eq!(body["results"][0]["memory_id"], ids[1]);
+    assert_eq!(body["failed"][0]["code"], "write_outcome_unknown");
+    assert_eq!(seen.batches.load(Ordering::Relaxed), 2);
+    let (_, history) = call(&proxy, "GET", format!("/memories/{id}/history"), json!({}));
+    assert!(history["results"].as_array().unwrap().is_empty());
+    assert!(proxy.memory_read_many_checked(tenant, &ids).unwrap().iter().all(Option::is_none));
+}
+
+#[test]
+fn batch_delete_pages_cleanup_failure_never_restores_a_page() {
+    for fault in [Fault::CleanupAppliedUnknown, Fault::CleanupRejected] {
+        let (_dir, proxy, id, tenant, seen) = fixture(fault, 2, true);
+        let ids = seed_delete_page(&proxy, tenant, &id, &seen, 16);
+        let (_, body) = call(&proxy, "POST", "/memories/batch/delete".into(), json!({"memories":ids}));
+        assert_eq!(body["deleted"], 0);
+        assert_eq!(body["failed"].as_array().unwrap().len(), 16);
+        assert_eq!(seen.batches.load(Ordering::Relaxed), 2);
+        assert!(proxy.memory_read_many_checked(tenant, &ids).unwrap().iter().all(Option::is_none));
+    }
+}
+
+#[test]
+fn batch_delete_pages_incomplete_primary_response_is_not_success() {
+    let (_dir, proxy, id, _tenant, seen) = fixture(Fault::Missing, 1, true);
+    let (_, body) = call(&proxy, "POST", "/memories/batch/delete".into(), json!({"memories":[id]}));
+    assert_eq!(body["deleted"], 0);
+    assert_eq!(body["failed"][0]["code"], "bad_response");
     assert_eq!(seen.batches.load(Ordering::Relaxed), 1);
 }
 
