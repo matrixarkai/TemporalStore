@@ -12,6 +12,18 @@ and contributions under the license.**
 [Documentation](https://github.com/matrixarkai/TemporalStore/tree/main/docs) |
 [Issues](https://github.com/matrixarkai/TemporalStore/issues)
 
+## Implementation entry points
+
+| Area | Start reading |
+|---|---|
+| Native Feast provider and supported online-store behavior | [Provider guide](integrations/feast/feast_temporalstore_command/README.md) |
+| Storage engine composition | [Engine module](crates/temporalstore-rust/src/engine.rs) |
+| Write-ahead log implementation | [WAL module](crates/temporalstore-rust/src/wal.rs) |
+
+The provider guide separates latest values, optional history, aggregates, and tracked
+teardown. Enabling one path does not establish the throughput or storage cost of the
+others; choose the API and acknowledgement policy before measuring a workload.
+
 ## Use cases
 
 | Workload | What you can build | Start here |
