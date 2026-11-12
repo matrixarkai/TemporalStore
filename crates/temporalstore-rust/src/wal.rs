@@ -2695,10 +2695,17 @@ impl LocalWriteAheadLogStore {
         };
         let mut file = File::open(path)?;
         let mut bytes_read = 0;
-        let selected = crate::wal_proto::indexed::read(
-            &mut file, physical, &mut inner.indexed_records, shard_id, log_id,
-            sequence, index, object_id, element_name, &mut bytes_read,
-        );
+        let selected = match packed_frames::PointReader::new(&mut file, physical)? {
+            Some(mut reader) => {
+                let result = crate::wal_proto::indexed::read(
+                    &mut reader, 0, &mut inner.indexed_records, shard_id, log_id,
+                    sequence, index, object_id, element_name, &mut 0,
+                );
+                bytes_read = reader.physical_bytes;
+                result
+            }
+            None => Ok(None),
+        };
         inner.stats.reads += 1;
         inner.stats.bytes_read += bytes_read;
         if let Some(block) = selected? { return Ok(Some(CarriedBlockRead::Block(block))); }
@@ -3837,7 +3844,17 @@ fn locate_log_id(
     shard_id: ShardId,
     log_id: u64,
 ) -> Result<Option<(PathBuf, u64)>, WriteAheadLogError> {
-    for path in wal_segment_paths(root, shard_id) {
+    let pieces = wal_segment_pieces(root, shard_id);
+    for (index, piece) in pieces.iter().enumerate() {
+        // Sealed names already carry ordered base offsets. A piece before the next sealed
+        // base cannot own this address; opening its header would only repeat the listing.
+        // Always inspect the selected candidate and the active piece's actual header.
+        if pieces.get(index + 1).and_then(|next| next.starts_at)
+            .is_some_and(|next| log_id >= next)
+        {
+            continue;
+        }
+        let path = &piece.path;
         if !path.exists() {
             continue;
         }
@@ -3852,7 +3869,7 @@ fn locate_log_id(
             return Ok(None);
         }
         if log_id - base < holds {
-            return Ok(Some((path, header_len + (log_id - base))));
+            return Ok(Some((path.clone(), header_len + (log_id - base))));
         }
     }
     Ok(None)

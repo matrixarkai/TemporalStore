@@ -277,8 +277,8 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn read_exact_at(
-    file: &mut File,
+fn read_exact_at<R: Read + Seek>(
+    file: &mut R,
     offset: u64,
     bytes: &mut [u8],
     read_bytes: &mut u64,
@@ -290,8 +290,8 @@ fn read_exact_at(
 }
 
 /// Returns None only for an older encoding. A recognized corrupt index is an error.
-pub(crate) fn read(
-    file: &mut File,
+pub(crate) fn read<R: Read + Seek>(
+    file: &mut R,
     physical: u64,
     cache: &mut Cache,
     shard: u64,

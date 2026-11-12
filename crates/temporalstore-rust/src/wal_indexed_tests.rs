@@ -261,3 +261,63 @@ fn indexed_store_reads_follow_stable_log_ids_and_survive_reopen() {
         assert_eq!(bytes, record.staged_blocks[499].bytes);
     }
 }
+
+#[test]
+fn indexed_store_reads_follow_reclaim_after_a_directory_was_cached() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = crate::wal::LocalWriteAheadLogStore::new(dir.path());
+    let first = record(500, 1320);
+    store.append_replayed_record(first.clone()).unwrap();
+    let mut next = first;
+    next.sequence = 12;
+    next.staged_blocks[499].bytes[0] = 77;
+    let report = store.append_replayed_record(next.clone()).unwrap();
+    let log_id = store.log_id_at(7, report.offset).unwrap();
+    let before = store.resolve_log_id(7, log_id).unwrap().unwrap();
+    let check = || {
+        let value = store
+            .read_carried_block_at_log_id(7, log_id, 12, 499, 499, Some(""))
+            .unwrap()
+            .unwrap();
+        let crate::wal::CarriedBlockRead::Block(bytes) = value else {
+            panic!("expected selected block")
+        };
+        assert_eq!(bytes, next.staged_blocks[499].bytes);
+    };
+    check();
+    store.gc_before_sequence_unchecked(7, 12).unwrap();
+    let after = store.resolve_log_id(7, log_id).unwrap().unwrap();
+    assert!(after < before);
+    check();
+}
+
+#[test]
+fn point_location_reads_only_candidate_headers_in_a_segmented_log() {
+    struct ResetRoll;
+    impl Drop for ResetRoll {
+        fn drop(&mut self) {
+            crate::wal::set_wal_segment_bytes_for_test(None);
+        }
+    }
+    let _reset = ResetRoll;
+    crate::wal::set_wal_segment_bytes_for_test(Some(1));
+    let dir = tempfile::tempdir().unwrap();
+    let store = crate::wal::LocalWriteAheadLogStore::new(dir.path());
+    let mut ids = Vec::new();
+    for _ in 0..32 {
+        let (_, id) = store
+            .append_batch_as_one_record_at(7, Vec::new(), record(8, 1024).staged_blocks, false)
+            .unwrap();
+        ids.push(id);
+    }
+    assert!(crate::wal::wal_piece_extents_for_test(dir.path(), 7).len() >= 32);
+    for id in [ids[0], ids[16], ids[31]] {
+        crate::wal::WAL_SEGMENT_HEADER_READS.with(|counter| counter.set(0));
+        assert!(store.resolve_log_id(7, id).unwrap().is_some());
+        let headers = crate::wal::WAL_SEGMENT_HEADER_READS.with(|counter| counter.get());
+        assert!((1..=2).contains(&headers), "{headers}");
+    }
+    crate::wal::WAL_SEGMENT_HEADER_READS.with(|counter| counter.set(0));
+    assert!(store.resolve_log_id(7, u64::MAX).unwrap().is_none());
+    assert!(crate::wal::WAL_SEGMENT_HEADER_READS.with(|counter| counter.get()) <= 2);
+}

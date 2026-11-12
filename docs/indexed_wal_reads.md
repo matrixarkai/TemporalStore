@@ -2,6 +2,8 @@
 
 Large binary WAL records can carry many independently addressed blocks. Reading
 one of those blocks no longer requires inflating every other block in the batch.
+Log-ID resolution uses ordered sealed-segment names to skip earlier segments
+without opening their headers; it still validates the candidate's actual header.
 The writer compresses the record header separately and groups carried blocks into
 independent Zstd frames, targeting 4 KiB of uncompressed bytes per group. A block
 larger than that target remains whole in its own frame.
@@ -38,6 +40,11 @@ of unrelated frames it does not read. Full replay still reads and checks the
 complete outer record. CRC32C detects accidental corruption; it is not an
 authentication mechanism. Unknown directory versions fall back to full replay
 decoding rather than making the underlying Zstd stream unreadable.
+
+Large records can also use the WAL's packed transport across block-footer slots.
+A seekable view validates that transport's header and every footer, then maps
+logical record ranges to physical chunks. The selected read includes those small
+transport checks without reading or allocating the unrelated payload prefix.
 
 ## Memory and amplification
 
