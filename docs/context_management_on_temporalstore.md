@@ -1,7 +1,9 @@
 # Context Management On TemporalStore
 
-TemporalStore is the hot serving layer for MatrixArk context management. It
-stores time-keyed agent memory, resource chunks, extracted state, summaries,
+Context-management code lives in TemporalStore, alongside its APIs, SDKs, and
+serving engine. MatrixArk is optional Python tooling, not a separate required
+context-management runtime. TemporalStore stores time-keyed agent memory,
+resource chunks, extracted state, summaries,
 embeddings, and compact retrieval indexes so agents can recall useful context
 without scanning whole transcripts or stuffing every old message into the next
 prompt.
