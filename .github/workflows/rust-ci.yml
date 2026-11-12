@@ -126,6 +126,19 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: WAL retention correctness and allocation checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for spec in retention_work_tests:4 physical_wal_:5; do
+            filter=${spec%:*}
+            expected=${spec##*:}
+            cargo test --release -p temporalstore-rust --lib --features alloc-probe "$filter" \
+              -- --test-threads=1 --nocapture 2>&1 | tee /tmp/wal-retention-gate.log
+            grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/wal-retention-gate.log \
+              || { echo "::error::$filter: expected $expected passing tests"; exit 1; }
+          done
+
       # This example requires the optional backend and are skipped by default builds.
       # Run the assertions: compiling a report does not enforce its byte ceilings.
       - name: One append storage cost and recovery

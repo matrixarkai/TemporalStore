@@ -191,6 +191,33 @@ pub(super) fn recover(
         .collect()
 }
 
+#[track_caller]
+fn retained_frame_folds(
+    state: &crate::engine::ShardState,
+    shard: ShardId,
+    retain_live_real_frames: bool,
+) -> std::collections::HashSet<u64> {
+    use crate::engine::storage_bucket_internals::{visit_model_live_blocks, ModelWalkTally};
+
+    let mut retained = std::collections::HashSet::new();
+    visit_model_live_blocks(
+        state,
+        ModelWalkTally::WholeShardEntries,
+        |_, _| true,
+        |kind, key, _, address| {
+            if retain_live_real_frames
+                || crate::wal_record::is_wal_resident(address.block_slab_id())
+            {
+                retained.insert(folded((
+                    crate::engine::stable_block_object_id(shard, kind.as_str(), key.as_str()),
+                    crate::engine::live_block_key(address),
+                )));
+            }
+        },
+    );
+    retained
+}
+
 pub(super) fn retirements(
     blocks: &crate::block_store::BlockStore,
     shard: ShardId,
@@ -210,19 +237,7 @@ pub(super) fn retirements(
             return Vec::new();
         }
     }
-    let mut retained = std::collections::HashSet::new();
-    for entry in crate::engine::storage_bucket_internals::collect_model_live_block_entries(state) {
-        if !retain_live_real_frames
-            && !crate::wal_record::is_wal_resident(entry.address.block_slab_id()) {
-            continue;
-        }
-        retained.insert((
-            crate::engine::stable_block_object_id(shard, entry.kind.as_str(), &entry.object_key),
-            crate::engine::live_block_key(&entry.address),
-        ));
-    }
-    let retained_folded: std::collections::HashSet<_> =
-        retained.iter().copied().map(folded).collect();
+    let retained_folded = retained_frame_folds(state, shard, retain_live_real_frames);
     // The persisted locator map folds both key domains into u64. Keep a collision
     // rather than retiring the other domain's still-needed location.
     let logical_folded: std::collections::HashSet<_> = match registry().lock() {
@@ -316,6 +331,10 @@ pub(super) fn clear_store(owner: usize) {
         table.remove(&owner);
     }
 }
+
+#[cfg(test)]
+#[path = "wal_retention_work_tests.rs"]
+mod retention_work_tests;
 
 #[cfg(test)]
 mod tests {
