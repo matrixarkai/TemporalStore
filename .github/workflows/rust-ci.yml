@@ -126,6 +126,22 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: WAL sequence read checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe wal::sequence_read_tests:: \
+            -- --test-threads=1 --nocapture 2>&1 | tee /tmp/wal-sequence-read-gate.log
+          grep -q 'test result: ok\. 5 passed; 0 failed;' /tmp/wal-sequence-read-gate.log
+
+      - name: Memory API route checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe proxy::memory \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-api-route-gate.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' /tmp/memory-api-route-gate.log
+
       - name: Inferred memory fact checks
         timeout-minutes: 30
         run: |
