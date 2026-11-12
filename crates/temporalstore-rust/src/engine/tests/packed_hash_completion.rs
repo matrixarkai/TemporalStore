@@ -135,19 +135,19 @@ fn packed_hash_completion_marker_excludes_empty_and_scalar_writes() {
     let object = stable_block_object_id(1, "hash", key);
     let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
-        key.into(), Vec::new(), true, None);
+        key.into(), Vec::new(), true, None, PackedFrameCache::Eager);
     assert!(!outcome.mutated && filed.is_none());
     let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true, false,
-        key.into(), vec![("a".into(), vec![1; 48])], true, None);
+        key.into(), vec![("a".into(), vec![1; 48])], true, None, PackedFrameCache::Eager);
     assert!(outcome.mutated && filed.is_none());
     let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
-        key.into(), vec![("b".into(), vec![2; 48])], true, None);
+        key.into(), vec![("b".into(), vec![2; 48])], true, None, PackedFrameCache::Eager);
     assert!(outcome.mutated && filed.is_some());
     let (outcome, _, filed) = execute_packed_conditional_hash_write_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true,
-        key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None, None);
+        key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None, None, PackedFrameCache::Eager);
     assert!(outcome.mutated && filed.is_none(), "expiry alone is not a completed packed write");
     let _ = crate::engine::block_in_wal::take_outcomes();
 }
@@ -161,7 +161,7 @@ fn packed_hash_completion_ordinal_is_lazy_only_for_wal_frames() {
             let calls = std::cell::Cell::new(0);
             let address = crate::engine::append_owned_value_of_object(
                 &engine.cache, &engine.block_store, 1, vec![3; length], 42, 1,
-                async_storage, || { calls.set(calls.get() + 1); 7 }).unwrap();
+                async_storage, PackedFrameCache::Eager, || { calls.set(calls.get() + 1); 7 }).unwrap();
             let physical = !async_storage || length >= 8192;
             assert_eq!(calls.get(), usize::from(physical));
             assert_eq!(address.block_id(), physical.then_some(7));

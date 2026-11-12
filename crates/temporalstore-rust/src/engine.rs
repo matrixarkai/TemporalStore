@@ -7287,6 +7287,7 @@ fn append_owned_value_of_object(
     object_id: u64,
     routing_bucket: u32,
     async_storage: bool,
+    frame_cache: execute_on_shard::PackedFrameCache,
     block_ordinal: impl FnOnce() -> u32,
 ) -> Result<ElementEntry, BlockStoreError> {
     if let Some(offset) = (async_storage && bytes.len() < 8 * 1024)
@@ -7296,13 +7297,16 @@ fn append_owned_value_of_object(
             let address = ElementEntry::try_from_parts(
                 HOT_BLOCK_SLAB_ID, offset, bytes.len() as u64, None, Some(object_id),
             )?;
-            let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes,
-                || bytes.clone());
+            let cached = (frame_cache == execute_on_shard::PackedFrameCache::Eager).then(||
+                crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes,
+                    || bytes.clone()));
             block_in_wal::stage_owned(object_id, None, bytes);
-            cache.put_memory_only(CacheKey::page_with_slot(
-                shard_id, address.block_slab_id(), address.offset(), address.length(),
-                Some(routing_bucket),
-            ), cached);
+            if let Some(cached) = cached {
+                cache.put_memory_only(CacheKey::page_with_slot(
+                    shard_id, address.block_slab_id(), address.offset(), address.length(),
+                    Some(routing_bucket),
+                ), cached);
+            }
             Ok(address)
         });
     }

@@ -889,6 +889,12 @@ fn release_hash_entry_payloads(entries: &mut [(String, Vec<u8>)]) {
 
 pub(super) struct HashIndexFiled(());
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PackedFrameCache {
+    Eager,
+    ReadThrough,
+}
+
 fn write_packed_hash_entries(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -902,6 +908,7 @@ fn write_packed_hash_entries(
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
     borrowed_values: Option<&[crate::types::BorrowedHashValue<'_>]>,
+    frame_cache: PackedFrameCache,
 ) -> (Option<HashIndexFiled>, Vec<(String, Vec<u8>)>) {
     let mut packed_entries = if fields_are_unique {
         entries
@@ -946,6 +953,7 @@ fn write_packed_hash_entries(
         object_id,
         routing_bucket,
         async_storage,
+        frame_cache,
         block_ordinal,
     );
     let filed = match address {
@@ -993,6 +1001,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata(
         entries,
         false,
         None,
+        PackedFrameCache::Eager,
     );
     (outcome, command, filed)
 }
@@ -1010,6 +1019,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
     mut entries: Vec<(String, Vec<u8>)>,
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
+    frame_cache: PackedFrameCache,
 ) -> (ExecuteOutcome, Command, Option<HashIndexFiled>) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let contains_large_value =
@@ -1033,6 +1043,7 @@ pub(super) fn execute_hash_multi_set_reusing_metadata_at_bucket(
             fields_are_unique,
             shared_fields,
             None,
+            frame_cache,
         );
         entries = returned_entries;
         (filed.is_some(), filed)
@@ -1146,6 +1157,7 @@ pub(super) fn execute_packed_conditional_hash_write(
         false,
         None,
         None,
+        PackedFrameCache::Eager,
     );
     (outcome, command)
 }
@@ -1167,6 +1179,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
     fields_are_unique: bool,
     shared_fields: Option<&super::container_blocks::SharedHashFields>,
     borrowed_values: Option<&[crate::types::BorrowedHashValue<'_>]>,
+    frame_cache: PackedFrameCache,
 ) -> (ExecuteOutcome, Command, Option<HashIndexFiled>) {
     let mut mutated = drop_if_expired(cache, shard_id, shard, &key);
     let timestamp_hint = shard.bucket_index.hashes.cached_timestamp(&key, &timestamp_field);
@@ -1239,6 +1252,7 @@ pub(super) fn execute_packed_conditional_hash_write_at_bucket(
         fields_are_unique,
         shared_fields,
         borrowed_values,
+        frame_cache,
     );
     let packed_mutated = index_filed.is_some();
     mutated |= packed_mutated;

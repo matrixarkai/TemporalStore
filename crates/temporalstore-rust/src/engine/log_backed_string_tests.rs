@@ -403,6 +403,7 @@ fn other_append_paths_keep_their_existing_large_frame_placement() {
         43,
         0,
         true,
+        execute_on_shard::PackedFrameCache::Eager,
         || 1,
     )
     .unwrap();
