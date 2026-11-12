@@ -6,6 +6,14 @@ use super::*;
 use crate::types::{BatchConditionalWriteResponse, BatchWriteError};
 use serde::ser::SerializeSeq;
 
+#[path = "projected_batch_snapshot.rs"]
+mod projected_batch_snapshot;
+use projected_batch_snapshot::ProjectedBatchSnapshot;
+
+#[cfg(test)]
+#[path = "tests/projected_read_snapshot.rs"]
+mod projected_read_snapshot_tests;
+
 #[cfg(test)]
 #[path = "hash_batch_filed_tests.rs"]
 mod hash_batch_filed_tests;
@@ -948,6 +956,7 @@ impl TemporalEngine {
         let enforce_foreground_limits = !raft_applying() && !replaying_wal();
         let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
         let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
+        let mut snapshot = ProjectedBatchSnapshot::new(keys.len());
         let recency_now = now_ms();
         for (index, key) in keys.iter().enumerate() {
             let rejected = if enforce_foreground_limits
@@ -973,7 +982,7 @@ impl TemporalEngine {
                 None
             };
             if let Some(status) = rejected {
-                visit(index, Err(status));
+                snapshot.push(index, Err(status), &mut visit);
                 continue;
             }
 
@@ -993,8 +1002,10 @@ impl TemporalEngine {
             crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
                 shard.bucket_recency.insert(routing_bucket, recency_now);
             });
-            visit(index, Ok(values));
+            snapshot.push(index, Ok(values), &mut visit);
         }
+        drop(shards);
+        snapshot.flush(&mut visit);
         Ok(())
     }
 
