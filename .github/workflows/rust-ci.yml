@@ -134,6 +134,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/ollama-source-isolation.log
           grep -q 'test result: ok\. 10 passed; 0 failed;' /tmp/ollama-source-isolation.log
 
+      - name: Resource chunk content checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe resource_chunk_tests \
+            -- --test-threads=1 2>&1 | tee /tmp/resource-chunk-content.log
+          grep -q 'test result: ok\. 8 passed; 0 failed;' /tmp/resource-chunk-content.log
+
       - name: Inferred memory fact checks
         timeout-minutes: 30
         run: |

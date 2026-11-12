@@ -28,7 +28,16 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     } else {
         context_resource_object_store_uri(&request.raw_uri, payload_size_bytes)
     };
+    let content_hash = stable_hash64_parts(&[
+        "resource_lifecycle:",
+        &request.raw_uri,
+        ":",
+        &request.version,
+        ":",
+        &request.text,
+    ]);
     let units = context_resource_units(&request.text, &resource_type, &request.raw_uri);
+    drop(request.text);
     let mut chunks = Vec::new();
     let mut parser_warnings = Vec::new();
 
@@ -172,14 +181,6 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     let total_tokens = chunks.iter().fold(0_u32, |total, chunk| {
         total.saturating_add(chunk.token_estimate)
     });
-    let content_hash = stable_hash64_parts(&[
-        "resource_lifecycle:",
-        &request.raw_uri,
-        ":",
-        &request.version,
-        ":",
-        &request.text,
-    ]);
     let watched = request.watch_interval_minutes > 0
         || matches!(import_kind, ContextResourceImportKind::WatchedResource);
     let version = if request.version.trim().is_empty() {
@@ -581,7 +582,8 @@ fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
             }
         }
         let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
-        let is_heading = (1..=6).contains(&hash_count)
+        let is_heading = active_code_language.is_none()
+            && (1..=6).contains(&hash_count)
             && trimmed.as_bytes().get(hash_count) == Some(&b' ')
             && trimmed.len() > hash_count + 1;
         if is_heading {
@@ -769,8 +771,13 @@ fn split_context_resource_text(
     let mut pieces = Vec::new();
     let mut start = 0;
     while start < normalized.len() {
-        let mut end =
-            floor_char_boundary(&normalized, (start + max_chunk_chars).min(normalized.len()));
+        let mut end = floor_char_boundary(
+            &normalized,
+            start.saturating_add(max_chunk_chars).min(normalized.len()),
+        );
+        if end == start {
+            end = ceil_char_boundary(&normalized, start.saturating_add(1));
+        }
         if end < normalized.len() {
             let window = &normalized[start..end];
             let paragraph_boundary = window.rfind("\n\n").map(|index| start + index);
@@ -911,6 +918,57 @@ mod resource_chunk_tests {
             split_paragraphs("  alpha  \r\nbeta \r\n\r\n gamma\ndelta  \n"),
             vec!["alpha\nbeta".to_string(), "gamma\ndelta".to_string()]
         );
+    }
+
+    #[test]
+    fn resource_tiny_chunks_never_discard_utf8_codepoints() {
+        let text = "é中文🙂tail";
+        for budget in 1..=4 {
+            let chunks = split_context_resource_text(text.to_string(), budget, 0);
+            assert_eq!(chunks.concat(), text, "budget={budget}");
+            assert!(chunks.iter().all(|chunk| !chunk.is_empty()));
+            assert!(chunks.iter().all(|chunk| chunk.len() <= budget.max(4)));
+        }
+    }
+
+    #[test]
+    fn markdown_fenced_code_does_not_create_document_headings() {
+        let units = markdown_resource_units(
+            "# Guide\n\n```rust\n# hidden heading\nfn main() {}\n```\n\n## Usage\n\nRun it.",
+        );
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0]["heading"], "Guide");
+        assert_eq!(units[0]["code_language"], "rust");
+        assert!(units[0]["text"].contains("# hidden heading"));
+        assert!(units[0]["text"].contains("fn main() {}\n```"));
+        assert_eq!(units[1]["heading"], "Usage");
+        assert_eq!(units[1]["heading_path"], "guide/usage");
+    }
+
+    #[test]
+    fn large_markdown_resource_keeps_payload_identity_and_bounded_chunks() {
+        let text = format!("# Attachment\n\n{}", "Large resource text with retrieval facts. ".repeat(32_768));
+        let expected_hash = stable_hash64_parts(&["resource_lifecycle:", "attachment.md", ":", "large", ":", &text]);
+        let payload_size = text.len();
+        let report = parse_context_resource(ContextResourceParseRequest {
+            raw_uri: "attachment.md".to_string(),
+            resource_type: Some("md".to_string()),
+            text,
+            max_chunk_chars: 2_048,
+            overlap_chars: 64,
+            chunk_hash_base: None,
+            owner_scope: "user".to_string(),
+            version: "large".to_string(),
+            watch_interval_minutes: 0,
+            parser_name: "markdown".to_string(),
+        });
+        assert!(report.status.ok);
+        assert_eq!(report.payload_size_bytes, payload_size);
+        assert_eq!(report.lifecycle.content_hash, expected_hash);
+        assert!(report.chunks.len() > 512);
+        assert!(report.chunks.iter().all(|chunk| !chunk.text.is_empty() && chunk.text.len() <= 2_048));
+        assert_eq!(report.chunks[0].metadata["heading"], "Attachment");
+        assert!(report.parser_warnings.is_empty());
     }
 
     #[test]
