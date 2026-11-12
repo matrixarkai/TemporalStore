@@ -1511,15 +1511,24 @@ impl DataNodeRuntime {
             && stale_block_pressure
             && compaction_has_work
         {
-            let response = run_compaction_inner_draining(
-                &self.inner,
-                CompactionRequest { shard_id },
-                Some(compaction_drain_block_slab_ids),
-            );
-            if !response.status.ok {
-                status = response.status.clone();
+            if detailed_report {
+                let response = run_compaction_inner_draining(
+                    &self.inner,
+                    CompactionRequest { shard_id },
+                    Some(compaction_drain_block_slab_ids),
+                );
+                if !response.status.ok {
+                    status = response.status.clone();
+                }
+                compaction_report = Some(response);
+            } else {
+                let compaction_status = task_execution::run_compaction_background_draining(
+                    &self.inner, shard_id, compaction_drain_block_slab_ids,
+                );
+                if !compaction_status.ok {
+                    status = compaction_status;
+                }
             }
-            compaction_report = Some(response);
             self.inner
                 .stats
                 .lock()
