@@ -1509,6 +1509,22 @@ fn collect_rebuild_tombstones<const INDEXED: bool>(shard: &ShardState)
     entries
 }
 
+fn file_rebuilt_block_refs(
+    index: &mut CoreIndex,
+    filed_blocks: &mut [(u32, u64, Arc<str>, BlockIndex)],
+) {
+    // The same ordering as BlockLookupRef. Each object's subsequence is ascending,
+    // so fresh ref vectors append instead of shifting an ever-growing suffix.
+    filed_blocks.sort_unstable_by_key(|row| (row.0, row.1));
+    for (routing_bucket, handle, object_key, block) in filed_blocks {
+        index.insert_object_block_lookup(*routing_bucket, *handle, object_key, block);
+    }
+}
+
+#[cfg(test)]
+#[path = "rebuilt_ref_filing_tests.rs"]
+mod rebuilt_ref_filing_tests;
+
 pub(super) fn rebuild_bucket_block_ownership(
     shard_id: ShardId,
     shard: &mut ShardState,
@@ -1632,11 +1648,7 @@ pub(super) fn rebuild_bucket_block_ownership(
             filed_blocks.push((routing_bucket, handle, object_key, placed.clone()));
         }
     }
-    for (routing_bucket, handle, object_key, block) in &filed_blocks {
-        shard
-            .bucket_index
-            .insert_object_block_lookup(*routing_bucket, *handle, object_key, block);
-    }
+    file_rebuilt_block_refs(&mut shard.bucket_index, &mut filed_blocks);
     // FILE THE TOMBSTONE ENTRIES BACK, after the live rebuild and before the flag pass below, so the
     // `every_block_deleted` computation sees the finished bucket rather than a half-built one.
     //
@@ -7159,9 +7171,7 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     // in the order they already had: a tombstone is never in this structure --
     // `insert_object_block_lookup` returns early on a deleted block -- so nothing the second loop
     // files could belong here anyway.
-    for (routing_bucket, handle, object_key, block) in &filed_blocks {
-        bucket_index.insert_object_block_lookup(*routing_bucket, *handle, object_key, block);
-    }
+    file_rebuilt_block_refs(&mut bucket_index, &mut filed_blocks);
     // The same removal as in `rebuild_bucket_block_ownership`, and the verification that stood in
     // its place is spent with its scaffold: it read the blocks' own copies of the identity, which
     // the entry no longer holds. `engine_storage_state.rs` carries the reasoning and names what the obligation
