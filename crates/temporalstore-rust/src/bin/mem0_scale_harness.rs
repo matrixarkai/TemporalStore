@@ -61,6 +61,7 @@ struct Report {
     tenant_id: String,
     requested_records: usize,
     ingested_records: usize,
+    acknowledged_source_records: usize,
     metadata_update_rounds: usize,
     crud_rounds: usize,
     tenant_shards: usize,
@@ -163,6 +164,7 @@ fn main() {
     let mut failures = Vec::new();
     let mut sampled_ids = Vec::new();
     let mut ingested_records = 0usize;
+    let mut acknowledged_source_records = 0usize;
     let mut payload_bytes = 0u64;
 
     let reset = post(&options.addr, "/memories/reset", &scope_body(&tenant_id));
@@ -198,16 +200,12 @@ fn main() {
             body["provider"] = provider.clone();
         }
         let call_started = Instant::now();
-        let result = post(&options.addr, "/memories", &body);
+        let result = post(&options.addr, "/memories", &body)
+            .and_then(|response| memory_add_ids(response, batch_end - batch_start, options.infer));
         timings.observe("add", call_started, &result);
         match result {
-            Ok(value) => {
-                let ids = value["results"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|row| row["id"].as_str().map(str::to_owned))
-                    .collect::<Vec<_>>();
+            Ok(ids) => {
+                acknowledged_source_records += batch_end - batch_start;
                 ingested_records += ids.len();
                 let remaining = 256usize.saturating_sub(sampled_ids.len());
                 sampled_ids.extend(ids.into_iter().take(remaining));
@@ -216,11 +214,14 @@ fn main() {
         }
         if progress_at.elapsed() >= Duration::from_secs(30) || batch_end == options.records {
             eprintln!("mem0-scale phase=ingest infer={} acknowledged={} requested={} failed_batches={}",
-                options.infer, ingested_records, options.records, failures.len());
+                options.infer, acknowledged_source_records, options.records, failures.len());
             progress_at = Instant::now();
         }
     }
     let ingest_elapsed = ingest_started.elapsed();
+    if options.infer && acknowledged_source_records > 0 && ingested_records == 0 {
+        failures.push("inferred fixture produced no fact memories; serving benchmark is incomplete".into());
+    }
     let stored_bytes_after_ingest = options.data_root.as_deref().map(directory_bytes);
     let mut stored_bytes_before_metadata_updates = None;
     let mut stored_bytes_after_metadata_updates = None;
@@ -244,7 +245,12 @@ fn main() {
             &options.addr,
             "/memories/search",
             &body,
-            |response| require_search_candidates(response, 10),
+            |response| {
+                if options.infer && ingested_records == 0 && acknowledged_source_records == options.records {
+                    if response["results"].as_array().is_some_and(Vec::is_empty) { Ok(()) }
+                    else { Err("search returned memories when extraction produced no facts".into()) }
+                } else { require_search_candidates(response, 10) }
+            },
         );
     }
 
@@ -416,6 +422,7 @@ fn main() {
         tenant_id,
         requested_records: options.records,
         ingested_records,
+        acknowledged_source_records,
         metadata_update_rounds: options.metadata_updates,
         crud_rounds: options.crud_rounds,
         tenant_shards: options.tenant_shards,
@@ -519,6 +526,27 @@ fn request_options() -> HttpRequestOptions {
         max_retries: 0,
     }
 }
+
+fn memory_add_ids(response: Value, requested: usize, infer: bool) -> Result<Vec<String>, String> {
+    let rows = response["results"].as_array().ok_or("add response has no results array")?;
+    if (!infer && rows.len() != requested) || (infer && rows.len() > requested.saturating_mul(8)) {
+        return Err("add response has an invalid memory count".into());
+    }
+    let mut seen = HashSet::with_capacity(rows.len());
+    let mut ids = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = row["id"].as_str().filter(|id| !id.is_empty()).ok_or("add result has no id")?;
+        if !seen.insert(id) || row["memory"].as_str().is_none_or(str::is_empty) {
+            return Err("add response contains duplicate ids or empty memories".into());
+        }
+        ids.push(id.to_owned());
+    }
+    Ok(ids)
+}
+
+#[cfg(test)]
+#[path = "mem0_scale_add_tests.rs"]
+mod memory_add_tests;
 
 fn validate_response(response: Value) -> Result<Value, String> {
     if response

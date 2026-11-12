@@ -7,6 +7,9 @@ use crate::http::{json_response, parse_json, serve_listener};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[path = "memory_inferred_route_tests.rs"]
+mod inferred_routes;
+
 struct Fixture {
     _dir: tempfile::TempDir,
     proxy: ProxyService,
@@ -92,6 +95,25 @@ fn fixture(ack_mode: u8) -> Fixture {
                     }
                 }
             }
+            "/context/ingest_facts" => {
+                infer_count.fetch_add(1, Ordering::Relaxed);
+                if ack_mode == 19 {
+                    return json_response(404, &Status::error("not_found", "fact endpoint unavailable"));
+                }
+                let mut decoded = ingest_wire::decode_request(&request.body).unwrap();
+                if ack_mode < 10 { decoded.provider = Default::default(); }
+                let body = crate::context_workflow::memory_wire::execute_request(&engine, decoded);
+                let mut receipt = crate::sdk::v1::ContextMemoryIngestResponse::decode(body.as_slice()).unwrap();
+                match ack_mode {
+                    11 => receipt.sources[0].facts.clear(),
+                    12 => receipt.acknowledgment.as_mut().unwrap().accepted = 0,
+                    13 => receipt.sources[1].source_ref = receipt.sources[0].source_ref.clone(),
+                    14 => receipt.sources[0].facts[0].entity_hash = 1,
+                    18 => receipt.sources[0].node_hash = 1,
+                    _ => {},
+                }
+                (200, receipt.encode_to_vec())
+            }
             "/context/ingest_extract" => {
                 infer_count.fetch_add(1, Ordering::Relaxed);
                 json_response(200, &json!({"status":{"ok":true}}))
@@ -103,6 +125,8 @@ fn fixture(ack_mode: u8) -> Fixture {
                     parse_json(&request.body).unwrap(),
                 ),
             ),
+            "/context/retrieve" => json_response(200, &crate::context_workflow::retrieve_context(
+                &engine, parse_json(&request.body).unwrap())),
             "/v1/embeddings" => {
                 let body: Value = parse_json(&request.body).unwrap();
                 assert_eq!(body["model"], "explicit-encoder");
@@ -117,6 +141,17 @@ fn fixture(ack_mode: u8) -> Fixture {
             }
             "/v1/chat/completions" => {
                 chat_count.fetch_add(1, Ordering::Relaxed);
+                if ack_mode >= 10 {
+                    let content = json!({"l0":"User preferences", "l1":"Uses Rust services and Vim editing.",
+                        "entities":if ack_mode == 15 { json!([]) } else if ack_mode == 17 { json!([
+                            {"kind":"preference","name":"language","value":"Rust services"},
+                            {"kind":"preference","name":"language","value":"Go services"}
+                        ]) } else { json!([
+                            {"kind":"preference","name":"language","value":"Rust services"},
+                            {"kind":"preference","name":"editor","value":"Vim editing"}
+                        ]) }}).to_string();
+                    return json_response(200, &json!({"choices":[{"message":{"content":content}}]}));
+                }
                 json_response(503, &Status::error("unavailable", "chat must not be used"))
             }
             _ => panic!("unexpected path {}", request.path),

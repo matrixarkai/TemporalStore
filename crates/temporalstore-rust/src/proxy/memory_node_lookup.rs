@@ -18,14 +18,12 @@ pub(super) fn memory_node_lookup_key(tenant: u64) -> String {
 }
 
 pub(super) fn memory_record_node_hash(tenant: u64, record: &MemoryRecord) -> u64 {
+    let reference = if record.context_ref.is_empty() { &record.id } else { &record.context_ref };
+    let source = memory_fact_ref(reference).map(|(source, _)| source).unwrap_or(reference);
     crate::context_workflow::context_source_node_hash(
         tenant,
         crate::context_workflow::ContextSourceKind::Chat,
-        if record.context_ref.is_empty() {
-            &record.id
-        } else {
-            &record.context_ref
-        },
+        source,
     )
 }
 
@@ -38,7 +36,7 @@ pub(super) fn memory_node_lookup_write<'a>(
         entries: records
             .map(|record| {
                 (
-                    format!("{:016x}", memory_record_node_hash(tenant, record)),
+                    format!("{:016x}", memory_record_lookup_hash(tenant, record)),
                     memory_identity_record_member(&record.id),
                 )
             })
@@ -97,7 +95,7 @@ impl ProxyService {
         let mut seen = HashSet::with_capacity(blocks.len());
         let nodes = blocks
             .iter()
-            .map(|block| block.node_hash)
+            .flat_map(|block| [Some(block.node_hash), memory_block_lookup_hash(tenant, block)].into_iter().flatten())
             .filter(|node| seen.insert(*node))
             .collect::<Vec<_>>();
         let mut ids = HashMap::with_capacity(nodes.len());

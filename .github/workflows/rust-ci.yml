@@ -126,6 +126,30 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Inferred memory fact checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe inferred_memory_ \
+            -- --test-threads=1 2>&1 | tee /tmp/inferred-memory-gate.log
+          grep -q 'test result: ok\. 11 passed; 0 failed;' /tmp/inferred-memory-gate.log
+
+      - name: Memory fact source accounting checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --bin mem0_scale_harness memory_add_receipt \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-source-count-gate.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/memory-source-count-gate.log
+
+      - name: Memory protobuf route checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --bin server context_explicit_route \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-protobuf-route-gate.log
+          grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/memory-protobuf-route-gate.log
+
       - name: Batch WAL durability checks
         timeout-minutes: 30
         run: |

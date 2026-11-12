@@ -17,6 +17,10 @@ use crate::types::CommandResponse;
 mod node_lookup;
 use node_lookup::*;
 
+#[path = "memory_inferred.rs"]
+mod inferred;
+use inferred::*;
+
 const MEMORY_BATCH_LIMIT: usize = 1_000;
 const MEMORY_CATALOG_PAGE_SIZE: usize = 512;
 const MEMORY_UPDATE_PAGE_SIZE: usize = 128;
@@ -364,7 +368,7 @@ fn memory_write_ack(response: &BatchExecuteResponse, expected: usize) -> Result<
 
 fn memory_delete_cleanup_commands(tenant: u64, record: &MemoryRecord, now: u64) -> Vec<Command> {
     let mut commands = vec![
-        memory_node_lookup_remove(tenant, memory_record_node_hash(tenant, record)),
+        memory_node_lookup_remove(tenant, memory_record_lookup_hash(tenant, record)),
         Command::HashSet {
             key: memory_history_key(tenant, &record.id), field: history_field(now, 0),
             value: MemoryHistoryEntry {
@@ -766,6 +770,9 @@ impl ProxyService {
         if messages.len() > MEMORY_BATCH_LIMIT {
             return self.memory_bad_request(format!("add accepts at most {MEMORY_BATCH_LIMIT} messages"));
         }
+        if !memory_metadata_fits(&request.metadata, messages.len(), infer) {
+            return self.memory_bad_request("aggregate projected metadata exceeds 16 MiB".into());
+        }
         let identity = request.scope.identity(&request.identity);
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
@@ -779,24 +786,12 @@ impl ProxyService {
             .context_ingest_sequence
             .fetch_add(messages.len() as u64, std::sync::atomic::Ordering::Relaxed);
         let mut records = Vec::with_capacity(messages.len());
-        let mut sources = if infer {
-            Vec::with_capacity(messages.len())
-        } else {
-            Vec::new()
-        };
+        let mut source_roles = if infer { Vec::with_capacity(messages.len()) } else { Vec::new() };
         let mut actor_ids = Vec::new();
         for (index, (role, text, actor_id)) in messages.into_iter().enumerate() {
             let id = memory_id(tenant_hash, now, base_sequence + index as u64, &text);
             if infer {
-                sources.push(json!({
-                    "body": text,
-                    "shard_id": shard_id,
-                    "source_id": id,
-                    "source_kind": "chat",
-                    "tenant_hash": tenant_hash,
-                    "timestamp_ms": now + index as u64,
-                    "title": role,
-                }));
+                source_roles.push(role.clone());
             }
             let mut metadata = request.metadata.clone();
             if !infer {
@@ -825,80 +820,75 @@ impl ProxyService {
             });
         }
         if infer {
-            let extract = context::ProxyContextIngestRequest {
-                scope,
-                messages: Vec::new(),
-                sources,
-                records: Vec::new(),
-                query: String::new(),
-                start_time_ms: 0,
-                end_time_ms: 0,
-                max_events: Some(records.len().max(1)),
-                provider: request.provider,
+            let body = match self.memory_extract_records(&scope, tenant_hash, &records, source_roles, request.provider) {
+                Ok(body) => body,
+                Err(response) => return response,
             };
-            let (status, body) = self.context_extract(extract);
-            if status != 200 || !json_status_ok(&body) {
-                return (status, body);
-            }
+            records = match memory_inferred_records(tenant_hash, records, &body) {
+                Ok(records) => records,
+                Err(status) => return crate::http::json_response(502, &status),
+            };
         } else {
             if let Err(response) = self.memory_store_explicit_records(scope, tenant_hash, records.iter(), request.provider) {
                 return response;
             }
         }
-        let mut commands = Vec::with_capacity(records.len() * 3 + 3);
-        commands.push(memory_catalog_write(tenant_hash, records.iter()));
-        commands.push(memory_node_lookup_write(tenant_hash, records.iter()));
-        for (index, record) in records.iter().enumerate() {
-            commands.push(Command::HashSet {
-                key: memory_history_key(tenant_hash, &record.id),
-                field: history_field(now, base_sequence + index as u64),
-                value: MemoryHistoryEntry {
-                    id: record.id.clone(),
-                    event: "ADD".to_string(),
-                    at_ms: now,
-                    memory: Some(record.memory.clone()),
-                    metadata: Some(record.metadata.clone()),
-                    feedback: None,
-                    feedback_reason: None,
-                }
-                .encode(),
-            });
-            commands.push(Command::SetAdd {
-                key: memory_order_key(tenant_hash),
-                member: memory_order_member(record.updated_at_ms, &record.id),
-            });
-        }
-        if let Some(record) = records.first() {
-            let increment = records.len().min(i64::MAX as usize) as i64;
-            let posting_field = record.id.clone();
-            commands.push(Command::HashSet {
-                key: memory_identity_postings_key(tenant_hash),
-                field: posting_field.clone(),
-                value: memory_identity_posting(&records),
-            });
-            commands.extend(memory_identity_members(record).into_iter().map(|member| {
-                Command::SetAdd {
-                    key: memory_identity_records_key(tenant_hash, &member),
-                    member: posting_field.as_bytes().to_vec(),
-                }
-            }));
-            commands.push(Command::ZSetCountAdjust {
-                key: memory_identity_key(tenant_hash),
-                member: MEMORY_TOTAL_MEMBER.to_vec(),
-                increment,
-            });
-            commands.extend(memory_identity_members(record).into_iter().map(|member| {
-                Command::ZSetCountAdjust {
+        for page in records.chunks(MEMORY_UPDATE_PAGE_SIZE) {
+            let mut commands = Vec::with_capacity(page.len() * 3 + 3);
+            commands.push(memory_catalog_write(tenant_hash, page.iter()));
+            commands.push(memory_node_lookup_write(tenant_hash, page.iter()));
+            for (index, record) in page.iter().enumerate() {
+                commands.push(Command::HashSet {
+                    key: memory_history_key(tenant_hash, &record.id),
+                    field: history_field(now, base_sequence + index as u64),
+                    value: MemoryHistoryEntry {
+                        id: record.id.clone(),
+                        event: "ADD".to_string(),
+                        at_ms: now,
+                        memory: Some(record.memory.clone()),
+                        metadata: Some(record.metadata.clone()),
+                        feedback: None,
+                        feedback_reason: None,
+                    }
+                    .encode(),
+                });
+                commands.push(Command::SetAdd {
+                    key: memory_order_key(tenant_hash),
+                    member: memory_order_member(record.updated_at_ms, &record.id),
+                });
+            }
+            if let Some(record) = page.first() {
+                let increment = page.len().min(i64::MAX as usize) as i64;
+                let posting_field = record.id.clone();
+                commands.push(Command::HashSet {
+                    key: memory_identity_postings_key(tenant_hash),
+                    field: posting_field.clone(),
+                    value: memory_identity_posting(page),
+                });
+                commands.extend(memory_identity_members(record).into_iter().map(|member| {
+                    Command::SetAdd {
+                        key: memory_identity_records_key(tenant_hash, &member),
+                        member: posting_field.as_bytes().to_vec(),
+                    }
+                }));
+                commands.push(Command::ZSetCountAdjust {
                     key: memory_identity_key(tenant_hash),
-                    member,
+                    member: MEMORY_TOTAL_MEMBER.to_vec(),
                     increment,
-                }
-            }));
-        }
-        let expected_commands = commands.len();
-        let stored = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-        if let Err(status) = memory_write_ack(&stored, expected_commands) {
-            return crate::http::json_response(502, &status);
+                });
+                commands.extend(memory_identity_members(record).into_iter().map(|member| {
+                    Command::ZSetCountAdjust {
+                        key: memory_identity_key(tenant_hash),
+                        member,
+                        increment,
+                    }
+                }));
+            }
+            let expected_commands = commands.len();
+            let stored = self.batch_execute(BatchExecuteRequest { shard_id, commands });
+            if let Err(status) = memory_write_ack(&stored, expected_commands) {
+                return crate::http::json_response(502, &status);
+            }
         }
         crate::http::json_response(
             200,
@@ -937,26 +927,19 @@ impl ProxyService {
                 MEMORY_IDENTITY_CANDIDATE_LIMIT,
             )
         };
+        let mut seen_nodes = HashSet::new();
         let node_hashes: Vec<u64> = scoped_records
             .as_ref()
             .map(|records| {
                 records
                     .iter()
                     .map(|record| memory_record_node_hash(tenant_hash, record))
+                    .filter(|node| seen_nodes.insert(*node))
                     .collect()
             })
             .unwrap_or_default();
         let node_sources = scoped_records.as_ref().map(|records| {
-            node_hashes
-                .iter()
-                .copied()
-                .zip(records.iter().map(|record| {
-                    if record.context_ref.is_empty() {
-                        record.id.as_str()
-                    } else {
-                        record.context_ref.as_str()
-                    }
-                }))
+            records.iter().map(|record| (memory_record_lookup_hash(tenant_hash, record), record.id.as_str()))
                 .collect::<HashMap<_, _>>()
         });
         let retrieval = context::ProxyContextRetrieveRequest {
@@ -990,7 +973,8 @@ impl ProxyService {
         let mut blocks = report.blocks;
         if let Some(sources) = &node_sources {
             blocks.retain_mut(|block| {
-                let Some(source) = sources.get(&block.node_hash) else {
+                let key = memory_block_lookup_hash(tenant_hash, block).unwrap_or(block.node_hash);
+                let Some(source) = sources.get(&key).or_else(|| sources.get(&block.node_hash)) else {
                     return false;
                 };
                 block.source_ref.clear();
@@ -1003,7 +987,8 @@ impl ProxyService {
                 Err(status) => return crate::http::json_response(502, &status),
             };
             for block in &mut blocks {
-                if let Some(id) = aliases.get(&block.node_hash) {
+                let key = memory_block_lookup_hash(tenant_hash, block).unwrap_or(block.node_hash);
+                if let Some(id) = aliases.get(&key).or_else(|| aliases.get(&block.node_hash)) {
                     block.source_ref.clone_from(id);
                 }
             }
@@ -1266,7 +1251,7 @@ impl ProxyService {
             return crate::http::json_response(404, &json!({"updated": false, "id": memory_id}));
         };
         let old_order_member = memory_order_member(record.updated_at_ms, &record.id);
-        let old_node_hash = memory_record_node_hash(tenant_hash, &record);
+        let old_node_hash = memory_record_lookup_hash(tenant_hash, &record);
         if request.data.trim().is_empty() && request.metadata.is_none() {
             return self.memory_bad_request("update requires data or metadata".to_string());
         }
@@ -1690,7 +1675,7 @@ impl ProxyService {
             }
             let mut commands = Vec::new();
             commands.extend(removed_records.iter().map(|record| {
-                memory_node_lookup_remove(tenant_hash, memory_record_node_hash(tenant_hash, record))
+                memory_node_lookup_remove(tenant_hash, memory_record_lookup_hash(tenant_hash, record))
             }));
             for (posting, record) in &removed_postings {
                 commands.extend(memory_identity_members(record).into_iter().map(|member| {
@@ -1813,7 +1798,7 @@ impl ProxyService {
                     continue;
                 }
                 let old_order_member = memory_order_member(record.updated_at_ms, &record.id);
-                let old_node_hash = memory_record_node_hash(tenant_hash, &record);
+                let old_node_hash = memory_record_lookup_hash(tenant_hash, &record);
                 let now = now_ms().max(record.updated_at_ms.saturating_add(1));
                 if !update.data.trim().is_empty() {
                     record.memory = update.data;
