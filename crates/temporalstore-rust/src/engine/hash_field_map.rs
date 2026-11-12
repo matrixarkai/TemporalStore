@@ -49,8 +49,9 @@
 //!
 //! THE WIRE FORMAT IS UNCHANGED, BY CONSTRUCTION AND BY TEST, AND THAT IS WHY `hashes` COULD BECOME
 //! DURABLE WITHOUT A FORMAT STAMP. This type deserializes from and serializes to exactly the MAP
-//! shape the `HashMap` used, through `serde(from/into)`, so no snapshot, manifest or index-log
-//! encoding moves a byte. `hashes` is written now rather than skipped; because the shape it writes
+//! shape the `HashMap` used. Serialization borrows the ordered entries without cloning them;
+//! map-entry order is not part of the reader contract. `hashes` is written now rather than skipped;
+//! because the shape it writes
 //! is the shape the field always had, an index written by an older binary still decodes here -- the
 //! field is absent, `#[serde(default)]` supplies an empty map, and the reconcile's merge fills it
 //! from the bucket index exactly as it did before -- and an index written here still decodes in an
@@ -104,11 +105,29 @@ const EXACT_GROWTH_BELOW: usize = 8;
 /// The inner vector is PRIVATE. Every reader goes through the methods below, which is what lets the
 /// container be reconsidered again later without another fifty-site rewrite -- and what stops a
 /// caller reaching in and leaving the entries unsorted, which every lookup here assumes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "HashMap<String, ElementEntry>", into = "HashMap<String, ElementEntry>")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "HashMap<String, ElementEntry>")]
 pub(super) struct HashFieldMap {
     entries: Vec<(FieldName, ElementEntry)>,
 }
+
+impl Serialize for HashFieldMap {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.entries.len()))?;
+        for (name, address) in &self.entries {
+            map.serialize_entry(name.as_ref(), address)?;
+        }
+        map.end()
+    }
+}
+
+#[cfg(test)]
+#[path = "hash_field_serialize_tests.rs"]
+mod hash_field_serialize_tests;
 
 impl HashFieldMap {
     /// Where `field` is, or where it would go.
@@ -366,10 +385,7 @@ impl IntoIterator for HashFieldMap {
     }
 }
 
-/// THE WIRE SHAPE IS THE TABLE'S. Both directions go through `HashMap`, so an encoding that
-/// carried this field before it became `skip_serializing` still decodes, and anything that
-/// serializes a `ShardState` through a path that does not skip it writes the same map it always
-/// wrote.
+/// Decode the original map wire shape into the ordered field vector.
 impl From<HashMap<String, ElementEntry>> for HashFieldMap {
     fn from(map: HashMap<String, ElementEntry>) -> Self {
         map.into_iter().collect()
@@ -377,9 +393,7 @@ impl From<HashMap<String, ElementEntry>> for HashFieldMap {
 }
 
 impl From<HashFieldMap> for HashMap<String, ElementEntry> {
-    /// THE ONE PLACE A HANDLE BECOMES AN OWNED NAME AGAIN, and it has to: the wire shape is
-    /// the table's, which is what keeps `SHARD_INDEX_FORMAT_VERSION` from moving. The cost is
-    /// one allocation per field at ENCODE time, which is a dump or an index write, not a serve.
+    /// Explicit owned-map conversion. Serialization instead borrows the field names above.
     fn from(fields: HashFieldMap) -> Self {
         fields
             .entries

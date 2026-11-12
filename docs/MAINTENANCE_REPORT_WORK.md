@@ -35,6 +35,17 @@ durable index under the write guard after the block durability barrier. Failed
 partial relocations keep their durable publication and resume behavior. Explicit
 compaction and manager requests retain complete compaction reports.
 
+Served-index Msgpack serialization uses a bounded 64 KiB writer into the Zstd
+frame instead of retaining the full raw index and then copying its compressed
+payload into a second container. Level 1 limits compression work during durable
+publication under the shard write guard. The container magic, codec, struct
+version and decoded state are unchanged; existing level-3 frames remain
+readable. Output-size effects depend on the index contents.
+
+Hash-field serialization also borrows its sorted names and addresses directly.
+It preserves the map wire shape without cloning the field vector, copying each
+field name, or constructing a temporary hash table during index publication.
+
 ## Checks
 
 ```bash
@@ -43,6 +54,8 @@ cargo test -p temporalstore-rust --lib live_block_layout_tests -- --test-threads
 cargo test -p temporalstore-rust --lib lifecycle_report_work_tests -- --test-threads=1
 cargo test -p temporalstore-rust --lib maintenance_report_tests -- --test-threads=1
 cargo test -p temporalstore-rust --lib compaction_execution_tests -- --test-threads=1
+cargo test -p temporalstore-rust --features alloc-probe --lib index_encode_work_tests -- --test-threads=1 --nocapture
+cargo test -p temporalstore-rust --features alloc-probe --lib hash_field_serialize_tests -- --test-threads=1 --nocapture
 cargo test -p temporalstore-rust --lib bucket_filing_range -- --test-threads=1
 cargo test -p temporalstore-rust --lib reclaim -- --test-threads=1
 cargo test -p temporalstore-rust --lib proxy::memory -- --test-threads=1
