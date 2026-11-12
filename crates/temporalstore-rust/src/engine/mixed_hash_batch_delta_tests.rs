@@ -341,3 +341,42 @@ fn durable_dump_allows_position_gc_to_reclaim_the_prefix() {
     let folded = engine.load_index(1, false).expect("dump remains readable");
     assert_eq!(folded.bucket_index.hashes.get("catalog").unwrap().len(), 64);
 }
+
+#[test]
+fn pure_hash_and_set_appends_keep_one_sparse_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    seed(&engine, 512);
+    let before = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .unwrap()
+        .last()
+        .unwrap()
+        .sequence;
+    write(
+        &engine,
+        vec![
+            Command::HashSet {
+                key: "catalog".into(),
+                field: "f0000".into(),
+                value: b"new".to_vec(),
+            },
+            Command::SetAdd {
+                key: "order".into(),
+                member: b"new-order".to_vec(),
+            },
+        ],
+    );
+    let records = engine
+        .index_log_store
+        .read_delta_records(1, before)
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(records[0].upsert);
+    assert_eq!(
+        records[0].items.iter().filter(|item| !item.deleted).count(),
+        2
+    );
+    assert!(records[0].items.len() <= 3);
+}

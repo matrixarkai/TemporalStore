@@ -1384,9 +1384,9 @@ impl TemporalEngine {
             Some(Vec::new());
         let mut batch_hash_snapshot_keys = BTreeSet::new();
         let mut batch_hash_split_safe = matches!(&command_source, BatchCommandSource::Commands(commands)
-            if commands.as_slice().iter().any(|command| !matches!(command,
-                Command::HashSet { .. } | Command::HashMultiSet { .. }
-                | Command::HashMultiSetIfTimestampOlder { .. } | Command::HashIncrBy { .. })));
+            if commands.as_slice().iter().any(|command| matches!(command,
+                Command::SetRemove { .. } | Command::HashDelete { .. }
+                | Command::ZSetRemove { .. } | Command::ListPop { .. })));
         let mut batch_hash_predecessors = mixed_hash_batch_delta::HashPredecessors::default();
         // Every container element any command in this batch added or replaced. Unlike the
         // element names above this is never downgraded to `None`: it is a list of elements, not a

@@ -6,8 +6,10 @@ snapshots for every touched key, including the tenant catalog and history hashes
 
 Mixed batches now keep snapshot semantics for keys that require them and emit
 sparse rows for independently updated hashes. A hash touched by removal or an
-unsupported command remains on the snapshot path. Shared-row input and pure hash
-batches retain their existing paths without predecessor collection.
+unsupported command remains on the snapshot path. Only batches containing a
+container removal can select this split. Shared-row input, pure hash batches and
+mixed batches containing only upserts retain their existing paths without
+predecessor collection.
 
 Before a hash rewrite, the writer captures its existing block identities and
 their actual routing buckets. Only blocks that no remaining field owns are
@@ -31,7 +33,7 @@ cargo test -p temporalstore-rust --lib mixed_hash_batch_delta -- --test-threads=
 ```
 
 The tests cover sparse row counts at two catalog sizes, folded-index readback,
-default WAL recovery, partial shared-block rewrites, same-key hash removal,
+default WAL recovery, pure mixed appends, partial shared-block rewrites, same-key hash removal,
 prefix boundaries, position-based GC and recovery after physically removing the suffix. These are
 correctness and work-shape checks, not all-API latency or semantic retrieval
 acceptance. Measure API errors, CPU, sampled RSS and storage bytes using an
