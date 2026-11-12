@@ -17,12 +17,15 @@ enum Fault {
     CatalogIdentity,
     CatalogShape,
     DeleteNoop,
+    CleanupAppliedUnknown,
+    CleanupRejected,
 }
 
 #[derive(Default)]
 struct Observed {
     batches: AtomicUsize,
     ready_writes: AtomicUsize,
+    engine: Option<Arc<crate::engine::TemporalEngine>>,
 }
 
 fn fixture(
@@ -78,6 +81,33 @@ fn fixture(
             score: 1.0,
         },
     ];
+    if matches!(fault, Fault::CleanupAppliedUnknown | Fault::CleanupRejected) {
+        let mut other = record.clone();
+        other.id = format!("{tenant:016x}-0000000000000002");
+        other.context_ref = other.id.clone();
+        other.user_id = "bob".into();
+        other.memory = "unrelated retained memory".into();
+        commands.extend([
+            memory_catalog_write(tenant, std::iter::once(&other)),
+            memory_node_lookup_write(tenant, std::iter::once(&other)),
+            Command::SetAdd { key: memory_order_key(tenant), member: memory_order_member(1, &other.id) },
+            Command::ZSetAdd { key: memory_identity_key(tenant), member: MEMORY_TOTAL_MEMBER.to_vec(), score: 2.0 },
+        ]);
+        for record in [&record, &other] {
+            commands.push(Command::HashSet {
+                key: memory_identity_postings_key(tenant), field: record.id.clone(),
+                value: memory_identity_posting(std::slice::from_ref(record)),
+            });
+            for member in memory_identity_members(record) {
+                commands.push(Command::ZSetAdd {
+                    key: memory_identity_key(tenant), member: member.clone(), score: 1.0,
+                });
+                commands.push(Command::SetAdd {
+                    key: memory_identity_records_key(tenant, &member), member: record.id.as_bytes().to_vec(),
+                });
+            }
+        }
+    }
     if ready {
         commands.extend([
             Command::StringSet {
@@ -97,7 +127,10 @@ fn fixture(
             .status
             .ok
     );
-    let observed = Arc::new(Observed::default());
+    let observed = Arc::new(Observed {
+        engine: Some(Arc::clone(&engine)),
+        ..Observed::default()
+    });
     let seen = Arc::clone(&observed);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -134,10 +167,17 @@ fn fixture(
                     }
                 }
                 if ordinal!=fail_batch { return json_response(200,&engine.batch_execute(batch)); }
-                let mut result = if matches!(fault,Fault::AppliedUnknown) { engine.batch_execute(batch) }
+                let mut result = if matches!(fault,Fault::AppliedUnknown | Fault::CleanupAppliedUnknown) { engine.batch_execute(batch) }
                     else { BatchExecuteResponse {status:Status::ok(), responses:batch.commands.iter().map(|_| ExecuteResponse {
                         status:Status::ok(),response:CommandResponse::Empty,
                     }).collect()} };
+                if matches!(fault, Fault::CleanupAppliedUnknown | Fault::CleanupRejected) {
+                    result.status = Status::error(
+                        if matches!(fault, Fault::CleanupAppliedUnknown) { "write_outcome_unknown" } else { "cleanup_rejected" },
+                        "injected cleanup acknowledgment failure",
+                    );
+                    return json_response(200, &result);
+                }
                 if matches!(fault,Fault::Missing) { result.responses.pop(); }
                 else {
                     let index = if matches!(fault,Fault::Last) { result.responses.len()-1 } else { 0 };
@@ -196,6 +236,86 @@ fn batch_delete_ack_rejects_a_concurrent_noop() {
     assert_eq!(body["failed"][0]["status"], 409);
     assert_eq!(body["failed"][0]["code"], "memory_delete_not_applied");
     assert_eq!(seen.batches.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn delete_cleanup_failure_preserves_single_removal() {
+    for fault in [Fault::CleanupAppliedUnknown, Fault::CleanupRejected] {
+        let (_dir, proxy, id, tenant, seen) = fixture(fault, 1, true);
+        let (status, _) = call(&proxy, "DELETE", format!("/memories/{id}"), json!({}));
+        assert_eq!(status, 502);
+        assert!(proxy.memory_read_one_checked(tenant, &id).unwrap().is_none(),
+            "an acknowledged catalog removal must not be reversed: {fault:?}");
+        assert_eq!(seen.batches.load(Ordering::Relaxed), 1, "no compensating write");
+    }
+}
+
+#[test]
+fn delete_cleanup_failure_preserves_scoped_tombstones() {
+    for fault in [Fault::CleanupAppliedUnknown, Fault::CleanupRejected] {
+        let (_dir, proxy, id, tenant, seen) = fixture(fault, 1, true);
+        let (status, _) = call(&proxy, "POST", "/memories/delete_all".into(),
+            json!({"scope":{"tenant_id":"ack","account_id":"test"},"user_id":"alice"}));
+        assert_eq!(status, 502);
+        assert!(proxy.memory_read_one_checked(tenant, &id).unwrap().is_none(),
+            "an acknowledged tombstone must not be cleared: {fault:?}");
+        let other = format!("{tenant:016x}-0000000000000002");
+        assert_eq!(proxy.memory_read_one_checked(tenant, &other).unwrap().unwrap().user_id, "bob");
+        assert_eq!(seen.batches.load(Ordering::Relaxed), 1, "no compensating write");
+    }
+}
+
+#[test]
+fn delete_cleanup_failure_stays_failed_in_batch_response() {
+    let (_dir, proxy, id, tenant, seen) = fixture(Fault::CleanupAppliedUnknown, 1, true);
+    let (status, body) = call(&proxy, "POST", "/memories/batch/delete".into(),
+        json!({"memories":[id]}));
+    assert_eq!(status, 200);
+    assert_eq!(body["deleted"], 0);
+    assert_eq!(body["failed"][0]["code"], "write_outcome_unknown");
+    assert!(proxy.memory_read_one_checked(tenant, &id).unwrap().is_none());
+    assert_eq!(seen.batches.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn delete_cleanup_failure_checkpoint_retains_removal() {
+    for scoped in [false, true] {
+        for fault in [Fault::CleanupAppliedUnknown, Fault::CleanupRejected] {
+            let (dir, proxy, id, tenant, seen) = fixture(fault, 1, true);
+            let (status, _) = if scoped {
+                call(&proxy, "POST", "/memories/delete_all".into(),
+                    json!({"scope":{"tenant_id":"ack","account_id":"test"},"user_id":"alice"}))
+            } else {
+                call(&proxy, "DELETE", format!("/memories/{id}"), json!({}))
+            };
+            assert_eq!(status, 502);
+            let source = seen.engine.as_ref().unwrap();
+            let shard_id = proxy.context_shard_id(tenant);
+            source.materialize_synthetic_blocks(shard_id);
+            source.flush_shard_index(shard_id);
+            let bytes = source.export_index_bytes(shard_id).unwrap();
+            let (start_routing_bucket, end_routing_bucket) = source.shard_routing_range(shard_id);
+            let restored = crate::engine::TemporalEngine::with_local_dirs(
+                16 << 20, dir.path().join("restored-cache"), dir.path().join("blocks"),
+                dir.path().join("restored-index"),
+            );
+            restored.install_index_bytes_in_empty_wal(shard_id, &bytes,
+                crate::engine::routing_range_stamp::RoutingRangeStamp {
+                    start_routing_bucket, end_routing_bucket,
+                }).unwrap();
+            restored.load_shard(shard_id);
+            let response = restored.execute(ExecuteRequest {
+                shard_id, command: Command::HashGet {
+                    key: if scoped { memory_tombstone_key(tenant) } else { memory_catalog_key(tenant) },
+                    field: id.clone(),
+                },
+            });
+            assert!(response.status.ok);
+            assert_eq!(response.response, CommandResponse::Bytes {
+                value: scoped.then(|| b"1".to_vec()),
+            });
+        }
+    }
 }
 
 #[test]

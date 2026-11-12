@@ -1376,20 +1376,7 @@ impl ProxyService {
         }));
         let expected = commands.len();
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-        if !response.status.ok {
-            let _ = self.batch_execute(BatchExecuteRequest {
-                shard_id,
-                commands: vec![
-                    Command::HashSet {
-                        key: memory_catalog_key(tenant_hash),
-                        field: memory_id.to_string(),
-                        value: record.encode(),
-                    },
-                    memory_node_lookup_write(tenant_hash, std::iter::once(&record)),
-                ],
-            });
-            return crate::http::json_response(502, &response.status);
-        }
+        // The catalog removal was acknowledged; a cleanup failure must not recreate it.
         if let Err(status) = memory_write_ack(&response, expected) {
             return crate::http::json_response(502, &status);
         }
@@ -1742,23 +1729,7 @@ impl ProxyService {
             if !commands.is_empty() {
                 let expected = commands.len();
                 let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
-                if !response.status.ok {
-                    let mut rollback = vec![memory_node_lookup_write(
-                        tenant_hash,
-                        removed_records.iter(),
-                    )];
-                    rollback.extend(removed_records.into_iter().map(|record| {
-                        Command::HashDelete {
-                            key: memory_tombstone_key(tenant_hash),
-                            field: record.id,
-                        }
-                    }));
-                    let _ = self.batch_execute(BatchExecuteRequest {
-                        shard_id,
-                        commands: rollback,
-                    });
-                    return crate::http::json_response(502, &response.status);
-                }
+                // Keep accepted tombstones even when cleanup's outcome is unknown.
                 if let Err(status) = memory_write_ack(&response, expected) {
                     return crate::http::json_response(502, &status);
                 }
