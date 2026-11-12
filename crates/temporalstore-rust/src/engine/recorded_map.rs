@@ -1629,7 +1629,7 @@ impl AddressedElementMap for super::hash_field_map::HashFieldMap {
         // explicit slice comparison says so at the site rather than relying on the reader
         // knowing which of the two it is.
         self.iter().any(|(field, address)| {
-            field[..] != skip[..] && super::live_block_key(address) == block
+            super::live_block_key(address) == block && field[..] != skip[..]
         })
     }
 }
@@ -1655,11 +1655,15 @@ where
     fn any_element_other_than_at(&self, skip: &E, block: &ElementEntry) -> bool {
         let block = super::live_block_key(block);
         self.iter().any(|(element, value)| {
-            element != skip
-                && super::live_block_key(super::CarriedValue::carried_address(value)) == block
+            super::live_block_key(super::CarriedValue::carried_address(value)) == block
+                && element != skip
         })
     }
 }
+
+#[cfg(test)]
+#[path = "block_owner_query_tests.rs"]
+mod block_owner_query_tests;
 
 // =============================================================================================
 // THE WIRE. One impl pair, generic, delegating to whatever codec the kind's field already named.
