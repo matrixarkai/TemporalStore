@@ -152,7 +152,7 @@ fn read_filled_cache_recovers_without_an_eager_payload_copy() {
         let result = apply(&engine, request(&[(21, 21, 0)]), borrowed);
         assert!(result.status.ok && result.errors.is_empty());
         assert_eq!(result.applied, 1);
-        assert_cached(&engine, false);
+        assert_cached(&engine, true);
         verify(&engine, 21);
     }
 }
@@ -256,7 +256,7 @@ fn read_filled_cache_unconditional_rows_remain_readable_after_overwrite() {
             .0;
         assert!(result.status.ok && result.errors.is_empty());
         assert_eq!(result.applied, 1);
-        assert_cached(&engine, false);
+        assert_cached(&engine, value == 20);
         verify(&engine, value);
         assert_cached(&engine, true);
     }
@@ -299,4 +299,34 @@ fn read_filled_cache_generic_batches_preserve_read_your_writes() {
         }
     );
     verify(&engine, 20);
+}
+
+#[test]
+fn read_filled_cache_refreshes_demanded_rows_without_a_storage_miss() {
+    for borrowed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), false);
+        assert!(apply(&engine, request(&[(20, 20, 0)]), borrowed).status.ok);
+        assert_cached(&engine, false);
+        verify(&engine, 20);
+        assert_cached(&engine, true);
+        BEFORE_SHARED_ROW_COMMIT.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(|engine, _, _| {
+                assert_cached(engine, true);
+                let before = engine.wal_store.stats_without_rescan(1);
+                verify(engine, 21);
+                let after = engine.wal_store.stats_without_rescan(1);
+                assert_eq!(
+                    (before.reads, before.bytes_read),
+                    (after.reads, after.bytes_read)
+                );
+            }))
+        });
+        let result = apply(&engine, request(&[(21, 21, 0)]), borrowed);
+        assert!(result.status.ok && result.errors.is_empty());
+        assert_eq!(result.applied, 1);
+        assert!(BEFORE_SHARED_ROW_COMMIT.with(|slot| slot.borrow().is_none()));
+        let stats = engine.wal_store.stats_without_rescan(1);
+        assert_eq!((stats.writes, stats.syncs), (2, 2));
+    }
 }
