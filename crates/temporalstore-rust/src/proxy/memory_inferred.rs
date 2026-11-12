@@ -3,6 +3,17 @@
 
 use super::*;
 
+pub(super) fn memory_normalize_text(mut text: String, infer: bool) -> String {
+    if infer {
+        let leading = text.len() - text.trim_start().len();
+        if leading != 0 {
+            drop(text.drain(..leading));
+        }
+        text.truncate(text.trim_end().len());
+    }
+    text
+}
+
 pub(super) fn memory_metadata_fits(metadata: &Value, sources: usize, infer: bool) -> bool {
     struct Budget(usize);
     impl std::io::Write for Budget {
@@ -38,7 +49,7 @@ impl ProxyService {
         &self,
         scope: &context::ProxyContextScope,
         tenant_hash: u64,
-        records: &[MemoryRecord],
+        records: &mut [MemoryRecord],
         roles: Vec<String>,
         provider: Option<Value>,
     ) -> Result<Vec<u8>, (u16, Vec<u8>)> {
@@ -47,44 +58,63 @@ impl ProxyService {
             .transpose()
             .map_err(|error| self.memory_bad_request(error.to_string()))?
             .unwrap_or_default();
-        let shard_id = self.context_shard_id(tenant_hash);
-        let sources = records
-            .iter()
-            .zip(roles)
-            .map(|(record, title)| crate::ContextExtractRequest {
-                shard_id,
-                tenant_hash,
-                source_kind: crate::ContextSourceKind::Chat,
-                source_id: record.id.clone(),
-                title,
-                body: record.memory.clone(),
-                timestamp_ms: record.updated_at_ms,
-                provider: crate::ContextModelProviderConfig {
-                    provider_name: String::new(),
-                    ..Default::default()
-                },
-            })
-            .collect::<Vec<_>>();
         self.context_extract_facts(
             scope,
-            crate::ContextIngestExtractRequest {
-                shard_id,
+            memory_extract_request(
+                self.context_shard_id(tenant_hash),
                 tenant_hash,
-                query: String::new(),
-                start_time_ms: 0,
-                end_time_ms: records
-                    .iter()
-                    .map(|row| row.updated_at_ms)
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_add(1),
-                max_events: sources.len(),
-                sources,
+                records,
+                roles,
                 provider,
-            },
+            ),
         )
     }
 }
+
+fn memory_extract_request(
+    shard_id: crate::types::ShardId,
+    tenant_hash: u64,
+    records: &mut [MemoryRecord],
+    roles: Vec<String>,
+    provider: crate::ContextModelProviderConfig,
+) -> crate::ContextIngestExtractRequest {
+    let sources = records
+        .iter_mut()
+        .zip(roles)
+        .map(|(record, title)| crate::ContextExtractRequest {
+            shard_id,
+            tenant_hash,
+            source_kind: crate::ContextSourceKind::Chat,
+            source_id: record.id.clone(),
+            title,
+            body: std::mem::take(&mut record.memory),
+            timestamp_ms: record.updated_at_ms,
+            provider: crate::ContextModelProviderConfig {
+                provider_name: String::new(),
+                ..Default::default()
+            },
+        })
+        .collect::<Vec<_>>();
+    crate::ContextIngestExtractRequest {
+        shard_id,
+        tenant_hash,
+        query: String::new(),
+        start_time_ms: 0,
+        end_time_ms: records
+            .iter()
+            .map(|row| row.updated_at_ms)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1),
+        max_events: sources.len(),
+        sources,
+        provider,
+    }
+}
+
+#[cfg(test)]
+#[path = "memory_input_ownership_tests.rs"]
+mod input_ownership_tests;
 
 pub(super) fn memory_fact_ref(reference: &str) -> Option<(&str, u64)> {
     let (source, entity) = reference.strip_prefix("entity:")?.rsplit_once(':')?;

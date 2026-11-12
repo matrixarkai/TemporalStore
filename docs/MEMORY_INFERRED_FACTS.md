@@ -44,6 +44,18 @@ metadata store.
 The preflight uses a bounded serde writer instead of allocating a second
 encoded metadata buffer.
 
+Message normalization moves owned text, role and actor-name strings out of JSON
+values. Inference trims Unicode whitespace in place; explicit messages preserve
+their original bytes. When building an inferred extraction request, the adapter
+moves each source body out of its temporary memory record. The temporary record
+keeps its ID, identity, timestamps and metadata for later fact projection, but no
+longer retains a duplicate raw body while the request is in flight.
+
+This removes input-string copies, not every allocation: public JSON request
+bodies, protobuf encoding, metadata, persisted context models and explicit-memory
+catalog content still have their own storage. It does not change model work,
+deadlines, retries, write ordering or history retention.
+
 Facts sharing an entity identity within a source use the final persisted value.
 Cross-source and cross-session reconciliation are not implemented by this change.
 Separate source occurrences can still produce separate memory IDs.
@@ -99,6 +111,7 @@ example configuration, not a quality or latency guarantee.
 
 ```bash
 cargo test -p temporalstore-rust --lib inferred_memory_ -- --test-threads=1
+cargo test -p temporalstore-rust --lib memory_input_ -- --test-threads=1
 cargo test -p temporalstore-rust --bin server context_explicit_route -- --test-threads=1
 cargo test -p temporalstore-rust --bin mem0_scale_harness memory_add_receipt -- --test-threads=1
 ```
@@ -113,3 +126,10 @@ Generated-corpus route checks are not semantic recall or extraction-quality
 measurements. Model throughput, total model CPU/RSS, distributed serving and
 large-corpus performance require separate measurement. No new performance
 improvement is claimed from functional tests alone.
+
+Seven input-ownership checks cover text/object inputs, Unicode trimming, field
+precedence, role filtering, empty inputs, protobuf round trips and fact projection
+after the raw body is moved. In the eight-source, 32-KiB-per-source fixture, the
+request reuses the original 256 KiB of body buffers while the temporary records
+retain zero body capacity. Pointer/capacity checks establish that component-level
+ownership property; they are not process RSS or end-to-end CPU measurements.
