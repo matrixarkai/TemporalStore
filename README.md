@@ -50,13 +50,21 @@ to configure these independently; enabling latest-value serving does not enable 
 
 | Requirement | Configuration and consequence |
 |---|---|
-| Reject stale latest-value updates | Keep `skip_dedup: false`; supported conditional routes compare event timestamps on the server. |
+| Reject stale latest-value updates | Keep `skip_dedup: false`; common latest-only, shared-layout conditional routes compare timestamps and mutate under one server shard guard. |
 | Expire entity state | Set `key_ttl_seconds`; rejected stale rows do not refresh expiry on the conditional TTL route. |
 | Retain feature history | Enable `write_feature_history`; this adds writes and uses a different path from latest-only materialization. |
 | Enumerate keys during teardown | Enable `track_keys_for_teardown` before materializing; without tracking, teardown cannot enumerate existing rows. |
+| Reduce serialization for mostly stale batches | Keep `adaptive_timestamp_prefetch: true`; a per-thread routing hint can add a fresh timestamp pre-read, while eligible survivors still use server-side conditional writes. |
 
-History, tracking, mixed layouts, and older-node fallbacks have their own costs and
-concurrency limits. Measure those configurations separately from latest-only writes,
+History, tracking, mixed layouts, and older-node fallbacks can use a separate
+timestamp-read and write sequence. That fallback is not an atomic conditional
+update across concurrent writers. `skip_dedup: true` disables stored-timestamp
+suppression; out-of-order materialization can then replace newer values.
+
+The native provider defaults to 4,096 write commands per request, also bounded
+by 4 MiB of encoded data; reads retain the 512-command response bound. A caller
+batch can therefore span several requests, not one atomic transaction. Measure
+the selected history, tracking, TTL, and acknowledgement configuration separately,
 including maintenance and retained WAL bytes, not just accepted rows per second.
 
 Eligible synchronous shared-row writes now leave cold packed payloads out of the
