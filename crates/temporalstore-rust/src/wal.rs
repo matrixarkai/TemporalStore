@@ -1167,6 +1167,11 @@ pub type WalStats = WriteAheadLogStats;
 pub type WalGcReport = WriteAheadLogGcReport;
 pub type LocalWalStore = LocalWriteAheadLogStore;
 
+pub(crate) enum CarriedBlockRead {
+    Block(Vec<u8>),
+    Record(Vec<u8>),
+}
+
 #[derive(Debug)]
 struct WriteAheadLogInner {
     root: PathBuf,
@@ -1194,6 +1199,7 @@ struct WriteAheadLogInner {
     /// whole record again every time -- four kilobytes an append at a four-kilobyte value. Kept
     /// here so its capacity survives; a steady workload stops allocating for it entirely.
     encode_scratch: Vec<u8>,
+    indexed_records: crate::wal_proto::indexed::Cache,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
@@ -1281,6 +1287,7 @@ impl LocalWriteAheadLogStore {
                 active_path_by_shard: HashMap::new(),
                 append_lock_by_shard: HashMap::new(),
                 encode_scratch: Vec::new(),
+                indexed_records: crate::wal_proto::indexed::Cache::default(),
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
@@ -2676,6 +2683,39 @@ impl LocalWriteAheadLogStore {
         Ok(raw.map(|record| record.bytes))
     }
 
+    /// Select one carried block when the compressed record has a directory. Older encodings
+    /// return the complete checked record from the same file handle for the existing decoder.
+    pub(crate) fn read_carried_block_at_log_id(
+        &self, shard_id: ShardId, log_id: u64, sequence: u64, index: usize,
+        object_id: u64, element_name: Option<&str>,
+    ) -> Result<Option<CarriedBlockRead>, WriteAheadLogError> {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let Some((path, physical)) = locate_log_id(&inner.root, shard_id, log_id)? else {
+            return Ok(None);
+        };
+        let mut file = File::open(path)?;
+        let mut bytes_read = 0;
+        let selected = match packed_frames::PointReader::new(&mut file, physical)? {
+            Some(mut reader) => {
+                let result = crate::wal_proto::indexed::read(
+                    &mut reader, 0, &mut inner.indexed_records, shard_id, log_id,
+                    sequence, index, object_id, element_name, &mut 0,
+                );
+                bytes_read = reader.physical_bytes;
+                result
+            }
+            None => Ok(None),
+        };
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += bytes_read;
+        if let Some(block) = selected? { return Ok(Some(CarriedBlockRead::Block(block))); }
+        file.seek(SeekFrom::Start(physical))?;
+        let mut reader = BufReader::with_capacity(1024, file);
+        let raw = read_raw_record(&mut reader)?;
+        if let Some(record) = raw.as_ref() { inner.stats.bytes_read += record.physical_bytes; }
+        Ok(raw.map(|record| CarriedBlockRead::Record(record.bytes)))
+    }
+
     /// Reclaim this shard's WAL prefix below `retain_from_sequence`, never going past what the
     /// durable served index proves it can replace.
     ///
@@ -3804,7 +3844,17 @@ fn locate_log_id(
     shard_id: ShardId,
     log_id: u64,
 ) -> Result<Option<(PathBuf, u64)>, WriteAheadLogError> {
-    for path in wal_segment_paths(root, shard_id) {
+    let pieces = wal_segment_pieces(root, shard_id);
+    for (index, piece) in pieces.iter().enumerate() {
+        // Sealed names already carry ordered base offsets. A piece before the next sealed
+        // base cannot own this address; opening its header would only repeat the listing.
+        // Always inspect the selected candidate and the active piece's actual header.
+        if pieces.get(index + 1).and_then(|next| next.starts_at)
+            .is_some_and(|next| log_id >= next)
+        {
+            continue;
+        }
+        let path = &piece.path;
         if !path.exists() {
             continue;
         }
@@ -3819,7 +3869,7 @@ fn locate_log_id(
             return Ok(None);
         }
         if log_id - base < holds {
-            return Ok(Some((path, header_len + (log_id - base))));
+            return Ok(Some((path.clone(), header_len + (log_id - base))));
         }
     }
     Ok(None)

@@ -30,6 +30,94 @@ fn payload(size: usize, seed: u64) -> Vec<u8> {
 }
 
 #[test]
+fn packed_point_view_seeks_across_footer_slots_without_reading_payload_prefixes() {
+    let frame = payload(6 * WAL_BLOCK_BYTES as usize + 51, 7);
+    let data = (WAL_BLOCK_BYTES - WAL_BLOCK_FOOTER_BYTES) as usize;
+    for offset in [0, 27, data - packed_frames::HEADER_BYTES - 1] {
+        let packed = packed_frames::pack(&frame, offset as u64, 0, 11);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("packed.bin");
+        let mut stored = vec![0; offset];
+        stored.extend_from_slice(&packed);
+        fs::write(&path, stored).unwrap();
+        let mut file = File::open(path).unwrap();
+        let mut reader = packed_frames::PointReader::new(&mut file, offset as u64)
+            .unwrap()
+            .unwrap();
+        let first = data - offset - packed_frames::HEADER_BYTES;
+        for position in [
+            0,
+            first.saturating_sub(5),
+            first,
+            first + data - 3,
+            frame.len() - 7,
+        ] {
+            let length = 31.min(frame.len() - position);
+            reader.seek(SeekFrom::Start(position as u64)).unwrap();
+            let mut actual = vec![0; length];
+            reader.read_exact(&mut actual).unwrap();
+            assert_eq!(actual, frame[position..position + length]);
+        }
+        assert_eq!(reader.seek(SeekFrom::End(0)).unwrap(), frame.len() as u64);
+        assert_eq!(reader.read(&mut [0; 1]).unwrap(), 0);
+        assert!(reader.physical_bytes < 16 * 1024);
+    }
+}
+
+#[test]
+fn packed_point_view_validates_transport_header_and_every_footer() {
+    let frame = payload(4 * WAL_BLOCK_BYTES as usize, 9);
+    let packed = packed_frames::pack(&frame, 0, 0, 11);
+    let data = (WAL_BLOCK_BYTES - WAL_BLOCK_FOOTER_BYTES) as usize;
+    for offset in [
+        1,
+        13,
+        data + 7,
+        2 * data + WAL_BLOCK_FOOTER_BYTES as usize + 7,
+    ] {
+        let mut corrupt = packed.clone();
+        corrupt[offset] ^= 1;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("packed.bin");
+        fs::write(&path, corrupt).unwrap();
+        assert!(packed_frames::PointReader::new(&mut File::open(path).unwrap(), 0).is_err());
+    }
+}
+
+#[test]
+fn indexed_carried_reads_select_from_a_large_packed_transport() {
+    let _policy = SegmentPolicy::enter(0);
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    let staged: Vec<_> = (0..500)
+        .map(|index| StagedBlock {
+            object_id: index,
+            element_name: None,
+            bytes: payload(1320, index),
+        })
+        .collect();
+    let (record, log_id) = store
+        .append_batch_as_one_record_at(7, Vec::new(), staged.clone(), false)
+        .unwrap();
+    assert_eq!(
+        store.read_at_log_id(7, log_id, 1).unwrap().unwrap(),
+        vec![packed_frames::MAGIC]
+    );
+    for index in [0, 127, 249, 499, 0] {
+        let before = store.stats_without_rescan(7).bytes_read;
+        let value = store
+            .read_carried_block_at_log_id(7, log_id, record.sequence, index, index as u64, None)
+            .unwrap()
+            .unwrap();
+        let CarriedBlockRead::Block(bytes) = value else {
+            panic!("expected selected block, not a full record")
+        };
+        assert_eq!(bytes, staged[index].bytes);
+        assert!(store.stats_without_rescan(7).bytes_read - before < 32 * 1024);
+    }
+}
+
+#[test]
 fn half_block_records_pack_without_record_sized_padding() {
     let _policy = SegmentPolicy::enter(0);
     let dir = tempfile::tempdir().unwrap();

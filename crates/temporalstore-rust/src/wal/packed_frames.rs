@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::io::{self, BufRead, Read};
+use std::fs::File;
+use std::io::{self, BufRead, Read, Seek, SeekFrom};
 
 use super::{
     block_of, decode_block_footer, encode_partial_block_footer, WAL_BLOCK_BYTES,
@@ -54,6 +55,152 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+fn decode_header(header: &[u8; HEADER_BYTES]) -> io::Result<(u64, usize)> {
+    let crc = u32::from_le_bytes(header[13..17].try_into().unwrap());
+    if crate::checksum::crc32c(&header[..13]) != crc {
+        return Err(invalid("packed WAL frame header checksum mismatch"));
+    }
+    let length = u64::from_le_bytes(header[1..9].try_into().unwrap());
+    let first = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
+    if length > u64::from(u32::MAX)
+        || first == 0
+        || first > DATA_BYTES - HEADER_BYTES
+        || first as u64 >= length
+    {
+        return Err(invalid("packed WAL frame has invalid chunk lengths"));
+    }
+    Ok((length, first))
+}
+
+fn validate_footer(slot: &[u8], remaining: u64, physical_bytes: u64) -> io::Result<()> {
+    let footer = decode_block_footer(slot)
+        .ok_or_else(|| invalid("packed WAL frame footer checksum mismatch"))?;
+    if footer.version != 2
+        || u64::from(footer.last_record_left_size) != remaining
+        || footer.last_record_offset != physical_bytes
+        || footer.block_end as usize != DATA_BYTES
+    {
+        return Err(invalid("packed WAL frame footer disagrees with its record"));
+    }
+    Ok(())
+}
+
+/// A seekable view of the inner integrity frame, without reading its unrelated payloads.
+/// The first chunk length is authenticated by the transport header. All footer slots are
+/// validated up front; subsequent seeks use that fixed layout, including after prefix reclaim.
+pub(super) struct PointReader<'a> {
+    file: &'a mut File,
+    start: u64,
+    position: u64,
+    packed: Option<(u64, u64)>,
+    pub physical_bytes: u64,
+}
+
+impl<'a> PointReader<'a> {
+    pub(super) fn new(file: &'a mut File, start: u64) -> io::Result<Option<Self>> {
+        file.seek(SeekFrom::Start(start))?;
+        let mut header = [0u8; HEADER_BYTES];
+        let read = file.read(&mut header[..1])?;
+        if read == 0 {
+            return Ok(None);
+        }
+        let mut view = Self {
+            file,
+            start,
+            position: 0,
+            packed: None,
+            physical_bytes: 1,
+        };
+        if header[0] != MAGIC {
+            return Ok(Some(view));
+        }
+        view.file.read_exact(&mut header[1..])?;
+        view.physical_bytes += (HEADER_BYTES - 1) as u64;
+        let (length, first) = decode_header(&header)?;
+        // Indexed writers are bounded to 16 MiB of protobuf plus their directory. Larger
+        // historical transports keep the streaming path rather than doing an unbounded probe.
+        if length > 32 * 1024 * 1024 {
+            return Ok(None);
+        }
+        let first = first as u64;
+        view.packed = Some((length, first));
+        let mut logical = first;
+        let mut physical = HEADER_BYTES as u64 + first;
+        while logical < length {
+            let mut footer = [0u8; WAL_BLOCK_FOOTER_BYTES as usize];
+            view.file.seek(SeekFrom::Start(
+                start
+                    .checked_add(physical)
+                    .ok_or_else(|| invalid("packed WAL point offset overflow"))?,
+            ))?;
+            view.file.read_exact(&mut footer)?;
+            view.physical_bytes += WAL_BLOCK_FOOTER_BYTES;
+            validate_footer(&footer, length - logical, physical)?;
+            let chunk = (DATA_BYTES as u64).min(length - logical);
+            logical += chunk;
+            physical += WAL_BLOCK_FOOTER_BYTES + chunk;
+        }
+        Ok(Some(view))
+    }
+}
+
+impl Read for PointReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let (offset, available) = match self.packed {
+            Some((length, first)) => {
+                if self.position >= length {
+                    return Ok(0);
+                }
+                if self.position < first {
+                    (HEADER_BYTES as u64 + self.position, first - self.position)
+                } else {
+                    let after = self.position - first;
+                    let block = after / DATA_BYTES as u64;
+                    let within = after % DATA_BYTES as u64;
+                    (
+                        HEADER_BYTES as u64
+                            + first
+                            + WAL_BLOCK_FOOTER_BYTES
+                            + block * (DATA_BYTES as u64 + WAL_BLOCK_FOOTER_BYTES)
+                            + within,
+                        (DATA_BYTES as u64 - within).min(length - self.position),
+                    )
+                }
+            }
+            None => (self.position, bytes.len() as u64),
+        };
+        let length = bytes.len().min(available as usize);
+        self.file.seek(SeekFrom::Start(
+            self.start
+                .checked_add(offset)
+                .ok_or_else(|| invalid("packed WAL point offset overflow"))?,
+        ))?;
+        let read = self.file.read(&mut bytes[..length])?;
+        self.position += read as u64;
+        self.physical_bytes += read as u64;
+        Ok(read)
+    }
+}
+
+impl Seek for PointReader<'_> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let position = match position {
+            SeekFrom::Start(position) => i128::from(position),
+            SeekFrom::Current(offset) => i128::from(self.position) + i128::from(offset),
+            SeekFrom::End(offset) => {
+                let length = match self.packed {
+                    Some((length, _)) => length,
+                    None => self.file.metadata()?.len().saturating_sub(self.start),
+                };
+                i128::from(length) + i128::from(offset)
+            }
+        };
+        self.position =
+            u64::try_from(position).map_err(|_| invalid("invalid packed WAL point seek"))?;
+        Ok(self.position)
+    }
+}
+
 fn read_complete(reader: &mut impl Read, bytes: &mut [u8]) -> io::Result<bool> {
     match reader.read_exact(bytes) {
         Ok(()) => Ok(true),
@@ -97,19 +244,7 @@ fn read_inner(reader: &mut impl BufRead, keep_transport: bool) -> io::Result<Opt
     if !read_complete(reader, &mut header)? {
         return Ok(None);
     }
-    let crc = u32::from_le_bytes(header[13..17].try_into().unwrap());
-    if crate::checksum::crc32c(&header[..13]) != crc {
-        return Err(invalid("packed WAL frame header checksum mismatch"));
-    }
-    let length = u64::from_le_bytes(header[1..9].try_into().unwrap());
-    let first = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
-    if length > u64::from(u32::MAX)
-        || first == 0
-        || first > DATA_BYTES - HEADER_BYTES
-        || first as u64 >= length
-    {
-        return Err(invalid("packed WAL frame has invalid chunk lengths"));
-    }
+    let (length, first) = decode_header(&header)?;
     let mut bytes =
         Vec::with_capacity((length as usize).min(crate::log_framing::MAX_RESERVED_RECORD_BYTES));
     if keep_transport {
@@ -143,15 +278,7 @@ fn read_inner(reader: &mut impl BufRead, keep_transport: bool) -> io::Result<Opt
                 Err(invalid("packed WAL frame has an interior missing footer"))
             };
         }
-        let footer = decode_block_footer(&slot)
-            .ok_or_else(|| invalid("packed WAL frame footer checksum mismatch"))?;
-        if footer.version != 2
-            || u64::from(footer.last_record_left_size) != remaining
-            || footer.last_record_offset != physical_bytes
-            || footer.block_end as usize != DATA_BYTES
-        {
-            return Err(invalid("packed WAL frame footer disagrees with its record"));
-        }
+        validate_footer(&slot, remaining, physical_bytes)?;
         physical_bytes += WAL_BLOCK_FOOTER_BYTES;
         if keep_transport {
             bytes.extend_from_slice(&slot);

@@ -860,6 +860,12 @@ New local WAL records use binary protobuf. Outcome recording and binary framing
 are enabled by default; commands remain when needed for safe recovery. Existing
 JSON records remain readable.
 
+Large carried-block batches use [indexed compressed groups](docs/indexed_wal_reads.md)
+so a point miss can read one group instead of inflating the complete batch.
+The directory cache is additional metadata outside the payload-cache budget;
+compression groups can trade larger WAL records for less read amplification.
+The guide covers selection, integrity scope, compatibility, and the writer opt-out.
+
 `SharedStoreReplicator` also defaults to `ProtobufAppendBlob`, including the
 retry-policy constructor and the MatrixObject server durability path. Synchronous
 and asynchronous writes use the same encoding; acknowledgement timing is separate.

@@ -3,6 +3,25 @@
 
 use super::*;
 
+struct IndexedSetting(Option<std::ffi::OsString>);
+
+impl IndexedSetting {
+    fn set(value: &str) -> Self {
+        let previous = std::env::var_os("TS_WAL_INDEXED_BLOCKS");
+        std::env::set_var("TS_WAL_INDEXED_BLOCKS", value);
+        Self(previous)
+    }
+}
+
+impl Drop for IndexedSetting {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(value) => std::env::set_var("TS_WAL_INDEXED_BLOCKS", value),
+            None => std::env::remove_var("TS_WAL_INDEXED_BLOCKS"),
+        }
+    }
+}
+
 fn blocks(count: usize) -> Vec<StagedBlock> {
     (0..count).map(|index| StagedBlock {
         object_id: index as u64 + 1000,
@@ -57,6 +76,7 @@ fn concurrent_publications_share_one_immutable_batch() {
 
 #[test]
 fn carried_reads_reuse_one_decoded_batch_and_select_new_record_positions() {
+    let _legacy = IndexedSetting::set("0");
     let dir = tempfile::tempdir().unwrap();
     let engine = crate::engine::TemporalEngine::with_local_dirs(
         64 * 1024, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
@@ -85,6 +105,31 @@ fn carried_reads_reuse_one_decoded_batch_and_select_new_record_positions() {
     assert_eq!(read_block(&engine.block_store, 1, 1000, None), Some(vec![9; 2048]));
     assert_eq!(cached[0].bytes, vec![0; 1024]);
     assert!(!Arc::ptr_eq(&cached, &cached_record(&wal, 1, next_id).unwrap()));
+}
+
+#[test]
+fn indexed_carried_reads_select_without_retaining_decoded_batches() {
+    let _indexed = IndexedSetting::set("1");
+    let dir = tempfile::tempdir().unwrap();
+    let engine = crate::engine::TemporalEngine::with_local_dirs(
+        64 * 1024, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let staged = blocks(512);
+    let marker = || crate::types::Command::StringSet { key: "carrier".into(), value: Vec::new() };
+    let wal = engine.write_ahead_log_store();
+    let (record, log_id) = wal.append_with_sync_staged(1, marker(), true, staged.clone()).unwrap();
+    register_record(&engine.block_store, 1, &staged, log_id, record.sequence, &wal);
+    for index in [0, 511, 127, 255, 0] {
+        assert_eq!(read_block(&engine.block_store, 1, 1000 + index, None),
+                   Some(vec![index as u8; 1024]));
+        assert!(cached_record(&wal, 1, log_id).is_none());
+    }
+    let next = vec![StagedBlock { object_id: 1000, element_name: None, bytes: vec![9; 2048] }];
+    let (record, next_id) = wal.append_with_sync_staged(1, marker(), true, next.clone()).unwrap();
+    register_record(&engine.block_store, 1, &next, next_id, record.sequence, &wal);
+    assert_eq!(read_block(&engine.block_store, 1, 1000, None), Some(vec![9; 2048]));
+    assert_eq!(read_block(&engine.block_store, 1, 1511, None), Some(vec![255; 1024]));
 }
 
 #[test]

@@ -12,6 +12,17 @@ Crate inventory generated from `cargo metadata --all-features`: **197 third-part
 Where a crate is offered under a choice of licenses (`A OR B`), this project takes it
 under a compatible permissive option.
 
+## Additional checksum dependencies
+
+The indexed WAL reader adds these permissively licensed crates to the inventory
+snapshot above. `rustc_version` and `semver` are build-time dependencies of `crc32c`.
+
+| Crate | Version | License expression |
+|---|---|---|
+| crc32c | 0.6.9 | MIT OR Apache-2.0 |
+| rustc_version | 0.4.1 | MIT OR Apache-2.0 |
+| semver | 1.0.28 | MIT OR Apache-2.0 |
+
 ## Crates by license
 
 ### (MIT OR Apache-2.0) AND Unicode-3.0
