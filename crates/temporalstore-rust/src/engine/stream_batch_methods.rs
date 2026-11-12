@@ -1277,6 +1277,7 @@ impl TemporalEngine {
         if command_count == 0 {
             return results.finish(Status::ok());
         }
+        let _slab_target_scope = crate::storage_config::SlabTargetScope::new();
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
