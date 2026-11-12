@@ -43,6 +43,22 @@ others; choose the API and acknowledgement policy before measuring a workload.
 | **LLM context and agent memory** | Conversations, resources, entities, reusable memory, retrieval, and token-budgeted context assembly | [Context guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/context_management_on_temporalstore.md) |
 | **Collections, blobs, and streams** | Membership/deduplication, sorted sets, lists, multipart blobs, range reads, and batch/stream ingestion | [Command surface](https://github.com/matrixarkai/TemporalStore/blob/main/docs/redis_compatibility_matrix.md) |
 
+### Choose a Feast materialization path
+
+Use the [native provider guide](integrations/feast/feast_temporalstore_command/README.md)
+to configure these independently; enabling latest-value serving does not enable them all.
+
+| Requirement | Configuration and consequence |
+|---|---|
+| Reject stale latest-value updates | Keep `skip_dedup: false`; supported conditional routes compare event timestamps on the server. |
+| Expire entity state | Set `key_ttl_seconds`; rejected stale rows do not refresh expiry on the conditional TTL route. |
+| Retain feature history | Enable `write_feature_history`; this adds writes and uses a different path from latest-only materialization. |
+| Enumerate keys during teardown | Enable `track_keys_for_teardown` before materializing; without tracking, teardown cannot enumerate existing rows. |
+
+History, tracking, mixed layouts, and older-node fallbacks have their own costs and
+concurrency limits. Measure those configurations separately from latest-only writes,
+including maintenance and retained WAL bytes, not just accepted rows per second.
+
 ### WindowReduce Features
 
 A cell-based model within Feature stores timestamped snapshots of members,
