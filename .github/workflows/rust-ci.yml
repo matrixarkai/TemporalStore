@@ -126,6 +126,14 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Ollama extraction source isolation checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test --locked -p temporalstore-rust --lib --features alloc-probe llm_context::ollama::tests:: \
+            -- --test-threads=1 2>&1 | tee /tmp/ollama-source-isolation.log
+          grep -q 'test result: ok\. 10 passed; 0 failed;' /tmp/ollama-source-isolation.log
+
       - name: Inferred memory fact checks
         timeout-minutes: 30
         run: |

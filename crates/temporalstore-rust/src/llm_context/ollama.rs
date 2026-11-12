@@ -279,9 +279,13 @@ impl OllamaProvider {
         messages: &[ContextMessage],
         start: usize,
     ) -> Result<(usize, String), OllamaError> {
-        let max_end = messages
+        let item_limit = messages
             .len()
             .min(start.saturating_add(self.config.max_batch_items));
+        let max_end = messages[start..item_limit]
+            .iter()
+            .position(|message| message.tenant_id != messages[start].tenant_id)
+            .map_or(item_limit, |offset| start + offset);
         let mut end = start;
         let estimated_prompt_bytes = messages[start..max_end]
             .iter()
@@ -553,6 +557,7 @@ impl OllamaProvider {
                     .unwrap_or(&messages_in_chunk)
                     .get(&item.source_message_id)
                     .copied()
+                    .filter(|index| (start..end).contains(index))
                     .ok_or(OllamaError::UnknownSourceMessage(item.source_message_id))?;
                 let source = &messages[source_index];
                 let text = trim_owned(item.text);
@@ -1151,5 +1156,77 @@ mod tests {
             duplicate_provider.extract_batch(&duplicate_messages),
             Err(OllamaError::DuplicateMessageId(7))
         ));
+    }
+
+    fn extraction_source(tenant_id: u64, message_id: u64, text: &str) -> ContextMessage {
+        ContextMessage {
+            tenant_id,
+            message_id,
+            event_time_ms: message_id,
+            role: ContextRole::User,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn extraction_prompts_keep_tenant_runs_separate_without_reordering() {
+        let client = OllamaProvider::new(OllamaConfig {
+            max_batch_items: 64,
+            ..OllamaConfig::default()
+        }).unwrap();
+        let messages = [
+            extraction_source(1, 7, "first tenant \"quoted\" fact"),
+            extraction_source(1, 8, "another first tenant fact"),
+            extraction_source(2, 9, "second tenant private fact"),
+            extraction_source(2, 10, "another second tenant fact"),
+            extraction_source(1, 11, "first tenant returns"),
+        ];
+        let mut start = 0;
+        for expected_end in [2, 4, 5] {
+            let (end, prompt) = client.extraction_batch_prompt(&messages, start).unwrap();
+            assert_eq!(end, expected_end);
+            let rows: Vec<Value> = serde_json::from_str(&prompt).unwrap();
+            assert_eq!(rows.len(), end - start);
+            for (row, source) in rows.iter().zip(&messages[start..end]) {
+                assert_eq!(row["source_message_id"], source.message_id);
+                assert_eq!(row["text"], source.text);
+                assert_eq!(source.tenant_id, messages[start].tenant_id);
+            }
+            start = end;
+        }
+        assert_eq!(start, messages.len());
+    }
+
+    #[test]
+    fn extraction_rejects_known_ids_from_a_different_tenant_chunk() {
+        let (addr, server) = serve_json(vec![
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":8,\"text\":\"wrong source\"}]}"}}"#,
+        ]);
+        let messages = [
+            extraction_source(1, 7, "first tenant fact"),
+            extraction_source(2, 8, "second tenant fact"),
+        ];
+        let result = provider(addr).extract_batch(&messages);
+        server.join().unwrap();
+        assert!(matches!(result, Err(OllamaError::UnknownSourceMessage(8))));
+    }
+
+    #[test]
+    fn extraction_rejects_known_ids_outside_a_byte_limited_chunk() {
+        let (addr, server) = serve_json(vec![
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":8,\"text\":\"wrong source\"}]}"}}"#,
+        ]);
+        let client = OllamaProvider::new(OllamaConfig {
+            base_url: format!("http://{addr}"),
+            max_batch_items: 2,
+            max_input_bytes: EXTRACTION_SYSTEM_PROMPT.len() + 128,
+            ..OllamaConfig::default()
+        }).unwrap();
+        let text = "a".repeat(EXTRACTION_SYSTEM_PROMPT.len());
+        let messages = [extraction_source(1, 7, &text), extraction_source(1, 8, &text)];
+        assert_eq!(client.extraction_batch_prompt(&messages, 0).unwrap().0, 1);
+        let result = client.extract_batch(&messages);
+        server.join().unwrap();
+        assert!(matches!(result, Err(OllamaError::UnknownSourceMessage(8))));
     }
 }
