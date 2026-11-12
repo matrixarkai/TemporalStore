@@ -18,6 +18,16 @@ mod projected_read_snapshot_tests;
 mod mixed_hash_batch_delta;
 
 #[cfg(test)]
+#[path = "tests/shared_row_commit.rs"]
+mod shared_row_commit_tests;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_SHARED_ROW_COMMIT: std::cell::RefCell<Option<Box<dyn FnOnce(&TemporalEngine, ShardId, u64)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 #[path = "hash_batch_filed_tests.rs"]
 mod hash_batch_filed_tests;
 
@@ -1354,6 +1364,7 @@ impl TemporalEngine {
             }
         }
         let mut mutated_any = false;
+        let mut pending_barrier_seq = None;
         // Set if any command in this batch rebuilt the bucket index, which invalidates the
         // per-batch record of touched buckets and forces the full sweep below.
         let mut rebuilt_bucket_index = false;
@@ -1384,10 +1395,10 @@ impl TemporalEngine {
             Some(Vec::new());
         let mut batch_hash_snapshot_keys = BTreeSet::new();
         let mut batch_hash_split_safe = matches!(&command_source, BatchCommandSource::Commands(commands)
-            if commands.as_slice().iter().any(|command| matches!(command,
-                Command::SetRemove { .. } | Command::HashDelete { .. }
-                | Command::ZSetRemove { .. } | Command::ListPop { .. })));
+            if mixed_hash_batch_delta::can_split(commands.as_slice())
+                && mixed_hash_batch_delta::keys_have_no_deadlines(shard, commands.as_slice()));
         let mut batch_hash_predecessors = mixed_hash_batch_delta::HashPredecessors::default();
+        let mut batch_set_predecessors = mixed_hash_batch_delta::SetPredecessors::default();
         // Every container element any command in this batch added or replaced. Unlike the
         // element names above this is never downgraded to `None`: it is a list of elements, not a
         // claim that the whole record is a pure upsert, so one non-upsert command in the batch
@@ -1549,7 +1560,10 @@ impl TemporalEngine {
                     config.feature_max_size,
                 );
             if persist_index_delta && batch_hash_split_safe {
+                let blocked = batch_hash_snapshot_keys.len();
                 batch_hash_predecessors.capture(shard, shard_id, &command, &mut batch_hash_snapshot_keys);
+                batch_hash_split_safe = batch_hash_snapshot_keys.len() == blocked
+                    && batch_set_predecessors.capture(shard, shard_id, &command);
             }
             let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
             let (outcome, returned_post_write, hash_index_filed) = match command {
@@ -1734,10 +1748,6 @@ impl TemporalEngine {
                 let written_element_names = (!hash_command || persist_index_delta)
                     .then(|| command_upsert_element_names(command_for_post_write_ref, shard))
                     .flatten();
-                if persist_index_delta && (!hash_command || written_element_names.is_none()) {
-                    batch_hash_split_safe &= !object_keys.is_empty();
-                    batch_hash_snapshot_keys.extend(object_keys.iter().cloned());
-                }
                 if persist_index_delta {
                     batch_touched_container_elements.extend(command_touched_container_elements(
                         command_for_post_write_ref,
@@ -1957,15 +1967,25 @@ impl TemporalEngine {
                     ));
             }
             let oldest_unindexed_sequence = shard.applied_wal_sequence.unwrap_or_default().saturating_add(1);
+            let concurrent_commit = sync
+                && use_data_only
+                && defer_shared_hash_materialization
+                && !persist_index_delta
+                && !raft_applying()
+                && !replaying_wal()
+                && self.concurrent_commit.load(std::sync::atomic::Ordering::Relaxed);
             let batch_result = if use_data_only {
                 self.wal_store
                     .append_batch_as_one_record_at(
                         shard_id,
                         staged_outcomes,
                         staged_blocks,
-                        sync,
+                        sync && !concurrent_commit,
                     )
                     .map(|(record, log_id)| {
+                        if concurrent_commit {
+                            pending_barrier_seq = Some(record.sequence);
+                        }
                         shard.note_wal_application(record.sequence, record.sequence);
                         // Materialization and the commit barrier are independent. A durable
                         // shared-row batch can still need these locations after cache eviction.
@@ -2080,16 +2100,14 @@ impl TemporalEngine {
                 // deferred to the next compaction point (see the single-command execute path).
                 let mixed_hash_delta = batch_hash_split_safe
                     .then(|| mixed_hash_batch_delta::MixedHashBatchDelta::new(
-                        &delta_command_keys,
+                        shard,
                         &batch_touched_container_elements,
-                        &batch_hash_snapshot_keys,
                         batch_hash_predecessors,
+                        batch_set_predecessors,
                     ))
                     .flatten();
-                let (items, upsert_record) = if let Some(plan) = mixed_hash_delta.as_ref() {
-                    (collect_command_index_items(
-                        shard, &plan.snapshot_keys, start_routing_bucket, end_routing_bucket,
-                    ), false)
+                let (items, upsert_record) = if let Some(plan) = mixed_hash_delta {
+                    (plan.items(shard_id, shard, start_routing_bucket, end_routing_bucket), true)
                 } else { match batch_upsert_element_names.as_ref() {
                     Some(element_names) => (
                         collect_upsert_index_items(
@@ -2129,24 +2147,11 @@ impl TemporalEngine {
                     shard,
                     &batch_touched_container_elements,
                 ));
-                let appended_index_log_sequence = if let Some(plan) = mixed_hash_delta {
-                    plan.append(
-                        &self.index_log_store,
-                        shard_id,
-                        shard,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                        items,
-                        key_states,
-                        shard.applied_wal_sequence,
-                        !raft_applying(),
-                    )
-                } else {
-                    self.index_log_store.append_delta(
+                let appended_index_log_sequence = self.index_log_store.append_delta(
                         shard_id, items, key_states, shard.applied_wal_sequence,
                         None, upsert_record, !raft_applying(),
                     )
-                }.unwrap_or(0);
+                    .unwrap_or(0);
                 // The index-log half, and it is a SEPARATE half: the plan keeps two frontiers
                 // counted in two different sequences and requires both, so a bucket that can
                 // place itself in the WAL and not in the index log has still said nothing.
@@ -2170,6 +2175,23 @@ impl TemporalEngine {
             }
         }
         drop(shards);
+        if let Some(sequence) = pending_barrier_seq {
+            // Match single-command concurrent commit: reserve and register under the
+            // engine guard, then await the shared durable barrier before acknowledging.
+            #[cfg(test)]
+            BEFORE_SHARED_ROW_COMMIT.with(|slot| {
+                let observer = slot.borrow_mut().take();
+                if let Some(observer) = observer {
+                    observer(self, shard_id, sequence);
+                }
+            });
+            if let Err(err) = self.wal_store.commit_barrier(shard_id, sequence) {
+                return results.finish(Status::error(
+                    "wal_commit_failed",
+                    format!("durable WAL batch commit barrier failed: {err}"),
+                ));
+            }
+        }
         self.publish_context_embedding_commands(&context_embedding_commands);
         results.finish(Status::ok())
     }
