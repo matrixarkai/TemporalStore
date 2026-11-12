@@ -97,6 +97,20 @@ persistence, and maintenance. Replicated deployments add placement and consensus
 Asynchronous acceptance and confirmed persistence provide different guarantees;
 choose settings for the required recovery.
 
+Eligible synchronous shared-row batches release the engine mutation guard before
+waiting for their shared WAL commit barrier. Successful writes still wait for a
+barrier covering their sequence; readers can observe an in-flight update before
+the writer receives durable success. Read visibility alone therefore does not
+prove crash durability, and a commit error is not a rollback guarantee. Async,
+replay, Raft-application, and index-persisting paths have their own commit rules.
+See the [batch implementation](crates/temporalstore-rust/src/engine/stream_batch_methods.rs).
+
+Feast materialization can split one caller batch into several native requests.
+Do not treat that caller batch as one atomic transaction. Compare accepted rows,
+request counts, durability, and concurrent reader work together when evaluating
+batch limits; smaller requests can improve scheduling while adding WAL records
+and synchronization work. No universal throughput or latency win is implied.
+
 Maintenance spans preparation, checkpoint/dump, expiry, eviction, compaction,
 page/slab, index and WAL reclaim, delayed destruction, and restore. Both workload
 families require tested recovery and replication fences, plus measured per-stage
@@ -119,12 +133,13 @@ The engine is Rust-native. Development targets `main`; `rust-main` is retired.
 There is no brpc/thrift compatibility layer. Validate production-readiness claims
 with deployment guides and readiness reports for the chosen configuration.
 
-## Five open-source projects
+## Six open-source projects
 
-All five projects are public under **Apache-2.0**, available worldwide for anyone
+All six projects are public under **Apache-2.0**, available worldwide for anyone
 to use, fork, modify, test, and contribute to under the license. The storage,
 cache, consensus, and object-store components are Rust; MatrixArk is Python
-companion tooling. Context-management code and serving remain in TemporalStore.
+companion tooling. MatrixAdsDemo is a standalone Python demonstration using
+generated data. Context-management code and serving remain in TemporalStore.
 
 | Project | Role |
 |---|---|
@@ -133,6 +148,7 @@ companion tooling. Context-management code and serving remain in TemporalStore.
 | [MatrixRaft](https://github.com/matrixarkai/matrixraft) | Rust consensus library |
 | [MatrixObject](https://github.com/matrixarkai/MatrixObject) | Rust distributed object storage |
 | [MatrixArk](https://github.com/matrixarkai/matrixark) | Optional Python ingestion, retrieval, and feedback tooling |
+| [MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) | Standalone ads retrieval, prediction, and auction demonstration |
 
 ## Build and contribute
 
