@@ -1272,7 +1272,7 @@ pub fn plant_live_block_scan_entries_for_test(count: u64) {
 /// these three, so a walk added later cannot compile without saying where it is counted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ModelWalkTally {
-    /// Materializing every live block in the shard: [`LIVE_BLOCK_SCAN_ENTRIES`].
+    /// Walking every live block, owned or borrowed: [`LIVE_BLOCK_SCAN_ENTRIES`].
     WholeShardEntries,
     /// Materializing the blocks of NAMED routing buckets: [`BUCKET_SCOPED_MODEL_ENTRIES`].
     BucketScopedEntries,
@@ -3737,14 +3737,14 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
 /// The timestamped-series kinds dedup and sort their addresses, and that helper allocates, so the
 /// series is first asked -- without allocating -- whether ANY of its addresses is accepted. The
 /// addresses emitted, and their order within a series, are unchanged.
-/// Walk every live model-map block, and CHARGE what the walk materializes.
+/// Walk every live model-map block, and CHARGE what the walk emits.
 ///
 /// The charge is here, not at the call sites, and `tally` has no uncounted variant -- so a new
 /// way of walking the model maps cannot compile without saying which counter it belongs to.
 /// That is the whole point: [`LIVE_BLOCK_SCAN_ENTRIES`] was charged by one wrapper while seven
 /// production call sites reached the same walks around it, and nothing failed.
 #[track_caller]
-fn visit_model_live_blocks(
+pub(super) fn visit_model_live_blocks(
     shard: &ShardState,
     tally: ModelWalkTally,
     accept: impl Fn(&str, &ElementEntry) -> bool,
@@ -9665,7 +9665,7 @@ mod live_block_scan_coverage {
 ///      control that the refusal is not simply "anything unusual panics";
 ///   4. no code is 0 and no two collide, live and retired together.
 #[cfg(test)]
-mod model_kind_registry_guards {
+pub(super) mod model_kind_registry_guards {
     use super::{
         collect_model_live_block_entries, model_report_code, ModelKind,
         RETIRED_MODEL_REPORT_CODES,
@@ -9692,7 +9692,7 @@ mod model_kind_registry_guards {
     /// filing one of these kinds would make the completeness check below pass by holding fewer
     /// kinds, which is the failure it exists to catch. Every field here is a field of
     /// `ShardState` that an arm of `visit_model_live_blocks` reads.
-    fn shard_holding_one_block_of_every_kind() -> ShardState {
+    pub(in crate::engine) fn shard_holding_one_block_of_every_kind() -> ShardState {
         let mut shard = ShardState::default();
         let at = address(7);
         shard.set_string_address("s".into(), &at.clone());
