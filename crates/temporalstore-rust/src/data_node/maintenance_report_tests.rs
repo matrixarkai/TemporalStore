@@ -52,10 +52,12 @@ fn timer_execution_preserves_actions_and_counters_without_exposing_partial_diagn
     let runtime = seeded(dir.path());
     let report = runtime.run_storage_manager_once_with_report_details(1, options(), false);
     assert!(report.status.ok, "{:?}", report.status);
-    assert!(report
-        .executed_stages
-        .iter()
-        .any(|stage| stage == "reclaim_wal"));
+    assert!(
+        report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reclaim_wal")
+    );
     assert!(report.lifecycle_report.is_none());
     let stats = runtime.stats();
     assert!(stats.dump_runs > 0);
@@ -84,18 +86,95 @@ fn explicit_manager_and_lifecycle_requests_still_return_full_diagnostics() {
     let lifecycle = report
         .lifecycle_report
         .expect("explicit manager diagnostics");
-    assert!(!lifecycle
-        .storage_index_snapshot
-        .page_index_entry_samples
-        .is_empty());
+    assert!(
+        !lifecycle
+            .storage_index_snapshot
+            .page_index_entry_samples
+            .is_empty()
+    );
     let response = runtime.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: 1,
         ..Default::default()
     });
     assert!(response.status.ok);
-    assert!(!response
-        .report
-        .storage_index_snapshot
-        .page_index_entry_samples
-        .is_empty());
+    assert!(
+        !response
+            .report
+            .storage_index_snapshot
+            .page_index_entry_samples
+            .is_empty()
+    );
+}
+
+#[test]
+fn background_compaction_task_preserves_counters_and_error_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = seeded(dir.path());
+    let drain = runtime.engine().live_block_slab_ids(1);
+    assert!(!drain.is_empty());
+    let status = task_execution::run_compaction_background_draining(
+        &runtime.inner,
+        1,
+        drain.into_iter().collect(),
+    );
+    assert!(status.ok, "{status:?}");
+    assert_eq!(runtime.stats().compaction_runs, 1);
+    let status =
+        task_execution::run_compaction_background_draining(&runtime.inner, 99, BTreeSet::new());
+    assert!(!status.ok);
+    assert_eq!(status.code, "shard_not_loaded");
+    assert_eq!(runtime.stats().compaction_runs, 2);
+}
+
+#[test]
+fn timer_manager_compacts_without_a_partial_response_while_explicit_calls_keep_details() {
+    for detailed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = seeded(dir.path());
+        runtime.engine().block_store().roll_slab().unwrap();
+        for i in 0..16 {
+            assert!(
+                runtime
+                    .engine()
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: format!("key-{i}"),
+                            value: vec![42; 96]
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        let report = runtime.run_storage_manager_once_with_report_details(
+            1,
+            StorageManagerOptions {
+                enable_block_compaction: true,
+                stale_block_slab_pressure: 1,
+                reclaimable_physical_bytes_pressure: 1,
+                ..options()
+            },
+            detailed,
+        );
+        assert!(report.status.ok, "{:?}", report.status);
+        assert!(
+            report
+                .executed_stages
+                .iter()
+                .any(|stage| stage == "compact_pages"),
+            "{report:?}"
+        );
+        assert_eq!(runtime.stats().compaction_runs, 1);
+        assert_eq!(runtime.stats().storage_manager_compact_runs, 1);
+        if detailed {
+            let compaction = report
+                .compaction_report
+                .expect("explicit compaction report");
+            assert!(compaction.rewritten_object_blocks > 0);
+            assert!(!compaction.model_layouts.is_empty());
+        } else {
+            assert!(report.compaction_report.is_none());
+        }
+    }
 }

@@ -5,6 +5,10 @@
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
+#[cfg(test)]
+#[path = "compaction_execution_tests.rs"]
+mod compaction_execution_tests;
+
 /// OBSERVATION SEAM: was the shard-table write guard still held when a round PUBLISHED its
 /// durable index?
 ///
@@ -1553,6 +1557,30 @@ fn expiry_scan_budget(limit: usize) -> usize {
         budget_block_refs: usize,
         drain_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<ShardCompactionReport, Status> {
+        self.compact_shard_blocks_relocating_inner(
+            shard_id, budget_bytes, budget_block_refs, drain_block_slab_ids, true,
+        )?.ok_or_else(|| Status::error("block_compaction_failed", "requested compaction report was not collected"))
+    }
+
+    pub(crate) fn compact_shard_blocks_draining_background(
+        &self,
+        shard_id: ShardId,
+        drain_block_slab_ids: BTreeSet<u64>,
+    ) -> Result<(), Status> {
+        self.compact_shard_blocks_relocating_inner(
+            shard_id, COMPACTION_ROUND_BYTES, COMPACTION_ROUND_BLOCK_REFS,
+            Some(drain_block_slab_ids), false,
+        ).map(|_| ())
+    }
+
+    fn compact_shard_blocks_relocating_inner(
+        &self,
+        shard_id: ShardId,
+        budget_bytes: u64,
+        budget_block_refs: usize,
+        drain_block_slab_ids: Option<BTreeSet<u64>>,
+        detailed_report: bool,
+    ) -> Result<Option<ShardCompactionReport>, Status> {
         // CAPTURED BEFORE ANYTHING IS REWRITTEN, so a successful round can open the write-
         // amplification window at this point and count its own relocation as the window's first
         // writes. Reading it after the rewrite would open the window at 0 bytes and report 0.000x.
@@ -1568,19 +1596,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
-        // ONE walk for the preamble's live-block consumers.
-        //
-        // Before any budget is consulted, this stage builds several whole-shard reports, and each
-        // one called `collect_live_block_entries` for its own copy -- measured by
-        // `what_the_compaction_preamble_walks` as 5.0x the shard. All of them run under the same
-        // WRITE lock on an unchanged `&ShardState`, so every read and write on the shard queues
-        // behind the lot. Two of them take the same live-block set and now share one walk.
-        //
-        // `collect_live_block_slab_ids` still walks on its own because it reads the model maps
-        // directly rather than the live-block set. The object-manager report is deliberately not
-        // built here: compaction only needs its four layout totals, computed below from buckets.
-        //
-        // Both consumers borrow the entries; release the allocation before relocation.
+        // Ownership validation is mandatory, including for timers that need no diagnostics.
+        // Detailed callers share its entries with the utility report before relocation.
         let entries = collect_live_block_entries(shard);
         let ownership = validate_bucket_ownership_index_from_entries(
             shard_id,
@@ -1598,13 +1615,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 ),
             ));
         }
-        let before_slabs = collect_live_block_slab_ids(shard);
-        let before = compaction_utility_report_from_entries(&self.block_store, shard, &entries);
-        let model_layouts_before = compaction_model_layout_reports(&self.block_store, shard);
+        let diagnostics_before = detailed_report.then(|| (
+            collect_live_block_slab_ids(shard),
+            compaction_utility_report_from_entries(&self.block_store, shard, &entries),
+            compaction_model_layout_reports(&self.block_store, shard),
+            storage_reporting::storage_delete_marked_object_count(shard),
+        ));
         drop(entries);
-        let delete_marked_object_ids_before =
-            storage_reporting::storage_delete_marked_object_count(shard);
-        let bucket_layout_transition_count_before = 0u64;
         // Start a round, or continue the one a budget cut short.
         //
         // A round rolls a fresh slab and relocates live blocks onto it. Rolling AGAIN while a
@@ -2036,34 +2053,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             end_routing_bucket,
         );
         refresh_bucket_runtime_flags(shard);
-        let after_slabs = collect_live_block_slab_ids(shard);
-        let after = compaction_utility_report(&self.block_store, shard);
         rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
-        let delete_marked_object_ids_after =
-            storage_reporting::storage_delete_marked_object_count(shard);
-        let bucket_layout_transition_count_after = 0u64;
-        let bucket_layout_states_after = compaction_bucket_layout_states(shard);
-        let stale_block_slab_ids = before_slabs
-            .difference(&after_slabs)
-            .copied()
-            .collect::<Vec<_>>();
-        let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
-        let model_policy_family_count = before.model_policies.len();
-        let delete_marker_policy_model_count = before
-            .model_policies
-            .iter()
-            .filter(|policy| policy.delete_marker_compaction_triggered)
-            .count();
-        let stale_density_policy_model_count = before
-            .model_policies
-            .iter()
-            .filter(|policy| policy.stale_density_triggered)
-            .count();
-        let layout_aware_policy_model_count = before
-            .model_policies
-            .iter()
-            .filter(|policy| policy.layout_aware_rewrite_required)
-            .count();
         // Durability barrier BEFORE publishing the base index that names the relocated blocks.
         // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
         // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
@@ -2110,6 +2100,32 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id)?;
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
         let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
+        // Only actual relocation opens a write-amplification window. A budgeted/drained
+        // round covers a partial consolidation; the diagnostic report retains that limitation.
+        if rewritten_object_blocks > 0 {
+            self.block_store
+                .mark_write_window_at_compaction(bytes_written_before_relocation);
+        }
+        // No report escapes the timer path: it still completed the same durable publication.
+        let Some((before_slabs, before, model_layouts_before, delete_marked_object_ids_before)) = diagnostics_before else {
+            return Ok(None);
+        };
+        let after_slabs = collect_live_block_slab_ids(shard);
+        let after = compaction_utility_report(&self.block_store, shard);
+        let delete_marked_object_ids_after =
+            storage_reporting::storage_delete_marked_object_count(shard);
+        let bucket_layout_transition_count_before = 0u64;
+        let bucket_layout_transition_count_after = 0u64;
+        let bucket_layout_states_after = compaction_bucket_layout_states(shard);
+        let stale_block_slab_ids = before_slabs.difference(&after_slabs).copied().collect::<Vec<_>>();
+        let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
+        let model_policy_family_count = before.model_policies.len();
+        let delete_marker_policy_model_count = before.model_policies.iter()
+            .filter(|policy| policy.delete_marker_compaction_triggered).count();
+        let stale_density_policy_model_count = before.model_policies.iter()
+            .filter(|policy| policy.stale_density_triggered).count();
+        let layout_aware_policy_model_count = before.model_policies.iter()
+            .filter(|policy| policy.layout_aware_rewrite_required).count();
         let bucket_layout_transition_count =
             bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);
         let has_model_layouts = !model_layouts_before.is_empty();
@@ -2139,26 +2155,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             model_layout_compaction_blockers
                 .push("slot layout transition evidence is missing".to_string());
         }
-        // OPEN A NEW WRITE-AMPLIFICATION WINDOW, because the live set has just been consolidated
-        // and the writes before this point no longer describe the store's current shape.
-        //
-        // HERE, AND ONLY IF SOMETHING MOVED. This is the single inner funnel that
-        // `compact_shard_blocks`, `compact_shard_blocks_draining`, `compact_shard_blocks_with_budget`
-        // and `compact_shard_blocks_with_budgets` all route through, and it has exactly one success
-        // return -- so a compaction cannot complete without passing this line. A round that
-        // rewrote NO live refs consolidated nothing, and resetting on it would hand the store a
-        // fresh window for doing no work, which is the one way this could flatter the figure.
-        //
-        // A BUDGETED OR DRAINED ROUND STILL OPENS A WINDOW THOUGH IT CONSOLIDATED ONLY PART OF THE
-        // STORE, so the windowed ratio is OPTIMISTIC after a partial compaction. That is stated
-        // rather than corrected: `blocks_left_by_budget` and `blocks_left_off_drain_set` are on
-        // this very report, so a reader who needs to know whether the window covers the whole
-        // store has both numbers beside it.
-        if rewritten_object_blocks > 0 {
-            self.block_store
-                .mark_write_window_at_compaction(bytes_written_before_relocation);
-        }
-        Ok(ShardCompactionReport {
+        Ok(Some(ShardCompactionReport {
             shard_id,
             model_layout_compaction_ready: model_layout_compaction_blockers.is_empty(),
             model_layout_compaction_evidence: vec![
@@ -2199,7 +2196,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             model_layouts: model_layouts_before,
             before,
             after,
-        })
+        }))
     }
 }
 
