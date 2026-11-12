@@ -66,7 +66,10 @@ fn packed_hash_completion_removes_the_second_index_pass() {
             let before = bucket_block_upserts();
             shared_rows(&engine, &fields, 1);
             assert_eq!(bucket_block_upserts() - before, 0, "no redundant maintenance filing");
-            assert_eq!(binary_search_count_for_test(), 0, "WAL frames need no ordinal or maintenance lookups");
+            let demand_probes = 4 * u64::from(!async_storage
+                && std::env::var("TS_HASH_WRITE_AROUND").as_deref() != Ok("0"));
+            assert_eq!(binary_search_count_for_test(), demand_probes,
+                "one cache-demand lookup per synchronous row, no per-field ordinal or maintenance lookups");
             // Exercise the skipped maintenance as a positive control on both counters.
             let before = bucket_block_upserts();
             reset_binary_search_count_for_test();
@@ -106,7 +109,9 @@ fn packed_hash_completion_timestamp_rows_keep_stale_writes_inert() {
     assert!(response.status.ok);
     assert_eq!((response.applied, response.skipped), (1, 0));
     assert_eq!(bucket_block_upserts() - before, 0);
-    assert_eq!(binary_search_count_for_test(), 2, "the condition and its new source-bound hint each locate the timestamp field");
+    let demand_probe = u64::from(std::env::var("TS_HASH_WRITE_AROUND").as_deref() != Ok("0"));
+    assert_eq!(binary_search_count_for_test(), 2 + demand_probe,
+        "the timestamp condition and hint each locate a field, plus one optional cache-demand probe");
     reset_binary_search_count_for_test();
     let before = bucket_block_upserts();
     let response = engine.batch_execute_packed_hash_rows(request(15)).0;
