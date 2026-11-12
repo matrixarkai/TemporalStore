@@ -363,6 +363,13 @@ pub(super) fn bucket_summaries_and_digests(
     Vec<BucketStorageSummary>,
     BTreeMap<u32, BucketFingerprintDigest>,
 ) {
+    if !with_digests {
+        let mut fold = BucketSummaryFold::default();
+        super::storage_bucket_internals::for_each_live_block_entry(shard, |entry| {
+            fold.add_entry(&entry, start_routing_bucket, end_routing_bucket);
+        });
+        return (fold.finish(shard), BTreeMap::new());
+    }
     let entries = collect_live_block_entries(shard);
     let summaries = bucket_storage_summaries_from_entries(
         shard,
@@ -370,11 +377,7 @@ pub(super) fn bucket_summaries_and_digests(
         end_routing_bucket,
         &entries,
     );
-    let digests = if with_digests {
-        bucket_generation_digests_from_entries(shard_id, &entries)
-    } else {
-        BTreeMap::new()
-    };
+    let digests = bucket_generation_digests_from_entries(shard_id, &entries);
     (summaries, digests)
 }
 
@@ -388,9 +391,28 @@ pub(super) fn bucket_storage_summaries_from_entries(
     end_routing_bucket: u32,
     entries: &[LiveBlockEntry],
 ) -> Vec<BucketStorageSummary> {
-    let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
-    let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
+    let mut fold = BucketSummaryFold::default();
     for entry in entries {
+        fold.add_entry(entry, start_routing_bucket, end_routing_bucket);
+    }
+    fold.finish(shard)
+}
+
+#[derive(Default)]
+struct BucketSummaryFold {
+    buckets: BTreeMap<u32, BucketStorageSummary>,
+    block_slabs_by_bucket: BTreeMap<u32, BTreeSet<u64>>,
+}
+
+impl BucketSummaryFold {
+    fn add_entry(
+        &mut self,
+        entry: &LiveBlockEntry,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+    ) {
+        let buckets = &mut self.buckets;
+        let block_slabs_by_bucket = &mut self.block_slabs_by_bucket;
         // The shard's OWN routing range, which is what every other consumer of this fallback
         // uses -- `rebuild_bucket_first_index`, `refresh_pending_bucket_runtime_flags` and the
         // dirty-key loop at the foot of this function all reach for
@@ -422,12 +444,16 @@ pub(super) fn bucket_storage_summaries_from_entries(
         let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
-        let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
-            routing_bucket,
-            ..BucketStorageSummary::default()
-        });
+        let summary = buckets
+            .entry(routing_bucket)
+            .or_insert(BucketStorageSummary {
+                routing_bucket,
+                ..BucketStorageSummary::default()
+            });
         summary.block_ref_count = summary.block_ref_count.saturating_add(1);
-        summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length());
+        summary.physical_bytes = summary
+            .physical_bytes
+            .saturating_add(entry.address.length());
         summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length());
         // Record which block slab backs each bucket so bucket-dump manifests carry the
         // live slab set (used by manifest validation and the dump/copy path).
@@ -444,58 +470,70 @@ pub(super) fn bucket_storage_summaries_from_entries(
             );
         }
     }
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        // object_count and the base dirty_generation are durable-generation IDENTITY
-        // fields (compared by bucket_dump_summary_matches_current_generation to anchor
-        // WAL/index reclaim). They must reflect durable bucket content, not the
-        // transient `dirty` flag -- so a bucket that was dumped and then had its dirty
-        // flag cleared but still owns live blocks keeps its
-        // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
-        // live-block summary; behaviour is unchanged for every pre-clear state (a bucket
-        // with content is dirty today, so the branch was always taken).
-        let has_live_summary = buckets.contains_key(routing_bucket);
-        if !bucket.dirty() && !has_live_summary {
-            continue;
+    fn finish(mut self, shard: &ShardState) -> Vec<BucketStorageSummary> {
+        let buckets = &mut self.buckets;
+        let block_slabs_by_bucket = &self.block_slabs_by_bucket;
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            // object_count and the base dirty_generation are durable-generation IDENTITY
+            // fields (compared by bucket_dump_summary_matches_current_generation to anchor
+            // WAL/index reclaim). They must reflect durable bucket content, not the
+            // transient `dirty` flag -- so a bucket that was dumped and then had its dirty
+            // flag cleared but still owns live blocks keeps its
+            // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
+            // live-block summary; behaviour is unchanged for every pre-clear state (a bucket
+            // with content is dirty today, so the branch was always taken).
+            let has_live_summary = buckets.contains_key(routing_bucket);
+            if !bucket.dirty() && !has_live_summary {
+                continue;
+            }
+            let summary = buckets
+                .entry(*routing_bucket)
+                .or_insert(BucketStorageSummary {
+                    routing_bucket: *routing_bucket,
+                    ..BucketStorageSummary::default()
+                });
+            // object_index.len() is the bucket's total object count, not its dirty count;
+            // assigning it to dirty_object_count double-counted (the dirty_objects loop
+            // below is the authoritative per-key dirty tally).
+            summary.object_count = bucket.object_index.object_count() as u64;
+            summary.dirty_generation = bucket.dirty_generation;
         }
-        let summary = buckets.entry(*routing_bucket).or_insert(BucketStorageSummary {
-            routing_bucket: *routing_bucket,
-            ..BucketStorageSummary::default()
-        });
-        // object_index.len() is the bucket's total object count, not its dirty count;
-        // assigning it to dirty_object_count double-counted (the dirty_objects loop
-        // below is the authoritative per-key dirty tally).
-        summary.object_count = bucket.object_index.object_count() as u64;
-        summary.dirty_generation = bucket.dirty_generation;
+        // ONE ITERATION PER DIRTY BUCKET, where this was one per dirty OBJECT.
+        //
+        // The loop this replaces walked every dirty object key and hashed it to recompute a routing
+        // bucket, to add 1 to a per-bucket counter. That is a fold whose group key was known when the
+        // object was marked dirty and thrown away; `DirtyObjectIndex` keeps it, so the fold is
+        // already done. Same arithmetic -- adding 1 N times and adding N are the same number well
+        // below saturation -- over a loop bounded by the bucket count instead of the corpus.
+        //
+        // This function runs three times in one `apply_storage_lifecycle` and again on each metrics
+        // scrape, so the per-key hash was paid four times a round over a set that grows with ingest.
+        for (routing_bucket, dirty_object_count) in shard.dirty_objects.bucket_counts() {
+            DIRTY_SUMMARY_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let summary = buckets
+                .entry(routing_bucket)
+                .or_insert(BucketStorageSummary {
+                    routing_bucket,
+                    ..BucketStorageSummary::default()
+                });
+            summary.dirty_object_count = summary
+                .dirty_object_count
+                .saturating_add(dirty_object_count);
+            summary.dirty_generation = summary.dirty_generation.saturating_add(dirty_object_count);
+        }
+        for (routing_bucket, summary) in buckets.iter_mut() {
+            summary.block_slab_ids = block_slabs_by_bucket
+                .get(routing_bucket)
+                .map(|ids| ids.iter().copied().collect())
+                .unwrap_or_default();
+        }
+        self.buckets.into_values().collect()
     }
-    // ONE ITERATION PER DIRTY BUCKET, where this was one per dirty OBJECT.
-    //
-    // The loop this replaces walked every dirty object key and hashed it to recompute a routing
-    // bucket, to add 1 to a per-bucket counter. That is a fold whose group key was known when the
-    // object was marked dirty and thrown away; `DirtyObjectIndex` keeps it, so the fold is
-    // already done. Same arithmetic -- adding 1 N times and adding N are the same number well
-    // below saturation -- over a loop bounded by the bucket count instead of the corpus.
-    //
-    // This function runs three times in one `apply_storage_lifecycle` and again on each metrics
-    // scrape, so the per-key hash was paid four times a round over a set that grows with ingest.
-    for (routing_bucket, dirty_object_count) in shard.dirty_objects.bucket_counts() {
-        DIRTY_SUMMARY_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
-            routing_bucket,
-            ..BucketStorageSummary::default()
-        });
-        summary.dirty_object_count = summary
-            .dirty_object_count
-            .saturating_add(dirty_object_count);
-        summary.dirty_generation = summary.dirty_generation.saturating_add(dirty_object_count);
-    }
-    for (routing_bucket, summary) in &mut buckets {
-        summary.block_slab_ids = block_slabs_by_bucket
-            .get(routing_bucket)
-            .map(|ids| ids.iter().copied().collect())
-            .unwrap_or_default();
-    }
-    buckets.into_values().collect()
 }
+
+#[cfg(test)]
+#[path = "streamed_bucket_summary_tests.rs"]
+mod streamed_bucket_summary_tests;
 
 const NATIVE_PACKED_BLOCK_INDEX_SIZE: usize = 17;
 const NATIVE_PACKED_BUCKET_NODE_SIZE: usize = 24;

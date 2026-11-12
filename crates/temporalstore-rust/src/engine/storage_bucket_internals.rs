@@ -1416,6 +1416,17 @@ pub(super) fn collect_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEnt
     }
 }
 
+#[track_caller]
+pub(super) fn for_each_live_block_entry(shard: &ShardState, mut visit: impl FnMut(LiveBlockEntry)) {
+    if !shard.bucket_index.bucket_map.is_empty() {
+        for_each_bucket_index_live_block_entry(shard, visit);
+    } else {
+        for entry in collect_model_live_block_entries(shard) {
+            visit(entry);
+        }
+    }
+}
+
 /// Mark one object, and its bucket, dirty.
 ///
 /// # IT IS NOT ASYNC-SPECIFIC, WHATEVER ITS OLD NAME SAID
@@ -2038,6 +2049,12 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
 #[track_caller]
 pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
+    for_each_bucket_index_live_block_entry(shard, |entry| entries.push(entry));
+    entries
+}
+
+#[track_caller]
+fn for_each_bucket_index_live_block_entry(shard: &ShardState, mut visit: impl FnMut(LiveBlockEntry)) {
     // Charged here rather than by whoever called: three production callers reach this walk
     // without going through `collect_live_block_entries`, and the wrapper's charge could not see
     // the supplement walk below either -- it charged what was RETURNED, while the walk
@@ -2084,7 +2101,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 continue;
             };
             from_index += 1;
-            entries.push(LiveBlockEntry {
+            visit(LiveBlockEntry {
                 object_key: Arc::clone(beside),
                 kind: block.model_id(),
                 // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A BLOCK.
@@ -2134,11 +2151,10 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 // WHOLE keyspace and name a bucket a narrow shard does not hold.
                 entry.filed_routing_bucket = routing_bucket;
                 entry.filing_is_known = true;
-                entries.push(entry);
+                visit(entry);
             }
         }
     }
-    entries
 }
 
 /// The identity a released block is compared by, so a release can prove it is reversible.
