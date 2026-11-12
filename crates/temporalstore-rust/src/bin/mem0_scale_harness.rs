@@ -13,6 +13,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use temporalstore_rust::http::{get_json_with_options, post_json_with_options, HttpRequestOptions};
 
+#[path = "mem0_scale/crud.rs"]
+mod crud;
+
 #[derive(Debug)]
 struct Options {
     infer: bool,
@@ -23,6 +26,7 @@ struct Options {
     users: usize,
     searches: usize,
     metadata_updates: usize,
+    crud_rounds: usize,
     payload_bytes: usize,
     out: PathBuf,
     data_root: Option<PathBuf>,
@@ -58,6 +62,7 @@ struct Report {
     requested_records: usize,
     ingested_records: usize,
     metadata_update_rounds: usize,
+    crud_rounds: usize,
     tenant_shards: usize,
     payload_bytes: u64,
     elapsed_ms: u128,
@@ -306,6 +311,8 @@ fn main() {
         }
     }
 
+    crud::run(&options, &tenant_id, &mut timings, &mut failures);
+
     if let Some(id) = sampled_ids.first() {
         measure_get(
             &mut timings,
@@ -410,6 +417,7 @@ fn main() {
         requested_records: options.records,
         ingested_records,
         metadata_update_rounds: options.metadata_updates,
+        crud_rounds: options.crud_rounds,
         tenant_shards: options.tenant_shards,
         payload_bytes,
         elapsed_ms: started.elapsed().as_millis(),
@@ -761,6 +769,7 @@ fn parse_options() -> Options {
         users: number("--users", 1_000).max(1),
         searches: number("--searches", 100).max(1),
         metadata_updates: number("--metadata-updates", 0).min(100_000),
+        crud_rounds: number("--crud-rounds", 0).min(10_000),
         payload_bytes: number("--payload-bytes", 512).max(64),
         out: value("--out")
             .map(PathBuf::from)
