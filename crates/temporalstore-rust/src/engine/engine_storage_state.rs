@@ -14,6 +14,9 @@ use super::control_rollup::RollupEntry;
 use super::hll::Hll;
 use super::hash_field_map::HashFieldMap;
 
+#[path = "checkpoint_capture.rs"]
+mod checkpoint_capture;
+
 /// WHICH FLAVOUR OF DIRTINESS A MARK IS, as a field rather than as a key prefix.
 ///
 /// One map holds both, and it used to tell them apart by testing whether the key began

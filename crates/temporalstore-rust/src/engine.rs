@@ -118,6 +118,7 @@ pub use compaction::{
     reset_container_batch_counts, CONTAINER_BATCH_ELEMENT_CAP,
 };
 mod storage_reporting;
+mod bucket_summary_snapshot;
 #[path = "engine/engine_hashing.rs"]
 pub(crate) mod hashing;
 mod bucket_store;
@@ -2228,8 +2229,8 @@ impl TemporalEngine {
     }
 
     /// The summaries and, when `with_digests`, the live shard's per-bucket fingerprint digests,
-    /// both read off ONE listing of the shard's live blocks under one read of the shard. The two
-    /// used to be built by separate calls that each listed every live block.
+    /// both computed from one listing and its bucket metadata captured under one shard read.
+    /// Folding and hashing run after unlocking, with the same captured manifest annotations.
     pub(crate) fn bucket_storage_summaries_with_digests(
         &self,
         shard_id: ShardId,
@@ -2238,33 +2239,9 @@ impl TemporalEngine {
         Vec<BucketStorageSummary>,
         BTreeMap<u32, BucketFingerprintDigest>,
     ) {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return (Vec::new(), BTreeMap::new());
-        };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
-        let (summaries, digests) =
-            bucket_summaries_and_digests(shard_id, shard, start, end, with_digests);
-        let summaries =
-            if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
-                merge_last_dump_sequence(summaries, &manifest)
-            } else {
-                summaries
-            };
-        (summaries, digests)
+        self.capture_bucket_storage_summaries(shard_id, with_digests)
+            .map(|snapshot| snapshot.finish())
+            .unwrap_or_default()
     }
 
     pub fn storage_physical_index_report(&self, shard_id: ShardId) -> StoragePhysicalIndexReport {

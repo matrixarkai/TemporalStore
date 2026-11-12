@@ -1288,7 +1288,7 @@ pub(super) enum ModelWalkTally {
 /// `#[track_caller]` all the way down from the public walks, so a charge moved inward still
 /// attributes to the same source line it did when the wrapper counted.
 #[track_caller]
-fn note_live_block_scan(count: usize) {
+pub(super) fn note_live_block_scan(count: usize) {
     LIVE_BLOCK_SCAN_ENTRIES.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
     STAGE_LIVE_BLOCK_SCAN_ENTRIES.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
     let caller = std::panic::Location::caller();
