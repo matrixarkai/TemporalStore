@@ -63,28 +63,47 @@ fn folded(key: PhysicalKey) -> u64 {
     hash
 }
 
+#[cfg(test)]
 pub(super) fn install(
     blocks: &crate::block_store::BlockStore,
     shard: ShardId,
     key: PhysicalKey,
     location: Registration,
 ) -> u64 {
+    install_many(blocks, shard, std::iter::once((key, location)))[0]
+}
+
+pub(super) fn install_many(
+    blocks: &crate::block_store::BlockStore,
+    shard: ShardId,
+    locations: impl IntoIterator<Item = (PhysicalKey, Registration)>,
+) -> Vec<u64> {
+    let mut locations = locations.into_iter().peekable();
+    let mut folded_keys = Vec::with_capacity(locations.size_hint().0);
+    if locations.peek().is_none() {
+        return folded_keys;
+    }
+    // A carrying record publishes all its locations under the shard's write guard.
+    // Hold the locator lock once rather than once per carried frame.
     let mut table = table().lock().expect("physical WAL locator lock poisoned");
     let state = table
         .entry(blocks.store_id())
         .or_default()
         .entry(shard)
         .or_default();
-    if state
-        .objects
-        .entry(key.0)
-        .or_default()
-        .insert(key.1, location)
-        .is_none()
-    {
-        state.len += 1;
+    for (key, location) in locations {
+        if state
+            .objects
+            .entry(key.0)
+            .or_default()
+            .insert(key.1, location)
+            .is_none()
+        {
+            state.len += 1;
+        }
+        folded_keys.push(folded(key));
     }
-    folded(key)
+    folded_keys
 }
 
 pub(super) fn lookup(
@@ -170,25 +189,21 @@ pub(super) fn recover(
             .filter(|(index, _)| !physical_indices.contains(index))
             .map(|(_, block)| registration_names(block, &packed, &mut pool).len())
             .sum::<usize>();
-    bindings
-        .into_iter()
-        .filter_map(|(key, index)| {
+    install_many(
+        blocks,
+        shard,
+        bindings.into_iter().filter_map(|(key, index)| {
             wanted.contains(&folded(key)).then(|| {
-                install(
-                    blocks,
-                    shard,
-                    key,
-                    Arc::new((
+                (key, Arc::new((
                         store.clone(),
                         log_id,
                         record.sequence,
                         expected,
                         Some(index),
-                    )),
-                )
+                    )))
             })
-        })
-        .collect()
+        }),
+    )
 }
 
 #[track_caller]
@@ -335,6 +350,10 @@ pub(super) fn clear_store(owner: usize) {
 #[cfg(test)]
 #[path = "wal_retention_work_tests.rs"]
 mod retention_work_tests;
+
+#[cfg(test)]
+#[path = "wal_location_batch_tests.rs"]
+mod location_batch_tests;
 
 #[cfg(test)]
 mod tests {
