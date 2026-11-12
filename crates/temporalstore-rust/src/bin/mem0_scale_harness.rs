@@ -545,7 +545,7 @@ fn memory_add_ids(response: Value, requested: usize, infer: bool) -> Result<Vec<
 }
 
 #[cfg(test)]
-#[path = "mem0_scale_add_tests.rs"]
+#[path = "mem0_scale/add_tests.rs"]
 mod memory_add_tests;
 
 fn validate_response(response: Value) -> Result<Value, String> {
