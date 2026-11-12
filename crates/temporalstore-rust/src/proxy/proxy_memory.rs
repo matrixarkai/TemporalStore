@@ -21,6 +21,9 @@ use node_lookup::*;
 mod inferred;
 use inferred::*;
 
+#[path = "memory_scoped_delete.rs"]
+mod scoped_delete;
+
 const MEMORY_BATCH_LIMIT: usize = 1_000;
 const MEMORY_CATALOG_PAGE_SIZE: usize = 512;
 const MEMORY_UPDATE_PAGE_SIZE: usize = 128;
@@ -1473,6 +1476,9 @@ impl ProxyService {
         let scope = request.scope.context_scope(&identity);
         let tenant_hash = context::context_tenant_hash(&scope);
         let shard_id = self.context_shard_id(tenant_hash);
+        if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
+            return crate::http::json_response(502, &status);
+        }
         let identity_members = [
             memory_identity_member(b'u', &identity.user_id),
             memory_identity_member(b'a', &identity.agent_id),
@@ -1499,33 +1505,16 @@ impl ProxyService {
             shard_id,
             commands: count_commands,
         });
-        if !counts.status.ok {
-            return crate::http::json_response(502, &counts.status);
-        }
-        let score = |response: &CommandResponse| match response {
-            CommandResponse::Bytes { value: Some(value) } => std::str::from_utf8(value)
-                .ok()
-                .and_then(|value| value.parse::<f64>().ok()),
-            _ => None,
+        let counts = match scoped_delete::checked_counts(&counts, identity_members.len() + 1) {
+            Ok(counts) => counts,
+            Err(status) => return crate::http::json_response(502, &status),
         };
-        let total = counts
-            .responses
-            .first()
-            .and_then(|response| score(&response.response))
-            .map(|value| value.max(0.0) as usize);
-        let identity_counts = counts
-            .responses
-            .iter()
-            .skip(1)
-            .map(|response| score(&response.response))
-            .collect::<Vec<_>>();
-        let identity_covers_scope = total.is_some()
-            && identity_counts
-                .iter()
-                .all(|count| count.map(|value| value as usize) == total);
-        let delete_whole_scope = identity_members.is_empty() || identity_covers_scope;
-        if delete_whole_scope {
-            let deleted = total.unwrap_or_default();
+        let total = counts[0];
+        let identity_counts = &counts[1..];
+        // A previous count cannot authorize a tenant-wide clear for an identity filter:
+        // another identity can commit between this read and the deletion batches.
+        if identity_members.is_empty() {
+            let deleted = total;
             let withdrawn = self.batch_execute(BatchExecuteRequest {
                 shard_id,
                 commands: vec![
@@ -1621,32 +1610,25 @@ impl ProxyService {
             self.memory_remember_indexes_ready(tenant_hash);
             return crate::http::json_response(200, &json!({"deleted": deleted}));
         }
-        if let Err(status) = self.memory_prepare_indexes(tenant_hash) {
-            return crate::http::json_response(502, &status);
-        }
         let selected_identity = identity_members
             .iter()
             .zip(identity_counts.iter())
-            .min_by(|(_, left), (_, right)| {
-                left.unwrap_or(f64::MAX)
-                    .total_cmp(&right.unwrap_or(f64::MAX))
-            })
+            .min_by_key(|(_, count)| **count)
             .map(|(member, _)| member.clone())
             .unwrap_or_else(|| identity_members[0].clone());
         let mut deleted = 0usize;
         let mut after = Vec::new();
         loop {
-            let (next_after, page) = self.memory_identity_page(
-                tenant_hash,
-                &selected_identity,
-                &after,
-                MEMORY_CATALOG_PAGE_SIZE,
-            );
-            if next_after.is_empty() {
+            let page = match self.memory_scoped_delete_page(tenant_hash, &selected_identity, &after) {
+                Ok(page) => page,
+                Err(status) => return crate::http::json_response(502, &status),
+            };
+            if page.after.is_empty() {
                 break;
             }
-            after = next_after;
+            after = page.after;
             let candidates = page
+                .rows
                 .into_iter()
                 .filter(|(_, record)| record.matches(&identity))
                 .collect::<Vec<_>>();
