@@ -315,6 +315,7 @@ fn memory_catalog_write<'a>(
     }
 }
 
+#[cfg(test)]
 fn memory_delete_ack(memory_id: &str, status: u16, body: &[u8]) -> Result<(), (u16, String)> {
     #[derive(Deserialize)]
     struct Acknowledgment {
@@ -359,6 +360,29 @@ fn memory_write_ack(response: &BatchExecuteResponse, expected: usize) -> Result<
         return Err(failed.status.clone());
     }
     Ok(())
+}
+
+fn memory_delete_cleanup_commands(tenant: u64, record: &MemoryRecord, now: u64) -> Vec<Command> {
+    let mut commands = vec![
+        memory_node_lookup_remove(tenant, memory_record_node_hash(tenant, record)),
+        Command::HashSet {
+            key: memory_history_key(tenant, &record.id), field: history_field(now, 0),
+            value: MemoryHistoryEntry {
+                id: record.id.clone(), event: "DELETE".into(), at_ms: now,
+                memory: None, metadata: None, feedback: None, feedback_reason: None,
+            }.encode(),
+        },
+        Command::SetRemove {
+            key: memory_order_key(tenant), member: memory_order_member(record.updated_at_ms, &record.id),
+        },
+        Command::ZSetCountAdjust {
+            key: memory_identity_key(tenant), member: MEMORY_TOTAL_MEMBER.to_vec(), increment: -1,
+        },
+    ];
+    commands.extend(memory_identity_members(record).into_iter().map(|member| Command::ZSetCountAdjust {
+        key: memory_identity_key(tenant), member, increment: -1,
+    }));
+    commands
 }
 
 fn memory_tombstone_write<'a>(
@@ -1341,39 +1365,7 @@ impl ProxyService {
         ) {
             return crate::http::json_response(200, &json!({"deleted": false, "id": memory_id}));
         }
-        let mut commands = vec![
-            memory_node_lookup_remove(tenant_hash, memory_record_node_hash(tenant_hash, &record)),
-            Command::HashSet {
-                key: memory_history_key(tenant_hash, memory_id),
-                field: history_field(now, 0),
-                value: MemoryHistoryEntry {
-                    id: memory_id.to_string(),
-                    event: "DELETE".to_string(),
-                    at_ms: now,
-                    memory: None,
-                    metadata: None,
-                    feedback: None,
-                    feedback_reason: None,
-                }
-                .encode(),
-            },
-            Command::SetRemove {
-                key: memory_order_key(tenant_hash),
-                member: memory_order_member(record.updated_at_ms, memory_id),
-            },
-            Command::ZSetCountAdjust {
-                key: memory_identity_key(tenant_hash),
-                member: MEMORY_TOTAL_MEMBER.to_vec(),
-                increment: -1,
-            },
-        ];
-        commands.extend(memory_identity_members(&record).into_iter().map(|member| {
-            Command::ZSetCountAdjust {
-                key: memory_identity_key(tenant_hash),
-                member,
-                increment: -1,
-            }
-        }));
+        let commands = memory_delete_cleanup_commands(tenant_hash, &record, now);
         let expected = commands.len();
         let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
         // The catalog removal was acknowledged; a cleanup failure must not recreate it.
@@ -1927,6 +1919,8 @@ impl ProxyService {
         }
         let mut results = Vec::with_capacity(request.memories.len());
         let mut failed = Vec::new();
+        let mut grouped: BTreeMap<u64, Vec<String>> = BTreeMap::new();
+        let mut seen = HashSet::new();
         for value in request.memories {
             let id = value
                 .as_str()
@@ -1941,13 +1935,95 @@ impl ProxyService {
                 failed.push(json!({"error": "memory_id is required"}));
                 continue;
             }
-            let (status, body) = self.memory_delete(id);
-            match memory_delete_ack(id, status, &body) {
-                Ok(()) => results.push(json!({"memory_id": id})),
-                Err((status, code)) => failed.push(json!({
-                    "memory_id": id, "status": status, "code": code,
-                    "body": String::from_utf8_lossy(&body),
-                })),
+            let Some(tenant) = tenant_hash_from_memory_id(id) else {
+                failed.push(json!({"memory_id":id,"status":400,"code":"invalid_memory_id"}));
+                continue;
+            };
+            if !seen.insert(id.to_owned()) {
+                failed.push(json!({"memory_id":id,"status":409,"code":"duplicate_memory_id"}));
+                continue;
+            }
+            grouped.entry(tenant).or_default().push(id.to_owned());
+        }
+        for (tenant, ids) in grouped {
+            if let Err(error) = self.memory_prepare_indexes(tenant) {
+                failed.extend(ids.iter().map(|id| json!({
+                    "memory_id":id,"status":502,"code":error.code,"body":error.message
+                })));
+                continue;
+            }
+            let shard_id = self.context_shard_id(tenant);
+            for page in ids.chunks(MEMORY_UPDATE_PAGE_SIZE) {
+                let records = match self.memory_read_many_checked(tenant, page) {
+                    Ok(records) => records,
+                    Err(error) => {
+                        failed.extend(page.iter().map(|id| json!({
+                            "memory_id":id,"status":502,"code":error.code,"body":error.message
+                        })));
+                        continue;
+                    }
+                };
+                let mut present = Vec::with_capacity(page.len());
+                for (id, record) in page.iter().zip(records) {
+                    if let Some(record) = record {
+                        present.push(record);
+                    } else {
+                        failed.push(json!({"memory_id":id,"status":404,"code":"memory_not_found"}));
+                    }
+                }
+                if present.is_empty() {
+                    continue;
+                }
+                let removed = self.batch_execute(BatchExecuteRequest {
+                    shard_id,
+                    commands: present.iter().map(|record| Command::HashDelete {
+                        key: memory_catalog_key(tenant), field: record.id.clone(),
+                    }).collect(),
+                });
+                // Top-level uncertainty cannot establish any child outcome.
+                if !removed.status.ok || removed.responses.len() != present.len() {
+                    let error = if !removed.status.ok { removed.status } else {
+                        Status::error("invalid_memory_delete_response", "incomplete removal acknowledgments")
+                    };
+                    failed.extend(present.iter().map(|record| json!({
+                        "memory_id":record.id,"status":502,"code":error.code,"body":error.message
+                    })));
+                    continue;
+                }
+                let mut confirmed = Vec::with_capacity(present.len());
+                for (record, ack) in present.into_iter().zip(removed.responses) {
+                    if !ack.status.ok {
+                        failed.push(json!({"memory_id":record.id,"status":502,
+                            "code":ack.status.code,"body":ack.status.message}));
+                    } else if matches!(ack.response, CommandResponse::Integer { value: 1 }) {
+                        confirmed.push(record);
+                    } else {
+                        let (status, code) = if matches!(ack.response, CommandResponse::Integer { value: 0 }) {
+                            (409, "memory_delete_not_applied")
+                        } else {
+                            (502, "invalid_memory_delete_response")
+                        };
+                        failed.push(json!({"memory_id":record.id,"status":status,"code":code}));
+                    }
+                }
+                if confirmed.is_empty() {
+                    continue;
+                }
+                let now = now_ms().max(1);
+                let mut commands = Vec::with_capacity(confirmed.len() * 7);
+                for record in &confirmed {
+                    commands.extend(memory_delete_cleanup_commands(tenant, record, now));
+                }
+                let expected = commands.len();
+                let cleanup = self.batch_execute(BatchExecuteRequest { shard_id, commands });
+                // Never compensate an acknowledged removal, even if cleanup was uncertain.
+                if let Err(error) = memory_write_ack(&cleanup, expected) {
+                    failed.extend(confirmed.iter().map(|record| json!({
+                        "memory_id":record.id,"status":502,"code":error.code,"body":error.message
+                    })));
+                } else {
+                    results.extend(confirmed.iter().map(|record| json!({"memory_id":record.id})));
+                }
             }
         }
         let deleted = results.len();
