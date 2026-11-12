@@ -272,9 +272,65 @@ pub fn context_block_target_bytes() -> usize {
 }
 
 pub fn effective_block_slab_target_bytes() -> u64 {
-    try_slab_target_from_getter(|name| std::env::var(name).ok())
+    try_scoped_slab_target_from_getter(|name| std::env::var(name).ok())
         .unwrap_or_else(|message| panic!("{message}"))
 }
+
+thread_local! {
+    static SCOPED_SLAB_TARGET: std::cell::Cell<Option<Option<u64>>> = const { std::cell::Cell::new(None) };
+    #[cfg(test)]
+    static SLAB_TARGET_CAPTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Lazily capture the validated slab target for one synchronous operation.
+/// Nested operations capture independently and restore their caller's value on exit.
+pub(crate) struct SlabTargetScope {
+    previous: Option<Option<u64>>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl SlabTargetScope {
+    pub(crate) fn new() -> Self {
+        Self {
+            previous: SCOPED_SLAB_TARGET.with(|slot| slot.replace(Some(None))),
+            _thread: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for SlabTargetScope {
+    fn drop(&mut self) {
+        SCOPED_SLAB_TARGET.with(|slot| slot.set(self.previous));
+    }
+}
+
+fn try_scoped_slab_target_from_getter(get: impl Fn(&str) -> Option<String>) -> Result<u64, String> {
+    SCOPED_SLAB_TARGET.with(|slot| {
+        let scope = slot.get();
+        if let Some(Some(target)) = scope {
+            return Ok(target);
+        }
+        let target = try_slab_target_from_getter(get)?;
+        if scope.is_some() {
+            slot.set(Some(Some(target)));
+            #[cfg(test)]
+            SLAB_TARGET_CAPTURES.with(|count| count.set(count.get() + 1));
+        }
+        Ok(target)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn slab_target_scope_for_test(target: u64) -> SlabTargetScope {
+    assert!((1024..=MAX_BLOCK_SLAB_TARGET_BYTES).contains(&target));
+    let scope = SlabTargetScope::new();
+    SCOPED_SLAB_TARGET.with(|slot| slot.set(Some(Some(target))));
+    scope
+}
+
+#[cfg(test)]
+#[path = "storage_slab_target_scope_tests.rs"]
+mod slab_target_scope_tests;
 
 fn try_slab_target_from_getter(get: impl Fn(&str) -> Option<String>) -> Result<u64, String> {
     // Keep live reads, alias precedence and address validation without unrelated lookups.

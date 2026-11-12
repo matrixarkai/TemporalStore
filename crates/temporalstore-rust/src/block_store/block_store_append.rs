@@ -144,7 +144,7 @@ impl BlockStore {
         //    even with blocks kept durable: the manifest is slab/GC metadata reconstructed
         //    by reconcile-on-open from the durable block records, never a read dependency.
         let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
-        let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
+        let defer_manifest = defer_data_sync;
         if !defer_data_sync {
             inner.active_append_file.as_ref().expect("active slab file").sync_data()?;
         }
@@ -176,13 +176,21 @@ impl BlockStore {
 
     pub fn append_batch_with_block_metadata(
         &self,
-        records: Vec<BlockAppendRecord<'_>>,
+        mut records: Vec<BlockAppendRecord<'_>>,
     ) -> Result<Vec<ElementEntry>, BlockStoreError> {
+        if records.len() == 1 {
+            let (bytes, object_id, routing_bucket, ordinal) = records.pop().expect("one record");
+            return self.append_block_of_object(bytes, object_id, routing_bucket, ordinal)
+                .map(|address| vec![address]);
+        }
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         if records.is_empty() {
             return Ok(Vec::new());
         }
-        std::fs::create_dir_all(&inner.root)?;
+        if !inner.root_created {
+            std::fs::create_dir_all(&inner.root)?;
+            inner.root_created = true;
+        }
         let slab_target_bytes = effective_block_slab_target_bytes();
         let mut file = None::<std::fs::File>;
         let mut addresses = Vec::with_capacity(records.len());
@@ -244,7 +252,7 @@ impl BlockStore {
         // never-fsync'd block is rebuilt, never left dangling. Under the TS_WAL_LEGACY_RECOVERY
         // escape hatch both barriers stay synchronous on the live path (delta-fold recovery).
         let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
-        let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
+        let defer_manifest = defer_data_sync;
         if let Some(mut current) = file {
             current.flush()?;
             if !defer_data_sync {
@@ -273,6 +281,10 @@ impl BlockStore {
         Ok(addresses)
     }
 }
+
+#[cfg(test)]
+#[path = "block_store_append_operation_tests.rs"]
+mod append_operation_tests;
 
 #[cfg(test)]
 mod sync_tests {
