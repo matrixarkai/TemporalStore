@@ -30,6 +30,19 @@ rather than a footnote.
 | Understand persistence and feature writes | [Architecture](#architecture) |
 | Build from source | [Build instructions](#build--test-from-source) |
 
+## Getting Help
+
+Search [public issues](https://github.com/matrixarkai/TemporalStore/issues) before
+opening a report. Include the server revision, client/provider version, endpoint
+type, acknowledgement policy, replication mode, and a small reproducible request.
+For feature-serving performance, include entity count, feature sizes, batch width,
+concurrency, cache budget, and accepted versus stale rows. Separate warm reads
+from storage misses and report latency percentiles alongside throughput.
+
+Remove credentials and use synthetic feature values rather than production data.
+Follow the [security policy](docs/SECURITY.md) for sensitive reports, not a public
+issue. For code or documentation changes, start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Choose the Serving Path
 
 ### Start a native feature-serving node
