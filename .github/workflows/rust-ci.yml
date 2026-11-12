@@ -126,11 +126,11 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
-      - name: WAL retention correctness and allocation checks
+      - name: Retention and block ownership checks
         timeout-minutes: 30
         run: |
           set -o pipefail
-          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5; do
+          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3; do
             filter=${spec%:*}
             expected=${spec##*:}
             cargo test -p temporalstore-rust --lib --features alloc-probe "$filter" \
