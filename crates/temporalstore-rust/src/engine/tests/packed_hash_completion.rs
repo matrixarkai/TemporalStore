@@ -192,12 +192,34 @@ fn packed_hash_completion_bounds_demand_lookups_for_new_projections() {
         let filing_lookups = (4 * 2 * width) as u64;
         assert_eq!(binary_search_count_for_test(), filing_lookups + demand_probes,
             "new-field filing plus at most one cache-demand lookup per row");
-        verify(&engine, &old_fields, 0);
-        verify(&engine, &new_fields, 1);
+        let verify_both = |engine: &TemporalEngine| {
+            let result = engine.batch_hash_multi_get_compact(BatchHashMultiGetRequest {
+                shard_id: 1,
+                keys: (0..4).map(|row| format!("completion-{row}")).collect(),
+                fields: old_fields.iter().chain(&new_fields).cloned().collect(),
+            });
+            assert!(result.status.ok && result.errors.is_empty());
+            assert_eq!(result.rows.len(), 4);
+            let expected: Vec<_> = (0..20).map(|column| Some(vec![column as u8; 48]))
+                .chain((0..width).map(|column| Some(vec![1 + column as u8; 48])))
+                .collect();
+            for row in &result.rows {
+                assert_eq!(row.0, expected);
+            }
+            let shards = engine.shards.read().unwrap();
+            let shard = shards.get(&1).unwrap();
+            for row in 0..4 {
+                let key = format!("completion-{row}");
+                let addresses: std::collections::BTreeSet<_> = shard.bucket_index.hashes.get(&key)
+                    .unwrap().values().map(crate::engine::live_block_key).collect();
+                assert_eq!(addresses.len(), 2, "both partial-view frames must remain reachable");
+                assert_eq!(shard.bucket_index.object_block_refs("hash", &key).unwrap().len(), 2);
+            }
+        };
+        verify_both(&engine);
         engine.write_ahead_log_store().flush(1).unwrap();
         drop(engine);
         let restored = open(dir.path());
-        verify(&restored, &old_fields, 0);
-        verify(&restored, &new_fields, 1);
+        verify_both(&restored);
     }
 }
