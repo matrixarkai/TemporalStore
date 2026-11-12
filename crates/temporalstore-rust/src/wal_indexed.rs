@@ -379,7 +379,11 @@ pub(crate) fn read<R: Read + Seek>(
                     .checked_add(u64::from(frame.encoded))
                     .ok_or_else(|| invalid("indexed WAL length overflow"))?;
                 inflated += u64::from(frame.decoded);
-                combined = crc32c::crc32c_combine(combined, frame.checksum, frame.encoded as usize);
+                combined = crate::checksum::crc32c_combine(
+                    combined,
+                    frame.checksum,
+                    frame.encoded as usize,
+                );
             }
             if end != payload_len
                 || inflated > MAX_REUSED_INFLATE_BYTES as u64
