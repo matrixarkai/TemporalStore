@@ -437,6 +437,15 @@ impl DataNodeRuntime {
         shard_id: ShardId,
         options: StorageManagerOptions,
     ) -> StorageManagerLoopReport {
+        self.run_storage_manager_once_with_report_details(shard_id, options, true)
+    }
+
+    fn run_storage_manager_once_with_report_details(
+        &self,
+        shard_id: ShardId,
+        options: StorageManagerOptions,
+        detailed_report: bool,
+    ) -> StorageManagerLoopReport {
         // The stage walk counters are read-and-cleared at each stage boundary, so the first span
         // must not inherit whatever ran before this round.
         let mut spans = LoopSpans::start();
@@ -595,7 +604,7 @@ impl DataNodeRuntime {
         // pressure -- it just has nothing to free -- so the record must not read as "no pressure".
         let wal_reclaim_reported = wal_reclaim_pressure || memo_hit == Some(true);
         if options.enable_wal_reclaim && wal_reclaim_pressure {
-            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+            let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
@@ -614,7 +623,7 @@ impl DataNodeRuntime {
                 block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
-            });
+            }, detailed_report);
             if let Some(manifest) = response.report.dump_manifest.as_ref() {
                 clear_dirty_shard_buckets(
                     &self.inner.dirty,
@@ -1010,7 +1019,7 @@ impl DataNodeRuntime {
         // lowering the bound below the threshold lands on the wide arm, whose input this
         // invalidation would zero.
         if options.enable_memory_reclaim && cache_pressure {
-            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+            let response = self.apply_storage_lifecycle_with_report_details(StorageLifecycleRequest {
                 item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
@@ -1034,7 +1043,7 @@ impl DataNodeRuntime {
                 block_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: true,
                 warm_cache: false,
-            });
+            }, detailed_report);
             let mut stats = self
                 .inner
                 .stats
@@ -1339,7 +1348,9 @@ impl DataNodeRuntime {
                 invalidate_cache: false,
                 warm_cache: false,
             };
-            let response = self.apply_storage_lifecycle(index_gc_request.clone());
+            let response = self.apply_storage_lifecycle_with_report_details(
+                index_gc_request.clone(), detailed_report,
+            );
             // Pruning manifests and rolling forward installs make the index log RECLAIMABLE.
             // Neither frees a byte of it: `storage_index_gc_report` is what truncates, and until
             // now nothing on this loop reached it -- so a server started as shipped grew its index
@@ -1699,6 +1710,11 @@ impl DataNodeRuntime {
             stats.storage_manager_last_shard_id = Some(shard_id);
         }
 
+        // Compact execution reports above carry the dump manifest needed by index-GC fences.
+        // Never expose their uncollected diagnostic fields as a complete lifecycle report.
+        if !detailed_report {
+            lifecycle_report = None;
+        }
         let duration_us = spans.started.elapsed().as_micros() as u64;
         StorageManagerLoopReport {
             shard_id,
@@ -1749,7 +1765,7 @@ impl DataNodeRuntime {
                     if scheduler_stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    runtime.run_storage_manager_once(shard_id, options.clone());
+                    runtime.run_storage_manager_once_with_report_details(shard_id, options.clone(), false);
                 }
             }
         });
@@ -1775,7 +1791,7 @@ impl DataNodeRuntime {
                 if scheduler_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                runtime.run_storage_manager_once(shard_id, options.clone());
+                runtime.run_storage_manager_once_with_report_details(shard_id, options.clone(), false);
             }
         });
         StorageLifecycleScheduler {
@@ -1807,7 +1823,15 @@ impl DataNodeRuntime {
         &self,
         request: StorageLifecycleRequest,
     ) -> StorageLifecycleResponse {
-        let report = self.inner.engine.apply_storage_lifecycle(request);
+        self.apply_storage_lifecycle_with_report_details(request, true)
+    }
+
+    fn apply_storage_lifecycle_with_report_details(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+    ) -> StorageLifecycleResponse {
+        let report = self.inner.engine.apply_storage_lifecycle_with_report_details(request, detailed_report);
         self.inner
             .stats
             .lock()
@@ -1858,7 +1882,7 @@ impl DataNodeRuntime {
                 if scheduler_stop.load(Ordering::Relaxed) {
                     break;
                 }
-                runtime.apply_storage_lifecycle(request.clone());
+                runtime.apply_storage_lifecycle_with_report_details(request.clone(), false);
             }
         });
         StorageLifecycleScheduler {
@@ -2167,6 +2191,10 @@ impl DataNodeRuntime {
     }
 }
 
+
+#[cfg(test)]
+#[path = "maintenance_report_tests.rs"]
+mod maintenance_report_tests;
 
 #[cfg(test)]
 mod eviction_loop_terms_tests {
