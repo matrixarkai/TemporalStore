@@ -174,3 +174,27 @@ fn packed_hash_completion_ordinal_is_lazy_only_for_wal_frames() {
         }
     }
 }
+
+#[test]
+fn packed_hash_completion_bounds_demand_lookups_for_new_projections() {
+    for width in [1, 20, 64] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        let old_fields: Vec<_> = (0..20).map(|i| format!("old-{i:03}")).collect();
+        let new_fields: Vec<_> = (0..width).map(|i| format!("new-{i:03}")).collect();
+        shared_rows(&engine, &old_fields, 0);
+        reset_binary_search_count_for_test();
+        shared_rows(&engine, &new_fields, 1);
+        let demand_probes = 4 * u64::from(
+            std::env::var("TS_HASH_WRITE_AROUND").as_deref() != Ok("0"));
+        assert_eq!(binary_search_count_for_test(), demand_probes,
+            "a missing first field must not scan every field in the new projection");
+        verify(&engine, &old_fields, 0);
+        verify(&engine, &new_fields, 1);
+        engine.write_ahead_log_store().flush(1).unwrap();
+        drop(engine);
+        let restored = open(dir.path());
+        verify(&restored, &old_fields, 0);
+        verify(&restored, &new_fields, 1);
+    }
+}

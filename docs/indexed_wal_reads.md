@@ -109,8 +109,9 @@ the first read may instead fetch and decompress a WAL compression group. Measure
 that tradeoff with both active writers and readers, not write throughput alone.
 
 An overwrite refreshes the payload cache when an overwritten resident frame is
-already cached. A single probe of the first resident address in the shared
-projection makes this decision before retiring the old frame. Cold writes do not
+already cached. One lookup of the first selected field in the shared projection
+makes this decision before retiring the old frame; an absent field stays cold
+without scanning the other selected fields. Cold writes do not
 displace the read-demanded working set, while hot packed rows can remain cached
 across updates. This is an admission policy, not a guarantee that every partial
 projection or capacity-constrained write remains cached.

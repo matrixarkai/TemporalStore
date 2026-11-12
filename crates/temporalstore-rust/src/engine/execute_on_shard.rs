@@ -945,11 +945,11 @@ fn write_packed_hash_entries(
         }
         None => crate::engine::container_blocks::encode_utf8_container_block(&packed_entries),
     };
-    // Keep a read-demanded row hot across updates without admitting cold writes. One resident
-    // address is enough for the homogeneous packed projection, and bounds this to one probe.
+    // Probe only the first selected field, even when a new projection has no resident fields.
+    // Existing homogeneous rows share its frame; partial projections use best-effort admission.
     let frame_cache = if frame_cache == PackedFrameCache::ReadThrough && block.len() < 8 * 1024
         && shard.bucket_index.hashes.get(key)
-            .and_then(|fields| packed_entries.iter().find_map(|(field, _)| fields.get(field)))
+            .and_then(|fields| fields.get(&packed_entries[0].0))
             .is_some_and(|address| cache.peek(&CacheKey::page_with_slot(
                 shard_id, address.block_slab_id(), address.offset(), address.length(),
                 Some(routing_bucket))))
