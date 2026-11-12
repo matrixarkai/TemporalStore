@@ -3,10 +3,9 @@
 **Open-source Rust storage for online features, LLM context, and control state.**
 
 Feature serving and LLM context are equally important, first-class workloads.
-Serve latest values, long histories, high-cardinality aggregates, ranked window
-features, frequency caps, and agent memory from the same temporal storage engine.
-Context management is implemented in TemporalStore, including ingestion,
-retrieval, ranking, token-budgeted packing, and its APIs and SDKs.
+Serve latest values, long histories, high-cardinality aggregates, WindowReduce
+features, frequency caps, and agent memory in one engine. Context ingestion,
+retrieval, ranking, token-budgeted packing, APIs, and SDKs are in TemporalStore.
 
 **Apache-2.0, available worldwide for use, modification, commercial deployment,
 and contributions under the license.**
@@ -29,13 +28,12 @@ and contributions under the license.**
 
 ### WindowReduce Features
 
-A cell-based model within Feature: each timestamped snapshot contains members,
-labels, and named numeric lanes. Writes merge lanes using their declared reducers.
-`CellRankQuery` selects a window, filters cells, reduces statistics per member,
-scores, returns a bounded top-k, and projects the requested fields. This supports
-engagement rankings, conversion rates, and multi-signal behavior features without
-building a separate serving-time aggregation service. Query and schema bounds
-are explicit; ordinary scalar feature aggregates remain available alongside it.
+A cell-based model within Feature stores timestamped snapshots of members,
+labels, and numeric lanes. Writes merge lanes with declared reducers.
+`CellRankQuery` selects a window, filters, reduces per member, scores, returns
+bounded top-k, and projects fields. Build engagement rankings, conversion rates,
+and multi-signal features alongside scalar aggregates, with explicit schema and
+query bounds.
 
 Feast remains a first-class integration, not a replacement for native clients.
 Use the [Rust SDK](https://github.com/matrixarkai/TemporalStore/tree/main/sdk/rust/temporalstore),
@@ -82,10 +80,10 @@ liveness, not whether every shard can serve requests.
 
 ## Architecture and durability
 
-TemporalStore owns temporal indexes, feature and context APIs, packed blocks,
-caching, persistence, and storage maintenance. Replicated deployments add metadata
-placement and consensus. Asynchronous acceptance and a confirmed persistence
-barrier provide different guarantees; choose settings for the required recovery.
+TemporalStore owns temporal indexes, feature/context APIs, packed blocks, caching,
+persistence, and maintenance. Replicated deployments add placement and consensus.
+Asynchronous acceptance and confirmed persistence provide different guarantees;
+choose settings for the required recovery.
 
 Maintenance spans preparation, checkpoint/dump, expiry, eviction, compaction,
 page/slab, index and WAL reclaim, delayed destruction, and restore. Both workload
@@ -104,6 +102,10 @@ qualification work, not a blanket production-readiness claim.
 - Bounded embedding scoring is not a graph-based ANN index. The built-in hash embedding is for tests; encoder changes require compatible model identity and re-embedding.
 - Validate authentication, exposure, backups, replication, and acknowledgement settings before deployment.
 - Formats can change before a stable milestone. Pin revisions and test retained-data upgrades.
+
+The engine is Rust-native. Development targets `main`; `rust-main` is retired.
+There is no brpc/thrift compatibility layer. Validate production-readiness claims
+with deployment guides and readiness reports for the chosen configuration.
 
 ## Five open-source projects
 
