@@ -117,6 +117,31 @@ fn indexed_carried_reads_select_from_a_large_packed_transport() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn positional_point_reads_do_not_move_the_shared_file_cursor() {
+    let frame = payload(3 * WAL_BLOCK_BYTES as usize, 13);
+    let packed = packed_frames::pack(&frame, 0, 0, 11);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("packed.bin");
+    fs::write(&path, packed).unwrap();
+    let mut file = File::open(path).unwrap();
+    file.seek(SeekFrom::Start(9)).unwrap();
+    {
+        let mut reader = packed_frames::PointReader::new(&mut file, 0)
+            .unwrap()
+            .unwrap();
+        reader.seek(SeekFrom::Start(WAL_BLOCK_BYTES + 7)).unwrap();
+        let mut bytes = [0; 32];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            frame[WAL_BLOCK_BYTES as usize + 7..WAL_BLOCK_BYTES as usize + 39]
+        );
+    }
+    assert_eq!(file.stream_position().unwrap(), 9);
+}
+
 #[test]
 fn half_block_records_pack_without_record_sized_padding() {
     let _policy = SegmentPolicy::enter(0);

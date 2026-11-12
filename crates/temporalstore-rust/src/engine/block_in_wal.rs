@@ -1047,7 +1047,7 @@ fn names_block(block: &StagedBlock, object_id: u64, element_name: Option<&str>) 
 /// Entries cannot go stale: WAL records are immutable, a superseding write registers a newer
 /// log id, and the post-dump WAL sweep never truncates a registered record (its floor).
 type SharedRecordBlocks = Arc<Vec<StagedBlock>>;
-type CachedRecord = (LocalWriteAheadLogStore, ShardId, u64, SharedRecordBlocks);
+type CachedRecord = (crate::wal::WriteAheadLogIdentity, ShardId, u64, SharedRecordBlocks);
 
 fn cached_record(store: &LocalWriteAheadLogStore, shard_id: ShardId, log_id: u64) -> Option<SharedRecordBlocks> {
     let cache = record_lru().lock().ok()?;
@@ -1073,7 +1073,7 @@ fn cache_record(
         if cache.len() >= 8 {
             retired = Some(cache.remove(0));
         }
-        cache.push((store.clone(), shard_id, log_id, Arc::clone(&blocks)));
+        cache.push((store.weak_identity(), shard_id, log_id, Arc::clone(&blocks)));
     }
     // Releasing a full decoded batch can free many payloads; keep it outside the cache lock.
     drop(retired);

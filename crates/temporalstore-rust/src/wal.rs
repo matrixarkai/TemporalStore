@@ -107,6 +107,7 @@ pub fn encode_wal_line_for_test(
 
 #[path = "wal/packed_frames.rs"]
 mod packed_frames;
+mod point_readers;
 
 /// Read one complete physical record, including any continuation envelope and footer slots.
 fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<packed_frames::ReadRecord>> {
@@ -1126,6 +1127,21 @@ pub struct LocalWriteAheadLogStore {
     flat_append: Arc<AtomicBool>,
 }
 
+/// Identifies one log owner without extending its files' lifetime through a derived cache.
+#[derive(Debug, Clone)]
+pub(crate) struct WriteAheadLogIdentity {
+    inner: std::sync::Weak<Mutex<WriteAheadLogInner>>,
+}
+
+impl WriteAheadLogIdentity {
+    pub(crate) fn same_log(&self, store: &LocalWriteAheadLogStore) -> bool {
+        std::ptr::eq(self.inner.as_ptr(), Arc::as_ptr(&store.inner))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_live(&self) -> bool { self.inner.strong_count() > 0 }
+}
+
 #[derive(Debug, Default)]
 struct GroupCommitState {
     // Highest WAL sequence proven durable (fdatasync'd) for this shard. A caller
@@ -1200,6 +1216,7 @@ struct WriteAheadLogInner {
     /// here so its capacity survives; a steady workload stops allocating for it entirely.
     encode_scratch: Vec<u8>,
     indexed_records: crate::wal_proto::indexed::Cache,
+    point_readers: point_readers::Cache,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
@@ -1288,6 +1305,7 @@ impl LocalWriteAheadLogStore {
                 append_lock_by_shard: HashMap::new(),
                 encode_scratch: Vec::new(),
                 indexed_records: crate::wal_proto::indexed::Cache::default(),
+                point_readers: point_readers::Cache::default(),
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
@@ -2579,6 +2597,10 @@ impl LocalWriteAheadLogStore {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    pub(crate) fn weak_identity(&self) -> WriteAheadLogIdentity {
+        WriteAheadLogIdentity { inner: Arc::downgrade(&self.inner) }
+    }
+
     pub fn set_block_retention_floor(&self, shard_id: ShardId, sequence: u64) {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.block_retention_floor_by_shard.insert(shard_id, sequence);
@@ -2690,30 +2712,37 @@ impl LocalWriteAheadLogStore {
         object_id: u64, element_name: Option<&str>,
     ) -> Result<Option<CarriedBlockRead>, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let Some((path, physical)) = locate_log_id(&inner.root, shard_id, log_id)? else {
+        let source = {
+            let WriteAheadLogInner { root, point_readers, .. } = &mut *inner;
+            point_readers.take(root, shard_id, log_id)?
+        };
+        let Some(mut source) = source else {
             return Ok(None);
         };
-        let mut file = File::open(path)?;
         let mut bytes_read = 0;
-        let selected = match packed_frames::PointReader::new(&mut file, physical)? {
-            Some(mut reader) => {
-                let result = crate::wal_proto::indexed::read(
-                    &mut reader, 0, &mut inner.indexed_records, shard_id, log_id,
-                    sequence, index, object_id, element_name, &mut 0,
-                );
-                bytes_read = reader.physical_bytes;
-                result
-            }
-            None => Ok(None),
-        };
+        let result = (|| {
+            let selected = match packed_frames::PointReader::new(&mut source.file, source.physical)? {
+                Some(mut reader) => {
+                    let result = crate::wal_proto::indexed::read(
+                        &mut reader, 0, &mut inner.indexed_records, shard_id, log_id,
+                        sequence, index, object_id, element_name, &mut 0,
+                    );
+                    bytes_read = reader.physical_bytes;
+                    result
+                }
+                None => Ok(None),
+            };
+            if let Some(block) = selected? { return Ok(Some(CarriedBlockRead::Block(block))); }
+            source.file.seek(SeekFrom::Start(source.physical))?;
+            let mut reader = BufReader::with_capacity(1024, &mut source.file);
+            let raw = read_raw_record(&mut reader)?;
+            if let Some(record) = raw.as_ref() { bytes_read += record.physical_bytes; }
+            Ok(raw.map(|record| CarriedBlockRead::Record(record.bytes)))
+        })();
         inner.stats.reads += 1;
         inner.stats.bytes_read += bytes_read;
-        if let Some(block) = selected? { return Ok(Some(CarriedBlockRead::Block(block))); }
-        file.seek(SeekFrom::Start(physical))?;
-        let mut reader = BufReader::with_capacity(1024, file);
-        let raw = read_raw_record(&mut reader)?;
-        if let Some(record) = raw.as_ref() { inner.stats.bytes_read += record.physical_bytes; }
-        Ok(raw.map(|record| CarriedBlockRead::Record(record.bytes)))
+        if result.is_ok() { inner.point_readers.put(source); }
+        result
     }
 
     /// Reclaim this shard's WAL prefix below `retain_from_sequence`, never going past what the
@@ -2796,6 +2825,7 @@ impl LocalWriteAheadLogStore {
         // highest-sequence record and anything a block still depends on, and a piece unlinked here
         // is gone in a way the copy path below could never undo. What remains is the piece being
         // written, which that path handles as it always has.
+        inner.point_readers.clear_shard(shard_id);
         let (dropped_segments, dropped_bytes) =
             drop_covered_wal_segments(&inner.root, shard_id, effective_retain)?;
         // Records are appended in strictly ascending sequence -- the live path increments under
@@ -3570,6 +3600,7 @@ fn roll_wal_segment_if_due(
     inner.prealloc_physical_by_shard.remove(&shard_id);
 
     // Seal by rename: atomic, so the piece is either being written or sealed, never neither.
+    inner.point_readers.clear_directory(shard_id);
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
     fs::rename(path.as_path(), &sealed)?;
     sync_parent_dir(&sealed)?;
@@ -3780,14 +3811,17 @@ struct WalPiece {
 /// find out. Keeping them costs nothing and is what lets a walk decide from the name alone that a
 /// piece is behind it.
 fn wal_segment_pieces(root: &Path, shard_id: ShardId) -> Vec<WalPiece> {
+    wal_segment_pieces_from_entries(root, shard_id, fs::read_dir(root).into_iter().flatten().flatten())
+}
+
+fn wal_segment_pieces_from_entries(
+    root: &Path, shard_id: ShardId, entries: impl Iterator<Item = fs::DirEntry>,
+) -> Vec<WalPiece> {
     #[cfg(test)]
     WAL_SEGMENT_LISTINGS.with(|listings| listings.set(listings.get() + 1));
     // Built once for the whole listing rather than once per file: see `SealedNameParts`.
     let parts = SealedNameParts::for_shard(shard_id);
-    let mut sealed = fs::read_dir(root)
-        .into_iter()
-        .flatten()
-        .flatten()
+    let mut sealed = entries
         .map(|entry| entry.path())
         .inspect(|_| {
             // The ENTRIES, not the call. This is the quantity that grows with the directory, and
@@ -4966,7 +5000,33 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
         let mut file = open_wal_read(path, &mut tally)?;
         file.read_window(&mut window)?
     };
-    let scanned = &window[..read];
+    match decode_wal_base_probe(&window[..read])? {
+        Some(base) => Ok(base),
+        None => read_wal_base_buffered(path),
+    }
+}
+
+/// Read the base from the same descriptor that will serve the record. A concurrent rename
+/// must not combine an old path header with the bytes of its replacement.
+fn read_wal_base_from_file(file: &mut File) -> Result<(u64, u64), WriteAheadLogError> {
+    #[cfg(test)]
+    WAL_SEGMENT_HEADER_READS.with(|reads| reads.set(reads.get() + 1));
+    file.seek(SeekFrom::Start(0))?;
+    let mut window = [0u8; WAL_BASE_HEADER_PROBE_BYTES];
+    let read = file.read(&mut window)?;
+    if let Some(base) = decode_wal_base_probe(&window[..read])? { return Ok(base); }
+    file.seek(SeekFrom::Start(0))?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    let read = reader.read_until(b'\n', &mut line)?;
+    match crate::log_framing::decode_base_header(&line)? {
+        Some(base) => Ok((base, read as u64)),
+        None => Ok((0, 0)),
+    }
+}
+
+fn decode_wal_base_probe(scanned: &[u8]) -> Result<Option<(u64, u64)>, WriteAheadLogError> {
+    let read = scanned.len();
     let line: &[u8] = match scanned.iter().position(|byte| *byte == b'\n') {
         // The terminated header line, inside the window. Every piece this engine has ever
         // written is this shape.
@@ -4983,18 +5043,18 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
         // called base zero. Read it the way the buffered reader did and let the decoder refuse
         // it.
         None if scanned.starts_with(crate::log_framing::BASE_HEADER_MAGIC) => {
-            return read_wal_base_buffered(path);
+            return Ok(None);
         }
         // A full window with no terminator and no magic: not a header, and the buffered reader
         // would have read to the first newline in the file to reach the same conclusion.
-        None => return Ok((0, 0)),
+        None => return Ok(Some((0, 0))),
     };
     if line.is_empty() {
-        return Ok((0, 0));
+        return Ok(Some((0, 0)));
     }
     match crate::log_framing::decode_base_header(line)? {
-        Some(base) => Ok((base, line.len() as u64)),
-        None => Ok((0, 0)),
+        Some(base) => Ok(Some((base, line.len() as u64))),
+        None => Ok(Some((0, 0))),
     }
 }
 

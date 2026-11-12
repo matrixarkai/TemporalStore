@@ -54,6 +54,41 @@ is additional metadata outside the configured payload-cache budget. It does not
 cache decoded block groups. In-flight buffers, allocator overhead, and the
 existing legacy decoded-record cache remain separate memory costs.
 
+### Checked reader reuse
+
+On systems with stable Unix file identities, carried-block reads also reuse
+sealed-segment descriptors. Every reuse checks the current path's device, inode,
+length, modification time, and change time. Replaced or deleted paths are not
+served through old descriptors. The base header is read from the descriptor that
+will serve the bytes, not from a separately opened path.
+
+Descriptor lookup metadata is bounded to 256 KiB and 128 descriptors per WAL
+store. A separate ordered segment-list cache retains at most eight shard lists
+and 1 MiB. These budgets are additional to the 4 MiB compressed-record directory
+cache and the configured payload cache. No decoded payload is retained by the
+reader cache. Directory changes invalidate lists; a failed lookup refreshes once
+even if filesystem timestamps did not distinguish a concurrent roll.
+
+Active files are not retained because they can grow and be replaced. The sum of
+file lengths represented by retained sealed descriptors is limited to 64 MiB.
+Owned reclaim closes shard descriptors before unlinking or replacing files, so
+they do not keep its reclaimed data alive. An external process can unlink a file
+between operations; its descriptor is retired on the next lookup, eviction, or
+store shutdown, with the represented-file-size limit bounding delayed release.
+Opening or listing under descriptor pressure can retire an owned cached reader
+and retry; the cache does not require all 128 descriptor slots to be available.
+
+Unix point reads use positional I/O instead of changing a shared file cursor.
+Every point read still validates the transport header, every footer, and the
+selected compressed data. Other platforms retain uncached descriptor lookup and
+the seek/read implementation when stable identity or positional I/O is not
+available. Write encoding, acknowledgement timing, and durability barriers do not
+change.
+
+The legacy decoded-record cache uses weak log identities. Its bounded decoded
+values can outlive a caller, but they do not retain a WAL owner, its descriptors,
+or its owned scratch directory after the real store handles are dropped.
+
 Small compression groups and the directory can increase WAL bytes compared with
 whole-record compression. Measure accepted writes, storage-miss reads, and log
 bytes together when selecting a deployment policy. Fewer requested file bytes or
