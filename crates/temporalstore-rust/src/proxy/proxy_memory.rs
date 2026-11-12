@@ -573,7 +573,7 @@ fn normalized_messages(
 ) -> Result<Vec<(String, String, Option<String>)>, String> {
     match messages {
         MemoryMessages::Text(text) => {
-            let text = if infer { text.trim().to_string() } else { text };
+            let text = memory_normalize_text(text, infer);
             if text.trim().is_empty() {
                 Err("messages must contain non-empty text".to_string())
             } else {
@@ -585,24 +585,28 @@ fn normalized_messages(
             for value in values {
                 match value {
                     Value::String(text) if !text.trim().is_empty() => {
-                        let text = if infer { text.trim().to_string() } else { text };
+                        let text = memory_normalize_text(text, infer);
                         out.push(("user".to_string(), text, None));
                     }
-                    Value::Object(map) => {
+                    Value::Object(mut map) => {
                         let role = map.get("role").and_then(Value::as_str).unwrap_or("user");
                         if !infer && (role == "system" || map.get("role").and_then(Value::as_str).is_none()) {
                             continue;
                         }
-                        let content = map
-                            .get("content")
-                            .or_else(|| map.get("text"))
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
+                        let content = match map.remove("content").or_else(|| map.remove("text")) {
+                            Some(Value::String(content)) => content,
+                            _ => continue,
+                        };
                         if !content.trim().is_empty() {
-                            let content = if infer { content.trim() } else { content };
-                            let actor_id = map.get("name").and_then(Value::as_str)
-                                .filter(|name| !name.is_empty()).map(str::to_owned);
-                            out.push((role.to_string(), content.to_string(), actor_id));
+                            let role = match map.remove("role") {
+                                Some(Value::String(role)) => role,
+                                _ => "user".to_string(),
+                            };
+                            let actor_id = match map.remove("name") {
+                                Some(Value::String(name)) if !name.is_empty() => Some(name),
+                                _ => None,
+                            };
+                            out.push((role, memory_normalize_text(content, infer), actor_id));
                         }
                     }
                     _ => {}
@@ -790,11 +794,10 @@ impl ProxyService {
         let mut actor_ids = Vec::new();
         for (index, (role, text, actor_id)) in messages.into_iter().enumerate() {
             let id = memory_id(tenant_hash, now, base_sequence + index as u64, &text);
-            if infer {
-                source_roles.push(role.clone());
-            }
             let mut metadata = request.metadata.clone();
-            if !infer {
+            if infer {
+                source_roles.push(role);
+            } else {
                 if metadata.is_null() {
                     metadata = json!({});
                 }
@@ -820,7 +823,7 @@ impl ProxyService {
             });
         }
         if infer {
-            let body = match self.memory_extract_records(&scope, tenant_hash, &records, source_roles, request.provider) {
+            let body = match self.memory_extract_records(&scope, tenant_hash, &mut records, source_roles, request.provider) {
                 Ok(body) => body,
                 Err(response) => return response,
             };
