@@ -952,27 +952,22 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         }
     }
 
-    // THE IDENTITY COMES FROM BESIDE THE BLOCK. The delete marker below states an object, and
-    // the entry is losing its own copy; the inversion is built once for the whole walk, which
-    // `shard` being immutable here makes free of any borrow to split.
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+    // Deleted identities come directly from the bucket rows, never from the live lookup.
     for (bucket_id, runtime_bucket) in &shard.bucket_index.bucket_map {
         let bucket = buckets.entry(*bucket_id).or_default();
         bucket.dirty_generation = bucket.dirty_generation.max(runtime_bucket.dirty_generation);
         bucket.object_refs
             .extend(runtime_bucket.object_index.iter().copied());
-        for (handle, block) in runtime_bucket.block_index.iter() {
+        for (_, block) in runtime_bucket.block_index.iter() {
             if bucket.block_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
                 break;
             }
             bucket.block_refs
                 .push(storage_page_address_sample(shard_id, &block.address));
-            // A DELETED BLOCK IS NAMED BY THIS BUCKET'S OWN TOMBSTONE ROW, which is the source
-            // `identity_of` reaches for one -- the lookup never holds a deleted block. A marker for
-            // a block nothing names would name no object, so it is not written.
+            // Keep the scalar reader's first-row semantics without inverting every live ref.
             if let Some(beside) = block
                 .deleted()
-                .then(|| identities.identity_of(runtime_bucket, *handle, block))
+                .then(|| runtime_bucket.tombstone_element_at(&block.address))
                 .flatten()
             {
                 bucket.delete_markers
