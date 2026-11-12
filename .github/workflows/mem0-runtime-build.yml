@@ -26,7 +26,6 @@ jobs:
     timeout-minutes: 75
     env:
       CARGO_TERM_COLOR: always
-      PACKAGE_DIR: ${{ runner.temp }}/mem0-runtime
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +55,8 @@ jobs:
         id: source
         run: |
           set -euo pipefail
+          PACKAGE_DIR="$RUNNER_TEMP/mem0-runtime"
+          echo "PACKAGE_DIR=$PACKAGE_DIR" >> "$GITHUB_ENV"
           revision=$(git rev-parse HEAD)
           [[ $revision =~ ^[0-9a-f]{40}$ ]]
           git diff --exit-code HEAD
