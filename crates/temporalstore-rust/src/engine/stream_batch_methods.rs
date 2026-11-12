@@ -15,6 +15,16 @@ use projected_batch_snapshot::ProjectedBatchSnapshot;
 mod projected_read_snapshot_tests;
 
 #[cfg(test)]
+#[path = "tests/shared_row_commit.rs"]
+mod shared_row_commit_tests;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_SHARED_ROW_COMMIT: std::cell::RefCell<Option<Box<dyn FnOnce(&TemporalEngine, ShardId, u64)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
 #[path = "hash_batch_filed_tests.rs"]
 mod hash_batch_filed_tests;
 
@@ -1351,6 +1361,7 @@ impl TemporalEngine {
             }
         }
         let mut mutated_any = false;
+        let mut pending_barrier_seq = None;
         // Set if any command in this batch rebuilt the bucket index, which invalidates the
         // per-batch record of touched buckets and forces the full sweep below.
         let mut rebuilt_bucket_index = false;
@@ -1941,15 +1952,25 @@ impl TemporalEngine {
                     ));
             }
             let oldest_unindexed_sequence = shard.applied_wal_sequence.unwrap_or_default().saturating_add(1);
+            let concurrent_commit = sync
+                && use_data_only
+                && defer_shared_hash_materialization
+                && !persist_index_delta
+                && !raft_applying()
+                && !replaying_wal()
+                && self.concurrent_commit.load(std::sync::atomic::Ordering::Relaxed);
             let batch_result = if use_data_only {
                 self.wal_store
                     .append_batch_as_one_record_at(
                         shard_id,
                         staged_outcomes,
                         staged_blocks,
-                        sync,
+                        sync && !concurrent_commit,
                     )
                     .map(|(record, log_id)| {
+                        if concurrent_commit {
+                            pending_barrier_seq = Some(record.sequence);
+                        }
                         shard.note_wal_application(record.sequence, record.sequence);
                         // Materialization and the commit barrier are independent. A durable
                         // shared-row batch can still need these locations after cache eviction.
@@ -2138,6 +2159,23 @@ impl TemporalEngine {
             }
         }
         drop(shards);
+        if let Some(sequence) = pending_barrier_seq {
+            // Match single-command concurrent commit: reserve and register under the
+            // engine guard, then await the shared durable barrier before acknowledging.
+            #[cfg(test)]
+            BEFORE_SHARED_ROW_COMMIT.with(|slot| {
+                let observer = slot.borrow_mut().take();
+                if let Some(observer) = observer {
+                    observer(self, shard_id, sequence);
+                }
+            });
+            if let Err(err) = self.wal_store.commit_barrier(shard_id, sequence) {
+                return results.finish(Status::error(
+                    "wal_commit_failed",
+                    format!("durable WAL batch commit barrier failed: {err}"),
+                ));
+            }
+        }
         self.publish_context_embedding_commands(&context_embedding_commands);
         results.finish(Status::ok())
     }
