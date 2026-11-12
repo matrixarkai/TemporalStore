@@ -16,6 +16,7 @@ enum Fault {
     CatalogCorrupt,
     CatalogIdentity,
     CatalogShape,
+    DeleteNoop,
 }
 
 #[derive(Default)]
@@ -149,6 +150,14 @@ fn fixture(
             }
             "/execute" => {
                 let body:ExecuteRequest = parse_json(&request.body).unwrap();
+                if matches!(fault, Fault::DeleteNoop)
+                    && matches!(&body.command, Command::HashDelete { key, .. } if key == &memory_catalog_key(tenant)) {
+                    // Another delete wins after the proxy reads the record.
+                    assert!(engine.execute(body).status.ok);
+                    return json_response(200, &ExecuteResponse {
+                        status: Status::ok(), response: CommandResponse::Integer { value: 0 },
+                    });
+                }
                 if matches!(&body.command,Command::StringSet {key,..} if key==&memory_order_ready_key(tenant)||key==&memory_identity_ready_key(tenant)) {
                     seen.ready_writes.fetch_add(1,Ordering::Relaxed);
                 }
@@ -174,6 +183,57 @@ fn call(proxy: &ProxyService, method: &str, path: String, body: Value) -> (u16, 
         })
         .unwrap();
     (status, serde_json::from_slice(&body).unwrap())
+}
+
+#[test]
+fn batch_delete_ack_rejects_a_concurrent_noop() {
+    let (_dir, proxy, id, _tenant, seen) = fixture(Fault::DeleteNoop, usize::MAX, true);
+    let (status, body) = call(&proxy, "POST", "/memories/batch/delete".into(),
+        json!({"memories":[id]}));
+    assert_eq!(status, 200);
+    assert_eq!(body["deleted"], 0, "{body}");
+    assert_eq!(body["failed"].as_array().unwrap().len(), 1);
+    assert_eq!(body["failed"][0]["status"], 409);
+    assert_eq!(body["failed"][0]["code"], "memory_delete_not_applied");
+    assert_eq!(seen.batches.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn batch_delete_ack_requires_true_and_matching_id() {
+    assert!(memory_delete_ack("m1", 200, br#"{"deleted":true,"id":"m1"}"#).is_ok());
+    assert_eq!(memory_delete_ack("m1", 200, br#"{"deleted":true,"id":"other"}"#),
+        Err((502, "invalid_memory_delete_response".into())));
+}
+
+#[test]
+fn batch_delete_ack_rejects_false_and_missing_fields() {
+    assert_eq!(memory_delete_ack("m1", 200, br#"{"deleted":false,"id":"m1"}"#),
+        Err((409, "memory_delete_not_applied".into())));
+    for body in [br#"{}"#.as_slice(), br#"{"id":"m1"}"#, br#"{"deleted":true}"#,
+        br#"{"deleted":1,"id":"m1"}"#] {
+        assert_eq!(memory_delete_ack("m1", 200, body),
+            Err((502, "invalid_memory_delete_response".into())));
+    }
+}
+
+#[test]
+fn batch_delete_ack_preserves_remote_failure_codes() {
+    assert_eq!(memory_delete_ack("m1", 502,
+        br#"{"deleted":true,"id":"m1","code":"write_outcome_unknown"}"#),
+        Err((502, "write_outcome_unknown".into())));
+    assert_eq!(memory_delete_ack("m1", 404, br#"{"deleted":false,"id":"m1"}"#),
+        Err((404, "memory_not_found".into())));
+}
+
+#[test]
+fn batch_delete_ack_rejects_malformed_bodies() {
+    for body in [b"not-json".as_slice(), b"null", b"[]",
+        br#"{"deleted":true,"deleted":false,"id":"m1"}"#] {
+        assert_eq!(memory_delete_ack("m1", 200, body),
+            Err((502, "invalid_memory_delete_response".into())));
+    }
+    assert_eq!(memory_delete_ack("m1", 503, b"unavailable"),
+        Err((503, "memory_delete_failed".into())));
 }
 
 #[test]
