@@ -5696,6 +5696,18 @@ const _: () = assert!(
 /// a subtraction: the element name was 16 bytes and held a constant `None`.
 const _: () = assert!(std::mem::size_of::<Option<Arc<str>>>() == 16);
 
+#[cfg(test)]
+thread_local! {
+    static BLOCK_REF_VECTOR_SHIFTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn measure_block_ref_vector_shifts_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    BLOCK_REF_VECTOR_SHIFTS.with(|count| count.set(0));
+    let result = work();
+    (result, BLOCK_REF_VECTOR_SHIFTS.with(std::cell::Cell::get))
+}
+
 impl BlockRefs {
     pub(super) fn as_slice(&self) -> &[BlockLookupRef] {
         match self {
@@ -5773,6 +5785,8 @@ impl BlockRefs {
             Self::Many(values) => match values.binary_search(&value) {
                 Ok(_) => false,
                 Err(at) => {
+                    #[cfg(test)]
+                    BLOCK_REF_VECTOR_SHIFTS.with(|count| count.set(count.get() + values.len() - at));
                     values.insert(at, value);
                     true
                 }
