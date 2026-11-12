@@ -43,6 +43,24 @@ others; choose the API and acknowledgement policy before measuring a workload.
 | **LLM context and agent memory** | Conversations, resources, entities, reusable memory, retrieval, and token-budgeted context assembly | [Context guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/context_management_on_temporalstore.md) |
 | **Collections, blobs, and streams** | Membership/deduplication, sorted sets, lists, multipart blobs, range reads, and batch/stream ingestion | [Command surface](https://github.com/matrixarkai/TemporalStore/blob/main/docs/redis_compatibility_matrix.md) |
 
+### Feast API support
+
+The [native Feast provider](integrations/feast/feast_temporalstore_command/README.md)
+is an online store and materialization target, not an offline training store.
+
+| API or workflow | Support |
+|---|---|
+| `get_online_features` and its async form | Latest-value serving through bounded compact projections; compatible views share entity planning. |
+| `online_write_batch` and its async form | Materialization with timestamp suppression, optional TTL, and bounded requests; atomic timestamp checks apply to the eligible latest-only route. |
+| `query_feature_aggregate` / `query_feature_aggregates` | Provider extensions for retained history; numeric reducers require integer features and the selected history layout. |
+| Precomputed vector read/write | Store and fetch vector-valued features; this does not provide provider vector search. |
+| `update` / `teardown` | Schemaless updates and tracked cleanup; exact teardown requires key tracking before materialization. |
+
+Feast async calls change client scheduling, not the node's persistence policy.
+See [latency, amplification, and allocation choices](integrations/feast/feast_temporalstore_command/README.md#latency-amplification-and-allocations)
+before comparing latest-only serving, history queries, or another backend. Provider
+vector-search hooks and offline point-in-time retrieval are not implemented here.
+
 ### Choose a Feast materialization path
 
 Use the [native provider guide](integrations/feast/feast_temporalstore_command/README.md)
