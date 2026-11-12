@@ -5,6 +5,9 @@
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
+#[path = "affected_bucket_survivors.rs"]
+mod affected_bucket_survivors;
+
 #[cfg(test)]
 thread_local! {
     static SET_WRITE_SCANS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
@@ -5398,7 +5401,9 @@ fn upsert_bucket_index_block_inner(
             shard
                 .bucket_index
                 .block_refs_for(entry.kind.as_str(), &entry.object_key, None)
-                .map(|refs| refs.iter().map(|block_ref| block_ref.routing_bucket).collect())
+                .map(|refs| {
+                    affected_bucket_survivors::find(&block_refs, refs, |at| at.routing_bucket)
+                })
                 .unwrap_or_default()
         } else {
             // Without the lookup there is no slot to ask, so keep the old question rather than
