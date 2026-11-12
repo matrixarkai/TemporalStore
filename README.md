@@ -77,14 +77,19 @@ from rows, and resident reads from storage misses. Keep payloads, batch widths, 
 durability, maintenance, and replica counts explicit. Allocation reductions and compressed
 wire bytes do not by themselves establish device write amplification or maximum service QPS.
 
-The other independently usable Apache-2.0 projects are
-[MatrixObject](https://github.com/matrixarkai/MatrixObject) for object storage,
-[MatrixArk](https://github.com/matrixarkai/matrixark) for context workflows,
-[MatrixCache](https://github.com/matrixarkai/matrixcache) for embedded caching,
-[MatrixRaft](https://github.com/matrixarkai/matrixraft) for consensus, and
-[MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) for an executable
-ads-serving demonstration. These repositories are not a list of mandatory
-services to start alongside TemporalStore.
+### Project map
+
+All six projects are independently usable under Apache-2.0. Select the component
+for the workload; this is not a list of services required to start TemporalStore.
+
+| Project | Use it for | Execution model |
+|---|---|---|
+| **TemporalStore (this repository)** | Temporal features, sequences, and context serving | Serving engine; configure the selected endpoint, persistence, and replication mode. |
+| [MatrixObject](https://github.com/matrixarkai/MatrixObject) | Distributed object storage | Object API with separately configured metadata and replica services. |
+| [MatrixCache](https://github.com/matrixarkai/matrixcache) | Tiered caching inside a Rust application | Embedded library; the application owns authoritative data and network requests. |
+| [MatrixRaft](https://github.com/matrixarkai/matrixraft) | Consensus inside a service | Embedded library; the host supplies transport and state-machine application. |
+| [MatrixArk](https://github.com/matrixarkai/matrixark) | Context ingestion, retrieval, and feedback | Python runtime with explicitly configured storage and model providers. |
+| [MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) | Exploring an ads retrieval and auction pipeline | Standalone generated-data demonstration, not a live feature-store deployment. |
 
 ## Deployment and Upgrade Checklist
 
