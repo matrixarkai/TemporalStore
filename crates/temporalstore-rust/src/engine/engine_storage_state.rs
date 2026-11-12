@@ -87,11 +87,25 @@ pub(super) struct ContextDirtyEntry {
 
 /// Where a WAL-resident block's bytes are: the log id of the record carrying it, and that
 /// record's sequence (which is what log reclaim reasons about).
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 pub(super) struct WalResidentBlock {
     pub(super) log_id: u64,
     pub(super) sequence: u64,
 }
+
+impl Serialize for WalResidentBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // The existing derived reader accepts both named fields and this ordered pair.
+        (self.log_id, self.sequence).serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+#[path = "wal_resident_wire_tests.rs"]
+mod wal_resident_wire_tests;
 
 /// Two log coordinates. One per block whose only durable copy is a log record.
 const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
