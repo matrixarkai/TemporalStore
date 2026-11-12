@@ -23,6 +23,13 @@ fn put(engine: &TemporalEngine, key: &str, fields: &[&str], value: u8, bytes: us
             .map(|_| BatchHashMultiSetValue(vec![value; bytes])).collect())],
     });
     assert!(result.status.ok && result.errors.is_empty() && result.applied == 1);
+    // These checks exercise retirement of cached frames, whether writes populated them or not.
+    let shards = engine.shards.read().unwrap();
+    let address = shards.get(&1).unwrap().bucket_index.hashes.get(key).unwrap()
+        .get(fields[0]).unwrap();
+    assert!(read_block_frame_shared(&engine.cache, &engine.block_store, 1, address,
+        BlockIdentity::of(1, "hash", key, Some(fields[0])),
+        Some(block_routing_bucket(key, 0, 1023))).is_some());
 }
 
 fn page(engine: &TemporalEngine, key: &str, field: &str) -> CacheKey {
