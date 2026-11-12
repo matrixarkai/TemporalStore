@@ -130,7 +130,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3; do
+          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5 block_owner_query_tests:3 mixed_hash_batch_delta:8; do
             filter=${spec%:*}
             expected=${spec##*:}
             cargo test -p temporalstore-rust --lib --features alloc-probe "$filter" \
