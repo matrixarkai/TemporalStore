@@ -1409,9 +1409,11 @@ pub fn reset_live_block_scan_sites() {
 /// `#[track_caller]` so a charge made further down still attributes to ITS caller.
 #[track_caller]
 pub(super) fn collect_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
-    let mut entries = Vec::new();
-    for_each_live_block_entry(shard, |entry| entries.push(entry));
-    entries
+    if !shard.bucket_index.bucket_map.is_empty() {
+        collect_bucket_index_live_block_entries(shard)
+    } else {
+        collect_model_live_block_entries(shard)
+    }
 }
 
 #[track_caller]

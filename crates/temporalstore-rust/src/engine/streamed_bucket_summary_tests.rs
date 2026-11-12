@@ -109,7 +109,9 @@ fn streamed_bucket_summaries_preserve_released_buckets_and_narrow_routing() {
             .take(8)
             .collect::<Vec<_>>()
     };
-    let manifest = engine.create_bucket_dump_manifest(1, buckets.clone()).unwrap();
+    let manifest = engine
+        .create_bucket_dump_manifest(1, buckets.clone())
+        .unwrap();
     engine.clear_dumped_bucket_dirty_state(1, &manifest);
     let released = engine.release_bucket_index_blocks(1, buckets);
     assert!(released.0 > 0 && released.1 > 0, "{released:?}");
@@ -161,5 +163,25 @@ fn streamed_bucket_summaries_avoid_the_resident_entry_vector_allocation() {
     assert!(
         retained.alloc_bytes >= streamed.alloc_bytes + entry_bytes as u64,
         "retained={retained:?} streamed={streamed:?} entry_bytes={entry_bytes}"
+    );
+    let mut model_only = shard.clone();
+    model_only.bucket_index.bucket_map.clear();
+    let direct_work =
+        || super::super::storage_bucket_internals::collect_model_live_block_entries(&model_only);
+    let collecting_work = || collect_live_block_entries(&model_only);
+    drop(direct_work());
+    drop(collecting_work());
+    let probe = crate::alloc_probe::Probe::start();
+    let direct_entries = direct_work();
+    let direct = probe.stop();
+    let probe = crate::alloc_probe::Probe::start();
+    let collected = collecting_work();
+    let collecting = probe.stop();
+    assert_eq!(collected.len(), direct_entries.len());
+    assert!(collected.len() >= 4096);
+    // Permit fixed bookkeeping, not another per-entry vector.
+    assert!(
+        collecting.alloc_bytes <= direct.alloc_bytes + 4096,
+        "direct={direct:?} collecting={collecting:?}"
     );
 }

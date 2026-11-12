@@ -5,7 +5,7 @@ of retaining a shard-wide `Vec<LiveBlockEntry>` before calculating bucket totals
 This path is used by lifecycle planning and other callers that request summaries
 without per-bucket digests.
 
-The collecting path and streaming path use the same live-entry visitor. Indexed
+The indexed collecting and streaming paths use the same live-entry visitor. Indexed
 row selection, tombstone handling, released-bucket supplementation and model-map
 fallbacks are unchanged. The summary fold preserves routing, block and byte
 counts, dirty generations, object counts, slab sets and compaction watermarks.
@@ -20,7 +20,9 @@ time and maintains the bucket-level maps needed to produce complete summaries.
 It does not add a persistent summary cache or another per-object index.
 
 Released-bucket and model-map-only paths retain their existing model-map
-materialization. The scan remains proportional to shard size and still runs
+materialization. Model-map-only collecting callers return that original list
+directly instead of copying it into another vector. The scan remains proportional
+to shard size and still runs
 under the existing read guard. This is not a bounded lock-hold guarantee or a
 claim that all large-corpus mutation stalls have been resolved.
 
@@ -42,6 +44,8 @@ summary results, and requires the streaming call to avoid at least one retained
 entry payload for 4096 resident rows. Its byte counters are allocation requests,
 not process RSS or a measured end-to-end latency improvement. Counters are
 process-global, so the checks run serially with the counting allocator enabled.
+The same check also rejects another per-entry vector in model-map-only collection,
+with a fixed 4096-byte allowance for bookkeeping.
 
 The existing combined-summary/digest checks remain required. Large-corpus API
 latency, CPU, memory and correctness need separate clean-runtime measurements;
