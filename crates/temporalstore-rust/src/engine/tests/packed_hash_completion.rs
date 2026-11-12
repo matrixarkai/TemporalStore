@@ -187,8 +187,11 @@ fn packed_hash_completion_bounds_demand_lookups_for_new_projections() {
         shared_rows(&engine, &new_fields, 1);
         let demand_probes = 4 * u64::from(
             std::env::var("TS_HASH_WRITE_AROUND").as_deref() != Ok("0"));
-        assert_eq!(binary_search_count_for_test(), demand_probes,
-            "a missing first field must not scan every field in the new projection");
+        // Partial filing still checks old addresses and inserts each new field. Cache admission
+        // adds one lookup per row, not another scan of every new field.
+        let filing_lookups = (4 * 2 * width) as u64;
+        assert_eq!(binary_search_count_for_test(), filing_lookups + demand_probes,
+            "new-field filing plus at most one cache-demand lookup per row");
         verify(&engine, &old_fields, 0);
         verify(&engine, &new_fields, 1);
         engine.write_ahead_log_store().flush(1).unwrap();
