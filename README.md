@@ -103,6 +103,13 @@ See [inferred memory behavior and coordinated rollout](docs/MEMORY_INFERRED_FACT
 
 Selected verified results from checked-in reports, not a new benchmark run.
 
+For a service comparison, report both rows/s and requests/s, batch size, read/write
+concurrency, and p50/p95/p99 latency. Keep acknowledgement policy, replication,
+payloads, cache budget, and storage medium explicit. A warm read-only run or an
+asynchronously accepted write is not a substitute for a durable mixed workload.
+Report physical bytes written per accepted logical byte separately from retained
+storage per live logical byte; expiry and reclamation change the latter over time.
+
 | Workload | Recorded result | Scope |
 |---|---|---|
 | Feature-history ingestion | **14,965-15,260 events/s** | Durable commit; 1,024 entities x 64 events; batches of 256; default 16 MiB cache |
