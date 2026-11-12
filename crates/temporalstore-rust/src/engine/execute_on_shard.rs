@@ -585,6 +585,21 @@ pub(crate) fn projected_value_visits_for_test() -> u64 {
 }
 
 impl ProjectedHashValues {
+    pub(super) fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Missing(_) => 0,
+            Self::Owned(values) => values.iter().flatten().fold(
+                values.capacity().saturating_mul(std::mem::size_of::<Option<Vec<u8>>>()),
+                |bytes, value| bytes.saturating_add(value.capacity()),
+            ),
+            Self::Shared { frame, ranges } => frame.len()
+                .saturating_add(2 * std::mem::size_of::<usize>())
+                .saturating_add(ranges.capacity().saturating_mul(
+                    std::mem::size_of::<Option<std::ops::Range<usize>>>(),
+                )),
+        }
+    }
+
     pub(super) fn len(&self) -> usize {
         match self {
             Self::Missing(field_count) => *field_count,
