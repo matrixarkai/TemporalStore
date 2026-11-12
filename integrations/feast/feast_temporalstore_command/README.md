@@ -11,6 +11,12 @@ updates, TTL, and async Feast calls. Optional history and aggregate queries use
 the feature-series commands described below; teardown is exact only when key
 tracking was enabled before materialization.
 
+**Start here:** [Configuration](#install-and-configure) |
+[Reads](#reads) | [Writes](#writes) |
+[History](#write_feature_history) | [Teardown](#teardown) |
+[Serving costs](#latency-amplification-and-allocations) |
+[API coverage](#what-of-feasts-onlinestore-contract-is-covered).
+
 ## Which integration point this is
 
 Feast has three pluggable slots that are easy to conflate. This is the first
@@ -92,6 +98,49 @@ Values matching byte for byte is what makes a latency comparison against those
 stores mean anything. Keys do not match — the hex encoding is a real difference
 in stored key footprint, and it is written down here so nobody quotes a
 footprint ratio without knowing.
+
+## Latency, amplification, and allocations
+
+Choose the complete serving workflow before tuning a batch limit. Latest-only
+materialization, raw history, numeric windows, TTL, and tracked teardown have
+different command counts and storage costs; they are not one benchmark workload.
+
+| Concern | Supported behavior and tradeoff |
+|---|---|
+| Latest-value latency | Compact reads share the field projection and deduplicate compatible entity plans within a request. Request only the needed features; larger returned values still cost transport and protobuf decoding. |
+| Batch latency versus throughput | Defaults are 512 read commands, 4,096 write commands, and 4 MiB of encoded request data. Smaller batches can reduce work per request while increasing round trips and commit work. A caller batch can span several requests, not one atomic transaction. |
+| Mostly stale writes | Keep `skip_dedup: false`. Eligible routes compare timestamps on the node; adaptive prefetch can skip client feature serialization for rejected rows, at the cost of an extra fresh timestamp read. Augmented and older-node fallbacks have different concurrency guarantees. |
+| History write amplification | `write_feature_history` adds raw series writes; the default integer projection adds numeric series writes too. `compact_numeric_history` avoids the numeric copy but scans retained raw points for numeric windows instead of using that projection's rollup. |
+| Cleanup amplification | `track_keys_for_teardown` adds tracking writes. TTL or logical deletion does not establish that physical files have been reclaimed; account for maintenance and retained storage separately. |
+| Allocation pressure | Shared projections, request-local planning, binary values, and deferred ownership on eligible conditional writes reduce specific copies. Entity keys, protobuf serialization, response values, and server metadata still allocate. Neither request limits nor payload-cache capacity are process-RSS limits. |
+
+### Keep the latency states separate
+
+Measure end-to-end Feast calls, not only a node command or an in-process cache hit.
+Separate first-query reads after materialization, repeated query-cache hits,
+payload-cache misses, reads after restart, and reads concurrent with writers.
+Record entity count, selected fields, payload size, batch size, concurrency, and
+p50/p95/p99 latency together with accepted rows/s and requests/s. A CPU instruction
+or allocation reduction alone does not establish a service-latency improvement.
+
+`online_read_async` and `online_write_batch_async` do not switch the node to async
+storage or remove its persistence barrier. Keep acknowledgement policy,
+replication, storage medium, and maintenance settings explicit when comparing
+backends. Binary transport preserves feature bytes; it does not prove lower
+latency for every workload or compatibility fallback.
+
+### Account for each kind of amplification
+
+Distinguish request/response bytes, cumulative physical bytes written per accepted
+logical feature byte, retained storage per live feature byte, and bytes allocated
+per operation. State whether keys, timestamps, metadata, history copies, tracking,
+replication, and maintenance are included. Retained file size is not cumulative
+write amplification, and allocation traffic is not peak resident memory.
+
+For configuration-specific measurements and reproduction commands, use the
+[benchmark guide](../../../docs/feast_online_store_benchmark.md). Published results
+apply to their recorded workloads; they do not establish that every Feast API is
+faster than another store. Work under qualification is not a shipped guarantee.
 
 ## Reads
 
@@ -265,7 +314,7 @@ Partial is written as partial below. Nothing here is rounded up.
 
 | method | required? | status |
 | --- | --- | --- |
-| `online_write_batch` | **abstract** | **implemented** — bounded `/batch_write` calls with a compatibility fallback; parameters identical to the base class |
+| `online_write_batch` | **abstract** | **implemented** — bounded native shared-row writes for eligible latest-value batches; augmented and older-node paths use compatible command batches |
 | `online_read` | **abstract** | **implemented** — bounded binary batch calls for N entities with a compatibility fallback |
 | `update` | **abstract** | **implemented** — nothing to create (the surface is schemaless); views being removed are swept through the teardown path |
 | `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which spreads keys over 1,024 deterministic sets and is off by default because it adds one write per row. Async commit is supported. With tracking off, teardown logs that it cannot enumerate instead of claiming success |
@@ -287,7 +336,7 @@ lists six steps. Where they apply to a package outside Feast's tree:
 | --- | --- |
 | 1–2. `OnlineStore` + `OnlineStoreConfig` classes, `OnlineStore` suffix | done; Feast resolves `type:` by import path and imports `<ClassName>Config` from the same module, so no entry-point registration is needed |
 | 3. reference it from `feature_store.yaml` | done, documented above |
-| 4. test it against Feast's suite | **done for the online-store suite, and it passes.** `feast_repo_configuration.py` and `feast_online_store_creator.py` supply `AVAILABLE_ONLINE_STORES`, `FULL_REPO_CONFIGS` and an `OnlineStoreCreator` that starts a data node. Feast 0.67.0's own `tests/integration/online_store/test_universal_online.py`, run against this store, reports **5 passed, 14 skipped, 1 error** — see the breakdown below. Plus `tests/test_feast_api_conformance.py` here: five tests driving the provider through Feast's public API against a live node |
+| 4. test it against Feast's suite | **partially exercised; not a green full-suite result.** `feast_repo_configuration.py` and `feast_online_store_creator.py` supply `AVAILABLE_ONLINE_STORES`, `FULL_REPO_CONFIGS` and an `OnlineStoreCreator` that starts a data node. The recorded Feast 0.67.0 `tests/integration/online_store/test_universal_online.py` run reports **5 passed, 14 skipped, 1 error**; see the breakdown below. The separate `tests/test_feast_api_conformance.py` drives five public-API checks against a live node |
 | 5. dependencies | done; `pyproject.toml` keeps Feast itself optional |
 | 6. documentation | this file, plus the benchmark write-up |
 
