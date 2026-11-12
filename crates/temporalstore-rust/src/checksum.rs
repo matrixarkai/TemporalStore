@@ -22,6 +22,10 @@
 /// Castagnoli polynomial, bit-reversed (the normal form for a reflected CRC).
 const CRC32C_POLYNOMIAL: u32 = 0x82f6_3b78;
 
+#[path = "checksum_combine.rs"]
+mod combine;
+pub(crate) use combine::crc32c_combine;
+
 /// Byte-at-a-time lookup table, generated at compile time.
 const CRC32C_TABLE: [u32; 256] = build_crc32c_table();
 
