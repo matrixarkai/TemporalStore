@@ -1340,6 +1340,15 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     record_from_proto(decode_message(payload)?)
 }
 
+/// Validate the complete message without rebuilding replay-only outcomes and identities.
+/// Outcome and staged-block restoration are infallible; control fields use the full decoder's
+/// conversions, including rejection of malformed embedded commands.
+pub(crate) fn decode_sequence(payload: &[u8]) -> Result<u64, String> {
+    let mut message = decode_message(payload)?;
+    let _ = record_control_from_proto(&mut message)?;
+    Ok(message.sequence)
+}
+
 /// Read carried data without rebuilding outcomes that only recovery consumes.
 pub(crate) fn decode_carried_blocks(payload: &[u8]) -> Result<Vec<StagedBlock>, String> {
     let message = decode_message(payload)?;
@@ -1376,14 +1385,22 @@ fn decode_message(payload: &[u8]) -> Result<v1::EngineWalRecord, String> {
     v1::EngineWalRecord::decode(bytes).map_err(|err| err.to_string())
 }
 
-fn record_from_proto(message: v1::EngineWalRecord) -> Result<WriteAheadLogRecord, String> {
+fn record_control_from_proto(
+    message: &mut v1::EngineWalRecord,
+) -> Result<(Option<crate::types::Command>, Option<WriteAheadLogRecordMetadata>), String> {
     // Absent is a legitimate record now, not a malformed one: it carries results instead.
-    let command = match message.command.and_then(|command| command.kind) {
+    let command = match message.command.take().and_then(|command| command.kind) {
         Some(kind) => Some(
             crate::raft::wal_proto::command_from_proto(kind).map_err(|err| err.to_string())?,
         ),
         None => None,
     };
+    let metadata = message.metadata.take().map(metadata_from_proto).transpose()?;
+    Ok((command, metadata))
+}
+
+fn record_from_proto(mut message: v1::EngineWalRecord) -> Result<WriteAheadLogRecord, String> {
+    let (command, metadata) = record_control_from_proto(&mut message)?;
     // The carried block states the length its address covers, so it is read off the block
     // before the items that point at it. Same shape as the implied object id below, and the same
     // one-of-each rule.
@@ -1419,7 +1436,7 @@ fn record_from_proto(message: v1::EngineWalRecord) -> Result<WriteAheadLogRecord
         shard_id: message.shard_id,
         sequence: message.sequence,
         command,
-        metadata: message.metadata.map(metadata_from_proto).transpose()?,
+        metadata,
         staged_blocks: staged_blocks_from_proto(message.staged_blocks, implied),
         outcomes,
     })

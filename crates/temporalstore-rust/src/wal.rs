@@ -122,6 +122,14 @@ pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLog
     decode_wal_payload(line, crate::wal_proto::decode)
 }
 
+fn decode_wal_sequence(line: &[u8]) -> Result<u64, WriteAheadLogError> {
+    decode_wal_payload(line, crate::wal_proto::decode_sequence)
+}
+
+#[cfg(test)]
+#[path = "wal_sequence_read_tests.rs"]
+mod sequence_read_tests;
+
 pub(crate) fn decode_carried_blocks(line: &[u8]) -> Result<Vec<StagedBlock>, WriteAheadLogError> {
     decode_wal_payload(line, crate::wal_proto::decode_carried_blocks)
 }
@@ -5400,9 +5408,9 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
         // it, the append was interrupted -- a torn tail is not corruption, and everything before
         // it stands. If bytes follow it, a complete record went bad while records around it are
         // fine, which is interior corruption and must stay fatal.
-        match decode_wal_line(&raw) {
-            Ok(record) => {
-                last_sequence = last_sequence.max(record.sequence);
+        match decode_wal_sequence(&raw) {
+            Ok(sequence) => {
+                last_sequence = last_sequence.max(sequence);
                 record_end = record_end.saturating_add(physical_bytes);
             }
             Err(err) => {
@@ -5673,9 +5681,9 @@ fn last_wal_sequence_forward_from(
             record_end = record_end.saturating_add(physical_bytes);
             continue;
         }
-        match decode_wal_line(&raw) {
-            Ok(record) => {
-                last_sequence = last_sequence.max(record.sequence);
+        match decode_wal_sequence(&raw) {
+            Ok(sequence) => {
+                last_sequence = last_sequence.max(sequence);
                 record_end = record_end.saturating_add(physical_bytes);
             }
             Err(err) => {
@@ -5802,7 +5810,7 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     let Some(line) = line else {
         return Ok((0, good_offset));
     };
-    Ok((decode_wal_line(&line)?.sequence, good_offset))
+    Ok((decode_wal_sequence(&line)?, good_offset))
 }
 
 /// Test-only override for the wall clock stamped onto a record. Recovery tests need records
