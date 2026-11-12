@@ -85,6 +85,45 @@ fn validate_footer(slot: &[u8], remaining: u64, physical_bytes: u64) -> io::Resu
     Ok(())
 }
 
+fn read_at_offset(file: &mut File, offset: u64, bytes: &mut [u8]) -> io::Result<usize> {
+    loop {
+        #[cfg(unix)]
+        let result = {
+            use std::os::unix::fs::FileExt;
+            file.read_at(bytes, offset)
+        };
+        #[cfg(not(unix))]
+        let result = file
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| file.read(bytes));
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
+fn read_exact_at_offset(
+    file: &mut File,
+    offset: u64,
+    bytes: &mut [u8],
+    physical_bytes: &mut u64,
+) -> io::Result<()> {
+    let mut used = 0;
+    while used < bytes.len() {
+        let position = offset
+            .checked_add(used as u64)
+            .ok_or_else(|| invalid("packed WAL point offset overflow"))?;
+        let read = read_at_offset(file, position, &mut bytes[used..])?;
+        if read == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        used += read;
+        *physical_bytes += read as u64;
+    }
+    Ok(())
+}
+
 /// A seekable view of the inner integrity frame, without reading its unrelated payloads.
 /// The first chunk length is authenticated by the transport header. All footer slots are
 /// validated up front; subsequent seeks use that fixed layout, including after prefix reclaim.
@@ -98,9 +137,8 @@ pub(super) struct PointReader<'a> {
 
 impl<'a> PointReader<'a> {
     pub(super) fn new(file: &'a mut File, start: u64) -> io::Result<Option<Self>> {
-        file.seek(SeekFrom::Start(start))?;
         let mut header = [0u8; HEADER_BYTES];
-        let read = file.read(&mut header[..1])?;
+        let read = read_at_offset(file, start, &mut header)?;
         if read == 0 {
             return Ok(None);
         }
@@ -109,13 +147,21 @@ impl<'a> PointReader<'a> {
             start,
             position: 0,
             packed: None,
-            physical_bytes: 1,
+            physical_bytes: read as u64,
         };
         if header[0] != MAGIC {
             return Ok(Some(view));
         }
-        view.file.read_exact(&mut header[1..])?;
-        view.physical_bytes += (HEADER_BYTES - 1) as u64;
+        if read < HEADER_BYTES {
+            read_exact_at_offset(
+                view.file,
+                start
+                    .checked_add(read as u64)
+                    .ok_or_else(|| invalid("packed WAL point offset overflow"))?,
+                &mut header[read..],
+                &mut view.physical_bytes,
+            )?;
+        }
         let (length, first) = decode_header(&header)?;
         // Indexed writers are bounded to 16 MiB of protobuf plus their directory. Larger
         // historical transports keep the streaming path rather than doing an unbounded probe.
@@ -128,13 +174,14 @@ impl<'a> PointReader<'a> {
         let mut physical = HEADER_BYTES as u64 + first;
         while logical < length {
             let mut footer = [0u8; WAL_BLOCK_FOOTER_BYTES as usize];
-            view.file.seek(SeekFrom::Start(
+            read_exact_at_offset(
+                view.file,
                 start
                     .checked_add(physical)
                     .ok_or_else(|| invalid("packed WAL point offset overflow"))?,
-            ))?;
-            view.file.read_exact(&mut footer)?;
-            view.physical_bytes += WAL_BLOCK_FOOTER_BYTES;
+                &mut footer,
+                &mut view.physical_bytes,
+            )?;
             validate_footer(&footer, length - logical, physical)?;
             let chunk = (DATA_BYTES as u64).min(length - logical);
             logical += chunk;
@@ -170,12 +217,13 @@ impl Read for PointReader<'_> {
             None => (self.position, bytes.len() as u64),
         };
         let length = bytes.len().min(available as usize);
-        self.file.seek(SeekFrom::Start(
+        let read = read_at_offset(
+            self.file,
             self.start
                 .checked_add(offset)
                 .ok_or_else(|| invalid("packed WAL point offset overflow"))?,
-        ))?;
-        let read = self.file.read(&mut bytes[..length])?;
+            &mut bytes[..length],
+        )?;
         self.position += read as u64;
         self.physical_bytes += read as u64;
         Ok(read)

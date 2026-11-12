@@ -75,6 +75,27 @@ fn concurrent_publications_share_one_immutable_batch() {
 }
 
 #[test]
+fn decoded_record_cache_does_not_keep_a_wal_owner_and_its_readers_alive() {
+    struct ResetRoll;
+    impl Drop for ResetRoll {
+        fn drop(&mut self) { crate::wal::set_wal_segment_bytes_for_test(None); }
+    }
+    let _reset = ResetRoll;
+    crate::wal::set_wal_segment_bytes_for_test(Some(1));
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    let staged = blocks(128);
+    let (record, log_id) = store.append_batch_as_one_record_at(1, Vec::new(), staged.clone(), false).unwrap();
+    let _ = store.read_carried_block_at_log_id(1, log_id, record.sequence, 127, 1127, None).unwrap().unwrap();
+    let identity = store.weak_identity();
+    let held = cache_record(&store, 1, log_id, staged);
+    assert!(identity.is_live());
+    drop(store);
+    assert!(!identity.is_live());
+    assert_eq!(held[127].bytes, vec![127; 1024]);
+}
+
+#[test]
 fn carried_reads_reuse_one_decoded_batch_and_select_new_record_positions() {
     let _legacy = IndexedSetting::set("0");
     let dir = tempfile::tempdir().unwrap();

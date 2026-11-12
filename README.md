@@ -870,6 +870,8 @@ so a point miss can read one group instead of inflating the complete batch.
 The directory cache is additional metadata outside the payload-cache budget;
 compression groups can trade larger WAL records for less read amplification.
 The guide covers selection, integrity scope, compatibility, and the writer opt-out.
+Checked sealed-reader reuse also avoids repeated segment listings and opens, with
+separate descriptor and metadata bounds and explicit retirement during reclaim.
 
 `SharedStoreReplicator` also defaults to `ProtobufAppendBlob`, including the
 retry-policy constructor and the MatrixObject server durability path. Synchronous
