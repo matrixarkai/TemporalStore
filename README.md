@@ -14,6 +14,11 @@ and contributions under the license.**
 
 ## Implementation entry points
 
+**On this page:** [Quick start](#quick-start) |
+[Use cases](#use-cases) | [Recorded benchmarks](#recorded-benchmark-highlights) |
+[Durability](#architecture-and-durability) | [Deployment boundaries](#deployment-boundaries) |
+[Contributing](#build-and-contribute).
+
 | Area | Start reading |
 |---|---|
 | Native Feast provider and supported online-store behavior | [Provider guide](integrations/feast/feast_temporalstore_command/README.md) |
@@ -114,6 +119,13 @@ the writer receives durable success. Read visibility alone therefore does not
 prove crash durability, and a commit error is not a rollback guarantee. Async,
 replay, Raft-application, and index-persisting paths have their own commit rules.
 See the [batch implementation](crates/temporalstore-rust/src/engine/stream_batch_methods.rs).
+
+Feature-write batches reuse append state and capture the slab target once per
+operation, rather than repeatedly checking the same configuration and directory.
+The next operation can observe an updated target. This reduces repeated work;
+it does not disable sync barriers, change the WAL format, or establish a service
+latency improvement. See the [append path](crates/temporalstore-rust/src/block_store/block_store_append.rs)
+and [storage configuration](crates/temporalstore-rust/src/storage_config.rs).
 
 Feast materialization can split one caller batch into several native requests.
 Do not treat that caller batch as one atomic transaction. Compare accepted rows,
