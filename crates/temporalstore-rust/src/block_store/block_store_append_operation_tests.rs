@@ -21,8 +21,14 @@ fn singleton_batches_reuse_the_active_append_handle() {
         .as_ref()
         .unwrap()
         .as_raw_fd();
+    let middle = store
+        .append_batch_with_block_metadata(vec![
+            (b"middle-a", Some(9), Some(5), 10),
+            (b"middle-b", Some(9), Some(5), 11),
+        ])
+        .unwrap();
     let second = store
-        .append_batch_with_block_metadata(vec![(b"second", Some(8), Some(4), 10)])
+        .append_batch_with_block_metadata(vec![(b"second", Some(8), Some(4), 12)])
         .unwrap();
     assert_eq!(
         store
@@ -36,11 +42,14 @@ fn singleton_batches_reuse_the_active_append_handle() {
         descriptor
     );
     assert_eq!(store.read(&first[0]).unwrap(), b"first");
+    assert_eq!(store.read(&middle[0]).unwrap(), b"middle-a");
+    assert_eq!(store.read(&middle[1]).unwrap(), b"middle-b");
     assert_eq!(store.read(&second[0]).unwrap(), b"second");
-    assert_eq!(second[0].offset(), first[0].offset() + first[0].length());
+    assert_eq!(middle[0].offset(), first[0].offset() + first[0].length());
+    assert_eq!(second[0].offset(), middle[1].offset() + middle[1].length());
     let inner = store.inner.lock().unwrap();
-    assert_eq!(inner.stats.writes, 2);
-    assert_eq!(inner.stats.logical_bytes_written, 11);
+    assert_eq!(inner.stats.writes, 4);
+    assert_eq!(inner.stats.logical_bytes_written, 27);
 }
 
 #[test]
