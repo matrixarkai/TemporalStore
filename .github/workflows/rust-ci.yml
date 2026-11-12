@@ -126,6 +126,22 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: Bucket summary snapshot checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe bucket_summary_snapshot_ \
+            -- --test-threads=1 2>&1 | tee /tmp/bucket-summary-snapshot-gate.log
+          grep -q 'test result: ok\. 4 passed; 0 failed;' /tmp/bucket-summary-snapshot-gate.log
+
+      - name: Memory API route checks
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib --features alloc-probe proxy::memory \
+            -- --test-threads=1 2>&1 | tee /tmp/memory-api-route-gate.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' /tmp/memory-api-route-gate.log
+
       - name: Inferred memory fact checks
         timeout-minutes: 30
         run: |
