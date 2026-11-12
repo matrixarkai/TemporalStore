@@ -146,7 +146,7 @@ fn bucket_summary_snapshot_allows_writer_progress_before_digest_completion() {
 fn bucket_summary_snapshot_preserves_manifest_annotations_without_pinning_the_image() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path(), 127);
-    let buckets = engine
+            let buckets: Vec<_> = engine
         .bucket_storage_summaries(1)
         .iter()
         .map(|row| row.routing_bucket)
@@ -242,7 +242,7 @@ fn bucket_summary_snapshot_metadata_scales_with_buckets_and_keeps_dirty_only_row
         let (nodes, dirty) = snapshot.metadata.recorded_bucket_counts();
         assert!((1..=4).contains(&nodes));
         assert!((1..=4).contains(&dirty));
-        assert!(snapshot.entries.len() >= count);
+        assert!(snapshot.entries.input_block_count() >= count);
         assert_eq!(snapshot.finish(), locked_result(&engine, 3, true));
 
         let mut model_only = engine.shards.read().unwrap()[&1].clone();
@@ -254,5 +254,88 @@ fn bucket_summary_snapshot_metadata_scales_with_buckets_and_keeps_dirty_only_row
         let expected = bucket_storage_summaries_from_entries(&model_only, 0, 3, &entries);
         assert_eq!(metadata.summaries_from_entries(0, 3, &entries), expected);
         assert!(expected.iter().any(|row| row.dirty_object_count > 0));
+    }
+}
+
+#[test]
+fn bucket_summary_snapshot_defers_identity_resolution_and_preserves_entry_details() {
+    for mode in ["resident", "misfiled", "released", "model_only"] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), 1023);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringDelete {
+                        key: "snapshot-0001".into()
+                    },
+                })
+                .status
+                .ok
+        );
+        if mode == "released" {
+            let buckets: Vec<_> = engine
+                .bucket_storage_summaries(1)
+                .into_iter()
+                .map(|row| row.routing_bucket)
+                .collect();
+            let manifest = engine.create_bucket_dump_manifest(1, buckets).unwrap();
+            engine.clear_dumped_bucket_dirty_state(1, &manifest);
+            let (released, blocks, _) = engine.release_all_releasable_bucket_index_blocks(1);
+            assert!(released > 0 && blocks > 0);
+        } else if mode == "model_only" {
+            engine
+                .shards
+                .write()
+                .unwrap()
+                .get_mut(&1)
+                .unwrap()
+                .bucket_index
+                .bucket_map
+                .clear();
+        } else if mode == "misfiled" {
+            let mut shards = engine.shards.write().unwrap();
+            let shard = shards.get_mut(&1).unwrap();
+            let from = *shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .find(|(_, node)| !node.block_index.is_empty())
+                .unwrap()
+                .0;
+            let to = (0..=1023)
+                .find(|id| !shard.bucket_index.bucket_map.contains_key(id))
+                .unwrap();
+            let node = shard.bucket_index.bucket_map.remove(&from).unwrap();
+            shard.bucket_index.bucket_map.insert(
+                to,
+                state::BucketNode {
+                    routing_bucket: to,
+                    ..node
+                },
+            );
+        }
+        let expected_entries = collect_live_block_entries(&engine.shards.read().unwrap()[&1]);
+        let expected_result = locked_result(&engine, 1023, true);
+        let (snapshot, builds) = state::measure_block_identity_builds_for_test(|| {
+            engine.capture_bucket_storage_summaries(1, true).unwrap()
+        });
+        assert_eq!(
+            builds, 0,
+            "identity inversion ran under the capture guard: {mode}"
+        );
+        assert!(engine.shards.try_write().is_ok());
+        write(&engine);
+        assert_eq!(
+            format!("{:?}", snapshot.entries.finish()),
+            format!("{expected_entries:?}"),
+            "{mode}"
+        );
+        // A second capture also retains the exact existing summary and generation rules.
+        assert_eq!(
+            engine.bucket_storage_summaries_with_digests(1, true),
+            locked_result(&engine, 1023, true)
+        );
+        assert!(!expected_result.0.is_empty());
     }
 }
