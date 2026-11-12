@@ -66,7 +66,10 @@ fn packed_hash_completion_removes_the_second_index_pass() {
             let before = bucket_block_upserts();
             shared_rows(&engine, &fields, 1);
             assert_eq!(bucket_block_upserts() - before, 0, "no redundant maintenance filing");
-            assert_eq!(binary_search_count_for_test(), 0, "WAL frames need no ordinal or maintenance lookups");
+            let demand_probes = 4 * u64::from(!async_storage
+                && std::env::var("TS_HASH_WRITE_AROUND").as_deref() != Ok("0"));
+            assert_eq!(binary_search_count_for_test(), demand_probes,
+                "one cache-demand lookup per synchronous row, no per-field ordinal or maintenance lookups");
             // Exercise the skipped maintenance as a positive control on both counters.
             let before = bucket_block_upserts();
             reset_binary_search_count_for_test();
@@ -106,7 +109,9 @@ fn packed_hash_completion_timestamp_rows_keep_stale_writes_inert() {
     assert!(response.status.ok);
     assert_eq!((response.applied, response.skipped), (1, 0));
     assert_eq!(bucket_block_upserts() - before, 0);
-    assert_eq!(binary_search_count_for_test(), 2, "the condition and its new source-bound hint each locate the timestamp field");
+    let demand_probe = u64::from(std::env::var("TS_HASH_WRITE_AROUND").as_deref() != Ok("0"));
+    assert_eq!(binary_search_count_for_test(), 2 + demand_probe,
+        "the timestamp condition and hint each locate a field, plus one optional cache-demand probe");
     reset_binary_search_count_for_test();
     let before = bucket_block_upserts();
     let response = engine.batch_execute_packed_hash_rows(request(15)).0;
@@ -135,19 +140,19 @@ fn packed_hash_completion_marker_excludes_empty_and_scalar_writes() {
     let object = stable_block_object_id(1, "hash", key);
     let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
-        key.into(), Vec::new(), true, None);
+        key.into(), Vec::new(), true, None, PackedFrameCache::Eager);
     assert!(!outcome.mutated && filed.is_none());
     let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true, false,
-        key.into(), vec![("a".into(), vec![1; 48])], true, None);
+        key.into(), vec![("a".into(), vec![1; 48])], true, None, PackedFrameCache::Eager);
     assert!(outcome.mutated && filed.is_none());
     let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
-        key.into(), vec![("b".into(), vec![2; 48])], true, None);
+        key.into(), vec![("b".into(), vec![2; 48])], true, None, PackedFrameCache::Eager);
     assert!(outcome.mutated && filed.is_some());
     let (outcome, _, filed) = execute_packed_conditional_hash_write_at_bucket(
         &engine.cache, &engine.block_store, 1, bucket, object, shard, true,
-        key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None, None);
+        key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None, None, PackedFrameCache::Eager);
     assert!(outcome.mutated && filed.is_none(), "expiry alone is not a completed packed write");
     let _ = crate::engine::block_in_wal::take_outcomes();
 }
@@ -161,7 +166,7 @@ fn packed_hash_completion_ordinal_is_lazy_only_for_wal_frames() {
             let calls = std::cell::Cell::new(0);
             let address = crate::engine::append_owned_value_of_object(
                 &engine.cache, &engine.block_store, 1, vec![3; length], 42, 1,
-                async_storage, || { calls.set(calls.get() + 1); 7 }).unwrap();
+                async_storage, PackedFrameCache::Eager, || { calls.set(calls.get() + 1); 7 }).unwrap();
             let physical = !async_storage || length >= 8192;
             assert_eq!(calls.get(), usize::from(physical));
             assert_eq!(address.block_id(), physical.then_some(7));

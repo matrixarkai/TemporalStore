@@ -100,3 +100,24 @@ whole-record compression. Measure accepted writes, storage-miss reads, and log
 bytes together when selecting a deployment policy. Fewer requested file bytes or
 decoded bytes do not by themselves prove lower device I/O or physical write
 amplification. The WAL read counter records requested bytes, not device traffic.
+
+Synchronous shared hash-row batches can leave small packed payloads out of the
+payload cache until a read requests them. The WAL append registers their locations
+before releasing the mutation guard, and acknowledgement uses the same configured
+durability barrier. This avoids write-side payload copies and cache admission;
+the first read may instead fetch and decompress a WAL compression group. Measure
+that tradeoff with both active writers and readers, not write throughput alone.
+
+An overwrite refreshes the payload cache when an overwritten resident frame is
+already cached. A single probe of the first resident address in the shared
+projection makes this decision before retiring the old frame. Cold writes do not
+displace the read-demanded working set, while hot packed rows can remain cached
+across updates. This is an admission policy, not a guarantee that every partial
+projection or capacity-constrained write remains cached.
+
+This policy requires a unique shared projection, deferred materialization, and
+cache-independent timestamp comparisons for conditional rows. Async writes, bulk
+ingestion, memory-limited configurations, replay, consensus apply, generic command
+batches, missing timestamp columns, and stored timestamp values over 64 bytes keep
+eager caching. Set `TS_HASH_WRITE_AROUND=0` before startup to retain eager caching
+on every path. No WAL encoding, cache capacity, or synchronization policy changes.

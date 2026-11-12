@@ -6,6 +6,12 @@ use super::*;
 use crate::types::{BatchConditionalWriteResponse, BatchWriteError};
 use serde::ser::SerializeSeq;
 
+fn read_filled_hash_cache_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("TS_HASH_WRITE_AROUND")
+        .map(|value| value != "0").unwrap_or(true))
+}
+
 #[path = "projected_batch_snapshot.rs"]
 mod projected_batch_snapshot;
 use projected_batch_snapshot::ProjectedBatchSnapshot;
@@ -17,6 +23,10 @@ mod projected_read_snapshot_tests;
 #[cfg(test)]
 #[path = "tests/shared_row_commit.rs"]
 mod shared_row_commit_tests;
+
+#[cfg(test)]
+#[path = "tests/read_filled_cache.rs"]
+mod read_filled_cache_tests;
 
 #[cfg(test)]
 thread_local! {
@@ -254,6 +264,30 @@ impl BatchExecutionResult {
 }
 
 impl BatchCommandSource<'_> {
+    fn supports_read_filled_frames(&self) -> bool {
+        match self {
+            Self::Commands(_) => false,
+            Self::SharedHashRows { entries, rows, .. } => rows.as_slice().iter()
+                .all(|row| row.1.len() == entries.len()),
+            Self::SharedTimestampRows { entries, timestamp_field, rows, .. } => {
+                let Some(column) = timestamp_field.as_ref()
+                    .and_then(|field| entries.iter().position(|entry| &entry.0 == field)) else {
+                    return false;
+                };
+                rows.as_slice().iter().all(|row| row.3.len() == entries.len()
+                    && row.3[column].0.len() <= 64)
+            }
+            Self::BorrowedTimestampRows { entries, timestamp_field, rows, .. } => {
+                let Some(column) = timestamp_field.as_ref()
+                    .and_then(|field| entries.iter().position(|entry| &entry.0 == field)) else {
+                    return false;
+                };
+                rows.as_slice().iter().all(|row| row.3.len() == entries.len()
+                    && row.3[column].0.len() <= 64)
+            }
+        }
+    }
+
     fn command_count(&self) -> usize {
         match self {
             Self::Commands(commands) => commands.len(),
@@ -1401,6 +1435,22 @@ impl TemporalEngine {
             .filter(|_| reuse_hash_command_metadata)
             .and_then(|entries| super::container_blocks::SharedHashFields::new(
                 entries.iter().map(|(field, _)| field.as_str())));
+        // Readers cannot observe these indexes until the synchronous WAL append has registered
+        // every frame. Conditional rows also retain the actual timestamp in the resident hint,
+        // so another row in this batch never needs an unregistered frame for its comparison.
+        let frame_cache = if read_filled_hash_cache_enabled()
+            && defer_shared_hash_materialization
+            && !config.async_storage
+            && !bulk_ingest_mode()
+            && !raft_applying()
+            && !replaying_wal()
+            && shared_hash_fields.is_some()
+            && command_source.supports_read_filled_frames()
+        {
+            execute_on_shard::PackedFrameCache::ReadThrough
+        } else {
+            execute_on_shard::PackedFrameCache::Eager
+        };
         while let Some(mut command) = command_source.next_command() {
             if !reuse_hash_command_metadata {
                 if let (Command::HashMultiSetIfTimestampOlder { entries, .. }, Some(values)) =
@@ -1569,6 +1619,7 @@ impl TemporalEngine {
                             entries,
                             true,
                             shared_hash_fields.as_ref(),
+                            frame_cache,
                         );
                     (outcome, Some(metadata), filed)
                 }
@@ -1599,6 +1650,7 @@ impl TemporalEngine {
                             true,
                             shared_hash_fields.as_ref(),
                             command_source.borrowed_hash_values(),
+                            frame_cache,
                         );
                     (outcome, Some(metadata), filed)
                 }

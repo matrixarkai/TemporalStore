@@ -22,6 +22,7 @@ fn owned_packed_frames_keep_the_original_buffer_and_placement_boundary() {
             let ordinal_calls = std::cell::Cell::new(0);
             let address = append_owned_value_of_object(
                 &engine.cache, &engine.block_store, 1, bytes, 42, 9, asynchronous,
+                execute_on_shard::PackedFrameCache::Eager,
                 || { ordinal_calls.set(ordinal_calls.get() + 1); 7 },
             ).unwrap();
             let blocks = block_in_wal::take_staged();
@@ -62,6 +63,7 @@ fn owned_packed_frames_stage_distinct_rows_once_in_order() {
         pointers.push(bytes.as_ptr());
         addresses.push(append_owned_value_of_object(
             &engine.cache, &engine.block_store, 1, bytes, index, 9, true,
+            execute_on_shard::PackedFrameCache::Eager,
             || panic!("WAL placement must not resolve a physical ordinal"),
         ).unwrap());
     }
@@ -92,7 +94,7 @@ fn owned_packed_frames_remove_the_carried_payload_copy() {
             let span = ClassSpan::open();
             let address = if owned {
                 append_owned_value_of_object(&engine.cache, &engine.block_store, 1,
-                    bytes, 42, 9, true, || 0)
+                    bytes, 42, 9, true, execute_on_shard::PackedFrameCache::Eager, || 0)
             } else {
                 append_value_inner(&engine.cache, &engine.block_store, 1,
                     &bytes, Some(42), None, Some(9), true, 8191, || 0)
@@ -129,7 +131,7 @@ fn owned_packed_frames_do_not_stage_a_failed_physical_append() {
         block_in_wal::begin_write();
         let before = engine.cache.stats().memory_bytes;
         assert!(append_owned_value_of_object(&engine.cache, &store, 1,
-            vec![31; 8192], 42, 9, asynchronous, || 0).is_err());
+            vec![31; 8192], 42, 9, asynchronous, execute_on_shard::PackedFrameCache::Eager, || 0).is_err());
         assert!(block_in_wal::take_staged().is_empty());
         assert_eq!(engine.cache.stats().memory_bytes, before);
     }
