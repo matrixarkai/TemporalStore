@@ -35,6 +35,12 @@ using checksum combination, validates its ranges and record identity, then reads
 and checksums the selected compressed frame. It decodes the selected block's
 protobuf and checks its object and element identity before returning bytes.
 
+Checksum composition uses compile-time Castagnoli shift operators rather than
+rebuilding matrices for every compressed frame. The immutable table occupies
+8 KiB per process on 64-bit hosts (4 KiB on 32-bit hosts), with no lazy
+initialization, locks, or heap allocation. The combined CRC32C is unchanged for
+every byte length; this does not skip frame checks or introduce a new encoding.
+
 A point read checks the directory and the selected frame, not the actual contents
 of unrelated frames it does not read. Full replay still reads and checks the
 complete outer record. CRC32C detects accidental corruption; it is not an

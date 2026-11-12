@@ -130,10 +130,10 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          for spec in retention_work_tests:4 physical_wal_:5; do
+          for spec in retention_work_tests:4 compaction_retention_tests:3 physical_wal_:5; do
             filter=${spec%:*}
             expected=${spec##*:}
-            cargo test --release -p temporalstore-rust --lib --features alloc-probe "$filter" \
+            cargo test -p temporalstore-rust --lib --features alloc-probe "$filter" \
               -- --test-threads=1 --nocapture 2>&1 | tee /tmp/wal-retention-gate.log
             grep -q "test result: ok\. $expected passed; 0 failed;" /tmp/wal-retention-gate.log \
               || { echo "::error::$filter: expected $expected passing tests"; exit 1; }

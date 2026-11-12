@@ -9,6 +9,10 @@ use super::*;
 #[path = "compaction_execution_tests.rs"]
 mod compaction_execution_tests;
 
+#[cfg(test)]
+#[path = "compaction_retention_tests.rs"]
+mod compaction_retention_tests;
+
 /// OBSERVATION SEAM: was the shard-table write guard still held when a round PUBLISHED its
 /// durable index?
 ///
@@ -1504,11 +1508,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         // Only the new slab passed this round's durability barrier. Unmoved
         // objects may still need their WAL fallback, including after a failed read.
-        let retained_objects = storage_bucket_internals::collect_model_live_block_entries(shard)
-            .into_iter()
-            .filter(|entry| entry.address.block_slab_id() != target_block_slab_id)
-            .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key))
-            .collect();
+        let retained_objects = retained_objects_outside_slab(shard, shard_id, target_block_slab_id);
         let mut retirements = super::block_in_wal::unreferenced_registrations(
             &self.block_store, shard_id, &self.wal_store, &retained_objects,
         );
@@ -2198,6 +2198,28 @@ fn expiry_scan_budget(limit: usize) -> usize {
             after,
         }))
     }
+}
+
+#[track_caller]
+fn retained_objects_outside_slab(
+    shard: &ShardState,
+    shard_id: ShardId,
+    target_block_slab_id: u64,
+) -> std::collections::HashSet<u64> {
+    use storage_bucket_internals::{visit_model_live_blocks, ModelWalkTally};
+
+    let mut retained = std::collections::HashSet::new();
+    visit_model_live_blocks(
+        shard,
+        ModelWalkTally::WholeShardEntries,
+        |_, _| true,
+        |kind, key, _, address| {
+            if address.block_slab_id() != target_block_slab_id {
+                retained.insert(stable_block_object_id(shard_id, kind.as_str(), key.as_str()));
+            }
+        },
+    );
+    retained
 }
 
 fn compaction_bucket_layout_states(shard: &ShardState) -> Vec<BucketLayoutStateCount> {

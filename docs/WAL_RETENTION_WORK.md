@@ -44,3 +44,31 @@ interrupted after stack capture; there is no complete endpoint report. Other
 source files changed during the shared build, so this is not an isolated
 before/after measurement. Real-model ingestion, extraction and retrieval
 performance remain separate acceptance work.
+
+The logical-object retention scan before the same publication now borrows the
+model visitor too. It retains an object if any address lies outside the newly
+durable slab, including both synthetic WAL address forms. The scan no longer
+builds an owned block list before computing that object set. All model kinds,
+mixed-slab objects and scan accounting remain covered; rollback and durability
+ordering are unchanged.
+
+For one 8,192-field hash object, a debug allocation probe requested 925,864 bytes
+in 1,381 calls for the materialized scan and 401,576 bytes in 1,369 calls for the
+borrowed scan. The 524,288-byte saving removes the owned list. Remaining visitor
+deduplication still allocates; this is not an allocation-free or bounded-time
+scan. Run its checks with:
+
+```bash
+cargo test -p temporalstore-rust --lib --features alloc-probe \
+  compaction_retention_tests -- --test-threads=1 --nocapture
+```
+
+With both borrowed scans, another 16,384-record storage diagnostic acknowledged
+all records but logged metadata requests at 813,371 microseconds (single) and
+407,703 microseconds (batch) before debugger attachment. That capture showed a
+request scanning set members in `any_element_other_than_at`, with maintenance
+asleep. It does not establish which operation caused the earlier slow requests.
+Rust-source fingerprints were unchanged during this test build and serving
+build, but both used the shared development tree, not a clean public commit.
+The diagnostic was interrupted after capture, so there is still no complete
+endpoint or real-model acceptance report.
