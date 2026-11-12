@@ -388,9 +388,85 @@ pub(super) fn bucket_storage_summaries_from_entries(
     end_routing_bucket: u32,
     entries: &[LiveBlockEntry],
 ) -> Vec<BucketStorageSummary> {
-    let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
-    let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
+    let mut fold = BucketSummaryFold::default();
     for entry in entries {
+        fold.add_entry(entry, start_routing_bucket, end_routing_bucket);
+    }
+    fold.finish(shard)
+}
+
+#[derive(Clone, Copy)]
+struct BucketSummaryNode {
+    routing_bucket: u32,
+    dirty: bool,
+    object_count: u64,
+    dirty_generation: u64,
+}
+
+impl BucketSummaryNode {
+    fn capture(routing_bucket: u32, bucket: &super::state::BucketNode) -> Self {
+        Self {
+            routing_bucket,
+            dirty: bucket.dirty(),
+            object_count: bucket.object_index.object_count() as u64,
+            dirty_generation: bucket.dirty_generation,
+        }
+    }
+}
+
+/// The fold's shard-dependent inputs, bounded by bucket count rather than object count.
+pub(super) struct BucketSummaryMetadata {
+    nodes: Vec<BucketSummaryNode>,
+    dirty_counts: Vec<(u32, u64)>,
+}
+
+impl BucketSummaryMetadata {
+    pub(super) fn capture(shard: &ShardState) -> Self {
+        Self {
+            nodes: shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(bucket, node)| BucketSummaryNode::capture(*bucket, node))
+                .collect(),
+            dirty_counts: shard.dirty_objects.bucket_counts().collect(),
+        }
+    }
+
+    pub(super) fn summaries_from_entries(
+        self,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        entries: &[LiveBlockEntry],
+    ) -> Vec<BucketStorageSummary> {
+        let mut fold = BucketSummaryFold::default();
+        for entry in entries {
+            fold.add_entry(entry, start_routing_bucket, end_routing_bucket);
+        }
+        fold.finish_parts(self.nodes, self.dirty_counts)
+    }
+
+    #[cfg(test)]
+    pub(super) fn recorded_bucket_counts(&self) -> (usize, usize) {
+        (self.nodes.len(), self.dirty_counts.len())
+    }
+}
+
+#[derive(Default)]
+struct BucketSummaryFold {
+    buckets: BTreeMap<u32, BucketStorageSummary>,
+    block_slabs_by_bucket: BTreeMap<u32, BTreeSet<u64>>,
+}
+
+impl BucketSummaryFold {
+    fn add_entry(
+        &mut self,
+        entry: &LiveBlockEntry,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+    ) {
+        let buckets = &mut self.buckets;
+        let block_slabs_by_bucket = &mut self.block_slabs_by_bucket;
         // The shard's OWN routing range, which is what every other consumer of this fallback
         // uses -- `rebuild_bucket_first_index`, `refresh_pending_bucket_runtime_flags` and the
         // dirty-key loop at the foot of this function all reach for
@@ -422,12 +498,16 @@ pub(super) fn bucket_storage_summaries_from_entries(
         let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
-        let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
-            routing_bucket,
-            ..BucketStorageSummary::default()
-        });
+        let summary = buckets
+            .entry(routing_bucket)
+            .or_insert(BucketStorageSummary {
+                routing_bucket,
+                ..BucketStorageSummary::default()
+            });
         summary.block_ref_count = summary.block_ref_count.saturating_add(1);
-        summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length());
+        summary.physical_bytes = summary
+            .physical_bytes
+            .saturating_add(entry.address.length());
         summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length());
         // Record which block slab backs each bucket so bucket-dump manifests carry the
         // live slab set (used by manifest validation and the dump/copy path).
@@ -444,57 +524,81 @@ pub(super) fn bucket_storage_summaries_from_entries(
             );
         }
     }
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        // object_count and the base dirty_generation are durable-generation IDENTITY
-        // fields (compared by bucket_dump_summary_matches_current_generation to anchor
-        // WAL/index reclaim). They must reflect durable bucket content, not the
-        // transient `dirty` flag -- so a bucket that was dumped and then had its dirty
-        // flag cleared but still owns live blocks keeps its
-        // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
-        // live-block summary; behaviour is unchanged for every pre-clear state (a bucket
-        // with content is dirty today, so the branch was always taken).
-        let has_live_summary = buckets.contains_key(routing_bucket);
-        if !bucket.dirty() && !has_live_summary {
-            continue;
+    fn finish(self, shard: &ShardState) -> Vec<BucketStorageSummary> {
+        self.finish_parts(
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(bucket, node)| BucketSummaryNode::capture(*bucket, node)),
+            shard.dirty_objects.bucket_counts(),
+        )
+    }
+
+    fn finish_parts(
+        mut self,
+        nodes: impl IntoIterator<Item = BucketSummaryNode>,
+        dirty_counts: impl IntoIterator<Item = (u32, u64)>,
+    ) -> Vec<BucketStorageSummary> {
+        let buckets = &mut self.buckets;
+        let block_slabs_by_bucket = &self.block_slabs_by_bucket;
+        for node in nodes {
+            let routing_bucket = node.routing_bucket;
+            // object_count and the base dirty_generation are durable-generation IDENTITY
+            // fields (compared by bucket_dump_summary_matches_current_generation to anchor
+            // WAL/index reclaim). They must reflect durable bucket content, not the
+            // transient `dirty` flag -- so a bucket that was dumped and then had its dirty
+            // flag cleared but still owns live blocks keeps its
+            // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
+            // live-block summary; behaviour is unchanged for every pre-clear state (a bucket
+            // with content is dirty today, so the branch was always taken).
+            let has_live_summary = buckets.contains_key(&routing_bucket);
+            if !node.dirty && !has_live_summary {
+                continue;
+            }
+            let summary = buckets
+                .entry(routing_bucket)
+                .or_insert(BucketStorageSummary {
+                    routing_bucket,
+                    ..BucketStorageSummary::default()
+                });
+            // object_index.len() is the bucket's total object count, not its dirty count;
+            // assigning it to dirty_object_count double-counted (the dirty_objects loop
+            // below is the authoritative per-key dirty tally).
+            summary.object_count = node.object_count;
+            summary.dirty_generation = node.dirty_generation;
         }
-        let summary = buckets.entry(*routing_bucket).or_insert(BucketStorageSummary {
-            routing_bucket: *routing_bucket,
-            ..BucketStorageSummary::default()
-        });
-        // object_index.len() is the bucket's total object count, not its dirty count;
-        // assigning it to dirty_object_count double-counted (the dirty_objects loop
-        // below is the authoritative per-key dirty tally).
-        summary.object_count = bucket.object_index.object_count() as u64;
-        summary.dirty_generation = bucket.dirty_generation;
+        // ONE ITERATION PER DIRTY BUCKET, where this was one per dirty OBJECT.
+        //
+        // The loop this replaces walked every dirty object key and hashed it to recompute a routing
+        // bucket, to add 1 to a per-bucket counter. That is a fold whose group key was known when the
+        // object was marked dirty and thrown away; `DirtyObjectIndex` keeps it, so the fold is
+        // already done. Same arithmetic -- adding 1 N times and adding N are the same number well
+        // below saturation -- over a loop bounded by the bucket count instead of the corpus.
+        //
+        // This function runs three times in one `apply_storage_lifecycle` and again on each metrics
+        // scrape, so the per-key hash was paid four times a round over a set that grows with ingest.
+        for (routing_bucket, dirty_object_count) in dirty_counts {
+            DIRTY_SUMMARY_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let summary = buckets
+                .entry(routing_bucket)
+                .or_insert(BucketStorageSummary {
+                    routing_bucket,
+                    ..BucketStorageSummary::default()
+                });
+            summary.dirty_object_count = summary
+                .dirty_object_count
+                .saturating_add(dirty_object_count);
+            summary.dirty_generation = summary.dirty_generation.saturating_add(dirty_object_count);
+        }
+        for (routing_bucket, summary) in buckets.iter_mut() {
+            summary.block_slab_ids = block_slabs_by_bucket
+                .get(routing_bucket)
+                .map(|ids| ids.iter().copied().collect())
+                .unwrap_or_default();
+        }
+        self.buckets.into_values().collect()
     }
-    // ONE ITERATION PER DIRTY BUCKET, where this was one per dirty OBJECT.
-    //
-    // The loop this replaces walked every dirty object key and hashed it to recompute a routing
-    // bucket, to add 1 to a per-bucket counter. That is a fold whose group key was known when the
-    // object was marked dirty and thrown away; `DirtyObjectIndex` keeps it, so the fold is
-    // already done. Same arithmetic -- adding 1 N times and adding N are the same number well
-    // below saturation -- over a loop bounded by the bucket count instead of the corpus.
-    //
-    // This function runs three times in one `apply_storage_lifecycle` and again on each metrics
-    // scrape, so the per-key hash was paid four times a round over a set that grows with ingest.
-    for (routing_bucket, dirty_object_count) in shard.dirty_objects.bucket_counts() {
-        DIRTY_SUMMARY_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
-            routing_bucket,
-            ..BucketStorageSummary::default()
-        });
-        summary.dirty_object_count = summary
-            .dirty_object_count
-            .saturating_add(dirty_object_count);
-        summary.dirty_generation = summary.dirty_generation.saturating_add(dirty_object_count);
-    }
-    for (routing_bucket, summary) in &mut buckets {
-        summary.block_slab_ids = block_slabs_by_bucket
-            .get(routing_bucket)
-            .map(|ids| ids.iter().copied().collect())
-            .unwrap_or_default();
-    }
-    buckets.into_values().collect()
 }
 
 const NATIVE_PACKED_BLOCK_INDEX_SIZE: usize = 17;
@@ -998,17 +1102,37 @@ pub(super) fn bucket_object_block_ownership_report_from_entries(
     report
 }
 
-pub(super) fn merge_last_dump_sequence(
-    mut summaries: Vec<BucketStorageSummary>,
-    manifest: &BucketDumpManifest,
-) -> Vec<BucketStorageSummary> {
-    let dumped_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
-    for summary in &mut summaries {
-        if dumped_buckets.contains(&summary.routing_bucket) {
-            summary.last_dump_sequence = manifest.index_log_sequence;
+pub(super) struct BucketDumpSequenceAnnotation {
+    dumped_buckets: BTreeSet<u32>,
+    sequence: u64,
+}
+
+impl BucketDumpSequenceAnnotation {
+    pub(super) fn capture(manifest: &BucketDumpManifest) -> Self {
+        Self {
+            dumped_buckets: manifest.bucket_ids.iter().copied().collect(),
+            sequence: manifest.index_log_sequence,
         }
     }
-    summaries
+
+    pub(super) fn apply(
+        self,
+        mut summaries: Vec<BucketStorageSummary>,
+    ) -> Vec<BucketStorageSummary> {
+        for summary in &mut summaries {
+            if self.dumped_buckets.contains(&summary.routing_bucket) {
+                summary.last_dump_sequence = self.sequence;
+            }
+        }
+        summaries
+    }
+}
+
+pub(super) fn merge_last_dump_sequence(
+    summaries: Vec<BucketStorageSummary>,
+    manifest: &BucketDumpManifest,
+) -> Vec<BucketStorageSummary> {
+    BucketDumpSequenceAnnotation::capture(manifest).apply(summaries)
 }
 
 pub(super) fn bucket_dump_manifest_comparable_summaries(

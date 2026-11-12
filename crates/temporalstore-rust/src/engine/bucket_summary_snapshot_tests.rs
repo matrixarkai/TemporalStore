@@ -111,30 +111,35 @@ fn bucket_summary_snapshot_matches_the_locked_result_in_both_modes() {
 fn bucket_summary_snapshot_allows_writer_progress_before_digest_completion() {
     fn assert_send<T: Send>() {}
     assert_send::<BucketSummarySnapshot>();
-    let dir = tempfile::tempdir().unwrap();
-    let engine = open(dir.path(), 127);
-    let expected = locked_result(&engine, 127, true);
-    let snapshot = engine.capture_bucket_storage_summaries(1, true).unwrap();
-    assert!(
-        engine.shards.try_write().is_ok(),
-        "capture retained a shard guard"
-    );
-    let (sent, received) = std::sync::mpsc::sync_channel(1);
-    let writer = engine.clone();
-    let thread = std::thread::spawn(move || {
-        write(&writer);
-        sent.send(()).unwrap();
-    });
-    // A deadlock guard, not a latency target: the fingerprint phase is deliberately deferred.
-    received
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
-    thread.join().unwrap();
-    assert_eq!(snapshot.finish(), expected);
-    assert_ne!(
-        engine.bucket_storage_summaries_with_digests(1, true).1,
-        expected.1
-    );
+    for with_digests in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), 127);
+        let expected = locked_result(&engine, 127, with_digests);
+        let before_digests = locked_result(&engine, 127, true).1;
+        let snapshot = engine
+            .capture_bucket_storage_summaries(1, with_digests)
+            .unwrap();
+        assert!(
+            engine.shards.try_write().is_ok(),
+            "capture retained a shard guard"
+        );
+        let (sent, received) = std::sync::mpsc::sync_channel(1);
+        let writer = engine.clone();
+        let thread = std::thread::spawn(move || {
+            write(&writer);
+            sent.send(()).unwrap();
+        });
+        // A deadlock guard, not a latency target: folding and hashing are both deferred.
+        received
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        thread.join().unwrap();
+        assert_eq!(snapshot.finish(), expected);
+        assert_ne!(
+            engine.bucket_storage_summaries_with_digests(1, true).1,
+            before_digests
+        );
+    }
 }
 
 #[test]
@@ -156,13 +161,13 @@ fn bucket_summary_snapshot_preserves_manifest_annotations_without_pinning_the_im
         users,
         "capture pins a full index image"
     );
-    assert_eq!(snapshot.summaries, expected.0);
+    assert!(snapshot.dump_sequence.is_some());
     write(&engine);
     let second = engine
         .create_bucket_dump_manifest(1, first.bucket_ids.clone())
         .unwrap();
     assert_ne!(first.manifest_id, second.manifest_id);
-    assert_eq!(snapshot.summaries, expected.0);
+    assert!(snapshot.dump_sequence.is_some());
     assert_eq!(snapshot.finish(), expected);
 }
 
@@ -215,5 +220,39 @@ fn bucket_summary_snapshot_does_not_cover_a_later_generation() {
             &old_digests,
             &current_digests
         ));
+    }
+}
+
+#[test]
+fn bucket_summary_snapshot_metadata_scales_with_buckets_and_keeps_dirty_only_rows() {
+    for count in [32, 1024] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), 3);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiSet {
+                key: "catalog".into(),
+                entries: (0..count)
+                    .map(|index| (format!("field-{index}"), vec![b'h'; 64]))
+                    .collect(),
+            },
+        });
+        assert!(response.status.ok);
+        let snapshot = engine.capture_bucket_storage_summaries(1, true).unwrap();
+        let (nodes, dirty) = snapshot.metadata.recorded_bucket_counts();
+        assert!((1..=4).contains(&nodes));
+        assert!((1..=4).contains(&dirty));
+        assert!(snapshot.entries.len() >= count);
+        assert_eq!(snapshot.finish(), locked_result(&engine, 3, true));
+
+        let mut model_only = engine.shards.read().unwrap()[&1].clone();
+        model_only.bucket_index.bucket_map.clear();
+        let entries = collect_live_block_entries(&model_only);
+        let metadata = BucketSummaryMetadata::capture(&model_only);
+        assert_eq!(metadata.recorded_bucket_counts().0, 0);
+        assert!(metadata.recorded_bucket_counts().1 > 0);
+        let expected = bucket_storage_summaries_from_entries(&model_only, 0, 3, &entries);
+        assert_eq!(metadata.summaries_from_entries(0, 3, &entries), expected);
+        assert!(expected.iter().any(|row| row.dirty_object_count > 0));
     }
 }

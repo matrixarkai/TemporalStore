@@ -2229,8 +2229,8 @@ impl TemporalEngine {
     }
 
     /// The summaries and, when `with_digests`, the live shard's per-bucket fingerprint digests,
-    /// both captured from one listing under one shard read. Pure digest computation runs after
-    /// the guard is released; entries and manifest annotations remain the same snapshot.
+    /// both computed from one listing and its bucket metadata captured under one shard read.
+    /// Folding and hashing run after unlocking, with the same captured manifest annotations.
     pub(crate) fn bucket_storage_summaries_with_digests(
         &self,
         shard_id: ShardId,
