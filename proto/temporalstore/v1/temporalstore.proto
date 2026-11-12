@@ -1996,3 +1996,23 @@ message ContextExplicitIngestResponse {
   uint64 accepted = 3;
   uint64 failed = 4;
 }
+
+message ContextMemoryFact {
+  uint64 entity_hash = 1;
+  string kind = 2;
+  string name = 3;
+  string value = 4;
+}
+
+message ContextMemorySourceReceipt {
+  Status status = 1;
+  string source_ref = 2;
+  uint64 node_hash = 3;
+  uint64 extracted_entity_count = 4;
+  repeated ContextMemoryFact facts = 5;
+}
+
+message ContextMemoryIngestResponse {
+  ContextExplicitIngestResponse acknowledgment = 1;
+  repeated ContextMemorySourceReceipt sources = 2;
+}

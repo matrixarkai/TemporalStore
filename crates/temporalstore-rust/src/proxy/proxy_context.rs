@@ -509,6 +509,22 @@ impl ProxyService {
             .map_err(|status| crate::http::json_response(502, &status))
     }
 
+    /// Extract inferred memories with a protobuf source request and compact fact receipt.
+    pub(super) fn context_extract_facts(
+        &self, scope: &ProxyContextScope,
+        request: crate::context_workflow::ContextIngestExtractRequest,
+    ) -> Result<Vec<u8>, (u16, Vec<u8>)> {
+        let _admitted = self.admit_context(scope, true)?;
+        self.inner.context_extract_requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let server_addr = self.context_shard_addr(request.shard_id)?;
+        let body = crate::context_workflow::ingest_wire::encode_request(request)
+            .map_err(|status| crate::http::json_response(400, &status))?;
+        let response = self.context_forward_encoded(
+            &server_addr, "/context/ingest_facts", &body, "application/x-protobuf");
+        if response.0 != 200 { return Err(response); }
+        Ok(response.1)
+    }
+
     /// FAST path: buffer messages as raw events in one write, without model calls.
     pub(super) fn context_ingest(&self, request: ProxyContextIngestRequest<'_>) -> (u16, Vec<u8>) {
         self.inner

@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use temporalstore_rust::context_workflow::ingest_wire;
+use temporalstore_rust::context_workflow::memory_wire;
 use temporalstore_rust::http::{RequestHead, StreamAction, StreamTransfer};
 use temporalstore_rust::{Status, TemporalEngine};
 
@@ -10,7 +11,8 @@ pub fn handle(
     head: &RequestHead,
     transfer: &mut StreamTransfer,
 ) -> StreamAction {
-    if head.method != "POST" || head.path != "/context/ingest_explicit" {
+    let inference = head.path == "/context/ingest_facts";
+    if head.method != "POST" || (!inference && head.path != "/context/ingest_explicit") {
         return StreamAction::Declined;
     }
     let result = if transfer.body_len() > ingest_wire::EXPLICIT_MAX_BODY_BYTES {
@@ -49,8 +51,10 @@ pub fn handle(
         }
     };
     let (http_status, body) = match result {
-        Ok(request) => (200, ingest_wire::execute_request(engine, request)),
-        Err(status) => (400, ingest_wire::encode_response(status, 0, 0)),
+        Ok(request) => (200, if inference { memory_wire::execute_request(engine, request) }
+            else { ingest_wire::execute_request(engine, request) }),
+        Err(status) => (400, if inference { memory_wire::encode_error(status) }
+            else { ingest_wire::encode_response(status, 0, 0) }),
     };
     let _ = transfer.drain_body();
     if transfer
@@ -66,6 +70,7 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use temporalstore_rust::context_workflow::{
@@ -96,20 +101,25 @@ mod tests {
         let valid = ingest_wire::encode_request(ContextIngestExtractRequest {
             shard_id: 1,
             tenant_hash: 42,
-            sources: Vec::new(),
+            sources: vec![temporalstore_rust::ContextExtractRequest {
+                shard_id: 1, tenant_hash: 42, source_kind: temporalstore_rust::ContextSourceKind::Chat,
+                source_id: "wire-source".into(), title: "user".into(), body: "A durable source".into(),
+                timestamp_ms: 1, provider: Default::default(),
+            }],
             query: String::new(),
             start_time_ms: 0,
-            end_time_ms: 1,
+            end_time_ms: 2,
             max_events: 1,
             provider: ContextModelProviderConfig::default(),
         })
         .unwrap();
-        for (body, expected_status) in [(valid, 200), (b"{}".to_vec(), 400)] {
+        for path in ["/context/ingest_explicit", "/context/ingest_facts"] {
+        for (body, expected_status) in [(valid.clone(), 200), (b"{}".to_vec(), 400)] {
             let mut socket = TcpStream::connect(addr).unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
-            write!(socket, "POST /context/ingest_explicit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            write!(socket, "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
             socket.write_all(&body).unwrap();
             let mut response = Vec::new();
             socket.read_to_end(&mut response).unwrap();
@@ -121,10 +131,16 @@ mod tests {
             let header = std::str::from_utf8(&response[..end]).unwrap();
             assert!(header.starts_with(&format!("HTTP/1.1 {expected_status} ")));
             assert!(header.contains("Content-Type: application/x-protobuf\r\n"));
-            assert_eq!(
-                ingest_wire::validate_response(&response[end..], 0).is_ok(),
-                expected_status == 200
-            );
+            if path == "/context/ingest_facts" {
+                let receipt = temporalstore_rust::sdk::v1::ContextMemoryIngestResponse::decode(&response[end..]).unwrap();
+                let ack = receipt.acknowledgment.unwrap();
+                assert_eq!(ack.status.unwrap().ok, expected_status == 200);
+                assert_eq!(ack.accepted, if expected_status == 200 { 1 } else { 0 });
+                assert_eq!(receipt.sources.len(), if expected_status == 200 { 1 } else { 0 });
+            } else {
+                assert_eq!(ingest_wire::validate_response(&response[end..], 1).is_ok(), expected_status == 200);
+            }
+        }
         }
     }
 }

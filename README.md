@@ -57,6 +57,12 @@ Use the [Rust SDK](https://github.com/matrixarkai/TemporalStore/tree/main/sdk/ru
 [Python context SDK](https://github.com/matrixarkai/TemporalStore/tree/main/sdk/python),
 HTTP APIs, or the documented RESP surface for the corresponding workloads.
 
+The Rust memory API uses `infer=false` for explicit messages without a chat-model
+call. With a configured model, `infer=true` creates separate memories from
+extracted facts rather than cataloging raw conversations. Internal inference
+uses protobuf and bounded fact receipts, reusing existing entity vectors.
+See [inferred memory behavior and coordinated rollout](docs/MEMORY_INFERRED_FACTS.md).
+
 ## Recorded benchmark highlights
 
 Selected verified results from checked-in reports, not a new benchmark run.

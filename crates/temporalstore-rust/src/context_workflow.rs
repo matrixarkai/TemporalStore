@@ -46,6 +46,7 @@ mod embed_drainer;
 #[path = "context_workflow/context_workflow_ingest.rs"]
 mod ingest;
 pub mod ingest_wire;
+pub mod memory_wire;
 mod model_provider;
 #[path = "context_workflow/context_query_scoring.rs"]
 mod query;
@@ -405,6 +406,14 @@ impl Default for ContextEmbeddingGenerationReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextExtractedFact {
+    pub entity_hash: u64,
+    pub kind: String,
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextExtractReport {
     pub status: Status,
@@ -413,6 +422,8 @@ pub struct ContextExtractReport {
     pub embedding_generation: ContextEmbeddingGenerationReport,
     #[serde(default)]
     pub extracted_entity_count: usize,
+    #[serde(skip)]
+    pub facts: Vec<ContextExtractedFact>,
     pub node: ContextNode,
     pub event: ContextEvent,
     pub index_ref: ContextIndexRef,
@@ -2068,6 +2079,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
                 provider,
                 embedding_generation: ContextEmbeddingGenerationReport::default(),
                 extracted_entity_count: 0,
+                facts: Vec::new(),
                 node: empty_node(),
                 event: empty_event(),
                 index_ref: ContextIndexRef {
@@ -2345,6 +2357,10 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
         });
     }
     let extracted_entity_count = extracted_entities.len();
+    let facts = extracted_entities.iter().map(|entity| ContextExtractedFact {
+        entity_hash: context_extracted_entity_hash(entity), kind: entity.kind.clone(),
+        name: entity.name.clone(), value: entity.value.clone(),
+    }).collect();
     commands.extend(
         extracted_entities
             .into_iter()
@@ -2388,6 +2404,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
             provider,
             embedding_generation,
             extracted_entity_count,
+            facts,
             node,
             event,
             index_ref,
@@ -3916,7 +3933,7 @@ fn context_extracted_entity_type(kind: &str) -> u32 {
     }
 }
 
-fn context_extracted_entity_hash(entity: &ContextExtractedEntity) -> u64 {
+pub(crate) fn context_extracted_entity_hash(entity: &ContextExtractedEntity) -> u64 {
     stable_hash64(&format!(
         "{}:{}",
         entity.kind,
@@ -4003,6 +4020,7 @@ fn empty_extract_report(
         provider,
         embedding_generation,
         extracted_entity_count: 0,
+        facts: Vec::new(),
         node: empty_node(),
         event: empty_event(),
         index_ref: ContextIndexRef {
