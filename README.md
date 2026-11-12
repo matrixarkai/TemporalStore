@@ -59,6 +59,18 @@ History, tracking, mixed layouts, and older-node fallbacks have their own costs 
 concurrency limits. Measure those configurations separately from latest-only writes,
 including maintenance and retained WAL bytes, not just accepted rows per second.
 
+Eligible synchronous shared-row writes now leave cold packed payloads out of the
+payload cache until a read requests them. Updates to an already cached frame can
+refresh it eagerly, using one lookup of the first selected field rather than a
+scan of the projection. This reduces write-side copying without increasing the
+cache budget; cold reads can instead fetch and decompress a WAL group.
+
+Set `TS_HASH_WRITE_AROUND=0` before startup to retain eager admission. Async,
+bulk, replay, consensus-apply, and memory-limited paths keep their existing
+behavior. Location registration and durability barriers are unchanged. See
+[indexed WAL reads and cache admission](docs/indexed_wal_reads.md) for eligibility
+and memory costs; compare mixed reads and writes, not write QPS alone.
+
 ### WindowReduce Features
 
 A cell-based model within Feature stores timestamped snapshots of members,
