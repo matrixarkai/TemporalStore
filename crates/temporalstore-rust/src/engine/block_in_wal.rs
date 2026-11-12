@@ -501,24 +501,23 @@ fn register_record_locations(
     }
     let packed = packed_objects(outcomes);
     let mut pool = std::collections::HashSet::new();
-    let names: Vec<_> = staged_blocks.iter()
-        .map(|block| select_registration_names(block, &packed, projection, &mut pool)).collect();
     let physical_blocks = physical::bindings(outcomes, staged_blocks);
     let physical_indices: std::collections::HashSet<_> = physical_blocks.iter().map(|(_, index)| *index).collect();
-    let names: Vec<_> = names.into_iter().enumerate().map(|(index, names)| {
+    let names: Vec<_> = staged_blocks.iter().enumerate().map(|(index, block)| {
         if physical_indices.contains(&index) {
             RegistrationNames::Owned(Vec::new())
-        } else { names }
+        } else { select_registration_names(block, &packed, projection, &mut pool) }
     }).collect();
     let expected = names.iter().map(RegistrationNames::len).sum::<usize>() + physical_blocks.len();
-    let mut folded = Vec::with_capacity(expected);
-    for (key, index) in physical_blocks {
+    let mut folded = physical::install_many(block_store, shard_id, physical_blocks.into_iter().map(|(key, index)| {
         let location = Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
-        folded.push(physical::install(block_store, shard_id, key, location));
-    }
+        (key, location)
+    }));
+    folded.reserve(expected - folded.len());
     if let Ok(mut map) = registry().lock() {
         let entries = map.shard_mut(block_store.store_id(), shard_id);
         for (index, (block, names)) in staged_blocks.iter().zip(names).enumerate() {
+            if names.len() == 0 { continue; }
             let location = std::sync::Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
             let mut install = |name: Option<std::sync::Arc<str>>| {
                 folded.push(wal_resident_key(block.object_id, name.as_deref()));
