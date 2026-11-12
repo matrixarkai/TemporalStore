@@ -20,11 +20,29 @@ without rebuilding the deleted-block membership set. Deleted-block removal,
 tombstone sweeps, unknown/replayed installs, and rebuilds keep full reconciliation.
 This does not defer work across commands or weaken the final bucket invariants.
 
+Periodic schedulers execute the same lifecycle actions without constructing the
+ownership diagnostics and sample vectors that their callers discard. Dump
+manifests remain available internally for dirty-state clearing and index-GC
+fences. Retention checks, cache actions, stage counters and timer intervals are
+unchanged. Explicit `apply_storage_lifecycle` and `run_storage_manager_once`
+calls still return full diagnostics; an internal timer result does not expose an
+incomplete diagnostic report as a full one.
+
+Periodic compaction likewise omits before/after slab surveys, utility policies and
+model-layout diagnostics. It still validates ownership, uses the same relocation
+budgets and resume anchor, rebuilds the index and ownership, and publishes the
+durable index under the write guard after the block durability barrier. Failed
+partial relocations keep their durable publication and resume behavior. Explicit
+compaction and manager requests retain complete compaction reports.
+
 ## Checks
 
 ```bash
 cargo test -p temporalstore-rust --lib maintenance_tombstone_walk_tests -- --test-threads=1
 cargo test -p temporalstore-rust --lib live_block_layout_tests -- --test-threads=1
+cargo test -p temporalstore-rust --lib lifecycle_report_work_tests -- --test-threads=1
+cargo test -p temporalstore-rust --lib maintenance_report_tests -- --test-threads=1
+cargo test -p temporalstore-rust --lib compaction_execution_tests -- --test-threads=1
 cargo test -p temporalstore-rust --lib bucket_filing_range -- --test-threads=1
 cargo test -p temporalstore-rust --lib reclaim -- --test-threads=1
 cargo test -p temporalstore-rust --lib proxy::memory -- --test-threads=1

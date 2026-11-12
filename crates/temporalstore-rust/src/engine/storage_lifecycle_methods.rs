@@ -4,6 +4,10 @@
 //! Storage lifecycle / WAL-reclaim / eviction methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+#[cfg(test)]
+#[path = "lifecycle_report_work_tests.rs"]
+mod lifecycle_report_work_tests;
+
 /// How many dirty-object keys the dump drain has looked at, across every call.
 ///
 /// The drain's cost is not visible from outside -- it is a closure inside a `retain` -- and
@@ -953,6 +957,15 @@ impl TemporalEngine {
         &self,
         request: StorageLifecycleRequest,
     ) -> StorageLifecycleReport {
+        self.apply_storage_lifecycle_with_report_details(request, true)
+    }
+
+    // Internal maintenance consumes execution facts, not the diagnostic ownership/sample views.
+    pub(crate) fn apply_storage_lifecycle_with_report_details(
+        &self,
+        request: StorageLifecycleRequest,
+        detailed_report: bool,
+    ) -> StorageLifecycleReport {
         let plan = self.storage_lifecycle_plan(request.clone());
         let dump_manifest = if plan.selected_dump_buckets.is_empty() {
             None
@@ -1013,7 +1026,11 @@ impl TemporalEngine {
                 request.follower_replay_cursors.clone(),
             )
         });
-        let object_lifecycle = self.storage_object_lifecycle_snapshot(request.shard_id);
+        let object_lifecycle = if detailed_report {
+            self.storage_object_lifecycle_snapshot(request.shard_id)
+        } else {
+            StorageObjectLifecycleReport::default()
+        };
         let mut report = StorageLifecycleReport {
             shard_id: request.shard_id,
             public_storage_contract: Default::default(),
@@ -1056,6 +1073,9 @@ impl TemporalEngine {
             object_lifecycle,
         };
         report.refresh_public_lifecycle_metrics();
+        if !detailed_report {
+            return report;
+        }
         if let Some(shard) = self
             .shards
             .read()
