@@ -315,6 +315,36 @@ fn memory_catalog_write<'a>(
     }
 }
 
+fn memory_delete_ack(memory_id: &str, status: u16, body: &[u8]) -> Result<(), (u16, String)> {
+    #[derive(Deserialize)]
+    struct Acknowledgment {
+        id: Option<String>,
+        deleted: Option<bool>,
+        code: Option<String>,
+    }
+    let acknowledgment = serde_json::from_slice::<Acknowledgment>(body).ok();
+    if status != 200 {
+        let code = acknowledgment
+            .and_then(|value| value.code)
+            .filter(|code| !code.is_empty())
+            .unwrap_or_else(|| match status {
+                404 => "memory_not_found".into(),
+                _ => "memory_delete_failed".into(),
+            });
+        return Err((status, code));
+    }
+    if let Some(value) = acknowledgment {
+        if value.id.as_deref() == Some(memory_id) {
+            match value.deleted {
+                Some(true) => return Ok(()),
+                Some(false) => return Err((409, "memory_delete_not_applied".into())),
+                None => {}
+            }
+        }
+    }
+    Err((502, "invalid_memory_delete_response".into()))
+}
+
 fn memory_write_ack(response: &BatchExecuteResponse, expected: usize) -> Result<(), Status> {
     if !response.status.ok {
         return Err(response.status.clone());
@@ -1941,10 +1971,12 @@ impl ProxyService {
                 continue;
             }
             let (status, body) = self.memory_delete(id);
-            if status == 200 {
-                results.push(json!({"memory_id": id}));
-            } else {
-                failed.push(json!({"memory_id": id, "status": status, "body": String::from_utf8_lossy(&body)}));
+            match memory_delete_ack(id, status, &body) {
+                Ok(()) => results.push(json!({"memory_id": id})),
+                Err((status, code)) => failed.push(json!({
+                    "memory_id": id, "status": status, "code": code,
+                    "body": String::from_utf8_lossy(&body),
+                })),
             }
         }
         let deleted = results.len();
