@@ -1534,6 +1534,19 @@ pub(super) fn rebuild_bucket_block_ownership(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) {
+    let entries = collect_model_live_block_entries(shard);
+    rebuild_bucket_block_ownership_from_entries(
+        shard_id, shard, start_routing_bucket, end_routing_bucket, entries,
+    );
+}
+
+fn rebuild_bucket_block_ownership_from_entries(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    entries: impl IntoIterator<Item = LiveBlockEntry>,
+) {
     // Preserve the durable per-bucket watermark across the clear+rebuild. load_index keeps
     // dirty_generation; rebuilding with a fresh BucketNode::default() would zero it, making a
     // restored shard (e.g. after a manifest install) mismatch its own dump-manifest generation
@@ -1598,7 +1611,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     // the loop holds one bucket out of it, so it cannot happen there -- the same shape
     // `reload_released_bucket` already uses for the same reason.
     let mut filed_blocks: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
-    for entry in collect_model_live_block_entries(shard) {
+    for entry in entries {
         let routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
         // THE OUT-OF-RANGE FILTER THAT STOOD HERE CANNOT FIRE ANY MORE, so it is gone rather than
@@ -6955,6 +6968,20 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     shard: &mut ShardState,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
+    finalize: impl FnMut(&mut BucketNode, &BTreeSet<u64>),
+) {
+    let entries = collect_model_live_block_entries(shard);
+    rebuild_bucket_first_index_from_entries_with_layout::<BATCHED>(
+        shard_id, shard, start_routing_bucket, end_routing_bucket, entries, finalize,
+    );
+}
+
+fn rebuild_bucket_first_index_from_entries_with_layout<const BATCHED: bool>(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    entries: impl IntoIterator<Item = LiveBlockEntry>,
     mut finalize: impl FnMut(&mut BucketNode, &BTreeSet<u64>),
 ) {
     // Preserve tombstone (deleted) object ids across the rebuild. A delete removes the object
@@ -7009,7 +7036,7 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     // `rebuild_bucket_block_ownership`. The index starts empty here, so the filing below is the
     // whole of what the lookup should hold.
     let mut filed_blocks: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
-    for entry in collect_model_live_block_entries(shard) {
+    for entry in entries {
         let routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
         let object_id = expected_live_block_object_id(shard_id, &entry);
@@ -7195,6 +7222,33 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
 #[cfg(test)]
 #[path = "tests/bucket_rebuild_finalize.rs"]
 mod bucket_rebuild_finalize_tests;
+
+// Both rebuild phases change derived indexes only. Keep their ordering, but walk the
+// authoritative model maps once while the caller still holds the shard write guard.
+pub(super) fn rebuild_compacted_bucket_views(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) {
+    let entries = collect_model_live_block_entries(shard);
+    rebuild_bucket_first_index_from_entries_with_layout::<true>(
+        shard_id,
+        shard,
+        start_routing_bucket,
+        end_routing_bucket,
+        entries.iter().cloned(),
+        update_bucket_layout_with_live_objects,
+    );
+    refresh_bucket_runtime_flags(shard);
+    rebuild_bucket_block_ownership_from_entries(
+        shard_id, shard, start_routing_bucket, end_routing_bucket, entries,
+    );
+}
+
+#[cfg(test)]
+#[path = "compaction_view_rebuild_tests.rs"]
+mod compaction_view_rebuild_tests;
 
 /// Merge a block-derived timestamped-series view against the pre-existing (deserialized /
 /// in-memory) model map, which is AUTHORITATIVE for membership. reconcile re-reads packed
