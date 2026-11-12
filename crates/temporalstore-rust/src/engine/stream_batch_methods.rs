@@ -2132,9 +2132,9 @@ impl TemporalEngine {
                         shard.applied_wal_sequence,
                         None,
                         upsert_record,
-                        // Non-blocking on the raft apply path (raft log is the durability
-                        // source).
-                        !raft_applying(),
+                        // Match single writes: the WAL is the default durability source.
+                        // Legacy recovery still requires the index-log barrier.
+                        !raft_applying() && !wal_single_barrier(),
                     )
                     .unwrap_or(0);
                 // The index-log half, and it is a SEPARATE half: the plan keeps two frontiers
@@ -2563,3 +2563,7 @@ impl TemporalEngine {
         Ok(index_bytes.len())
     }
 }
+
+#[cfg(test)]
+#[path = "batch_wal_barrier_tests.rs"]
+mod batch_wal_barrier_tests;

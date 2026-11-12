@@ -2999,15 +2999,15 @@ impl LocalIndexLogStore {
     /// |---|---|---|
     /// | `engine.rs` single-command ack | `!raft_applying() && !wal_single_barrier()` | **false** |
     /// | `engine/recovery_sweep_compact.rs` expiry flush | `!raft_applying() && !wal_single_barrier()` | **false** |
-    /// | `engine/stream_batch_methods.rs` batch ack | `!raft_applying()` | **true** |
+    /// | `engine/stream_batch_methods.rs` batch ack | `!raft_applying() && !wal_single_barrier()` | **false** |
     /// | `engine/engine_persistence.rs` threshold catalog dump | `true` | **true** |
     ///
     /// `wal_single_barrier()` is `!wal_legacy_recovery()`, which reads `TS_WAL_LEGACY_RECOVERY`,
-    /// off by default -- so the two expressions carrying that term evaluate false, and the raft
+    /// off by default -- so the three expressions carrying that term evaluate false, and the raft
     /// term is what defers them on the apply path instead. The single-command ack therefore
-    /// defers, because the WAL barrier has already committed before this is reached. The BATCH
-    /// ack does not: its expression never had the `wal_single_barrier()` term, so on every
-    /// single-node batch write it takes the barrier. And the dump passes a literal `true`, which
+    /// defers, because recovery uses the WAL rather than this delta. Batch
+    /// acknowledgment now uses the same gate; shared-row batches still await their pending
+    /// WAL commit barrier before returning. The dump passes a literal `true`, which
     /// is the point of a dump -- step 4 of `dump_index_catalog` advances the dumped watermark on
     /// the strength of this record being durable.
     ///
@@ -3019,7 +3019,7 @@ impl LocalIndexLogStore {
     /// reader who checks it finds a literal `true` at the second call site down.
     ///
     /// Two separate errors produced it. "Both callers" was a count taken from a grep: there are
-    /// four, and only two compute the expression quoted. And "no caller passes `true`" read the
+    /// four, and at that time only two computed the expression quoted. And "no caller passes `true`" read the
     /// term `!wal_single_barrier()` as though every call site carried it.
     ///
     /// The caller count here is the COMPILER's, not a grep's. `append_delta`'s `durable`
