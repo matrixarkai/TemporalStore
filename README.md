@@ -1,885 +1,174 @@
 # TemporalStore
 
-**A distributed, time-aware serving engine, written in Rust.**
-One durable store for the read paths that sit in front of a model or a request: ranked context,
-long sequences, aggregated features, frequency caps, and control state.
-Apache-2.0 · self-hostable · no vector database · [temporalstore.ai](https://temporalstore.ai)
+**Open-source Rust storage for LLM context, temporal features, and control state.**
 
-📊 **Benchmarks & docs — [temporalstore.ai/benchmarks.html](https://temporalstore.ai/benchmarks.html)**
+Context management is the flagship use case: ingest conversations and resources,
+maintain reusable memory, and retrieve relevant context within a token budget.
+Long sequences, feature aggregates, and frequency caps use the same storage engine.
 
-Keys are time-ordered, writes are append-structured, and every workload below is answered from one
-temporal index rather than from several stores that each keep their own idea of time. It runs
-locally with one Docker command and scales out to a replicated, shared-storage cluster.
+**Apache-2.0, available worldwide for use, modification, commercial deployment,
+and contributions under the license.**
+[Website](https://temporalstore.ai) |
+[Documentation](https://github.com/matrixarkai/TemporalStore/tree/main/docs) |
+[Issues](https://github.com/matrixarkai/TemporalStore/issues)
 
-**Every figure on this block is measured, and carries its denominator and its conditions** — store
-size, routing range, payload size, node count. Each one names what reproduces it, and all of them
-were re-measured on `main` for this document except the one that says it was not. Where a limit is
-real it is stated plainly, and [What this store is bad at](#what-this-store-is-bad-at) is a section
-rather than a footnote.
+## Quick start
 
----
-
-## Guide
-
-| Task | Section |
-|---|---|
-| Pick a provider and start a serving node | [Serving paths](#choose-the-serving-path) |
-| Choose sequence, feature, or context operations | [Workload guide](#is-this-the-store-for-your-problem) |
-| Check constraints before choosing the store | [Limitations](#what-this-store-is-bad-at) |
-| Use RESP locally | [Docker quick start](#quick-start-single-node-docker) |
-| Understand persistence and feature writes | [Architecture](#architecture) |
-| Build from source | [Build instructions](#build--test-from-source) |
-
-## Getting Help
-
-Search [public issues](https://github.com/matrixarkai/TemporalStore/issues) before
-opening a report. Include the server revision, client/provider version, endpoint
-type, acknowledgement policy, replication mode, and a small reproducible request.
-For feature-serving performance, include entity count, feature sizes, batch width,
-concurrency, cache budget, and accepted versus stale rows. Separate warm reads
-from storage misses and report latency percentiles alongside throughput.
-
-Remove credentials and use synthetic feature values rather than production data.
-Follow the [security policy](docs/SECURITY.md) for sensitive reports, not a public
-issue. For code or documentation changes, start with [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Choose the Serving Path
-
-### Start a native feature-serving node
-
-From a source checkout, use the single-node Compose configuration for the HTTP
-command surface used by the native Feast provider:
+Prerequisites: Git, Docker, and Docker Compose. Build and start a local node from
+the public source:
 
 ```bash
+git clone https://github.com/matrixarkai/TemporalStore.git
+cd TemporalStore
 docker compose -f docker-compose.single-node.yml up --build -d
 curl -fsS http://127.0.0.1:17102/health
 ```
 
-The command endpoint is port 17102; it is not the RESP endpoint in the separate
-Docker quick start below. Install and configure the provider using its
-[setup guide](integrations/feast/feast_temporalstore_command/README.md).
-Its latest-value API is an online store, not a replacement for Feast's offline
-store or materialization engine. History is opt-in and increases stored work.
-The Compose deployment retains data in a named volume; `down` stops it without
-deleting that volume. Do not add `-v` unless the stored data is disposable.
+The Compose setup runs a metaserver on port `17101` and a data node on `17102`.
+Data lives in a named Docker volume and survives container restarts. `/health`
+checks process liveness; it is not proof that every shard can serve requests.
 
-### Select a component
+Installation: [Linux](https://github.com/matrixarkai/TemporalStore/blob/main/docs/linux_deploy.md) |
+[Windows Docker](https://github.com/matrixarkai/TemporalStore/blob/main/docs/windows_docker_install.md) |
+[macOS](https://github.com/matrixarkai/TemporalStore/blob/main/docs/macos_deploy.md).
 
-| Workload | Entry point | Deployment decision |
+## What it serves
+
+| Capability | Use cases | Start here |
 |---|---|---|
-| Feast materialization and online reads | [Feast integration](integrations/feast) | Select the provider and write acknowledgement policy; preserve timestamp ordering and expiry semantics. |
-| Context ingestion, retrieval, and feedback | [MatrixArk runtime](https://github.com/matrixarkai/matrixark) and the [Python client](#python-llm-context-client) | Configure storage and model providers separately; installing an SDK does not start either service. |
-| Replicated serving | [Cluster deployment](#deploy-laptop--replicated-cluster) | Choose the replication mode and read consistency before interpreting latency or durability. |
-| Embedded cache or consensus | [MatrixCache](https://github.com/matrixarkai/matrixcache) and [MatrixRaft](https://github.com/matrixarkai/matrixraft) | These are reusable libraries, not additional mandatory network services. |
+| Context | Agent memory, conversations, resources, entities, and budgeted retrieval | [Context guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/context_management_on_temporalstore.md) |
+| Features | Time-keyed observations, long sequences, windowed reads, and aggregates | [Feature guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_feature_sequences_and_aggregates.md) |
+| Control state | Frequency caps, counters, quotas, pacing, suppression, and risk control | [Control-state guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 
-For performance results, distinguish accepted writes from stale conditional writes, requests
-from rows, and resident reads from storage misses. Keep payloads, batch widths, concurrency,
-durability, maintenance, and replica counts explicit. Allocation reductions and compressed
-wire bytes do not by themselves establish device write amplification or maximum service QPS.
+### LLM context
 
-### Project map
+```text
+Messages and resources -> ingestion -> extraction and summaries
+                      -> candidate selection -> ranking -> token-budgeted pack
+```
 
-All six projects are independently usable under Apache-2.0. Select the component
-for the workload; this is not a list of services required to start TemporalStore.
+Context retrieval combines lexical matching with supplied embeddings. Bounded
+candidate selection precedes exact scoring and text hydration; selected blocks
+are deduplicated and packed after charging the caller's prompt against the budget.
+The built-in hash embedding is for tests, not a substitute for a semantic encoder.
+Changing encoders requires compatible model identity and re-embedding existing data.
 
-| Project | Use it for | Execution model |
+Use the [Python context SDK](https://github.com/matrixarkai/TemporalStore/tree/main/sdk/python)
+or [MatrixArk tooling](https://github.com/matrixarkai/matrixark) for ingestion and
+retrieval orchestration. Model and parser configuration remain explicit.
+
+### Temporal features and control state
+
+Feature sequences support timestamp windows and count-based retention. Aggregates
+include count, sum, average, min/max, and first/last; an optional sum-family rollup
+ladder accelerates supported wide-window queries. Whole-key TTL is separate from
+per-point retention. Control state provides atomic single-key updates and
+windowed counters.
+
+The [Feast integration](https://github.com/matrixarkai/TemporalStore/tree/main/integrations/feast)
+offers online feature serving. Native clients include a
+[Rust SDK](https://github.com/matrixarkai/TemporalStore/tree/main/sdk/rust/temporalstore),
+HTTP command APIs, and a documented
+[RESP surface](https://github.com/matrixarkai/TemporalStore/blob/main/docs/redis_compatibility_matrix.md).
+Consult the command matrix rather than assuming complete Redis compatibility.
+
+## Architecture and durability
+
+```text
+Clients / MatrixArk
+        |
+TemporalStore: temporal indexes, serving paths, append-structured storage
+        |
+MatrixCache + MatrixRaft
+        |
+Local disk / shared filesystem / object-store adapter
+```
+
+The engine owns indexed reads, packed blocks, caching, persistence, and storage
+maintenance. Distributed deployments add metadata placement and replication.
+Cache eviction releases memory; durable space reclamation requires safe storage
+maintenance and must respect live indexes and follower progress.
+
+Acknowledgement policy matters: an asynchronous acceptance is not the same as a
+confirmed persistence barrier. Choose and verify storage and replication settings
+for the required recovery guarantees; do not compare their write rates as if
+they provided identical durability.
+
+See [shared storage](https://github.com/matrixarkai/TemporalStore/blob/main/docs/shared_store_replication.md),
+[Raft replication](https://github.com/matrixarkai/TemporalStore/blob/main/docs/raft_replication_and_snapshots.md),
+and [indexed WAL reads](https://github.com/matrixarkai/TemporalStore/blob/main/docs/indexed_wal_reads.md).
+
+## Recorded benchmarks
+
+Selected measurements from the checked-in reports below, not a new benchmark run.
+These are local release-build results on a shared 16-core host, not multi-machine
+capacity claims. Rates use different operation units and are not interchangeable.
+
+| Workload | Recorded result | Conditions |
 |---|---|---|
-| **TemporalStore (this repository)** | Temporal features, sequences, and context serving | Serving engine; configure the selected endpoint, persistence, and replication mode. |
-| [MatrixObject](https://github.com/matrixarkai/MatrixObject) | Distributed object storage | Object API with separately configured metadata and replica services. |
-| [MatrixCache](https://github.com/matrixarkai/matrixcache) | Tiered caching inside a Rust application | Embedded library; the application owns authoritative data and network requests. |
-| [MatrixRaft](https://github.com/matrixarkai/matrixraft) | Consensus inside a service | Embedded library; the host supplies transport and state-machine application. |
-| [MatrixArk](https://github.com/matrixarkai/matrixark) | Context ingestion, retrieval, and feedback | Python runtime with explicitly configured storage and model providers. |
-| [MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) | Exploring an ads retrieval and auction pipeline | Standalone generated-data demonstration, not a live feature-store deployment. |
-
-## Deployment and Upgrade Checklist
-
-- Pin the server revision and client package together. Select the HTTP command
-  provider or RESP provider explicitly; their endpoints are not interchangeable.
-- Record acknowledgement policy, replication mode, cache budget, and whether
-  history is enabled. Increasing a cache budget changes the memory conditions
-  of a performance comparison, not the write durability contract.
-- Preserve durable volumes before changing versions. Read the
-  [format policy](#before-the-first-milestone-formats-can-change) before opening
-  existing data with a new binary; do not assume downgrade compatibility.
-- Size for process memory as well as configured cache capacity. Resident indexes,
-  decoded data, in-flight requests, and allocator retention are separate costs.
-- Keep accepted newer writes, rejected stale writes, latest-value reads, and
-  history reads separate in capacity estimates. Local instruction or allocation
-  reductions do not establish an end-to-end throughput improvement.
-
-## Feature-Serving Behavior
-
-The native Feast provider exposes different storage work depending on the selected
-options. Use its [configuration guide](integrations/feast/feast_temporalstore_command/README.md)
-when choosing a path rather than treating every materialization as the same write.
-
-| Workflow | Behavior and boundary |
-|---|---|
-| Latest values with default deduplication | Supported shared-layout writes compare event timestamps atomically on the server; augmented and older-node paths have the concurrency limits documented by the provider. |
-| Adaptive stale-traffic prefetch | A thread-local hint can enable fresh timestamp projections before later writes. It is not a cache of timestamp values or a substitute for server ordering. |
-| Optional history | `write_feature_history` adds series work; numeric-history configuration changes the aggregate read path. Latest-value reads and history-window reads remain different APIs. |
-| Expiring data | `key_ttl_seconds` configures latest-key expiry and TTL on new history writes. Choose a compatible server; expiry is not exact view enumeration. |
-| Removing a view | Exact cleanup requires `track_keys_for_teardown`. With tracking disabled, teardown warns and leaves rows rather than claiming deletion. |
-
-For throughput and latency work, start with the
-[Feast benchmark guide](docs/feast_online_store_benchmark.md). Keep accepted rows,
-stale refusals, returned rows, request counts, and read widths separate, and include
-metadata and retained buffers when reporting memory beyond the payload-cache budget.
-
-## Is this the store for your problem?
-
-| You are building | This store | Read on |
-|---|---|---|
-| **Event sequences per entity that grow without bound** — clickstreams, session histories, interaction logs — read as a recent window | Keeps one sorted array per key, so a window read is a binary search plus the points in the window and does **not** grow with the tail. Retains by **count** (10,000 points a series by default), trimmed oldest-first on every write. No per-point age policy. | [§1](#1-long-sequences-per-entity) |
-| **Many millions of distinct entities, each with few values** | **39.4 B of resident index per key** at 20,000 keys in one shard, falling from 86.3 B/key at 2,000 as per-bucket rows amortise. A 64 MiB per-shard resident bound is reached at roughly 1.7 M keys. | [§2](#2-high-cardinality-features) |
-| **Rollups over a window** — counts, sums, min/max/avg | Exact, recomputed from the points on each read; an exact incremental ladder at 1 s / 1 m / 1 h / 1 d is available for sum-family counters. **No decayed scores, no top-k, no percentiles.** | [§3](#3-aggregated-features) |
-| **Plain online feature serving** — point reads at serving latency | Addresses from a DRAM-resident index, bytes from a memory cache tier, disk only on a miss. Reads are cheap and local; writes pay a consensus round trip. Measured 21x apart at p50 on one box. Ships as a **Feast online store**. | [§4](#4-online-feature-serving) |
-| **Context for an LLM application** under a token budget | Retrieve, rank, and pack to `max_prompt_tokens`; the prompt is charged first and blocks are taken greedily in ranked order, with what did not fit recorded. Ranking is lexical plan score plus cosine over per-node vectors. **No ANN index** — scoring is linear in the candidate set the caller names. | [§5](#5-context-for-llm-applications) |
-| **Frequency caps, quotas, pacing, blobs, stream ingestion** | Single-key atomic counters with windowed sums, a multipart blob path with range reads, and batch/stream ingestion with a dead-letter export. | [§6](#6-what-else-the-engine-actually-does) |
-
-Underneath all six: an append-structured block store, no GC pauses, crash-safe reload from its own
-persistence, and a format stamp that refuses an image it cannot read rather than guessing.
-
----
-
-## 1. Long sequences per entity
-
-A series is a **sorted owned array per key**, not a per-key tree: a one-point series costs one
-allocation, and both ends of a window are located by binary search, so a read costs
-`O(log n)` plus the points inside the window. The cost of a long tail falls on **memory and
-retention**, not on the read.
-
-**Windowing.** Every series read names a window. `FeatureQuery` / `SequenceQuery` take
-`start_ms`, `end_ms` and a `count`; `SequenceBatchQuery` carries several windows in one request;
-`FeatureQueryFiltered` adds `AND`-ed predicates over four fixed row fields.
-
-**Retention is by count, and it is enforced on the write path.** `feature_max_size` defaults to
-**10,000 points a series**, trimmed oldest-first on every append, and it is also the default *and
-the maximum* read bound — a `count` above it is clamped, so a long window cannot return more than
-the retained length. One append is hard-capped at 100,000 points. Whole-key TTL
-(`CommonExpire` / `CommonTtl`) is evaluated lazily on read and by a background sweep with default
-budgets of 100 hot and 5 cold expired-record candidates per round. Periodic cold expiry is enabled
-by default; `load_cold_buckets_for_expire: false` defers released objects. Metadata-only deletion
-does not reload their payloads or bucket indexes, and is not counted as a reload.
-
-**What the tail costs.** The term that grows with the shard is the resident index. Measured on the
-shipped routing range `0..1023`, one shard, single-block records:
-
-| keys in the shard | resident index | per key |
-|---:|---:|---:|
-| 2,000 | 172,672 B | 86.3 B |
-| 8,000 | 404,992 B | 50.6 B |
-| 20,000 | 788,224 B | 39.4 B |
-
-*`data_node::tests::evict_live::what_a_default_eviction_threshold_has_to_clear`.*
-
-**Limits.** Retention is by count or by whole-key TTL — there is **no per-point age policy** and no
-per-point deadline. Row filters are evaluated *after* decoding each candidate row, so a wide
-filtered window pays for every row in it. The only destructive series verbs are a window
-overwrite (`FeatureReplace`) and a whole-key delete (`FeatureDelete`).
-
-## 2. High-cardinality features
-
-This is the case where per-key overhead decides whether the design is affordable, so the figure is
-given rather than an adjective.
-
-**Resident index per key: 39.4 B at 20,000 keys in one shard** (shipped routing range `0..1023`,
-single-block string records). It *falls* with key count — 86.3 B/key at 2,000, 50.6 at 8,000 —
-because the per-bucket rows are shared by every key that lands in the bucket. Quoting a per-key
-figure without its key count therefore means nothing here.
-
-**The resident bound.** `index_resident_limit_bytes` ships at **64 MiB a shard**. At 39.4 B/key
-that bound is reached at roughly **1.7 M keys in one shard**, which is the scale it is a bound at.
-
-**What the routing range buys.** A block's bucket is `start + hash(object_key) % (end - start + 1)`,
-so the range sets the modulus and therefore how many blocks share a bucket. On the shipped
-`0..1023`, per **routed record**, incompressible values, one shard — two allocator columns, because
-the rounding is exactly what a change of container shape moves:
-
-| routed records | `0..1023` asked / charged | whole keyspace asked / charged | blocks a bucket holds (p50 / max) |
-|---:|---:|---:|---:|
-| 4,000 | 94.8 / 107.0 B/rec | 187.3 / 197.1 B/rec | 4 / 8 |
-| 40,000 | **52.8 / 54.0 B/rec** | 186.5 / 198.1 B/rec | 39 / 50 |
-
-*`engine::tests::routing_range_default::both_byte_columns_and_the_allocations_a_record_at_every_candidate_range`,
-854 s. "Asked" is what the allocator was asked for; "charged" reads `malloc_usable_size`. The
-whole-keyspace column is the arm where every key lands alone in its own bucket by construction.*
-
-**At a matched denominator** — same corpus, same 256 B values, one shard, weighing the whole
-resident shard state rather than the index alone — the shipped range costs **281.2 B/key at 8,000
-keys (marginal 238.0 B/key)** against **447.4 B/key at 2,000 keys (marginal 438.7 B/key)** on the
-whole keyspace. *(`where_the_resident_index_bytes_go_on_both_routing_ranges`.)*
-
-**The per-key figure is a sawtooth, and that is a property of the measurement.** The hash table
-behind a per-key map is a step function of the key count, so dividing by keys gives a sawtooth that
-doubles the moment the table does: the string table measures **74.3 B/key at 1,792 keys and 147.9
-B/key at 1,800** — 1.99x for eight more keys — while the whole resident index steps 362.0 → 435.9
-B/key (1.204x), diluted by the per-bucket rows that do not move.
-*(`the_per_key_index_figure_is_a_sawtooth`.)*
-
-**Limits.** A store records the routing range it was built on and **refuses** to load under a
-different one, and refuses an unstamped store rather than guessing; the range is a decision taken
-before the first ingest, not afterwards. Only new stores take the shipped default.
-
-## 3. Aggregated features
-
-`FeatureAggQuery` takes one aggregator over a window: `sum`, `avg`, `min`, `max`, `first`, `last`,
-`count`. Values are `i64` throughout, so `avg` is an integer division and there are no float
-aggregates. The same shapes exist for control-state counters, where `"at most N in the last H
-hours"` is a single round trip.
-
-**Most aggregates are recomputed from the points in the window on every read**: the window
-is ranged, each point decoded, and the aggregator folded over the result. `last` instead walks
-backward from the eligible window tail and stops at the first readable value. An explicit
-`count` still limits the eligible prefix before that backward walk; it does not select the
-newest `count` points. The sum-family rollup path below is another specialized read path.
-
-**Kept current without recomputing: the rollup ladder.** For sum-family counters an optional index
-maintains exact per-bucket sums at **1 s → 1 m → 1 h → 1 d**, folded forward on each counter write,
-so a wide window reads a few coarse cells plus the sub-second edges instead of every raw bucket. A
-fully covered window is **bit-identical** to the raw scan; partial edges fall back to the
-authoritative series; the index is derived, never serialized, rebuilt whenever its recorded length
-disagrees with the series, and dropped on delete, expiry or reconcile.
-
-**Batching amortises only the fixed part of a record, and the fixed part is small.** An index-log
-delta record measures 63.0 B for one item, 55.1 B/item at 8 and 54.3 B/item at 32, with a marginal
-**54.00 B/item over 1..8 and 54.08 B/item over 8..32** — three sizes, because two points fit any
-line. About 9 B a record is shareable; the rest travels with the item.
-*(`index_log::tests::what_an_index_item_costs_per_append_at_three_batch_sizes`.)*
-
-**Limits, and they matter.** The ladder is **off by default**, and on the feature path it serves
-only a literal `sum` with no `count`. There is **no decayed score** anywhere in the engine — no
-time-decay function and no decay aggregator; recency enters retrieval as a tiebreak, not as a
-curve. There is no top-k, percentile, histogram or distinct aggregator on the feature surface, no
-multi-aggregate request, and an **unknown aggregator name returns the point count rather than an
-error**. On the feature path the ladder's first read after an append re-derives its numeric view
-from the whole series, so an alternating append-and-aggregate workload pays a full-series decode
-per aggregate.
-
-## 4. Online feature serving
-
-**The tiers.** A point read resolves its address in the **DRAM-resident index** — in-process, no
-I/O, no cache call — then fetches bytes from the **memory cache tier**, falling through to a local
-**block slab** (or to the log, for a block still resident there) only on a miss. The primary resident
-index holds addresses rather than feature payloads. A **disk tier** exists but is only switched on
-where it spans a real distance: with shared storage the durable copy is on another machine, so a local disk tier closes
-milliseconds; with consensus replication the durable copy is this node's own disk, where the tier
-would be a third copy of bytes the operating system already serves from the same device, so it is
-off. The backend is resolved before the engine is built, and publishes the reason it chose what it
-chose. `TS_CACHE_MEMORY_BYTES` (16 MiB default) bounds the general payload cache,
-not the resident indexes or total process memory.
-
-Conditional hash writes additionally retain at most one timestamp hint per resident
-hash. Short stored timestamps, up to 24 bytes, are retained exactly inline; larger
-values keep a parsed comparator. Each hint is bound to its field and current immutable source address;
-expiry is checked first, and a changed source uses the normal storage path. These
-derived hints reuse index-owned key and field-name handles, are omitted from clone
-and serialization, and add resident metadata outside the payload-cache budget.
-They avoid payload reads for valid timestamp comparisons and exact single-field
-timestamp reads. Ordinary feature projections still use the payload path. Raw
-timestamp results preserve unknown fields, noncanonical encodings, and malformed
-bytes rather than being recreated from the comparator. See the [hint implementation](crates/temporalstore-rust/src/engine/recorded_map.rs)
-and [allocation and source-identity checks](crates/temporalstore-rust/src/engine/resident_timestamp_hint_tests.rs).
-
-**Blocks are packed**, so one window read of adjacent instants typically decodes one block, and a
-multi-point read memoizes each block for the duration of the query.
-
-**The read/write asymmetry, measured.** A three-node cluster, consensus write path against replica
-reads served from local state, 504 proposals and 44 sampled reads in a 2,018 ms run, one process,
-one box (release build, WSL Ubuntu 22.04):
-
-| | p50 | p95 | p99 | max |
-|---|---:|---:|---:|---:|
-| write, through consensus (504 samples) | **2,652 µs** | 8,144 µs | 12,004 µs | 20,200 µs |
-| read, from a replica's local state (44 samples) | **126 µs** | 537 µs | 1,025 µs | 1,291 µs |
-
-**21x apart at p50**, and the reason is structural rather than tunable: a write is replicated to and
-committed on a majority before it is acknowledged, while a read takes a lock and applies the command
-against the state the node already holds. The same run reported `replication_healthy`, a maximum
-replica lag of **0**, a full error budget, **one failover and two membership changes exercised
-during the workload**, and all three voters converged on commit index 504.
-*(`scale_harness --nodes 3 --string-ops 400 --hash-ops 100 --sequence-keys 4 --sequence-len 100
---read-sample-every 10`.)*
-
-**What one append's envelope costs.** Over incompressible payloads from 0 to 8,192 B under a
-7-byte key, a framed write-ahead record fits
-
-```
-one local WAL record = 1.0004 * payload + 36.4 B      worst residual 3.4 B
-```
-
-so the marginal cost of a payload byte is a payload byte, and the fixed cost is 36.4 B. What that
-means per write depends entirely on the payload:
-
-| payload | user bytes | framed bytes | framed / user |
-|---:|---:|---:|---:|
-| 0 | 7 | 33 | 4.71x |
-| 128 | 135 | 167 | 1.24x |
-| 512 | 519 | 551 | 1.06x |
-| 8,192 | 8,199 | 8,231 | 1.00x |
-
-*(`wal::tests::one_record_envelope_terms::what_one_local_wal_record_costs`. The regime is asserted
-at every point: a control sweep over repeated bytes fits a slope of −0.0021 instead of 1.0004,
-which is the compressor and not the log, so any envelope figure taken on compressible values is
-measuring zstd.)*
-
-**Write amplification by payload size.** Amplification here is dominated by the fixed per-record
-**envelope**, so it dilutes as the payload grows. Measured end to end — every durable byte a write
-causes, over the bytes it carries — 4,000 records a rung, genuinely incompressible payloads, one
-shard:
-
-| value | user bytes | blocks | index | total written |
-|---:|---:|---:|---:|---:|
-| 64 B | 356,000 | 0.85x | 3.39x | **4.25x** |
-| 256 B | 1,124,000 | 0.95x | 1.79x | **2.74x** |
-| 1,024 B | 4,196,000 | 0.99x | 1.17x | **2.16x** |
-| 4,096 B | 16,484,000 | 1.00x | 1.06x | **2.06x** |
-
-The payload itself is written about once at every rung — the block column stays between 0.85x and
-1.00x — so the whole excess is envelope: the record's framing plus the index log that every write
-appends to. It is worst exactly where the payload is smallest. Once maintenance has reclaimed the
-logs the *retained* index settles at roughly 740–780 KB at every rung whatever the payload, which
-is a smaller and more flattering number for the same workload; write amplification conventionally
-means the first.
-*(`engine::tests::part4::what_a_write_costs_across_every_subsystem`.)*
-
-**None of that is replication, and replication is the other cost.** Every amplification figure this
-engine publishes is **per node**: replication is a mode here (consensus or shared storage), not a
-factor, so no replica count appears in any of them. Three voters means three physical copies of
-every committed byte — a deliberate cost that buys durability, and arithmetic rather than a
-measurement. The two are quoted apart so neither is mistaken for the other. On the per-node side,
-the index log costs **1.528x** its own image — log written over index image — at 2,000 keys × 256 B
-in one shard. *(`the_amplification_set_in_the_published_format`.)*
-
-**And a warning about one of this engine's own exported ratios.** Rewriting the same 2,000 keys ×
-256 B five times, the block-granular tally reads **5.000x** write and **5.000x** space
-amplification — one extra copy a rewrite, which is correct — while the `space_amplification` figure
-the engine *publishes* reads **1.000x throughout**, because its denominator is slab-granular and
-cannot see a rewrite that lands inside a slab. Space does not come back quickly either: a compacted
-slab waits out a 60-minute quarantine before release, so space amplification cannot fall within the
-quarantine age of the rewrite that caused it. Do not read a published 1.000x as evidence about a
-rewriting workload. *(`the_amplification_set_under_rewrite`, 22.5 s.)*
-
-**Maintenance is nine stages in a fixed order**, run as one round by a scheduler: `prepare`,
-`reclaim_wal`, `expire`, `evict`, `reclaim_memory`, `reclaim_page`, `reclaim_index`,
-`compact_pages`, `reap_metrics`. The order is load-bearing — a blanket cache invalidation ahead of
-eviction zeroes the number eviction's own gate reads — and a test asserts the stages that ran did
-so in that order. Some are pressure-gated and legitimately skip a round.
-
-By ablation — timing the round, then timing it again with one stage disabled at a time — a whole
-round measured **685 ms on a 5,000-object shard and 2,269 ms on a 20,000-object one** (release
-build, one shard, 96-byte values). Two stages dominate at both sizes: reclaiming the write-ahead
-log (427 ms of the 685, then 1,419 ms of the 2,269) and reclaiming the index log (418 ms, then
-1,208 ms).
-
-Read the per-stage column as an order of magnitude, not a constant. A repeat of the same
-measurement on the same box put the round at 602 ms and 1,863 ms and moved individual stages by up
-to 50%, and in each run at least one stage ablated to a *negative* cost — meaning its own cost sits
-under this instrument's run-to-run noise. The two dominant stages are the same in both runs, and
-that is the part of the table worth planning against. The ablation also covers eight of the nine
-stages: eviction is never switched off, so the round has no per-stage figure for it.
-*(`data_node::tests::part3::what_each_maintenance_stage_costs`, about 290 s a run.)*
-
-The **resident bound** is the other half of maintenance: `index_resident_limit_bytes` caps the
-resident index at **64 MiB a shard**, which at the 39.4 B/key of [§2](#2-high-cardinality-features)
-is reached at roughly 1.7 M keys in one shard. A shard under the bound declines to evict, and that
-is correct — a cap firing at a few percent of its limit would be a thrash rather than a bound.
-
-**TemporalStore as a Feast online store.** [Feast](https://github.com/feast-dev/feast) is the
-open-source feature store. It resolves its online store through a plugin class named in
-`feature_store.yaml`, and this repository ships two of them under
-[`integrations/feast/`](integrations/feast/), because the engine exposes two surfaces with
-different trade-offs. Pick by surface:
-
-For installation, configuration, batching, and numeric-history options, start with the
-[Feast integration guide](integrations/feast/README.md). For repeatable materialization and
-serving measurements, use the [benchmark guide](docs/feast_online_store_benchmark.md).
-Compare write rows/s, read requests/s, read rows/s, latency percentiles, and storage bytes
-separately. A lower batch-read latency does not establish higher write throughput, and a
-local run does not establish multi-host performance. Match durability and payloads before
-comparing stores.
-
-| package | surface | pick it when |
-|---|---|---|
-| `feast_temporalstore` | RESP, port 6399 | you already run the proxy, or you want Feast's Redis tooling and mental model |
-| `feast_temporalstore_command` | binary batch writes and reads on the data node | you want bounded round trips, one process instead of three, readable hash fields, and optionally a queryable feature history behind each served value |
-
-Both store values identically (`ValueProto.SerializeToString()`) but **do not share a key space**:
-rows written through one are not readable through the other, so choose one per project rather than
-switching under a populated store.
-
-**Shared-row writes and durability.** The command path can keep small packed hash rows in
-the WAL instead of immediately materializing a separate block and served-index update for
-each row. In synchronous mode, acknowledgement still waits for the WAL commit; deferred
-materialization is not an asynchronous durability setting. Larger frames continue through
-the block path. Legacy recovery and memory-limited configurations keep their existing paths.
-Conditional timestamp checks reuse the bounded field cache, with storage lookup on a miss.
-
-WAL-backed locations remain readable across reload and checkpoint publication. Maintenance
-retires their registrations only after replacement data and index locations are durable;
-a checkpoint does not by itself mean the underlying WAL bytes can be reclaimed. This moves
-work out of the foreground, not out of the storage lifecycle. Retained file size is not
-cumulative write amplification, and local process-restart checks are not power-loss or
-multi-host qualification. These changes do not establish a new cross-store speedup.
-
-Asynchronous string values remain log-backed when their payload leaves the memory cache,
-including values too large for that cache to admit. Other models keep their existing placement
-policy. Location entries are index metadata, not
-retained payload buffers. Foreground relocation is opt-in through a positive
-`TS_WAL_RESIDENT_BLOCKS` value (`TS_WAL_RESIDENT_PAGES` remains an alias); unset or zero does
-not create slab copies merely because the locator count grows. Cache payload-byte limits still
-apply. The read path also retains at most eight decoded WAL records, so cache byte statistics
-are not a bound on complete process RSS. Portable export and maintenance relocation remain
-separate operations, and needed WAL records stay retained until their dependencies are gone.
-
-Binary WAL records that cross block boundaries use a packed envelope and checksummed
-continuation footers. Raw scans preserve the complete physical bytes, so byte-based cursors
-and retained log IDs remain stable through prefix reclaim. Tail recovery starts at the last
-closed block or its crossing record. Existing records remain readable, but older binaries
-cannot read newly packed records. Pause writes and maintenance during a mixed-version
-rollout, upgrade every replay reader, then resume. Downgrade requires restoring an
-older-format backup.
-
-```yaml
-# feature_store.yaml, command-surface plugin
-project: my_project
-provider: local
-registry: data/registry.db
-entity_key_serialization_version: 3
-online_store:
-  type: feast_temporalstore_command.TemporalStoreCommandOnlineStore
-  host: 127.0.0.1
-  port: 17102      # served by `docker compose -f docker-compose.single-node.yml up`
-  shard_id: 1
-```
-
-**Which Feast slot this is.** The online store only. It is not an offline store and not a
-materialization engine: the stock engines write *into* it by calling `online_write_batch`, so
-`feast materialize` works unchanged and TemporalStore becomes a materialization target as a
-consequence of being the online store.
-
-**Why there are two, and what the RESP one works around.** Pointing Feast's stock Redis store at
-the RESP port does not fail; it returns wrong answers, for two server behaviours the
-`feast_temporalstore` plugin routes around. Keys and hash fields are decoded lossily, and Feast
-names a field with four arbitrary bytes (a murmur3 digest): **91.08%** of 4-byte names do not
-survive as UTF-8, and two distinct names then collide **1 time in 1,042** against 1 in
-4,294,967,296 for a correct store. That puts a 50-feature view at a **69.1%** chance of at least one
-silent collision and a 100-feature view at 99.1%. Separately, `SCAN` cannot see another
-connection's keys, so Feast's `teardown` finds nothing to remove and reports success. The plugin
-encodes keys and fields to survive the first and keeps its own row registry for the second; the
-command-surface plugin needs neither. Both findings and the deletion condition for the encoding are
-in [`integrations/feast/README.md`](integrations/feast/README.md).
-
-**Measured through Feast itself.** `bench_feature_serving.py` drives each store through Feast, so
-the only difference between two rows is the `online_store` block. Conditions: Feast 0.67.0, 5,000 entities, hot
-set 512, 1,500 reads per cell, one client thread, 20 B of feature payload per row (ten int64
-features), a 16-core shared host at 1-minute load 3 with no compiler running, TemporalStore a
-**release** build on a freshly created empty shard. Every arm's rows were read back and compared
-byte for byte before any clock started, and the SQLite control re-run held within tolerance (drift
-17.3% and 13.0% against a 25% limit).
-
-These small-load serving figures do not describe sustained materialization into a large shard.
-For that workload, use the [Feast benchmark guide](docs/feast_online_store_benchmark.md) with
-a fresh store per sample and report write throughput, read latency, and storage bytes separately.
-
-| store | durability | cold p50 | warm p50, batch 1 | warm p50, batch 10 | warm rows/s, batch 10 |
-|---|---|---:|---:|---:|---:|
-| SQLite | rollback journal, in-process (control) | 72 µs | 73 µs | 452 µs | 20,053 |
-| Valkey 8.1.10 | no persistence | 479 µs | 477 µs | 925 µs | 10,486 |
-| PostgreSQL 16.15 | `synchronous_commit=on`, tmpfs | 703 µs | 825 µs | 1,192 µs | 7,076 |
-| **TemporalStore** | **async commit** | **396 µs** | **355 µs** | 970 µs | 10,130 |
-| **TemporalStore** | **durable commit** | 656 µs | 410 µs | 933 µs | 10,204 |
-
-At this payload the async configuration answered a single-entity read faster than Valkey in every
-percentile measured: cold p50 17% lower (396 vs 479 µs), warm p50 26% lower (355 vs 477 µs). At
-batch width 10 the two are level (warm p50 970 vs 925 µs, throughput 3% lower). Durable commit costs
-37% on the cold p50 against its own async configuration, which is the price of the fsync and is why
-durability is a column rather than a footnote.
-
-**And the result that goes the other way.** At 1,035 B per row (four int64 features and a 1 KiB
-blob) and batch width 10, the async configuration measured **1,614 µs warm p50 against Valkey's
-861 µs**, and 5,923 against 11,381 rows/s: 88% behind on p50 and 48% behind on throughput. At batch
-width 1 the two stay level (445 vs 455 µs). That table was taken over the JSON `/batch_execute`
-surface, whose response is a decimal array of about 3.8 characters per byte. The benchmark's own
-follow-up found the number of field slots fetched to be a first-order cost and payload width a
-second-order one: 110 slots holding 376 B cost more than 60 slots holding 10,490 B, and a
-ten-command batch that returns nothing at all costs 1,026.6 µs.
-
-The command-surface plugin has since moved to MessagePack in both directions. For 4,096 commands
-carrying 12,296-byte values that is **24.99% fewer request bytes** (50,605,338 against 67,460,469)
-and a client encode **4.93x faster** (55.41 against 273.01 ms), and 25.03% fewer response bytes. Those
-are wire and client-encoding figures; **no cross-store table has been taken on the binary path yet**,
-so the 1 KiB comparison above has not been re-measured on it.
-
-On that binary path, with 4,096 entities each holding one 12,296-byte sequence, batch 10, 500
-measured read calls and eight concurrent readers (release build, isolated tmpfs, storage maintenance
-disabled so the figures price the command API and codec rather than a maintenance cycle):
-
-| mode | write rows/s | warm rows/s, batch 10 | concurrent rows/s, 8 workers | concurrent p50 | concurrent p99 |
-|---|---:|---:|---:|---:|---:|
-| async commit | 4,985 | 12,289 | 4,585 | 14,500 µs | 36,781 µs |
-| durable commit | 3,437 | 6,204 | 9,344 | 8,086 µs | 15,885 µs |
-
-Durable commit served more concurrent rows than async in the last column, the opposite of what the
-write and warm-read columns show, and the benchmark document does not explain it; treat the
-commit-mode ordering of that one column as unresolved rather than as a property of the modes. With
-`write_feature_history` on, a separate run on a release standalone node with durable commit
-sustained about **15,000 history events/s** and **1,482 to 1,552 aggregate queries/s** across two
-valid runs (p50 4,566 to 4,848 µs, p99 12,737 to 13,106 µs) on 1,024 entities with 64 events each,
-and one accepted run served **4,207 aggregate queries/s** through the bounded batch API at 64
-queries per call. Those are single-node figures, not a comparison with another store.
-*(Method, the checks the harness refuses to run without, and every table:
-[`docs/feast_online_store_benchmark.md`](docs/feast_online_store_benchmark.md). The offline suites,
-standard library only: `python integrations/feast/run_tests.py`.)*
-
-**What to know before relying on it.**
-
-- **The cross-store tables are single-client latencies**, driven from one thread because Feast's
-  serving path is synchronous. None is a saturation throughput. A concurrency sweep under async
-  commit peaked near **8,900 rows/s from one client process** at concurrency 4 for the 20 B payload,
-  and p99 grew 12x between concurrency 4 and 16.
-- **Exact `teardown` needs `track_keys_for_teardown`, which is off by default**, because the command
-  surface has no keyspace scan and cannot enumerate what to delete otherwise. Turning it on adds one
-  write per row, spread over 1,024 tracking sets: ten times the rows now costs 8.3 times the write
-  time where a single shared set cost 152 times. Combined with async commit it **lost 17,500 of
-  20,000 rows** before the WAL container lookup was fixed; the same workload now retains
-  20,000 of 20,000, and the regression script is `tools/repro_async_commit_row_loss.py`.
-- **A delete batch costs what the shard holds, not what the batch deletes.** The same 2,000 deletes
-  measured 2.24 ms per key on a shard holding only those keys and 69.17 ms per key beside 20,000
-  filler keys, 31x for identical work. The benchmark document records the measurement and not a fix,
-  so tearing down a view on a large store should be planned as slow.
-- **`/health` reports process liveness, not shard serviceability.** It answered 200 in 1.0 ms while
-  every data operation on the same node was blocked behind a hot-key write storm, so an orchestrator
-  watching it will neither restart that node nor take it out of rotation.
-- **No offline store and no materialization engine ship here.** Historical point-in-time queries
-  for training stay with whichever offline store the project already uses.
-
-## 5. Context for LLM applications
-
-This is the workload the project was built around, and it is the one with the most surface.
-
-**Ingest → extract → retrieve → pack.** Retrieval takes a tenant, a time window, a set of candidate
-node hashes and a query, and returns ranked `ContextBlock`s. Each block carries a
-`record_type`: `matched_chunk`, `raw_message`, or `entity`. The single tagged list avoids
-copying the same text into separate response collections.
-
-**Packing to a budget.** `max_prompt_tokens` (2,048 by default) is the budget. The caller's own
-prompt is charged against it first; blocks are then taken **greedily in ranked order**, and a block
-that does not fit is recorded in `blocked_blocks` while the fill *continues*, so a small
-lower-ranked block can still land after a large one was rejected. Both lists, with the token counts,
-are written durably as a `ContextPackAudit` — what went in and what was held back is a record, not
-a log line.
-
-**Recency and relevance.** Candidate nodes are scored two ways and merged: a lexical query plan
-(topic phrases, stemmed term groups with synonyms, adjacent bigrams, and intent bonuses for
-"latest"-shaped and timeline-shaped questions) and **cosine similarity over vectors stored inline on
-the node record**, batched 1,000 nodes a command. A lexical match saturates deliberately *below* a
-perfect cosine, so in a mixed store a strong semantic match outranks a purely lexical one while an
-un-embedded node stays rankable instead of collapsing to recency order. The final block order is
-lexical relevance, then tier (`L0` before `L1` before `L2`), then recency, then URI, de-duplicated
-by `source_ref`. Freshness is a tiebreak — again, there is no decay curve.
-
-**Keeping a working set resident.** A compact quantized embedding index selects a bounded node
-candidate set before exact reranking and text hydration. Entity expansion runs only for those
-selected nodes and is capped at four times the requested result count, with a hard ceiling of 256.
-The final entity output is capped separately. A cold sweep deliberately does not fill the cache,
-so bulk maintenance does not evict a live working set.
-
-**Embedding safety is enforced, not documented.** Vectors of differing width are declined, and
-same-width vectors written by a *different* encoder are declined too, counted separately — two
-widths means a provider outage seeded fallback vectors, two encoders at one width means a model
-swap: same symptom, different cause, different fix. Embeddings are **supplied**, over an
-OpenAI-compatible HTTP endpoint; the built-in alternative is a deterministic 16-dimension hash for
-tests, and `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` turns using it into a hard error rather than a
-quiet downgrade.
-
-**What it saves, on a recorded run.** On a full local agent corpus of **12,384 events / 97 sessions
-/ 1,698,940 tokens**, a token-budgeted pack of **~1,333 tokens** scored **8.30 against 6.59** for
-replaying the whole local context, on 6 of 6 queries, with `qwen2.5:7b` as both reader and judge
-(2026-08-09). Method, arms and the judge's known failure mode are in
-[docs/benchmarks](docs/benchmarks/README.md); that run needs a local model and was **not** re-run
-for this document.
-
-**Limits.** Candidate routing is bounded and quantized, followed by exact scoring; it is not a
-graph ANN implementation. Callers can provide node hashes or omit them for bounded tenant-wide
-embedding selection. Switching embedding model means re-embedding the corpus.
-
-## 6. What else the engine actually does
-
-- **Control state** — quotas, pacing, suppression and selection as single-key atomic updates, with
-  windowed sums, UUID-keyed idempotency over a 5-minute dedup window, and an optional bounded
-  distinct sketch (off by default, so distinct stays exact).
-- **A RESP surface** — strings, hashes, sets, sorted sets and lists, plus native verbs for the
-  feature, sequence and control-state models. Unsupported commands return a deterministic error
-  rather than a fake success, `SELECT` accepts database 0 only, and the TTL semantics of every verb
-  are written down. Lists and sorted sets are storage-backed through encoded string values; native
-  list and sorted-set models remain future work.
-- **Blobs and large content** — a multipart upload (begin / append / commit, content-hashed and
-  fsynced before the rename), a single-shot put, **range reads**, and a sweep that collects blobs
-  no record points at. Large raw content offloads to content-addressed storage while metadata stays
-  in the index.
-- **Batch and stream ingestion** — batch requests with per-record results, a dead-letter path with
-  an export report, and offset-ledger and checkpoint-handshake surfaces for streaming sources.
-- **Namespaces → tables → shards**, with per-table and per-tenant read and write QPS limits,
-  per-shard rate and burst limits, a read-only shard mode, and topology-aware placement that spreads
-  replicas widest-first across location labels.
-- **Crash safety you can check** — the shard index carries a format stamp and **refuses** an image
-  older than the one it understands; expiry replay is clock-aware, so a key live at leader time is
-  not silently dropped on recovery; fault-injection hooks and a single-barrier crash harness are in
-  the tree.
-- **Failure detection with guardrails** — an adaptive φ-accrual detector, conviction ratio
-  thresholds, a safe mode, and refusals for orphaning shards or self-clearing a conviction.
-- **A Rust SDK** with both an in-process client and an HTTP client, and a C ABI for non-Rust
-  callers. It lives in `sdk/rust/temporalstore` and is deliberately outside the workspace.
-
-## What this store is bad at
-
-A block that only lists what works is less useful than one that does not.
-
-- **Writes scale sublinearly with concurrency, and the cost comes back as latency.** On the durable
-  shared-storage write path, 400 writes a run on one box: **471 writes/s at 2 concurrent writers,
-  842 at 4, 1,320 at 8** — four times the writers for **2.80x** the throughput — while write p50
-  climbs 3.77 → 4.36 → 4.73 ms and the read p50 behind them climbs 76 → 119 → 247 µs. Concurrency
-  does buy something; it does not buy proportionally, and what it costs is the tail. During each
-  concurrent burst a replica fell as far as 400 entries behind the primary and converged back to
-  **0** after replay. *(`scale_harness --nodes 3 --compare-shared-store true --shared-store-ops 400
-  --shared-store-flush-every 25 --shared-store-concurrency N`, release build, one box; all four
-  points come from the same arm of the same harness.)* A separate single-box report records a
-  throughput plateau beyond eight cores on the HTTP path:
-  [docs/ENTERPRISE_INGESTION_RETRIEVAL_PERF.md](docs/ENTERPRISE_INGESTION_RETRIEVAL_PERF.md).
-- **Small payloads pay a large fixed envelope.** 36.4 B a record before the payload: 4.71x framed
-  over user bytes on an empty value, 1.24x at 128 B, and only at a few kilobytes does it round to
-  1.00x. End to end it is worse, because the index log is per record too: total write amplification
-  is **4.25x at 64-byte values against 2.06x at 4 KiB**. A workload of tiny writes is paying mostly
-  for framing.
-- **The cluster figures here are from three nodes in one process on one box.** That is enough to
-  measure the consensus/local-read asymmetry and to exercise a failover and two membership changes,
-  and it is not a multi-machine result. The multi-process harnesses are in the tree and listed under
-  [Build & test](#build--test-from-source); run them on real nodes before sizing a deployment.
-- **A per-key figure is a sawtooth.** The table behind a per-key map steps at powers of two, so the
-  per-key cost can move 1.99x between two key counts eight apart. Any capacity plan built on a
-  single per-key number is built on a phase.
-- **Aggregates are linear in the window by default.** The incremental ladder that avoids that is off
-  by default and sum-family only, and on the feature path it serves one literal aggregator.
-- **No decay, no top-k, no percentiles, no ANN index.** Ranking recency is a tiebreak; retrieval
-  scoring is linear in the candidate set the caller names.
-- **Retention has no age dimension.** Series retention is by count, TTL is per key, and neither can
-  express "drop points older than a week".
-- **Authentication is thin.** Two shared-secret environment tokens, no users, no roles, no ACLs and
-  no per-key authorization. Consensus transport has TLS; the service edge does not terminate it.
-- **Stored formats can still change.** See below.
-
-## Quick start (single node, Docker)
-
-```bash
-docker run --rm -p 6379:6379 -p 8080:8080 \
-  -v temporalstore-data:/var/lib/temporalstore \
-  ghcr.io/matrixarkai/temporalstore:latest
-```
-
-Then talk to it with any RESP client:
-
-```bash
-# write: key "hello" = bytes for "world"
-redis-cli -p 6379 SET hello world
-
-# read it back
-redis-cli -p 6379 GET hello
-```
-
-The RESP surface, the HTTP routes, and the control verbs are documented under
-[`docs/`](docs/). Deploy manuals: [Windows Docker](docs/windows_docker_install.md) ·
-[Linux](docs/linux_deploy.md) · [macOS](docs/macos_deploy.md).
-
-## Python LLM-context client
-
-The installable package under [`sdk/python/`](sdk/python/) provides ingestion, retrieval, update,
-history, deletion, and batch operations through the Rust proxy's non-versioned `/memories`
-surface. It uses only Python's standard library and code in this repository:
-
-```bash
-python3 -m pip install -e sdk/python
-export TEMPORALSTORE_BASE_URL=http://127.0.0.1:17000
-```
-
-```python
-from temporalstore.llm_context import Memory
-
-memory = Memory()
-memory.add("Prefer compact int8 embeddings.", user_id="alice")
-result = memory.search("How should vectors be stored?", user_id="alice", limit=8)
-```
-
-See [the SDK workflow](sdk/python/README.md). The Feast online store remains under
-[`integrations/feast/`](integrations/feast/); see [§4](#4-online-feature-serving).
-
-## Deploy: laptop → replicated cluster
-
-- **Local single node** — one Docker command (above); durable storage in a local volume, no
-  metaserver dependency.
-- **Distributed** — replicate through **MatrixRaft** consensus; the storage backend auto-resolves
-  **object store → shared filesystem → replicated local disk**, and every resolution publishes the
-  reason it chose what it chose.
-- **Serving modes, budgets, startup and recovery, storage resolution** are documented in
-  [docs/benchmarks](docs/benchmarks/README.md) and the deploy manuals above.
-
-## Architecture
-
-```
-Clients ── RESP · HTTP · proxy · matrixark (Python)
-   │
-Engine ─ TemporalStore: temporal index · serving paths · append-structured block store
-   │
-Foundation ─ MatrixCache (multi-layer cache) · MatrixRaft (Rust Raft consensus)
-   │
-Storage backend (auto) ─ object store → shared filesystem → local + Raft
-```
-
-### Feature-serving write path
-
-The native Feast path shares field names across a batch and checks event timestamps
-on the serving node. Binary conditional requests borrow value bytes through admission
-and timestamp checks; rejected stale rows do not allocate owned per-feature payloads
-on that path. Accepted rows are encoded into owned packed frames. Complete-row
-overwrites reuse resident field identities and avoid repeated field searches; partial
-updates, older encodings, and mirrored writes retain their compatible paths.
-
-The command provider can learn a per-thread stale-traffic hint with
-`adaptive_timestamp_prefetch: true` (default). It pre-reads timestamps when recent
-batches are mostly stale, skipping rejected rows before feature serialization;
-eligible survivors still use the server's atomic conditional route. The hint stores
-no timestamps or values and resets on client close. A return to fresh traffic can
-cost one extra read; mixed-layout and older-node fallbacks keep their documented
-read-then-write concurrency limits.
-
-Single-field hash projections can reuse a positive field-cache buffer after checking
-the resident field index. Misses and unsupported encodings retain the full-frame
-path. This avoids fetching and decoding a packed row for an eligible cached field;
-it does not make all projections cache hits or remove TTL and invalidation checks.
-
-Hash writes reuse an invalidation-key buffer across a row's fields, while retaining
-the existing per-field cache checks and invalidation rules. WAL-backed reads share
-decoded immutable batches through a cache bounded to eight records, identified by
-WAL instance, shard, and log ID. Publishing a decoded batch does not clone every
-payload; cache hits acquire shared ownership before copying the selected block
-outside the cache lock. Concurrent fills reuse the same cached record, and evicted
-batches are released outside that lock.
-
-The decoded-record limit is a record count, not a byte budget. Cold reads still
-fetch and decode a carrying WAL frame, and returned blocks still copy their bytes.
-These changes do not make the read path zero-copy or reclaim persistent WAL data.
-
-These are allocation and bookkeeping reductions, not weaker acknowledgement rules.
-Synchronous writes still wait for their durability barrier, stale conditional writes
-do not renew TTL, and WAL-backed values remain subject to safe materialization and
-reclamation ordering. Start with the [command provider guide](integrations/feast/feast_temporalstore_command/README.md)
-for configuration and the [benchmark guide](docs/feast_online_store_benchmark.md)
-for matched workloads. Lower copy counts alone do not establish higher saturated
-QPS, lower tail latency, or lower cumulative device writes.
-
-Related Apache-2.0 repositories, public and open to anyone in the world to use, fork and
-contribute to:
-[TemporalStore](https://github.com/matrixarkai/TemporalStore) (engine) ·
-[MatrixCache](https://github.com/matrixarkai/MatrixCache) (cache) ·
-[MatrixRaft](https://github.com/matrixarkai/MatrixRaft) (consensus) ·
-[MatrixObject](https://github.com/matrixarkai/MatrixObject) (object store) ·
-[matrixark](https://github.com/matrixarkai/matrixark) (Python tooling) ·
-[MatrixAdsDemo](https://github.com/matrixarkai/MatrixAdsDemo) (ads retrieval and ranking demo).
-
----
-
-## Build & test (from source)
+| Feature-history ingestion | **14,965-15,260 events/s** across two valid runs | Durable commit; 1,024 entities x 64 events; write batches of 256; default 16 MiB cache |
+| Batched history aggregates | **4,207 queries/s**; batch-call p99 **16.906 ms** | 64 queries/call; three repeats: 4,207 / 4,714 / 4,187 queries/s; all value checks passed |
+| Wide feature reads | **4,585 async / 9,344 durable-commit rows/s** | Eight readers; ten rows/call; 4,096 entities; 12,296-byte payload/row; tmpfs storage directories; maintenance disabled |
+
+The wide-read figures are separate observed runs, not evidence that durable
+commit makes reads faster. Tmpfs results do not establish persistent-device
+durability or maintenance-under-load performance. Aggregate p99 is per batch
+call, not per individual query. Controls, cleanup checks, and reproduction
+commands are in the [feature-serving benchmark report](https://github.com/matrixarkai/TemporalStore/blob/main/docs/feast_online_store_benchmark.md).
+
+Context quality and token cost depend on the reader, workload, and baseline.
+The checked-in Qwen2.5 7B multi-turn experiment measured quality on four of ten turns:
+local-only **4.117/10**, managed-only **4.879/10**, and augmented **6.466/10**.
+Across all ten turns, cumulative input counts were **1,665 / 29,996 / 16,341**
+respectively: the managed arms used more tokens on these short conversations.
+This is a small model-judged experiment, not a general quality or token-saving
+guarantee. See the [raw results](https://github.com/matrixarkai/TemporalStore/blob/main/docs/benchmarks/local_context_token_quality/multiturn_3arm_multiturn_qwen7b.json)
+and [benchmark methodology](https://github.com/matrixarkai/TemporalStore/blob/main/docs/benchmarks/README.md).
+
+## Deployment boundaries
+
+- Series retention is count-based; whole-key TTL does not provide per-point age retention.
+- General aggregates can scan the requested window; accelerated rollups cover a narrower surface.
+- Bounded embedding selection is not a graph-based ANN index or a guarantee of constant retrieval cost.
+- Local benchmark results do not prove distributed throughput, failover capacity, or production readiness.
+- Review authentication, network exposure, backup/recovery, and acknowledgement settings before deployment.
+- Stored formats can change before a stable milestone. Pin revisions and validate upgrades against retained data.
+
+The engine is Rust-native. Development targets `main`; `rust-main` is retired.
+There is no brpc/thrift compatibility layer. Validate production-readiness claims
+with the deployment guides and readiness reports for the chosen configuration.
+
+## Build and contribute
+
+From a Rust source checkout:
 
 ```bash
 cargo check -p temporalstore-rust --all-targets
-cargo test  -p temporalstore-rust --lib --tests -- --test-threads=1
-```
-
-Focused harnesses:
-
-```bash
-cargo run -p temporalstore-rust --bin readiness_gate -- --service-reports
-cargo run -p temporalstore-rust --bin context_workflow_harness
-cargo run -p temporalstore-rust --bin storage_modes_harness
-cargo run -p temporalstore-rust --bin raft_secondary_replication_harness
-```
-
-Reproducing the figures on this block: the byte and allocation measurements need the counting
-allocator, which is a Cargo feature and test-only, and they are `#[ignore]`d because they seed
-stores and weigh them — so they run by name:
-
-```bash
-cargo test --release --features alloc-probe -p temporalstore-rust --lib \
-  <measurement name> -- --include-ignored --nocapture --test-threads=1
-```
-
-Formatting:
-
-```bash
+cargo test -p temporalstore-rust --lib --tests -- --test-threads=1
 cargo fmt --all -- --check
 ```
 
-## Before the first milestone: formats can change
+Anyone may open an [issue](https://github.com/matrixarkai/TemporalStore/issues) or
+[pull request](https://github.com/matrixarkai/TemporalStore/pulls).
+Read the [contribution guide](https://github.com/matrixarkai/TemporalStore/blob/main/CONTRIBUTING.md)
+and [code of conduct](https://github.com/matrixarkai/TemporalStore/blob/main/CODE_OF_CONDUCT.md).
+Report vulnerabilities through the [security policy](https://github.com/matrixarkai/TemporalStore/blob/main/docs/SECURITY.md).
 
-Stored formats and wire shapes may still change between releases. The index carries a format stamp
-and refuses an image it cannot read rather than guessing, so an upgrade fails loudly instead of
-silently mis-reading a store. Pin a version for anything you care about keeping.
+## Related projects
 
-## Status & evidence
+These five Apache-2.0 repositories form the TemporalStore stack:
 
-Apache-2.0. Read the project's production-readiness claims from passing reports rather than from this README:
-
-- [Benchmarks: token & quality against full local replay](docs/benchmarks/README.md)
-- [Context management on TemporalStore](docs/context_management_on_temporalstore.md)
-- Deploy: [Windows Docker](docs/windows_docker_install.md) · [Linux](docs/linux_deploy.md) ·
-  [macOS](docs/macos_deploy.md)
-
-The engine is Rust-native end to end: the temporal index, the serving paths and the block store
-are all Rust, with no foreign-language bridge anywhere in a request. Out of scope unless
-separately re-added: alternate wire-protocol compatibility (**no brpc/thrift** layer, clients
-speak RESP or HTTP), and live external object-store integration.
-
-## Contributing
-
-**Anyone is welcome to contribute, and you do not need to ask first.** If something is wrong,
-unclear or missing, open an [issue](https://github.com/matrixarkai/TemporalStore/issues); if you
-would rather fix it yourself, send a
-[pull request](https://github.com/matrixarkai/TemporalStore/pulls). You need no connection to this
-project and no permission: the licence is Apache-2.0 and the fork button works for everyone.
-
-See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [SECURITY.md](docs/SECURITY.md). Contributions
-target `main`, this repository's default branch and the branch every change merges to. The
-older `rust-main` name is retired and no branch by that name exists here, so a pull request
-opened against it has nowhere to land.
+| Project | Role |
+|---|---|
+| [TemporalStore](https://github.com/matrixarkai/TemporalStore) | Rust temporal serving and storage engine |
+| [MatrixArk](https://github.com/matrixarkai/matrixark) | Python context tooling and orchestration |
+| [MatrixCache](https://github.com/matrixarkai/matrixcache) | Multi-layer cache |
+| [MatrixRaft](https://github.com/matrixarkai/matrixraft) | Rust consensus library |
+| [MatrixObject](https://github.com/matrixarkai/MatrixObject) | Distributed object storage |
 
 ## License
 
-Licensed under the Apache License, Version 2.0 ([`LICENSE`](LICENSE), [`NOTICE`](NOTICE)).
-Third-party dependency licenses and attributions are listed in
-[`THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md). Product and crate names are trademarks
-of MatrixArkAI; see [`TRADEMARKS.md`](docs/TRADEMARKS.md).
-
-### WAL encoding and shared-store append support
-
-New local WAL records use binary protobuf. Outcome recording and binary framing
-are enabled by default; commands remain when needed for safe recovery. Existing
-JSON records remain readable.
-
-Large carried-block batches use [indexed compressed groups](docs/indexed_wal_reads.md)
-so a point miss can read one group instead of inflating the complete batch.
-The directory cache is additional metadata outside the payload-cache budget;
-compression groups can trade larger WAL records for less read amplification.
-The guide covers selection, integrity scope, compatibility, and the writer opt-out.
-Checked sealed-reader reuse also avoids repeated segment listings and opens, with
-separate descriptor and metadata bounds and explicit retirement during reclaim.
-
-`SharedStoreReplicator` also defaults to `ProtobufAppendBlob`, including the
-retry-policy constructor and the MatrixObject server durability path. Synchronous
-and asynchronous writes use the same encoding; acknowledgement timing is separate.
-Readers accept older per-key JSON records alongside the protobuf append log.
-
-A shared-store backend must implement real `append_blob` semantics for this
-default. The base trait returns an unsupported error instead of replacing earlier
-log bytes. Existing put-only integrations can explicitly select
-`SharedStoreWalAppendMode::PerKeyObject` during migration; there is no automatic
-fallback to JSON after an append failure.
+[Apache License 2.0](https://github.com/matrixarkai/TemporalStore/blob/main/LICENSE) |
+[NOTICE](https://github.com/matrixarkai/TemporalStore/blob/main/NOTICE) |
+[Third-party notices](https://github.com/matrixarkai/TemporalStore/blob/main/docs/THIRD-PARTY-NOTICES.md) |
+[Trademarks](https://github.com/matrixarkai/TemporalStore/blob/main/docs/TRADEMARKS.md).
