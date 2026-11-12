@@ -1111,6 +1111,16 @@ pub struct WriteAheadLogInfo {
 
 pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
 
+#[cfg(test)]
+#[path = "wal_commit_generation_tests.rs"]
+mod group_commit_generation_tests;
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_GROUP_COMMIT_SYNC: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
@@ -1999,7 +2009,7 @@ impl LocalWriteAheadLogStore {
         } else if use_adaptive_window {
             std::thread::sleep(adaptive_window);
         }
-        let (path, snapshot, record_end) = {
+        let (path, snapshot, record_end, generation) = {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             // The CACHED name, not a rebuilt one. `write_ahead_log_path` decides which of the
             // two piece names a store uses by asking whether each exists, so rebuilding it here
@@ -2035,7 +2045,8 @@ impl LocalWriteAheadLogStore {
                 .get(&shard_id)
                 .copied()
                 .unwrap_or(0);
-            (path, snapshot, record_end)
+            let generation = inner.base_by_shard.get(&shard_id).copied();
+            (path, snapshot, record_end, generation)
         };
         // Asked by OPENING, not by an `exists()` before it. The open happens either way and
         // answers the same question in the same syscall, with no window between two answers for
@@ -2051,6 +2062,13 @@ impl LocalWriteAheadLogStore {
         };
         crate::durability_metrics::record_barrier("engine_wal_group_commit");
         file.sync_data()?;
+        #[cfg(test)]
+        AFTER_GROUP_COMMIT_SYNC.with(|slot| {
+            let observer = slot.borrow_mut().take();
+            if let Some(observer) = observer {
+                observer();
+            }
+        });
         let owed = {
             let inner = self.inner.lock().expect("write-ahead log lock poisoned");
             inner.dir_sync_owed_by_shard.contains(&shard_id)
@@ -2078,10 +2096,11 @@ impl LocalWriteAheadLogStore {
             if snapshot > inner.stats.last_flushed_sequence {
                 inner.stats.last_flushed_sequence = snapshot;
             }
-            // The barrier above covered everything written to this shard's active segment, so
-            // its records are durable as far as the end snapshotted before it. Recorded per
-            // shard for the same reason the flush path does it.
-            note_durable_record_end(&mut inner, shard_id, record_end, true);
+            // A roll or prefix rewrite owns the replacement file's durable boundary.
+            // It must not inherit the snapshotted file's byte offset after fsync.
+            if inner.base_by_shard.get(&shard_id).copied() == generation {
+                note_durable_record_end(&mut inner, shard_id, record_end, true);
+            }
             let sequence_entry = inner.durable_sequence_by_shard.entry(shard_id).or_default();
             *sequence_entry = (*sequence_entry).max(snapshot);
         }
