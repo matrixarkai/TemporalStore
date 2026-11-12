@@ -86,6 +86,16 @@ curl -fsS http://127.0.0.1:17102/health
 The Compose setup runs a metaserver on `17101` and a data node on `17102`.
 A named volume preserves data across container restarts. `/health` checks process
 liveness, not whether every shard can serve requests.
+
+To stop this local deployment while retaining its named data volume:
+
+```bash
+docker compose -f docker-compose.single-node.yml down
+```
+
+Do not add `--volumes` when retaining data. Use the same checkout and Compose
+project name when starting it again so that Compose selects the existing volume.
+
 [Linux](https://github.com/matrixarkai/TemporalStore/blob/main/docs/linux_deploy.md) |
 [Windows Docker](https://github.com/matrixarkai/TemporalStore/blob/main/docs/windows_docker_install.md) |
 [macOS](https://github.com/matrixarkai/TemporalStore/blob/main/docs/macos_deploy.md).
