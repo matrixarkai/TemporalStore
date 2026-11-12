@@ -46,6 +46,13 @@ Hash-field serialization also borrows its sorted names and addresses directly.
 It preserves the map wire shape without cloning the field vector, copying each
 field name, or constructing a temporary hash table during index publication.
 
+Ownership rebuilds sort their existing block-filing vector in the same order as
+the stored block refs. Each object's refs then arrive in ascending order, so
+fresh ref vectors append rather than repeatedly moving a growing suffix. Both
+rebuild entry points keep the existing filing door, duplicate handling, deleted
+block exclusion and ref counters. The in-place sort costs O(B log B) for B
+filings; no resident index or persisted field is added.
+
 ## Checks
 
 ```bash
@@ -56,6 +63,7 @@ cargo test -p temporalstore-rust --lib maintenance_report_tests -- --test-thread
 cargo test -p temporalstore-rust --lib compaction_execution_tests -- --test-threads=1
 cargo test -p temporalstore-rust --features alloc-probe --lib index_encode_work_tests -- --test-threads=1 --nocapture
 cargo test -p temporalstore-rust --features alloc-probe --lib hash_field_serialize_tests -- --test-threads=1 --nocapture
+cargo test -p temporalstore-rust --lib rebuilt_ref_filing_tests -- --test-threads=1 --nocapture
 cargo test -p temporalstore-rust --lib bucket_filing_range -- --test-threads=1
 cargo test -p temporalstore-rust --lib reclaim -- --test-threads=1
 cargo test -p temporalstore-rust --lib proxy::memory -- --test-threads=1
