@@ -3505,10 +3505,13 @@ const INDEX_CODEC_ZSTD_MSGPACK: u8 = 2;
 /// the decode it is supposed to guard, and a fresh shard carries 0 there regardless.
 const INDEX_BINARY_VERSION_BYTES: usize = 4;
 
-/// Compression level for the container payload. The served index is written whole, in the
-/// background, and read whole -- so this trades a little CPU on a path that is not the request
-/// path for a large cut in bytes written and bytes read at load.
-const INDEX_ZSTD_LEVEL: i32 = 3;
+/// Compaction publishes this frame under the shard write guard. Favor low encoding cost;
+/// the codec and decoder are independent of the compression level.
+const INDEX_ZSTD_LEVEL: i32 = 1;
+
+#[cfg(test)]
+#[path = "engine/index_encode_work_tests.rs"]
+mod index_encode_work_tests;
 
 /// Does this look like a served index?
 ///
@@ -3523,18 +3526,17 @@ pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
 fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
     // struct-as-MAP, not struct-as-array: the array form is positional, and positional is what
     // mis-reads a struct that skipped an absent optional.
-    let mut encoded = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut encoded).with_struct_map();
-    serde::Serialize::serialize(shard, &mut serializer).ok()?;
-    let payload = zstd::stream::encode_all(encoded.as_slice(), INDEX_ZSTD_LEVEL).ok()?;
-    let mut out = Vec::with_capacity(
-        payload.len() + INDEX_CONTAINER_MAGIC.len() + 1 + INDEX_BINARY_VERSION_BYTES,
-    );
+    let mut out = Vec::new();
     out.extend_from_slice(INDEX_CONTAINER_MAGIC);
     out.push(INDEX_CODEC_ZSTD_MSGPACK);
     out.extend_from_slice(&SHARD_INDEX_FORMAT_VERSION.to_be_bytes());
-    out.extend_from_slice(&payload);
-    Some(out)
+    // Bound the writer buffer instead of retaining the whole uncompressed index.
+    // Buffer the small Msgpack writes before they reach the compression stream.
+    let encoder = zstd::stream::write::Encoder::new(out, INDEX_ZSTD_LEVEL).ok()?;
+    let mut buffered = std::io::BufWriter::with_capacity(64 * 1024, encoder);
+    let mut serializer = rmp_serde::Serializer::new(&mut buffered).with_struct_map();
+    serde::Serialize::serialize(shard, &mut serializer).ok()?;
+    buffered.into_inner().ok()?.finish().ok()
 }
 
 /// The single place the served index becomes bytes, and it always writes the container.
