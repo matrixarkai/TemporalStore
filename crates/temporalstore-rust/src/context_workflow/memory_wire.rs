@@ -75,20 +75,40 @@ pub fn encode_error(status: Status) -> Vec<u8> {
     .encode_to_vec()
 }
 
-/// Project existing extraction results; never invoke another model or copy a vector.
-pub fn execute_request(engine: &TemporalEngine, request: ContextIngestExtractRequest) -> Vec<u8> {
-    let report = ingest_extract_context(engine, request);
-    wire::ContextMemoryIngestResponse {
-        acknowledgment: Some(wire::ContextExplicitIngestResponse {
-            protocol_version: ingest_wire::EXPLICIT_PROTOCOL_VERSION,
-            status: Some(wire_status(report.status)),
-            accepted: report.accepted as u64,
-            failed: report.failed as u64,
-        }),
-        sources: report
-            .extracts
-            .into_iter()
-            .map(|extract| wire::ContextMemorySourceReceipt {
+/// Retain full extraction reports for one model window, then encode fact receipts directly.
+pub fn execute_request(
+    engine: &TemporalEngine,
+    mut request: ContextIngestExtractRequest,
+) -> Vec<u8> {
+    let mut sources = std::mem::take(&mut request.sources).into_iter();
+    let mut bytes = Vec::new();
+    let mut accepted = 0;
+    let mut failed = 0;
+    loop {
+        let window = sources
+            .by_ref()
+            .take(super::ingest::CONTEXT_MODEL_SOURCE_WINDOW)
+            .collect::<Vec<_>>();
+        if window.is_empty() {
+            break;
+        }
+        let report = ingest_extract_context(
+            engine,
+            ContextIngestExtractRequest {
+                sources: window,
+                provider: request.provider.clone(),
+                query: String::new(),
+                shard_id: request.shard_id,
+                tenant_hash: request.tenant_hash,
+                start_time_ms: request.start_time_ms,
+                end_time_ms: request.end_time_ms,
+                max_events: request.max_events,
+            },
+        );
+        accepted += report.accepted;
+        failed += report.failed;
+        for extract in report.extracts {
+            let receipt = wire::ContextMemorySourceReceipt {
                 status: Some(wire_status(extract.status)),
                 source_ref: extract.source_ref,
                 node_hash: extract.node.node_hash,
@@ -103,10 +123,36 @@ pub fn execute_request(engine: &TemporalEngine, request: ContextIngestExtractReq
                         value: fact.value,
                     })
                     .collect(),
-            })
-            .collect(),
+            };
+            prost::encoding::message::encode(2, &receipt, &mut bytes);
+        }
     }
-    .encode_to_vec()
+    let status = if failed == 0 {
+        Status::ok()
+    } else if accepted > 0 {
+        Status::error(
+            "partial_context_ingest_extract_failure",
+            format!("{failed} context sources failed"),
+        )
+    } else {
+        Status::error(
+            "context_ingest_extract_failed",
+            "all context sources failed ingestion/extraction",
+        )
+    };
+    // Protobuf fields may arrive in any order; emit the aggregate acknowledgment last.
+    wire::ContextMemoryIngestResponse {
+        acknowledgment: Some(wire::ContextExplicitIngestResponse {
+            protocol_version: ingest_wire::EXPLICIT_PROTOCOL_VERSION,
+            status: Some(wire_status(status)),
+            accepted: accepted as u64,
+            failed: failed as u64,
+        }),
+        sources: Vec::new(),
+    }
+    .encode(&mut bytes)
+    .expect("a Vec can grow to encode the acknowledgment");
+    bytes
 }
 
 pub(crate) fn decode_response(
@@ -147,6 +193,122 @@ pub(crate) fn decode_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request_with_sources(count: usize, tenant_hash: u64) -> ContextIngestExtractRequest {
+        ContextIngestExtractRequest {
+            shard_id: 1,
+            tenant_hash,
+            query: String::new(),
+            start_time_ms: 0,
+            end_time_ms: count as u64 + 2,
+            max_events: 10,
+            provider: Default::default(),
+            sources: (0..count)
+                .map(|index| ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash,
+                    source_kind: ContextSourceKind::Chat,
+                    source_id: format!("window-source-{index}"),
+                    title: "user".into(),
+                    body: format!("Source {index} prefers Rust."),
+                    timestamp_ms: index as u64 + 1,
+                    provider: Default::default(),
+                })
+                .collect(),
+        }
+    }
+
+    fn open_engine(root: &std::path::Path) -> TemporalEngine {
+        let engine = TemporalEngine::with_local_dirs(
+            16 << 20,
+            root.join("cache"),
+            root.join("blocks"),
+            root.join("indexes"),
+        );
+        engine.load_shard(1);
+        engine
+    }
+
+    #[test]
+    fn inferred_memory_wire_windows_preserve_full_report_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = open_engine(root.path());
+        let count = super::super::ingest::CONTEXT_MODEL_SOURCE_WINDOW + 1;
+        let request = request_with_sources(count, 42);
+        let full = ingest_extract_context(&engine, request.clone());
+        assert!(full.status.ok, "{:?}", full.status);
+        let bytes = execute_request(&engine, request);
+        let receipts = decode_response(&bytes, count).unwrap();
+        assert_eq!(receipts.len(), full.extracts.len());
+        for (receipt, extract) in receipts.iter().zip(full.extracts) {
+            assert_eq!(receipt.status, Some(wire_status(extract.status)));
+            assert_eq!(receipt.source_ref, extract.source_ref);
+            assert_eq!(receipt.node_hash, extract.node.node_hash);
+            assert_eq!(
+                receipt.extracted_entity_count,
+                extract.extracted_entity_count as u64
+            );
+            let expected_facts = extract
+                .facts
+                .into_iter()
+                .map(|fact| wire::ContextMemoryFact {
+                    entity_hash: fact.entity_hash,
+                    kind: fact.kind,
+                    name: fact.name,
+                    value: fact.value,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(receipt.facts, expected_facts);
+        }
+        assert_eq!(
+            receipts.last().unwrap().source_ref,
+            format!("window-source-{}", count - 1)
+        );
+    }
+
+    #[test]
+    fn inferred_memory_wire_windows_aggregate_partial_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = open_engine(root.path());
+        let window = super::super::ingest::CONTEXT_MODEL_SOURCE_WINDOW;
+        let mut request = request_with_sources(window + 1, 42);
+        request.sources[window].body =
+            "x".repeat(ContextWorkflowPolicy::default().max_extract_body_bytes + 1);
+        let bytes = execute_request(&engine, request);
+        let response = wire::ContextMemoryIngestResponse::decode(bytes.as_slice()).unwrap();
+        let ack = response.acknowledgment.unwrap();
+        assert_eq!((ack.accepted, ack.failed), (window as u64, 1));
+        assert_eq!(response.sources.len(), window);
+        assert_eq!(
+            ack.status.unwrap().code,
+            "partial_context_ingest_extract_failure"
+        );
+        assert_eq!(
+            decode_response(&bytes, window + 1).unwrap_err().code,
+            "partial_context_ingest_extract_failure"
+        );
+    }
+
+    #[test]
+    fn inferred_memory_wire_windows_preserve_all_failed_acknowledgment() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = open_engine(root.path());
+        let count = super::super::ingest::CONTEXT_MODEL_SOURCE_WINDOW + 1;
+        let bytes = execute_request(&engine, request_with_sources(count, 0));
+        let response = wire::ContextMemoryIngestResponse::decode(bytes.as_slice()).unwrap();
+        let ack = response.acknowledgment.unwrap();
+        assert_eq!((ack.accepted, ack.failed), (0, count as u64));
+        assert!(response.sources.is_empty());
+        assert_eq!(ack.status.unwrap().code, "context_ingest_extract_failed");
+    }
+
+    #[test]
+    fn inferred_memory_wire_windows_preserve_empty_acknowledgment() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = open_engine(root.path());
+        let bytes = execute_request(&engine, request_with_sources(0, 42));
+        assert!(decode_response(&bytes, 0).unwrap().is_empty());
+    }
 
     #[test]
     fn inferred_memory_wire_preserves_extraction_errors_without_acknowledging_sources() {

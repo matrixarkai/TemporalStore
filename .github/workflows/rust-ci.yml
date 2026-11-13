@@ -156,7 +156,7 @@ jobs:
           set -o pipefail
           cargo test -p temporalstore-rust --lib --features alloc-probe inferred_memory_ \
             -- --test-threads=1 2>&1 | tee /tmp/inferred-memory-gate.log
-          grep -q 'test result: ok\. 11 passed; 0 failed;' /tmp/inferred-memory-gate.log
+          grep -q 'test result: ok\. 15 passed; 0 failed;' /tmp/inferred-memory-gate.log
 
       - name: Memory input buffer ownership checks
         timeout-minutes: 30
