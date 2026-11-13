@@ -62,6 +62,64 @@ fn trim() -> bool {
     false
 }
 
+/// How many malloc arenas the server allows itself when the operator has said nothing.
+///
+/// glibc gives every thread that allocates its own arena, up to eight per core, and a freed chunk
+/// stays in the arena that made it. The server runs a thread per connection plus background
+/// workers -- about 43 under a 32-connection load -- and a write allocates on one thread and frees
+/// on another, so chunks end up scattered across arenas where no later allocation reuses them.
+///
+/// MEASURED on the matched fixture (100,000 keys, 144 B values, 80/20 get/set, 40 minutes, three
+/// servers differing only in this setting, one run each): resident memory from minute 5 grew
+/// 1.00 MB/min at glibc's default, 0.28 at four arenas and 0.07 at two, with throughput unchanged
+/// to slightly better (sets 952 -> 976 per second, gets 3,641 -> 3,738). The LIVE heap was flat
+/// throughout -- valgrind massif over 435,000 sets read 6.2 MB at the start and 7.0 MB at the
+/// end -- so what grew was retention, not data.
+///
+/// Much of the growth is warm-up and slows later: the default's slope was +2.05 MB/min in the
+/// first half of that run and +0.75 in the second, and in a 30-minute write-only run the second
+/// half was flat. It does not always stop: one 118-minute run of the uncapped server was still
+/// rising at 1.4 MB/min in its second half. So the cap lowers how far and how fast resident memory
+/// climbs; this is not a claim that uncapped memory grows per write without bound.
+pub const DEFAULT_ARENA_MAX: i32 = 2;
+
+/// Cap the malloc arenas, once, at process start, before the threads that allocate exist.
+///
+/// Returns the cap applied, or `None` when nothing was changed: the operator set
+/// `MALLOC_ARENA_MAX` (glibc has already read it, and theirs wins), `TS_MALLOC_ARENA_MAX` is `0`
+/// or unparsable, or this is not a glibc target. `TS_MALLOC_ARENA_MAX=<n>` picks another cap.
+pub fn cap_malloc_arenas() -> Option<i32> {
+    if std::env::var_os("MALLOC_ARENA_MAX").is_some() {
+        return None;
+    }
+    let wanted = match std::env::var("TS_MALLOC_ARENA_MAX") {
+        Ok(value) => value.trim().parse::<i32>().ok()?,
+        Err(_) => DEFAULT_ARENA_MAX,
+    };
+    apply_arena_cap(wanted)
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn apply_arena_cap(wanted: i32) -> Option<i32> {
+    if wanted <= 0 {
+        return None;
+    }
+    extern "C" {
+        /// glibc: set a malloc tunable. Returns 1 on success, 0 on error.
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    // `M_ARENA_MAX` from <malloc.h>.
+    const M_ARENA_MAX: i32 = -8;
+    // Safe: two integers in, no pointers, and it only changes how many arenas glibc will create
+    // from now on. Arenas that already exist keep serving the threads that hold them.
+    (unsafe { mallopt(M_ARENA_MAX, wanted) } == 1).then_some(wanted)
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn apply_arena_cap(_wanted: i32) -> Option<i32> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +138,24 @@ mod tests {
         assert!(trim_enabled(), "1 must leave it on");
         std::env::remove_var("TS_MALLOC_TRIM");
         assert!(trim_enabled(), "unset must leave it on, which is the default");
+    }
+
+    /// The cap is a positive count, zero and negatives leave glibc's default, and an operator's own
+    /// `MALLOC_ARENA_MAX` always wins. The value is a generous 1,024 so applying it in a test
+    /// process that runs many threads changes nothing about how those threads allocate.
+    #[test]
+    fn the_arena_cap_applies_a_positive_value_and_leaves_the_rest_alone() {
+        assert_eq!(DEFAULT_ARENA_MAX, 2, "the measured default is two arenas");
+        assert_eq!(apply_arena_cap(0), None, "0 must leave glibc's default");
+        assert_eq!(apply_arena_cap(-3), None, "a negative must leave glibc's default");
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        assert_eq!(apply_arena_cap(1024), Some(1024), "a positive cap must be applied");
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        assert_eq!(apply_arena_cap(1024), None, "no portable equivalent off glibc");
+
+        std::env::set_var("MALLOC_ARENA_MAX", "4");
+        assert_eq!(cap_malloc_arenas(), None, "the operator's setting must win");
+        std::env::remove_var("MALLOC_ARENA_MAX");
     }
 
     /// Off means off: the call must do nothing and say so.
