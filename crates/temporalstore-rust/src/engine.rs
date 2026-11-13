@@ -3125,7 +3125,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// which rebuilds the map through the ordinary write path.
 ///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 31;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
 
 /// What the serving read fast path decided to serve: chosen under the shard-table read guard,
 /// read off the block store after it drops.

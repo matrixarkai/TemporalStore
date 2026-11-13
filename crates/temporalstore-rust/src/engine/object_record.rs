@@ -817,13 +817,51 @@ impl BlockLayoutStore {
 /// other's shape into something plausible.
 ///
 /// `e` is skipped when empty, so the only cost for an element-free slot is the `r` wrapper.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub(super) struct ObjectSlotWire {
     /// The fixed-width record. REQUIRED, which is what refuses an image of the older shape.
     r: ObjectRecord,
     /// The owned element array, absent when empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     e: Vec<(u64, ElementEntry)>,
+}
+
+/// A slot is written `[record]` or `[record, elements]`: a position and not a name for each, and the
+/// elements only when there are some.
+impl serde::Serialize for ObjectSlotWire {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let length = if self.e.is_empty() { 1 } else { 2 };
+        let mut slot = serializer.serialize_seq(Some(length))?;
+        slot.serialize_element(&self.r)?;
+        if length == 2 {
+            slot.serialize_element(&self.e)?;
+        }
+        slot.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ObjectSlotWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Slot;
+        impl<'de> serde::de::Visitor<'de> for Slot {
+            type Value = ObjectSlotWire;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object slot row of one or two elements")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut slot: A) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+                let r = slot.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                let e: Vec<(u64, ElementEntry)> = slot.next_element()?.unwrap_or_default();
+                if slot.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(A::Error::invalid_length(3, &self));
+                }
+                Ok(ObjectSlotWire { r, e })
+            }
+        }
+        deserializer.deserialize_seq(Slot)
+    }
 }
 
 impl From<ObjectSlot> for ObjectSlotWire {
@@ -915,25 +953,68 @@ fn is_zero_u8(value: &u8) -> bool {
     *value == 0
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// THE STORED RECORD, WRITTEN BY POSITION: `[address, block_size, flags, model_id]`, with a fifth
+/// element -- the uncompressed size class -- only when it is known.
+///
+/// A named row spent a key on every field of every object: four one-letter names are eight bytes of
+/// a record whose values are a handful, and the node this layout follows is a packed record with no
+/// names at all. A reader refuses a row LONGER than this by length rather than reinterpreting it, the
+/// same rule the positional index rows already hold, so a field added later cannot be read as nothing.
+#[derive(Debug, Clone)]
 pub(super) struct ObjectRecordWire {
-    #[serde(rename = "a")]
     address: u64,
-    #[serde(rename = "n", default)]
     block_size: u32,
-    #[serde(rename = "f", default)]
     flags: u16,
-    #[serde(rename = "m", default)]
     model_id: u8,
-    /// The uncompressed size class. `default`, and SKIPPED WHEN UNKNOWN, so an image whose records
-    /// have no class is byte-identical to one written before the field existed.
-    #[serde(rename = "u", default, skip_serializing_if = "is_zero_u8")]
+    /// The uncompressed size class; the fifth element, written only when known.
     logical_size_class: u8,
-    // THE `t` KEY IS GONE WITH THE DEADLINE WORD, AND NO STORED BYTES MOVE WITH IT. It was
-    // `skip_serializing_if = "Option::is_none"` and nothing ever set a deadline, so no image this
-    // binary or any before it wrote carries a `t` at all -- there is nothing for a reader to drop,
-    // which is why this costs no format stamp. A record that did carry one is refused rather than
-    // misread, because bits 1, 2 and 10 retired into `RESERVED`.
+    // THE `t` KEY IS GONE WITH THE DEADLINE WORD, AND NO STORED BYTES MOVE WITH IT. Nothing ever set a
+    // deadline, so no image carries one; a record that did is refused, because bits 1, 2 and 10
+    // retired into `RESERVED`.
+}
+
+impl serde::Serialize for ObjectRecordWire {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let length = if self.logical_size_class == 0 { 4 } else { 5 };
+        let mut row = serializer.serialize_seq(Some(length))?;
+        row.serialize_element(&self.address)?;
+        row.serialize_element(&self.block_size)?;
+        row.serialize_element(&self.flags)?;
+        row.serialize_element(&self.model_id)?;
+        if length == 5 {
+            row.serialize_element(&self.logical_size_class)?;
+        }
+        row.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ObjectRecordWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Row;
+        impl<'de> serde::de::Visitor<'de> for Row {
+            type Value = ObjectRecordWire;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object record row of four or five elements")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut row: A) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+                let address = row.next_element()?.ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                let block_size = row.next_element()?.ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                let flags = row.next_element()?.ok_or_else(|| A::Error::invalid_length(2, &self))?;
+                let model_id = row.next_element()?.ok_or_else(|| A::Error::invalid_length(3, &self))?;
+                let logical_size_class = row.next_element()?.unwrap_or(0);
+                // LONGER THAN THIS STRUCT IS REFUSED BY LENGTH, never read with the extra dropped.
+                if row.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(A::Error::invalid_length(6, &self));
+                }
+                Ok(ObjectRecordWire { address, block_size, flags, model_id, logical_size_class })
+            }
+        }
+        deserializer.deserialize_seq(Row)
+    }
 }
 
 impl From<ObjectRecord> for ObjectRecordWire {

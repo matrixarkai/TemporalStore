@@ -322,7 +322,7 @@ fn the_decoder_refuses_by_name_rather_than_panicking() {
     let cases: [(&str, &str, &str); 3] = [
         (
             "a reserved bit set by a newer writer",
-            r#"{"a":64,"n":8,"f":4096,"m":1}"#,
+            r#"[64,8,4096,1]"#,
             "ReservedFlagBitsSet",
         ),
         // THE TWO RETIRED DEADLINE BITS ARE STILL REFUSED, under a different name: bits 1 and 10
@@ -330,12 +330,12 @@ fn the_decoder_refuses_by_name_rather_than_panicking() {
         // rather than by a deadline-specific check. Same refusal, earlier, and by one rule.
         (
             "the retired deadline-presence bit, now reserved",
-            r#"{"a":64,"n":8,"f":1024,"m":1}"#,
+            r#"[64,8,1024,1]"#,
             "ReservedFlagBitsSet",
         ),
         (
             "the retired deadline-pointer bit, now reserved",
-            r#"{"a":64,"n":8,"f":2,"m":1}"#,
+            r#"[64,8,2,1]"#,
             "ReservedFlagBitsSet",
         ),
         // A `t` KEY ON THE WIRE IS NO LONGER THE DECODER'S BUSINESS, and that case is gone rather
@@ -369,7 +369,7 @@ fn the_decoder_refuses_by_name_rather_than_panicking() {
     // carry a `t`, all three of which retired -- so the record it was built from would now be
     // REFUSED as a newer writer's, and a control that gets refused proves nothing. Bit 3 is
     // `INDEX_DIRTY`, which is still named.
-    let legal = r#"{"a":64,"n":8,"f":8,"m":7}"#;
+    let legal = r#"[64,8,8,7]"#;
     let decoded: ObjectRecord = serde_json::from_str(legal)
         .unwrap_or_else(|error| panic!("the decoder refused a LEGAL record: {error} from {legal}"));
     // THE CONTROL IS STILL A CONTROL, narrowed to what the record still carries: it decoded, so
