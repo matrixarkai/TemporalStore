@@ -810,30 +810,29 @@ fn ingest_hashes(objects: usize, fields: usize) -> (i64, i64) {
             value: incompressible(64, u64::MAX),
         },
     });
-    let mut batches: Vec<Vec<Command>> = Vec::new();
-    let mut commands = Vec::with_capacity(BATCH);
-    for object in 0..objects {
-        for field in 0..fields {
-            commands.push(Command::HashSet {
-                key: format!("h-{object:08}"),
-                field: format!("f{field:02}"),
-                value: incompressible(64, (object * fields + field) as u64),
-            });
-            if commands.len() == BATCH {
-                batches.push(std::mem::take(&mut commands));
-            }
-        }
-    }
-    if !commands.is_empty() {
-        batches.push(commands);
-    }
+    // THE COMMANDS ARE BUILT INSIDE THE SPAN, which is the opposite of the rate probes above and
+    // for the opposite reason. A rate wants the fixture OUTSIDE the window so it is not charged to
+    // the store; a NET figure wants every allocation the fixture makes to be freed INSIDE the same
+    // window, because the engine drops each command when it is done and a window that saw those
+    // frees without the allocations that matched them reads negative.
     let span = ClassSpan::open();
-    for commands in batches.drain(..) {
+    let total = objects * fields;
+    let mut done = 0usize;
+    while done < total {
+        let end = (done + BATCH).min(total);
+        let commands: Vec<Command> = (done..end)
+            .map(|n| Command::HashSet {
+                key: format!("h-{:08}", n / fields),
+                field: format!("f{:02}", n % fields),
+                value: incompressible(64, n as u64),
+            })
+            .collect();
         let response = engine.batch_execute(crate::types::BatchExecuteRequest {
             shard_id: 1,
             commands,
         });
         assert!(response.status.ok, "ingest failed: {:?}", response.status);
+        done = end;
     }
     let counts = span.close().expect("built with `alloc-probe`");
     let net_allocs = counts.total.allocs as i64 - counts.total.frees as i64;
