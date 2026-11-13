@@ -88,6 +88,7 @@ impl DataNodeRuntime {
             storage_manager_round_us_total: stats.storage_manager_round_us_total,
             storage_manager_round_us_max: stats.storage_manager_round_us_max,
             storage_manager_stage_timing: stats.storage_manager_stage_timing.clone(),
+            expiry_sweep_failures: self.inner.engine.expiry_sweep_failures(),
         }
     }
 

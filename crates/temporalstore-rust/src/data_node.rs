@@ -209,6 +209,10 @@ pub struct DataNodeRuntimeStats {
     /// completed, so a node whose dump keeps failing showed no dumps and no error.
     #[serde(default)]
     pub storage_dump_failures: u64,
+    /// Expiry sweeps that failed. `expiry_sweeps` counts the rounds that ran, whatever each
+    /// shard's sweep returned, so a node whose sweep keeps failing showed rounds and no error.
+    #[serde(default)]
+    pub expiry_sweep_failures: u64,
     /// Rounds that ended with a non-ok status (a compaction or block-GC stage reported failure).
     /// The all-shards scheduler used to drop the round report, so this was visible nowhere.
     #[serde(default)]
