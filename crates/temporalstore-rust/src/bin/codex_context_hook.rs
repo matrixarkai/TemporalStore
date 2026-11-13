@@ -12,10 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    context_scope_nodes, extract_context, inject_context, remember_context_scope,
-    remember_context_scope_node, ContextExtractRequest, ContextIndexRef, ContextInjectRequest,
-    ContextModelProviderConfig, ContextRetrieveRequest, ContextSourceKind, ContextTier, TemporalEngine,
-    CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT,
+    context_provider_from_env, context_scope_nodes, extract_context, inject_context,
+    remember_context_scope, remember_context_scope_node, ContextExtractRequest, ContextIndexRef,
+    ContextInjectRequest, ContextModelProviderConfig, ContextRetrieveRequest, ContextSourceKind,
+    ContextTier, TemporalEngine, CONTEXT_SCOPE_NODE_CANDIDATE_LIMIT,
 };
 
 #[derive(Debug, Clone)]
@@ -65,6 +65,7 @@ fn main() {
         args.root.join("indexes"),
     );
     engine.load_shard(1);
+    let provider = context_provider_from_env();
 
     let tenant_hash = stable_hash64(&format!(
         "{}:{}:{}:{}",
@@ -102,7 +103,7 @@ fn main() {
                     text
                 ),
                 timestamp_ms: now_ms,
-                provider: ContextModelProviderConfig::default(),
+                provider: provider.clone(),
             },
         );
         ingest_status = json!({
@@ -148,8 +149,16 @@ fn main() {
         // Durable memory, resources, skills, and promoted facts are ingested under
         // the stable `_global` scope; a brand-new session has no own nodes but still
         // receives global memory -- this is what surfaces cross-session context.
-        let (sess_ctx, sess_blocks, sess_tokens) =
-            retrieve_scope(&engine, tenant_hash, &node_hashes, &query, now_ms, &args, "session");
+        let (sess_ctx, sess_blocks, sess_tokens) = retrieve_scope(
+            &engine,
+            tenant_hash,
+            &node_hashes,
+            &query,
+            now_ms,
+            &args,
+            "session",
+            &provider,
+        );
         let global_tenant_hash = stable_hash64(&format!(
             "{}:{}:{}:_global",
             args.account_id, args.tenant_id, args.user_id
@@ -162,8 +171,16 @@ fn main() {
             &args.agent_name,
             "_global",
         );
-        let (glob_ctx, glob_blocks, glob_tokens) =
-            retrieve_scope(&engine, global_tenant_hash, &global_nodes, &query, now_ms, &args, "global");
+        let (glob_ctx, glob_blocks, glob_tokens) = retrieve_scope(
+            &engine,
+            global_tenant_hash,
+            &global_nodes,
+            &query,
+            now_ms,
+            &args,
+            "global",
+            &provider,
+        );
         let merged = merge_context_blocks(&[sess_ctx.as_str(), glob_ctx.as_str()]);
         if !merged.is_empty() {
             retrieve_status = json!({
@@ -517,6 +534,7 @@ fn retrieve_scope(
     now_ms: u64,
     args: &Args,
     scope: &str,
+    provider: &ContextModelProviderConfig,
 ) -> (String, usize, u64) {
     if node_hashes.is_empty() {
         return (String::new(), 0, 0);
@@ -536,7 +554,7 @@ fn retrieve_scope(
         max_event_nodes: 8,
         prefer_current_agent: false,
         current_agent_scope_key: format!("agent:{}", agent_profile(&args.agent_name)),
-        provider: ContextModelProviderConfig::default(),
+        provider: provider.clone(),
         include_debug: false,
     };
     let inject = inject_context(
@@ -547,12 +565,16 @@ fn retrieve_scope(
             session_hash: stable_hash64(&format!("{}:{}", args.session_id, scope)),
             query_id: format!("{}:{}:{:016x}", args.event, scope, stable_hash64(query)),
             max_prompt_tokens: args.max_context_tokens,
-            provider: ContextModelProviderConfig::default(),
+            provider: provider.clone(),
         },
     );
     let ctx =
         additional_context_from_injected(&inject.injected_prompt, additional_context_char_limit());
-    (ctx, inject.selected_blocks.len(), inject.audit.selected_tokens as u64)
+    (
+        ctx,
+        inject.selected_blocks.len(),
+        inject.audit.selected_tokens as u64,
+    )
 }
 
 /// Merge multiple `<context>...</context>` blocks into one, dropping empties.

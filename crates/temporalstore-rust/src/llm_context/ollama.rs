@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -11,8 +11,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::env_flag::{env_bool, env_number};
-use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
+use crate::env_flag::{env_bool_first, env_number_first, env_value_any};
+use crate::http::{
+    post_encoded_json_streaming_with_options_and_headers,
+    post_json_streaming_with_options_and_headers, HttpError, HttpRequestOptions,
+};
 
 use super::{
     BatchEmbedder, BatchExtractor, ContextMessage, ContextRole, EmbeddingBatch, ExtractedContext,
@@ -57,56 +60,79 @@ impl Default for OllamaConfig {
 impl OllamaConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
-        if let Some(base_url) =
-            string_from_env("MATRIXARK_OLLAMA_BASE_URL").or_else(|| string_from_env("OLLAMA_HOST"))
-        {
+        if let Some(base_url) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_BASE_URL",
+            "MATRIXARK_OLLAMA_BASE_URL",
+            "OLLAMA_HOST",
+        ]) {
             config.base_url = if base_url.contains("://") {
                 base_url
             } else {
                 format!("http://{base_url}")
             };
         }
-        set_string_from_env(
+        if let Some(model) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_EXTRACTION_MODEL",
             "MATRIXARK_OLLAMA_EXTRACTION_MODEL",
-            &mut config.extraction_model,
-        );
-        set_string_from_env(
+        ]) {
+            config.extraction_model = model;
+        }
+        if let Some(model) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL",
             "MATRIXARK_OLLAMA_EMBEDDING_MODEL",
-            &mut config.embedding_model,
-        );
-        if let Some(keep_alive) = string_from_env("MATRIXARK_OLLAMA_KEEP_ALIVE")
-            .or_else(|| string_from_env("OLLAMA_KEEP_ALIVE"))
-        {
+        ]) {
+            config.embedding_model = model;
+        }
+        if let Some(keep_alive) = env_value_any(&[
+            "TEMPORALSTORE_OLLAMA_KEEP_ALIVE",
+            "MATRIXARK_OLLAMA_KEEP_ALIVE",
+            "OLLAMA_KEEP_ALIVE",
+        ]) {
             config.keep_alive = keep_alive;
         }
-        config.timeout_ms = env_number("MATRIXARK_OLLAMA_TIMEOUT_MS", config.timeout_ms);
-        config.max_retries = env_number("MATRIXARK_OLLAMA_MAX_RETRIES", config.max_retries);
-        config.max_batch_items =
-            env_number("MATRIXARK_OLLAMA_MAX_BATCH_ITEMS", config.max_batch_items);
-        config.max_input_bytes =
-            env_number("MATRIXARK_OLLAMA_MAX_INPUT_BYTES", config.max_input_bytes);
-        config.max_request_bytes = env_number(
-            "MATRIXARK_OLLAMA_MAX_REQUEST_BYTES",
+        config.timeout_ms = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_TIMEOUT_MS",
+                "MATRIXARK_OLLAMA_TIMEOUT_MS",
+            ],
+            config.timeout_ms,
+        );
+        config.max_retries = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_RETRIES",
+                "MATRIXARK_OLLAMA_MAX_RETRIES",
+            ],
+            config.max_retries,
+        );
+        config.max_batch_items = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_BATCH_ITEMS",
+                "MATRIXARK_OLLAMA_MAX_BATCH_ITEMS",
+            ],
+            config.max_batch_items,
+        );
+        config.max_input_bytes = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_INPUT_BYTES",
+                "MATRIXARK_OLLAMA_MAX_INPUT_BYTES",
+            ],
+            config.max_input_bytes,
+        );
+        config.max_request_bytes = env_number_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_MAX_REQUEST_BYTES",
+                "MATRIXARK_OLLAMA_MAX_REQUEST_BYTES",
+            ],
             config.max_request_bytes,
         );
-        config.truncate_embeddings = env_bool(
-            "MATRIXARK_OLLAMA_TRUNCATE_EMBEDDINGS",
+        config.truncate_embeddings = env_bool_first(
+            &[
+                "TEMPORALSTORE_OLLAMA_TRUNCATE_EMBEDDINGS",
+                "MATRIXARK_OLLAMA_TRUNCATE_EMBEDDINGS",
+            ],
             config.truncate_embeddings,
         );
         config
-    }
-}
-
-fn string_from_env(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn set_string_from_env(name: &str, target: &mut String) {
-    if let Some(value) = string_from_env(name) {
-        *target = value;
     }
 }
 
@@ -217,16 +243,11 @@ impl OllamaProvider {
         }
     }
 
-    fn batch_end<T>(
-        &self,
-        inputs: &[T],
-        start: usize,
-        input_size: impl Fn(&T) -> usize,
-    ) -> Result<usize, OllamaError> {
+    fn embedding_batch_end(&self, inputs: &[&str], start: usize) -> Result<usize, OllamaError> {
         let mut end = start;
-        let mut bytes = 0usize;
+        let mut request_bytes = ollama_embed_request_wire_bytes(&self.config, &[]);
         while end < inputs.len() && end - start < self.config.max_batch_items {
-            let item_bytes = input_size(&inputs[end]);
+            let item_bytes = inputs[end].len();
             if item_bytes > self.config.max_input_bytes {
                 return Err(OllamaError::InputTooLarge {
                     index: end,
@@ -234,17 +255,20 @@ impl OllamaProvider {
                     limit: self.config.max_input_bytes,
                 });
             }
-            if end > start && bytes.saturating_add(item_bytes) > self.config.max_request_bytes {
+            let candidate_bytes = request_bytes
+                .saturating_add(usize::from(end > start))
+                .saturating_add(json_string_wire_bytes(inputs[end]));
+            if end > start && candidate_bytes > self.config.max_request_bytes {
                 break;
             }
-            if item_bytes > self.config.max_request_bytes {
+            if candidate_bytes > self.config.max_request_bytes {
                 return Err(OllamaError::InputTooLarge {
                     index: end,
-                    bytes: item_bytes,
+                    bytes: candidate_bytes,
                     limit: self.config.max_request_bytes,
                 });
             }
-            bytes += item_bytes;
+            request_bytes = candidate_bytes;
             end += 1;
         }
         Ok(end)
@@ -255,9 +279,13 @@ impl OllamaProvider {
         messages: &[ContextMessage],
         start: usize,
     ) -> Result<(usize, String), OllamaError> {
-        let max_end = messages
+        let item_limit = messages
             .len()
             .min(start.saturating_add(self.config.max_batch_items));
+        let max_end = messages[start..item_limit]
+            .iter()
+            .position(|message| message.tenant_id != messages[start].tenant_id)
+            .map_or(item_limit, |offset| start + offset);
         let mut end = start;
         let estimated_prompt_bytes = messages[start..max_end]
             .iter()
@@ -339,24 +367,40 @@ impl OllamaProvider {
             });
         }
 
-        let mut dimensions = 0usize;
-        let mut values = Vec::new();
+        // Validate the complete input plan before spending inference on its prefix.
+        let mut batch_ends = Vec::with_capacity(texts.len().div_ceil(self.config.max_batch_items));
         let mut start = 0usize;
         while start < texts.len() {
-            let end = self.batch_end(texts, start, |text| text.len())?;
+            let end = self.embedding_batch_end(texts, start)?;
+            batch_ends.push(end);
+            start = end;
+        }
+
+        let mut dimensions = 0usize;
+        let mut values = Vec::new();
+        let mut request_body = Vec::new();
+        let mut start = 0usize;
+        for end in batch_ends {
             let request = OllamaEmbedRequest {
                 model: &self.config.embedding_model,
                 input: &texts[start..end],
                 truncate: self.config.truncate_embeddings,
                 keep_alive: &self.config.keep_alive,
             };
-            let mut response: OllamaEmbedResponse = post_json_with_options(
-                &self.addr,
-                &self.endpoint("/api/embed"),
-                &request,
-                self.request_options(),
-            )
-            .map_err(OllamaError::Http)?;
+            let request_bytes = ollama_embed_request_wire_bytes(&self.config, request.input);
+            request_body.clear();
+            request_body.reserve(request_bytes);
+            serde_json::to_writer(&mut request_body, &request).map_err(OllamaError::ContentJson)?;
+            debug_assert_eq!(request_body.len(), request_bytes);
+            let mut response: OllamaEmbedResponse =
+                post_encoded_json_streaming_with_options_and_headers(
+                    &self.addr,
+                    &self.endpoint("/api/embed"),
+                    &request_body,
+                    "",
+                    self.request_options(),
+                )
+                .map_err(OllamaError::Http)?;
             let expected = end - start;
             if response.embeddings.len() != expected {
                 return Err(OllamaError::EmbeddingCount {
@@ -372,7 +416,6 @@ impl OllamaProvider {
                 }
                 if dimensions == 0 {
                     dimensions = vector.len();
-                    values.reserve(texts.len().saturating_mul(dimensions));
                 } else if vector.len() != dimensions {
                     return Err(OllamaError::EmbeddingDimensions {
                         expected: dimensions,
@@ -450,10 +493,11 @@ impl OllamaProvider {
             keep_alive: &self.config.keep_alive,
             options: OllamaChatOptions { temperature: 0.0 },
         };
-        let response: OllamaChatResponse = post_json_with_options(
+        let response: OllamaChatResponse = post_json_streaming_with_options_and_headers(
             &self.addr,
             &self.endpoint("/api/chat"),
             &request,
+            "",
             self.request_options(),
         )
         .map_err(OllamaError::Http)?;
@@ -465,20 +509,43 @@ impl OllamaProvider {
     }
 
     fn extract(&self, messages: &[ContextMessage]) -> Result<Vec<ExtractedContext>, OllamaError> {
-        let mut messages_by_id = HashMap::with_capacity(messages.len());
+        let mut messages_by_id = (messages.len() <= self.config.max_batch_items)
+            .then(|| HashMap::with_capacity(messages.len()));
+        let mut seen_message_ids = messages_by_id
+            .is_none()
+            .then(|| HashSet::with_capacity(messages.len()));
         for (message_index, message) in messages.iter().enumerate() {
-            if messages_by_id
-                .insert(message.message_id, message_index)
-                .is_some()
-            {
+            let duplicate = if let Some(messages_by_id) = messages_by_id.as_mut() {
+                messages_by_id
+                    .insert(message.message_id, message_index)
+                    .is_some()
+            } else {
+                !seen_message_ids
+                    .as_mut()
+                    .expect("large extraction has an id set")
+                    .insert(message.message_id)
+            };
+            if duplicate {
                 return Err(OllamaError::DuplicateMessageId(message.message_id));
             }
         }
+        drop(seen_message_ids);
 
         let mut extracted = Vec::new();
+        let mut messages_in_chunk = HashMap::new();
         let mut start = 0usize;
         while start < messages.len() {
             let (end, prompt) = self.extraction_batch_prompt(messages, start)?;
+            if messages_by_id.is_none() {
+                messages_in_chunk.clear();
+                messages_in_chunk.reserve(end - start);
+                messages_in_chunk.extend(
+                    messages[start..end]
+                        .iter()
+                        .enumerate()
+                        .map(|(offset, message)| (message.message_id, start + offset)),
+                );
+            }
             let output: OllamaExtractionOutput = self.generate_structured_output(
                 EXTRACTION_SYSTEM_PROMPT,
                 &prompt,
@@ -486,12 +553,12 @@ impl OllamaProvider {
             )?;
             for item in output.items {
                 let source_index = messages_by_id
+                    .as_ref()
+                    .unwrap_or(&messages_in_chunk)
                     .get(&item.source_message_id)
                     .copied()
+                    .filter(|index| (start..end).contains(index))
                     .ok_or(OllamaError::UnknownSourceMessage(item.source_message_id))?;
-                if !(start..end).contains(&source_index) {
-                    return Err(OllamaError::UnknownSourceMessage(item.source_message_id));
-                }
                 let source = &messages[source_index];
                 let text = trim_owned(item.text);
                 if text.is_empty() {
@@ -545,6 +612,37 @@ fn parse_base_url(base_url: &str) -> Result<(String, String), OllamaError> {
         format!("/{}", path.trim_matches('/'))
     };
     Ok((host.to_string(), path_prefix))
+}
+
+fn ollama_embed_request_wire_bytes(config: &OllamaConfig, inputs: &[&str]) -> usize {
+    let input_bytes = inputs
+        .iter()
+        .enumerate()
+        .fold(0usize, |bytes, (index, input)| {
+            bytes
+                .saturating_add(usize::from(index > 0))
+                .saturating_add(json_string_wire_bytes(input))
+        });
+    b"{\"model\":"
+        .len()
+        .saturating_add(json_string_wire_bytes(&config.embedding_model))
+        .saturating_add(b",\"input\":[".len())
+        .saturating_add(input_bytes)
+        .saturating_add(b"],\"truncate\":".len())
+        .saturating_add(if config.truncate_embeddings { 4 } else { 5 })
+        .saturating_add(b",\"keep_alive\":".len())
+        .saturating_add(json_string_wire_bytes(&config.keep_alive))
+        .saturating_add(1)
+}
+
+fn json_string_wire_bytes(value: &str) -> usize {
+    value.bytes().fold(2usize, |bytes, byte| {
+        bytes.saturating_add(match byte {
+            b'"' | b'\\' | b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+    })
 }
 
 fn context_id(tenant_id: u64, source_message_id: u64, text: &str) -> u64 {
@@ -749,6 +847,7 @@ struct OllamaExtractionItem {
 mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::process::Command;
     use std::thread;
 
     use super::*;
@@ -760,6 +859,64 @@ mod tests {
             ..OllamaConfig::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn temporalstore_environment_configures_the_native_provider() {
+        const CHILD: &str = "TEMPORALSTORE_OLLAMA_CONFIG_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let config = OllamaConfig::from_env();
+            assert_eq!(config.base_url, "http://127.0.0.1:21434");
+            assert_eq!(config.extraction_model, "qwen-test");
+            assert_eq!(config.embedding_model, "embed-test");
+            assert_eq!(config.keep_alive, "17m");
+            assert_eq!(config.timeout_ms, 7_001);
+            assert_eq!(config.max_retries, 3);
+            assert_eq!(config.max_batch_items, 11);
+            assert_eq!(config.max_input_bytes, 12_345);
+            assert_eq!(config.max_request_bytes, 54_321);
+            assert!(!config.truncate_embeddings);
+
+            let provider = crate::context_workflow::context_provider_from_env();
+            assert_eq!(
+                provider.provider_kind,
+                crate::context_workflow::ContextProviderKind::Ollama
+            );
+            assert_eq!(provider.base_url, config.base_url);
+            assert_eq!(provider.model, config.extraction_model);
+            assert_eq!(provider.embedding_model, config.embedding_model);
+            assert!(!provider.mock_mode);
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--exact",
+                "llm_context::ollama::tests::temporalstore_environment_configures_the_native_provider",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("TEMPORALSTORE_CONTEXT_PROVIDER", "ollama")
+            .env("TEMPORALSTORE_OLLAMA_BASE_URL", "127.0.0.1:21434")
+            .env("TEMPORALSTORE_OLLAMA_EXTRACTION_MODEL", "qwen-test")
+            .env("TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL", "embed-test")
+            .env("TEMPORALSTORE_OLLAMA_KEEP_ALIVE", "17m")
+            .env("TEMPORALSTORE_OLLAMA_TIMEOUT_MS", "7001")
+            .env("TEMPORALSTORE_OLLAMA_MAX_RETRIES", "3")
+            .env("TEMPORALSTORE_OLLAMA_MAX_BATCH_ITEMS", "11")
+            .env("TEMPORALSTORE_OLLAMA_MAX_INPUT_BYTES", "12345")
+            .env("TEMPORALSTORE_OLLAMA_MAX_REQUEST_BYTES", "54321")
+            .env("TEMPORALSTORE_OLLAMA_TRUNCATE_EMBEDDINGS", "off")
+            .env("MATRIXARK_CONTEXT_PROVIDER", "mock")
+            .env("MATRIXARK_OLLAMA_BASE_URL", "127.0.0.1:1")
+            .output()
+            .expect("child test process");
+        assert!(
+            output.status.success(),
+            "child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn serve_json(responses: Vec<&'static str>) -> (std::net::SocketAddr, thread::JoinHandle<()>) {
@@ -792,12 +949,16 @@ mod tests {
                         break;
                     }
                 }
-                let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response.len(),
-                    response
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response.len()
                 );
-                stream.write_all(reply.as_bytes()).unwrap();
+                stream.write_all(head.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                thread::sleep(std::time::Duration::from_millis(5));
+                for chunk in response.as_bytes().chunks(7) {
+                    stream.write_all(chunk).unwrap();
+                }
             }
         });
         (addr, handle)
@@ -816,6 +977,59 @@ mod tests {
 
         assert_eq!(output.dimensions, 2);
         assert_eq!(output.values, vec![1.0, 0.0, 0.0, 1.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn embedding_wire_size_matches_the_encoded_request() {
+        let config = OllamaConfig {
+            embedding_model: "embed\"model".to_string(),
+            keep_alive: "5m\\local".to_string(),
+            truncate_embeddings: false,
+            ..OllamaConfig::default()
+        };
+        let inputs = [
+            "plain",
+            "quote \" newline\n control \u{0001}",
+            "unicode \u{4e0a}\u{4e0b}\u{6587}",
+        ];
+        let request = OllamaEmbedRequest {
+            model: &config.embedding_model,
+            input: &inputs,
+            truncate: config.truncate_embeddings,
+            keep_alive: &config.keep_alive,
+        };
+
+        let encoded = serde_json::to_vec(&request).unwrap();
+
+        assert_eq!(
+            ollama_embed_request_wire_bytes(&config, &inputs),
+            encoded.len()
+        );
+    }
+
+    #[test]
+    fn embedding_batches_use_encoded_wire_bytes() {
+        let first = "quote-heavy \"\"\" and newline\n";
+        let second = "second";
+        let mut config = OllamaConfig::default();
+        config.max_request_bytes = ollama_embed_request_wire_bytes(&config, &[first]);
+        let provider = OllamaProvider::new(config.clone()).unwrap();
+
+        assert_eq!(
+            provider.embedding_batch_end(&[first, second], 0).unwrap(),
+            1
+        );
+        assert_eq!(
+            provider.embedding_batch_end(&[first, second], 1).unwrap(),
+            2
+        );
+
+        config.max_request_bytes -= 1;
+        let provider = OllamaProvider::new(config).unwrap();
+        assert!(matches!(
+            provider.embedding_batch_end(&[first], 0),
+            Err(OllamaError::InputTooLarge { index: 0, .. })
+        ));
     }
 
     #[test]
@@ -841,6 +1055,57 @@ mod tests {
     }
 
     #[test]
+    fn native_extraction_reuses_a_bounded_chunk_lookup() {
+        let (addr, server) = serve_json(vec![
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":7,\"text\":\"first fact\"},{\"source_message_id\":8,\"text\":\"second fact\"}]}"}}"#,
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":9,\"text\":\"third fact\"}]}"}}"#,
+        ]);
+        let messages = [
+            ContextMessage {
+                tenant_id: 4,
+                message_id: 7,
+                event_time_ms: 11,
+                role: ContextRole::User,
+                text: "first".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 4,
+                message_id: 8,
+                event_time_ms: 12,
+                role: ContextRole::Assistant,
+                text: "second".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 4,
+                message_id: 9,
+                event_time_ms: 13,
+                role: ContextRole::User,
+                text: "third".to_string(),
+            },
+        ];
+        let output = provider(addr).extract_batch(&messages).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(
+            output
+                .iter()
+                .map(|item| {
+                    (
+                        item.source_message_id,
+                        item.event_time_ms,
+                        item.text.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (7, 11, "first fact"),
+                (8, 12, "second fact"),
+                (9, 13, "third fact"),
+            ]
+        );
+    }
+
+    #[test]
     fn invalid_or_oversized_inputs_fail_before_network_io() {
         let provider = OllamaProvider::new(OllamaConfig {
             max_input_bytes: 3,
@@ -858,5 +1123,110 @@ mod tests {
             }),
             Err(OllamaError::UnsupportedUrl)
         ));
+
+        let duplicate_messages = [
+            ContextMessage {
+                tenant_id: 1,
+                message_id: 7,
+                event_time_ms: 1,
+                role: ContextRole::User,
+                text: "first".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 1,
+                message_id: 8,
+                event_time_ms: 2,
+                role: ContextRole::Assistant,
+                text: "middle".to_string(),
+            },
+            ContextMessage {
+                tenant_id: 1,
+                message_id: 7,
+                event_time_ms: 3,
+                role: ContextRole::User,
+                text: "duplicate in a later request chunk".to_string(),
+            },
+        ];
+        let duplicate_provider = OllamaProvider::new(OllamaConfig {
+            max_batch_items: 2,
+            ..OllamaConfig::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            duplicate_provider.extract_batch(&duplicate_messages),
+            Err(OllamaError::DuplicateMessageId(7))
+        ));
+    }
+
+    fn extraction_source(tenant_id: u64, message_id: u64, text: &str) -> ContextMessage {
+        ContextMessage {
+            tenant_id,
+            message_id,
+            event_time_ms: message_id,
+            role: ContextRole::User,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn extraction_prompts_keep_tenant_runs_separate_without_reordering() {
+        let client = OllamaProvider::new(OllamaConfig {
+            max_batch_items: 64,
+            ..OllamaConfig::default()
+        }).unwrap();
+        let messages = [
+            extraction_source(1, 7, "first tenant \"quoted\" fact"),
+            extraction_source(1, 8, "another first tenant fact"),
+            extraction_source(2, 9, "second tenant private fact"),
+            extraction_source(2, 10, "another second tenant fact"),
+            extraction_source(1, 11, "first tenant returns"),
+        ];
+        let mut start = 0;
+        for expected_end in [2, 4, 5] {
+            let (end, prompt) = client.extraction_batch_prompt(&messages, start).unwrap();
+            assert_eq!(end, expected_end);
+            let rows: Vec<Value> = serde_json::from_str(&prompt).unwrap();
+            assert_eq!(rows.len(), end - start);
+            for (row, source) in rows.iter().zip(&messages[start..end]) {
+                assert_eq!(row["source_message_id"], source.message_id);
+                assert_eq!(row["text"], source.text);
+                assert_eq!(source.tenant_id, messages[start].tenant_id);
+            }
+            start = end;
+        }
+        assert_eq!(start, messages.len());
+    }
+
+    #[test]
+    fn extraction_rejects_known_ids_from_a_different_tenant_chunk() {
+        let (addr, server) = serve_json(vec![
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":8,\"text\":\"wrong source\"}]}"}}"#,
+        ]);
+        let messages = [
+            extraction_source(1, 7, "first tenant fact"),
+            extraction_source(2, 8, "second tenant fact"),
+        ];
+        let result = provider(addr).extract_batch(&messages);
+        server.join().unwrap();
+        assert!(matches!(result, Err(OllamaError::UnknownSourceMessage(8))));
+    }
+
+    #[test]
+    fn extraction_rejects_known_ids_outside_a_byte_limited_chunk() {
+        let (addr, server) = serve_json(vec![
+            r#"{"message":{"content":"{\"items\":[{\"source_message_id\":8,\"text\":\"wrong source\"}]}"}}"#,
+        ]);
+        let client = OllamaProvider::new(OllamaConfig {
+            base_url: format!("http://{addr}"),
+            max_batch_items: 2,
+            max_input_bytes: EXTRACTION_SYSTEM_PROMPT.len() + 128,
+            ..OllamaConfig::default()
+        }).unwrap();
+        let text = "a".repeat(EXTRACTION_SYSTEM_PROMPT.len());
+        let messages = [extraction_source(1, 7, &text), extraction_source(1, 8, &text)];
+        assert_eq!(client.extraction_batch_prompt(&messages, 0).unwrap().0, 1);
+        let result = client.extract_batch(&messages);
+        server.join().unwrap();
+        assert!(matches!(result, Err(OllamaError::UnknownSourceMessage(8))));
     }
 }

@@ -320,6 +320,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: false,
@@ -362,6 +363,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
                     confidence: 1.0,
                     source_event_hashes: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 },
             },
             Command::ContextUpsertChildRef {
@@ -1082,6 +1084,7 @@ fn the_auto_compression_trigger_folds_a_window_and_keeps_the_raw_events() {
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: false,

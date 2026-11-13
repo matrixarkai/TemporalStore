@@ -336,6 +336,42 @@ pub(super) enum Utf8ContainerRangeProjection {
     Corrupt(String),
 }
 
+/// Immutable field names and membership shared by a homogeneous write batch.
+pub(super) struct SharedHashFields {
+    names: Vec<std::sync::Arc<str>>,
+    sorted_names: Vec<std::sync::Arc<str>>,
+    membership: std::collections::HashSet<std::sync::Arc<str>>,
+}
+
+impl SharedHashFields {
+    pub(super) fn new<'a>(fields: impl Iterator<Item = &'a str>) -> Option<Self> {
+        let names: Vec<std::sync::Arc<str>> = fields.map(std::sync::Arc::from).collect();
+        let membership: std::collections::HashSet<_> = names.iter().cloned().collect();
+        if membership.len() != names.len() {
+            return None;
+        }
+        let mut sorted_names = names.clone();
+        sorted_names.sort_unstable();
+        Some(Self { names, sorted_names, membership })
+    }
+
+    pub(super) fn names(&self) -> &[std::sync::Arc<str>] {
+        &self.names
+    }
+
+    pub(super) fn sorted_names(&self) -> &[std::sync::Arc<str>] {
+        &self.sorted_names
+    }
+
+    pub(super) fn matches<'a>(&self, fields: impl Iterator<Item = &'a str>) -> bool {
+        self.names.iter().map(|name| name.as_ref()).eq(fields)
+    }
+
+    pub(super) fn contains(&self, field: &str) -> bool {
+        self.membership.contains(field)
+    }
+}
+
 /// The requested-name index shared by every row in one hash projection batch.
 pub(super) struct Utf8ProjectionPlan<'a> {
     element_names: &'a [String],
@@ -374,6 +410,21 @@ pub(super) struct Utf8ProjectionScratch {
     present_in_index: Vec<bool>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static INDEX_PRESENCE_RESETS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_index_presence_reset_count_for_test() {
+    INDEX_PRESENCE_RESETS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn index_presence_reset_count_for_test() -> u64 {
+    INDEX_PRESENCE_RESETS.with(std::cell::Cell::get)
+}
+
 impl Utf8ProjectionScratch {
     pub(super) fn new() -> Self {
         Self {
@@ -388,6 +439,8 @@ impl Utf8ProjectionScratch {
     }
 
     pub(super) fn reset_index_presence(&mut self, field_count: usize) {
+        #[cfg(test)]
+        INDEX_PRESENCE_RESETS.with(|count| count.set(count.get().saturating_add(1)));
         self.present_in_index.resize(field_count, false);
         self.present_in_index.fill(false);
     }
@@ -518,16 +571,17 @@ where
     K: AsRef<[u8]>,
     V: AsRef<[u8]>,
 {
+    encode_utf8_container_iter(items.iter().map(|(key, value)| (key.as_ref(), value.as_ref())))
+}
+
+pub(super) fn encode_utf8_container_iter<'a>(
+    items: impl Iterator<Item = (&'a [u8], &'a [u8])> + Clone + ExactSizeIterator,
+) -> Vec<u8> {
     encode_live_container_block(
         ElementKeySpelling::Utf8,
         items.len(),
-        items
-            .iter()
-            .map(|(key, value)| (key.as_ref(), value.as_ref())),
-        items
-            .iter()
-            .map(|(key, value)| key.as_ref().len() + value.as_ref().len() + 6)
-            .sum(),
+        items.clone(),
+        items.map(|(key, value)| key.len() + value.len() + 6).sum(),
     )
 }
 
@@ -749,6 +803,25 @@ fn take_item<'a>(
 ) -> Result<(&'a [u8], Vec<u8>, bool), String> {
     take_item_bytes(bytes, cursor, index, shape)
         .map(|(key, value, deleted)| (key, value.to_vec(), deleted))
+}
+
+/// Match a complete UTF-8 field projection without allocating keys or values.
+pub(super) fn matches_utf8_projection(bytes: &[u8], fields: &[std::sync::Arc<str>]) -> bool {
+    let Some(Ok((shape, ElementKeySpelling::Utf8))) = frame_header(bytes) else {
+        return false;
+    };
+    let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
+    let Ok(count) = take_varint(bytes, &mut cursor, "item count") else { return false };
+    if count != fields.len() as u64 {
+        return false;
+    }
+    for (index, field) in fields.iter().enumerate() {
+        match take_item_bytes(bytes, &mut cursor, index as u64, shape) {
+            Ok((key, _, false)) if key == field.as_bytes() => {}
+            _ => return false,
+        }
+    }
+    cursor == bytes.len()
 }
 
 /// Ask a payload for one element's value, without building every other item.
@@ -1168,6 +1241,31 @@ pub(super) fn tombstone_block(kind: &str, element_name: &str) -> Option<Vec<u8>>
 #[cfg(test)]
 mod member_element_name_tests {
     use super::*;
+
+    #[test]
+    fn shared_registration_projection_requires_a_complete_live_frame() {
+        let fields = [std::sync::Arc::from("first"), std::sync::Arc::from("second")];
+        let payload = vec![b'x'; 16 * 1024];
+        let frame = encode_container_block(ElementKeySpelling::Utf8,
+            &[(b"first".as_slice(), payload.as_slice()), (b"second", b"second")]);
+        assert!(matches_utf8_projection(&frame, &fields));
+        assert!(!matches_utf8_projection(&frame, &[fields[1].clone(), fields[0].clone()]));
+        assert!(!matches_utf8_projection(&frame, &fields[..1]));
+        assert!(!matches_utf8_projection(&frame, &[]));
+        for end in 0..frame.len() {
+            assert!(!matches_utf8_projection(&frame[..end], &fields), "cut at {end}");
+        }
+        let mut trailing = frame.clone();
+        trailing.push(0);
+        assert!(!matches_utf8_projection(&trailing, &fields));
+        let removed = encode_container_block_items(ElementKeySpelling::Utf8,
+            &[ContainerBlockWrite::live(b"first", b"one"), ContainerBlockWrite::removed(b"second")]);
+        assert!(!matches_utf8_projection(&removed, &fields));
+        let other = encode_container_block(ElementKeySpelling::Hex,
+            &[(b"first".as_slice(), b"one".as_slice()), (b"second", b"two")]);
+        assert!(!matches_utf8_projection(&other, &fields));
+        assert!(!matches_utf8_projection(b"plain bytes", &fields));
+    }
 
     #[test]
     fn owned_utf8_rows_encode_identically_without_pair_vectors() {

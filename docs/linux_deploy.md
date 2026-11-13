@@ -364,6 +364,19 @@ Ollama/Qwen setup:
   --ollama-models "qwen2.5:0.5b qwen2.5:1.5b nomic-embed-text"
 ```
 
+Use the native Rust Ollama client for extraction and embeddings:
+
+```bash
+export TEMPORALSTORE_CONTEXT_PROVIDER=ollama
+export TEMPORALSTORE_OLLAMA_BASE_URL=http://127.0.0.1:11434
+export TEMPORALSTORE_OLLAMA_EXTRACTION_MODEL=qwen2.5:1.5b
+export TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+```
+
+These settings are consumed by live context hooks, bulk ingestion, query
+embedding, and the embedding drainer. `MATRIXARK_OLLAMA_*` remains a compatible
+fallback for existing deployments.
+
 vLLM setup, for stronger local OpenAI-compatible readers:
 
 ```bash

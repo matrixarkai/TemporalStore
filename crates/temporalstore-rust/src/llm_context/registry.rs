@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{
     EmbeddingHit, EmbeddingIndex, EmbeddingIndexConfig, EmbeddingIndexError, EmbeddingKey,
@@ -20,6 +20,8 @@ const CACHE_VECTOR_BYTES_ENV: &str = "TS_CONTEXT_EMBEDDING_CACHE_VECTOR_BYTES";
 pub enum EmbeddingChannel {
     Node,
     Summary,
+    Event,
+    Entity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -134,12 +136,19 @@ impl EmbeddingIndexRegistry {
         let rows = if !only_missing {
             batch
         } else if let Some(index) = self.spaces.get(&space) {
-            if batch.iter().all(|row| !index.contains(row.key)) {
+            if let Some(first_existing) = batch.iter().position(|row| index.contains(row.key)) {
+                missing.reserve(batch.len().saturating_sub(1));
+                missing.extend_from_slice(&batch[..first_existing]);
+                missing.extend(
+                    batch[first_existing + 1..]
+                        .iter()
+                        .copied()
+                        .filter(|row| !index.contains(row.key)),
+                );
+                missing.as_slice()
+            } else {
                 // A cold chunk can be quantized directly from the caller's borrowed rows.
                 batch
-            } else {
-                missing.extend(batch.iter().copied().filter(|row| !index.contains(row.key)));
-                missing.as_slice()
             }
         } else {
             batch
@@ -187,7 +196,9 @@ impl EmbeddingIndexRegistry {
             );
         }
 
-        let new_entries = {
+        let new_entries = if only_missing {
+            compact.len()
+        } else {
             let index = self.spaces.get(&space).expect("embedding space exists");
             (0..compact.len())
                 .filter(|row| !index.contains(compact.key(*row)))
@@ -211,11 +222,17 @@ impl EmbeddingIndexRegistry {
                 break;
             }
         }
+        let protected = only_missing.then(|| {
+            batch
+                .iter()
+                .map(|row| row.key)
+                .collect::<HashSet<EmbeddingKey>>()
+        });
         let report = self
             .spaces
             .get_mut(&space)
             .expect("embedding space exists")
-            .upsert_compact_batch_bounded(&compact)?;
+            .upsert_compact_batch_bounded(&compact, only_missing, protected.as_ref())?;
         self.touch_space(space);
         Ok(Some(report))
     }
@@ -371,15 +388,16 @@ impl EmbeddingIndexRegistry {
         let mut positions = hits
             .iter()
             .enumerate()
-            .map(|(position, hit)| (hit.key.item_id, position))
+            .map(|(position, hit)| ((hit.key.owner_id, hit.key.item_id), position))
             .collect::<HashMap<_, _>>();
         for (_, index) in std::iter::once(second).chain(matching) {
             for hit in score(index, candidate_item_ids.clone())? {
-                if let Some(&position) = positions.get(&hit.key.item_id) {
+                let identity = (hit.key.owner_id, hit.key.item_id);
+                if let Some(&position) = positions.get(&identity) {
                     let existing: &mut EmbeddingHit = &mut hits[position];
                     existing.score = existing.score.max(hit.score);
                 } else {
-                    positions.insert(hit.key.item_id, hits.len());
+                    positions.insert(identity, hits.len());
                     hits.push(hit);
                 }
             }
@@ -425,6 +443,28 @@ impl EmbeddingIndexRegistry {
         )
     }
 
+    pub(crate) fn search_prepared_owners(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_id: u64,
+        model_hash: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+        owner_ids: &HashSet<u64>,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        if limit == 0 || owner_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.search_with(
+            channel,
+            tenant_id,
+            model_hash,
+            query.dimensions(),
+            limit,
+            |index| index.search_prepared_owners(tenant_id, query, limit, owner_ids),
+        )
+    }
+
     fn search_with<F>(
         &self,
         channel: EmbeddingChannel,
@@ -451,22 +491,26 @@ impl EmbeddingIndexRegistry {
             return search(first);
         };
 
-        let mut best_by_item = HashMap::<u64, f32>::new();
+        let mut best_by_item = HashMap::<(u64, u64), f32>::new();
         for index in std::iter::once(first)
             .chain(std::iter::once(second))
             .chain(matching.map(|(_, index)| index))
         {
             for hit in search(index)? {
                 best_by_item
-                    .entry(hit.key.item_id)
+                    .entry((hit.key.owner_id, hit.key.item_id))
                     .and_modify(|score| *score = score.max(hit.score))
                     .or_insert(hit.score);
             }
         }
         let mut hits = best_by_item
             .into_iter()
-            .map(|(item_id, score)| EmbeddingHit {
-                key: EmbeddingKey { tenant_id, item_id },
+            .map(|((owner_id, item_id), score)| EmbeddingHit {
+                key: EmbeddingKey {
+                    tenant_id,
+                    owner_id,
+                    item_id,
+                },
                 score,
             })
             .collect::<Vec<_>>();
@@ -474,6 +518,7 @@ impl EmbeddingIndexRegistry {
             right
                 .score
                 .total_cmp(&left.score)
+                .then_with(|| left.key.owner_id.cmp(&right.key.owner_id))
                 .then_with(|| left.key.item_id.cmp(&right.key.item_id))
         });
         hits.truncate(limit);
@@ -531,6 +576,7 @@ mod tests {
                     EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 7,
+                            owner_id: 0,
                             item_id: 1,
                         },
                         values: &x,
@@ -538,6 +584,7 @@ mod tests {
                     EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 7,
+                            owner_id: 0,
                             item_id: 2,
                         },
                         values: &y,
@@ -552,6 +599,7 @@ mod tests {
                 &[EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 7,
+                        owner_id: 0,
                         item_id: 1,
                     },
                     values: &y,
@@ -583,6 +631,7 @@ mod tests {
         let row = |values| EmbeddingVector {
             key: EmbeddingKey {
                 tenant_id: 3,
+                owner_id: 0,
                 item_id: 9,
             },
             values,
@@ -609,6 +658,68 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_batch_keeps_existing_rows_and_appends_new_rows() {
+        let mut registry = EmbeddingIndexRegistry::new(2);
+        let x = [1.0, 0.0];
+        let y = [0.0, 1.0];
+        let key = |item_id| EmbeddingKey {
+            tenant_id: 3,
+            owner_id: 0,
+            item_id,
+        };
+        registry
+            .upsert_batch(
+                EmbeddingChannel::Node,
+                7,
+                &[
+                    EmbeddingVector {
+                        key: key(1),
+                        values: &x,
+                    },
+                    EmbeddingVector {
+                        key: key(3),
+                        values: &x,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let report = registry
+            .upsert_missing_batch(
+                EmbeddingChannel::Node,
+                7,
+                &[
+                    EmbeddingVector {
+                        key: key(1),
+                        values: &y,
+                    },
+                    EmbeddingVector {
+                        key: key(2),
+                        values: &y,
+                    },
+                ],
+            )
+            .unwrap()
+            .expect("one row is missing");
+        assert_eq!(report.inserted, 1);
+        assert_eq!(report.updated, 0);
+        assert_eq!(report.total_entries, 2);
+
+        let existing = registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &x, &[1])
+            .unwrap();
+        assert!(existing[0].score > 0.99);
+        let inserted = registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &y, &[2])
+            .unwrap();
+        assert!(inserted[0].score > 0.99);
+        assert!(registry
+            .score_candidates(EmbeddingChannel::Node, 3, 7, &x, &[3])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn an_unknown_stored_model_remains_scoreable() {
         let mut registry = EmbeddingIndexRegistry::new(4);
         let x = [1.0, 0.0];
@@ -619,6 +730,7 @@ mod tests {
                 &[EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 3,
+                        owner_id: 0,
                         item_id: 9,
                     },
                     values: &x,
@@ -639,6 +751,7 @@ mod tests {
                 &[EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 3,
+                        owner_id: 0,
                         item_id: 10,
                     },
                     values: &x,
@@ -667,6 +780,7 @@ mod tests {
         let x = [1.0, 0.0];
         let key = EmbeddingKey {
             tenant_id: 3,
+            owner_id: 0,
             item_id: 9,
         };
         for model_hash in [0, 17] {
@@ -700,6 +814,7 @@ mod tests {
                     &[EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 4,
+                            owner_id: 0,
                             item_id,
                         },
                         values,
@@ -733,6 +848,7 @@ mod tests {
                     &[EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 5,
+                            owner_id: 0,
                             item_id,
                         },
                         values: &vector,
@@ -763,6 +879,7 @@ mod tests {
                     &[EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 6,
+                            owner_id: 0,
                             item_id: model_hash,
                         },
                         values: &vector,
@@ -795,6 +912,7 @@ mod tests {
                     &[EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 4,
+                            owner_id: 0,
                             item_id: index as u64 + 1,
                         },
                         values: vector,
@@ -823,6 +941,7 @@ mod tests {
                 &[EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 7,
+                        owner_id: 0,
                         item_id: 1,
                     },
                     values: &valid,
@@ -838,6 +957,7 @@ mod tests {
                 &[EmbeddingVector {
                     key: EmbeddingKey {
                         tenant_id: 7,
+                        owner_id: 0,
                         item_id: 2,
                     },
                     values: &zero,
@@ -853,6 +973,7 @@ mod tests {
                     EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 7,
+                            owner_id: 0,
                             item_id: 2,
                         },
                         values: &valid,
@@ -860,6 +981,7 @@ mod tests {
                     EmbeddingVector {
                         key: EmbeddingKey {
                             tenant_id: 7,
+                            owner_id: 0,
                             item_id: 3,
                         },
                         values: &valid,

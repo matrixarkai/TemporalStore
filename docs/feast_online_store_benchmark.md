@@ -118,6 +118,31 @@ server and host scheduling.
 
 ## Reproducing
 
+For an isolated large-ingest sample, start with an empty shard and run one arm
+and one payload. Timestamp deduplication is enabled by default for both Redis and
+TemporalStore. Use `--skip-dedup` to disable it on both for an ordered initial-load
+measurement; the Markdown and CSV reports record this setting. Do not compare runs
+with different timestamp policies as though they measured the same write path.
+Older versions of this harness forced skip-dedup on TemporalStore but left Redis
+at its default. Re-run their write-rate comparisons with a recorded, matched policy.
+
+`--skip-teardown` keeps the known fixture keys after sampled
+value verification, avoiding a potentially long deletion phase outside the
+timed writes. The report names the write-batch size and marks that teardown
+was skipped. Remove the isolated store directory before the next sample.
+
+```bash
+PYTHONPATH=integrations/feast python integrations/feast/benchmarks/bench_feature_serving.py \
+  --arms ts_sync --payloads large --entities 50000 --write-batch 500 \
+  --hot 512 --reads 1 --cold-reads 1 --skip-teardown \
+  --temporalstore 127.0.0.1:17502
+```
+
+This invocation has no SQLite control and cannot support a claim against
+another store. The controlled multi-arm run below retains its default teardown
+and verification behavior. Record the node build, configuration, load, and
+block/index/WAL bytes along with throughput when comparing storage settings.
+
 ```bash
 # a data node with every persistent directory isolated for this run
 BENCH_NODE=/dev/shm/feast-command-benchmark-node
@@ -145,6 +170,9 @@ PYTHONPATH="$PWD" python benchmarks/bench_feature_serving.py \
 ```
 
 The harness exits non-zero when a run is PROVISIONAL or VOID, so it can gate.
+The SQLite control must stay within `--control-tolerance` for both write time
+per row and warm single-row read p50. Stable reads alone cannot validate a
+write-throughput comparison. A rejection in either dimension marks the run VOID.
 
 For long list-valued features, use `--payloads sequence`. That profile writes
 one 4,096-element Feast `Array(Int64)` per entity, verifies serialized values

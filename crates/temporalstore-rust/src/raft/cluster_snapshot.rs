@@ -1661,7 +1661,7 @@ fn build_installed_engine(
             ))
         })?;
         engine
-            .install_index_bytes(shard_id, &image.index_bytes, routing_range)
+            .install_index_bytes_in_empty_wal(shard_id, &image.index_bytes, routing_range)
             .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         engine.load_shard(shard_id);
     } else {

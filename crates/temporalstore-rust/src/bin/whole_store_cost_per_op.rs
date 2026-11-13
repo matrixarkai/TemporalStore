@@ -26,15 +26,19 @@
 //! read-back matches.
 //!
 //! Usage: whole_store_cost_per_op <string|hash> <ops> <key_bytes> <value_bytes>
+//! Optional maintenance: WSC_MAINTENANCE_ROUNDS=1..16 and WSC_COMPACTION_MODE=operator|drain.
 
-use temporalstore_rust::control::{Config, SetConfigRequest};
+use temporalstore_rust::control::{Config, LoadShardRequest, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
+use temporalstore_rust::engine::reports::StorageManagerCycleRequest;
 use temporalstore_rust::types::{Command, CommandResponse, ExecuteRequest};
 
 /// Sum of every file length under `root`, recursively. The directory is the denominator.
 fn tree_bytes(root: &std::path::Path) -> u64 {
     fn walk(path: &std::path::Path, total: &mut u64) {
-        let Ok(entries) = std::fs::read_dir(path) else { return };
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
         for entry in entries.flatten() {
             let Ok(meta) = entry.metadata() else { continue };
             if meta.is_dir() {
@@ -94,7 +98,10 @@ fn main() {
     let key_bytes: usize = args.get(3).and_then(|a| a.parse().ok()).unwrap_or(16);
     let value_bytes: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(64);
     assert!(
-        matches!(model, "string" | "hash" | "set" | "zset" | "list" | "feature"),
+        matches!(
+            model,
+            "string" | "hash" | "set" | "zset" | "list" | "feature"
+        ),
         "model must be string|hash|set|zset|list|feature, got {model}"
     );
     // CONTAINER MODELS WRITE ONE MEMBER PER OPERATION INTO ONE KEY, which is the comparison that
@@ -112,13 +119,43 @@ fn main() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).unwrap();
+    let memory_capacity_bytes = std::env::var("WSC_MEMORY_BYTES")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .expect("WSC_MEMORY_BYTES must be an integer")
+        })
+        .unwrap_or(64 << 20);
+    let end_routing_bucket = std::env::var("WSC_END_ROUTING_BUCKET")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .expect("WSC_END_ROUTING_BUCKET must be an integer")
+        })
+        .unwrap_or(temporalstore_rust::DEFAULT_END_ROUTING_BUCKET);
     let engine = TemporalEngine::with_local_dirs(
-        1 << 20,
+        memory_capacity_bytes,
         dir.join("cache"),
         dir.join("blocks"),
         dir.join("indexes"),
     );
-    engine.load_shard(1);
+    assert!(
+        engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 0,
+                local_node_id: None,
+                shard_uri: String::new(),
+                start_routing_bucket: 0,
+                end_routing_bucket,
+                readonly: false,
+                table_name: String::new(),
+            })
+            .status
+            .ok
+    );
     // DURABLE LOGGING ON. Their oplog is unconditional, so a comparison against a configuration
     // that skips our log would be measuring a different durability promise, not a cheaper one.
     assert!(
@@ -138,6 +175,8 @@ fn main() {
     // Measured AFTER load and config, so the figure is the cost of the WRITES.
     let before = tree_bytes(&dir);
     let legs_before = legs(&dir);
+    let wal_before = engine.write_ahead_log_store().stats(1).bytes_written;
+    let index_log_before = engine.index_log_store().stats(1).bytes_written;
     // INCOMPRESSIBLE AND DETERMINISTIC. A repeated byte made every figure a compression
     // measurement -- `bytes/op` fell as the payload grew and the envelope went negative, which a
     // real cost cannot do. splitmix64 over the index gives bytes with no exploitable structure
@@ -227,6 +266,8 @@ fn main() {
     }
     let elapsed = started.elapsed();
     let after = tree_bytes(&dir);
+    let wal_appended = engine.write_ahead_log_store().stats(1).bytes_written - wal_before;
+    let index_log_appended = engine.index_log_store().stats(1).bytes_written - index_log_before;
 
     // ARRIVAL, PROVEN. A success code is not evidence the bytes are stored.
     // ARRIVAL PER MODEL. A container model proves its MEMBER COUNT, because a per-member write
@@ -304,12 +345,13 @@ fn main() {
     // `Bytes`, not `Value` -- read off the arms in `execute_on_shard` rather than guessed, after
     // guessing wrong once.
 
-
     let grew = after.saturating_sub(before);
     println!("model              {model}");
     println!("ops                {ops}");
     println!("key bytes          {key_bytes}");
     println!("value bytes        {value_bytes}");
+    println!("memory bytes       {memory_capacity_bytes}");
+    println!("routing buckets    0..{end_routing_bucket}");
     println!("denominator        sum of file lengths under the WHOLE data dir (cache+blocks+indexes+log)");
     println!(
         "record compression TS_WAL_COMPRESS_RECORDS={}   (a compressible payload makes this a codec measurement)",
@@ -317,12 +359,19 @@ fn main() {
     );
     println!(
         "payload shape      {}   (identical = the original maximally-compressible fixture)",
-        if identical_payload { "identical" } else { "random" }
+        if identical_payload {
+            "identical"
+        } else {
+            "random"
+        }
     );
     println!("bytes before       {before}");
     println!("bytes after        {after}");
     println!("bytes delta        {grew}");
     println!("bytes per op       {:.1}", grew as f64 / ops.max(1) as f64);
+    println!("wal appended       {wal_appended}");
+    println!("wal bytes per op   {:.1}", wal_appended as f64 / ops.max(1) as f64);
+    println!("index log appended {index_log_appended}");
     // WHAT THIS MODEL ACTUALLY STORED, not a constant. `key_bytes + value_bytes` was reported for
     // every model, but a container model stores its member and never touches `value`; the
     // difference was being read as an envelope.
@@ -360,12 +409,18 @@ fn main() {
             .to_string()
     );
     // REFUSE A FIGURE THAT CANNOT BE ABOUT THE WRITES.
-    assert_eq!(accepted, ops, "every operation must be accepted or the figure is about a subset");
+    assert_eq!(
+        accepted, ops,
+        "every operation must be accepted or the figure is about a subset"
+    );
     assert!(
         served,
         "THE READ-BACK DID NOT MATCH, so the bytes above are not the cost of storing this payload"
     );
-    assert!(grew > 0, "the directory did not grow; nothing durable was written");
+    assert!(
+        grew > 0,
+        "the directory did not grow; nothing durable was written"
+    );
     // REFUSE A PREALLOCATION STEP. `TS_WAL_PREALLOCATE` is ON by default and reserves 256 KiB
     // segments, so a short run's directory delta is the SEGMENT it reserved rather than the
     // records it wrote -- and the tell is that two different models report the identical delta.
@@ -376,5 +431,84 @@ fn main() {
         grew % PREALLOC_STEP != 0 || grew < PREALLOC_STEP,
         "THIS IS A PREALLOCATION STEP, NOT A COST: the directory grew {grew} B, an exact multiple          of the {PREALLOC_STEP} B segment this store reserves in advance. Re-run with          TS_WAL_PREALLOCATE=0 so the log's length follows its records."
     );
+    let rounds = std::env::var("WSC_MAINTENANCE_ROUNDS")
+        .map(|value| value.parse::<usize>().expect("WSC_MAINTENANCE_ROUNDS must be an integer"))
+        .unwrap_or(0);
+    assert!(rounds <= 16, "maintenance rounds must not exceed 16");
+    if rounds > 0 {
+        assert!(matches!(model, "string" | "hash"), "maintenance read-back requires string or hash");
+        let compaction_mode = std::env::var("WSC_COMPACTION_MODE").unwrap_or_else(|_| "operator".to_string());
+        assert!(matches!(compaction_mode.as_str(), "operator" | "drain"),
+            "WSC_COMPACTION_MODE must be operator or drain");
+        for round in 0..rounds {
+            let files_before = tree_bytes(&dir);
+            let wal_before = engine.write_ahead_log_store().stats(1).bytes_written;
+            let started = std::time::Instant::now();
+            let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                max_dump_buckets_per_round: 64,
+                min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
+                enable_block_compaction: compaction_mode == "operator",
+                ..StorageManagerCycleRequest::default()
+            });
+            assert!(report.errors.is_empty(), "maintenance cycle failed: {:?}", report.errors);
+            for candidate in &report.plan.reclaim_candidates {
+                println!("RECLAIM_COST round={round} slab={} physical_bytes={} live_bytes={} stale_bytes={} blocks={} live_refs={} stale_blocks={} reason={}",
+                    candidate.block_slab_id, candidate.physical_bytes,
+                    candidate.live_physical_bytes, candidate.stale_physical_bytes,
+                    candidate.block_count, candidate.live_block_refs,
+                    candidate.stale_block_estimate, candidate.reason);
+            }
+            if compaction_mode == "drain" {
+                let candidates = &report.plan.reclaim_candidates;
+                let eligible_refs = temporalstore_rust::engine::compaction_relocatable_block_refs(candidates);
+                let compact_started = std::time::Instant::now();
+                let rewritten = if eligible_refs > 0 {
+                    let slabs = temporalstore_rust::engine::compaction_drain_block_slab_ids(candidates);
+                    engine.compact_shard_blocks_draining(1, slabs)
+                        .expect("drain compaction failed").rewritten_object_blocks
+                } else {
+                    0
+                };
+                println!("STAGE_COST round={round} stage=compact_drain elapsed_us={} eligible_refs={eligible_refs} rewritten_refs={rewritten}",
+                    compact_started.elapsed().as_micros());
+            }
+            println!("CYCLE_COST round={round} kind={compaction_mode} elapsed_us={} file_delta={} wal_appended={}",
+                started.elapsed().as_micros(),
+                i128::from(tree_bytes(&dir)) - i128::from(files_before),
+                engine.write_ahead_log_store().stats(1).bytes_written.saturating_sub(wal_before));
+            for stage in &report.stages {
+                println!("STAGE_COST round={round} stage={} elapsed_us={} enabled={} applied={} candidates={} before_bytes={} after_bytes={} rewritten_refs={}",
+                    stage.stage, stage.duration_us, stage.enabled, stage.applied,
+                    stage.candidate_count, stage.before_bytes, stage.after_bytes,
+                    stage.rewritten_block_refs);
+                assert!(stage.errors.is_empty(), "stage {}: {:?}", stage.stage, stage.errors);
+            }
+        }
+        drop(engine);
+        let restored = TemporalEngine::with_local_dirs(
+            memory_capacity_bytes, dir.join("cache"), dir.join("blocks"), dir.join("indexes"),
+        );
+        let load = restored.load_shard_with(LoadShardRequest {
+            shard_id: 1, load_version: 0, local_node_id: None, shard_uri: String::new(),
+            start_routing_bucket: 0, end_routing_bucket, readonly: false, table_name: String::new(),
+        });
+        assert!(load.status.ok, "maintenance reload failed: {:?}", load.status);
+        for index in 0..ops {
+            let key = padded("k", index, key_bytes);
+            let command = if model == "hash" {
+                Command::HashGet { key, field: "f".to_string() }
+            } else {
+                Command::StringGet { key }
+            };
+            let response = restored.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(response.status.ok, "restored read {index}: {:?}", response.status);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(value.clone()) },
+                "restored value {index}");
+        }
+        println!("CYCLE_COST restored_exact={ops}");
+        drop(restored);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

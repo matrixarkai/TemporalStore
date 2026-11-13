@@ -11,9 +11,9 @@
 //! was just loaded, until something stamped it. All three are gone: the payload is msgpack, for
 //! every shard.
 //!
-//! The JSON READERS are still here (plain JSON and the zstd-json payload), kept deliberately for a
-//! follow-up that retires them together with the door machinery that depends on them. This module
-//! pins the WRITE side only.
+//! The JSON READERS are gone too (plain JSON and the zstd-json payload), together with the door
+//! machinery that depended on them: the stamp has one home, the container header, and the decode
+//! compares it. The first test pins that the reader names no JSON as well as the writer.
 //!
 //! None of this can be driven by a failure: a `ShardState` that msgpack refuses and JSON accepts is
 //! not a shape any type in it can produce, which is the argument for deleting the arm. So the first
@@ -66,7 +66,7 @@ fn the_served_index_encoder_does_not_fall_through_to_json_or_read_a_setting() {
     let encoder = body(
         source,
         "pub(super) fn encode_index_bytes(",
-        "fn wrap_index_json(",
+        "pub(super) fn encode_index_bytes_at_version(",
     );
     assert!(encoder.len() > 80, "the scan found almost nothing");
     assert!(
@@ -99,6 +99,24 @@ fn the_served_index_encoder_does_not_fall_through_to_json_or_read_a_setting() {
     assert!(
         !code.contains("fn stamp_index_format_version"),
         "the helper that patched the stamp into a JSON value is declared again"
+    );
+
+    // THE READERS, TOO. The compressed-JSON wrapper and its codec id are not declared, and the
+    // codec arms read no JSON: a stale image is refused by its header, and a reader for a shape no
+    // writer produces is a door that image could walk through.
+    assert!(
+        !code.contains("fn wrap_index_json") && !code.contains("INDEX_CODEC_ZSTD_JSON"),
+        "engine.rs declares the compressed-JSON wrapper or its codec id again"
+    );
+    let reader = body(
+        source,
+        "fn decode_index_bytes_inner(",
+        "/// Collect the served-index delta items",
+    );
+    assert!(reader.len() > 400, "the scan found almost nothing: {reader}");
+    assert!(
+        reader.contains("rmp_serde::from_slice") && !reader.contains("serde_json"),
+        "the codec arms read JSON, or no longer read the msgpack payload: {reader}"
     );
 
     // THE CONTROL: the stale-version arm as it stood, verbatim. The scan must see its JSON write.

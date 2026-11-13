@@ -5,21 +5,60 @@
 use super::*;
 use super::record::sha256_bytes;
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_NEXT_SYNC: std::cell::RefCell<Option<(usize, Box<dyn FnOnce()>)>> =
+        std::cell::RefCell::new(None);
+}
+
 impl BlockStore {
+    #[cfg(test)]
+    pub(crate) fn with_after_next_sync_for_test<R>(
+        &self,
+        after: impl FnOnce() + 'static,
+        action: impl FnOnce() -> R,
+    ) -> R {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                AFTER_NEXT_SYNC.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        AFTER_NEXT_SYNC.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            assert!(slot.is_none());
+            *slot = Some((self.store_id(), Box::new(after)));
+        });
+        let _reset = Reset;
+        action()
+    }
+
     /// Force durability for writes made under relaxed (bulk) mode: fsync the
     /// active slab's data and persist the extent manifest once. No-op when
     /// nothing was deferred (e.g. the live per-append-fsync path).
     pub fn sync_durable(&self) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        if !inner.relaxed_dirty {
-            return Ok(());
+        if inner.relaxed_dirty {
+            let path = slab_path(&inner.root, inner.block_slab_id);
+            OpenOptions::new().append(true).open(&path)?.sync_data()?;
+            inner.persist_slab_manifest_counted()?;
+            inner.relaxed_dirty = false;
         }
-        let path = slab_path(&inner.root, inner.block_slab_id);
-        if let Ok(file) = OpenOptions::new().append(true).open(&path) {
-            file.sync_data()?;
+        drop(inner);
+        #[cfg(test)]
+        {
+            let after = AFTER_NEXT_SYNC.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                if slot.as_ref().is_some_and(|(owner, _)| *owner == self.store_id()) {
+                    slot.take().map(|(_, after)| after)
+                } else {
+                    None
+                }
+            });
+            if let Some(after) = after {
+                after();
+            }
         }
-        inner.persist_slab_manifest_counted()?;
-        inner.relaxed_dirty = false;
         Ok(())
     }
 
@@ -58,7 +97,10 @@ impl BlockStore {
         block_ordinal: u32,
     ) -> Result<ElementEntry, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        std::fs::create_dir_all(&inner.root)?;
+        if !inner.root_created {
+            std::fs::create_dir_all(&inner.root)?;
+            inner.root_created = true;
+        }
         let slab_target_bytes = effective_block_slab_target_bytes();
         let block_id = u64::from(block_ordinal);
         // ENCODED ONCE, INCLUDING ACROSS A ROLL. This used to re-encode the whole record after
@@ -78,8 +120,10 @@ impl BlockStore {
         ) {
             roll_slab_inner(&mut inner)?;
         }
-        let path = slab_path(&inner.root, inner.block_slab_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        if inner.active_append_file.is_none() {
+            let path = slab_path(&inner.root, inner.block_slab_id);
+            inner.active_append_file = Some(OpenOptions::new().create(true).append(true).open(path)?);
+        }
         // CHECKED, NOT SATURATED. The slab target is capped so `write_offset` fits in the
         // address word's low half, but the cap binds what a store may be CONFIGURED with, not
         // what a slab file on disk already is: a slab grown past 4 GiB under an older, uncapped
@@ -88,8 +132,7 @@ impl BlockStore {
         // the write turns that into a failed append; truncating it would turn it into a block
         // that reads back as a different block.
         let address = ElementEntry::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id)?;
-        file.write_all(&record.bytes)?;
-        file.flush()?;
+        inner.active_append_file.as_mut().expect("active slab file").write_all(&record.bytes)?;
         // Two INDEPENDENT relaxations:
         //  * `defer_data_sync` skips this record's data-block fdatasync. UNSAFE on the live
         //    path: the served index references blocks by (slab,offset,page_id) and recovery
@@ -101,9 +144,9 @@ impl BlockStore {
         //    even with blocks kept durable: the manifest is slab/GC metadata reconstructed
         //    by reconcile-on-open from the durable block records, never a read dependency.
         let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
-        let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
+        let defer_manifest = defer_data_sync;
         if !defer_data_sync {
-            file.sync_data()?;
+            inner.active_append_file.as_ref().expect("active slab file").sync_data()?;
         }
         inner.write_offset += address.length();
         let block_slab_id = inner.block_slab_id;
@@ -133,13 +176,21 @@ impl BlockStore {
 
     pub fn append_batch_with_block_metadata(
         &self,
-        records: Vec<BlockAppendRecord<'_>>,
+        mut records: Vec<BlockAppendRecord<'_>>,
     ) -> Result<Vec<ElementEntry>, BlockStoreError> {
+        if records.len() == 1 {
+            let (bytes, object_id, routing_bucket, ordinal) = records.pop().expect("one record");
+            return self.append_block_of_object(bytes, object_id, routing_bucket, ordinal)
+                .map(|address| vec![address]);
+        }
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         if records.is_empty() {
             return Ok(Vec::new());
         }
-        std::fs::create_dir_all(&inner.root)?;
+        if !inner.root_created {
+            std::fs::create_dir_all(&inner.root)?;
+            inner.root_created = true;
+        }
         let slab_target_bytes = effective_block_slab_target_bytes();
         let mut file = None::<std::fs::File>;
         let mut addresses = Vec::with_capacity(records.len());
@@ -201,7 +252,7 @@ impl BlockStore {
         // never-fsync'd block is rebuilt, never left dangling. Under the TS_WAL_LEGACY_RECOVERY
         // escape hatch both barriers stay synchronous on the live path (delta-fold recovery).
         let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
-        let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
+        let defer_manifest = defer_data_sync;
         if let Some(mut current) = file {
             current.flush()?;
             if !defer_data_sync {
@@ -228,5 +279,25 @@ impl BlockStore {
             .compression_bytes_saved
             .saturating_add(compression_bytes_saved);
         Ok(addresses)
+    }
+}
+
+#[cfg(test)]
+#[path = "block_store_append_operation_tests.rs"]
+mod append_operation_tests;
+
+#[cfg(test)]
+mod sync_tests {
+    use super::*;
+
+    #[test]
+    fn missing_active_slab_refuses_the_durability_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        let address = store.append(b"pending checkpoint data").unwrap();
+        store.inner.lock().unwrap().relaxed_dirty = true;
+        std::fs::remove_file(slab_path(dir.path(), address.block_slab_id())).unwrap();
+        assert!(store.sync_durable().is_err());
+        assert!(store.inner.lock().unwrap().relaxed_dirty);
     }
 }

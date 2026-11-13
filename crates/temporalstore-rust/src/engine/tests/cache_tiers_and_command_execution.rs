@@ -3427,6 +3427,45 @@ fn counting_a_logs_records_agrees_with_scanning_it() {
 }
 
 #[test]
+fn the_log_pressure_gauges_fall_when_a_dump_reclaims_the_logs() {
+    // `wal_bytes` and `index_log_bytes` of the pressure report feed the pressure score and the
+    // metrics endpoint. They are what each log holds NOW: a reclaim that shrinks the files must
+    // shrink them. Read from the lifetime write counters they could only rise, so this asserts a
+    // value the counters cannot produce -- a fall -- and that the index figure is the log's
+    // on-disk length.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-p"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..60 {
+        write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
+    }
+    let before = engine.storage_log_pressure_report(1);
+    assert!(before.wal_bytes > 0 && before.index_log_bytes > 0, "{before:?}");
+    engine
+        .maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(1, 1, 0, 0, 0)
+        .expect("once it is due, the dump + reclaim must fire");
+    let after = engine.storage_log_pressure_report(1);
+    assert!(
+        after.index_log_bytes < before.index_log_bytes,
+        "index_log_bytes must fall with the log ({} -> {})",
+        before.index_log_bytes,
+        after.index_log_bytes
+    );
+    assert!(
+        after.wal_bytes < before.wal_bytes,
+        "wal_bytes must fall with the log ({} -> {})",
+        before.wal_bytes,
+        after.wal_bytes
+    );
+    assert_eq!(after.index_log_bytes, engine.index_log_store().log_len_bytes(1));
+}
+
+#[test]
 fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // Embedded-path log reclaim: once a threshold dump durably captures the shard, the
     // index-log records the base reflects and the WAL prefix below the anchor are redundant --
@@ -4938,6 +4977,174 @@ fn common_expire_and_ttl_work() {
 }
 
 #[test]
+fn feature_append_with_ttl_expires_the_series_and_round_trips_through_protobuf() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let append = Command::FeatureAppendWithTtl {
+        key: "ttl-history".to_string(),
+        points: vec![FeaturePoint {
+            timestamp_ms: 10,
+            value: b"v".to_vec(),
+        }],
+        ttl_ms: 60_000,
+    };
+    let encoded = crate::shared_store::command_protobuf_bytes(&append).unwrap();
+    let decoded = crate::shared_store::command_from_protobuf_bytes(&encoded).unwrap();
+    assert!(matches!(decoded, Command::FeatureAppendWithTtl { ttl_ms: 60_000, .. }));
+    assert!(engine.execute(ExecuteRequest { shard_id: 1, command: decoded }).status.ok);
+    let ttl = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl { key: "ttl-history".to_string() },
+    });
+    assert!(matches!(ttl.response, CommandResponse::Integer { value } if value > 0));
+
+    let expire = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppendWithTtl {
+            key: "ttl-history".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 20,
+                value: b"new".to_vec(),
+            }],
+            ttl_ms: 0,
+        },
+    });
+    assert!(expire.status.ok);
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "ttl-history".to_string(),
+            start_ms: 0,
+            end_ms: 30,
+            count: None,
+        },
+    });
+    assert_eq!(read.response, CommandResponse::FeaturePoints { points: Vec::new() });
+}
+
+#[test]
+fn feature_append_with_ttl_survives_shard_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache-a"),
+            &blocks,
+            &indexes,
+        );
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppendWithTtl {
+                key: "reloaded-history".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"persisted".to_vec(),
+                }],
+                ttl_ms: 60_000,
+            },
+        });
+        assert!(response.status.ok);
+    }
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(1);
+    let ttl = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl { key: "reloaded-history".to_string() },
+    });
+    assert!(matches!(ttl.response, CommandResponse::Integer { value } if value > 0));
+    let read = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "reloaded-history".to_string(),
+            start_ms: 0,
+            end_ms: 20,
+            count: None,
+        },
+    });
+    assert_eq!(
+        read.response,
+        CommandResponse::FeaturePoints {
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"persisted".to_vec(),
+            }],
+        }
+    );
+}
+
+#[test]
+fn hash_multi_set_with_ttl_survives_shard_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let write = Command::HashMultiSetWithTtl {
+        key: "feature-row".to_string(),
+        entries: vec![("view:value".to_string(), b"seven".to_vec())],
+        ttl_ms: 60_000,
+    };
+    let encoded = crate::shared_store::command_protobuf_bytes(&write).unwrap();
+    let decoded = crate::shared_store::command_from_protobuf_bytes(&encoded).unwrap();
+    assert!(matches!(decoded, Command::HashMultiSetWithTtl { ttl_ms: 60_000, .. }));
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache-a"),
+            &blocks,
+            &indexes,
+        );
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest { shard_id: 1, command: decoded });
+        assert!(response.status.ok);
+    }
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(1);
+    let ttl = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonTtl { key: "feature-row".to_string() },
+    });
+    assert!(matches!(ttl.response, CommandResponse::Integer { value } if value > 0));
+    let read = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "feature-row".to_string(),
+            field: "view:value".to_string(),
+        },
+    });
+    assert_eq!(read.response, CommandResponse::Bytes { value: Some(b"seven".to_vec()) });
+
+    let expire = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashMultiSetWithTtl {
+            key: "feature-row".to_string(),
+            entries: vec![("view:value".to_string(), b"eight".to_vec())],
+            ttl_ms: 0,
+        },
+    });
+    assert!(expire.status.ok);
+    let expired = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "feature-row".to_string(),
+            field: "view:value".to_string(),
+        },
+    });
+    assert_eq!(expired.response, CommandResponse::Bytes { value: None });
+}
+
+#[test]
 fn common_expire_missing_key_matches_not_found() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -5332,6 +5539,196 @@ fn feature_agg_rollup_matches_raw_scan() {
     let (raw, _) = run(false);
     assert_eq!(with_rollup, raw, "feature-aggregate rollup diverged from raw scan");
     assert!(raw.iter().any(|value| *value != 0), "test series should be non-trivial");
+}
+
+#[test]
+fn feature_proto_aggregate_reads_numeric_values() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let points = vec![
+        FeaturePoint {
+            timestamp_ms: 10,
+            value: hex::decode("20f9ffffffffffffffff01").unwrap(),
+        },
+        FeaturePoint {
+            timestamp_ms: 20,
+            value: hex::decode("182a").unwrap(),
+        },
+        FeaturePoint {
+            timestamp_ms: 30,
+            value: hex::decode("2011").unwrap(),
+        },
+    ];
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "numeric".to_string(),
+                points,
+            },
+        })
+        .status
+        .ok);
+    for (aggregator, expected) in [
+        ("sum", 52),
+        ("avg", 17),
+        ("min", -7),
+        ("max", 42),
+        ("first", -7),
+        ("last", 17),
+        ("count", 3),
+    ] {
+        let command = serde_json::from_value(serde_json::json!({
+            "kind": "feature_proto_agg_query",
+            "key": "numeric",
+            "start_ms": 0,
+            "end_ms": 30,
+            "aggregator": aggregator,
+        }))
+        .unwrap();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
+    let capped = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureProtoAggQuery {
+            key: "numeric".to_string(),
+            start_ms: 0,
+            end_ms: 30,
+            aggregator: "sum".to_string(),
+            count: Some(2),
+        },
+    });
+    assert_eq!(capped.response, CommandResponse::Aggregate { value: 35 });
+    for (count, expected) in [(Some(0), 0), (Some(1), -7), (Some(2), 42), (None, 17)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureProtoAggQuery {
+                key: "numeric".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                aggregator: "last".to_string(),
+                count,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
+    let empty = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureProtoAggQuery {
+            key: "numeric".to_string(),
+            start_ms: 31,
+            end_ms: 40,
+            aggregator: "sum".to_string(),
+            count: None,
+        },
+    });
+    assert_eq!(empty.response, CommandResponse::Aggregate { value: 0 });
+}
+
+#[test]
+fn feature_aggregate_stream_preserves_unparseable_point_semantics() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let points = [b"unknown".as_slice(), b"-7", b"42", b"17"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| FeaturePoint {
+            timestamp_ms: (index + 1) as u64 * 10,
+            value: value.to_vec(),
+        })
+        .collect();
+    assert!(engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "stream".to_string(),
+                points,
+            },
+        })
+        .status
+        .ok);
+    for (aggregator, expected) in [
+        ("sum", 52),
+        ("avg", 17),
+        ("min", -7),
+        ("max", 42),
+        ("first", 0),
+        ("last", 17),
+        ("count", 4),
+        ("events", 4),
+        ("unknown", 4),
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAggQuery {
+                key: "stream".to_string(),
+                start_ms: 0,
+                end_ms: 40,
+                aggregator: aggregator.to_string(),
+                count: None,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
+    let capped = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAggQuery {
+            key: "stream".to_string(),
+            start_ms: 0,
+            end_ms: 40,
+            aggregator: "sum".to_string(),
+            count: Some(2),
+        },
+    });
+    assert_eq!(capped.response, CommandResponse::Aggregate { value: -7 });
+    for (count, expected) in [(Some(0), 0), (Some(1), 0), (Some(2), -7), (None, 17)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAggQuery {
+                key: "stream".to_string(),
+                start_ms: 0,
+                end_ms: 40,
+                aggregator: "last".to_string(),
+                count,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
+}
+
+#[test]
+fn feature_last_keeps_an_unparseable_newest_point_and_capped_prefix() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "last-boundary".to_string(),
+            points: vec![
+                FeaturePoint { timestamp_ms: 10, value: b"7".to_vec() },
+                FeaturePoint { timestamp_ms: 20, value: b"unknown".to_vec() },
+            ],
+        },
+    }).status.ok);
+    for (count, expected) in [(None, 0), (Some(0), 0), (Some(1), 7), (Some(2), 0)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAggQuery {
+                key: "last-boundary".to_string(), start_ms: 0, end_ms: 20,
+                aggregator: "last".to_string(), count,
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Aggregate { value: expected });
+    }
 }
 
 // The gated control-state rollup ladder must return exactly the same sum-family window

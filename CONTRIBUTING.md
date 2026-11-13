@@ -3,6 +3,17 @@
 Thanks for your interest in improving TemporalStore. Issues, discussion and pull
 requests are all welcome, from anyone.
 
+## License
+
+TemporalStore is available worldwide under the
+[Apache License, Version 2.0](https://github.com/matrixarkai/TemporalStore/blob/main/LICENSE).
+Anyone may use, modify, fork, and
+redistribute it, including commercially, subject to that license.
+Unless explicitly stated otherwise, contributions intentionally submitted for
+inclusion are licensed under Apache-2.0, without additional terms or conditions.
+Security reports should follow
+[the security policy](https://github.com/matrixarkai/TemporalStore/blob/main/docs/SECURITY.md).
+
 ## Ground rules
 
 - **Durability rules are not negotiable to make a test pass.** A write is never

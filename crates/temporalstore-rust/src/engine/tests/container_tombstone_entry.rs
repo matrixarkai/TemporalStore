@@ -287,26 +287,11 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
         1, tombstoned,
         "DENOMINATOR: {tombstoned} tombstone entries, so this module is not testing what it claims"
     );
-    // THREE, NOT TWO: A REMOVAL DOES NOT RETIRE THE LIVE ENTRY OVER THE BLOCK IT VACATES.
-    //
-    // This asserted 2 -- one entry per surviving MEMBER. Under one entry a block the live entries
-    // are the object's BLOCKS, and a gated removal deliberately keeps the block entry because the
-    // block may still hold siblings; the tombstone is added BESIDE it. So the live count does not
-    // fall on a removal, and this fixture's three members are three blocks before and after.
-    //
-    // THE ASYMMETRY IS KNOWN AND RECORDED, not discovered here:
-    // `index_entry_names_a_block`'s doc calls it "a defect of footprint rather than of answers" and
-    // names the fix -- ask the resident map whether any sibling is still on the vacated block,
-    // which `RecordedMap::block_an_element_vacates` is -- and why a removal cannot reach it, since
-    // it enters the index through a door that takes no element type. What this arm still holds is
-    // the half that is about ANSWERS: every reader below must refuse to answer FROM the tombstone,
-    // and that is asserted member by member rather than by a count.
+    // These members occupy separate frames. Removing one retires that empty data frame,
+    // while retaining its deletion marker. Shared frames with surviving members stay live.
     assert_eq!(
-        3, live,
-        "{live} live entries after removing one of three. One entry a block means the live count is \
-         the BLOCK count, which a removal does not reduce -- if this is 2 the removal has started \
-         retiring the vacated block's entry, which is the footprint fix the doc describes, and the \
-         comment above it should be read rather than this number adjusted"
+        2, live,
+        "{live} live entries after removing one of three separately stored members"
     );
 
     // READER 1: the block index reader every serving path resolves through.
@@ -346,10 +331,8 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     // every other member: vacuously.
     //
     // What can still fail, and is what the arm was really about: the reader must not hand back the
-    // tombstone's block. It filters `!block.deleted`, so it returns one pair per LIVE block -- three
-    // here, since a removal retains the vacated block's entry -- and never the fourth. If that
-    // filter were lost this returns 4 and reddens, which is the defect "answering from a tombstone
-    // entry" actually consists of.
+    // tombstone's block. It returns the two surviving data frames, never the deletion marker.
+    // Losing the `deleted` filter would return three entries instead of two.
     assert_eq!(
         0,
         named.len(),
@@ -438,17 +421,13 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
 /// rust-internal: drives SetAdd/SetRemove and counts index entries
 #[test]
 fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
-    // ONE ENTRY PER LIVE MEMBER IS THE UNGATED COST MODEL. Gated, the live entry is retained
-    // BESIDE the tombstone rather than replaced by it -- dropping it would take every other
-    // member of the block with it -- so the counts here are not the gated ones. See
-    // `removal_the_index_can_find`.
+    // Each seeded member has its own frame, so its removal vacates that frame completely.
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-cost");
 
-    // THE COST IS STATED AS A NUMBER RATHER THAN DESCRIBED. A removal used to FREE an entry and now
-    // retains one, so a workload that adds and removes distinct members holds one entry per element
-    // ever written rather than one per live element.
+    // Retained markers still cost one entry per removed member. Empty data frames must no
+    // longer add another live entry beside those markers.
     const MEMBERS: usize = 8;
     const REMOVED: usize = 3;
     let key = "cte-cost-set";
@@ -488,44 +467,22 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
         live_after + tombstoned_after,
         MEMBERS - REMOVED
     );
-    // THE LIVE COUNT IS THE BLOCK COUNT, AND A REMOVAL DOES NOT REDUCE IT.
-    //
-    // This asserted `MEMBERS - REMOVED` -- one live entry per surviving member. Under one entry a
-    // block the live entries are the object's BLOCKS, and a removal keeps the block entry and adds a
-    // tombstone beside it, so the live count stays at `MEMBERS` and the TOMBSTONE count is what
-    // moves. Asserting the per-member figure made this an entry-per-element test wearing a
-    // block-named label.
-    //
-    // THE COST THIS MODULE IS NAMED FOR IS STILL ITS SUBJECT, and it is now stated more sharply
-    // than before: `MEMBERS` live plus `REMOVED` tombstones for a live membership of
-    // `MEMBERS - REMOVED`, which is the retained-entry cost nothing yet collects. The printed line
-    // above says exactly that, and the two assertions here are its two halves.
     assert_eq!(
-        MEMBERS, live_after,
-        "{live_after} live entries where {MEMBERS} blocks were written. A removal retains the block \
-         entry, so the live count must not fall -- if it has, the vacated block's entry is being \
-         retired and this module's cost figure needs remeasuring rather than this number adjusting"
+        MEMBERS - REMOVED, live_after,
+        "empty data frames must retire while all surviving member frames remain live"
     );
     assert_eq!(
         REMOVED, tombstoned_after,
         "{tombstoned_after} tombstone entries for {REMOVED} removals -- one per removal is the cost \
          this change pays, and a different number means removals are not filing one each"
     );
-    // THE TOTAL IS `MEMBERS + REMOVED`, NOT `MEMBERS`, AND THE DIFFERENCE IS THE WHOLE COST.
-    //
-    // This asserted the total was unchanged at `MEMBERS`, which was right while a removal REPLACED
-    // a live entry with a tombstone -- net zero. A removal now ADDS a tombstone beside a retained
-    // live entry, so each one costs a whole entry and the total rises by `REMOVED`.
-    //
-    // Stated as the sum of the two halves above rather than as a literal, so the three assertions
-    // cannot drift apart: if a removal ever starts retiring the vacated block's entry, the live
-    // half falls and this total falls with it, and both say so instead of one absorbing it.
+    // Remeasured: eight separate member frames become five live frames plus three markers.
+    // This is index-entry accounting, not a claim that physical data bytes were reclaimed.
     assert_eq!(
-        MEMBERS + REMOVED,
+        MEMBERS,
         live_after + tombstoned_after,
-        "the total entry count is {} where {MEMBERS} blocks were written and {REMOVED} removed. A \
-         removal adds a tombstone rather than replacing an entry, so the cost is exactly one entry \
-         per removed element and the total must be their sum",
+        "the total entry count is {} where {MEMBERS} separate member frames were written and \
+         {REMOVED} were replaced by retained deletion markers",
         live_after + tombstoned_after
     );
 
@@ -974,31 +931,14 @@ fn a_removed_member_does_not_make_its_object_deleted() {
 
     // DENOMINATOR: the tombstone has to be in the index for this report to be about anything.
     //
-    // RESTATED FOR THE COLLAPSED PROJECTION, AND STATED AS THE INVARIANT RATHER THAN AS A NUMBER.
-    // A gated removal KEEPS the block entry -- the block still holds the object's other members, and
-    // dropping the entry would take them with it -- and files ONE tombstone naming the member
-    // removed. So the live count does not fall on a removal here, where ungated it does.
-    //
-    // The arm this describes had never executed before the write path stopped naming live entries:
-    // while it did, `remove_container_element`'s retain matched the element's own entry, dropped
-    // it, and the UNGATED arm ran. So this expectation is not adjusted to fit new behaviour -- the
-    // behaviour's correctness is established independently, by
-    // `write_after_fold::a_gated_removal_leaves_every_other_member_whole_across_a_reload` (the
-    // member is gone and the other eleven are whole, by membership, across a reload) and by
-    // `write_after_fold::gated_removals_file_one_tombstone_per_distinct_element_and_do_not_
-    // accumulate` (one tombstone per distinct element, however many times the removal is issued).
-    // Without those two this would be a test asserting whatever the code does.
+    // The deleted member's separate frame is retired. Its marker must not make the other
+    // eleven live frames, or the containing object, read as deleted.
     let (live, tombstoned) = entry_counts(&engine, "set", key);
-    // ONE LIVE ENTRY, UNCONDITIONALLY. This read the gate and chose between `MEMBERS` and
-    // `MEMBERS - 1`; the per-element projection it was choosing against no longer exists, so the
-    // collapsed figure is the only one. The collapsed projection KEEPS the object's block entry and
-    // ADDS one tombstone, which is why this is `MEMBERS` live and not `MEMBERS - 1`.
-    let expected_live = MEMBERS;
+    let expected_live = MEMBERS - 1;
     assert_eq!(
         (expected_live, 1),
         (live, tombstoned),
-        "the fixture holds {live} live and {tombstoned} tombstone entries; the collapsed \
-         projection keeps the block entry and adds one tombstone, the per-element one replaces it"
+        "the fixture must retain {expected_live} live frames and one deletion marker"
     );
 
     assert!(
@@ -1012,11 +952,7 @@ fn a_removed_member_does_not_make_its_object_deleted() {
         "the tombstone is not counted as a deleted block ref ({} of them), which it is",
         object.deleted_block_ref_count
     );
-    // THE SAME RESTATEMENT AS THE DENOMINATOR ABOVE, and for the same reason: this counts LIVE
-    // entries, and under the collapsed projection a removal keeps the block entry because the block
-    // still holds the object's other members. What the field must never count is the tombstone,
-    // which is what the name asserts and what the two assertions above this one are actually for --
-    // both of those pass unchanged under either projection.
+    // The report counts surviving data frames, not the retired frame or its marker.
     assert_eq!(
         expected_live,
         report.live_block_ref_count,

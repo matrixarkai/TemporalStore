@@ -166,6 +166,80 @@ fn as_x(ppm: u64) -> f64 {
     ppm as f64 / 1_000_000.0
 }
 
+#[test]
+fn operator_cycles_relocate_only_live_blocks_on_drain_slabs() {
+    for overwritten in [0, 8, 32] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path());
+        for index in 0..32 {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key_of(index),
+                    value: noisy_value(index, 0),
+                },
+            });
+            assert!(result.status.ok);
+            if index == 15 || index == 31 {
+                engine.block_store.roll_slab().unwrap();
+            }
+        }
+        for index in 0..overwritten {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key_of(index),
+                    value: noisy_value(index, 1),
+                },
+            });
+            assert!(result.status.ok);
+        }
+        let before = plan_of(&engine);
+        if overwritten < 32 {
+            assert!(before.live_block_slab_ids.len() >= 2);
+        } else {
+            assert!(before.reclaim_candidates.iter().any(|candidate| candidate.live_block_refs == 0));
+        }
+        let expected_refs = crate::engine::compaction_relocatable_block_refs(
+            &before.reclaim_candidates,
+        );
+        assert_eq!(expected_refs > 0, overwritten == 8);
+        let bytes_before = engine.block_store.stats().bytes_written;
+        let report = engine.run_storage_manager_cycle(crate::engine::StorageManagerCycleRequest {
+            shard_id: 1,
+            enable_prepare: false,
+            enable_wal_reclaim: false,
+            enable_evict: false,
+            enable_expire: false,
+            enable_block_reclaim: false,
+            enable_index_gc: false,
+            ..crate::engine::StorageManagerCycleRequest::default()
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let compact = report.stages.iter().find(|stage| stage.stage == "compact").unwrap();
+        assert_eq!(compact.rewritten_block_refs as u64, expected_refs,
+            "overwritten={overwritten}");
+        assert_eq!(compact.applied, expected_refs > 0);
+        assert_eq!(compact.skipped, expected_refs == 0);
+        if expected_refs == 0 {
+            assert_eq!(engine.block_store.stats().bytes_written, bytes_before);
+        }
+        engine.flush_shard_index(1);
+        drop(engine);
+        let restored = engine_at(dir.path());
+        for index in 0..32 {
+            let result = restored.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: key_of(index) },
+            });
+            assert!(result.status.ok);
+            assert_eq!(result.response, crate::types::CommandResponse::Bytes {
+                value: Some(noisy_value(index, usize::from(index < overwritten))),
+            });
+        }
+    }
+}
+
 /// ONE SWEEP, AND THE PUBLISHED RATIO DOES NOT MOVE WHILE THE TRIGGER'S OWN TERM DOES.
 ///
 /// Rewriting keys that are already there is the one instrument that separates "nothing is dead"

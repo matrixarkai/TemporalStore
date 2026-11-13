@@ -1474,6 +1474,8 @@ pub struct LocalRaftWal {
     /// instead of queueing to take an identical one. Shared by `clone`, like the cursors: two
     /// handles to the same file must share a gate or each would take its own barrier again.
     flush_gates: Arc<crate::flush_gate::FlushRegistry>,
+    /// Unsynced completions must not satisfy a writer waiting for a real fsync.
+    unsynced_gates: Arc<crate::flush_gate::FlushRegistry>,
 }
 
 
@@ -3481,6 +3483,8 @@ pub struct RaftConfig {
     pub ignore_witness: bool,
     pub send_snapshot_timeout_ms: u64,
     pub raft_transport_timeout_ms: u64,
+    /// Sync Raft WAL records before acknowledging them. Disabling this trades crash durability
+    /// for throughput and must be an explicit choice.
     pub wal_sync: bool,
     pub max_segment_bytes: u64,
     pub min_keep_segment_num: u64,
@@ -3559,7 +3563,7 @@ impl Default for RaftConfig {
             // rejects every proposal to it for the same minute.
             send_snapshot_timeout_ms: 10_000,
             raft_transport_timeout_ms: 1_000,
-            wal_sync: false,
+            wal_sync: true,
             max_segment_bytes: 64 * 1024 * 1024,
             min_keep_segment_num: 2,
             can_trigger_snapshot: true,
@@ -3753,7 +3757,7 @@ pub fn serialize_data_raft_log(entry: &DataRaftLogCodecEntry) -> Result<Vec<u8>,
             "wal sequence must be nonzero".to_string(),
         ));
     }
-    let payload = serde_json::to_vec(&entry.command)
+    let payload = crate::shared_store::command_protobuf_bytes(&entry.command)
         .map_err(|err| RaftError::InvalidDataRaftLog(err.to_string()))?;
     if payload.is_empty() {
         return Err(RaftError::InvalidDataRaftLog(
@@ -3822,7 +3826,7 @@ pub fn parse_data_raft_log(bytes: &[u8]) -> Result<DataRaftLogCodecEntry, RaftEr
             bytes.len() - DATA_RAFT_LOG_HEADER_LEN
         )));
     }
-    let command = serde_json::from_slice(&bytes[DATA_RAFT_LOG_HEADER_LEN..])
+    let command = crate::shared_store::command_from_protobuf_bytes(&bytes[DATA_RAFT_LOG_HEADER_LEN..])
         .map_err(|err| RaftError::InvalidDataRaftLog(err.to_string()))?;
     Ok(DataRaftLogCodecEntry {
         shard_id,
@@ -3847,7 +3851,7 @@ pub fn serialize_data_raft_command(
             "command batch is empty".to_string(),
         ));
     }
-    let payload = serde_json::to_vec(&entry.commands)
+    let payload = encode_command_batch(&entry.commands)
         .map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
     if payload.is_empty() {
         return Err(RaftError::InvalidDataRaftCommand(
@@ -3910,7 +3914,7 @@ pub fn parse_data_raft_command(bytes: &[u8]) -> Result<DataRaftCommandCodecEntry
             bytes.len() - DATA_RAFT_COMMAND_HEADER_LEN
         )));
     }
-    let commands = serde_json::from_slice(&bytes[DATA_RAFT_COMMAND_HEADER_LEN..])
+    let commands = decode_command_batch(&bytes[DATA_RAFT_COMMAND_HEADER_LEN..])
         .map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
     Ok(DataRaftCommandCodecEntry {
         shard_id,
@@ -3946,6 +3950,32 @@ fn read_u64_le(bytes: &[u8], offset: usize) -> Result<u64, RaftError> {
     Ok(u64::from_le_bytes(
         slice.try_into().expect("u64 slice length"),
     ))
+}
+
+/// A batch of commands: each one length-delimited, in order, as its protobuf encoding.
+fn encode_command_batch(commands: &[Command]) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    for command in commands {
+        let bytes = crate::shared_store::command_protobuf_bytes(command)?;
+        prost::encoding::encode_varint(bytes.len() as u64, &mut out);
+        out.extend_from_slice(&bytes);
+    }
+    Ok(out)
+}
+
+/// The commands a batch written by [`encode_command_batch`] carries.
+fn decode_command_batch(mut bytes: &[u8]) -> io::Result<Vec<Command>> {
+    let mut commands = Vec::new();
+    while !bytes.is_empty() {
+        let length = prost::encoding::decode_varint(&mut bytes).map_err(io::Error::other)? as usize;
+        if bytes.len() < length {
+            return Err(io::Error::other("a command in the batch is cut short"));
+        }
+        let (one, rest) = bytes.split_at(length);
+        commands.push(crate::shared_store::command_from_protobuf_bytes(one)?);
+        bytes = rest;
+    }
+    Ok(commands)
 }
 
 pub fn estimate_snapshot_bytes(snapshot: &RaftSnapshot) -> Result<u64, RaftError> {
@@ -6171,12 +6201,15 @@ fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
         // whose buckets nothing can account for.
         match image.routing_range {
             Some(routing_range) => {
-                let _ = engine.install_index_bytes(
+                match engine.install_index_bytes_in_empty_wal(
                     snapshot.shard_id,
                     &image.index_bytes,
                     routing_range,
-                );
-                engine.load_shard(snapshot.shard_id);
+                ) {
+                    Ok(()) => engine.load_shard(snapshot.shard_id),
+                    Err(err) => tracing::error!(shard_id = snapshot.shard_id,
+                        error = %err, "snapshot index could not be installed into the fresh engine"),
+                }
             }
             None => {
                 tracing::error!(

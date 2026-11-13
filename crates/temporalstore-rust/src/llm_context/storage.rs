@@ -58,8 +58,8 @@ pub enum TemporalEmbeddingStoreError {
 
 /// Durable compact-vector storage backed by TemporalStore's WAL-protected hash model.
 ///
-/// One hash belongs to one tenant, model and vector width. A batch therefore costs one
-/// engine command per tenant, while recovery reads all compact rows for a tenant once.
+/// One hash belongs to one tenant, model and vector width. Writes are capped at a bounded
+/// number of rows per command, while recovery reads all compact rows for a tenant once.
 pub struct TemporalEmbeddingStore<'a> {
     engine: &'a TemporalEngine,
     shard_id: ShardId,
@@ -95,29 +95,39 @@ impl<'a> TemporalEmbeddingStore<'a> {
         if batch.model_hash() == 0 {
             return Err(TemporalEmbeddingStoreError::MissingModelHash);
         }
-        let mut tenants = BTreeMap::<u64, Vec<(String, Vec<u8>)>>::new();
-        for row in 0..batch.len() {
-            let key = batch.key(row);
-            tenants
-                .entry(key.tenant_id)
-                .or_default()
-                .push((key.item_id.to_string(), encode_compact_row(batch, row)));
+        if batch.is_empty() {
+            return Ok(());
         }
 
-        for (tenant_id, mut entries) in tenants {
-            while !entries.is_empty() {
-                let remainder = if entries.len() > MAX_ROWS_PER_WRITE {
-                    entries.split_off(MAX_ROWS_PER_WRITE)
-                } else {
-                    Vec::new()
-                };
+        let first_tenant = batch.key(0).tenant_id;
+        if (1..batch.len()).all(|row| batch.key(row).tenant_id == first_tenant) {
+            for start in (0..batch.len()).step_by(MAX_ROWS_PER_WRITE) {
+                let end = start.saturating_add(MAX_ROWS_PER_WRITE).min(batch.len());
+                self.persist_tenant_rows(
+                    first_tenant,
+                    batch.model_hash(),
+                    batch.dimensions(),
+                    encode_compact_rows(batch, start..end),
+                )?;
+            }
+            return Ok(());
+        }
+
+        let mut tenants = BTreeMap::<u64, Vec<usize>>::new();
+        for row in 0..batch.len() {
+            tenants
+                .entry(batch.key(row).tenant_id)
+                .or_default()
+                .push(row);
+        }
+        for (tenant_id, rows) in tenants {
+            for chunk in rows.chunks(MAX_ROWS_PER_WRITE) {
                 self.persist_tenant_rows(
                     tenant_id,
                     batch.model_hash(),
                     batch.dimensions(),
-                    entries,
+                    encode_compact_rows(batch, chunk.iter().copied()),
                 )?;
-                entries = remainder;
             }
         }
         Ok(())
@@ -150,12 +160,14 @@ impl<'a> TemporalEmbeddingStore<'a> {
         let mut scales = Vec::with_capacity(entries.len());
         let mut vectors = Vec::with_capacity(entries.len().saturating_mul(index.dimensions()));
         for (field, value) in entries {
-            let item_id = field
-                .parse::<u64>()
-                .map_err(|_| TemporalEmbeddingStoreError::InvalidItemId { field })?;
+            let (owner_id, item_id) = decode_embedding_field(&field)?;
             let (scale, row) =
                 decode_compact_row(item_id, &value, index.dimensions(), index.model_hash())?;
-            keys.push(EmbeddingKey { tenant_id, item_id });
+            keys.push(EmbeddingKey {
+                tenant_id,
+                owner_id,
+                item_id,
+            });
             scales.push(scale);
             vectors.extend_from_slice(&row);
         }
@@ -181,7 +193,7 @@ impl<'a> TemporalEmbeddingStore<'a> {
             shard_id: self.shard_id,
             command: Command::HashDelete {
                 key: self.store_key(key.tenant_id, model_hash, dimensions),
-                field: key.item_id.to_string(),
+                field: encode_embedding_field(key),
             },
         });
         ensure_ok(
@@ -255,6 +267,42 @@ fn encode_compact_row(batch: &CompactEmbeddingBatch, row: usize) -> Vec<u8> {
     output
 }
 
+fn encode_compact_rows(
+    batch: &CompactEmbeddingBatch,
+    rows: impl ExactSizeIterator<Item = usize>,
+) -> Vec<(String, Vec<u8>)> {
+    let mut entries = Vec::with_capacity(rows.len());
+    for row in rows {
+        entries.push((
+            encode_embedding_field(batch.key(row)),
+            encode_compact_row(batch, row),
+        ));
+    }
+    entries
+}
+
+fn encode_embedding_field(key: EmbeddingKey) -> String {
+    if key.owner_id == 0 {
+        key.item_id.to_string()
+    } else {
+        format!("{}:{}", key.owner_id, key.item_id)
+    }
+}
+
+fn decode_embedding_field(field: &str) -> Result<(u64, u64), TemporalEmbeddingStoreError> {
+    let (owner_id, item_id) = match field.split_once(':') {
+        Some((owner, item)) => (owner, item),
+        None => ("0", field),
+    };
+    let invalid = || TemporalEmbeddingStoreError::InvalidItemId {
+        field: field.to_string(),
+    };
+    Ok((
+        owner_id.parse::<u64>().map_err(|_| invalid())?,
+        item_id.parse::<u64>().map_err(|_| invalid())?,
+    ))
+}
+
 fn decode_compact_row(
     item_id: u64,
     value: &[u8],
@@ -319,6 +367,7 @@ mod tests {
             .prepare_batch(&[EmbeddingVector {
                 key: EmbeddingKey {
                     tenant_id: 7,
+                    owner_id: 9,
                     item_id: 42,
                 },
                 values: &source,
@@ -330,6 +379,91 @@ mod tests {
         let mut recovered = EmbeddingIndex::new(config).unwrap();
         let report = store.recover_tenant(7, &mut recovered).unwrap();
         assert_eq!(report.recovered_rows, 1);
-        assert_eq!(recovered.search(7, &source, 1).unwrap()[0].key.item_id, 42);
+        let recovered_key = recovered.search(7, &source, 1).unwrap()[0].key;
+        assert_eq!((recovered_key.owner_id, recovered_key.item_id), (9, 42));
+    }
+
+    #[test]
+    fn single_tenant_batches_persist_in_bounded_chunks() {
+        const ROWS: usize = MAX_ROWS_PER_WRITE + 1;
+
+        let engine = TemporalEngine::new(MultiLayerCache::default());
+        engine.load_shard(1);
+        let store = TemporalEmbeddingStore::new(&engine, 1, "context").unwrap();
+        let config = EmbeddingIndexConfig::new(3, ROWS).with_model_hash(91);
+        let values = (0..ROWS)
+            .map(|row| [1.0, row as f32 + 1.0, 0.5])
+            .collect::<Vec<_>>();
+        let inputs = values
+            .iter()
+            .enumerate()
+            .map(|(row, values)| EmbeddingVector {
+                key: EmbeddingKey {
+                    tenant_id: 7,
+                    owner_id: 0,
+                    item_id: row as u64,
+                },
+                values,
+            })
+            .collect::<Vec<_>>();
+        let writer = EmbeddingIndex::new(config).unwrap();
+        let compact = writer.prepare_batch(&inputs).unwrap();
+
+        store.persist_batch(&compact).unwrap();
+
+        let mut recovered = EmbeddingIndex::new(config).unwrap();
+        assert_eq!(
+            store
+                .recover_tenant(7, &mut recovered)
+                .unwrap()
+                .recovered_rows,
+            ROWS
+        );
+    }
+
+    #[test]
+    fn mixed_tenant_batches_persist_in_bounded_chunks() {
+        const ROWS_PER_TENANT: usize = MAX_ROWS_PER_WRITE + 1;
+
+        let engine = TemporalEngine::new(MultiLayerCache::default());
+        engine.load_shard(1);
+        let store = TemporalEmbeddingStore::new(&engine, 1, "context").unwrap();
+        let config = EmbeddingIndexConfig::new(3, ROWS_PER_TENANT * 2).with_model_hash(91);
+        let values = (0..ROWS_PER_TENANT * 2)
+            .map(|row| [1.0, row as f32 + 1.0, 0.5])
+            .collect::<Vec<_>>();
+        let inputs = values
+            .iter()
+            .enumerate()
+            .map(|(row, values)| EmbeddingVector {
+                key: EmbeddingKey {
+                    tenant_id: 7 + (row % 2) as u64,
+                    owner_id: 0,
+                    item_id: (row / 2) as u64,
+                },
+                values,
+            })
+            .collect::<Vec<_>>();
+        let writer = EmbeddingIndex::new(config).unwrap();
+        let compact = writer.prepare_batch(&inputs).unwrap();
+
+        store.persist_batch(&compact).unwrap();
+
+        let mut recovered = EmbeddingIndex::new(config).unwrap();
+        assert_eq!(
+            store
+                .recover_tenant(7, &mut recovered)
+                .unwrap()
+                .recovered_rows,
+            ROWS_PER_TENANT
+        );
+        assert_eq!(
+            store
+                .recover_tenant(8, &mut recovered)
+                .unwrap()
+                .recovered_rows,
+            ROWS_PER_TENANT
+        );
+        assert_eq!(recovered.len(), ROWS_PER_TENANT * 2);
     }
 }

@@ -164,6 +164,8 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "type": "redis",
             "redis_type": "redis",
             "connection_string": args.redis,
+            "skip_dedup": args.skip_dedup,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     if arm == "redis_aof":
         # The SAME Feast online-store type as `redis`: the difference is entirely
@@ -175,6 +177,8 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "type": "redis",
             "redis_type": "redis",
             "connection_string": args.redis_aof,
+            "skip_dedup": args.skip_dedup,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     if arm == "postgres":
         host, port = args.postgres.split(":")
@@ -200,9 +204,8 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "host": host,
             "port": int(port),
             "shard_id": args.shard_id,
-            # The dedup read is for out-of-order materialization. The fixture
-            # arrives in order, so omit it from the measured write path.
-            "skip_dedup": True,
+            "skip_dedup": args.skip_dedup,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
             # The harness knows every entity key and deletes those keys
             # directly, so tracking would add work without helping cleanup.
             "timeout_seconds": 120.0,
@@ -214,7 +217,8 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             "host": host,
             "port": int(port),
             "shard_id": args.shard_id,
-            "skip_dedup": True,
+            "skip_dedup": args.skip_dedup,
+            "key_ttl_seconds": args.key_ttl_seconds or None,
         }
     raise SystemExit(f"unknown arm: {arm}")
 
@@ -654,9 +658,15 @@ def run_arm(
 
     # The fixture knows every key it wrote. Delete those keys directly on the
     # command-surface arms, then verify the server's own record count fell.
-    records_before = temporalstore_record_count(args) if arm.startswith("ts_") else None
+    records_before = (
+        temporalstore_record_count(args)
+        if arm.startswith("ts_") and not args.skip_teardown
+        else None
+    )
     try:
-        if arm.startswith("ts_"):
+        if args.skip_teardown:
+            print("    teardown skipped; use a fresh store for the next sample")
+        elif arm.startswith("ts_"):
             from feast_temporalstore_command import TemporalStoreCommandOnlineStore
 
             adapter = TemporalStoreCommandOnlineStore()
@@ -724,6 +734,7 @@ def render(
     args: argparse.Namespace,
     provisional: bool,
     peak_io_pressure: float,
+    peak_load: float,
 ) -> str:
     lines: List[str] = []
     by_payload: Dict[str, List[ArmResult]] = {}
@@ -734,7 +745,10 @@ def render(
         lines.append("")
         lines.append(
             f"### Payload {payload_bytes} B/row, {group[0].entities} entities, "
-            f"hot set {args.hot}, {args.reads} reads per cell"
+            f"hot set {args.hot}, {args.reads} reads per cell, "
+            f"key TTL {args.key_ttl_seconds or 'disabled'} s, "
+            f"write batch {args.write_batch}, "
+            f"Redis/TemporalStore skip_dedup={args.skip_dedup}"
         )
         lines.append("")
         lines.append(
@@ -772,6 +786,8 @@ def render(
                         f"{phase.throughput_rows_per_s:,.0f} | "
                         f"{phase.p50:,.0f} us | {phase.p99:,.0f} us |"
                     )
+    if args.skip_teardown:
+        lines.extend(["", "Teardown skipped; use a fresh store for each sample."])
     if provisional:
         lines.append("")
         lines.append(
@@ -798,6 +814,12 @@ def main() -> int:
     parser.add_argument("--cold-reads", type=int, default=2000)
     parser.add_argument("--batch", type=int, default=10)
     parser.add_argument("--write-batch", type=int, default=500)
+    parser.add_argument(
+        "--skip-dedup", action="store_true",
+        help="Disable timestamp deduplication on Redis and TemporalStore for ordered loads",
+    )
+    parser.add_argument("--skip-teardown", action="store_true")
+    parser.add_argument("--key-ttl-seconds", type=int, default=0)
     parser.add_argument("--redis", default="127.0.0.1:6380")
     parser.add_argument("--redis-aof", default="127.0.0.1:6381")
     parser.add_argument("--postgres", default="127.0.0.1:55432")
@@ -819,10 +841,14 @@ def main() -> int:
 
     if args.concurrency < 1 or args.reads < 1 or args.batch < 1 or args.hot < 1:
         parser.error("concurrency, reads, batch and hot must be positive")
+    if args.key_ttl_seconds < 0:
+        parser.error("key ttl must not be negative")
 
     os.makedirs(args.run_dir, exist_ok=True)
     arms = [a.strip() for a in args.arms.split(",") if a.strip()]
     payloads = [p.strip() for p in args.payloads.split(",") if p.strip()]
+    if args.skip_teardown and (len(arms) != 1 or len(payloads) != 1):
+        parser.error("--skip-teardown requires one arm and one payload")
 
     print(
         f"io pressure at start: {io_pressure():.2f}%  "
@@ -871,6 +897,18 @@ def main() -> int:
                 f"sqlite_control pair -- this group has NO control"
             )
             continue
+        first_write_per_row = first.write_seconds / first.entities
+        last_write_per_row = last.write_seconds / last.entities
+        if first_write_per_row > 0:
+            write_drift = abs(last_write_per_row - first_write_per_row) / first_write_per_row
+            print(
+                f"control: payload {payload_bytes} B/row SQLite write time per row "
+                f"drift={write_drift:.1%}"
+            )
+            if write_drift > args.control_tolerance:
+                drift_reasons.append(
+                    f"{payload_bytes} B/row write time drifted {write_drift:.1%}"
+                )
         if first.warm_b1.p50 <= 0:
             continue
         drift = abs(last.warm_b1.p50 - first.warm_b1.p50) / first.warm_b1.p50
@@ -880,7 +918,7 @@ def main() -> int:
             f"drift={drift:.1%}"
         )
         if drift > args.control_tolerance:
-            drift_reasons.append(f"{payload_bytes} B/row drifted {drift:.1%}")
+            drift_reasons.append(f"{payload_bytes} B/row read latency drifted {drift:.1%}")
     if drift_reasons:
         control_void = (
             f"the control arm drifted beyond the {args.control_tolerance:.0%} "
@@ -893,10 +931,10 @@ def main() -> int:
     # Decided on I/O pressure, not on loadavg, for the reason in load_average's
     # docstring. `peak_load` is still carried and printed.
     provisional = peak_io_pressure > args.max_io_pressure
-    table = render(results, args, provisional, peak_io_pressure)
-    print(table)
+    table = render(results, args, provisional, peak_io_pressure, peak_load)
     if control_void:
-        print(f"\n**VOID** -- {control_void}")
+        table += f"\n\n**VOID** -- {control_void}"
+    print(table)
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:
@@ -909,6 +947,7 @@ def main() -> int:
                     "arm", "store", "durability", "transport", "payload_bytes_per_row",
                     "entities", "phase", "calls", "rows_served", "p50_us", "p99_us",
                     "rows_per_s", "load_before", "load_after", "workers", "wall_seconds",
+                    "skip_dedup",
                 ]
             )
             for r in results:
@@ -919,6 +958,7 @@ def main() -> int:
                         (r.entities + args.write_batch - 1) // args.write_batch,
                         r.entities, "", "", f"{r.entities / r.write_seconds:.1f}",
                         "", "", 1, f"{r.write_seconds:.6f}",
+                        args.skip_dedup if r.arm.startswith(("ts_", "redis")) else "",
                     ]
                 )
                 for phase in (r.cold, r.warm_b1, r.warm_bn, r.serving, r.concurrent):
@@ -934,6 +974,7 @@ def main() -> int:
                             f"{phase.load_before:.2f}", f"{phase.load_after:.2f}",
                             args.concurrency if phase is r.concurrent else 1,
                             f"{phase.wall_seconds:.6f}" if phase is r.concurrent else "",
+                            args.skip_dedup if r.arm.startswith(("ts_", "redis")) else "",
                         ]
                     )
         print(f"\nwrote {args.out} and {csv_path}")

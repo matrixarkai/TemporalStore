@@ -283,6 +283,11 @@ message Command {
     ContextWriteCompressionEvent context_write_compression_event = 61;
     ContextWritePackAudit context_write_pack_audit = 62;
     HashMultiSetIfTimestampOlder hash_multi_set_if_timestamp_older = 63;
+    SetScan set_scan = 64;
+    FeatureAppendWithTtl feature_append_with_ttl = 65;
+    HashMultiSetWithTtl hash_multi_set_with_ttl = 66;
+    ZSetCountAdjust zset_count_adjust = 67;
+    ZSetScan zset_scan = 68;
   }
 }
 
@@ -295,6 +300,9 @@ message CommandResponse {
   repeated ContextNode context_nodes = 6;
   uint64 count = 7;
   bool exists = 8;
+  // A merge-reduce feature append reports what landed. `count` stays the snapshots written.
+  uint64 cells_created = 9;
+  uint64 cells_merged = 10;
 }
 
 message StringSet {
@@ -332,12 +340,19 @@ message HashMultiSet {
   repeated HashEntry entries = 2;
 }
 
+message HashMultiSetWithTtl {
+  string key = 1;
+  repeated HashEntry entries = 2;
+  uint64 ttl_ms = 3;
+}
+
 message HashMultiSetIfTimestampOlder {
   string key = 1;
   string timestamp_field = 2;
   int64 timestamp_seconds = 3;
   int32 timestamp_nanos = 4;
   repeated HashEntry entries = 5;
+  optional uint64 ttl_ms = 6;
 }
 
 message HashMultiGet {
@@ -354,6 +369,18 @@ message SetMembers {
   string key = 1;
 }
 
+message SetScan {
+  string key = 1;
+  bytes after = 2;
+  uint64 limit = 3;
+}
+
+message ZSetScan {
+  string key = 1;
+  bytes after = 2;
+  uint64 limit = 3;
+}
+
 message FeaturePoint {
   uint64 timestamp_ms = 1;
   bytes value = 2;
@@ -362,6 +389,12 @@ message FeaturePoint {
 message FeatureAppend {
   string key = 1;
   repeated FeaturePoint points = 2;
+}
+
+message FeatureAppendWithTtl {
+  string key = 1;
+  repeated FeaturePoint points = 2;
+  uint64 ttl_ms = 3;
 }
 
 message FeatureQuery {
@@ -491,7 +524,9 @@ message WalCommand {
   oneof kind {
     StringSet string_set = 1;
     HashSet hash_set = 2;
-    bytes verbatim = 99;
+    // Every command the two arms above do not carry field by field, in the SDK's own protobuf
+    // encoding (a `Command` message).
+    bytes sdk_command = 99;
   }
 }
 
@@ -544,6 +579,132 @@ message WalInstalledSnapshot {
   WalStateImage state_image = 2;
 }
 
+message WalPipelineState {
+  uint64 match_index = 1;
+  uint64 next_index = 2;
+  uint64 append_requests = 3;
+  uint64 append_accepted = 4;
+  uint64 append_rejected = 5;
+  uint64 committed_overwrite_rejections = 6;
+  uint64 inflight_entries = 7;
+  uint64 inflight_bytes = 8;
+  uint64 append_queue_depth = 9;
+  uint64 last_accepted_append_ms = 10;
+  uint64 leader_reported_commit_index = 11;
+  uint64 apply_inflight_tasks = 12;
+  uint64 apply_queue_depth = 13;
+  uint64 apply_queue_max_depth = 14;
+  uint64 apply_backpressure_rejections = 15;
+  uint64 memory_backpressure_rejections = 16;
+  uint64 oversized_log_rejections = 17;
+  uint64 append_queue_max_depth = 18;
+  uint64 reorder_queue_depth = 19;
+  uint64 out_of_order_append_rejections = 20;
+  uint64 reorder_entries_accepted = 21;
+  uint64 reorder_entries_released = 22;
+  uint64 reorder_entries_rejected = 23;
+  uint64 reorder_entry_timeouts = 24;
+  uint64 reorder_dropped_packages = 25;
+  uint64 stale_term_rejections = 26;
+  uint64 append_send_failures = 27;
+  bool snapshot_sending = 28;
+  bool snapshot_installing = 29;
+  uint64 snapshot_installed_index = 30;
+  uint64 snapshot_send_attempts = 31;
+  uint64 snapshot_send_completed = 32;
+  uint64 snapshot_send_failed = 33;
+  uint64 snapshot_install_started = 34;
+  uint64 snapshot_install_completed = 35;
+  uint64 snapshot_install_rejected = 36;
+  uint64 snapshot_install_rolled_back = 37;
+  uint64 snapshot_install_received_chunks = 38;
+  uint64 snapshot_send_progress_mark = 39;
+  uint64 snapshot_install_total_chunks = 40;
+  uint64 snapshot_install_progress_per_mille = 41;
+  uint64 snapshot_retry_count = 42;
+  uint64 snapshot_chunk_retry_count = 43;
+  uint64 snapshot_backpressure_rejections = 44;
+  uint64 snapshot_rate_limit_rejections = 45;
+  optional uint64 snapshot_send_started_ms = 46;
+  uint64 snapshot_send_elapsed_ms = 47;
+  uint64 snapshot_send_timeouts = 48;
+  bool snapshot_during_membership_change = 49;
+  bool snapshot_rejoin_after_compacted_log = 50;
+  bool transfer_leader_target = 51;
+  uint64 transfer_leader_requests = 52;
+  uint64 transfer_leader_accepted = 53;
+  uint64 transfer_leader_rejected = 54;
+  uint64 transfer_leader_completed = 55;
+  optional uint64 transfer_leader_started_ms = 56;
+  uint64 transfer_leader_elapsed_ms = 57;
+  uint64 transfer_leader_timeouts = 58;
+  uint64 pre_vote_rejections = 59;
+  uint64 election_rejections = 60;
+  optional uint64 offline_since_ms = 61;
+  uint64 offline_elapsed_ms = 62;
+  bool offline_timeout_reached = 63;
+  uint64 offline_timeout_rejections = 64;
+  bool auto_promoted_from_learner = 65;
+}
+
+message WalReadSafetyState {
+  uint64 read_index_requests = 1;
+  uint64 read_index_accepted = 2;
+  uint64 read_index_rejected = 3;
+  uint64 lease_read_requests = 4;
+  uint64 lease_read_accepted = 5;
+  uint64 lease_read_rejected = 6;
+  uint64 pre_vote_requests = 7;
+  uint64 pre_vote_accepted = 8;
+  uint64 pre_vote_rejected = 9;
+  uint64 bounded_stale_read_requests = 10;
+  uint64 bounded_stale_read_accepted = 11;
+  uint64 bounded_stale_read_rejected = 12;
+  uint64 stale_leader_lease_rejected = 13;
+  uint64 lagging_follower_read_rejected = 14;
+  uint64 stale_follower_write_rejected = 15;
+  uint64 minority_partition_read_rejected = 16;
+  uint64 minority_partition_write_rejected = 17;
+  uint64 healed_follower_catchup_observed = 18;
+}
+
+message WalMembershipEvidence {
+  uint64 learner_add_count = 1;
+  uint64 learner_catchup_count = 2;
+  uint64 learner_promote_count = 3;
+  uint64 voter_remove_count = 4;
+  uint64 witness_add_count = 5;
+  uint64 auto_promote_count = 6;
+  uint64 leader_transfer_write_count = 7;
+  uint64 leader_transfer_exact_once_commit_count = 8;
+  repeated uint64 leader_transfer_exact_once_commit_ids = 9;
+  uint64 pending_joint_consensus_persist_count = 10;
+  uint64 pending_joint_consensus_restore_count = 11;
+}
+
+message WalJointMembership {
+  repeated uint64 old_voters = 1;
+  repeated uint64 new_voters = 2;
+}
+
+message WalExternalSnapshotRef {
+  string uri = 1;
+  string checksum = 2;
+  uint64 byte_size = 3;
+}
+
+// The record fields that sit at their default on nearly every record, so the message is
+// absent from a record that has none of them.
+message WalRecordRest {
+  // 0 voter, 1 learner, 2 witness.
+  uint32 replica_role = 1;
+  optional WalJointMembership joint_membership = 2;
+  optional WalExternalSnapshotRef latest_external_snapshot_ref = 3;
+  optional WalPipelineState pipeline_state = 4;
+  optional WalReadSafetyState read_safety_state = 5;
+  optional WalMembershipEvidence membership_evidence = 6;
+}
+
 message WalRecord {
   WalHardState hard_state = 1;
   WalMembership membership = 2;
@@ -553,8 +714,8 @@ message WalRecord {
   WalInstalledSnapshot installed_snapshot = 7;
   // The record's remaining fields -- replica role, joint membership, snapshot refs and
   // runtime telemetry -- which sit at their default on almost every record and are omitted
-  // entirely when they do. Carried in their existing encoding so none of them can be lost.
-  bytes rest = 6;
+  // entirely when they do.
+  WalRecordRest rest = 6;
 }
 
 message WalEnvelope {
@@ -785,6 +946,12 @@ message ZSetIncrBy {
   double increment = 3;
 }
 
+message ZSetCountAdjust {
+  string key = 1;
+  bytes member = 2;
+  int64 increment = 3;
+}
+
 message ZSetPop {
   string key = 1;
   bool min = 2;
@@ -953,6 +1120,7 @@ enum FeatureWritePolicy {
   FEATURE_WRITE_POLICY_INSERT_IF_ABSENT = 2;
   FEATURE_WRITE_POLICY_REPLACE_EXISTING = 3;
   FEATURE_WRITE_POLICY_BLOCK = 4;
+  FEATURE_WRITE_POLICY_MERGE_REDUCE = 5;
 }
 
 message BucketTake {
@@ -1201,14 +1369,14 @@ message ContextSetNodeEmbedding {
   uint64 updated_at_ms = 5;
 }
 
-// THE DURABLE EVENT. ALL FIFTEEN FIELDS.
+// THE DURABLE EVENT. ALL SIXTEEN FIELDS.
 //
 // NOT a client projection. `ContextEvent` has no client message at all, and the one that exists
 // for its sibling -- `message ContextNode`, four fields against a fifteen-field durable struct,
 // whose converter fabricates `parent_hash`, `kind` and `status` as zero -- is exactly what a
 // durable record must not reuse. `ContextNodeRecord` above is the same decision for the node.
 //
-// SEVEN OF THE FIFTEEN ARE `skip_serializing` IN THE JSON FORM, so the durable JSON this replaces
+// SEVEN OF THE SIXTEEN ARE `skip_serializing` IN THE JSON FORM, so the durable JSON this replaces
 // never wrote them. They are carried anyway, as `ContextNodeRecord` carries its three: the WAL's
 // contract is to reproduce the COMMAND, not to re-apply the JSON form's write policy. That makes
 // this record STRICTLY MORE FAITHFUL than the JSON it replaces, which is a property the round-trip
@@ -1218,12 +1386,6 @@ message ContextSetNodeEmbedding {
 // `vector` is `repeated float` -- packed by default, and NOT quantised. Int8 quantisation is a
 // separately gated decision with its own quality bar.
 //
-// NO MODEL HASH, and that is `ContextEvent`'s existing design rather than an omission here: the
-// event vector has never carried one. Inventing a guard during a format port would put a field on
-// disk that the shipped reader does not know, for a check this record has never made. The three
-// that do exist -- `ContextNodeRecord.embedding_model_hash`,
-// `ContextNodeRecord.summary_vector_model_hash` and `ContextSetNodeEmbedding.model_hash` -- stay
-// individual and are not shared with this one.
 message ContextEventRecord {
   uint64 event_id_hash = 1;
   uint64 event_time_ms = 2;
@@ -1248,6 +1410,8 @@ message ContextEventRecord {
   // Deprecated hot-schema field; carried for the same reason.
   bytes compact_attrs = 14;
   repeated float vector = 15;
+  // Encoder identity for `vector`. Zero keeps records written before this field readable.
+  uint64 embedding_model_hash = 16;
 }
 
 // The five internal secondary indexes an extraction can switch off.
@@ -1304,7 +1468,7 @@ message ContextWriteExtractedEvent {
   bool cold_storage = 6;
 }
 
-// THE DURABLE ENTITY. ALL TEN FIELDS.
+// THE DURABLE ENTITY. ALL ELEVEN FIELDS.
 message ContextEntityRecord {
   uint64 entity_hash = 1;
   uint64 node_hash = 2;
@@ -1319,11 +1483,9 @@ message ContextEntityRecord {
   float confidence = 8;
   repeated uint64 source_event_hashes = 9;
   // Inline, `repeated float`, packed, and NOT quantised.
-  //
-  // NO MODEL HASH, which is `ContextEntity`'s existing design rather than a guard dropped here --
-  // the entity vector has never carried one, exactly as the event vector has not. Compare
-  // ContextSummaryRecord below, which DOES carry one and must keep it.
   repeated float vector = 10;
+  // Encoder identity for `vector`. Zero keeps records written before this field readable.
+  uint64 embedding_model_hash = 11;
 }
 
 // THE DURABLE SUMMARY. ALL SIX FIELDS, AND ONE OF THEM IS AN ENCODER GUARD IN ITS OWN RIGHT.
@@ -1747,4 +1909,110 @@ message DurableControlStateSeries {
   repeated uint64 timestamps_ms = 1;
   // `sint64`: zigzag, so a small negative amount is one byte and not ten.
   repeated sint64 values = 2;
+}
+
+// Compact durable records for the LLM-context memory client. Metadata is MessagePack
+// inside protobuf so arbitrary caller metadata remains typed without JSON storage.
+message LlmMemoryRecord {
+  string id = 1;
+  string memory = 2;
+  bytes metadata_msgpack = 3;
+  string tenant_id = 4;
+  string account_id = 5;
+  string user_id = 6;
+  string agent_id = 7;
+  string run_id = 8;
+  uint64 created_at_ms = 9;
+  uint64 updated_at_ms = 10;
+  string context_ref = 11;
+}
+
+message LlmMemoryHistoryRecord {
+  string id = 1;
+  string event = 2;
+  uint64 at_ms = 3;
+  optional string memory = 4;
+  bytes metadata_msgpack = 5;
+  optional string feedback = 6;
+  optional string feedback_reason = 7;
+}
+
+enum LlmContextProviderKind {
+  LLM_CONTEXT_PROVIDER_UNSPECIFIED = 0;
+  LLM_CONTEXT_PROVIDER_MOCK = 1;
+  LLM_CONTEXT_PROVIDER_OPEN_AI_COMPATIBLE = 2;
+  LLM_CONTEXT_PROVIDER_OLLAMA = 3;
+}
+
+enum LlmContextSourceKind {
+  LLM_CONTEXT_SOURCE_UNSPECIFIED = 0;
+  LLM_CONTEXT_SOURCE_DOCUMENT = 1;
+  LLM_CONTEXT_SOURCE_CHAT = 2;
+  LLM_CONTEXT_SOURCE_TICKET = 3;
+  LLM_CONTEXT_SOURCE_CODE = 4;
+  LLM_CONTEXT_SOURCE_INCIDENT = 5;
+  LLM_CONTEXT_SOURCE_USER_EVENT = 6;
+}
+
+message LlmContextProvider {
+  string provider_name = 1;
+  LlmContextProviderKind provider_kind = 2;
+  string base_url = 3;
+  string api_key_env = 4;
+  string model = 5;
+  string embedding_model = 6;
+  string vlm_model = 7;
+  uint64 timeout_ms = 8;
+  uint64 max_retries = 9;
+  LlmContextProvider fallback_provider = 10;
+  bool mock_mode = 11;
+}
+
+message LlmContextSource {
+  LlmContextSourceKind source_kind = 1;
+  string source_id = 2;
+  string title = 3;
+  string body = 4;
+  uint64 timestamp_ms = 5;
+  LlmContextProvider provider = 6;
+}
+
+// Explicit-memory ingestion never invokes a summary model. Its encoder remains configurable.
+message ContextExplicitIngestRequest {
+  uint32 protocol_version = 1;
+  uint64 shard_id = 2;
+  uint64 tenant_hash = 3;
+  repeated LlmContextSource sources = 4;
+  LlmContextProvider provider = 5;
+  uint64 start_time_ms = 6;
+  uint64 end_time_ms = 7;
+  uint64 max_events = 8;
+  string query = 9;
+}
+
+message ContextExplicitIngestResponse {
+  uint32 protocol_version = 1;
+  Status status = 2;
+  uint64 accepted = 3;
+  uint64 failed = 4;
+}
+
+message ContextMemoryFact {
+  uint64 entity_hash = 1;
+  string kind = 2;
+  string name = 3;
+  string value = 4;
+}
+
+message ContextMemorySourceReceipt {
+  Status status = 1;
+  string source_ref = 2;
+  uint64 node_hash = 3;
+  uint64 extracted_entity_count = 4;
+  repeated ContextMemoryFact facts = 5;
+}
+
+message ContextMemoryIngestResponse {
+  ContextExplicitIngestResponse acknowledgment = 1;
+  repeated ContextMemorySourceReceipt sources = 2;
 }

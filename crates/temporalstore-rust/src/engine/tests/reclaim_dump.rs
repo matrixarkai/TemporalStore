@@ -105,6 +105,1462 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
     records.len()
 }
 
+#[test]
+fn older_checkpoint_publications_do_not_replace_newer_images() {
+    for kind in ["flush", "catalog"] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), kind));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        assert!(engine.set_config(crate::control::SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: crate::control::Config {
+                version: 2,
+                async_storage: false,
+                ..crate::control::Config::default()
+            },
+        }).ok);
+        write_one_at_a_time(&engine, &["early".to_string()]);
+        let writer = std::sync::Arc::clone(&engine);
+        engine.block_store.with_after_next_sync_for_test(
+            move || {
+                write_one_at_a_time(&writer, &["late".to_string()]);
+                assert!(writer.dump_index_catalog(RECLAIM_DUMP_SHARD));
+            },
+            || match kind {
+                "flush" => engine.flush_shard_index(RECLAIM_DUMP_SHARD),
+                "catalog" => { assert!(!engine.dump_index_catalog(RECLAIM_DUMP_SHARD)); }
+                _ => unreachable!(),
+            },
+        );
+        let bytes = std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap();
+        let durable = crate::engine::decode_index_bytes(&bytes).unwrap();
+        assert_eq!(durable.applied_wal_sequence,
+            Some(engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence), "{kind}");
+        assert!(durable.string_address("late").is_some(), "{kind} replaced the newer image");
+        drop(engine);
+        let indexes = dir.path().join(format!("{kind}-indexes"));
+        for name in ["wals", "indexlogs"] {
+            let path = indexes.join(name);
+            if path.exists() {
+                std::fs::remove_dir_all(path).unwrap();
+            }
+        }
+        let restored = TemporalEngine::with_local_dirs(
+            1 << 20,
+            dir.path().join(format!("{kind}-restart-cache")),
+            dir.path().join(format!("{kind}-blocks")),
+            &indexes,
+        );
+        restored.load_shard(RECLAIM_DUMP_SHARD);
+        assert_eq!(wal_record_count(&restored), 0);
+        for key in ["early", "late"] {
+            let response = restored.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringGet { key: key.to_string() },
+            });
+            assert!(response.status.ok);
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+        }
+    }
+}
+
+#[test]
+fn a_superseded_manifest_capture_is_not_published() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), "superseded"));
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    write_one_at_a_time(&engine, &["early".to_string()]);
+    let writer = std::sync::Arc::clone(&engine);
+    let result = engine.block_store.with_after_next_sync_for_test(
+        move || {
+            write_one_at_a_time(&writer, &["late".to_string()]);
+            assert!(writer.dump_index_catalog(RECLAIM_DUMP_SHARD));
+        },
+        || engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []),
+    );
+    assert!(result.is_err());
+    assert!(crate::engine::bucket_dump_io::list_bucket_dump_manifests_at(
+        &engine.index_dir, RECLAIM_DUMP_SHARD).unwrap().is_empty());
+}
+
+#[test]
+fn compaction_at_the_same_wal_sequence_supersedes_an_older_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), "relocated"));
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2, async_storage: false, ..crate::control::Config::default()
+        },
+    }).ok);
+    write_one_at_a_time(&engine, &["early".to_string()]);
+    let before = engine.string_block_address(RECLAIM_DUMP_SHARD, "early").unwrap();
+    let sequence = engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence;
+    let compactor = std::sync::Arc::clone(&engine);
+    engine.block_store.with_after_next_sync_for_test(
+        move || { compactor.compact_shard_blocks(RECLAIM_DUMP_SHARD).unwrap(); },
+        || engine.flush_shard_index(RECLAIM_DUMP_SHARD),
+    );
+    let after = engine.string_block_address(RECLAIM_DUMP_SHARD, "early").unwrap();
+    assert_ne!(before, after);
+    assert_eq!(engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence, sequence);
+    let durable = crate::engine::decode_index_bytes(
+        &std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap()).unwrap();
+    assert_eq!(durable.string_address("early"), Some(after));
+}
+
+#[test]
+fn unload_forgets_publication_state_and_refuses_old_captures() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "generations");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    let (_, older) = engine.capture_shard_checkpoint(RECLAIM_DUMP_SHARD).unwrap();
+    assert_eq!(engine.checkpoint_publications.tracked_shards_for_test(), 1);
+    engine.unload_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(engine.checkpoint_publications.tracked_shards_for_test(), 0);
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    let (_, newer) = engine.capture_shard_checkpoint(RECLAIM_DUMP_SHARD).unwrap();
+    assert!(engine.checkpoint_publications.publish(&older, || Ok(())).unwrap().is_none());
+    assert!(engine.checkpoint_publications.publish(&newer, || Ok(())).unwrap().is_some());
+}
+
+#[test]
+fn a_failed_flush_keeps_the_live_checkpoint_anchor() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "failed-flush");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..crate::control::Config::default()
+        },
+    }).ok);
+    write_one_at_a_time(&engine, &reclaim_dump_keys(1));
+    let before = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence;
+    let index_path = engine.index_path(RECLAIM_DUMP_SHARD);
+    if index_path.is_file() {
+        std::fs::remove_file(&index_path).unwrap();
+    }
+    std::fs::create_dir_all(&index_path).unwrap();
+    engine.flush_shard_index(RECLAIM_DUMP_SHARD);
+    assert!(index_path.is_dir());
+    assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence, before);
+}
+
+#[test]
+fn checkpoint_capture_precedes_the_storage_barrier() {
+    for (kind, async_storage) in [
+        ("manifest", false), ("flush", false), ("catalog", false),
+        ("manifest", true), ("flush", true), ("catalog", true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), kind));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        assert!(engine.set_config(crate::control::SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: crate::control::Config {
+                version: 2,
+                async_storage,
+                ..crate::control::Config::default()
+            },
+        }).ok);
+        let write = |engine: &TemporalEngine, key: &str| {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringSet { key: key.to_string(), value: key.as_bytes().to_vec() },
+            });
+            assert!(result.status.ok, "{:?}", result.status);
+        };
+        write(&engine, "early");
+        let captured_sequence = engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence;
+        assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+            .applied_wal_sequence, Some(captured_sequence));
+        let writer = std::sync::Arc::clone(&engine);
+        let injected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let did_inject = std::sync::Arc::clone(&injected);
+        let bytes = engine.block_store.with_after_next_sync_for_test(
+            move || {
+                write(&writer, "late");
+                did_inject.store(true, std::sync::atomic::Ordering::Relaxed);
+            },
+            || match kind {
+                "manifest" => engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, [])
+                    .unwrap().index_bytes,
+                "flush" => {
+                    engine.flush_shard_index(RECLAIM_DUMP_SHARD);
+                    std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap()
+                }
+                "catalog" => {
+                    assert!(engine.dump_index_catalog(RECLAIM_DUMP_SHARD));
+                    std::fs::read(engine.index_path(RECLAIM_DUMP_SHARD)).unwrap()
+                }
+                _ => unreachable!(),
+            },
+        );
+        assert!(injected.load(std::sync::atomic::Ordering::Relaxed));
+        let live_sequence = engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence;
+        assert!(live_sequence > captured_sequence);
+        let captured = crate::engine::decode_index_bytes(&bytes).unwrap();
+        assert_eq!(captured.applied_wal_sequence, Some(captured_sequence), "{kind}");
+        assert!(captured.string_address("early").is_some());
+        assert!(captured.string_address("late").is_none(), "{kind} captured a write after its data sync");
+        assert!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].string_address("late").is_some());
+        assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD].applied_wal_sequence,
+            Some(live_sequence), "{kind} must not roll back a concurrent writer's anchor");
+        drop(engine);
+        let restored = reclaim_dump_engine(dir.path(), kind);
+        restored.load_shard(RECLAIM_DUMP_SHARD);
+        for key in ["early", "late"] {
+            let result = restored.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringGet { key: key.to_string() },
+            });
+            assert!(result.status.ok);
+            assert_eq!(result.response, CommandResponse::Bytes { value: Some(key.as_bytes().to_vec()) }, "{kind}");
+        }
+    }
+}
+
+#[test]
+fn resident_materialization_does_not_replace_a_newer_write() {
+    resident_materialization_race(false);
+}
+
+#[test]
+fn resident_materialization_does_not_resurrect_a_deleted_key() {
+    resident_materialization_race(true);
+}
+
+fn resident_materialization_race(delete: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "materialize-race");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..crate::control::Config::default()
+        },
+    }).ok);
+    let write = |value: &[u8]| {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringSet { key: "contended".into(), value: value.to_vec() },
+        }).status.ok);
+    };
+    write(b"old");
+    let mut injected = false;
+    let mut registrations_after_mutation = 0;
+    let moved = engine.materialize_resident_blocks_with_before_publish(
+        RECLAIM_DUMP_SHARD, |_| true, |key| {
+            assert_eq!(key, "contended");
+            if delete {
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::StringDelete { key: key.into() },
+                }).status.ok);
+            } else {
+                write(b"new");
+            }
+            registrations_after_mutation = engine.registration_count_for_test(RECLAIM_DUMP_SHARD);
+            injected = true;
+        },
+    );
+    assert!(injected);
+    assert_eq!(moved, 0, "a superseded copy must not be published");
+    let remaining = usize::from(!delete);
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), registrations_after_mutation);
+    let check = |engine: &TemporalEngine| {
+        engine.cache.invalidate_shard(RECLAIM_DUMP_SHARD).unwrap();
+        let result = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringGet { key: "contended".into() },
+        });
+        assert!(result.status.ok);
+        assert_eq!(result.response, CommandResponse::Bytes {
+            value: (!delete).then(|| b"new".to_vec()),
+        });
+    };
+    check(&engine);
+    assert_eq!(engine.materialize_oldest_resident_blocks(RECLAIM_DUMP_SHARD, 0), remaining);
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD),
+        if delete { registrations_after_mutation } else { 0 });
+    check(&engine);
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "materialize-race");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    check(&restored);
+}
+
+#[test]
+fn durable_dump_retires_deleted_objects_but_keeps_live_frames_and_tombstones() {
+    checkpoint_retirement_corpus(32, false);
+}
+
+#[test]
+#[ignore = "large checkpoint retirement measurement"]
+fn durable_dump_registration_retirement_at_scale() {
+    checkpoint_retirement_corpus(20_000, true);
+}
+
+fn checkpoint_retirement_corpus(deleted: usize, batched: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "retire-deleted");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    let keys = reclaim_dump_keys(deleted);
+    if batched {
+        write_as_batches(&engine, &keys, 512);
+    } else {
+        write_one_at_a_time(&engine, &keys);
+    }
+    for command in [
+        Command::HashSet { key: "deleted-hash".into(), field: "a".into(), value: b"a".to_vec() },
+        Command::HashSet { key: "deleted-hash".into(), field: "b".into(), value: b"b".to_vec() },
+        Command::SetAdd { key: "deleted-set".into(), member: b"a".to_vec() },
+    ] {
+        assert!(engine.execute(ExecuteRequest { shard_id: RECLAIM_DUMP_SHARD, command }).status.ok);
+    }
+    let unreferenced = engine.registration_count_for_test(RECLAIM_DUMP_SHARD);
+    let keepers = vec![
+        Command::StringSet { key: "live-string".into(), value: b"retained".to_vec() },
+        Command::HashSet { key: "live-hash".into(), field: "field".into(), value: b"value".to_vec() },
+        Command::SetAdd { key: "removed-member".into(), member: b"member".to_vec() },
+        Command::SetRemove { key: "removed-member".into(), member: b"member".to_vec() },
+    ];
+    assert!(engine.batch_execute(crate::types::BatchExecuteRequest {
+        shard_id: RECLAIM_DUMP_SHARD, commands: keepers,
+    }).status.ok);
+    let before = engine.registration_count_for_test(RECLAIM_DUMP_SHARD);
+    let old_manifest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    let deletes = keys.iter().map(|key| Command::StringDelete { key: key.clone() })
+        .chain([Command::CommonDelete { key: "deleted-hash".into() },
+            Command::CommonDelete { key: "deleted-set".into() }]).collect::<Vec<_>>();
+    if batched {
+        for commands in deletes.chunks(512) {
+            assert!(engine.batch_execute(crate::types::BatchExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD, commands: commands.to_vec(),
+            }).status.ok);
+        }
+    } else {
+        for command in deletes {
+            assert!(engine.execute(ExecuteRequest { shard_id: RECLAIM_DUMP_SHARD, command }).status.ok);
+        }
+    }
+    // The previous durable image still names these frames until the new dump publishes.
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), before);
+    let slab_bytes = engine.block_store.stats().bytes_written;
+    let manifest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), before - unreferenced);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), before - unreferenced);
+    let snapshot = decode_index_bytes(&manifest.index_bytes).unwrap();
+    assert_eq!(snapshot.wal_resident_blocks.len(), before - unreferenced);
+    assert_eq!(engine.block_store.stats().bytes_written, slab_bytes);
+    let slab_delta = engine.block_store.stats().bytes_written - slab_bytes;
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &manifest);
+    let plan = engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []);
+    assert!(plan.safe_to_reclaim, "{:?}", plan.blocker_reasons);
+    let guarded = engine.apply_storage_wal_reclaim(plan);
+    assert!(guarded.applied, "{:?}", guarded.plan.blocker_reasons);
+    assert_eq!(engine.write_ahead_log_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(1));
+    let pruned = engine.apply_bucket_dump_manifest_prune(RECLAIM_DUMP_SHARD);
+    assert!(pruned.removed_manifest_ids.contains(&old_manifest.manifest_id), "{:?}", pruned.plan);
+    let plan = engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []);
+    assert!(plan.safe_to_reclaim, "{:?}", plan.blocker_reasons);
+    let reclaimed = engine.apply_storage_wal_reclaim(plan);
+    assert!(reclaimed.applied, "{:?}", reclaimed.plan.blocker_reasons);
+    assert_eq!(engine.write_ahead_log_store().block_retention_floor(RECLAIM_DUMP_SHARD),
+        snapshot.wal_resident_blocks.values().map(|placement| placement.sequence).min());
+    if batched { assert!(reclaimed.wal_records_removed > 0); }
+    let check = |engine: &TemporalEngine| {
+        engine.cache.invalidate_shard(RECLAIM_DUMP_SHARD).unwrap();
+        for (command, expected) in [
+            (Command::StringGet { key: "live-string".into() },
+                CommandResponse::Bytes { value: Some(b"retained".to_vec()) }),
+            (Command::HashGet { key: "live-hash".into(), field: "field".into() },
+                CommandResponse::Bytes { value: Some(b"value".to_vec()) }),
+            (Command::SetMembers { key: "removed-member".into() },
+                CommandResponse::Members { members: Vec::new() }),
+        ] {
+            let result = engine.execute(ExecuteRequest { shard_id: RECLAIM_DUMP_SHARD, command });
+            assert!(result.status.ok);
+            assert_eq!(result.response, expected);
+        }
+        for key in &keys {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: key.clone() },
+            });
+            assert!(result.status.ok);
+            assert_eq!(result.response, CommandResponse::Bytes { value: None });
+        }
+    };
+    check(&engine);
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "retire-deleted");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restored.registration_count_for_test(RECLAIM_DUMP_SHARD), before - unreferenced);
+    check(&restored);
+    eprintln!("checkpoint_retirement deleted={deleted} before={before} retained={} index_bytes={} slab_delta={} wal_records_removed={} wal_bytes_removed={}",
+        before - unreferenced, manifest.index_bytes.len(), slab_delta, reclaimed.wal_records_removed,
+        reclaimed.wal_bytes_before.saturating_sub(reclaimed.wal_bytes_after));
+}
+
+#[test]
+fn retained_manifest_wal_dependencies_are_decoded_once_per_allocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "dependency-memo");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    write_one_at_a_time(&engine, &["live".into()]);
+    engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    let manifest = bucket_dump_io::list_bucket_dump_manifests_shared_at(
+        &engine.index_dir, RECLAIM_DUMP_SHARD,
+    ).unwrap().pop().unwrap();
+    let mut calls = 0;
+    let mut compute = || {
+        calls += 1;
+        let snapshot = decode_index_bytes(&manifest.index_bytes).map_err(|_| ())?;
+        Ok(snapshot.wal_resident_blocks.values().map(|placement| placement.sequence).min())
+    };
+    let first = bucket_dump_io::manifest_wal_floor_memoised(&manifest, &mut compute);
+    assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(&manifest, &mut compute), first);
+    let replacement = std::sync::Arc::new((*manifest).clone());
+    assert_eq!(bucket_dump_io::manifest_wal_floor_memoised(&replacement, &mut compute), first);
+    assert_eq!(calls, 2);
+}
+
+#[test]
+fn dump_registration_retirement_keeps_concurrent_writes_and_refused_publications() {
+    for mutation in ["same-key", "other-key", "supersede"] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = std::sync::Arc::new(reclaim_dump_engine(dir.path(), mutation));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        assert!(engine.set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config { version: 2, async_storage: true, ..Config::default() },
+        }).ok);
+        write_one_at_a_time(&engine, &["gone".into()]);
+        engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD, command: Command::StringDelete { key: "gone".into() },
+        }).status.ok);
+        let writer = std::sync::Arc::clone(&engine);
+        let result = engine.block_store.with_after_next_sync_for_test(move || {
+            if mutation == "supersede" {
+                assert!(writer.dump_index_catalog(RECLAIM_DUMP_SHARD));
+            } else {
+                let key = if mutation == "same-key" { "gone" } else { "other" };
+                assert!(writer.execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::StringSet { key: key.into(), value: b"new".to_vec() },
+                }).status.ok);
+            }
+        }, || engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []));
+        assert_eq!(result.is_err(), mutation == "supersede");
+        let expected_before_retry = if mutation == "other-key" { 2 } else { 1 };
+        assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), expected_before_retry);
+        assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), expected_before_retry);
+        engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+        assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), usize::from(mutation != "supersede"));
+        drop(engine);
+        let restored = reclaim_dump_engine(dir.path(), mutation);
+        restored.load_shard(RECLAIM_DUMP_SHARD);
+        for key in ["gone", "other"] {
+            let expected = match (mutation, key) {
+                ("same-key", "gone") | ("other-key", "other") => Some(b"new".to_vec()),
+                _ => None,
+            };
+            let response = restored.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: key.into() },
+            });
+            assert!(response.status.ok);
+            assert_eq!(response.response, CommandResponse::Bytes { value: expected });
+        }
+    }
+}
+
+#[test]
+fn dump_registration_retirement_keeps_frames_in_released_buckets() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "retire-released");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    write_one_at_a_time(&engine, &["released-live".into(), "gone".into()]);
+    let first = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &first);
+    let bucket = engine.routing_bucket_for_key(RECLAIM_DUMP_SHARD, "released-live");
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&RECLAIM_DUMP_SHARD).unwrap();
+        let released = storage_bucket_internals::release_bucket_blocks(shard, &[bucket]);
+        assert_eq!(released.released_buckets, vec![bucket]);
+    }
+    assert!(engine.execute(ExecuteRequest {
+        shard_id: RECLAIM_DUMP_SHARD, command: Command::StringDelete { key: "gone".into() },
+    }).status.ok);
+    assert!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .bucket_index.released_buckets.contains(&bucket));
+    engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 1);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 1);
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "retire-released");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restored.registration_count_for_test(RECLAIM_DUMP_SHARD), 1);
+    let response = restored.execute(ExecuteRequest {
+        shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: "released-live".into() },
+    });
+    assert!(response.status.ok);
+    assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+}
+
+#[test]
+fn failed_dump_publication_keeps_registration_retirements_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "retire-failure");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    write_one_at_a_time(&engine, &["gone".into()]);
+    assert!(engine.execute(ExecuteRequest {
+        shard_id: RECLAIM_DUMP_SHARD, command: Command::StringDelete { key: "gone".into() },
+    }).status.ok);
+    let manifest_dir = bucket_dump_io::bucket_dump_manifest_dir(&engine.index_dir, RECLAIM_DUMP_SHARD);
+    std::fs::create_dir_all(manifest_dir.parent().unwrap()).unwrap();
+    std::fs::write(&manifest_dir, b"blocked directory").unwrap();
+    assert!(engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).is_err());
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 1);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 1);
+    std::fs::remove_file(&manifest_dir).unwrap();
+    engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 0);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 0);
+}
+
+#[test]
+fn a_partial_dump_keeps_released_bucket_slabs_and_restores_without_the_source_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "released-slab");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    write_one_at_a_time(&engine, &["released-live".into()]);
+    assert_eq!(engine.materialize_synthetic_blocks(RECLAIM_DUMP_SHARD), 1);
+    assert!(engine.block_store.prepare_next_slab_with_target(1).unwrap().is_some());
+    write_one_at_a_time(&engine, &["still-resident".into()]);
+    assert_eq!(engine.materialize_synthetic_blocks(RECLAIM_DUMP_SHARD), 1);
+    let released_bucket = engine.routing_bucket_for_key(RECLAIM_DUMP_SHARD, "released-live");
+    let resident_bucket = engine.routing_bucket_for_key(RECLAIM_DUMP_SHARD, "still-resident");
+    assert_ne!(released_bucket, resident_bucket);
+    let released_slab = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .string_address("released-live").unwrap().block_slab_id();
+    let resident_slab = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .string_address("still-resident").unwrap().block_slab_id();
+    assert_ne!(released_slab, resident_slab);
+    let first = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &first);
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let released = storage_bucket_internals::release_bucket_blocks(
+            shards.get_mut(&RECLAIM_DUMP_SHARD).unwrap(), &[released_bucket],
+        );
+        assert_eq!(released.released_blocks, 1);
+        assert_eq!(released.released_buckets, vec![released_bucket]);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let exported = decode_index_bytes(&engine.export_index_bytes(RECLAIM_DUMP_SHARD).unwrap()).unwrap();
+    assert_eq!(collect_live_block_entries(&exported).len(), 2,
+        "served-index export must also carry released block indexes");
+    let manifest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, [resident_bucket]).unwrap();
+    assert_eq!(manifest.bucket_ids, vec![resident_bucket]);
+    assert!(manifest.block_slab_ids.contains(&released_slab),
+        "the complete dump image must retain the released bucket's slab");
+    assert!(manifest.block_slab_ids.contains(&resident_slab));
+    engine.validate_bucket_dump_manifest(&manifest).unwrap();
+    assert!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .bucket_index.released_buckets.contains(&released_bucket),
+        "checkpoint capture must not reload the live shard");
+    drop(engine);
+
+    // Only the slabs and this manifest reach the destination, not the source WAL or cache.
+    let restored = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("restore-cache"), dir.path().join("released-slab-blocks"),
+        dir.path().join("restore-indexes"),
+    );
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restored.wal_store.stats_without_rescan(RECLAIM_DUMP_SHARD).last_sequence, 0);
+    restored.install_bucket_dump_manifest(&manifest).unwrap();
+    for key in ["released-live", "still-resident"] {
+        let response = restored.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: key.into() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+    }
+}
+
+#[test]
+fn checkpoint_capture_restores_released_indexes_in_one_model_pass() {
+    checkpoint_released_bucket_scan_case(2_000);
+}
+
+#[test]
+#[ignore = "large checkpoint capture guard"]
+fn checkpoint_capture_restores_released_indexes_at_scale() {
+    checkpoint_released_bucket_scan_case(100_000);
+}
+
+fn checkpoint_released_bucket_scan_case(count: usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "release-scan");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    let keys = reclaim_dump_keys(count);
+    write_as_batches(&engine, &keys, 500);
+    let manifest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &manifest);
+    {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&RECLAIM_DUMP_SHARD).unwrap();
+        let buckets = shard.bucket_index.bucket_map.keys().copied().take(64).collect::<Vec<_>>();
+        assert_eq!(buckets.len(), 64);
+        let outcome = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
+        assert_eq!(outcome.released_buckets.len(), 64, "{outcome:?}");
+    }
+    storage_bucket_internals::reset_model_map_addresses_visited();
+    let (snapshot, _) = engine.capture_shard_checkpoint(RECLAIM_DUMP_SHARD).unwrap();
+    let visited = storage_bucket_internals::model_map_addresses_visited();
+    assert_eq!(visited, count as u64, "capture must inspect the model maps once, not per bucket");
+    assert!(snapshot.bucket_index.released_buckets.is_empty());
+    let decoded = decode_index_bytes(&serialize_index(&snapshot)).unwrap();
+    assert_eq!(collect_live_block_entries(&decoded).len(), count);
+    assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .bucket_index.released_buckets.len(), 64);
+    eprintln!("checkpoint objects={count} released_buckets=64 model_addresses_visited={visited}");
+}
+
+#[test]
+fn slab_backed_dumps_do_not_pin_obsolete_wal_placements() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "retire-slab-backed");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    write_one_at_a_time(&engine, &["live".into()]);
+    let first = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    let placement = engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .wal_resident_blocks.iter().map(|(key, placement)| (*key, placement.clone())).next().unwrap();
+    assert_eq!(engine.materialize_synthetic_blocks(RECLAIM_DUMP_SHARD), 1);
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 0);
+    // Older complete images can carry placement metadata after all frames moved to slabs.
+    engine.shards.write().unwrap().get_mut(&RECLAIM_DUMP_SHARD).unwrap()
+        .wal_resident_blocks.insert(placement.0, placement.1);
+    let latest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    assert_eq!(decode_index_bytes(&latest.index_bytes).unwrap().wal_resident_blocks.len(), 1);
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &latest);
+    let guarded = engine.apply_storage_wal_reclaim(engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []));
+    assert!(guarded.applied);
+    assert_eq!(engine.write_ahead_log_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(1));
+    let pruned = engine.apply_bucket_dump_manifest_prune(RECLAIM_DUMP_SHARD);
+    assert!(pruned.removed_manifest_ids.contains(&first.manifest_id));
+    let reclaimed = engine.apply_storage_wal_reclaim(engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []));
+    assert!(reclaimed.applied);
+    assert_eq!(engine.write_ahead_log_store().block_retention_floor(RECLAIM_DUMP_SHARD), None);
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "retire-slab-backed");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    let response = restored.execute(ExecuteRequest {
+        shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: "live".into() },
+    });
+    assert!(response.status.ok);
+    assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+}
+
+#[test]
+fn cache_eviction_does_not_create_unindexed_slab_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "no-copy");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..crate::control::Config::default()
+        },
+    }).ok);
+    let keys = reclaim_dump_keys(64);
+    write_one_at_a_time(&engine, &keys);
+    assert_eq!(engine.materialize_oldest_resident_blocks(RECLAIM_DUMP_SHARD, 32), 32);
+    let bytes_before = engine.block_store.stats().bytes_written;
+    assert!(bytes_before > 0);
+    let buckets = engine.bucket_storage_summaries(RECLAIM_DUMP_SHARD);
+    let mut removed = 0;
+    for bucket in buckets {
+        removed += engine.cache.invalidate_slot(RECLAIM_DUMP_SHARD, bucket.routing_bucket)
+            .unwrap().memory_entries_removed;
+    }
+    assert!(removed >= keys.len());
+    assert_eq!(engine.block_store.stats().bytes_written, bytes_before);
+    let check = |engine: &TemporalEngine| {
+        for key in &keys {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(result.status.ok);
+            assert_eq!(result.response, CommandResponse::Bytes { value: Some(vec![118; 64]) });
+        }
+    };
+    check(&engine);
+    for _ in 0..2 {
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            max_dump_buckets_per_round: 0,
+            ..StorageManagerCycleRequest::default()
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.plan.reclaim_candidates.is_empty());
+        assert!(report.stages.iter().all(|stage| stage.rewritten_block_refs == 0));
+        assert_eq!(engine.block_store.stats().bytes_written, bytes_before);
+    }
+    drop(engine);
+    let restored = reclaim_dump_engine(dir.path(), "no-copy");
+    restored.load_shard(RECLAIM_DUMP_SHARD);
+    check(&restored);
+}
+
+#[test]
+fn anonymous_async_blocks_have_real_storage_addresses() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "anonymous");
+    let value = b"anonymous block";
+    let address = append_value(&engine.cache, &engine.block_store, RECLAIM_DUMP_SHARD,
+        value, None, None, Some(0), true).unwrap();
+    assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+    engine.cache.invalidate_shard(RECLAIM_DUMP_SHARD).unwrap();
+    assert_eq!(engine.block_store.read(&address).unwrap(), value);
+}
+
+#[test]
+fn manifest_install_keeps_index_only_state_without_the_source_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("shared-blocks");
+    let source = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("source-cache"), &blocks, dir.path().join("source-index"),
+    );
+    source.load_shard(RECLAIM_DUMP_SHARD);
+    for command in [
+        Command::StringSet { key: "anchor".to_string(), value: b"anchor-value".to_vec() },
+        Command::SeenCheck { key: "seen-only".to_string(), member: b"member".to_vec(), window_ms: 600_000 },
+        Command::BucketTake { key: "quota-only".to_string(), tokens: 2.0, capacity: 2.0, refill_per_sec: 0.0 },
+        Command::CommonExpire { key: "seen-only".to_string(), ttl_ms: 600_000 },
+    ] {
+        let result = source.execute(ExecuteRequest { shard_id: RECLAIM_DUMP_SHARD, command });
+        assert!(result.status.ok, "source write: {:?}", result.status);
+    }
+    let peek = Command::BucketPeek {
+        key: "quota-only".to_string(), tokens: 1.0, capacity: 2.0, refill_per_sec: 0.0,
+    };
+    let expected_quota = source.execute(ExecuteRequest {
+        shard_id: RECLAIM_DUMP_SHARD, command: peek.clone(),
+    });
+    assert!(expected_quota.status.ok);
+    match &expected_quota.response {
+        CommandResponse::Members { members } => {
+            assert_eq!(members.first().map(Vec::as_slice), Some(b"0".as_slice()),
+                "the source quota must be exhausted, not a fresh full bucket");
+        }
+        other => panic!("unexpected quota response: {other:?}"),
+    }
+    let expected_deadline = source.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+        .expires_at_ms().get("seen-only").copied().expect("the seen set has a deadline");
+    source.flush_shard_index(RECLAIM_DUMP_SHARD);
+    let selected = source.bucket_storage_summaries(RECLAIM_DUMP_SHARD)[0].routing_bucket;
+    let manifest = source.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, [selected]).unwrap();
+    assert_eq!(manifest.bucket_ids, vec![selected]);
+    assert!(manifest.wal_sequence > 0);
+
+    let target_indexes = dir.path().join("target-index");
+    let target = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("target-cache"), &blocks, &target_indexes,
+    );
+    target.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(target.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence, 0);
+    target.install_bucket_dump_manifest(&manifest).unwrap();
+    let check = |engine: &TemporalEngine| {
+        let seen = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::SeenCard { key: "seen-only".to_string() },
+        });
+        assert!(seen.status.ok);
+        assert_eq!(seen.response, CommandResponse::Integer { value: 1 });
+        let quota = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD, command: peek.clone(),
+        });
+        assert!(quota.status.ok);
+        assert_eq!(quota.response, expected_quota.response);
+        assert_eq!(engine.shards.read().unwrap()[&RECLAIM_DUMP_SHARD]
+            .expires_at_ms().get("seen-only").copied(), Some(expected_deadline));
+        assert_eq!(engine.write_ahead_log_store().stats(RECLAIM_DUMP_SHARD).last_sequence, 0);
+    };
+    check(&target);
+    drop(target);
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("restart-cache"), &blocks, &target_indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    check(&restarted);
+}
+
+#[test]
+fn object_runtime_report_builds_one_identity_map_for_all_buckets() {
+    let dir = tempfile::tempdir().unwrap();
+    for count in [32, 128] {
+        let engine = reclaim_dump_engine(dir.path(), &format!("identity-{count}"));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        write_one_at_a_time(&engine, &reclaim_dump_keys(count));
+        let shards = engine.shards.read().unwrap();
+        let shard = &shards[&RECLAIM_DUMP_SHARD];
+        assert!(shard.bucket_index.bucket_map.len() > 16);
+        let (report, builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
+            crate::engine::object_manager::runtime_report(shard)
+        });
+        assert_eq!(report.live_object_count, count);
+        assert_eq!(report.live_block_ref_count, count);
+        assert_eq!(builds, 1, "{count} objects must share one identity map");
+    }
+}
+
+#[test]
+fn physical_index_report_identity_builds_do_not_scale_with_buckets() {
+    let dir = tempfile::tempdir().unwrap();
+    for count in [32, 128] {
+        let engine = reclaim_dump_engine(dir.path(), &format!("physical-{count}"));
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        write_one_at_a_time(&engine, &reclaim_dump_keys(count));
+        let shards = engine.shards.read().unwrap();
+        let shard = &shards[&RECLAIM_DUMP_SHARD];
+        assert!(shard.bucket_index.bucket_map.len() > 16);
+        let (report, builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
+            crate::engine::storage_reporting::storage_physical_index_report(
+                RECLAIM_DUMP_SHARD, shard, Vec::new(),
+            )
+        });
+        assert_eq!(report.block_index_count, count);
+        assert_eq!(report.bucket_count, shard.bucket_index.bucket_map.len());
+        assert_eq!(report.missing_object_id_count, 0);
+        assert!(builds <= 2, "{count} objects required {builds} identity builds");
+    }
+}
+
+#[test]
+fn compacted_hash_elements_release_their_wal_positions_before_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = reclaim_dump_engine(dir.path(), "retire");
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine.set_config(SetConfigRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        config: Config { version: 2, async_storage: true, ..Config::default() },
+    }).ok);
+    for index in 0..16 {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::HashSet {
+                key: "many-fields".to_string(),
+                field: format!("field-{index}"),
+                value: vec![index as u8; 64],
+            },
+        }).status.ok);
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 16);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 16);
+    engine.compact_shard_blocks(RECLAIM_DUMP_SHARD).unwrap();
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), 0);
+    assert_eq!(engine.wal_resident_block_count(RECLAIM_DUMP_SHARD), 0);
+    engine.flush_shard_index(RECLAIM_DUMP_SHARD);
+    drop(engine);
+    let restarted = reclaim_dump_engine(dir.path(), "retire");
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restarted.wal_resident_block_count(RECLAIM_DUMP_SHARD), 0);
+    for index in 0..16 {
+        let response = restarted.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::HashGet {
+                key: "many-fields".to_string(), field: format!("field-{index}"),
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![index as u8; 64]) });
+    }
+}
+
+#[test]
+fn a_hash_dump_keeps_wal_blocks_needed_by_restore() {
+    const KEYS: usize = 48;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::HashSet {
+                key: format!("hash-{index:04}"),
+                field: "f".to_string(),
+                value: format!("value-{index:04}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), KEYS);
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+    assert_eq!(
+        engine.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD),
+        Some(1),
+        "reclaim report: {:?}",
+        report.wal_reclaim_report
+    );
+    assert_eq!(wal_record_count(&engine), KEYS, "reclaim removed live WAL records");
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::HashGet {
+                    key: "hash-0000".to_string(),
+                    field: "f".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"value-0000".to_vec()),
+        },
+        "the live shard lost its first hash before restart"
+    );
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    let load = restarted.load_shard_with(LoadShardRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(load.status.ok, "restart refused: {:?}", load.status);
+    for index in 0..KEYS {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::HashGet {
+                        key: format!("hash-{index:04}"),
+                        field: "f".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("value-{index:04}").into_bytes()),
+            },
+            "hash-{index:04} was lost after reclaim and restart"
+        );
+    }
+}
+
+#[test]
+fn a_live_only_string_dump_keeps_wal_pages_without_slab_rewrites() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = reclaim_dump_keys(64);
+    for batch in [1, 8] {
+        let name = format!("live-only-{batch}");
+        let engine = reclaim_dump_engine(dir.path(), &name);
+        engine.load_shard(RECLAIM_DUMP_SHARD);
+        assert!(engine.set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config { version: 2, async_storage: true, ..Config::default() },
+        }).ok);
+        write_as_batches(&engine, &keys, batch);
+        assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), keys.len());
+        let records_before = wal_record_count(&engine);
+        assert!(!crate::engine::block_in_wal::registered_record_span_has_holes(
+            &engine.block_store, RECLAIM_DUMP_SHARD, &engine.wal_store,
+        ));
+        assert_eq!(records_before, keys.len() / batch);
+        let block_bytes_before = engine.block_store.stats().bytes_written;
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            max_dump_buckets_per_round: 0,
+            enable_prepare: false,
+            enable_evict: false,
+            enable_expire: false,
+            enable_block_reclaim: false,
+            enable_block_compaction: false,
+            enable_index_gc: false,
+            ..StorageManagerCycleRequest::default()
+        });
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+        assert!(report.stages.iter().all(|stage| stage.wal_resident_blocks_materialised == 0));
+        assert_eq!(engine.block_store.stats().bytes_written, block_bytes_before);
+        assert_eq!(wal_record_count(&engine), records_before);
+        assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), keys.len());
+        if batch == 8 {
+            assert!(engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::StringSet { key: keys[0].clone(), value: vec![119; 64] },
+            }).status.ok);
+            assert!(crate::engine::block_in_wal::registered_record_span_has_holes(
+                &engine.block_store, RECLAIM_DUMP_SHARD, &engine.wal_store,
+            ), "a partially superseded batch must still create relocation pressure");
+        }
+        drop(engine);
+        let restored = TemporalEngine::with_local_dirs(
+            1 << 20, dir.path().join(format!("restart-{batch}")),
+            dir.path().join(format!("{name}-blocks")), dir.path().join(format!("{name}-indexes")),
+        );
+        restored.load_shard(RECLAIM_DUMP_SHARD);
+        for key in &keys {
+            assert_eq!(restored.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD, command: Command::StringGet { key: key.clone() },
+            }).response, CommandResponse::Bytes {
+                value: Some(vec![if batch == 8 && key == &keys[0] { 119 } else { 118 }; 64]),
+            });
+        }
+    }
+}
+
+#[test]
+fn an_async_string_dump_reclaims_without_losing_restore() {
+    const KEYS: usize = 24;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringSet {
+                key: format!("string-{index:04}"),
+                value: format!("value-{index:04}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    // Supersede a record inside the live span so relocation can recover stale WAL space.
+    for value in [b"temporary".to_vec(), format!("value-{:04}", KEYS / 2).into_bytes()] {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::StringSet { key: format!("string-{:04}", KEYS / 2), value },
+        }).status.ok);
+    }
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+    assert!(report.stages.iter().any(|stage| stage.wal_resident_blocks_materialised > 0));
+    assert!(
+        report
+            .wal_reclaim_report
+            .as_ref()
+            .is_some_and(|stage| stage.wal_records_removed > 0),
+        "reclaim report: {:?}",
+        report.wal_reclaim_report
+    );
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    for index in 0..KEYS {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::StringGet {
+                        key: format!("string-{index:04}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("value-{index:04}").into_bytes()),
+            },
+            "string-{index:04} was lost after reclaim and restart"
+        );
+    }
+}
+
+#[test]
+fn container_blocks_remain_readable_after_dump_and_restart() {
+    const KEYS: usize = 12;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for index in 0..KEYS {
+        let member = format!("member-{index:04}").into_bytes();
+        for command in [
+            Command::SetAdd {
+                key: format!("set-{index:04}"),
+                member: member.clone(),
+            },
+            Command::ListPush {
+                key: format!("list-{index:04}"),
+                member: member.clone(),
+                left: false,
+            },
+            Command::ZSetAdd {
+                key: format!("zset-{index:04}"),
+                member: member.clone(),
+                score: index as f64,
+            },
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command,
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), KEYS * 3);
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(report.lifecycle_report.as_ref().and_then(|stage| stage.dump_manifest.as_ref()).is_some());
+    assert_eq!(engine.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(1));
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    for index in 0..KEYS {
+        let member = format!("member-{index:04}").into_bytes();
+        for (command, expected) in [
+            (
+                Command::SetMembers {
+                    key: format!("set-{index:04}"),
+                },
+                CommandResponse::Members {
+                    members: vec![member.clone()],
+                },
+            ),
+            (
+                Command::ListRange {
+                    key: format!("list-{index:04}"),
+                    start: 0,
+                    stop: -1,
+                },
+                CommandResponse::Members {
+                    members: vec![member.clone()],
+                },
+            ),
+            (
+                Command::ZSetScore {
+                    key: format!("zset-{index:04}"),
+                    member,
+                },
+                CommandResponse::Bytes {
+                    value: Some(index.to_string().into_bytes()),
+                },
+            ),
+        ] {
+            let got = restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command,
+                })
+                .response;
+            assert_eq!(got, expected, "container {index} changed after restart");
+        }
+    }
+}
+
+#[test]
+fn a_container_tombstone_retains_its_wal_record_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for command in [
+        Command::SetAdd {
+            key: "removed-set".to_string(),
+            member: b"former-member".to_vec(),
+        },
+        Command::SetRemove {
+            key: "removed-set".to_string(),
+            member: b"former-member".to_vec(),
+        },
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command,
+        });
+        assert!(response.status.ok, "write failed: {:?}", response.status);
+    }
+    let request = StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        min_undumped_wal_records: 0,
+        min_undumped_wal_bytes: 0,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    };
+    engine.run_storage_manager_cycle(request.clone());
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    restarted.load_shard(RECLAIM_DUMP_SHARD);
+    assert_eq!(restarted.registration_count_for_test(RECLAIM_DUMP_SHARD), 1);
+    restarted.run_storage_manager_cycle(request);
+    assert_eq!(restarted.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(2));
+    assert_eq!(
+        restarted
+            .execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD,
+                command: Command::SetMembers {
+                    key: "removed-set".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Members { members: Vec::new() }
+    );
+}
+
+#[test]
+fn batched_tombstones_rehydrate_from_one_wal_record() {
+    const MEMBERS: usize = 64;
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &blocks,
+        &indexes,
+    );
+    engine.load_shard(RECLAIM_DUMP_SHARD);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+    for remove in [false, true] {
+        let commands = (0..MEMBERS)
+            .map(|index| {
+                let key = format!("removed-set-{index}");
+                let member = format!("member-{index}").into_bytes();
+                if remove {
+                    Command::SetRemove { key, member }
+                } else {
+                    Command::SetAdd { key, member }
+                }
+            })
+            .collect();
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            commands,
+        });
+        assert!(response.status.ok, "batch write failed: {:?}", response.status);
+    }
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        max_dump_buckets_per_round: 0,
+        enable_prepare: false,
+        enable_evict: false,
+        enable_expire: false,
+        enable_block_reclaim: false,
+        enable_block_compaction: false,
+        enable_index_gc: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert_eq!(engine.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &blocks,
+        &indexes,
+    );
+    let before = restarted.wal_store().stats(RECLAIM_DUMP_SHARD).bytes_read;
+    let load = restarted.load_shard_with(LoadShardRequest {
+        shard_id: RECLAIM_DUMP_SHARD,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(load.status.ok, "restart refused: {:?}", load.status);
+    let bytes_read = restarted.wal_store().stats(RECLAIM_DUMP_SHARD).bytes_read - before;
+    assert_eq!(restarted.registration_count_for_test(RECLAIM_DUMP_SHARD), MEMBERS);
+    assert!(
+        bytes_read < 1 << 20,
+        "rehydrating {MEMBERS} tombstones read {bytes_read} WAL bytes"
+    );
+    for index in 0..MEMBERS {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: RECLAIM_DUMP_SHARD,
+                    command: Command::SetMembers {
+                        key: format!("removed-set-{index}"),
+                    },
+                })
+                .response,
+            CommandResponse::Members { members: Vec::new() }
+        );
+    }
+}
+
 /// A bucket dirtied by a BATCH write can name its oldest undumped write, as one dirtied by a
 /// single-command write already could.
 ///

@@ -94,6 +94,19 @@ pub(super) fn run_compaction_inner_draining(
     }
 }
 
+pub(super) fn run_compaction_background_draining(
+    inner: &DataNodeRuntimeInner,
+    shard_id: ShardId,
+    drain_block_slab_ids: BTreeSet<u64>,
+) -> Status {
+    let result = inner.engine.compact_shard_blocks_draining_background(shard_id, drain_block_slab_ids);
+    inner.stats.lock().expect("runtime stats lock poisoned").compaction_runs += 1;
+    match result {
+        Ok(()) => Status::ok(),
+        Err(status) => status,
+    }
+}
+
 pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse {
     // REFUSE WHILE THE SHARD IS RECOVERING (WAL replay still to run, or running).
     //

@@ -2539,9 +2539,8 @@ fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
 
     // RANGE READS use the durable maps, not the element name.
     assert!(
-        execute.contains("let mut ordered: Vec<(Vec<u8>, u64)> = shard\n        .bucket_index.zsets"),
-        "zset_members_in_score_range no longer reads the zsets map; if it has started walking the \
-         bucket index, element name order IS load-bearing"
+        execute.contains("let mut ordered: Vec<(Vec<u8>, u64)> = shard\n        .bucket_index\n        .zsets"),
+        "zset_members_in_score_range must read the resident zset map, not walk block entries"
     );
 
     // AND THE ONE CALLER THAT COULD HAVE CARED DOES NOT ORDER BY THE ELEMENT NAME.

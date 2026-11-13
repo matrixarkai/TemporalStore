@@ -1,7 +1,9 @@
 # Context Management On TemporalStore
 
-TemporalStore is the hot serving layer for MatrixArk context management. It
-stores time-keyed agent memory, resource chunks, extracted state, summaries,
+Context-management code lives in TemporalStore, alongside its APIs, SDKs, and
+serving engine. MatrixArk is optional Python tooling, not a separate required
+context-management runtime. TemporalStore stores time-keyed agent memory,
+resource chunks, extracted state, summaries,
 embeddings, and compact retrieval indexes so agents can recall useful context
 without scanning whole transcripts or stuffing every old message into the next
 prompt.
@@ -193,6 +195,37 @@ Ollama/Qwen setup:
   --pull-ollama \
   --ollama-models "qwen2.5:0.5b qwen2.5:1.5b nomic-embed-text"
 ```
+
+Enable TemporalStore's native Ollama extraction and embedding path for live
+hooks, bulk ingestion, query embedding, and the asynchronous embedding drainer:
+
+```bash
+export TEMPORALSTORE_CONTEXT_PROVIDER=ollama
+export TEMPORALSTORE_OLLAMA_BASE_URL=http://127.0.0.1:11434
+export TEMPORALSTORE_OLLAMA_EXTRACTION_MODEL=qwen2.5:1.5b
+export TEMPORALSTORE_OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+```
+
+The native client uses Ollama's `/api/chat` structured-output API and batched
+`/api/embed` API. Batch item, input-byte, request-byte, timeout, retry, keep-alive,
+and embedding truncation settings are available under the
+`TEMPORALSTORE_OLLAMA_*` prefix. Existing `MATRIXARK_OLLAMA_*` settings remain
+accepted after the TemporalStore-prefixed names.
+
+Each structured extraction request returns the L0/L1 summaries and up to eight
+normalized durable entities in one model call. Entity names and values are
+byte-bounded, duplicate entities are removed before persistence, and the cap
+limits write, memory, and retrieval amplification while preserving facts,
+decisions, preferences, constraints, tasks, people, organizations, and projects
+for candidate retrieval. Node, event, and entity texts share the same bounded
+`/api/embed` batch: repeated text is encoded once, each entity stores its vector
+inline, and retrieval checks the stored encoder identity before exact scoring.
+Raw messages carry the same encoder identity. Retrieval scores each raw-message
+or entity vector as it is read and retains only a fixed top-K heap for that
+record type, so overfetch improves recall without retaining a second vector or
+full candidate array. The returned ContextPack keeps matched chunks, raw
+messages, and entities as separate record types; deduplication is local to each
+type and cannot make one layer erase another.
 
 vLLM setup:
 

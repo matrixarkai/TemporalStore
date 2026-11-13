@@ -52,6 +52,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::HashGet { key, .. }
         | Command::HashMultiGet { key, .. }
         | Command::HashMultiSet { key, .. }
+        | Command::HashMultiSetWithTtl { key, .. }
         | Command::HashMultiSetIfTimestampOlder { key, .. }
         | Command::HashIncrBy { key, .. }
         | Command::HashGetAll { key }
@@ -59,6 +60,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetMembers { key }
+        | Command::SetScan { key, .. }
         | Command::SetRemove { key, .. }
         | Command::ListPush { key, .. }
         | Command::ListPop { key, .. }
@@ -70,7 +72,9 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ZSetCard { key }
         | Command::ZSetRange { key, .. }
         | Command::ZSetRangeByScore { key, .. }
+        | Command::ZSetScan { key, .. }
         | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetCountAdjust { key, .. }
         | Command::ZSetPop { key, .. }
         | Command::ZSetRank { key, .. }
         | Command::BucketTake { key, .. }
@@ -78,14 +82,17 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::SeenCheck { key, .. }
         | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithTtl { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }
         | Command::FeatureQueryFiltered { key, .. }
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
         | Command::FeatureAggQuery { key, .. }
+        | Command::FeatureProtoAggQuery { key, .. }
         | Command::SequenceAdd { key, .. }
         | Command::SequenceQuery { key, .. }
+        | Command::CellRankQuery { key, .. }
         | Command::ControlStateIncrement { key, .. }
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
@@ -107,6 +114,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextWriteEvent { .. }
         | Command::ContextWriteExtractedEvent { .. }
         | Command::ContextQueryEvents { .. }
+        | Command::ContextQueryEventsByIds { .. }
         | Command::ContextWriteIndexRef { .. }
         | Command::ContextQueryIndex { .. }
         | Command::ContextQueryIndexIntersection { .. }
@@ -181,6 +189,11 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             ..
         }
         | Command::ContextQueryEvents {
+            tenant_hash,
+            node_hash,
+            ..
+        }
+        | Command::ContextQueryEventsByIds {
             tenant_hash,
             node_hash,
             ..

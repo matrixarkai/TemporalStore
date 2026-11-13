@@ -242,6 +242,156 @@ fn a_hash_delete_files_no_block() {
     }
 }
 
+fn sync_fields(engine: &TemporalEngine, fields: &[&str]) -> (bool, u64) {
+    let before = crate::engine::storage_bucket_internals::bucket_block_upserts();
+    let mut shards = engine.shards.write().unwrap();
+    let shard = shards.get_mut(&1).unwrap();
+    let synced = crate::engine::storage_bucket_internals::sync_written_hash_fields(
+        shard,
+        1,
+        "h",
+        fields.iter().copied(),
+    );
+    let filed = crate::engine::storage_bucket_internals::bucket_block_upserts() - before;
+    (synced, filed)
+}
+
+fn packed_write(engine: &TemporalEngine, count: usize) {
+    run(
+        engine,
+        Command::HashMultiSet {
+            key: "h".to_string(),
+            entries: (0..count)
+                .map(|index| {
+                    (format!("f{index:03}"), vec![index as u8; if index == 0 { 8192 } else { 48 }])
+                })
+                .collect(),
+        },
+    );
+}
+
+#[test]
+fn packed_hash_sync_files_one_block_for_twenty_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    packed_write(&engine, 20);
+    {
+        let shards = engine.shards.read().unwrap();
+        let fields = shards.get(&1).unwrap().bucket_index.hashes.get("h").unwrap();
+        assert_eq!(fields.len(), 20);
+        assert!(fields.values().all(|address| address == fields.get("f000").unwrap()));
+    }
+    let fields: Vec<String> = (0..20).map(|index| format!("f{index:03}")).collect();
+    let names: Vec<&str> = fields.iter().map(String::as_str).collect();
+    assert_eq!(sync_fields(&engine, &names), (true, 1));
+    assert_eq!(sync_fields(&engine, &[]), (false, 0));
+    assert_eq!(sync_fields(&engine, &["f000", "missing"]), (false, 1));
+    let CommandResponse::HashEntries { entries } = run(
+        &engine,
+        Command::HashGetAll { key: "h".to_string() },
+    ) else { panic!("expected hash entries") };
+    assert_eq!(entries.len(), 20);
+    for (field, value) in entries {
+        let index: usize = field.trim_start_matches('f').parse().unwrap();
+        assert_eq!(value, vec![index as u8; if index == 0 { 8192 } else { 48 }]);
+    }
+}
+
+#[test]
+fn packed_hash_sync_preserves_distinct_and_nonadjacent_addresses() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    for index in 0..3 {
+        hset(&engine, "h", index, 24);
+    }
+    {
+        let shards = engine.shards.read().unwrap();
+        let fields = shards.get(&1).unwrap().bucket_index.hashes.get("h").unwrap();
+        assert_ne!(fields.get("f000"), fields.get("f001"));
+    }
+    assert_eq!(sync_fields(&engine, &["f000", "f001", "f002"]), (true, 3));
+    assert_eq!(sync_fields(&engine, &["f000", "f001", "f000"]), (true, 3));
+}
+
+#[test]
+fn packed_hash_sync_sweeps_each_readded_field_tombstone_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_on(dir.path());
+    hset(&engine, "h", 1, 24);
+    hset(&engine, "h", 20, 24);
+    let old_addresses = {
+        let shards = engine.shards.read().unwrap();
+        let fields = shards.get(&1).unwrap().bucket_index.hashes.get("h").unwrap();
+        [fields.get("f001").unwrap().clone(), fields.get("f020").unwrap().clone()]
+    };
+    hdel(&engine, "h", 20);
+    packed_write(&engine, 3);
+    let (routing_bucket, live_before) = {
+        let mut shards = engine.shards.write().unwrap();
+        let shard = shards.get_mut(&1).unwrap();
+        let (start, end) = shard.routing_range();
+        let routing_bucket = block_routing_bucket("h", start, end);
+        // Recreate the pending per-field sweep beside the newly installed packed addresses.
+        crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
+            shard, "hash", "h", Some("f001"), old_addresses[0].clone(), routing_bucket,
+        );
+        let bucket = shard.bucket_index.bucket_map.get(&routing_bucket).unwrap();
+        let kind = crate::engine::storage_bucket_internals::stored_model_kind("hash");
+        assert!(bucket.tombstone_element_block("h", kind, "f001").is_some());
+        assert!(bucket.tombstone_element_block("h", kind, "f020").is_some());
+        let live = bucket.block_index.iter().filter(|(_, block)| !block.deleted()).count();
+        assert!(live > 0);
+        (routing_bucket, live)
+    };
+    assert_eq!(sync_fields(&engine, &["f000", "f001", "f002"]), (true, 2));
+    let shards = engine.shards.read().unwrap();
+    let bucket = shards.get(&1).unwrap().bucket_index.bucket_map.get(&routing_bucket).unwrap();
+    let kind = crate::engine::storage_bucket_internals::stored_model_kind("hash");
+    assert!(bucket.tombstone_element_block("h", kind, "f001").is_none());
+    assert!(bucket.tombstone_element_block("h", kind, "f020").is_some());
+    let live = bucket.block_index.iter().filter(|(_, block)| !block.deleted()).count();
+    assert_eq!(live, live_before);
+}
+
+#[test]
+fn batch_hash_delete_files_no_live_blocks_and_keeps_surviving_fields() {
+    for whole in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_on(dir.path());
+        for index in 0..128 {
+            hset(&engine, "h", index, 24);
+        }
+        let before = crate::engine::storage_bucket_internals::bucket_block_upserts();
+        let response = with_whole_object_sync(whole, || {
+            engine.batch_execute(crate::types::BatchExecuteRequest {
+                shard_id: 1,
+                commands: (0..64).map(|index| Command::HashDelete {
+                    key: "h".into(),
+                    field: format!("f{index:03}"),
+                }).collect(),
+            })
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.responses.len(), 64);
+        assert!(response.responses.iter().all(|r| r.status.ok));
+        let filed = crate::engine::storage_bucket_internals::bucket_block_upserts() - before;
+        if whole {
+            assert!(filed > 0, "the control must exercise whole-object filing");
+        } else {
+            assert_eq!(filed, 0);
+        }
+        let CommandResponse::HashEntries { entries } = run(
+            &engine, Command::HashGetAll { key: "h".into() },
+        ) else { panic!("expected surviving fields") };
+        assert_eq!(entries.len(), 64);
+        for (field, value) in entries {
+            let index = field[1..].parse::<usize>().unwrap();
+            assert!((64..128).contains(&index));
+            assert_eq!(value, vec![b'a' + (index % 26) as u8; 24]);
+        }
+    }
+}
+
 /// Allocation and profiler driver, not a gate: `HASH_E=<fields> HASH_K=<deletes> HASH_WHOLE=1`
 /// forces the whole-object sync. Run under `valgrind --tool=callgrind
 /// --toggle-collect='*hash_delete_span*'` for instructions.

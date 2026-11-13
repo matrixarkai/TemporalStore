@@ -846,29 +846,16 @@ fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does
     let buckets = fields
         .remove("bucket_map")
         .expect("the renamed wire field is written under its current spelling");
-    // `objects` IS ON THE WIRE AND HAS NEVER HAD A SECOND SPELLING, so it is taken out of the set
-    // rather than re-spelled below. It arrived at `SHARD_INDEX_FORMAT_VERSION` 30, moving in from
-    // `ShardState`'s top level under the same name it had there -- and this arm is about the
-    // RENAME of `bucket_map`, which is the only field that has ever had a legacy key. Removing it
-    // here keeps the assertion below meaningful: a THIRD field arriving still fails.
-    fields
-        .remove("objects")
-        .expect("the second wire field is written under its only spelling");
-    // THE FOUR CONTAINER MAPS ARRIVED AT 31 under the names they had on `ShardState`, and have no
-    // second spelling either, so they leave the set the same way and a SEVENTH field still fails.
-    for name in ["hashes", "sets", "zsets", "lists"] {
-        fields
-            .remove(name)
-            .unwrap_or_else(|| panic!("{name} is written under its only spelling"));
-    }
-    assert!(
-        fields.is_empty(),
-        "nothing else is on the wire, so nothing else needs re-spelling here: {:?}",
-        fields.keys().collect::<Vec<_>>()
+    // Only bucket_map is renamed. Keep every other durable field in both inputs and pin
+    // their complete set so a newly added field still requires an explicit test decision.
+    let unchanged = ["hashes", "lists", "objects", "sets", "zsets"];
+    assert_eq!(
+        fields.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(),
+        unchanged.into_iter().collect::<std::collections::BTreeSet<_>>()
     );
 
     // THE LEGACY SPELLING. An index written before the field was renamed is keyed `slots`.
-    let mut legacy = serde_json::Map::new();
+    let mut legacy = fields.clone();
     legacy.insert("slots".to_string(), buckets.clone());
     let from_legacy: CoreIndex = serde_json::from_value(serde_json::Value::Object(legacy))
         .expect("an index keyed with the legacy spelling must still decode");
@@ -880,10 +867,16 @@ fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does
 
     // THE CONTROL. A spelling the decoder knows nothing about must be IGNORED -- which is what
     // makes the assertion above a statement about the alias rather than about `default`.
-    let mut unknown = serde_json::Map::new();
+    let mut unknown = fields;
     unknown.insert("slotz".to_string(), buckets);
     let from_unknown: CoreIndex = serde_json::from_value(serde_json::Value::Object(unknown))
         .expect("an unrecognised key is ignored, which is what lets a newer index load into an older engine");
+    for restored in [&from_legacy, &from_unknown] {
+        let restored = serde_json::to_value(restored).expect("the decoded core index serializes");
+        for field in unchanged {
+            assert_eq!(restored.get(field), encoded.get(field), "durable field {field}");
+        }
+    }
     assert!(
         from_unknown.bucket_map.is_empty(),
         "an unrecognised spelling must leave the map at its default; if this were populated the \

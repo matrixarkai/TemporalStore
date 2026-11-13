@@ -83,7 +83,7 @@ def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
     """Return one command with byte-bearing fields represented as bytes."""
     encoded = dict(command)
     kind = encoded.get("kind")
-    if kind in {"hash_multi_set", "hash_multi_set_if_timestamp_older"}:
+    if kind in {"hash_multi_set", "hash_multi_set_with_ttl", "hash_multi_set_if_timestamp_older"}:
         encoded["entries"] = [
             (name, _required_binary(value))
             for name, value in encoded.get("entries", [])
@@ -92,7 +92,9 @@ def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
         encoded["value"] = _required_binary(encoded["value"])
     elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
         encoded["member"] = _required_binary(encoded["member"])
-    elif kind in {"feature_append", "feature_append_with_policy", "feature_replace"}:
+    elif kind == "set_scan":
+        encoded["after"] = _required_binary(encoded["after"])
+    elif kind in {"feature_append", "feature_append_with_ttl", "feature_append_with_policy", "feature_replace"}:
         encoded["points"] = [
             {**point, "value": _required_binary(point["value"])}
             for point in encoded.get("points", [])
@@ -104,7 +106,7 @@ def _json_command(command: Dict[str, Any]) -> Dict[str, Any]:
     """Return one command in the established JSON byte encoding."""
     encoded = dict(command)
     kind = encoded.get("kind")
-    if kind in {"hash_multi_set", "hash_multi_set_if_timestamp_older"}:
+    if kind in {"hash_multi_set", "hash_multi_set_with_ttl", "hash_multi_set_if_timestamp_older"}:
         encoded["entries"] = [
             (name, encode_bytes(_required_binary(value)))
             for name, value in encoded.get("entries", [])
@@ -113,7 +115,9 @@ def _json_command(command: Dict[str, Any]) -> Dict[str, Any]:
         encoded["value"] = encode_bytes(_required_binary(encoded["value"]))
     elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
         encoded["member"] = encode_bytes(_required_binary(encoded["member"]))
-    elif kind in {"feature_append", "feature_append_with_policy", "feature_replace"}:
+    elif kind == "set_scan":
+        encoded["after"] = encode_bytes(_required_binary(encoded["after"]))
+    elif kind in {"feature_append", "feature_append_with_ttl", "feature_append_with_policy", "feature_replace"}:
         encoded["points"] = [
             {**point, "value": list(_required_binary(point["value"]))}
             for point in encoded.get("points", [])
@@ -127,6 +131,14 @@ def _msgpack_array_header(length: int) -> bytes:
     if length <= 0xFFFF:
         return b"\xdc" + length.to_bytes(2, "big")
     return b"\xdd" + length.to_bytes(4, "big")
+
+
+def _msgpack_map_header(length: int) -> bytes:
+    if length < 16:
+        return bytes((0x80 | length,))
+    if length <= 0xFFFF:
+        return b"\xde" + length.to_bytes(2, "big")
+    return b"\xdf" + length.to_bytes(4, "big")
 
 
 class TemporalStoreClient:
@@ -189,9 +201,28 @@ class TemporalStoreClient:
         self._shared_field_write_supported: Optional[bool] = (
             False if msgpack is None else None
         )
+        self._shared_field_ttl_write_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
         self._conditional_shared_field_write_supported: Optional[bool] = (
             False if msgpack is None else None
         )
+        self._conditional_shared_field_ttl_write_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
+
+    def timestamp_prefetch_preferred(self) -> bool:
+        """Whether this thread recently observed mostly stale bulk writes."""
+        return getattr(self._local, "prefer_timestamp_prefetch", False)
+
+    def observe_timestamp_dedup(self, total_rows: int, skipped_rows: int) -> None:
+        """Keep a routing hint, never cached timestamps or feature values."""
+        if total_rows <= 0 or skipped_rows < 0 or skipped_rows > total_rows:
+            return
+        if total_rows >= 8 and skipped_rows * 4 >= total_rows * 3:
+            self._local.prefer_timestamp_prefetch = True
+        elif skipped_rows * 4 <= total_rows:
+            self._local.prefer_timestamp_prefetch = False
 
     # -- connection handling -------------------------------------------------
 
@@ -567,6 +598,7 @@ class TemporalStoreClient:
         fields: List[str],
         rows: List[Tuple[str, List[bytes]]],
         request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
     ) -> None:
         """Write one field projection to many hashes with shared wire metadata.
 
@@ -578,14 +610,23 @@ class TemporalStoreClient:
         """
         if not rows:
             return
-        if msgpack is not None and self._shared_field_write_supported is not False:
+        capability = (
+            self._shared_field_ttl_write_supported
+            if ttl_ms is not None
+            else self._shared_field_write_supported
+        )
+        if msgpack is not None and capability is not False:
             applied_any = False
             try:
                 for chunk, body in self._shared_field_write_batches(
-                    fields, rows, request_upper_bound
+                    fields, rows, request_upper_bound, ttl_ms
                 ):
                     raw = self._request_encoded(
-                        "/batch_hash_multi_set_msgpack",
+                        (
+                            "/batch_hash_multi_set_ttl_msgpack"
+                            if ttl_ms is not None
+                            else "/batch_hash_multi_set_msgpack"
+                        ),
                         body,
                         "application/msgpack",
                     )
@@ -593,27 +634,35 @@ class TemporalStoreClient:
                     self._check_write_count(envelope, len(chunk))
                     applied_any = True
             except TemporalStoreCommandError as error:
-                if error.code != "http_404" or applied_any:
+                fallback_codes = {"http_404", "compact_ttl_write_unavailable"}
+                if error.code not in fallback_codes or applied_any:
                     raise
-                self._shared_field_write_supported = False
+                if ttl_ms is not None:
+                    self._shared_field_ttl_write_supported = False
+                else:
+                    self._shared_field_write_supported = False
             except (ValueError, msgpack.UnpackException) as error:
                 raise TemporalStoreCommandError(
                     "invalid_binary_response", str(error)
                 ) from error
             else:
-                self._shared_field_write_supported = True
+                if ttl_ms is not None:
+                    self._shared_field_ttl_write_supported = True
+                else:
+                    self._shared_field_write_supported = True
                 return
 
-        self.batch_write(
-            [
-                {
-                    "kind": "hash_multi_set",
-                    "key": key,
-                    "entries": list(zip(fields, values)),
-                }
-                for key, values in rows
-            ]
-        )
+        kind = "hash_multi_set_with_ttl" if ttl_ms is not None else "hash_multi_set"
+        commands = [
+            {
+                "kind": kind,
+                "key": key,
+                "entries": list(zip(fields, values)),
+                **({"ttl_ms": ttl_ms} if ttl_ms is not None else {}),
+            }
+            for key, values in rows
+        ]
+        self.batch_write(commands)
 
     def batch_hash_timestamp_set(
         self,
@@ -621,6 +670,7 @@ class TemporalStoreClient:
         timestamp_field: str,
         rows: List[Tuple[str, int, int, List[bytes]]],
         request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
     ) -> Optional[Tuple[int, int]]:
         """Atomically write rows whose stored timestamp is older.
 
@@ -632,7 +682,12 @@ class TemporalStoreClient:
         """
         if not rows:
             return (0, 0)
-        if msgpack is None or self._conditional_shared_field_write_supported is False:
+        capability = (
+            self._conditional_shared_field_ttl_write_supported
+            if ttl_ms is not None
+            else self._conditional_shared_field_write_supported
+        )
+        if msgpack is None or capability is False:
             return None
 
         processed_any = False
@@ -640,10 +695,15 @@ class TemporalStoreClient:
         skipped = 0
         try:
             for chunk, body in self._shared_timestamp_write_batches(
-                fields, timestamp_field, rows, request_upper_bound
+                fields, timestamp_field, rows, request_upper_bound, ttl_ms
             ):
+                path = (
+                    "/batch_hash_timestamp_set_ttl_msgpack"
+                    if ttl_ms is not None
+                    else "/batch_hash_timestamp_set_msgpack"
+                )
                 raw = self._request_encoded(
-                    "/batch_hash_timestamp_set_msgpack",
+                    path,
                     body,
                     "application/msgpack",
                 )
@@ -676,14 +736,20 @@ class TemporalStoreClient:
         except TemporalStoreCommandError as error:
             if error.code != "http_404" or processed_any:
                 raise
-            self._conditional_shared_field_write_supported = False
+            if ttl_ms is None:
+                self._conditional_shared_field_write_supported = False
+            else:
+                self._conditional_shared_field_ttl_write_supported = False
             return None
         except (ValueError, msgpack.UnpackException) as error:
             raise TemporalStoreCommandError(
                 "invalid_binary_response", str(error)
             ) from error
 
-        self._conditional_shared_field_write_supported = True
+        if ttl_ms is None:
+            self._conditional_shared_field_write_supported = True
+        else:
+            self._conditional_shared_field_ttl_write_supported = True
         return applied, skipped
 
     def _shared_timestamp_write_batches(
@@ -692,6 +758,7 @@ class TemporalStoreClient:
         timestamp_field: str,
         rows: List[Tuple[str, int, int, List[bytes]]],
         request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
     ) -> Iterator[Tuple[List[Tuple[str, int, int, List[bytes]]], bytes]]:
         if msgpack is None:
             return
@@ -699,28 +766,35 @@ class TemporalStoreClient:
             request_upper_bound is not None
             and len(rows) <= self.max_write_batch_commands
         ):
+            document = {
+                "shard_id": self.shard_id,
+                "fields": fields,
+                "timestamp_field": timestamp_field,
+                "rows": rows,
+            }
+            if ttl_ms is not None:
+                document["ttl_ms"] = ttl_ms
             body = self._pack_bounded_shared_request(
-                {
-                    "shard_id": self.shard_id,
-                    "fields": fields,
-                    "timestamp_field": timestamp_field,
-                    "rows": rows,
-                },
+                document,
                 request_upper_bound,
             )
             if body is not None:
                 yield rows, body
                 return
         prefix = (
-            b"\x84"
+            _msgpack_map_header(5 if ttl_ms is not None else 4)
             + msgpack.packb("shard_id", use_bin_type=True)
             + msgpack.packb(self.shard_id, use_bin_type=True)
             + msgpack.packb("fields", use_bin_type=True)
             + msgpack.packb(fields, use_bin_type=True)
             + msgpack.packb("timestamp_field", use_bin_type=True)
             + msgpack.packb(timestamp_field, use_bin_type=True)
-            + msgpack.packb("rows", use_bin_type=True)
         )
+        if ttl_ms is not None:
+            prefix += msgpack.packb("ttl_ms", use_bin_type=True) + msgpack.packb(
+                ttl_ms, use_bin_type=True
+            )
+        prefix += msgpack.packb("rows", use_bin_type=True)
         chunk: List[Tuple[str, int, int, List[bytes]]] = []
         packer = msgpack.Packer(use_bin_type=True, autoreset=False)
 
@@ -762,6 +836,7 @@ class TemporalStoreClient:
         fields: List[str],
         rows: List[Tuple[str, List[bytes]]],
         request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
     ) -> Iterator[Tuple[List[Tuple[str, List[bytes]]], bytes]]:
         if msgpack is None:
             return
@@ -774,6 +849,7 @@ class TemporalStoreClient:
                     "shard_id": self.shard_id,
                     "fields": fields,
                     "rows": rows,
+                    **({"ttl_ms": ttl_ms} if ttl_ms is not None else {}),
                 },
                 request_upper_bound,
             )
@@ -781,11 +857,17 @@ class TemporalStoreClient:
                 yield rows, body
                 return
         prefix = (
-            b"\x83"
+            _msgpack_map_header(4 if ttl_ms is not None else 3)
             + msgpack.packb("shard_id", use_bin_type=True)
             + msgpack.packb(self.shard_id, use_bin_type=True)
             + msgpack.packb("fields", use_bin_type=True)
             + msgpack.packb(fields, use_bin_type=True)
+            + (
+                msgpack.packb("ttl_ms", use_bin_type=True)
+                + msgpack.packb(ttl_ms, use_bin_type=True)
+                if ttl_ms is not None
+                else b""
+            )
             + msgpack.packb("rows", use_bin_type=True)
         )
         chunk: List[Tuple[str, List[bytes]]] = []

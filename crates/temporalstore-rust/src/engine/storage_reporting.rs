@@ -4,6 +4,20 @@
 //! Storage physical-index / object-manager / feature-block layout report helpers, split from engine.rs.
 use super::*;
 
+/// The deletion total without materializing block identities or ownership reports.
+/// Compaction only consumes this field of the unfiltered lifecycle report.
+pub(super) fn storage_delete_marked_object_count(shard: &ShardState) -> u64 {
+    shard
+        .dirty_objects
+        .iter()
+        .filter(|key| !record_exists(shard, key))
+        .count() as u64
+}
+
+#[cfg(test)]
+#[path = "delete_marked_count_tests.rs"]
+mod delete_marked_count_tests;
+
 pub(super) fn storage_object_lifecycle_report(
     shard_id: ShardId,
     shard: &ShardState,
@@ -330,9 +344,53 @@ pub(super) fn bucket_storage_summaries(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) -> Vec<BucketStorageSummary> {
+    bucket_storage_summaries_from_entries(
+        shard,
+        start_routing_bucket,
+        end_routing_bucket,
+        &collect_live_block_entries(shard),
+    )
+}
+
+/// The summaries and, when asked, the live digests, off ONE listing of the shard's live blocks.
+pub(super) fn bucket_summaries_and_digests(
+    shard_id: ShardId,
+    shard: &ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    with_digests: bool,
+) -> (
+    Vec<BucketStorageSummary>,
+    BTreeMap<u32, BucketFingerprintDigest>,
+) {
+    let entries = collect_live_block_entries(shard);
+    let summaries = bucket_storage_summaries_from_entries(
+        shard,
+        start_routing_bucket,
+        end_routing_bucket,
+        &entries,
+    );
+    let digests = if with_digests {
+        bucket_generation_digests_from_entries(shard_id, &entries)
+    } else {
+        BTreeMap::new()
+    };
+    (summaries, digests)
+}
+
+/// The summaries of a shard whose live blocks the caller has already listed.
+///
+/// `entries` MUST be `collect_live_block_entries(shard)` taken under the same read of the shard;
+/// the function reads nothing else of the block set.
+pub(super) fn bucket_storage_summaries_from_entries(
+    shard: &ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    entries: &[LiveBlockEntry],
+) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
     let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
-    for entry in collect_live_block_entries(shard) {
+    for entry in entries {
         // The shard's OWN routing range, which is what every other consumer of this fallback
         // uses -- `rebuild_bucket_first_index`, `refresh_pending_bucket_runtime_flags` and the
         // dirty-key loop at the foot of this function all reach for
@@ -589,6 +647,7 @@ pub(super) fn storage_physical_index_report(
             hex::encode(native_packed_block_index_bytes(&block_index));
         bucket.block_indexes.push(block_index);
     }
+    let identities = shard.bucket_index.block_identities();
     for (routing_bucket, runtime_bucket) in &shard.bucket_index.bucket_map {
         let bucket = buckets
             .entry(*routing_bucket)
@@ -619,7 +678,6 @@ pub(super) fn storage_physical_index_report(
         // by the newest one reported the older manifest's WAL sequence and now reports 0. That
         // figure is not reconstructible from the newest manifest alone, and it was not readable
         // by anything that decided anything.
-        let identities = shard.bucket_index.block_identities();
         for (handle, block) in runtime_bucket.block_index.iter() {
             // THE ROW NAMES AN OBJECT, so a block whose neighbours do not name one cannot produce a
             // row. The one such block is a tombstone whose removal named no element.
@@ -748,9 +806,8 @@ pub(super) fn object_manager_runtime_report(
 /// The same report, from live-block entries the caller ALREADY has.
 ///
 /// This walked the shard TWICE: once for the ownership report below, and once more at the very end
-/// purely to COUNT entries of eight timestamped kinds. Measured at 2.0x the shard
-/// (`what_the_compaction_preamble_walks`), which is why the compaction preamble could not get
-/// below 7.0x while calling the wrapper form.
+/// purely to COUNT entries of eight timestamped kinds. Callers that already hold the live-block
+/// entries use this form to avoid repeating that walk.
 pub(super) fn object_manager_runtime_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,
@@ -1041,24 +1098,29 @@ pub(super) fn bucket_generation_digests_by_bucket(
     shard_id: ShardId,
     shard: &ShardState,
 ) -> BTreeMap<u32, BucketFingerprintDigest> {
+    bucket_generation_digests_from_entries(shard_id, &collect_live_block_entries(shard))
+}
+
+/// The digests of a block set the caller has already listed. `entries` is the shard's own
+/// `collect_live_block_entries` (or a decoded dump state's), read once for every consumer.
+pub(super) fn bucket_generation_digests_from_entries(
+    shard_id: ShardId,
+    entries: &[LiveBlockEntry],
+) -> BTreeMap<u32, BucketFingerprintDigest> {
     let mut lines = BTreeMap::<u32, Vec<(u64, u64)>>::new();
-    // One buffer for every line: the digest reads the bytes and keeps none of them.
-    let mut line = String::new();
-    for entry in collect_live_block_entries(shard) {
+    for entry in entries {
         let routing_bucket = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        line.clear();
-        write_bucket_fingerprint_line(&mut line, shard_id, &entry, routing_bucket);
         lines
             .entry(routing_bucket)
             .or_default()
-            .push(fingerprint_line_hash(&line));
+            .push(fingerprint_fields_hash(shard_id, entry, routing_bucket));
     }
     lines
         .into_iter()
         .map(|(routing_bucket, mut hashes)| {
-            // A SET, as the strings were: two blocks that state the same line are one line.
+            // Repeated entries do not change the bucket's fingerprint set.
             hashes.sort_unstable();
             hashes.dedup();
             (routing_bucket, BucketFingerprintDigest::of_sorted(&hashes))
@@ -1067,7 +1129,7 @@ pub(super) fn bucket_generation_digests_by_bucket(
 }
 
 /// The 128-bit digest of one bucket's fingerprint set. Two buckets compare equal exactly when their
-/// sets of lines do, up to a collision in 128 bits of a keyed hash over data nobody chooses against
+/// sets of fields do, up to a collision in 128 bits of a hash over data nobody chooses against
 /// it: both sides are produced by this binary a moment apart, and an unequal pair is the safe
 /// direction for the reclaim plan (it declines to treat the manifest as covering the bucket).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1092,6 +1154,36 @@ impl BucketFingerprintDigest {
     }
 }
 
+fn fingerprint_fields_hash(
+    shard_id: ShardId,
+    entry: &LiveBlockEntry,
+    routing_bucket: u32,
+) -> (u64, u64) {
+    use std::hash::{Hash, Hasher};
+    // The derived object ID depends only on shard, kind and key, already included here.
+    // Keep the old empty/absent aliases and omit transient dirty/deleted/residency flags.
+    let fields = (
+        shard_id,
+        entry.kind.as_str(),
+        entry.object_key.as_ref(),
+        entry.element_name.as_deref().unwrap_or_default(),
+        entry.address.block_slab_id(),
+        entry.address.offset(),
+        entry.address.length(),
+        entry.address.block_id().unwrap_or_default(),
+        routing_bucket,
+        entry.address.generation().unwrap_or_default(),
+    );
+    let mut low = std::collections::hash_map::DefaultHasher::new();
+    let mut high = std::collections::hash_map::DefaultHasher::new();
+    low.write_u8(0x5a);
+    high.write_u8(0xa5);
+    fields.hash(&mut low);
+    fields.hash(&mut high);
+    (low.finish(), high.finish())
+}
+
+#[cfg(test)]
 fn fingerprint_line_hash(line: &str) -> (u64, u64) {
     use std::hash::Hasher;
     let mut low = std::collections::hash_map::DefaultHasher::new();
@@ -1103,8 +1195,8 @@ fn fingerprint_line_hash(line: &str) -> (u64, u64) {
     (low.finish(), high.finish())
 }
 
-/// The ONE home of what a fingerprint line says. The digest above hashes it and the reference
-/// below keeps it, so neither can drift from the other.
+/// Textual oracle for the fields the maintenance comparison includes.
+#[cfg(test)]
 fn write_bucket_fingerprint_line(
     out: &mut String,
     shard_id: ShardId,
@@ -1130,6 +1222,10 @@ fn write_bucket_fingerprint_line(
         String::new()
     );
 }
+
+#[cfg(test)]
+#[path = "fingerprint_fields_tests.rs"]
+mod fingerprint_fields_tests;
 
 /// The lines themselves, as the plan compared them before it compared digests. Kept for the test
 /// that holds the digest to the same answer, pair by pair.

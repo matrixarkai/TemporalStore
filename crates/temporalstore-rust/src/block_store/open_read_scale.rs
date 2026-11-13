@@ -555,7 +555,8 @@ fn every_production_read_of_a_block_store_file_goes_through_the_counted_door() {
         .filter(|name| name.ends_with(".rs"))
         // The wholly-`#[cfg(test)]` modules are not production and carry their own imports.
         .filter(|name| !matches!(name.as_str(),
-            "gc_scale.rs" | "large_store_scale.rs" | "open_read_scale.rs"))
+            "gc_scale.rs" | "large_store_scale.rs" | "open_read_scale.rs"
+                | "block_store_append_operation_tests.rs"))
         .collect();
     on_disk.sort();
     let mut named: Vec<String> = MODULES

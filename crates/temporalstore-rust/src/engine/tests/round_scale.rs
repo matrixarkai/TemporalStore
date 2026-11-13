@@ -132,7 +132,14 @@ use crate::engine::reports::StorageManagerCycleRequest;
 /// is to run the test and read the sites it prints, then name the ENCLOSING FUNCTION of each.
 /// Matching the printed line numbers against an older table instead has already produced a wrong
 /// answer about this constant, because the files were renamed wholesale underneath it.
-const WALKS_PER_ROUND: u64 = 12;
+///
+/// # 12 -> 11 WHEN THE RECLAIM PLAN LISTED THE SHARD ONCE FOR TWO FOLDS
+///
+/// The plan's bucket summaries and its live digests used to list every live block separately; they
+/// now come off one listing (`a_plan_lists_the_shards_blocks_once`). The round's census loses
+/// exactly one pass: measured 22,000 entries over 2,000
+/// records = 11x. The two older tables above state 12 for the tree before that change.
+const WALKS_PER_ROUND: u64 = 11;
 
 /// The same, once the dirty set has drained.
 ///
@@ -148,7 +155,8 @@ const WALKS_PER_ROUND: u64 = 12;
 /// and the drain round that wrote the manifest is the one that computes them. Measured on this
 /// tree, the idle round materialises 24,000 live-block entries over 2,000 records, which is 12x --
 /// the same as the steady round, so the manifest no longer makes an idle shard dearer.
-const WALKS_PER_IDLE_ROUND: u64 = 12;
+/// 12 -> 11 FOR THE SAME REASON AS `WALKS_PER_ROUND`, and it was measured: the idle round also loses one pass.
+const WALKS_PER_IDLE_ROUND: u64 = 11;
 
 fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -646,6 +654,11 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
         "the second-half seed failed: {:?}",
         response.status
     );
+    let released = engine.apply_storage_eviction(1, 0, 16, true, false);
+    assert!(
+        released.bucket_index_buckets_released > 0,
+        "the fixture must dump and release some buckets: {released:?}"
+    );
 
     crate::engine::reset_live_block_scan_entries();
     crate::engine::reset_live_block_scan_sites();
@@ -756,8 +769,8 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // ---- WHAT ONE WALK OF THESE TWO COSTS --------------------------------
     //
     // More than the block set it hands back, and the difference is not small. A round leaves
-    // buckets RELEASED -- 16 of them on this fixture, which is an ordinary storage round and not
-    // a contrived state -- and a released bucket's index holds no blocks. So
+    // buckets RELEASED -- the fixture dumps and releases candidates explicitly -- and a
+    // released bucket's index holds no blocks. So
     // `collect_bucket_index_live_block_entries` walks the index, then walks the WHOLE model-map
     // block set a second time to supplement the released buckets' blocks back in. It materialises
     // `indexed + every live block` to return `indexed + released`.

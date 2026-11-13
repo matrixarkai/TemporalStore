@@ -490,3 +490,70 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         after_clean.rebuilds
     );
 }
+
+#[test]
+fn deleting_one_packed_row_keeps_its_neighbor_without_reporting_divergence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    assert!(engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "packed-delete".to_string(),
+        shard_uri: "local://packed-delete/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: 63,
+        readonly: false,
+        load_version: 1,
+        local_node_id: Some(1),
+    }).status.ok);
+
+    let mut first_by_bucket = std::collections::HashMap::new();
+    let (bucket_id, removed_key, surviving_key) = (0..256)
+        .find_map(|index| {
+            let key = format!("entity-{index}");
+            let bucket = crate::engine::hashing::block_routing_bucket(&key, 0, 63);
+            first_by_bucket
+                .insert(bucket, key.clone())
+                .map(|first| (bucket, first, key))
+        })
+        .expect("256 keys must include two in one of 64 buckets");
+
+    for key in [&removed_key, &surviving_key] {
+        let written = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiSet {
+                key: key.clone(),
+                entries: vec![
+                    ("score".to_string(), b"42".to_vec()),
+                    ("payload".to_string(), vec![b'x'; 8 * 1024]),
+                ],
+            },
+        });
+        assert!(written.status.ok, "{written:?}");
+    }
+    let before = engine.object_index_divergence_report();
+    let deleted = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonDelete { key: removed_key.clone() },
+    });
+    assert!(deleted.status.ok, "{deleted:?}");
+    let after = engine.object_index_divergence_report();
+    assert_eq!(
+        after.list_held_an_object_no_block_names,
+        before.list_held_an_object_no_block_names,
+        "a normal delete was reported as an index disagreement"
+    );
+
+    let removed_id = crate::engine::hashing::stable_block_object_id(1, "hash", &removed_key);
+    let surviving_id = crate::engine::hashing::stable_block_object_id(1, "hash", &surviving_key);
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let bucket = shard.bucket_index.bucket_map.get(&bucket_id).expect("bucket exists");
+    assert!(!bucket.object_index.contains(&removed_id));
+    assert!(bucket.object_index.contains(&surviving_id));
+    assert!(bucket.deleted_object_index.contains(&removed_id));
+}

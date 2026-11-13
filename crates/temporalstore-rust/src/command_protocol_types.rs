@@ -125,6 +125,13 @@ pub enum FeatureWritePolicy {
     ReplaceExisting,
     #[serde(alias = "BLOCK", alias = "block")]
     Block,
+    /// Merge each point's cells into the snapshot already stored at its timestamp, lane by lane
+    /// under the reducers the point's own header declares. The point's VALUE is the request: it
+    /// carries the key spec, the label and lane names and the per-lane reducers followed by the
+    /// cells (`engine::cell_set::encode_value`), so the command shape does not change. Every
+    /// violation is refused at validation, before anything is written, exactly as `Block` is.
+    #[serde(alias = "MERGE_REDUCE", alias = "merge")]
+    MergeReduce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -201,6 +208,98 @@ pub struct SequenceQuerySpec {
     pub count: usize,
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
+}
+
+/// Which snapshots of a cell-set key a ranked read looks at. Every bound is inclusive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CellWindow {
+    /// Snapshots stamped in `[start_ms, end_ms]`.
+    Between { start_ms: u64, end_ms: u64 },
+    /// Snapshots stamped in the last `duration_ms` up to the instant the read runs.
+    Last { duration_ms: u64 },
+    /// Snapshots stamped at or after `start_ms`.
+    Since { start_ms: u64 },
+    /// The `n` newest snapshots.
+    LastN { n: usize },
+}
+
+/// What a ranked read orders members by. Lanes are named, never numbered, and an unknown name is
+/// refused.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CellScore {
+    /// The member's reduced value of one lane.
+    Lane { lane: String },
+    /// `numerator / denominator` of two reduced lanes; a member whose denominator is `0` is not
+    /// ranked.
+    Ratio { numerator: String, denominator: String },
+    /// The lower bound of the Wilson score interval for `successes` out of `trials` at `z`
+    /// standard deviations (1.96 is 95%). A member with no trials, a negative lane, or more
+    /// successes than trials is not ranked.
+    Wilson { successes: String, trials: String, z: f64 },
+    /// The member's own value (`u64` members only).
+    Member,
+    /// The stamp of the member's newest snapshot in the window.
+    Time,
+    /// `sum(lane[i] * weights[i])` over reduced lanes.
+    Weighted { lanes: Vec<String>, weights: Vec<f64> },
+}
+
+/// A ranked windowed read: `window -> select -> reduce per member -> score -> top-k -> project`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CellRankSpec {
+    pub window: CellWindow,
+    /// Named predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`) over a label, a lane or `member`, ANDed.
+    /// Each is tested on a cell as one snapshot stores it, before that member's snapshots are
+    /// reduced together. A name the key does not declare is refused.
+    #[serde(default)]
+    pub filters: Vec<FeatureFilter>,
+    pub score: CellScore,
+    pub top_k: usize,
+    /// Label and lane names to return. Empty returns every label and every lane.
+    #[serde(default)]
+    pub project: Vec<String>,
+}
+
+/// A member as a read returns it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CellMemberId {
+    U64(u64),
+    Bytes(#[serde(with = "crate::bytes_serde")] Vec<u8>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RankedCellRow {
+    pub member: CellMemberId,
+    /// The ordering value, as a float. Integer scores above 2^53 lose their low bits here only;
+    /// the ordering itself is exact.
+    pub score: f64,
+    /// The stamp of the member's newest snapshot in the window.
+    pub last_ms: u64,
+    /// Labels as the newest snapshot holding the member carries them, in `label_columns` order.
+    pub labels: Vec<u64>,
+    /// Reduced lane values, in `lane_columns` order.
+    pub lanes: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RankedCells {
+    pub label_columns: Vec<String>,
+    pub lane_columns: Vec<String>,
+    /// Snapshots the window selected.
+    pub snapshots: usize,
+    /// Members the selection kept whose score is undefined (a zero denominator, no trials): they
+    /// are counted here and left out of `rows`.
+    pub unscored: u64,
+    /// Best first; equal scores order by member, smaller first.
+    pub rows: Vec<RankedCellRow>,
+    /// Why the read was refused, when it was: a name the key does not declare, a window over the
+    /// bound, a snapshot that cannot be read. Empty when the read was served. A refused read has no
+    /// rows, and an empty `rows` with an empty `refused` means there was nothing to rank.
+    #[serde(default)]
+    pub refused: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,10 +456,10 @@ pub struct ContextEvent {
     pub event_time_ms: u64,
     #[serde(default)]
     pub ingestion_time_ms: u64,
-    // Deprecated hot-schema field: use type/event_type instead.
+    // Deprecated hot-schema field: use type instead.
     #[serde(default, skip_serializing)]
     pub kind: u32,
-    #[serde(default, rename = "type", alias = "event_type")]
+    #[serde(default, rename = "type")]
     pub event_type: u32,
     // Deprecated hot-schema field: reserves this field.
     #[serde(default, skip_serializing)]
@@ -399,6 +498,9 @@ pub struct ContextEvent {
     // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
+    /// Hash of the encoder that produced `vector`; zero means unknown for older records.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub embedding_model_hash: u64,
 }
 
 impl ContextEvent {
@@ -513,7 +615,7 @@ pub struct ContextDirtyNode {
 pub struct ContextEntity {
     pub entity_hash: u64,
     pub node_hash: u64,
-    #[serde(default, rename = "type", alias = "entity_type")]
+    #[serde(default, rename = "type")]
     pub entity_type: u32,
     #[serde(default)]
     pub name: String,
@@ -539,6 +641,9 @@ pub struct ContextEntity {
     // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
+    /// Hash of the encoder that produced `vector`; zero means unknown for older records.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub embedding_model_hash: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -754,8 +859,12 @@ pub trait ContextWire: Sized + Serialize + for<'de> Deserialize<'de> {
         self.encode_context_proto_value()
     }
 
+    /// A stored context value is PROTOBUF AND NOTHING ELSE. This used to try the protobuf decode and
+    /// then parse the bytes as JSON, for values written by a build that stored them that way. Nothing
+    /// writes one as JSON now (`encode_context_value` is the protobuf encoding) and there is no
+    /// installed base, so bytes that are not protobuf are refused rather than read a second way.
     fn decode_context_value(bytes: &[u8]) -> Option<Self> {
-        Self::decode_context_proto_value(bytes).or_else(|| serde_json::from_slice(bytes).ok())
+        Self::decode_context_proto_value(bytes)
     }
 }
 
@@ -773,7 +882,8 @@ impl ContextWire for ContextNode {
         // source provenance moved to resource/provenance sidecars. It is the last
         // deprecated field still being written to the canonical wire payload,
         // so encoding it round-trips a value the trimmed schema must drop. Stop
-        // emitting field 10; decode still accepts it for legacy on-disk blocks.
+        // emitting field 10, and decode no longer reads fields 7, 9 and 10 at all: they fall to
+        // the skip arm like any tag this binary does not know.
         encode_vector_field(&mut out, &self.vector);
         if self.embedding_model_hash != 0 {
             encode_varint_field(&mut out, CONTEXT_EMBEDDING_MODEL_FIELD, self.embedding_model_hash);
@@ -839,10 +949,6 @@ impl ContextWire for ContextNode {
                 (4, 2) => value.canonical_name = decode_string(bytes, &mut cursor)?,
                 (5, 2) => value.l0 = decode_string(bytes, &mut cursor)?,
                 (6, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
-                // Legacy Rust-only node fields from pre-trim builds.
-                (7, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
-                (9, 2) => value.l1_ref = decode_string(bytes, &mut cursor)?,
-                (10, 2) => value.raw_metadata_ref = decode_string(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
@@ -901,6 +1007,13 @@ impl ContextWire for ContextEvent {
         encode_bytes_field(&mut out, 8, self.text.as_bytes());
         encode_varint_field(&mut out, 9, self.primary_time_ms());
         encode_vector_field(&mut out, &self.vector);
+        if self.embedding_model_hash != 0 {
+            encode_varint_field(
+                &mut out,
+                CONTEXT_EMBEDDING_MODEL_FIELD,
+                self.embedding_model_hash,
+            );
+        }
         out
     }
 
@@ -922,6 +1035,7 @@ impl ContextWire for ContextEvent {
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
             vector: Vec::new(),
+            embedding_model_hash: 0,
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -933,9 +1047,6 @@ impl ContextWire for ContextEvent {
                     value.event_type = event_type;
                 }
                 // Legacy Rust-only event fields from pre-trim builds.
-                (4, 0) => {
-                    value.event_type = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
-                }
                 (5, 0) => value.actor_hash = decode_varint(bytes, &mut cursor)?,
                 (6, 0) => value.status = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
                 (6, 5) => value.confidence = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
@@ -954,6 +1065,9 @@ impl ContextWire for ContextEvent {
                 }
                 (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
                     value.vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
+                }
+                (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
+                    value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
                 }
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
                 (12, 0) => value
@@ -1125,6 +1239,9 @@ impl ContextWire for ContextEntity {
         for source_event_hash in &self.source_event_hashes {
             encode_varint_field(&mut out, 9, *source_event_hash);
         }
+        if self.embedding_model_hash != 0 {
+            encode_varint_field(&mut out, 11, self.embedding_model_hash);
+        }
         encode_vector_field(&mut out, &self.vector);
         out
     }
@@ -1142,6 +1259,7 @@ impl ContextWire for ContextEntity {
             confidence: 0.0,
             source_event_hashes: Vec::new(),
             vector: Vec::new(),
+            embedding_model_hash: 0,
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -1168,6 +1286,7 @@ impl ContextWire for ContextEntity {
                             .push(decode_varint(&packed, &mut packed_cursor)?);
                     }
                 }
+                (11, 0) => value.embedding_model_hash = decode_varint(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
@@ -1399,6 +1518,12 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde::pairs")]
         entries: Vec<(String, Vec<u8>)>,
     },
+    HashMultiSetWithTtl {
+        key: String,
+        #[serde(with = "crate::bytes_serde::pairs")]
+        entries: Vec<(String, Vec<u8>)>,
+        ttl_ms: u64,
+    },
     /// Atomically replace hash fields when the stored protobuf timestamp is older.
     ///
     /// The condition and writes execute under one shard guard. A skipped command does not
@@ -1408,6 +1533,8 @@ pub enum Command {
         timestamp_field: String,
         timestamp_seconds: i64,
         timestamp_nanos: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_ms: Option<u64>,
         #[serde(with = "crate::bytes_serde::pairs")]
         entries: Vec<(String, Vec<u8>)>,
     },
@@ -1470,6 +1597,14 @@ pub enum Command {
         max_exclusive: bool,
         rev: bool,
     },
+    /// Bounded member-order scan, strictly after the cursor.
+    /// Answers interleaved member/score-string pairs without sorting the whole set.
+    ZSetScan {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        after: Vec<u8>,
+        limit: usize,
+    },
     /// Atomic seen-within-window check-and-mark: answers 1 when the member was already seen
     /// inside the window (a duplicate), else marks it and answers 0. Expired entries are
     /// swept from the front in bounded steps on every call.
@@ -1506,6 +1641,14 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
         increment: f64,
+    },
+    /// Adjust an integer member count atomically, removing the member at zero.
+    /// Decrementing an absent member is an idempotent zero rather than a negative count.
+    ZSetCountAdjust {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        increment: i64,
     },
     /// Pop up to `count` members off the low (min) or high end, in order.
     /// Answers interleaved member/score-string pairs.
@@ -1546,6 +1689,13 @@ pub enum Command {
     SetMembers {
         key: String,
     },
+    /// Return at most `limit` members in byte order, strictly after `after`.
+    SetScan {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        after: Vec<u8>,
+        limit: usize,
+    },
     SetRemove {
         key: String,
         #[serde(with = "crate::bytes_serde")]
@@ -1554,6 +1704,11 @@ pub enum Command {
     FeatureAppend {
         key: String,
         points: Vec<FeaturePoint>,
+    },
+    FeatureAppendWithTtl {
+        key: String,
+        points: Vec<FeaturePoint>,
+        ttl_ms: u64,
     },
     FeatureAppendWithPolicy {
         key: String,
@@ -1593,6 +1748,14 @@ pub enum Command {
         #[serde(default)]
         count: Option<usize>,
     },
+    FeatureProtoAggQuery {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: String,
+        #[serde(default)]
+        count: Option<usize>,
+    },
     SequenceAdd {
         key: String,
         rows: Vec<SequenceFeatureRow>,
@@ -1607,6 +1770,11 @@ pub enum Command {
     },
     SequenceBatchQuery {
         queries: Vec<SequenceQuerySpec>,
+    },
+    /// A ranked windowed read over the cell snapshots stored under `key`.
+    CellRankQuery {
+        key: String,
+        spec: CellRankSpec,
     },
     ControlStateIncrement {
         key: String,
@@ -1880,6 +2048,13 @@ pub enum Command {
         #[serde(default)]
         min_importance: f32,
     },
+    ContextQueryEventsByIds {
+        tenant_hash: u64,
+        node_hash: u64,
+        event_id_hashes: Vec<u64>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     ContextWriteIndexRef {
         tenant_hash: u64,
         index_name: String,
@@ -2083,37 +2258,13 @@ pub enum Command {
 /// vector field it meets, so the last encoding present is the one that wins. Stopping at the
 /// first would disagree with it on any record carrying more than one.
 pub(crate) fn decode_context_node_vector(bytes: &[u8]) -> Option<Vec<f32>> {
-    decode_context_node_vector_proto(bytes).or_else(|| {
-        serde_json::from_slice::<ContextNode>(bytes)
-            .ok()
-            .map(|node| node.vector)
-    })
+    decode_context_node_vector_proto(bytes)
 }
 
 pub(crate) fn decode_context_node_vector_projection(
     bytes: &[u8],
 ) -> Option<ContextNodeVectorProjection> {
-    decode_context_node_vector_projection_proto(bytes).or_else(|| {
-        serde_json::from_slice::<ContextNode>(bytes)
-            .ok()
-            .map(|node| {
-                let summary_vector_same_as_node = !node.summary_vector.is_empty()
-                    && node.summary_vector == node.vector;
-                ContextNodeVectorProjection {
-                    node_hash: node.node_hash,
-                    vector: node.vector,
-                    embedding_model_hash: node.embedding_model_hash,
-                    summary_vector: if summary_vector_same_as_node {
-                        Vec::new()
-                    } else {
-                        node.summary_vector
-                    },
-                    summary_vector_same_as_node,
-                    summary_vector_valid_from_ms: node.summary_vector_valid_from_ms,
-                    summary_vector_model_hash: node.summary_vector_model_hash,
-                }
-            })
-    })
+    decode_context_node_vector_projection_proto(bytes)
 }
 
 fn decode_context_node_vector_projection_proto(
@@ -2470,7 +2621,7 @@ fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
     encode_vector_field_as(out, &OWN_VECTOR_FIELDS, vector);
 }
 
-fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
+pub(crate) fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
     encode_varint(out, field_number << 3);
     encode_varint(out, value);
 }
@@ -2480,7 +2631,7 @@ fn encode_fixed32_field(out: &mut Vec<u8>, field_number: u64, value: u32) {
     out.extend(value.to_le_bytes());
 }
 
-fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
+pub(crate) fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
     if value.is_empty() {
         return;
     }
@@ -2489,7 +2640,7 @@ fn encode_bytes_field(out: &mut Vec<u8>, field_number: u64, value: &[u8]) {
     out.extend(value);
 }
 
-fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
+pub(crate) fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {
         out.push((value as u8) | 0x80);
         value >>= 7;
@@ -2497,7 +2648,7 @@ fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
     out.push(value as u8);
 }
 
-fn decode_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+pub(crate) fn decode_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
     let mut value = 0_u64;
     for shift in (0..64).step_by(7) {
         let byte = *bytes.get(*cursor)?;
@@ -2746,11 +2897,22 @@ pub enum CommandResponse {
     Aggregate {
         value: i64,
     },
+    /// What a merge-reduce append landed: snapshots written (one per distinct timestamp in the
+    /// request), cells created, cells merged into a member already stored (or repeated within
+    /// the request), and the cells the newest written snapshot holds afterwards.
+    CellMergeReceipt {
+        snapshots_written: u64,
+        cells_created: u64,
+        cells_merged: u64,
+    },
     SequenceRows {
         rows: Vec<SequenceFeatureRow>,
     },
     SequenceRowGroups {
         groups: Vec<(String, Vec<SequenceFeatureRow>)>,
+    },
+    CellRanking {
+        ranked: RankedCells,
     },
     ContextNode {
         object_key: String,
@@ -3059,6 +3221,8 @@ pub struct BatchHashMultiSetRequest {
     pub shard_id: ShardId,
     pub fields: Vec<String>,
     pub rows: Vec<BatchHashMultiSetRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
 }
 
 /// One row in a shared-field conditional hash write.
@@ -3076,7 +3240,66 @@ pub struct BatchHashTimestampSetRequest {
     pub shard_id: ShardId,
     pub fields: Vec<String>,
     pub timestamp_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
     pub rows: Vec<BatchHashTimestampSetRow>,
+}
+
+/// Binary requests can retain payload slices until the accepted row is encoded for storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct BorrowedHashValue<'a>(
+    #[serde(borrow, with = "crate::bytes_serde::borrowed_binary")]
+    pub std::borrow::Cow<'a, [u8]>,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BorrowedHashTimestampRow<'a>(
+    pub String,
+    pub i64,
+    pub i32,
+    #[serde(borrow)] pub Vec<BorrowedHashValue<'a>>,
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BorrowedHashTimestampRequest<'a> {
+    pub shard_id: ShardId,
+    pub fields: Vec<String>,
+    pub timestamp_field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(borrow)]
+    pub rows: Vec<BorrowedHashTimestampRow<'a>>,
+}
+
+impl BorrowedHashTimestampRequest<'_> {
+    pub fn into_owned(self) -> BatchHashTimestampSetRequest {
+        #[cfg(test)]
+        BORROWED_VALUE_MATERIALIZATIONS.with(|count| count.set(count.get()
+            + self.rows.iter().flat_map(|row| &row.3)
+                .filter(|value| matches!(value.0, std::borrow::Cow::Borrowed(_))).count()));
+        BatchHashTimestampSetRequest {
+            shard_id: self.shard_id, fields: self.fields, timestamp_field: self.timestamp_field,
+            ttl_ms: self.ttl_ms,
+            rows: self.rows.into_iter().map(|row| BatchHashTimestampSetRow(row.0, row.1, row.2,
+                row.3.into_iter().map(|value| BatchHashMultiSetValue(value.0.into_owned())).collect())).collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BORROWED_VALUE_MATERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_borrowed_value_materializations_for_test() {
+    BORROWED_VALUE_MATERIALIZATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn borrowed_value_materializations_for_test() -> usize {
+    BORROWED_VALUE_MATERIALIZATIONS.with(std::cell::Cell::get)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3203,6 +3426,7 @@ mod tests {
             shard_id: 1,
             fields: fields.clone(),
             rows: rows.clone(),
+            ttl_ms: None,
         };
         let expanded = BatchExecuteRequest {
             shard_id: 1,
@@ -3909,6 +4133,67 @@ mod tests {
         assert_eq!(0, decoded.embedding_model_hash);
     }
 
+    /// A STORED CONTEXT VALUE IS PROTOBUF AND NOTHING ELSE, through all three readers.
+    ///
+    /// The readers of a stored context node (`decode_context_value` and the two vector readers the
+    /// traversal scores candidates with) used to try protobuf and then fall back to parsing the
+    /// bytes as JSON, for values written by a build that stored them that way. Nothing writes one as
+    /// JSON now and there is no installed base, so a JSON value is refused by each of them. The
+    /// denominator is that the JSON IS a node: serde reads it back to the same node, so a refusal
+    /// below is a refusal of a readable value and not of garbage. The control is the same node as
+    /// protobuf, which all three read.
+    #[test]
+    fn a_context_value_is_read_as_protobuf_and_nothing_else() {
+        let node = ContextNode {
+            node_hash: 11,
+            parent_hash: 1,
+            kind: 0,
+            canonical_name: "json-or-proto".to_string(),
+            l0: "the same node, spelled two ways".to_string(),
+            last_event_time_ms: 99,
+            vector: vec![0.5, 0.25],
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 5,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+            status: 0,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        };
+        let as_json = serde_json::to_vec(&node).expect("a node serializes as JSON");
+        let read_back: ContextNode =
+            serde_json::from_slice(&as_json).expect("the JSON is a node serde reads back");
+        assert_eq!(read_back.canonical_name, node.canonical_name, "denominator: the JSON is this node");
+        assert_eq!(read_back.vector, node.vector, "denominator: the JSON is this node");
+
+        assert!(
+            ContextNode::decode_context_value(&as_json).is_none(),
+            "decode_context_value read a JSON node"
+        );
+        assert!(
+            decode_context_node_vector(&as_json).is_none(),
+            "decode_context_node_vector read a JSON node"
+        );
+        assert!(
+            decode_context_node_vector_projection(&as_json).is_none(),
+            "decode_context_node_vector_projection read a JSON node"
+        );
+
+        // THE CONTROL: the same node as protobuf.
+        let proto = node.encode_context_value();
+        let decoded = ContextNode::decode_context_value(&proto).expect("protobuf is read");
+        assert_eq!(
+            (decoded.node_hash, decoded.canonical_name.as_str(), decoded.vector.as_slice()),
+            (node.node_hash, node.canonical_name.as_str(), node.vector.as_slice())
+        );
+        assert_eq!(decode_context_node_vector(&proto), Some(node.vector.clone()));
+        assert_eq!(
+            decode_context_node_vector_projection(&proto).map(|projection| projection.node_hash),
+            Some(node.node_hash)
+        );
+    }
+
     #[test]
     fn a_node_block_written_before_the_fold_still_decodes() {
         // Blocks on disk predate the new tags. Decoding must ignore their absence rather than
@@ -3936,6 +4221,76 @@ mod tests {
         assert!(decoded.vector.is_empty(), "no vector may be invented");
         assert_eq!(legacy.l0, decoded.l0);
         assert_eq!(legacy.canonical_name, decoded.canonical_name);
+    }
+
+    /// A TAG NO WRITER EMITS IS SKIPPED, AND THE NAME NO WRITER USES IS NOT READ.
+    ///
+    /// The node wire once carried `last_event_time_ms` at field 7, `l1_ref` at 9 and
+    /// `raw_metadata_ref` at 10, and the event wire `event_type` at field 4; the decoders still
+    /// filled the struct from them for blocks written by pre-trim builds, and the JSON forms read
+    /// `event_type` and `entity_type` as spellings of `type`. The first release carries no such
+    /// block, and nothing emits any of these, so each is now what any unknown tag or key is:
+    /// skipped. The controls are the live spellings, so a refusal is not a decoder that reads
+    /// nothing.
+    #[test]
+    fn a_tag_or_key_no_writer_emits_is_skipped_and_not_read_into_a_field() {
+        // ---- node: fields 7, 9, 10 ----
+        let mut node_bytes = Vec::new();
+        encode_varint_field(&mut node_bytes, 1, 42);
+        encode_varint_field(&mut node_bytes, 7, 999);
+        encode_bytes_field(&mut node_bytes, 9, b"l1");
+        encode_bytes_field(&mut node_bytes, 10, b"raw");
+        let node = ContextNode::decode_context_proto_value(&node_bytes).expect("a node decodes");
+        assert_eq!(42, node.node_hash, "the control field did not decode");
+        assert_eq!(0, node.last_event_time_ms, "field 7 still fills last_event_time_ms");
+        assert!(node.l1_ref.is_empty(), "field 9 still fills l1_ref");
+        assert!(node.raw_metadata_ref.is_empty(), "field 10 still fills raw_metadata_ref");
+        let mut live = node_bytes.clone();
+        encode_varint_field(&mut live, 6, 123);
+        assert_eq!(
+            123,
+            ContextNode::decode_context_proto_value(&live)
+                .expect("a node decodes")
+                .last_event_time_ms,
+            "control: field 6 is the live home of last_event_time_ms"
+        );
+
+        // ---- event: field 4 ----
+        let mut event_bytes = Vec::new();
+        encode_varint_field(&mut event_bytes, 1, 5);
+        encode_varint_field(&mut event_bytes, 4, 9);
+        let event =
+            ContextEvent::decode_context_proto_value(&event_bytes).expect("an event decodes");
+        assert_eq!(5, event.event_id_hash, "the control field did not decode");
+        assert_eq!(0, event.event_type, "field 4 still fills event_type");
+        let mut live = event_bytes.clone();
+        encode_varint_field(&mut live, 3, 9);
+        assert_eq!(
+            9,
+            ContextEvent::decode_context_proto_value(&live)
+                .expect("an event decodes")
+                .event_type,
+            "control: field 3 is the live home of event_type"
+        );
+
+        // ---- the JSON spellings ----
+        let retired: ContextEvent =
+            serde_json::from_str(r#"{"event_id_hash":1,"event_time_ms":2,"event_type":7}"#)
+                .expect("an event with an unknown key still parses");
+        assert_eq!(0, retired.event_type, "`event_type` is still read as `type`");
+        let live: ContextEvent =
+            serde_json::from_str(r#"{"event_id_hash":1,"event_time_ms":2,"type":7}"#)
+                .expect("an event parses");
+        assert_eq!(7, live.event_type, "control: `type` is the key");
+        let retired: ContextEntity = serde_json::from_str(
+            r#"{"entity_hash":1,"node_hash":2,"updated_at_ms":3,"entity_type":7}"#,
+        )
+        .expect("an entity with an unknown key still parses");
+        assert_eq!(0, retired.entity_type, "`entity_type` is still read as `type`");
+        let live: ContextEntity =
+            serde_json::from_str(r#"{"entity_hash":1,"node_hash":2,"updated_at_ms":3,"type":7}"#)
+                .expect("an entity parses");
+        assert_eq!(7, live.entity_type, "control: `type` is the key");
     }
 
     #[test]
@@ -4155,6 +4510,7 @@ mod tests {
             confidence: 0.97,
             source_event_hashes: vec![5, 6],
             vector: Vec::new(),
+            embedding_model_hash: 0x51A7,
         };
         assert_eq!(
             ContextEntity::decode_context_proto_value(&entity.encode_context_proto_value()),

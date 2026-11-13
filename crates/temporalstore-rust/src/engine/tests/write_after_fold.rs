@@ -1038,11 +1038,19 @@ fn a_re_add_clears_only_its_own_tombstone_when_two_removals_are_outstanding() {
          over-match and this arm would pass without reaching it",
         before.len()
     );
-    let returning_element_name = hex::encode(&returning);
-    let staying_gone_element_name = hex::encode(&staying_gone);
+    let decoded_members = |names: &[Option<String>]| {
+        names
+            .iter()
+            .map(|name| {
+                super::super::container_blocks::member_from_element_name(
+                    name.as_deref().expect("tombstone names its member"),
+                )
+                .expect("tombstone member name decodes")
+            })
+            .collect::<std::collections::BTreeSet<Vec<u8>>>()
+    };
     assert!(
-        before.contains(&Some(returning_element_name.clone()))
-            && before.contains(&Some(staying_gone_element_name.clone())),
+        decoded_members(&before) == [returning.clone(), staying_gone.clone()].into_iter().collect(),
         "the two tombstones name {before:?}, not the two members removed -- so they are not the \
          two rows this arm is about"
     );
@@ -1051,6 +1059,7 @@ fn a_re_add_clears_only_its_own_tombstone_when_two_removals_are_outstanding() {
     add(&engine, returning.clone());
 
     let after = tombstones(&engine);
+    assert_eq!(after.len(), 1, "only the sibling tombstone must remain");
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
@@ -1060,8 +1069,8 @@ fn a_re_add_clears_only_its_own_tombstone_when_two_removals_are_outstanding() {
     );
 
     assert_eq!(
-        vec![Some(staying_gone_element_name.clone())],
-        after,
+        [staying_gone.clone()].into_iter().collect::<std::collections::BTreeSet<_>>(),
+        decoded_members(&after),
         "the re-add left tombstones {after:?}. Exactly the re-added member's row should have gone \
          and the other removal's row should still be there -- a sweep that took both has erased \
          the record of a removal the client never undid"

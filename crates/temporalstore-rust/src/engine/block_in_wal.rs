@@ -9,8 +9,7 @@
 //! copy is its WAL record, and it is served from the memory cache at a synthetic address that
 //! names no file. So when the cache drops that entry before a dump materializes it, the read
 //! finds nothing: an acked write reads back as MISSING until a full reload replays the WAL.
-//! [`super::hot_block_spill`] works around that by copying evicted values to a real slab, which
-//! helps only if the spill happened and succeeded.
+//! Cache misses resolve through the carrying WAL record without creating another slab copy.
 //!
 //! The value was in the WAL the whole time. What was missing was a way to say *where*: the
 //! synthetic address is a counter, not a position, so nothing could find the record again.
@@ -41,10 +40,24 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::types::ShardId;
 use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
+
+#[path = "wal_physical_blocks.rs"]
+mod physical;
+
+#[cfg(test)]
+thread_local! {
+    static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static REGISTRATION_QUERY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn oldest_registered_scans_for_test() -> u64 {
+    OLDEST_REGISTERED_SCANS.with(std::cell::Cell::get)
+}
 
 thread_local! {
     /// Blocks produced by the write currently executing on this thread.
@@ -63,28 +76,35 @@ pub(super) fn begin_write() {
 
 /// Put a block aside for the record this write is about to append.
 ///
-/// Unconditional. `TS_BLOCK_IN_WAL` used to gate it and is gone -- said the way
-/// `hot_block_spill` says the same thing about `TS_HOT_PAGE_SPILL`, because a retired flag that
+/// Unconditional. `TS_BLOCK_IN_WAL` used to gate it and is gone. A retired flag that
 /// leaves no note behind gets cited later as though it still decided something. It was, in the
 /// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
 /// somebody reads to decide what an ack promises.
 pub(super) fn stage(object_id: u64, element_name: Option<&str>, bytes: &[u8]) {
-    // Charged here rather than at the two call sites inside `append_value`: this copy is what
-    // carrying a block in its record COSTS, and a third caller staging a block would otherwise add
-    // that cost to the store while adding nothing to the count.
+    // Charge the copy where it occurs. Owned packed rows take `stage_owned` and avoid it.
     //
-    // The element name's copy is charged to the same class for the same reason. It is a second,
+    // The element name's copy is charged to the same class. It is a second,
     // smaller cost of carrying the block -- a hash field name is two or three bytes, a zset member
     // is `16 + 2n` characters -- and it belongs beside the block copy it travels with rather than
     // against whichever caller happened to render the name.
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedBlock, || {
-        STAGED.with(|staged| {
-            staged.borrow_mut().push(StagedBlock {
-                object_id,
-                element_name: element_name.map(std::sync::Arc::from),
-                bytes: bytes.to_vec(),
-            })
-        });
+        stage_inner(object_id, element_name, bytes.to_vec());
+    });
+}
+
+pub(super) fn stage_owned(object_id: u64, element_name: Option<&str>, bytes: Vec<u8>) {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedBlock, || {
+        stage_inner(object_id, element_name, bytes);
+    });
+}
+
+fn stage_inner(object_id: u64, element_name: Option<&str>, bytes: Vec<u8>) {
+    STAGED.with(|staged| {
+        staged.borrow_mut().push(StagedBlock {
+            object_id,
+            element_name: element_name.map(std::sync::Arc::from),
+            bytes,
+        })
     });
 }
 
@@ -138,6 +158,12 @@ pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
 /// bucket-index primitive re-enters this class around the item it builds, so that one path is
 /// whole; a future caller that does not will have its item counted as its own class's cost.
 fn stage_outcome_inner(item: crate::wal::WalOutcomeItem) {
+    // Recovery installs already-durable input and never appends an outgoing record.
+    if super::replaying_wal() {
+        #[cfg(test)]
+        super::replay_scratch::observe_suppressed_outcome();
+        return;
+    }
     // Asked here rather than by each caller. Six of them asked it immediately before calling,
     // which is six chances to write a seventh that does not -- and the answer belongs with the
     // table that holds the result, not with the code that produced it.
@@ -176,7 +202,134 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
 /// The sequence is what lets WAL reclaim coexist with these registrations: a registered block's
 /// only durable copy is its record, so reclaim must never truncate below the lowest registered
 /// sequence (see [`min_registered_sequence`]).
-type Registration = (LocalWriteAheadLogStore, u64, u64);
+// Locator-only metadata; payload bytes belong to the byte-bounded cache or a temporary read.
+// The final count is zero when an index-only registration has not read its carrying record.
+type Registration = std::sync::Arc<(LocalWriteAheadLogStore, u64, u64, usize, Option<usize>)>;
+
+fn packed_objects(outcomes: &[crate::wal::WalOutcomeItem]) -> std::collections::HashSet<u64> {
+    let mut maximum: Option<u64> = None;
+    let mut packed = std::collections::HashSet::new();
+    for item in outcomes {
+        if item.kind == "hash" && !item.deleted {
+            packed.insert(item.object_id);
+        }
+        if let Some(address) = item.resolved_address() {
+            if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                maximum = Some(maximum.unwrap_or(0).max(address.offset()));
+            }
+        }
+    }
+    if let Some(maximum) = maximum {
+        super::HOT_BLOCK_OFFSET.fetch_max(maximum.saturating_add(1), std::sync::atomic::Ordering::Relaxed);
+    }
+    packed
+}
+
+fn registration_names(
+    block: &StagedBlock,
+    packed: &std::collections::HashSet<u64>,
+    pool: &mut std::collections::HashSet<std::sync::Arc<str>>,
+) -> Vec<Option<std::sync::Arc<str>>> {
+    let mut names = vec![block.element_name.clone()];
+    if block.element_name.is_none() && packed.contains(&block.object_id) {
+        if let super::container_blocks::ContainerBlockDecode::Framed { spelling, items, .. } =
+            super::container_blocks::decode_container_block(&block.bytes)
+        {
+            for item in items.iter().filter(|item| !item.deleted) {
+                let name = if spelling == super::container_blocks::ElementKeySpelling::Utf8 {
+                    std::str::from_utf8(&item.key).ok().map(std::borrow::Cow::Borrowed)
+                } else {
+                    super::container_blocks::element_name_from_element_key(spelling, &item.key)
+                        .map(std::borrow::Cow::Owned)
+                };
+                if let Some(name) = name {
+                    let shared = match pool.get(name.as_ref()) {
+                        Some(shared) => shared.clone(),
+                        None => {
+                            let shared: std::sync::Arc<str> = std::sync::Arc::from(name.as_ref());
+                            pool.insert(shared.clone());
+                            shared
+                        }
+                    };
+                    names.push(Some(shared));
+                }
+            }
+            if names.len() > 1 {
+                names.remove(0);
+            }
+        }
+    }
+    names
+}
+
+enum RegistrationNames<'a> {
+    Shared(&'a [std::sync::Arc<str>]),
+    Owned(Vec<Option<std::sync::Arc<str>>>),
+}
+
+impl RegistrationNames<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Shared(names) => names.len(),
+            Self::Owned(names) => names.len(),
+        }
+    }
+}
+
+fn select_registration_names<'a>(
+    block: &StagedBlock,
+    packed: &std::collections::HashSet<u64>,
+    projection: Option<&'a [std::sync::Arc<str>]>,
+    pool: &mut std::collections::HashSet<std::sync::Arc<str>>,
+) -> RegistrationNames<'a> {
+    if block.element_name.is_none() && packed.contains(&block.object_id) {
+        if let Some(fields) = projection.filter(|fields| !fields.is_empty()) {
+            if super::container_blocks::matches_utf8_projection(&block.bytes, fields) {
+                return RegistrationNames::Shared(fields);
+            }
+        }
+    }
+    RegistrationNames::Owned(registration_names(block, packed, pool))
+}
+
+pub(super) fn outcome_block_bindings(
+    outcomes: &[crate::wal::WalOutcomeItem],
+    blocks: &[StagedBlock],
+) -> HashMap<(u64, super::LiveBlockKey), usize> {
+    // Appends stage blocks and their outcomes in the same order. Older records can repeat
+    // an address per field, so pair only distinct addresses with the carried frames.
+    let mut addresses = HashMap::<u64, Vec<(super::LiveBlockKey, bool)>>::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in outcomes {
+        if let Some(address) = item.resolved_address() {
+            let key = super::live_block_key(&address);
+            if seen.insert((item.object_id, key)) {
+                addresses.entry(item.object_id).or_default().push((key,
+                    crate::wal_record::is_wal_resident(address.block_slab_id())));
+            }
+        }
+    }
+    let mut staged = HashMap::<u64, Vec<usize>>::new();
+    for (index, block) in blocks.iter().enumerate() {
+        if addresses.contains_key(&block.object_id) {
+            staged.entry(block.object_id).or_default().push(index);
+        }
+    }
+    let mut bindings = HashMap::new();
+    for (object_id, addresses) in addresses {
+        let Some(staged) = staged.get(&object_id) else { continue };
+        if addresses.len() != staged.len()
+            || addresses.iter().zip(staged).any(|((address, synthetic), index)|
+                *synthetic && address.2 != blocks[*index].bytes.len() as u64)
+        {
+            continue;
+        }
+        for ((address, _), index) in addresses.into_iter().zip(staged) {
+            bindings.insert((object_id, address), *index);
+        }
+    }
+    bindings
+}
 
 /// Which block this table is about: the object, and which element of it.
 ///
@@ -232,11 +385,65 @@ pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u6
 /// are two entries, not one, and which of them a read wants is a question the object id cannot be
 /// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
 /// INSIDE that record -- which is why [`StagedBlock::element_name`] exists as well.
-fn registry() -> &'static Mutex<HashMap<(usize, ShardId, BlockKey), Registration>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, BlockKey), Registration>>> =
-        OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+// Hash randomization is process-local; persisted block identities keep their stable hash.
+type ShardRegistrations = HashMap<BlockKey, Registration, ahash::RandomState>;
+
+#[derive(Default)]
+struct RegistrationRegistry {
+    stores: HashMap<usize, HashMap<ShardId, ShardRegistrations>>,
 }
+
+impl RegistrationRegistry {
+    fn shard(&self, owner: usize, shard: ShardId) -> Option<&ShardRegistrations> {
+        self.stores.get(&owner)?.get(&shard)
+    }
+
+    fn shard_mut(&mut self, owner: usize, shard: ShardId) -> &mut ShardRegistrations {
+        self.stores.entry(owner).or_default().entry(shard).or_default()
+    }
+
+    fn entries(&self, owner: usize, shard: ShardId)
+        -> impl Iterator<Item = (&BlockKey, &Registration)>
+    {
+        self.shard(owner, shard).into_iter().flat_map(|entries| entries.iter()).inspect(|_| {
+            #[cfg(test)]
+            REGISTRATION_QUERY_VISITS.with(|count| count.set(count.get() + 1));
+        })
+    }
+
+    fn remove_shard(&mut self, owner: usize, shard: ShardId) {
+        if let Some(shards) = self.stores.get_mut(&owner) {
+            shards.remove(&shard);
+            if shards.is_empty() {
+                self.stores.remove(&owner);
+            }
+        }
+    }
+
+    fn remove(&mut self, owner: usize, shard: ShardId, key: &BlockKey) {
+        let empty = self.stores.get_mut(&owner).and_then(|shards| shards.get_mut(&shard))
+            .map(|entries| {
+                entries.remove(key);
+                entries.is_empty()
+            }).unwrap_or(false);
+        if empty {
+            self.remove_shard(owner, shard);
+        }
+    }
+}
+
+fn registry() -> &'static Mutex<RegistrationRegistry> {
+    static REGISTRY: OnceLock<Mutex<RegistrationRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(RegistrationRegistry::default()))
+}
+
+#[cfg(test)]
+#[path = "registration_scope_tests.rs"]
+mod registration_scope_tests;
+
+#[cfg(test)]
+#[path = "registration_hash_tests.rs"]
+mod registration_hash_tests;
 
 /// Note that the blocks in `record` live in the record at `log_id`, carried by the WAL record
 /// at `sequence`.
@@ -251,21 +458,82 @@ pub(super) fn register_record(
     sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) {
+    let _ = register_record_with_outcomes(block_store, shard_id, staged_blocks, &[], log_id, sequence, store);
+}
+
+pub(super) fn register_record_with_outcomes(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    staged_blocks: &[StagedBlock],
+    outcomes: &[crate::wal::WalOutcomeItem],
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+) -> Vec<u64> {
+    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, None)
+}
+
+pub(super) fn register_shared_hash_record(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    staged_blocks: &[StagedBlock],
+    outcomes: &[crate::wal::WalOutcomeItem],
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+    projection: &[std::sync::Arc<str>],
+) -> Vec<u64> {
+    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, Some(projection))
+}
+
+fn register_record_locations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    staged_blocks: &[StagedBlock],
+    outcomes: &[crate::wal::WalOutcomeItem],
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+    projection: Option<&[std::sync::Arc<str>]>,
+) -> Vec<u64> {
     if staged_blocks.is_empty() {
-        return;
+        return Vec::new();
     }
+    let packed = packed_objects(outcomes);
+    let mut pool = std::collections::HashSet::new();
+    let physical_blocks = physical::bindings(outcomes, staged_blocks);
+    let physical_indices: std::collections::HashSet<_> = physical_blocks.iter().map(|(_, index)| *index).collect();
+    let names: Vec<_> = staged_blocks.iter().enumerate().map(|(index, block)| {
+        if physical_indices.contains(&index) {
+            RegistrationNames::Owned(Vec::new())
+        } else { select_registration_names(block, &packed, projection, &mut pool) }
+    }).collect();
+    let expected = names.iter().map(RegistrationNames::len).sum::<usize>() + physical_blocks.len();
+    let mut folded = physical::install_many(block_store, shard_id, physical_blocks.into_iter().map(|(key, index)| {
+        let location = Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
+        (key, location)
+    }));
+    folded.reserve(expected - folded.len());
     if let Ok(mut map) = registry().lock() {
-        for block in staged_blocks {
-            map.insert(
-                (
-                    block_store.store_id(),
-                    shard_id,
-                    (block.object_id, block.element_name.clone()),
-                ),
-                (store.clone(), log_id, sequence),
-            );
+        let entries = map.shard_mut(block_store.store_id(), shard_id);
+        for (index, (block, names)) in staged_blocks.iter().zip(names).enumerate() {
+            if names.len() == 0 { continue; }
+            let location = std::sync::Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
+            let mut install = |name: Option<std::sync::Arc<str>>| {
+                folded.push(wal_resident_key(block.object_id, name.as_deref()));
+                entries.insert((block.object_id, name), location.clone());
+            };
+            match names {
+                RegistrationNames::Shared(fields) => {
+                    for name in fields { install(Some(name.clone())); }
+                }
+                RegistrationNames::Owned(names) => {
+                    for name in names { install(name); }
+                }
+            }
         }
     }
+    folded
 }
 
 /// Register a block whose location came from the index rather than from an append.
@@ -283,11 +551,64 @@ pub(super) fn register_at(
     store: &LocalWriteAheadLogStore,
 ) {
     if let Ok(mut map) = registry().lock() {
-        map.insert(
-            (block_store.store_id(), shard_id, block_key(object_id, element_name)),
-            (store.clone(), log_id, sequence),
+        map.shard_mut(block_store.store_id(), shard_id).insert(
+            block_key(object_id, element_name),
+            std::sync::Arc::new((store.clone(), log_id, sequence, 0, None)),
         );
     }
+}
+
+/// Recover the identity of a block that has no live model-map element, such as a tombstone.
+pub(super) fn register_from_record(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    log_id: u64,
+    placements: &[(u64, u64)],
+    store: &LocalWriteAheadLogStore,
+) -> bool {
+    let Ok(Some(bytes)) = store.read_frame_at_log_id(shard_id, log_id) else {
+        return false;
+    };
+    let Ok(record) = decode_wal_line(&bytes) else {
+        return false;
+    };
+    if placements.iter().any(|(_, sequence)| *sequence != record.sequence) {
+        return false;
+    }
+    let mut wanted = placements
+        .iter()
+        .map(|(folded, _)| *folded)
+        .collect::<std::collections::BTreeSet<_>>();
+    let recovered = physical::recover(block_store, shard_id, store, log_id, &record, &wanted);
+    for folded in recovered { wanted.remove(&folded); }
+    let packed = packed_objects(&record.outcomes);
+    let mut pool = std::collections::HashSet::new();
+    let names: Vec<_> = record.staged_blocks.iter().map(|block| {
+        let mut names = registration_names(block, &packed, &mut pool);
+        // Older indexes registered packed frames under the whole-object slot.
+        if block.element_name.is_none() && wanted.contains(&wal_resident_key(block.object_id, None))
+            && !names.iter().any(Option::is_none)
+        {
+            names.push(None);
+        }
+        names
+    }).collect();
+    let expected = names.iter().map(Vec::len).sum();
+    let Ok(mut map) = registry().lock() else { return false };
+    let mut found = std::collections::BTreeSet::new();
+    for (index, (block, names)) in record.staged_blocks.iter().zip(names).enumerate() {
+        let location = std::sync::Arc::new((store.clone(), log_id, record.sequence, expected, Some(index)));
+        for name in names {
+            let folded = wal_resident_key(block.object_id, name.as_deref());
+            if wanted.contains(&folded) {
+                found.insert(folded);
+                map.shard_mut(block_store.store_id(), shard_id)
+                    .insert((block.object_id, name), location.clone());
+            }
+        }
+    }
+    for folded in found { wanted.remove(&folded); }
+    wanted.is_empty()
 }
 
 /// The lowest WAL sequence any of this shard's registrations IN THIS LOG still depends on, or
@@ -304,12 +625,39 @@ pub(super) fn min_registered_sequence(
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
     let map = registry().lock().ok()?;
-    map.iter()
-        .filter(|((owner, shard, _), (reg_store, _, _))| {
-            *owner == block_store.store_id() && *shard == shard_id && reg_store.same_log(store)
-        })
-        .map(|(_, (_, _, sequence))| *sequence)
-        .min()
+    let logical = map.entries(block_store.store_id(), shard_id)
+        .filter(|(_, location)| location.0.same_log(store))
+        .map(|(_, location)| location.2)
+        .min();
+    logical.into_iter().chain(physical::locations(block_store, shard_id).into_iter()
+        .filter(|location| location.0.same_log(store)).map(|location| location.2)).min()
+}
+
+/// A necessary relocation-pressure signal, not permission to reclaim any record.
+/// If every record between the oldest and newest live registrations is still needed,
+/// relocating those blocks only exchanges live WAL bytes for live slab bytes.
+pub(super) fn registered_record_span_has_holes(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    store: &LocalWriteAheadLogStore,
+) -> bool {
+    let Ok(map) = registry().lock() else { return false };
+    let mut records = std::collections::BTreeMap::<u64, (usize, usize)>::new();
+    let physical = physical::locations(block_store, shard_id);
+    for location in map.entries(block_store.store_id(), shard_id).map(|(_, location)| location).chain(physical.iter()) {
+        let (log, _, sequence, expected, _) = &**location;
+        if !log.same_log(store) {
+            continue;
+        }
+        let record = records.entry(*sequence).or_insert((0, *expected));
+        if record.1 != *expected { return true; }
+        record.0 += 1;
+    }
+    if records.values().any(|(live, expected)| *expected == 0 || live != expected) {
+        return true;
+    }
+    let (Some(first), Some(last)) = (records.keys().next(), records.keys().next_back()) else { return false };
+    (records.len() as u64) < last.saturating_sub(*first).saturating_add(1)
 }
 
 /// How many registrations this shard is holding.
@@ -330,14 +678,15 @@ pub(super) fn oldest_registered_objects(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
 ) -> Vec<(u64, BlockKey)> {
+    #[cfg(test)]
+    OLDEST_REGISTERED_SCANS.with(|scans| scans.set(scans.get() + 1));
     let Ok(map) = registry().lock() else {
         return Vec::new();
     };
     let owner = block_store.store_id();
     let mut entries: Vec<(u64, BlockKey)> = map
-        .iter()
-        .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
-        .map(|((_, _, block), (_, _, sequence))| (*sequence, block.clone()))
+        .entries(owner, shard_id)
+        .map(|(block, location)| (location.2, block.clone()))
         .collect();
     entries.sort_unstable();
     entries
@@ -351,9 +700,86 @@ pub(super) fn registration_count(
         return 0;
     };
     let owner = block_store.store_id();
-    map.keys()
-        .filter(|(store_id, shard, _)| *store_id == owner && *shard == shard_id)
-        .count()
+    map.shard(owner, shard_id).map_or(0, HashMap::len) + physical::count(block_store, shard_id)
+}
+
+pub(super) struct RegistrationRetirement {
+    pub folded_key: u64,
+    pub log_id: u64,
+    pub sequence: u64,
+    block: RetirementKey,
+    location: Registration,
+}
+
+enum RetirementKey {
+    Logical(BlockKey),
+    Physical(physical::PhysicalKey),
+}
+
+pub(super) fn unreferenced_physical_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    store: &LocalWriteAheadLogStore,
+    shard: &super::ShardState,
+    retain_live_real_frames: bool,
+) -> Vec<RegistrationRetirement> {
+    physical::retirements(block_store, shard_id, store, shard, retain_live_real_frames)
+}
+
+/// Propose removals; the caller must publish an image that no longer needs them first.
+pub(super) fn unreferenced_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    store: &LocalWriteAheadLogStore,
+    retained_objects: &std::collections::HashSet<u64>,
+) -> Vec<RegistrationRetirement> {
+    let Ok(map) = registry().lock() else { return Vec::new(); };
+    let owner = block_store.store_id();
+    let mut candidates: Vec<_> = map.entries(owner, shard_id)
+        .filter_map(|(block, location)| {
+            let folded_key = wal_resident_key(block.0, block.1.as_deref());
+            if retained_objects.contains(&block.0) || !location.0.same_log(store)
+            {
+                return None;
+            }
+            Some(RegistrationRetirement {
+                folded_key, log_id: location.1, sequence: location.2,
+                block: RetirementKey::Logical(block.clone()), location: location.clone(),
+            })
+        })
+        .collect();
+    if !candidates.is_empty() {
+        // Folded placement keys are hashes. Preserve a collision with any retained object.
+        let mut protected: std::collections::HashSet<_> = map.entries(owner, shard_id)
+            .filter(|((object_id, _), _)| retained_objects.contains(object_id))
+            .map(|((object_id, name), _)| wal_resident_key(*object_id, name.as_deref()))
+            .collect();
+        protected.extend(physical::folded_keys(block_store, shard_id));
+        candidates.retain(|candidate| !protected.contains(&candidate.folded_key));
+    }
+    candidates
+}
+
+/// Called under the shard guard after durable publication. Never remove a replacement.
+pub(super) fn retire_unchanged_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    retirements: &[RegistrationRetirement],
+) {
+    let Ok(mut map) = registry().lock() else { return; };
+    let owner = block_store.store_id();
+    for retirement in retirements {
+        let RetirementKey::Logical(block) = &retirement.block else {
+            physical::retire(block_store, shard_id, retirement);
+            continue;
+        };
+        let unchanged = map.shard(owner, shard_id)
+            .and_then(|entries| entries.get(block))
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &retirement.location));
+        if unchanged {
+            map.remove(owner, shard_id, block);
+        }
+    }
 }
 
 /// Retire one object's registration.
@@ -369,11 +795,11 @@ pub(super) fn deregister(
     element_name: Option<&str>,
 ) {
     if let Ok(mut map) = registry().lock() {
-        map.remove(&(
+        map.remove(
             block_store.store_id(),
             shard_id,
-            block_key(object_id, element_name),
-        ));
+            &block_key(object_id, element_name),
+        );
     }
 }
 
@@ -381,9 +807,138 @@ pub(super) fn deregister(
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
 /// re-derives whatever it needs.
 pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id: ShardId) {
+    physical::clear_shard(block_store.store_id(), shard_id);
     if let Ok(mut map) = registry().lock() {
         let owner = block_store.store_id();
-        map.retain(|(store_id, shard, _), _| !(*store_id == owner && *shard == shard_id));
+        map.remove_shard(owner, shard_id);
+    }
+}
+
+pub(crate) fn clear_store_registrations(owner: usize) {
+    physical::clear_store(owner);
+    if let Ok(mut map) = registry().lock() {
+        map.stores.remove(&owner);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn registrations_live_until_the_final_store_owner_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = crate::block_store::BlockStore::new(dir.path().join("blocks"));
+    let clone = blocks.clone();
+    let owner = blocks.store_id();
+    let wal = LocalWriteAheadLogStore::new(dir.path().join("wal"));
+    register_at(&blocks, 1, 42, None, 1, 1, &wal);
+    assert_eq!(registration_count(&clone, 1), 1);
+    drop(blocks);
+    assert_eq!(registration_count(&clone, 1), 1);
+    drop(clone);
+    assert!(!registry().lock().unwrap().stores.contains_key(&owner));
+    let next = crate::block_store::BlockStore::new(dir.path().join("next"));
+    assert_ne!(next.store_id(), owner);
+    assert_eq!(registration_count(&next, 1), 0);
+}
+
+#[cfg(test)]
+mod shared_registration_tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use crate::engine::container_blocks::{encode_utf8_container_block, select_container_element, ContainerElementRead};
+
+    #[test]
+    fn shared_registration_checks_hints_and_pools_fallback_names() {
+        let block = StagedBlock {
+            object_id: 42,
+            element_name: None,
+            bytes: encode_utf8_container_block(&[("first", b"one"), ("second", b"two")]),
+        };
+        let packed = HashSet::from([42]);
+        let fields: Vec<Arc<str>> = ["first", "second"].into_iter().map(Arc::from).collect();
+        let mut pool = HashSet::new();
+        let RegistrationNames::Shared(names) = select_registration_names(&block, &packed, Some(&fields), &mut pool)
+            else { panic!("matching frames must reuse the projection") };
+        assert!(std::ptr::eq(names.as_ptr(), fields.as_ptr()));
+        assert!(pool.is_empty());
+        let wrong = [Arc::from("second"), Arc::from("first")];
+        let RegistrationNames::Owned(first) = select_registration_names(&block, &packed, Some(&wrong), &mut pool)
+            else { panic!("mismatched projections must decode the actual frame") };
+        let RegistrationNames::Owned(second) = select_registration_names(&block, &packed, None, &mut pool)
+            else { panic!("no projection") };
+        assert_eq!(pool.len(), 2);
+        for (index, field) in fields.iter().enumerate() {
+            assert_eq!(first[index].as_deref(), Some(field.as_ref()));
+            assert!(Arc::ptr_eq(first[index].as_ref().unwrap(), second[index].as_ref().unwrap()));
+        }
+        let RegistrationNames::Owned(scalar) = select_registration_names(&block, &HashSet::new(), Some(&fields), &mut pool)
+            else { panic!("non-hash payloads cannot use hash aliases") };
+        assert_eq!(scalar, [None]);
+    }
+
+    #[test]
+    fn shared_registration_preserves_empty_and_corrupt_fallbacks() {
+        let packed = HashSet::from([42]);
+        let mut pool = HashSet::new();
+        let fields = [Arc::from("first")];
+        for bytes in [Vec::new(), b"not framed".to_vec(),
+            encode_utf8_container_block(&[("first", b"one")])[..10].to_vec(),
+            encode_utf8_container_block::<&str, &[u8]>(&[])] {
+            let block = StagedBlock { object_id: 42, element_name: None, bytes };
+            let RegistrationNames::Owned(names) = select_registration_names(&block, &packed, Some(&fields), &mut pool)
+                else { panic!("invalid or empty frames must retain generic behavior") };
+            assert_eq!(names, [None]);
+        }
+        assert!(pool.is_empty());
+    }
+
+    fn assert_shared_rows(engine: &crate::engine::TemporalEngine) {
+        let owner = engine.block_store.store_id();
+        let entries: Vec<_> = registry().lock().unwrap().entries(owner, 1)
+            .map(|((object, name), location)| (*object, name.clone(), location.clone()))
+            .collect();
+        assert_eq!(entries.len(), 24);
+        let allocations: HashSet<_> = entries.iter().map(|(_, name, _)|
+            Arc::as_ptr(name.as_ref().unwrap()) as *const () as usize).collect();
+        assert_eq!(allocations.len(), 3, "one field-name allocation per column, not per row");
+        for (object, name, location) in entries {
+            let name = name.unwrap();
+            let frame = read_block(&engine.block_store, 1, object, Some(&name)).unwrap();
+            assert!(location.4.is_some(), "each alias retains its exact staged frame");
+            let ContainerElementRead::Found(value) = select_container_element(&frame, &name)
+                else { panic!("registered field must select a value") };
+            let row = location.4.unwrap() as u8;
+            let field = name.strip_prefix("field-").unwrap().parse::<u8>().unwrap();
+            assert_eq!(value, vec![row * 3 + field; 48]);
+        }
+    }
+
+    #[test]
+    fn shared_registration_reuses_names_on_commit_and_recovery() {
+        use crate::types::{BatchHashMultiSetRequest, BatchHashMultiSetRow, BatchHashMultiSetValue};
+        let dir = tempfile::tempdir().unwrap();
+        let open = || {
+            let engine = crate::engine::TemporalEngine::with_local_dirs(64 * 1024 * 1024,
+                dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+            engine.load_shard(1);
+            engine
+        };
+        let engine = open();
+        let (response, completed) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
+            shard_id: 1,
+            fields: (0..3).map(|field| format!("field-{field}")).collect(),
+            rows: (0..8u8).map(|row| BatchHashMultiSetRow(format!("row-{row}"),
+                (0..3u8).map(|field| BatchHashMultiSetValue(vec![row * 3 + field; 48])).collect())).collect(),
+            ttl_ms: None,
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.applied, 8);
+        assert_eq!(completed.len(), 8);
+        assert_shared_rows(&engine);
+        engine.write_ahead_log_store().flush(1).unwrap();
+        drop(engine);
+        let recovered = open();
+        assert_shared_rows(&recovered);
     }
 }
 
@@ -398,62 +953,72 @@ pub(super) fn read_block(
     object_id: u64,
     element_name: Option<&str>,
 ) -> Option<Vec<u8>> {
-    let (store, log_id, _) = {
+    let location = {
         let map = registry().lock().ok()?;
         let owner = block_store.store_id();
-        map.get(&(owner, shard_id, block_key(object_id, element_name)))
-            .or_else(|| map.get(&(owner, shard_id, block_key(object_id, None))))?
+        let entries = map.shard(owner, shard_id)?;
+        entries.get(&block_key(object_id, element_name))
+            .or_else(|| entries.get(&block_key(object_id, None)))?
             .clone()
     };
+    read_registration(&location, shard_id, object_id, element_name)
+}
+
+pub(super) fn read_block_at(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    object_id: u64,
+    element_name: Option<&str>,
+    address: &crate::block_store::ElementEntry,
+) -> Option<Vec<u8>> {
+    match physical::lookup(block_store, shard_id, object_id, super::live_block_key(address)) {
+        Some(Some(location)) => read_registration(&location, shard_id, object_id, element_name),
+        Some(None) => None,
+        None => read_block(block_store, shard_id, object_id, element_name),
+    }
+}
+
+fn read_registration(
+    location: &Registration,
+    shard_id: ShardId,
+    object_id: u64,
+    element_name: Option<&str>,
+) -> Option<Vec<u8>> {
+    let (store, log_id, sequence, _, index) = &**location;
     // One batch record carries many blocks, and an ingest reads several of the fields its own
     // batch just wrote -- so the same record used to be pread and re-parsed once per block. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
     // stale: a superseding write registers a NEWER log_id and old entries simply age out.
-    if let Ok(cache) = record_lru().lock() {
-        // Keyed by (log identity, shard, log id) -- a log id is a byte offset within ONE log,
-        // so the same number names unrelated records in different engines' logs.
-        if let Some((_, _, _, blocks)) = cache
+    let cached = cached_record(store, shard_id, *log_id);
+    if let Some(blocks) = cached {
+        if let Some(index) = index {
+            return blocks.get(*index).filter(|block| block.object_id == object_id)
+                .map(|block| block.bytes.clone());
+        }
+        if let Some(block) = blocks
             .iter()
-            .find(|(s, shard, l, _)| *shard == shard_id && *l == log_id && s.same_log(&store))
+            .find(|block| names_block(block, object_id, element_name))
+            .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
         {
-            if let Some(block) = blocks
-                .iter()
-                .find(|block| names_block(block, object_id, element_name))
-                .or_else(|| blocks.iter().find(|block| names_block(block, object_id, None)))
-            {
-                return Some(block.bytes.clone());
-            }
+            return Some(block.bytes.clone());
         }
     }
-    // Adaptive pread: most records terminate well inside 128KB, so try that first and escalate
-    // only when the record does not end in the chunk -- a fixed 1MB upper bound makes every
-    // point read cost a megabyte of I/O.
-    //
-    // Where the record ends is asked of the FRAME, not guessed from a newline. Looking for one
-    // is right only while a record cannot contain the byte it ends with: a length-framed record
-    // carries 0x0A freely, so `contains` answers yes on the first payload that holds one and the
-    // split then cuts the record in half. The frame reader says "not all here yet" for exactly
-    // the case the newline probe was approximating, so escalation reads better than it did.
-    let mut record = None;
-    for size in [128u64 << 10, 1 << 20, u64::MAX] {
-        let bytes = store.read_at_log_id(shard_id, log_id, size).ok()??;
-        match crate::log_framing::next_frame(&bytes) {
-            Ok(Some((consumed, _))) => {
-                record = decode_wal_line(&bytes[..consumed]).ok();
-                break;
-            }
-            // The record declares more bytes than this window holds: read a bigger one.
-            Ok(None) => continue,
-            Err(_) => return None,
+    // Read the carrying frame once, without fetching unrelated records after it or retrying
+    // overlapping windows when a large record exceeds the initial read size.
+    let bytes = if let Some(index) = index {
+        match store.read_carried_block_at_log_id(shard_id, *log_id, *sequence, *index,
+                                               object_id, element_name).ok()?? {
+            crate::wal::CarriedBlockRead::Block(bytes) => return Some(bytes),
+            crate::wal::CarriedBlockRead::Record(bytes) => bytes,
         }
-    }
-    let record = record?;
-    let blocks = record.staged_blocks;
-    if let Ok(mut cache) = record_lru().lock() {
-        if cache.len() >= 8 {
-            cache.remove(0);
-        }
-        cache.push((store.clone(), shard_id, log_id, blocks.clone()));
+    } else {
+        store.read_frame_at_log_id(shard_id, *log_id).ok()??
+    };
+    let blocks = crate::wal::decode_carried_blocks(&bytes).ok()?;
+    let blocks = cache_record(store, shard_id, *log_id, blocks);
+    if let Some(index) = index {
+        return blocks.get(*index).filter(|block| block.object_id == object_id)
+            .map(|block| block.bytes.clone());
     }
     blocks
         .iter()
@@ -480,8 +1045,52 @@ fn names_block(block: &StagedBlock, object_id: u64, element_name: Option<&str>) 
 /// Tiny on purpose: the working set is "the record(s) the current request's batch just wrote".
 /// Entries cannot go stale: WAL records are immutable, a superseding write registers a newer
 /// log id, and the post-dump WAL sweep never truncates a registered record (its floor).
-fn record_lru() -> &'static Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedBlock>)>> {
-    static LRU: OnceLock<Mutex<Vec<(LocalWriteAheadLogStore, ShardId, u64, Vec<StagedBlock>)>>> =
-        OnceLock::new();
+type SharedRecordBlocks = Arc<Vec<StagedBlock>>;
+type CachedRecord = (crate::wal::WriteAheadLogIdentity, ShardId, u64, SharedRecordBlocks);
+
+fn cached_record(store: &LocalWriteAheadLogStore, shard_id: ShardId, log_id: u64) -> Option<SharedRecordBlocks> {
+    let cache = record_lru().lock().ok()?;
+    cache.iter().find(|(s, shard, l, _)|
+        *shard == shard_id && *l == log_id && s.same_log(store))
+        .map(|(_, _, _, blocks)| Arc::clone(blocks))
+}
+
+fn cache_record(
+    store: &LocalWriteAheadLogStore,
+    shard_id: ShardId,
+    log_id: u64,
+    blocks: Vec<StagedBlock>,
+) -> SharedRecordBlocks {
+    let blocks = Arc::new(blocks);
+    let mut retired = None;
+    if let Ok(mut cache) = record_lru().lock() {
+        if let Some((_, _, _, existing)) = cache.iter().find(|(s, shard, l, _)|
+            *shard == shard_id && *l == log_id && s.same_log(store))
+        {
+            return Arc::clone(existing);
+        }
+        if cache.len() >= 8 {
+            retired = Some(cache.remove(0));
+        }
+        cache.push((store.weak_identity(), shard_id, log_id, Arc::clone(&blocks)));
+    }
+    // Releasing a full decoded batch can free many payloads; keep it outside the cache lock.
+    drop(retired);
+    blocks
+}
+
+fn record_lru() -> &'static Mutex<Vec<CachedRecord>> {
+    static LRU: OnceLock<Mutex<Vec<CachedRecord>>> = OnceLock::new();
     LRU.get_or_init(|| Mutex::new(Vec::new()))
 }
+
+#[cfg(test)]
+pub(super) fn decoded_record_cache_shape_for_test() -> (usize, usize) {
+    let cache = record_lru().lock().unwrap();
+    (cache.len(), cache.iter().flat_map(|(_, _, _, blocks)| blocks.iter())
+        .map(|block| block.bytes.len()).sum())
+}
+
+#[cfg(test)]
+#[path = "tests/shared_wal_record_cache.rs"]
+mod shared_wal_record_cache_tests;

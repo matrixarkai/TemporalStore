@@ -61,7 +61,9 @@ class RecordingClient(TemporalStoreClient):
         self._shared_field_read_supported = False
         self._compact_shared_field_read_supported = False
         self._shared_field_write_supported = False
+        self._shared_field_ttl_write_supported = False
         self._conditional_shared_field_write_supported = False
+        self._conditional_shared_field_ttl_write_supported = False
         self.sent = []
         self.shared_reads = []
         self.shared_writes = []
@@ -73,16 +75,35 @@ class RecordingClient(TemporalStoreClient):
         return super().batch_hash_multi_get(keys, fields)
 
     def batch_hash_multi_set(  # type: ignore[override]
-        self, fields, rows, request_upper_bound=None
+        self, fields, rows, request_upper_bound=None, ttl_ms=None
     ):
         self.shared_writes.append((list(fields), list(rows)))
         return super().batch_hash_multi_set(
-            fields, rows, request_upper_bound
+            fields, rows, request_upper_bound, ttl_ms
         )
 
     def _answer(self, path, document):
         self.sent.append((path, document))
         if self.tracking_members is not None:
+            if path == "/batch_execute" and all(
+                command["kind"] == "set_scan" for command in document["commands"]
+            ):
+                def page(command):
+                    after = decode_bytes(command["after"]) or b""
+                    members = sorted(set(self.tracking_members.get(command["key"], [])))
+                    return [
+                        list(member)
+                        for member in members
+                        if member > after
+                    ][: command["limit"]]
+
+                return {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [
+                        ok({"kind": "members", "members": page(command)})
+                        for command in document["commands"]
+                    ],
+                }
             if path == "/execute" and document["command"]["kind"] == "set_members":
                 key = document["command"]["key"]
                 return ok(
@@ -157,7 +178,56 @@ class ByteEncodingTest(unittest.TestCase):
         self.assertEqual(decode_bytes([]), b"")
 
 
+class TimestampPrefetchPolicyTest(unittest.TestCase):
+    def test_bulk_threshold_and_hysteresis(self):
+        client = TemporalStoreClient()
+        for total, skipped, expected in (
+            (7, 7, False), (8, 6, True), (8, 4, True),
+            (8, 2, False), (8, 8, True), (1, 0, False),
+        ):
+            client.observe_timestamp_dedup(total, skipped)
+            self.assertEqual(client.timestamp_prefetch_preferred(), expected)
+
+    def test_invalid_observations_do_not_change_policy(self):
+        client = TemporalStoreClient()
+        client.observe_timestamp_dedup(8, 8)
+        for total, skipped in ((0, 0), (-1, 0), (8, -1), (8, 9)):
+            client.observe_timestamp_dedup(total, skipped)
+            self.assertTrue(client.timestamp_prefetch_preferred())
+
+    def test_policy_is_per_thread_and_close_resets_it(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        client = TemporalStoreClient()
+        client.observe_timestamp_dedup(8, 8)
+
+        def other_thread():
+            before = client.timestamp_prefetch_preferred()
+            client.observe_timestamp_dedup(8, 0)
+            return before, client.timestamp_prefetch_preferred()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            self.assertEqual(pool.submit(other_thread).result(), (False, False))
+        self.assertTrue(client.timestamp_prefetch_preferred())
+        self.assertEqual(vars(client._local), {"prefer_timestamp_prefetch": True})
+        client.close()
+        self.assertFalse(client.timestamp_prefetch_preferred())
+
+
 class ClientProtocolTest(unittest.TestCase):
+    def test_set_scan_cursor_is_encoded_on_both_batch_routes(self):
+        client = TemporalStoreClient()
+        command = {"kind": "set_scan", "key": "tracking", "after": b"\x00\xff", "limit": 8}
+        _chunk, body = next(client._encoded_batches([command], 1))
+        self.assertEqual(
+            decode_bytes(json.loads(body)["commands"][0]["after"]), b"\x00\xff"
+        )
+        if msgpack is not None:
+            _chunk, body = next(client._binary_batches([command], 1))
+            self.assertEqual(
+                msgpack.unpackb(body, raw=False)["commands"][0]["after"], b"\x00\xff"
+            )
+
     def test_a_refusal_is_raised_with_its_code_and_not_swallowed(self):
         client = RecordingClient(
             [{"status": {"ok": False, "code": "shard_not_loaded", "message": "nope"}}]
@@ -783,13 +853,15 @@ class ClientProtocolTest(unittest.TestCase):
                 ("a", 20, 3, [b"timestamp-a", b"one"]),
                 ("b", 10, 2, [b"timestamp-b", b"two"]),
             ],
+            ttl_ms=60_000,
         )
 
         self.assertEqual(result, (1, 1))
         path, document = client.documents[0]
-        self.assertEqual(path, "/batch_hash_timestamp_set_msgpack")
+        self.assertEqual(path, "/batch_hash_timestamp_set_ttl_msgpack")
         self.assertEqual(document["fields"], ["ts", "feature"])
         self.assertEqual(document["timestamp_field"], "ts")
+        self.assertEqual(document["ttl_ms"], 60_000)
         self.assertEqual(document["rows"][0], ["a", 20, 3, [b"timestamp-a", b"one"]])
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
@@ -808,6 +880,17 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertIsNone(client.batch_hash_timestamp_set(["ts", "f"], "ts", rows))
         self.assertIsNone(client.batch_hash_timestamp_set(["ts", "f"], "ts", rows))
         self.assertEqual(client.attempts, 1)
+        self.assertIsNone(
+            client.batch_hash_timestamp_set(
+                ["ts", "f"], "ts", rows, ttl_ms=60_000
+            )
+        )
+        self.assertIsNone(
+            client.batch_hash_timestamp_set(
+                ["ts", "f"], "ts", rows, ttl_ms=60_000
+            )
+        )
+        self.assertEqual(client.attempts, 2)
 
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_missing_shared_field_write_endpoint_falls_back_once(self):
@@ -1087,6 +1170,223 @@ class OnlineStoreTest(unittest.TestCase):
         )
         return client
 
+    def _timestamp_client(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        class TimestampClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self.current = {}
+                self.conditional_calls = []
+                self.before_conditional = None
+
+            def batch_hash_multi_get(self, keys, fields):
+                self.shared_reads.append((list(keys), list(fields)))
+                return [[self.current.get(key)] for key in keys]
+
+            def batch_hash_timestamp_set(
+                self, fields, timestamp_field, rows, request_upper_bound=None, ttl_ms=None
+            ):
+                self.conditional_calls.append((list(fields), list(rows), ttl_ms))
+                if self.before_conditional is not None:
+                    self.before_conditional()
+                applied = 0
+                for key, seconds, nanos, values in rows:
+                    raw = self.current.get(key)
+                    if raw is not None:
+                        stored = Timestamp.FromString(raw)
+                        if (seconds, nanos) <= (stored.seconds, stored.nanos):
+                            continue
+                    self.current[key] = values[fields.index(timestamp_field)]
+                    applied += 1
+                return applied, len(rows) - applied
+
+            def batch_hash_multi_set(self, *args, **kwargs):
+                raise AssertionError("survivors must retain their atomic timestamp guard")
+
+        return self._install(client=TimestampClient())
+
+    def _timestamp_rows(self, seconds, ids=range(8), value=None):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        return [
+            (self._entity_key(i), {"trips": value if value is not None else ValueProto(int64_val=i)},
+             self.datetime.fromtimestamp(seconds, self.timezone.utc), None)
+            for i in ids
+        ]
+
+    def test_latest_row_timestamp_bytes_are_reused_only_within_each_batch(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        serializations = []
+
+        class CountedTimestamp:
+            def __init__(self):
+                self.proto = Timestamp()
+
+            def __getattr__(self, name):
+                return getattr(self.proto, name)
+
+            def SerializeToString(self):
+                serializations.append((self.proto.seconds, self.proto.nanos))
+                return self.proto.SerializeToString()
+
+        with mock.patch("feast_temporalstore_command.online_store.Timestamp", CountedTimestamp):
+            self.store.online_write_batch(self.config, self.view, self._timestamp_rows(20), None)
+            self.assertEqual(serializations, [(20, 0)])
+            self.store.online_write_batch(self.config, self.view, self._timestamp_rows(30), None)
+            self.assertEqual(serializations, [(20, 0), (30, 0)])
+        self.assertEqual(len(client.current), 8)
+        self.assertTrue(all(Timestamp.FromString(raw).seconds == 30 for raw in client.current.values()))
+
+    def test_prepared_rows_preserve_proto_bytes_and_newest_duplicate_values(self):
+        from datetime import timedelta
+        from google.protobuf.timestamp_pb2 import Timestamp
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._timestamp_client()
+        base = self.datetime.fromtimestamp(20, self.timezone.utc)
+        unknown = ValueProto.FromString(b"\xf8\x07\x01")
+        values = [ValueProto(bytes_val=b""), ValueProto(int64_val=-1), unknown,
+                  ValueProto(), ValueProto(int32_val=0)]
+        rows = [(self._entity_key(index), {"trips": value},
+                 base + timedelta(microseconds=index), None)
+                for index, value in enumerate(values)]
+        newest = ValueProto(bytes_val=b"newest")
+        rows.append((self._entity_key(1), {"trips": newest}, base + timedelta(seconds=1), None))
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        fields, prepared, _ttl = client.conditional_calls[-1]
+        self.assertEqual(fields, ["_ts:stats", "stats:trips"])
+        self.assertEqual(len(prepared), len(values))
+        for index, (key, seconds, nanos, encoded) in enumerate(prepared):
+            expected = newest if index == 1 else values[index]
+            self.assertEqual(key, self.store._entity_hash_key(self.config, self._entity_key(index)))
+            self.assertEqual(encoded[1], expected.SerializeToString())
+            self.assertEqual(encoded[0], Timestamp(seconds=seconds, nanos=nanos).SerializeToString())
+
+    def _train_timestamp_prefetch(self, client):
+        for seconds in (20, 10):
+            self.store.online_write_batch(
+                self.config, self.view, self._timestamp_rows(seconds), None
+            )
+        self.assertTrue(client.timestamp_prefetch_preferred())
+
+    def test_adaptive_stale_batch_avoids_feature_serialization_and_payload_write(self):
+        client = self._timestamp_client()
+        self._train_timestamp_prefetch(client)
+        self.assertEqual(client.shared_reads, [])
+        self.assertEqual(len(client.conditional_calls), 2)
+
+        class UnserializableValue:
+            def SerializeToString(self):
+                raise AssertionError("stale feature must not be serialized")
+
+        progress = []
+        self.store.online_write_batch(
+            self.config, self.view, self._timestamp_rows(10, value=UnserializableValue()),
+            progress.append,
+        )
+        self.assertEqual(sum(progress), 8)
+        self.assertEqual(len(client.conditional_calls), 2)
+        self.assertEqual(len(client.shared_reads), 1)
+        self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
+
+    def test_adaptive_survivors_remain_atomic_and_ttl_is_preserved(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        self.config.online_store.key_ttl_seconds = 90
+        self._train_timestamp_prefetch(client)
+
+        def newer_concurrent_write():
+            client.current.update({key: Timestamp(seconds=40).SerializeToString()
+                                   for key in client.current})
+
+        client.before_conditional = newer_concurrent_write
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(30), None)
+        self.assertTrue(all(Timestamp.FromString(v).seconds == 40 for v in client.current.values()))
+        self.assertTrue(client.timestamp_prefetch_preferred())
+        client.before_conditional = None
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(50), None)
+        self.assertFalse(client.timestamp_prefetch_preferred())
+        reads = len(client.shared_reads)
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(60), None)
+        self.assertEqual(len(client.shared_reads), reads)
+        self.assertTrue(all(call[2] == 90_000 for call in client.conditional_calls))
+
+    def test_adaptive_does_not_cache_timestamps_across_delete_or_expiry(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        self._train_timestamp_prefetch(client)
+        client.current.clear()
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(10), None)
+        self.assertEqual(len(client.current), 8)
+        self.assertTrue(all(Timestamp.FromString(v).seconds == 10 for v in client.current.values()))
+        self.assertFalse(client.timestamp_prefetch_preferred())
+
+    def test_adaptive_counts_unique_keys_instead_of_local_duplicates(self):
+        client = self._timestamp_client()
+        self._train_timestamp_prefetch(client)
+        rows = self._timestamp_rows(10, ids=range(6)) * 20
+        rows += self._timestamp_rows(30, ids=range(6, 8)) * 20
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        self.assertEqual(len(client.conditional_calls[-1][1]), 2)
+        self.assertTrue(client.timestamp_prefetch_preferred())
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(40), None)
+        self.assertFalse(client.timestamp_prefetch_preferred())
+        client.shared_reads.clear()
+        rows = self._timestamp_rows(10, ids=[0]) * 20
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        self.assertFalse(client.timestamp_prefetch_preferred())
+        self.assertEqual(client.shared_reads, [])
+
+    def test_adaptive_handles_epoch_zero_and_negative_event_times(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        client = self._timestamp_client()
+        client.observe_timestamp_dedup(8, 8)
+        for i, seconds in ((0, 0), (1, -10)):
+            key = self.store._entity_hash_key(self.config, self._entity_key(i))
+            client.current[key] = Timestamp(seconds=seconds).SerializeToString()
+        rows = self._timestamp_rows(0, ids=[0]) + self._timestamp_rows(-20, ids=[1])
+        rows += self._timestamp_rows(-5, ids=[2]) + self._timestamp_rows(-10, ids=[2])
+        rows += self._timestamp_rows(-4, ids=[3]) + self._timestamp_rows(-3, ids=[3])
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        self.assertEqual([r[1] for r in client.conditional_calls[-1][1]], [-5, -3])
+
+    def test_adaptive_opt_out_and_augmented_paths_preserve_routing(self):
+        client = self._timestamp_client()
+        client.observe_timestamp_dedup(8, 8)
+        self.config.online_store.adaptive_timestamp_prefetch = False
+        self.store.online_write_batch(self.config, self.view, self._timestamp_rows(20), None)
+        self.assertEqual(client.shared_reads, [])
+        self.assertEqual(len(client.conditional_calls), 1)
+
+        for option in ("skip_dedup", "write_feature_history", "track_keys_for_teardown"):
+            with self.subTest(option=option):
+                client = self._install()
+                self.config.online_store.adaptive_timestamp_prefetch = True
+                for setting in ("skip_dedup", "write_feature_history", "track_keys_for_teardown"):
+                    setattr(self.config.online_store, setting, setting == option)
+                client.timestamp_prefetch_preferred = mock.Mock(side_effect=AssertionError("ineligible"))
+                self.store.online_write_batch(self.config, self.view, self._timestamp_rows(20), None)
+                client.timestamp_prefetch_preferred.assert_not_called()
+                self.assertEqual(len(client.shared_reads), 0 if option == "skip_dedup" else 1)
+
+    def test_fallback_timestamp_reads_distinguish_missing_from_epoch_zero(self):
+        client = self._install(answers=[{
+            "status": {"ok": True},
+            "responses": [ok({"kind": "values", "values": [[]]}),
+                          ok({"kind": "values", "values": [None]})],
+        }])
+        rows = self._timestamp_rows(-5, ids=[0, 1])
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        commands = client.sent[-1][1]["commands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["key"], self.store._entity_hash_key(self.config, self._entity_key(1)))
+
     def _install_tracking(self, members_by_key=None, legacy_members=None):
         client = self._install()
         client.tracking_members = dict(members_by_key or {})
@@ -1123,6 +1423,46 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertIn("_ts:stats", fields)
         self.assertIn("stats:trips", fields)
 
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_ttl_rows_use_one_packed_write(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        class PackedTtlClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self._shared_field_ttl_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.sent.append((path, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["rows"]),
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = self._install(client=PackedTtlClient())
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [
+            (self._entity_key(i), {"trips": ValueProto(int64_val=i)}, now, None)
+            for i in range(3)
+        ]
+
+        self.store.online_write_batch(self.config, self.view, rows, None)
+
+        self.assertEqual(len(client.sent), 1)
+        path, document = client.sent[0]
+        self.assertEqual(path, "/batch_hash_multi_set_ttl_msgpack")
+        self.assertEqual(document["ttl_ms"], 90_000)
+        self.assertEqual(len(document["rows"]), 3)
+
     def test_mixed_feature_layouts_keep_the_regular_write_batch(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
 
@@ -1143,11 +1483,28 @@ class OnlineStoreTest(unittest.TestCase):
             ["hash_multi_set", "hash_multi_set"],
         )
 
+    def test_mixed_feature_layouts_carry_ttl_without_expiry_commands(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._install()
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [
+            (self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None),
+            (self._entity_key(2), {"fares": ValueProto(int64_val=2)}, now, None),
+        ]
+
+        self.store.online_write_batch(self.config, self.view, rows, None)
+
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            ["hash_multi_set_with_ttl", "hash_multi_set_with_ttl"],
+        )
+        self.assertEqual([command["ttl_ms"] for command in commands], [90_000, 90_000])
+
     def test_history_serializes_each_entity_and_value_once(self):
-        from unittest.mock import patch
-
-        import feast_temporalstore_command.online_store as online_store_module
-
         class CountingValue:
             def __init__(self, number):
                 self.int64_val = number
@@ -1164,20 +1521,10 @@ class OnlineStoreTest(unittest.TestCase):
         self.config.online_store.skip_dedup = True
         self.config.online_store.write_feature_history = True
         values = {"trips": CountingValue(7), "fares": CountingValue(11)}
-        original_serialize_entity_key = online_store_module.serialize_entity_key
-        entity_serialize_calls = 0
-
-        def count_entity_serialization(*args, **kwargs):
-            nonlocal entity_serialize_calls
-            entity_serialize_calls += 1
-            return original_serialize_entity_key(*args, **kwargs)
-
         now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
-        with patch.object(
-            online_store_module,
-            "serialize_entity_key",
-            side_effect=count_entity_serialization,
-        ):
+        with mock.patch.object(
+            self.store, "_entity_key_hex", wraps=self.store._entity_key_hex
+        ) as encode_key:
             self.store.online_write_batch(
                 self.config,
                 self.view,
@@ -1185,7 +1532,7 @@ class OnlineStoreTest(unittest.TestCase):
                 None,
             )
 
-        self.assertEqual(entity_serialize_calls, 1)
+        self.assertEqual(encode_key.call_count, 1)
         self.assertTrue(all(value.serialize_calls == 1 for value in values.values()))
         self.assertEqual(client.shared_writes, [])
         self.assertEqual(len(client.sent[0][1]["commands"]), 5)
@@ -1219,6 +1566,41 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(read_commands[0]["fields"], ["_ts:stats"])
         self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
 
+    def test_ttl_write_falls_back_to_timestamp_read_and_combined_write(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [ok({"kind": "values", "values": [None]})],
+                },
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "applied": 1,
+                    "errors": [],
+                },
+            ]
+        )
+        self.config.online_store.skip_dedup = False
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None)],
+            None,
+        )
+
+        self.assertEqual(len(client.sent), 2)
+        self.assertEqual(client.shared_reads[0][1], ["_ts:stats"])
+        self.assertEqual(
+            [command["kind"] for command in client.sent[1][1]["commands"]],
+            ["hash_multi_set_with_ttl"],
+        )
+        self.assertEqual(client.sent[1][1]["commands"][0]["ttl_ms"], 90_000)
+
     @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
     def test_default_write_uses_one_atomic_timestamp_request(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
@@ -1227,6 +1609,7 @@ class OnlineStoreTest(unittest.TestCase):
             def __init__(self):
                 super().__init__()
                 self._conditional_shared_field_write_supported = None
+                self._conditional_shared_field_ttl_write_supported = None
 
             def _request_encoded(  # type: ignore[override]
                 self, path, body, content_type="application/json"
@@ -1258,6 +1641,49 @@ class OnlineStoreTest(unittest.TestCase):
         path, document = client.sent[0]
         self.assertEqual(path, "/batch_hash_timestamp_set_msgpack")
         self.assertEqual(document["timestamp_field"], "_ts:stats")
+        self.assertEqual(len(document["rows"]), 1)
+
+    @unittest.skipIf(msgpack is None, "MessagePack codec is not installed")
+    def test_ttl_write_uses_one_atomic_timestamp_request(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        class ConditionalRecordingClient(RecordingClient):
+            def __init__(self):
+                super().__init__()
+                self._conditional_shared_field_write_supported = None
+                self._conditional_shared_field_ttl_write_supported = None
+
+            def _request_encoded(  # type: ignore[override]
+                self, path, body, content_type="application/json"
+            ):
+                document = msgpack.unpackb(body, raw=False)
+                self.sent.append((path, document))
+                return msgpack.packb(
+                    {
+                        "status": {"ok": True, "code": "ok", "message": ""},
+                        "applied": len(document["rows"]),
+                        "skipped": 0,
+                        "errors": [],
+                    },
+                    use_bin_type=True,
+                )
+
+        client = self._install(client=ConditionalRecordingClient())
+        self.config.online_store.skip_dedup = False
+        self.config.online_store.key_ttl_seconds = 90
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None)],
+            None,
+        )
+
+        self.assertEqual(client.shared_reads, [])
+        self.assertEqual(len(client.sent), 1)
+        path, document = client.sent[0]
+        self.assertEqual(path, "/batch_hash_timestamp_set_ttl_msgpack")
+        self.assertEqual(document["ttl_ms"], 90_000)
         self.assertEqual(len(document["rows"]), 1)
 
     def test_default_write_prepares_each_feature_field_once_per_batch(self):
@@ -1306,6 +1732,96 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(client.fields, ["_ts:stats", "stats:trips", "stats:fares"])
         self.assertEqual(len(client.rows), len(rows))
         self.assertTrue(all(len(row[3]) == 3 for row in client.rows))
+
+    def test_repeated_event_times_share_one_protobuf_conversion(self):
+        from datetime import timedelta
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        import feast_temporalstore_command.online_store as online_store_module
+
+        class ConditionalRowsClient(RecordingClient):
+            def batch_hash_timestamp_set(  # type: ignore[override]
+                self, fields, timestamp_field, rows, request_upper_bound=None
+            ):
+                self.rows = list(rows)
+                return len(rows), 0
+
+        client = self._install(client=ConditionalRowsClient())
+        first = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        second = first + timedelta(seconds=1)
+        rows = [
+            (self._entity_key(i), {"trips": ValueProto(int64_val=i)}, event_time, None)
+            for i, event_time in enumerate((first, first.replace(), second, second.replace()))
+        ]
+        original = online_store_module.Timestamp.FromDatetime
+        with mock.patch.object(
+            online_store_module.Timestamp,
+            "FromDatetime",
+            autospec=True,
+            side_effect=original,
+        ) as convert:
+            self.store.online_write_batch(self.config, self.view, rows, None)
+
+        self.assertEqual(convert.call_count, 2)
+        self.assertEqual(
+            [row[1] for row in client.rows],
+            [
+                int(first.timestamp()),
+                int(first.timestamp()),
+                int(second.timestamp()),
+                int(second.timestamp()),
+            ],
+        )
+
+    def test_precomputed_vector_write_omits_the_unused_timestamp(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        class PrecomputedWriteClient(RecordingClient):
+            def batch_hash_multi_set(  # type: ignore[override]
+                self, fields, rows, request_upper_bound=None
+            ):
+                self.shared_writes.append((list(fields), list(rows)))
+                self.request_upper_bound = request_upper_bound
+
+        client = self._install(client=PrecomputedWriteClient())
+        entity_key = self._entity_key(7)
+        self.store.write_precomputed_vector(
+            self.config, "ranking", "serving", entity_key, b"packed-features"
+        )
+
+        self.assertEqual(len(client.shared_writes), 1)
+        fields, rows = client.shared_writes[0]
+        self.assertEqual(fields, ["__precomputed__ranking:vector"])
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0][0].endswith(":serving"))
+        value = ValueProto()
+        value.ParseFromString(rows[0][1][0])
+        self.assertEqual(value.bytes_val, b"packed-features")
+        self.assertGreater(client.request_upper_bound, len(rows[0][1][0]))
+
+    def test_precomputed_vector_read_deduplicates_entities_and_skips_row_decode(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        first = ValueProto(bytes_val=b"first").SerializeToString()
+
+        class PrecomputedReadClient(RecordingClient):
+            def batch_hash_multi_get(self, keys, fields):  # type: ignore[override]
+                self.shared_reads.append((list(keys), list(fields)))
+                return [[first], [None]]
+
+        client = self._install(client=PrecomputedReadClient())
+        one = self._entity_key(1)
+        two = self._entity_key(2)
+        values = self.store.read_precomputed_vectors(
+            self.config, "ranking", "serving", [one, two, one]
+        )
+
+        self.assertEqual(values, [b"first", None, b"first"])
+        self.assertEqual(len(client.shared_reads), 1)
+        keys, fields = client.shared_reads[0]
+        self.assertEqual(len(keys), 2)
+        self.assertTrue(all(key.endswith(":serving") for key in keys))
+        self.assertEqual(fields, ["__precomputed__ranking:vector"])
 
     def test_repeated_entity_writes_share_one_timestamp_read(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
@@ -1473,6 +1989,57 @@ class OnlineStoreTest(unittest.TestCase):
         # dict of empty values.
         self.assertEqual(results[1], (None, None))
 
+    def test_direct_read_collapses_repeated_feature_names(self):
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        event = Timestamp()
+        event.FromDatetime(self.datetime(2026, 3, 4, tzinfo=self.timezone.utc))
+        present = ok(
+            {
+                "kind": "values",
+                "values": [
+                    list(ValueProto(int64_val=42).SerializeToString()),
+                    list(event.SerializeToString()),
+                ],
+            }
+        )
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [present],
+                }
+            ]
+        )
+
+        result = self.store.online_read(
+            self.config,
+            self.view,
+            [self._entity_key(1)],
+            ["trips", "trips", "trips"],
+        )
+
+        self.assertEqual(client.shared_reads[0][1], ["stats:trips", "_ts:stats"])
+        self.assertEqual(result[0][1]["trips"].int64_val, 42)
+
+    def test_versioned_reads_use_the_versioned_field_namespace(self):
+        self.config.registry.enable_online_feature_view_versioning = True
+        self.view.projection.version_tag = 7
+        client = self._install()
+
+        self.assertTrue(self.store._is_versioned_read_supported())
+        self.store._check_versioned_read_support([(self.view, ["trips"])])
+        self.store.online_read(
+            self.config, self.view, [self._entity_key(1)], ["trips"]
+        )
+
+        self.assertEqual(
+            client.shared_reads[0][1],
+            ["stats_v7:trips", "_ts:stats_v7"],
+        )
+
     def test_repeated_entity_reads_share_one_hash_command(self):
         from google.protobuf.timestamp_pb2 import Timestamp
 
@@ -1524,6 +2091,136 @@ class OnlineStoreTest(unittest.TestCase):
             "repeated positions must not share mutable protobuf messages",
         )
 
+    def test_single_integer_entity_keys_keep_feasts_wire_bytes(self):
+        from feast.infra.key_encoding_utils import serialize_entity_key
+        from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        for name in ("id", "driver_id", "long_join_key_name"):
+            for number in (-(1 << 63), -1, 0, 1, (1 << 63) - 1):
+                key = EntityKeyProto(
+                    join_keys=[name], entity_values=[ValueProto(int64_val=number)]
+                )
+                self.assertEqual(
+                    self.store._entity_key_hex(self.config, key),
+                    serialize_entity_key(key, entity_key_serialization_version=3).hex(),
+                )
+
+    def test_other_entity_key_shapes_use_feasts_encoder(self):
+        from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        import feast_temporalstore_command.online_store as online_store_module
+
+        integer_key = self._entity_key(7)
+        non_integer_key = EntityKeyProto(
+            join_keys=["driver_id"], entity_values=[ValueProto(string_val="seven")]
+        )
+        multi_key = EntityKeyProto(
+            join_keys=["driver_id", "region"],
+            entity_values=[ValueProto(int64_val=7), ValueProto(string_val="west")],
+        )
+        online_store_module._single_entity_prefix("driver_id")
+        original = online_store_module.serialize_entity_key
+        with mock.patch.object(
+            online_store_module, "serialize_entity_key", wraps=original
+        ) as encode:
+            self.store._entity_key_hex(self.config, integer_key)
+            self.assertEqual(encode.call_count, 0)
+            self.store._entity_key_hex(self.config, non_integer_key)
+            self.store._entity_key_hex(self.config, multi_key)
+            self.config.entity_key_serialization_version = 4
+            self.store._entity_key_hex(self.config, integer_key)
+            self.assertEqual(encode.call_count, 3)
+
+        self.config.entity_key_serialization_version = 3
+        with mock.patch.object(online_store_module, "_single_entity_prefix", return_value=None):
+            with mock.patch.object(
+                online_store_module, "serialize_entity_key", wraps=original
+            ) as encode:
+                self.store._entity_key_hex(self.config, integer_key)
+                self.assertEqual(encode.call_count, 1)
+
+    def test_feature_views_with_the_same_entities_share_one_projection(self):
+        from feast import FeatureView, Field
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+        from feast.types import Int64
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        fares = FeatureView(
+            name="fares",
+            entities=[self.entity],
+            schema=[Field(name="amount", dtype=Int64)],
+            source=self.view.batch_source,
+        )
+        entity_keys = [self._entity_key(1), self._entity_key(2)]
+        stamp = Timestamp()
+        stamp.FromDatetime(self.datetime(2026, 1, 1, tzinfo=self.timezone.utc))
+        stamp_bytes = stamp.SerializeToString()
+
+        class MultiViewClient(RecordingClient):
+            def batch_hash_multi_get(self, keys, fields):  # type: ignore[override]
+                self.shared_reads.append((list(keys), list(fields)))
+                return [
+                    [
+                        ValueProto(int64_val=number).SerializeToString(),
+                        stamp_bytes,
+                        ValueProto(int64_val=number * 10).SerializeToString(),
+                        stamp_bytes,
+                    ]
+                    for number in (1, 2)
+                ]
+
+        client = self._install(client=MultiViewClient())
+        populated = []
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], [[0], [1]], 2),
+        ) as unique_entities, mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            return_value=entity_keys,
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._populate_response_from_feature_data",
+            side_effect=lambda features, rows, *_args: populated.append((features, rows)),
+        ):
+            self.store._read_features_per_fv(
+                self.config,
+                [(self.view, ["trips"]), (fares, ["amount"])],
+                {},
+                {},
+                object(),
+                False,
+                False,
+            )
+
+        self.assertEqual(len(client.shared_reads), 1)
+        self.assertEqual(unique_entities.call_count, 1)
+        keys, fields = client.shared_reads[0]
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(
+            fields,
+            ["stats:trips", "_ts:stats", "fares:amount", "_ts:fares"],
+        )
+        self.assertEqual([item[0] for item in populated], [["trips"], ["amount"]])
+        self.assertEqual(populated[0][1][1][1]["trips"].int64_val, 2)
+        self.assertEqual(populated[1][1][1][1]["amount"].int64_val, 20)
+
+        fares.projection.join_key_map["driver_id"] = "other_driver_id"
+        with mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_unique_entities",
+            return_value=(["entities"], [[0], [1]], 2),
+        ) as unique_entities, mock.patch(
+            "feast_temporalstore_command.online_store.utils._get_entity_key_protos",
+            return_value=entity_keys,
+        ), mock.patch(
+            "feast_temporalstore_command.online_store.utils._populate_response_from_feature_data",
+        ):
+            self.store._read_features_per_fv(
+                self.config,
+                [(self.view, ["trips"]), (fares, ["amount"])],
+                {}, {}, object(), False, False,
+            )
+        self.assertEqual(unique_entities.call_count, 2)
+
     def test_a_short_field_answer_does_not_shift_values_onto_other_features(self):
         # A node that answers with fewer slots than fields requested must not
         # silently align `trips` to the timestamp slot.
@@ -1564,6 +2261,82 @@ class OnlineStoreTest(unittest.TestCase):
         numeric = client.sent[0][1]["commands"][2]
         self.assertTrue(numeric["key"].startswith("fa:"))
         self.assertEqual(bytes(numeric["points"][0]["value"]), b"1")
+
+    def test_history_ttl_is_carried_by_each_append_without_extra_commands(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        self.config.online_store.key_ttl_seconds = 90
+        client = self._install()
+        timestamp = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=7)}, timestamp, None)],
+            None,
+        )
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            [
+                "hash_multi_set_with_ttl",
+                "feature_append_with_ttl",
+                "feature_append_with_ttl",
+            ],
+        )
+        self.assertEqual([command["ttl_ms"] for command in commands], [90_000] * 3)
+
+        self.config.online_store.compact_numeric_history = True
+        client = self._install()
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(self._entity_key(1), {"trips": ValueProto(int64_val=7)}, timestamp, None)],
+            None,
+        )
+        self.assertEqual(
+            [command["kind"] for command in client.sent[0][1]["commands"]],
+            ["hash_multi_set_with_ttl", "feature_append_with_ttl"],
+        )
+
+    def test_compact_numeric_history_writes_one_series_and_queries_it(self):
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.write_feature_history = True
+        self.config.online_store.compact_numeric_history = True
+        key = self._entity_key(1)
+        timestamp = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        client = self._install()
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [(key, {"trips": ValueProto(int64_val=-7)}, timestamp, None)],
+            None,
+        )
+        commands = client.sent[0][1]["commands"]
+        self.assertEqual(
+            [command["kind"] for command in commands],
+            ["hash_multi_set", "feature_append"],
+        )
+        self.assertTrue(commands[1]["key"].startswith("fh:"))
+        self.assertEqual(
+            bytes(commands[1]["points"][0]["value"]),
+            ValueProto(int64_val=-7).SerializeToString(),
+        )
+
+        aggregate = self.store._feature_aggregate_command(
+            self.config, {"trips": self.view.features[0].dtype}, self.view.name,
+            key, "trips", 0, 100, "sum", None
+        )
+        count = self.store._feature_aggregate_command(
+            self.config, {"trips": self.view.features[0].dtype}, self.view.name,
+            key, "trips", 0, 100, "count", None
+        )
+        self.assertEqual(aggregate["kind"], "feature_proto_agg_query")
+        self.assertEqual(count["kind"], "feature_agg_query")
+        self.assertEqual(aggregate["key"], count["key"])
 
     def test_repeated_entity_history_is_consolidated_without_losing_points(self):
         from feast.protos.feast.types.Value_pb2 import Value as ValueProto
@@ -1642,14 +2415,16 @@ class OnlineStoreTest(unittest.TestCase):
             ]
         )
         key = self._entity_key(1)
-        values = self.store.query_feature_aggregates(
-            self.config,
-            self.view,
-            [
-                (key, "trips", 1, 100, "sum", None),
-                (key, "trips", 1, 100, "count", None),
-            ],
-        )
+        with mock.patch.object(self.store, "_view_name", wraps=self.store._view_name) as view_name:
+            values = self.store.query_feature_aggregates(
+                self.config,
+                self.view,
+                [
+                    (key, "trips", 1, 100, "sum", None),
+                    (key, "trips", 1, 100, "count", None),
+                ],
+            )
+        self.assertEqual(view_name.call_count, 1)
         self.assertEqual(values, [13, 3])
         self.assertEqual(len(client.sent), 1)
         path, document = client.sent[0]
@@ -1736,21 +2511,24 @@ class OnlineStoreTest(unittest.TestCase):
             members_by_key.setdefault(command["key"], []).append(
                 decode_bytes(command["member"])
             )
-        # Now tear down: one legacy read plus bounded shard reads, then bounded
-        # batches of field deletes and the occupied tracking sets dropped last.
+        # Now tear down through bounded set pages and delete batches.
         client = self._install_tracking(members_by_key)
         self.store.teardown(self.config, [self.view], [self.entity])
-        self.assertEqual(client.sent[0][0], "/execute")
-        self.assertEqual(client.sent[0][1]["command"]["kind"], "set_members")
-        field_deletes, key_deletes = [], []
-        for path, document in client.sent[1:]:
+        self.assertEqual(client.sent[0][0], "/batch_execute")
+        self.assertTrue(
+            all(command["kind"] == "set_scan" for command in client.sent[0][1]["commands"])
+        )
+        field_deletes, history_deletes, key_deletes = [], [], []
+        for path, document in client.sent:
             self.assertEqual(path, "/batch_execute")
             for command in document["commands"]:
                 if command["kind"] == "hash_delete":
                     field_deletes.append((command["key"], command["field"]))
+                elif command["kind"] == "feature_delete":
+                    history_deletes.append(command["key"])
                 elif command["kind"] == "common_delete":
                     key_deletes.append(command["key"])
-                elif command["kind"] != "set_members":
+                elif command["kind"] != "set_scan":
                     self.fail(f"unexpected command {command['kind']}")
 
         # THE ROWS ARE NOT DELETED, THEIR FIELDS ARE. The row is shared by every
@@ -1780,6 +2558,9 @@ class OnlineStoreTest(unittest.TestCase):
             len(written) * 2,
             "one delete per (row, field), no field twice",
         )
+        self.assertEqual(len(history_deletes), len(written) * 2)
+        self.assertTrue(any(key.startswith("fh:proj:stats:") for key in history_deletes))
+        self.assertTrue(any(key.startswith("fa:proj:stats:") for key in history_deletes))
 
     def test_tearing_down_one_view_leaves_another_views_fields_on_a_shared_row(self):
         """FEAST ISSUE #2150, WHICH THIS LAYOUT IS EXPOSED TO BY CONSTRUCTION.
@@ -1809,15 +2590,11 @@ class OnlineStoreTest(unittest.TestCase):
         self.config.online_store.skip_dedup = True
         self.config.online_store.track_keys_for_teardown = True
         written_key = "somerow:proj"
-        client = self._install(
-            [
-                ok({"kind": "members", "members": [list(written_key.encode())]}),
-            ]
-        )
+        client = self._install_tracking(legacy_members=[written_key.encode()])
         self.store.teardown(self.config, [self.view], [self.entity])
 
         touched = []
-        for _path, document in client.sent[1:]:
+        for _path, document in client.sent:
             touched.extend(document["commands"])
 
         # DENOMINATOR: it really did emit deletes for the one tracked row.
@@ -1887,8 +2664,8 @@ class OnlineStoreTest(unittest.TestCase):
         self.store.teardown(self.config, [self.view], [self.entity])
 
         batches = [
-            [command for command in document["commands"] if command["kind"] != "set_members"]
-            for _, document in client.sent[1:]
+            [command for command in document["commands"] if command["kind"] != "set_scan"]
+            for _, document in client.sent
         ]
         batches = [batch for batch in batches if batch]
         self.assertTrue(batches, "teardown sent no deletes at all")
@@ -1910,6 +2687,36 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual({c["key"] for c in field_deletes}, written)
         self.assertEqual({c["key"] for c in key_deletes}, set(members_by_key))
         self.assertTrue(all(c["kind"] == "common_delete" for c in batches[-1]))
+
+    def test_teardown_scans_large_tracking_set_with_exclusive_cursors(self):
+        self.config.online_store.track_keys_for_teardown = True
+        self.config.online_store.teardown_batch_size = 16
+        set_key = self.store._teardown_shard_keys(self.config, "stats")[0]
+        members = [f"entity{i:04d}:proj".encode() for i in range(40)]
+        client = self._install_tracking({set_key: members})
+
+        self.store.teardown(self.config, [self.view], [self.entity])
+
+        commands = [
+            command
+            for _path, document in client.sent
+            for command in document["commands"]
+        ]
+        scans = [
+            command for command in commands
+            if command["kind"] == "set_scan" and command["key"] == set_key
+        ]
+        self.assertEqual([decode_bytes(command["after"]) for command in scans], [
+            b"", members[15], members[31],
+        ])
+        self.assertTrue(all(command["limit"] <= 16 for command in scans))
+        self.assertEqual(
+            len([command for command in commands if command["kind"] == "hash_delete"]),
+            80,
+        )
+        self.assertEqual(client.sent[-1][1]["commands"], [
+            {"kind": "common_delete", "key": set_key}
+        ])
 
     def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
         """Feast's async serving path calls this, and the base class raises.

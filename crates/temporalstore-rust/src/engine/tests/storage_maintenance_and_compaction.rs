@@ -565,6 +565,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
         confidence: 0.97,
         source_event_hashes: vec![5],
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let entity_upsert = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -629,6 +630,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
         related_node_hashes: vec![42],
         compact_attrs: vec![1, 2, 3],
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let mut event_b = event_a.clone();
     event_b.event_id_hash = 6;
@@ -696,6 +698,21 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
                     == vec!["second", "first"]
     ));
 
+    let exact = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQueryEventsByIds {
+            tenant_hash: 11,
+            node_hash: 42,
+            event_id_hashes: vec![5],
+            limit: Some(1),
+        },
+    });
+    assert!(matches!(
+        exact.response,
+        CommandResponse::ContextEvents { ref events, .. }
+            if events.len() == 1 && events[0].event_id_hash == 5 && events[0].text == "first"
+    ));
+
     let index_ref = ContextIndexRef {
         primary_node_hash: 42,
         primary_event_time_ms: 1_000,
@@ -750,6 +767,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
         related_node_hashes: vec![42],
         compact_attrs: Vec::new(),
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let extracted = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -833,6 +851,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
                 related_node_hashes: vec![43],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             indexes: ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -988,6 +1007,7 @@ fn context_query_events_applies_limit_after_filter_like_native() {
         related_node_hashes: vec![42],
         compact_attrs: vec![],
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     // 100 low-confidence events at earlier timestamps, then 5 high-confidence ones later.
     for i in 0..100u64 {
@@ -1334,6 +1354,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: false,
@@ -1430,6 +1451,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 }),
                 first_write_only: false,
                 cold_storage: true,
@@ -1731,6 +1753,7 @@ fn block_compaction_reports_model_layouts_delete_markers_object_blocks_and_densi
                 related_node_hashes: Vec::new(),
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             first_write_only: false,
             cold_storage: false,
@@ -1974,6 +1997,10 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
     }
     assert!(report.lifecycle_report.is_some());
     assert!(report
+        .stages
+        .iter()
+        .any(|stage| stage.stage == "reclaim_wal" && stage.dumped_bucket_count > 0));
+    assert!(report
         .expiry_report
         .as_ref()
         .is_some_and(|expiry| expiry.expired_records_removed >= 1));
@@ -2003,11 +2030,21 @@ fn storage_manager_cycle_runs_prepare_reclaim_evict_expire_compact_and_index_gc(
             "reap_metrics",
         ]
     );
+    assert_eq!(report.stage_boundary_order, report.native_stage_order);
+    assert_eq!(
+        report
+            .stages
+            .iter()
+            .filter(|stage| stage.stage != "plan" && stage.stage != "merged_dump_load_policy")
+            .map(|stage| stage.stage.as_str())
+            .collect::<Vec<_>>(),
+        report.stage_boundary_order.iter().map(String::as_str).collect::<Vec<_>>()
+    );
 }
 
 // shared-corpus: storage_data_structure_api_parity
 #[test]
-fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surfaces() {
+fn storage_api_readiness_requires_a_durable_dump() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -2039,6 +2076,9 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     });
     assert!(response.status.ok, "{response:?}");
 
+    let initial = engine.storage_data_structure_api_parity_report(1);
+    assert!(!initial.storage_manager_merged_dump_load_api_ready);
+    engine.create_bucket_dump_manifest(1, []).unwrap();
     let report = engine.storage_data_structure_api_parity_report(1);
     assert!(report.ready, "{report:?}");
     assert!(report.bucket_object_block_authority_ready);
@@ -3001,34 +3041,43 @@ fn expiry_sweep_removes_expired_records_without_lazy_read() {
 }
 
 #[test]
-fn string_get_uses_memory_cache() {
+fn string_get_populates_cache_once_then_hits_memory() {
     let dir = tempfile::tempdir().unwrap();
     let cache = MultiLayerCache::new(1024, dir.path());
     let engine = TemporalEngine::new(cache.clone());
     engine.load_shard(1);
-    engine.execute(ExecuteRequest {
+    let write = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
             key: "k".to_string(),
             value: b"v".to_vec(),
         },
     });
-    engine.execute(ExecuteRequest {
+    assert!(write.status.ok);
+    cache.invalidate_shard(1).unwrap();
+    let before = cache.stats();
+    let cold_read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
             key: "k".to_string(),
         },
     });
-    engine.execute(ExecuteRequest {
+    assert!(cold_read.status.ok);
+    assert_eq!(cold_read.response, CommandResponse::Bytes { value: Some(b"v".to_vec()) });
+    let cold = cache.stats();
+    assert_eq!(cold.misses, before.misses + 1);
+    assert!(cold.puts > before.puts);
+    let warm_read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
             key: "k".to_string(),
         },
     });
-    let stats = cache.stats();
-    assert_eq!(stats.misses, 2);
-    assert!(stats.memory_hits >= 1);
-    assert!(stats.puts >= 2);
+    assert!(warm_read.status.ok);
+    assert_eq!(warm_read.response, CommandResponse::Bytes { value: Some(b"v".to_vec()) });
+    let warm = cache.stats();
+    assert_eq!(warm.misses, cold.misses);
+    assert!(warm.memory_hits > cold.memory_hits);
 }
 
 // shared-corpus: context_dirty_coalescing_is_visible
@@ -3556,7 +3605,7 @@ fn scratch_engine_index_dir_dies_with_the_last_engine_clone() {
 }
 
 #[test]
-fn served_index_container_round_trips_and_still_reads_plain_json() {
+fn served_index_container_round_trips_and_refuses_plain_json() {
     use crate::engine::{decode_index_bytes, encode_index_bytes, encode_index_bytes_as_plain_json};
 
     let mut shard = ShardState::default();
@@ -3567,9 +3616,11 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     // Raw JSON, which is what an older binary wrote. Nothing in production produces this any
     // more, so the test names the shape it wants rather than setting a variable to select it.
     let plain = encode_index_bytes_as_plain_json(&shard);
-    assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
-    let decoded = decode_index_bytes(&plain).expect("json index decodes");
-    assert!(decoded.strings().contains_key("container-probe"));
+    assert_eq!(plain.first(), Some(&b'{'), "the plain shape is JSON");
+    // PLAIN JSON IS REFUSED, NOT READ: nothing writes it, and a reader for a shape no writer
+    // produces is a door a stale image can walk through. The refusal names what was wrong with it.
+    let refused = decode_index_bytes(&plain).expect_err("a plain-JSON index is not a served index");
+    assert!(refused.contains("not a container"), "unhelpful refusal: {refused}");
 
     // And what production writes: a magic-prefixed payload that decodes back to the same state.
     let wrapped = encode_index_bytes(&shard);
@@ -3670,23 +3721,20 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     let refused = decode_index_bytes(&wrong_version).expect_err("a foreign struct version refuses");
     assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
 
-    // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
+    // And every older on-disk shape is REFUSED, never guessed at: plain JSON, and the
+    // compressed-JSON payload (codec 1) that an older binary wrote. Neither has a writer or a
+    // reader left, and a reader for a shape no writer produces is a door a stale image can walk
+    // through.
     let plain = encode_index_bytes_as_plain_json(&shard);
-    assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
-    assert_eq!(
-        decode_index_bytes(&plain).expect("json decodes").strings().len(),
-        shard.strings().len()
-    );
+    assert_eq!(plain.first(), Some(&b'{'), "the plain shape is JSON");
+    let refused = decode_index_bytes(&plain).expect_err("plain json is refused");
+    assert!(refused.contains("not a container"), "unhelpful refusal: {refused}");
 
-    // The compressed-JSON payload has no writer left: it is built here the way an older binary
-    // built it, which is the only way to give the reader arm that still takes it a real input.
-    let compressed_json =
-        crate::engine::wrap_index_json(serde_json::to_vec(&shard).expect("shard serialises"));
-    assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
-    assert_eq!(
-        decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings().len(),
-        shard.strings().len()
-    );
+    let mut compressed_json = binary.clone();
+    compressed_json[6] = 1;
+    let refused =
+        decode_index_bytes(&compressed_json).expect_err("the compressed-json payload is refused");
+    assert!(refused.contains("cannot read"), "unhelpful refusal: {refused}");
 
     // The binary payload is the smaller one -- that is the whole point of adding it.
     assert!(
@@ -8991,7 +9039,8 @@ before the dump.",
 #[test]
 fn one_call_walks_the_live_blocks_a_known_number_of_times() {
     const RECORDS: usize = 1_000;
-    const EXPECTED_MULTIPLE: u64 = 6;
+    // 6 -> 5: the plan's summaries and digests come off one listing (`a_plan_lists_the_shards_blocks_once`).
+    const EXPECTED_MULTIPLE: u64 = 5;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -10136,7 +10185,7 @@ fn emptied_buckets_are_dropped_without_walking_the_map() {
                     actor_hash: 42, status: 1, valid_until_ms: 0, confidence: 1.0,
                     importance: 1.0, text: "body".to_string(),
                     source_ref: format!("msg-{nid}"), related_node_hashes: Vec::new(),
-                    compact_attrs: Vec::new(), vector: Vec::new(),
+                    compact_attrs: Vec::new(), vector: Vec::new(), embedding_model_hash: 0,
                 }),
             },
             Command::ContextWriteIndexRef {
@@ -10520,7 +10569,8 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 /// because that report is taken whether or not the round has work, which is exactly why the idle
 /// half is measured separately.
 const EXPECTED_IDLE_MULTIPLE: u64 = 2;
-const EXPECTED_DIRTY_MULTIPLE: u64 = 6;
+// 6 -> 5 for the same reason as `EXPECTED_MULTIPLE` in `one_call_walks_the_live_blocks_a_known_number_of_times`.
+const EXPECTED_DIRTY_MULTIPLE: u64 = 5;
 
 /// What one round walked, at one corpus size.
 struct RoundWalkMeasurement {
@@ -10887,5 +10937,69 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
             .get(&1)
             .is_none(),
         "a round that finished its work must close, so the next round rolls a fresh slab",
+    );
+}
+
+/// AN UNREADABLE BLOCK STOPS ITSELF, NOT THE BLOCKS BEHIND IT.
+///
+/// One read in the middle of the walk fails and every other read succeeds. The round must still
+/// FAIL -- an incomplete round stays loud and commits its partial index -- but it must have walked
+/// past the bad block first. Blocks already moved are skipped by the next round, so a round that
+/// stopped AT the bad block would arrive at it first again and never reach anything after it.
+///
+/// Two numbers, asserted separately: the failed round's message names the one block it left, and the
+/// round after it moves exactly that one block and nothing else. A round that stopped at the bad
+/// block would leave every block behind it, so the second round would move all of those too.
+#[test]
+fn a_round_walks_past_one_unreadable_block_and_still_fails() {
+    const RECORDS: usize = 32;
+    const UNREADABLE_READ: usize = 2;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("unreadable-{index:04}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let live_blocks: usize = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.block_ref_count as usize)
+        .sum();
+    assert!(
+        live_blocks > UNREADABLE_READ + 1,
+        "{live_blocks} live block refs leaves nothing behind the unreadable one"
+    );
+
+    crate::engine::compaction::fail_only_compaction_block_read_at_for_test(Some(UNREADABLE_READ));
+    let first_round = engine.compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX);
+    crate::engine::compaction::fail_only_compaction_block_read_at_for_test(None);
+    let failure = first_round.expect_err("a round that left a block unread must not report success");
+    assert_eq!(failure.code, "block_compaction_failed", "{failure:?}");
+    assert!(
+        failure.message.contains("1 block(s)"),
+        "the failure should name the one block it left: {failure:?}"
+    );
+
+    let second_round = engine
+        .compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX)
+        .expect("round two reads every block");
+    assert_eq!(
+        second_round.rewritten_block_refs, 1,
+        "round two moved {} blocks; the failed round should have moved all but the one it could \
+         not read ({live_blocks} live), and moving more means it stopped at the bad block",
+        second_round.rewritten_block_refs,
     );
 }

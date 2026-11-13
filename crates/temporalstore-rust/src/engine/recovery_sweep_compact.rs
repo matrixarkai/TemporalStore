@@ -5,6 +5,14 @@
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
+#[cfg(test)]
+#[path = "compaction_execution_tests.rs"]
+mod compaction_execution_tests;
+
+#[cfg(test)]
+#[path = "compaction_retention_tests.rs"]
+mod compaction_retention_tests;
+
 /// OBSERVATION SEAM: was the shard-table write guard still held when a round PUBLISHED its
 /// durable index?
 ///
@@ -64,13 +72,12 @@ pub(crate) struct ExpiryGuardNanos {
     pub total: std::sync::atomic::AtomicU64,
     /// `ensure_expiry_order` + both `due_window` reads: choosing what the round will expire.
     pub select: std::sync::atomic::AtomicU64,
-    /// `delete_record`, once per due key: the in-memory removal from the shard index. This is the
-    /// only part of the removal that actually needs the shard guard.
+    /// Preparing deletion groups and applying their logged exact-record removals.
     pub delete: std::sync::atomic::AtomicU64,
     /// The record-cache pass. ONE `invalidate_records_all_batched` per round; it is handed
     /// `&MultiLayerCache` and a key slice and touches NOTHING on the shard.
     pub invalidate: std::sync::atomic::AtomicU64,
-    /// The per-key WAL tombstone loop, including the one mirror lookup it takes first.
+    /// Bounded deletion WAL batches and the mirror hand-off, excluding in-memory apply time.
     pub wal_append: std::sync::atomic::AtomicU64,
     /// Building the checkpoint the unlocked flush is handed: once per round.
     pub checkpoint: std::sync::atomic::AtomicU64,
@@ -169,6 +176,26 @@ struct ExpiryIndexDelta {
     applied_wal_sequence: Option<u64>,
 }
 
+fn expiry_record_is_hot(shard: &ShardState, key: &str) -> bool {
+    if shard.bucket_index.released_buckets.is_empty() {
+        return record_exists(shard, key);
+    }
+    let (start, end) = shard.routing_range();
+    let mut exists = false;
+    for record_key in associated_record_keys(key) {
+        if !record_exists_exact(shard, &record_key) {
+            continue;
+        }
+        exists = true;
+        // Released buckets retain model locators. Presence in those maps is not residency.
+        let bucket = block_routing_bucket(&record_key, start, end);
+        if shard.bucket_index.released_buckets.contains(&bucket) {
+            return false;
+        }
+    }
+    exists
+}
+
 impl TemporalEngine {
     /// Install a shard index received from elsewhere -- a snapshot, a checkpoint, a restore.
     ///
@@ -192,13 +219,15 @@ impl TemporalEngine {
         bytes: &[u8],
         routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp,
     ) -> Result<(), std::io::Error> {
-        fs::create_dir_all(&self.index_dir)?;
-        crate::engine::routing_range_stamp::write_routing_range_stamp(
-            &self.index_dir,
-            shard_id,
-            routing_range,
-        )?;
-        fs::write(self.index_path(shard_id), bytes)
+        self.checkpoint_publications.publish_current(shard_id, || {
+            fs::create_dir_all(&self.index_dir)?;
+            crate::engine::routing_range_stamp::write_routing_range_stamp(
+                &self.index_dir,
+                shard_id,
+                routing_range,
+            )?;
+            atomic_write_bytes(&self.index_path(shard_id), bytes)
+        })
     }
 
     pub fn storage_recovery_report(&self, shard_id: ShardId) -> StorageRecoveryReport {
@@ -1058,26 +1087,29 @@ fn expiry_scan_budget(limit: usize) -> usize {
         crate::engine::ensure_expiry_order(shard);
         let hot_selected =
             crate::engine::due_window(shard, now, hot_limit, scan_budget, |key| {
-                record_exists(shard, key)
+                expiry_record_is_hot(shard, key)
             });
         let cold_selected =
             crate::engine::due_window(shard, now, cold_limit, scan_budget, |key| {
-                !record_exists(shard, key)
+                !expiry_record_is_hot(shard, key)
             });
         EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
         let next_hot_cursor: Option<String> = None;
         let next_cold_cursor: Option<String> = None;
         let mut expired_records_removed = 0;
         let mut skipped_records = 0usize;
-        let mut loaded_for_expire = 0usize;
+        // Both paths delete from retained metadata; neither reloads payloads or bucket indexes.
+        let loaded_for_expire = 0usize;
         let mut expired_keys: Vec<String> = Vec::new();
+        let mut deletions = Vec::new();
         let mut pending_index_flush: Option<ExpiryIndexCheckpoint> = None;
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
                 let phase = std::time::Instant::now();
-                let removed = delete_record(shard, key);
+                let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
                 EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
-                if removed {
+                if let Some(deletion) = removed {
+                    deletions.push(deletion);
                     expired_records_removed += 1;
                     expired_keys.push(key.clone());
                 }
@@ -1088,11 +1120,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
         for (key, expires_at) in cold_selected.iter() {
             if *expires_at <= now {
                 if request.load_cold_buckets {
-                    loaded_for_expire = loaded_for_expire.saturating_add(1);
                     let phase = std::time::Instant::now();
-                    let removed = delete_record(shard, key);
+                    let removed = super::maintenance_log::MaintenanceDeletion::capture(shard, key);
                     EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
-                    if removed {
+                    if let Some(deletion) = removed {
+                        deletions.push(deletion);
                         expired_records_removed += 1;
                         expired_keys.push(key.clone());
                     } else {
@@ -1146,8 +1178,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         if expired_records_removed > 0 {
             // Expiry IS a logged,
-            // replicated delete. Emit a WAL tombstone per expired key -- buffered and
-            // unfsynced, mirroring the fire-and-forget commit -- so followers and WAL
+            // replicated delete. Batch exact-record tombstones into buffered, unfsynced
+            // WAL frames, preserving the fire-and-forget commit, so followers and WAL
             // replay observe the deletion instead of relying on each node running its own
             // sweep with its own clock/enable_expire. Then anchor the served snapshot past
             // the tombstones so a restart does not resurrect the key by replaying the
@@ -1162,33 +1194,22 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 // the whole run ONE destination, where a sink swapped mid-loop would split a
                 // single round's tombstones across two mirrors and leave neither complete.
                 let phase = std::time::Instant::now();
-                let mirror = self.maintenance_mirror_sink();
-                for key in &expired_keys {
-                    let command = Command::CommonDelete { key: key.clone() };
-                    let appended = self
-                        .wal_store
-                        .append_with_sync(request.shard_id, command.clone(), false);
-                    // An expiry is a real deletion, so it has to reach every log that a
-                    // successor might replay -- not only this node's.
-                    if appended.is_ok() {
-                        if let Some(sink) = mirror.as_ref() {
-                            sink.record_write(request.shard_id, &command);
-                        }
-                    }
+                let result = self.append_maintenance_deletions(request.shard_id, shard, deletions, || {});
+                EXPIRY_GUARD_NANOS.delete.fetch_add(result.apply_ns, std::sync::atomic::Ordering::Relaxed);
+                EXPIRY_GUARD_NANOS.wal_append.fetch_add(
+                    (phase.elapsed().as_nanos() as u64).saturating_sub(result.apply_ns),
+                    std::sync::atomic::Ordering::Relaxed);
+                if let Some(error) = result.error { return Err(error); }
+                expired_records_removed = result.removed_keys;
+            } else {
+                let phase = std::time::Instant::now();
+                expired_records_removed = 0;
+                for deletion in deletions {
+                    let mut removed = false;
+                    for record in deletion.records() { removed |= delete_record_exact(shard, record); }
+                    expired_records_removed += usize::from(removed);
                 }
-                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.wal_append, phase);
-                // Anchor off the O(1) CACHED last sequence, not `stats()` -- the same change, for
-                // the same reason, as the `delete_drop` round's anchor in
-                // `storage_lifecycle_methods.rs`. `stats()` takes a full-file rescan plus a walk
-                // of every sealed piece, and it was taking them under this write guard, right
-                // after this sweep's own appends. The write path reads the cached value under
-                // flat append; both logged-deletion paths now do too, so neither is the copy
-                // that kept the cost.
-                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
-                    self.wal_store.cached_last_sequence(request.shard_id)
-                } else {
-                    self.wal_store.stats(request.shard_id).last_sequence
-                });
+                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
             }
             let phase = std::time::Instant::now();
             // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
@@ -1206,7 +1227,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // concurrent storage cycle can see blocks these deletes freed, call their slabs
             // stale and reclaim them while the durable index still names them. Both are
             // recoverable HERE and only here, because an expiry IS a logged delete: every key
-            // above emitted a `CommonDelete` to the WAL before this point, so a checkpoint that
+            // above has an exact-record result in the WAL before this point, so a checkpoint that
             // lands stale (or never lands at all) leaves an anchor BEHIND the tombstones, and
             // replay re-derives exactly the deletions it describes. Landing behind a newer
             // checkpoint rewinds the anchor, which holds more log than needed and never less.
@@ -1238,7 +1259,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // anchor has folded the deletions. A delta that lands late or never leaves the anchor
             // BEHIND the tombstones, and WAL replay re-derives exactly these deletions. Neither
             // direction can leave a key resurrected.
-            pending_index_flush = Some(
+            pending_index_flush = shard.checkpoint_wal_sequence().map(|_| {
                 if self
                     .expiry_index_flush_whole
                     .load(std::sync::atomic::Ordering::Relaxed)
@@ -1282,8 +1303,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         key_states: super::capture_key_states(shard, &delta_keys),
                         applied_wal_sequence: shard.applied_wal_sequence,
                     }))
-                },
-            );
+                }
+            });
             EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
         }
         // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
@@ -1466,6 +1487,56 @@ fn expiry_scan_budget(limit: usize) -> usize {
         self.compact_shard_blocks_with_budgets(shard_id, budget_bytes, usize::MAX)
     }
 
+    // Called under the shard write guard, after the block durability barrier succeeds.
+    fn publish_compacted_container_index(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+        stats: &CompactionRewriteStats,
+        target_block_slab_id: u64,
+    ) -> Result<Vec<u8>, Status> {
+        if shard.checkpoint_wal_sequence().is_none() {
+            return Err(Status::error("checkpoint_wal_apply_incomplete",
+                "cannot publish compacted state with an unapplied WAL prefix"));
+        }
+        let mut removed = Vec::new();
+        for (object_id, element_name) in &stats.retired_container_wal_blocks {
+            let key = super::block_in_wal::wal_resident_key(*object_id, Some(element_name));
+            if let Some(placement) = shard.wal_resident_blocks.remove(&key) {
+                removed.push((key, placement));
+            }
+        }
+        // Only the new slab passed this round's durability barrier. Unmoved
+        // objects may still need their WAL fallback, including after a failed read.
+        let retained_objects = retained_objects_outside_slab(shard, shard_id, target_block_slab_id);
+        let mut retirements = super::block_in_wal::unreferenced_registrations(
+            &self.block_store, shard_id, &self.wal_store, &retained_objects,
+        );
+        retirements.extend(super::block_in_wal::unreferenced_physical_registrations(
+            &self.block_store, shard_id, &self.wal_store, shard, true,
+        ));
+        retirements.retain(|retirement| shard.wal_resident_blocks.get(&retirement.folded_key)
+            .is_some_and(|placement| placement.log_id == retirement.log_id
+                && placement.sequence == retirement.sequence));
+        for retirement in &retirements {
+            if let Some(placement) = shard.wal_resident_blocks.remove(&retirement.folded_key) {
+                removed.push((retirement.folded_key, placement));
+            }
+        }
+        let bytes = super::serialize_index_stamped(shard);
+        if let Err(err) = self.persist_index_bytes_durable(shard_id, &bytes) {
+            shard.wal_resident_blocks.extend(removed);
+            return Err(Status::error("block_compaction_failed", err.to_string()));
+        }
+        for (object_id, element_name) in &stats.retired_container_wal_blocks {
+            super::block_in_wal::deregister(
+                &self.block_store, shard_id, *object_id, Some(element_name),
+            );
+        }
+        super::block_in_wal::retire_unchanged_registrations(&self.block_store, shard_id, &retirements);
+        Ok(bytes)
+    }
+
     pub(crate) fn compact_shard_blocks_with_budgets(
         &self,
         shard_id: ShardId,
@@ -1479,13 +1550,37 @@ fn expiry_scan_budget(limit: usize) -> usize {
     /// direct instruction -- and `Some` for "only the slabs named", which is what the
     /// periodic loop asks for. Everything else about a round is identical either way, so the two
     /// share one body and one set of rules about resuming, budgets and the write guard.
-    fn compact_shard_blocks_relocating(
+    pub(super) fn compact_shard_blocks_relocating(
         &self,
         shard_id: ShardId,
         budget_bytes: u64,
         budget_block_refs: usize,
         drain_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<ShardCompactionReport, Status> {
+        self.compact_shard_blocks_relocating_inner(
+            shard_id, budget_bytes, budget_block_refs, drain_block_slab_ids, true,
+        )?.ok_or_else(|| Status::error("block_compaction_failed", "requested compaction report was not collected"))
+    }
+
+    pub(crate) fn compact_shard_blocks_draining_background(
+        &self,
+        shard_id: ShardId,
+        drain_block_slab_ids: BTreeSet<u64>,
+    ) -> Result<(), Status> {
+        self.compact_shard_blocks_relocating_inner(
+            shard_id, COMPACTION_ROUND_BYTES, COMPACTION_ROUND_BLOCK_REFS,
+            Some(drain_block_slab_ids), false,
+        ).map(|_| ())
+    }
+
+    fn compact_shard_blocks_relocating_inner(
+        &self,
+        shard_id: ShardId,
+        budget_bytes: u64,
+        budget_block_refs: usize,
+        drain_block_slab_ids: Option<BTreeSet<u64>>,
+        detailed_report: bool,
+    ) -> Result<Option<ShardCompactionReport>, Status> {
         // CAPTURED BEFORE ANYTHING IS REWRITTEN, so a successful round can open the write-
         // amplification window at this point and count its own relocation as the window's first
         // writes. Reading it after the rewrite would open the window at 0 bytes and report 0.000x.
@@ -1501,21 +1596,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
-        // ONE walk for the preamble's live-block consumers.
-        //
-        // Before any budget is consulted, this stage builds several whole-shard reports, and each
-        // one called `collect_live_block_entries` for its own copy -- measured by
-        // `what_the_compaction_preamble_walks` as 5.0x the shard. All of them run under the same
-        // WRITE lock on an unchanged `&ShardState`, so every read and write on the shard queues
-        // behind the lot. Three of them take the same live-block set and now share one walk.
-        //
-        // `object_manager_runtime_report` (2.0x) and `collect_live_block_slab_ids` still walk on
-        // their own: the first needs `_from_entries` forms of two nested reports, and the second
-        // walks the model maps directly rather than the live-block set, so it is not the same walk
-        // and cannot share this one.
-        //
-        // Order is forced by the last consumer taking the Vec BY VALUE: the two that borrow go
-        // first, so nothing is cloned.
+        // Ownership validation is mandatory, including for timers that need no diagnostics.
+        // Detailed callers share its entries with the utility report before relocation.
         let entries = collect_live_block_entries(shard);
         let ownership = validate_bucket_ownership_index_from_entries(
             shard_id,
@@ -1533,22 +1615,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 ),
             ));
         }
-        let before_slabs = collect_live_block_slab_ids(shard);
-        let before = compaction_utility_report_from_entries(&self.block_store, shard, &entries);
-        let model_layouts_before = compaction_model_layout_reports(&self.block_store, shard);
-        // Ordered so the ONE consumer that takes the Vec by value goes last. These are read-only
-        // reports over unchanged state, so the order among them carries no meaning beyond that.
-        let object_manager_before = object_manager_runtime_report_from_entries(
-            shard_id,
-            shard,
-            &entries,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        let delete_marked_object_ids_before =
-            object_lifecycle_report_from_entries(shard_id, shard, entries, &BTreeSet::new(), |_| 0)
-                .delete_marked_object_ids;
-        let bucket_layout_transition_count_before = object_manager_before.layout_transition_count;
+        let diagnostics_before = detailed_report.then(|| (
+            collect_live_block_slab_ids(shard),
+            compaction_utility_report_from_entries(&self.block_store, shard, &entries),
+            compaction_model_layout_reports(&self.block_store, shard),
+            storage_reporting::storage_delete_marked_object_count(shard),
+        ));
+        drop(entries);
         // Start a round, or continue the one a budget cut short.
         //
         // A round rolls a fresh slab and relocates live blocks onto it. Rolling AGAIN while a
@@ -1654,11 +1727,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "hash",
                 key,
                 routing_bucket,
-                addresses.iter_mut().map(|(field, address)| ContainerElementRef {
+                addresses.iter_mut().map(|(field, address)| ContainerElementRef::bytes(
                     // A hash field's element name IS the field name, so its key bytes are the name's.
-                    key: field.as_bytes().to_vec(),
+                    field.as_bytes(),
                     address,
-                }),
+                )),
                 &mut rewrite_stats,
             )?;
         }
@@ -1674,13 +1747,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 members.iter_mut().map(|(member, entry)| {
                     // The biased score big-endian, then the member: the two halves the element name
                     // spells as sixteen hex characters and then the member's hex.
-                    let mut element_key = Vec::with_capacity(8 + member.len());
-                    element_key.extend_from_slice(&entry.0.to_be_bytes());
-                    element_key.extend_from_slice(member);
-                    ContainerElementRef {
-                        key: element_key,
-                        address: &mut entry.1,
-                    }
+                    ContainerElementRef::prefixed(entry.0.to_be_bytes(), member, &mut entry.1)
                 }),
                 &mut rewrite_stats,
             )?;
@@ -1694,15 +1761,14 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "list",
                 key,
                 routing_bucket,
-                elements.iter_mut().map(|(sequence, address)| ContainerElementRef {
+                elements.iter_mut().map(|(sequence, address)| ContainerElementRef::inline(
                     // The same two's-complement bias `ListPush` renders as sixteen hex characters,
                     // as the eight bytes underneath that rendering.
-                    key: (*sequence as u64)
+                    (*sequence as u64)
                         .wrapping_sub(i64::MIN as u64)
-                        .to_be_bytes()
-                        .to_vec(),
+                        .to_be_bytes(),
                     address,
-                }),
+                )),
                 &mut rewrite_stats,
             )?;
         }
@@ -1715,12 +1781,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "set",
                 key,
                 routing_bucket,
-                addresses.iter_mut().map(|(member, address)| ContainerElementRef {
+                addresses.iter_mut().map(|(member, address)| ContainerElementRef::bytes(
                     // A set member's element name renders the member and nothing else, in whichever
                     // spelling it was filed under, so the member IS the key.
-                    key: member.clone(),
+                    member,
                     address,
-                }),
+                )),
                 &mut rewrite_stats,
             )?;
         }
@@ -1896,6 +1962,23 @@ fn expiry_scan_budget(limit: usize) -> usize {
             }),
             &mut rewrite_stats,
         )?;
+            // THE WALK FINISHED, AND THE ROUND IS STILL A FAILURE if any block would not read.
+            //
+            // An unreadable block used to end the walk where it stood, so every key after it in
+            // walk order was never reached -- and since blocks already moved are skipped, the next
+            // round arrived at the same block first and stopped there again. Now the block is left
+            // where it is and the walk continues, so the blocks behind it still move. The error is
+            // raised HERE, after the walk, so the failure stays loud and the handler below still
+            // commits the consistent partial index and keeps the round open.
+            if rewrite_stats.skipped_unreadable > 0 {
+                return Err(Status::error(
+                    "block_compaction_failed",
+                    format!(
+                        "{} block(s) could not be read during compaction and were left in place",
+                        rewrite_stats.skipped_unreadable
+                    ),
+                ));
+            }
             Ok(())
         })();
         if let Err(err) = relocation_result {
@@ -1929,10 +2012,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     ),
                 )
             })?;
-            let partial_index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
-                .map_err(|serialize| Status::error("block_compaction_failed", serialize.to_string()))?;
-            self.persist_index_bytes(shard_id, &partial_index_bytes)
-                .map_err(|persist| Status::error("block_compaction_failed", persist.to_string()))?;
+            let partial_index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id)?;
             let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
             // Keep the round OPEN. A relocation that failed partway left work behind by
             // definition -- the blocks it had not reached yet are still on their old slabs -- and
@@ -1973,36 +2053,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             end_routing_bucket,
         );
         refresh_bucket_runtime_flags(shard);
-        let after_slabs = collect_live_block_slab_ids(shard);
-        let after = compaction_utility_report(&self.block_store, shard);
         rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
-        let delete_marked_object_ids_after =
-            storage_object_lifecycle_report(shard_id, shard).delete_marked_object_ids;
-        let object_manager_after =
-            object_manager_runtime_report(shard_id, shard, start_routing_bucket, end_routing_bucket);
-        let bucket_layout_transition_count_after = object_manager_after.layout_transition_count;
-        let bucket_layout_states_after = object_manager_after.layout_states;
-        let stale_block_slab_ids = before_slabs
-            .difference(&after_slabs)
-            .copied()
-            .collect::<Vec<_>>();
-        let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
-        let model_policy_family_count = before.model_policies.len();
-        let delete_marker_policy_model_count = before
-            .model_policies
-            .iter()
-            .filter(|policy| policy.delete_marker_compaction_triggered)
-            .count();
-        let stale_density_policy_model_count = before
-            .model_policies
-            .iter()
-            .filter(|policy| policy.stale_density_triggered)
-            .count();
-        let layout_aware_policy_model_count = before
-            .model_policies
-            .iter()
-            .filter(|policy| policy.layout_aware_rewrite_required)
-            .count();
         // Durability barrier BEFORE publishing the base index that names the relocated blocks.
         // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
         // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
@@ -2042,16 +2093,39 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // Holding the guard across the encode is what makes that window not exist: no other
         // thread can observe the vacated volatile index until the durable one names the new
         // slab. The cost is real and measured; it buys the invariant.
-        let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
-            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
         // The PUBLISH, not just the encode, is what has to happen inside the region. See
         // `FLUSH_PUBLISHED_UNDER_GUARD`.
         #[cfg(test)]
         note_compaction_flush_publish();
-        self.persist_index_bytes(shard_id, &index_bytes)
-            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
+        let index_bytes = self.publish_compacted_container_index(shard_id, shard, &rewrite_stats, target_block_slab_id)?;
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
         let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
+        // Only actual relocation opens a write-amplification window. A budgeted/drained
+        // round covers a partial consolidation; the diagnostic report retains that limitation.
+        if rewritten_object_blocks > 0 {
+            self.block_store
+                .mark_write_window_at_compaction(bytes_written_before_relocation);
+        }
+        // No report escapes the timer path: it still completed the same durable publication.
+        let Some((before_slabs, before, model_layouts_before, delete_marked_object_ids_before)) = diagnostics_before else {
+            return Ok(None);
+        };
+        let after_slabs = collect_live_block_slab_ids(shard);
+        let after = compaction_utility_report(&self.block_store, shard);
+        let delete_marked_object_ids_after =
+            storage_reporting::storage_delete_marked_object_count(shard);
+        let bucket_layout_transition_count_before = 0u64;
+        let bucket_layout_transition_count_after = 0u64;
+        let bucket_layout_states_after = compaction_bucket_layout_states(shard);
+        let stale_block_slab_ids = before_slabs.difference(&after_slabs).copied().collect::<Vec<_>>();
+        let reclaimable_stale_block_slab_count = stale_block_slab_ids.len();
+        let model_policy_family_count = before.model_policies.len();
+        let delete_marker_policy_model_count = before.model_policies.iter()
+            .filter(|policy| policy.delete_marker_compaction_triggered).count();
+        let stale_density_policy_model_count = before.model_policies.iter()
+            .filter(|policy| policy.stale_density_triggered).count();
+        let layout_aware_policy_model_count = before.model_policies.iter()
+            .filter(|policy| policy.layout_aware_rewrite_required).count();
         let bucket_layout_transition_count =
             bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);
         let has_model_layouts = !model_layouts_before.is_empty();
@@ -2081,26 +2155,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             model_layout_compaction_blockers
                 .push("slot layout transition evidence is missing".to_string());
         }
-        // OPEN A NEW WRITE-AMPLIFICATION WINDOW, because the live set has just been consolidated
-        // and the writes before this point no longer describe the store's current shape.
-        //
-        // HERE, AND ONLY IF SOMETHING MOVED. This is the single inner funnel that
-        // `compact_shard_blocks`, `compact_shard_blocks_draining`, `compact_shard_blocks_with_budget`
-        // and `compact_shard_blocks_with_budgets` all route through, and it has exactly one success
-        // return -- so a compaction cannot complete without passing this line. A round that
-        // rewrote NO live refs consolidated nothing, and resetting on it would hand the store a
-        // fresh window for doing no work, which is the one way this could flatter the figure.
-        //
-        // A BUDGETED OR DRAINED ROUND STILL OPENS A WINDOW THOUGH IT CONSOLIDATED ONLY PART OF THE
-        // STORE, so the windowed ratio is OPTIMISTIC after a partial compaction. That is stated
-        // rather than corrected: `blocks_left_by_budget` and `blocks_left_off_drain_set` are on
-        // this very report, so a reader who needs to know whether the window covers the whole
-        // store has both numbers beside it.
-        if rewritten_object_blocks > 0 {
-            self.block_store
-                .mark_write_window_at_compaction(bytes_written_before_relocation);
-        }
-        Ok(ShardCompactionReport {
+        Ok(Some(ShardCompactionReport {
             shard_id,
             model_layout_compaction_ready: model_layout_compaction_blockers.is_empty(),
             model_layout_compaction_evidence: vec![
@@ -2118,8 +2173,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             compacted_block_slab_id: target_block_slab_id,
             blocks_left_by_budget: rewrite_stats.skipped_by_budget,
             bytes_left_by_budget: rewrite_stats.skipped_by_budget_bytes,
-            blocks_left_off_drain_set: rewrite_stats.skipped_off_drain_set,
-            rewritten_block_refs: rewrite_stats.rewritten_block_refs,
+            blocks_left_off_drain_set: rewrite_stats.skipped_off_drain_set,            rewritten_block_refs: rewrite_stats.rewritten_block_refs,
             relocated_bytes: rewrite_stats.relocated_bytes,
             cold_block_rewrite_refs: rewrite_stats.cold_block_rewrite_refs,
             object_block_pack_group_count: before
@@ -2142,6 +2196,46 @@ fn expiry_scan_budget(limit: usize) -> usize {
             model_layouts: model_layouts_before,
             before,
             after,
-        })
+        }))
     }
+}
+
+#[track_caller]
+fn retained_objects_outside_slab(
+    shard: &ShardState,
+    shard_id: ShardId,
+    target_block_slab_id: u64,
+) -> std::collections::HashSet<u64> {
+    use storage_bucket_internals::{visit_model_live_blocks, ModelWalkTally};
+
+    let mut retained = std::collections::HashSet::new();
+    visit_model_live_blocks(
+        shard,
+        ModelWalkTally::WholeShardEntries,
+        |_, _| true,
+        |kind, key, _, address| {
+            if address.block_slab_id() != target_block_slab_id {
+                retained.insert(stable_block_object_id(shard_id, kind.as_str(), key.as_str()));
+            }
+        },
+    );
+    retained
+}
+
+fn compaction_bucket_layout_states(shard: &ShardState) -> Vec<BucketLayoutStateCount> {
+    let mut counts = BTreeMap::<&'static str, u64>::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        let count = bucket.object_index.object_count() as u64;
+        counts
+            .entry(bucket_layout_name(bucket.layout))
+            .and_modify(|total| *total = total.saturating_add(count))
+            .or_insert(count);
+    }
+    counts
+        .into_iter()
+        .map(|(state, object_count)| BucketLayoutStateCount {
+            state: state.to_string(),
+            object_count,
+        })
+        .collect()
 }

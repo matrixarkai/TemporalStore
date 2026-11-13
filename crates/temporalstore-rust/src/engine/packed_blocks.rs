@@ -103,9 +103,9 @@ pub(super) fn timestamped_element_name(stored_key: u64, identity: Option<u64>) -
 }
 
 fn stage_timestamped_outcomes(
-    shard_id: ShardId,
     kind: &str,
     key: &str,
+    object_id: u64,
     routing_bucket: u32,
     refs: &[(u64, ElementEntry)],
     identity: Option<u64>,
@@ -119,7 +119,7 @@ fn stage_timestamped_outcomes(
             kind: kind.to_string(),
             object_key: key.to_string(),
             element_name: Some(element_name.clone()),
-            object_id: stable_block_object_id(shard_id, kind, key),
+            object_id,
             routing_bucket,
             address: Some(address.clone()),
             value: None,
@@ -135,9 +135,9 @@ fn stage_timestamped_outcomes(
 /// The insert above records where a point landed; without this its removal is invisible, and a
 /// shard rebuilt from records alone would keep points the shard itself has dropped.
 fn stage_timestamped_removal(
-    shard_id: ShardId,
     kind: &str,
     key: &str,
+    object_id: u64,
     routing_bucket: u32,
     timestamp_ms: u64,
 ) {
@@ -146,7 +146,7 @@ fn stage_timestamped_removal(
         kind: kind.to_string(),
         object_key: key.to_string(),
         element_name: Some(element_name.clone()),
-        object_id: stable_block_object_id(shard_id, kind, key),
+        object_id,
         routing_bucket,
         address: None,
         value: None,
@@ -210,10 +210,13 @@ pub(super) fn drop_timestamped_points(
     timestamps: &[u64],
 ) -> bool {
     let mut dropped = false;
+    let mut object_id = None;
     for timestamp_ms in timestamps {
         if series.get(*timestamp_ms).is_some() {
             series.clear(*timestamp_ms);
-            stage_timestamped_removal(shard_id, kind, key, routing_bucket, *timestamp_ms);
+            let object_id = *object_id
+                .get_or_insert_with(|| stable_block_object_id(shard_id, kind, key));
+            stage_timestamped_removal(kind, key, object_id, routing_bucket, *timestamp_ms);
             dropped = true;
         }
     }
@@ -235,6 +238,7 @@ pub(super) fn trim_timestamped_series(
     boundary_record: bool,
 ) -> bool {
     let mut newest_dropped = None;
+    let mut object_id = None;
     while series.len() > max_size {
         // THE OLDEST POINT IS THE FIRST, because `points` promises ascending order. A
         // representation that could not promise it is not a timestamped series.
@@ -243,7 +247,9 @@ pub(super) fn trim_timestamped_series(
         };
         series.clear(oldest);
         if !boundary_record {
-            stage_timestamped_removal(shard_id, kind, key, routing_bucket, oldest);
+            let object_id = *object_id
+                .get_or_insert_with(|| stable_block_object_id(shard_id, kind, key));
+            stage_timestamped_removal(kind, key, object_id, routing_bucket, oldest);
         }
         // The LAST one dropped is the boundary, and the loop takes them oldest first, so this
         // ends up holding the newest instant that went.
@@ -396,7 +402,7 @@ fn append_timestamped_kv_blocks_inner(
                     .map(|point| (point.timestamp_ms, address.clone())),
             );
         }
-        stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs, identity);
+        stage_timestamped_outcomes(kind, key, object_id, routing_bucket, &refs, identity);
         return Ok(refs);
     }
 
@@ -420,7 +426,7 @@ fn append_timestamped_kv_blocks_inner(
                 .map(|point| (point.timestamp_ms, address.clone())),
         );
     }
-    stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs, identity);
+    stage_timestamped_outcomes(kind, key, object_id, routing_bucket, &refs, identity);
     Ok(refs)
 }
 
@@ -598,6 +604,43 @@ pub(super) fn read_feature_point_cold(
     }
 }
 
+pub(super) struct CachedFeatureBlock {
+    points: Vec<FeaturePoint>,
+    strictly_sorted: bool,
+    next_index: usize,
+}
+
+impl CachedFeatureBlock {
+    fn new(points: Vec<FeaturePoint>) -> Self {
+        let strictly_sorted = points
+            .windows(2)
+            .all(|window| window[0].timestamp_ms < window[1].timestamp_ms);
+        Self { points, strictly_sorted, next_index: 0 }
+    }
+
+    fn point(&mut self, timestamp_ms: u64) -> Option<FeaturePoint> {
+        if !self.strictly_sorted {
+            return self.points
+                .iter()
+                .find(|point| point.timestamp_ms == timestamp_ms)
+                .cloned();
+        }
+        if self.points
+            .get(self.next_index)
+            .is_some_and(|point| point.timestamp_ms == timestamp_ms)
+        {
+            let point = self.points[self.next_index].clone();
+            self.next_index += 1;
+            return Some(point);
+        }
+        let index = self.points
+            .binary_search_by_key(&timestamp_ms, |point| point.timestamp_ms)
+            .ok()?;
+        self.next_index = index.saturating_add(1);
+        Some(self.points[index].clone())
+    }
+}
+
 pub(super) fn read_feature_point_cached(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -609,27 +652,18 @@ pub(super) fn read_feature_point_cached(
     // recovered here: this function is handed an address and a timestamp, and neither names a key.
     // See [`BlockIdentity`] for why it is the terms rather than an id that cross.
     identity: BlockIdentity<'_>,
-    packed_block_cache: &mut HashMap<ElementEntry, Option<Vec<FeaturePoint>>>,
+    packed_block_cache: &mut HashMap<ElementEntry, Option<CachedFeatureBlock>>,
     routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
-    if let Some(points) = packed_block_cache.get(address) {
-        return points
-            .as_ref()
-            .and_then(|points| {
-                points
-                    .iter()
-                    .find(|point| point.timestamp_ms == timestamp_ms)
-            })
-            .cloned();
+    if let Some(points) = packed_block_cache.get_mut(address) {
+        return points.as_mut().and_then(|points| points.point(timestamp_ms));
     }
 
     let bytes = read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => {
-            let selected = points
-                .iter()
-                .find(|point| point.timestamp_ms == timestamp_ms)
-                .cloned();
+            let mut points = CachedFeatureBlock::new(points);
+            let selected = points.point(timestamp_ms);
             packed_block_cache.insert(address.clone(), Some(points));
             selected
         }

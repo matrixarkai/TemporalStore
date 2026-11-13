@@ -327,6 +327,26 @@ where
     set_point_and_collect_live(map, K::from(object_key), at, address)
 }
 
+pub(super) fn insert_point_if_absent<K, S>(
+    map: &mut std::collections::HashMap<K, S>,
+    object_key: &str,
+    at: u64,
+    address: &ElementEntry,
+) -> bool
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone + for<'a> From<&'a str>,
+    S: TimestampedSeriesWrite,
+{
+    if map
+        .get(object_key)
+        .is_some_and(|series| series.get(at).is_some())
+    {
+        return false;
+    }
+    set_point(map, K::from(object_key), at, Some(address.clone()));
+    true
+}
+
 // =================================================================================================
 // THE OWNED SORTED ARRAY, AND WHY A SECOND REPRESENTATION EARNS ITS PLACE
 // =================================================================================================

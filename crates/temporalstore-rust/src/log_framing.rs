@@ -121,7 +121,7 @@ pub(crate) fn binary_frame_enabled() -> bool {
     )
 }
 
-fn write_varint(value: u64, out: &mut Vec<u8>) {
+fn write_varint(value: u64, out: &mut impl bytes::BufMut) {
     let mut value = value;
     loop {
         let mut byte = (value & 0x7f) as u8;
@@ -129,7 +129,7 @@ fn write_varint(value: u64, out: &mut Vec<u8>) {
         if value != 0 {
             byte |= 0x80;
         }
-        out.push(byte);
+        out.put_u8(byte);
         if value == 0 {
             return;
         }
@@ -190,6 +190,29 @@ pub(crate) fn encode_record_into(payload: &[u8], out: &mut Vec<u8>) {
         out.extend_from_slice(&encode_line(payload));
     }
 }
+
+/// Prepend a binary frame and payload marker to a body already in its destination buffer.
+pub(crate) fn frame_binary_body_in_place(payload_marker: u8, out: &mut Vec<u8>) {
+    let body_len = out.len();
+    let mut header = [0u8; MAX_BINARY_HEADER_BYTES];
+    header[0] = FRAME_MAGIC_V3;
+    let checksum_at = {
+        let mut tail = &mut header[1..];
+        write_varint((body_len + 1) as u64, &mut tail);
+        MAX_BINARY_HEADER_BYTES - tail.len()
+    };
+    let payload_at = checksum_at + 4;
+    out.resize(body_len + payload_at + 1, 0);
+    out.copy_within(0..body_len, payload_at + 1);
+    out[..checksum_at].copy_from_slice(&header[..checksum_at]);
+    out[payload_at] = payload_marker;
+    let checksum = crate::checksum::crc32c(&out[payload_at..]);
+    out[checksum_at..payload_at].copy_from_slice(&checksum.to_le_bytes());
+}
+
+#[cfg(test)]
+#[path = "log_framing_in_place_tests.rs"]
+mod in_place_tests;
 
 /// Frame a record whose length is known before it is written, with no payload buffer in between.
 ///

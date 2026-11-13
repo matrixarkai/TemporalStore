@@ -18,6 +18,8 @@ mod prometheus;
 mod reports;
 #[path = "proxy/proxy_handle.rs"]
 mod handle;
+#[path = "proxy/proxy_memory.rs"]
+mod memory;
 #[path = "proxy/proxy_configuration_defaults.rs"]
 mod config;
 #[path = "proxy/proxy_metrics.rs"]
@@ -60,6 +62,7 @@ use crate::meta::{
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
     FeatureFilter, FeatureWritePolicy, ControlStateSelectionType, ShardId, Status,
+    StringSetCondition,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -880,6 +883,14 @@ pub struct ProxySequenceQueryCommandRequest {
     pub filters: Vec<FeatureFilter>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyCellRankQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub spec: crate::types::CellRankSpec,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyControlStateIncrementCommandRequest {
     pub namespace: String,
@@ -1050,6 +1061,7 @@ struct ProxyInner {
     context_ingest_requests: std::sync::atomic::AtomicU64,
     context_extract_requests: std::sync::atomic::AtomicU64,
     context_retrieve_requests: std::sync::atomic::AtomicU64,
+    memory_indexes_ready: RwLock<std::collections::HashSet<u64>>,
     cluster_shard_count: std::sync::atomic::AtomicU64,
     /// Whether the metaserver has been asked for the shard list yet. Distinguishes "we have
     /// not looked" from "we looked and the ids cannot be addressed as a range" -- reporting
@@ -1096,6 +1108,7 @@ impl ProxyService {
                 context_ingest_requests: std::sync::atomic::AtomicU64::new(0),
                 context_extract_requests: std::sync::atomic::AtomicU64::new(0),
                 context_retrieve_requests: std::sync::atomic::AtomicU64::new(0),
+                memory_indexes_ready: RwLock::default(),
                 cluster_shard_count: std::sync::atomic::AtomicU64::new(0),
                 cluster_shards_checked: std::sync::atomic::AtomicBool::new(false),
                 cluster_shards_contiguous: std::sync::atomic::AtomicBool::new(false),

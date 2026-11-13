@@ -38,6 +38,34 @@ impl TemporalStoreTable {
         }
     }
 
+    /// Appends cell-set requests under the merge-reduce policy and says what landed:
+    /// `(snapshots written, cells created, cells merged)`. A request that disagrees with the
+    /// header stored for the key is refused and nothing is written.
+    pub fn feature_merge_cells(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+    ) -> Result<(u64, u64, u64), ClientError> {
+        match self
+            .execute(Command::FeatureAppendWithPolicy {
+                key: key.into(),
+                points,
+                policy: FeatureWritePolicy::MergeReduce,
+            })?
+            .response
+        {
+            CommandResponse::CellMergeReceipt {
+                snapshots_written,
+                cells_created,
+                cells_merged,
+            } => Ok((snapshots_written, cells_created, cells_merged)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_merge_cells",
+                response,
+            }),
+        }
+    }
+
     pub fn feature_query(
         &self,
         key: impl Into<String>,
@@ -178,6 +206,27 @@ impl TemporalStoreTable {
             CommandResponse::SequenceRows { rows } => Ok(rows),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "sequence_query",
+                response,
+            }),
+        }
+    }
+
+    /// The ranked windowed read over the cell snapshots stored under `key`. A read the key could
+    /// not serve (an unknown name, a window over the bound) is an error naming why; a key with
+    /// nothing to rank is an empty answer.
+    pub fn cell_rank_query(
+        &self,
+        key: impl Into<String>,
+        spec: crate::types::CellRankSpec,
+    ) -> Result<crate::types::RankedCells, ClientError> {
+        match self
+            .execute(Command::CellRankQuery { key: key.into(), spec })?
+            .response
+        {
+            CommandResponse::CellRanking { ranked } if ranked.refused.is_empty() => Ok(ranked),
+            CommandResponse::CellRanking { ranked } => Err(ClientError::Status(ranked.refused)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "cell_rank_query",
                 response,
             }),
         }

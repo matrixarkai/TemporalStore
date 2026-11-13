@@ -10,7 +10,7 @@
 //! the engine's execute path; this module is the read/aggregation side.
 
 use super::timestamped_series::TimestampedSeries as _;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::block_store::{ElementEntry, BlockStore};
 use crate::types::{
@@ -19,7 +19,9 @@ use crate::types::{
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_blocks::decode_feature_block_strict;
+use super::packed_blocks::{
+    decode_feature_block_strict, read_feature_point_cached, CachedFeatureBlock,
+};
 use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
 use super::{decode_or_count_sequence_row, note_unreadable_sequence_row, parse_i64, read_block_bytes, ShardState};
@@ -52,6 +54,32 @@ pub(super) fn read_sequence_row(
     }
 }
 
+pub(super) fn read_sequence_row_cached(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    timestamp_ms: u64,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    routing_bucket: Option<u32>,
+    packed_block_cache: &mut HashMap<ElementEntry, Option<CachedFeatureBlock>>,
+) -> Option<SequenceFeatureRow> {
+    let point = read_feature_point_cached(
+        cache,
+        block_store,
+        shard_id,
+        timestamp_ms,
+        address,
+        identity,
+        packed_block_cache,
+        routing_bucket,
+    );
+    if point.is_none() && matches!(packed_block_cache.get(address), Some(None)) {
+        note_unreadable_sequence_row(timestamp_ms, "the block is corrupt");
+    }
+    point.and_then(|point| decode_or_count_sequence_row(timestamp_ms, &point.value))
+}
+
 pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
     let lhs = match filter.field.as_str() {
         "gid" => row.gid,
@@ -60,13 +88,19 @@ pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &Feature
         "author_id" => row.author_id,
         _ => return false,
     };
-    match filter.op {
-        FeatureFilterOp::Equal => lhs == filter.value,
-        FeatureFilterOp::NotEqual => lhs != filter.value,
-        FeatureFilterOp::GreaterThan => lhs > filter.value,
-        FeatureFilterOp::GreaterOrEqual => lhs >= filter.value,
-        FeatureFilterOp::LessThan => lhs < filter.value,
-        FeatureFilterOp::LessOrEqual => lhs <= filter.value,
+    filter_op_holds(&filter.op, lhs, filter.value)
+}
+
+/// Whether `lhs <op> rhs` holds: the one place the six filter operators are spelled, shared by
+/// the sequence filter and the ranked cell read.
+pub(super) fn filter_op_holds<T: PartialOrd>(op: &FeatureFilterOp, lhs: T, rhs: T) -> bool {
+    match op {
+        FeatureFilterOp::Equal => lhs == rhs,
+        FeatureFilterOp::NotEqual => lhs != rhs,
+        FeatureFilterOp::GreaterThan => lhs > rhs,
+        FeatureFilterOp::GreaterOrEqual => lhs >= rhs,
+        FeatureFilterOp::LessThan => lhs < rhs,
+        FeatureFilterOp::LessOrEqual => lhs <= rhs,
     }
 }
 
@@ -84,6 +118,8 @@ pub(super) fn sequence_rows_in_range(
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket =
         crate::engine::hashing::block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    let identity = BlockIdentity::of(shard_id, "feature", key, None);
+    let mut packed_block_cache = HashMap::new();
     shard
         .features()
         .get(key)
@@ -92,14 +128,15 @@ pub(super) fn sequence_rows_in_range(
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .take(count)
                 .filter_map(|(timestamp_ms, address)| {
-                    read_sequence_row(
+                    read_sequence_row_cached(
                         cache,
                         block_store,
                         shard_id,
                         timestamp_ms,
                         address,
-                        BlockIdentity::of(shard_id, "feature", key, None),
+                        identity,
                         Some(routing_bucket),
+                        &mut packed_block_cache,
                     )
                 })
                 .filter(|row| {

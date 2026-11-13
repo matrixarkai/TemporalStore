@@ -101,6 +101,7 @@ fn exposed_surface(source: &str) -> Vec<String> {
         .filter(|line| {
             line.starts_with("pub(super) fn ")
                 || line.starts_with("pub(super) struct ")
+                || line.starts_with("pub(super) enum ")
                 || line.starts_with("pub(super) trait ")
         })
         .map(|line| {
@@ -108,6 +109,7 @@ fn exposed_surface(source: &str) -> Vec<String> {
                 .trim_start_matches("pub(super) ")
                 .trim_start_matches("fn ")
                 .trim_start_matches("struct ")
+                .trim_start_matches("enum ")
                 .trim_start_matches("trait ");
             let end = after
                 .find(|c: char| !(c.is_alphanumeric() || c == '_'))
@@ -120,6 +122,7 @@ fn exposed_surface(source: &str) -> Vec<String> {
 /// THE SURFACE IS THE INVARIANT, SO THE SURFACE IS PINNED BY NAME -- ONCE, FOR EVERY KIND.
 #[test]
 fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
+    assert_eq!(exposed_surface("pub(super) enum ReadValue { Empty }"), vec!["ReadValue"]);
     // CONTROLS on the matchers.
     assert!(
         !mutable_borrows_of_the_inner_map(PLANTED_HATCH).is_empty(),
@@ -183,6 +186,11 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "ReplaysInstallsUnrecorded",
         "RepacksAfterDecode",
         "RecordedMap",
+        // Immutable derived values: inline bytes or a parsed comparator, never model entries.
+        "TimestampHintValue",
+        "from_bytes",
+        "parsed",
+        "raw_bytes",
         // The proofs. Generic, each carrying the identity of what was recorded.
         "RecordedElement",
         "RecordedElementRemoval",
@@ -231,8 +239,15 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "adopt_refs_into_row",
         // THE OPERATIONS, written once for every kind.
         "install_element",
+        // Fresh append placement still obtains a filing witness before changing the map.
+        "install_appended_element",
+        "install_element_at_bucket",
+        "install_packed_hash_block_at_bucket",
         "install_element_staged_only",
         "remove_element",
+        // Wraps the existing replay removal and returns its vacated address. The caller has
+        // already recorded the deletion; this adds no new unrecorded mutation capability.
+        "remove_replayed_element",
         "drop_object",
         // What a level-2 container must supply, declared beside the operation that needs it.
         "RemovableElementMap",
@@ -250,6 +265,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "adopt_key",
         // Reads, all borrows.
         "get",
+        // A scalar read with a bounded derived cache; it cannot change resident model entries.
+        "highest_block_id",
         // IN SOURCE ORDER, which is what the matcher returns -- so an entry goes where its
         // DECLARATION is, not where it reads best in this list.
         // THE SAME SHAPE ONE LEVEL DOWN, and the same answer. `adopt_element_names` points
@@ -304,6 +321,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // THE FILER'S DOOR ONTO A ROW, same ground: it answers `None` when there is no row rather
         // than creating one, and the first ref of a row is built into it.
         "file_ref",
+        // A READ: whether a row exists at all, vacant or not.
+        "has_row",
         // MAKES A VACANT ROW, NOT AN OBJECT: no elements, so `get`, `contains_key`, `len` and `iter`
         // all skip it and no existence answer changes. It exists so a first write has a row to file
         // its ref on; it records nothing because there is no durable statement in an empty row.
@@ -378,6 +397,11 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // The kinds themselves -- ALL FOUR container kinds now, which is the whole point: adding
         // one is a `RecordedKind` impl plus markers, and it appears HERE rather than as a new type.
         "HashKind",
+        // Derived comparator reads and updates only. Neither lends mutable model entries or
+        // changes payloads, serialized state, or ordering records; every hit checks its source.
+        "cached_timestamp",
+        "cached_timestamp_bytes",
+        "remember_timestamp_value",
         "SetKind",
         "ZSetKind",
         "ListKind",

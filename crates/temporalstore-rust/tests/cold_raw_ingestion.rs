@@ -24,6 +24,7 @@ fn cold_event(event_id_hash: u64, event_time_ms: u64, text: &str) -> ContextEven
         compact_attrs: Vec::new(),
         // Raw ingestion carries no vector; empty is what a record without one holds.
         vector: Vec::new(),
+        embedding_model_hash: 0,
     }
 }
 

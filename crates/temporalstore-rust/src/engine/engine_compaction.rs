@@ -267,6 +267,7 @@ pub(super) fn compaction_action_for_policy(
 
 #[derive(Debug, Default)]
 pub(super) struct CompactionRewriteStats {
+    pub(super) retired_container_wal_blocks: Vec<(u64, String)>,
     pub(super) rewritten_block_refs: usize,
     pub(super) cold_block_rewrite_refs: usize,
     by_model: BTreeMap<String, ModelCompactionRewriteStats>,
@@ -305,6 +306,8 @@ pub(super) struct CompactionRewriteStats {
     /// `skipped_by_budget` would make `left_work_behind` true for ever on any shard with a
     /// block outside the drain set, and the round would never close.
     pub(super) skipped_off_drain_set: usize,
+    /// Blocks whose bytes could not be read, left where they are while the round carries on.
+    pub(super) skipped_unreadable: usize,
 }
 
 #[derive(Debug, Default)]
@@ -381,6 +384,19 @@ impl CompactionRewriteStats {
         self.budget_block_refs = self.budget_block_refs.saturating_sub(1);
         self.relocated_bytes = self.relocated_bytes.saturating_add(address.length());
         true
+    }
+
+    /// A block `should_relocate` approved turned out to be unreadable.
+    ///
+    /// Nothing moved, so the refs and bytes charged for it are given back: an unreadable block
+    /// must not spend the budget that readable ones behind it are waiting on. It is counted, not
+    /// hidden, and it does not count as work left by the budget (it would keep the round open
+    /// for ever).
+    pub(super) fn skip_unreadable(&mut self, address: &ElementEntry) {
+        self.budget_bytes = self.budget_bytes.saturating_add(address.length());
+        self.budget_block_refs = self.budget_block_refs.saturating_add(1);
+        self.relocated_bytes = self.relocated_bytes.saturating_sub(address.length());
+        self.skipped_unreadable = self.skipped_unreadable.saturating_add(1);
     }
 
     /// Whether the round stopped early, so the engine keeps it open for the next one.
@@ -666,6 +682,20 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// Fault seam: make exactly ONE block read inside a compaction round fail, the `n`th (0-based),
+/// and every other read succeed. The seam above fails every read after its threshold, which cannot
+/// say whether a round walked PAST the bad block.
+#[cfg(test)]
+thread_local! {
+    static FAIL_ONLY_BLOCK_READ_AT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_only_compaction_block_read_at_for_test(read: Option<usize>) {
+    FAIL_ONLY_BLOCK_READ_AT.with(|cell| cell.set(read));
+}
+
 /// Arm (`Some(n)`) or disarm (`None`) the seam above. `Some(0)` fails the first read.
 #[cfg(test)]
 pub(crate) fn fail_compaction_block_read_after_for_test(relocations: Option<usize>) {
@@ -694,6 +724,13 @@ fn read_block_bytes_for_compaction(
             }
             FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
         }
+        let only = FAIL_ONLY_BLOCK_READ_AT.with(|cell| cell.get());
+        if let Some(remaining) = only {
+            FAIL_ONLY_BLOCK_READ_AT.with(|cell| cell.set(remaining.checked_sub(1)));
+            if remaining == 0 {
+                return None;
+            }
+        }
     }
     // `None`, AND THIS IS THE ONE PLACE IN THIS CHANGE THAT PASSES IT WITHOUT THE BLOCK BEING
     // A WHOLE OBJECT. Compaction walks the model maps, and for the container kinds those maps
@@ -712,16 +749,15 @@ fn read_block_bytes_for_compaction(
     //
     // WHAT IT COSTS, stated rather than implied: the in-log fallback inside `read_block_bytes`
     // will not resolve a container ELEMENT block whose only durable copy is still a WAL record,
-    // so compaction cannot relocate that block -- and the round FAILS rather than skipping it.
-    // Both callers turn this `None` into `Status::error("block_compaction_failed", ...)` with `?`,
-    // which is what CP4 requires: a round that stops partway must propagate, so the consistent
-    // partial index is durably committed, or reclaim purges a slab the durable index still names.
-    // The fault seam above says the same from the other side -- returning `None` here is THE way
-    // a round fails partway in production. Do NOT read this paragraph as permission to make the
-    // caller skip the entry and leave the address alone; the guard is
-    // `part4::partial_compaction_failure_durably_persists_the_consistent_partial_index`, and that
-    // misreading has already turned it red once. The bytes are never wrong either way -- what is
-    // at stake is whether the failure stays loud.
+    // so compaction cannot relocate that block -- and the round FAILS.
+    // The callers leave that block's address alone (`skip_unreadable`) and keep walking, so the
+    // blocks behind it still move, and the round returns `Status::error("block_compaction_failed",
+    // ...)` once the walk is done. That is what CP4 requires: a round that did not complete must
+    // propagate, so the consistent partial index is durably committed, or reclaim purges a slab
+    // the durable index still names. Do NOT make the round return success past an unreadable
+    // block; the guard is
+    // `part4::partial_compaction_failure_durably_persists_the_consistent_partial_index`. The
+    // bytes are never wrong either way -- what is at stake is whether the failure stays loud.
     // Whole-object blocks, which is every `string` and `control_state`, are unaffected: `None`
     // is their actual element name.
     read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
@@ -762,8 +798,59 @@ fn container_batch_target_bytes() -> usize {
 /// Re-spelling them here would be a second copy of four rules, free to drift from the four
 /// originals." There is a renderer now, so the caller hands over key bytes and this asks it.
 pub(super) struct ContainerElementRef<'a> {
-    pub(super) key: Vec<u8>,
+    key: DeferredContainerKey<'a>,
     pub(super) address: &'a mut ElementEntry,
+}
+
+enum DeferredContainerKey<'a> {
+    Bytes(&'a [u8]),
+    Inline([u8; 8]),
+    Prefixed([u8; 8], &'a [u8]),
+}
+
+impl DeferredContainerKey<'_> {
+    fn encode(self) -> Vec<u8> {
+        match self {
+            Self::Bytes(bytes) => bytes.to_vec(),
+            Self::Inline(bytes) => bytes.to_vec(),
+            Self::Prefixed(prefix, bytes) => {
+                let mut key = Vec::with_capacity(prefix.len() + bytes.len());
+                key.extend_from_slice(&prefix);
+                key.extend_from_slice(bytes);
+                key
+            }
+        }
+    }
+}
+
+impl<'a> ContainerElementRef<'a> {
+    pub(super) fn bytes(key: &'a [u8], address: &'a mut ElementEntry) -> Self {
+        Self { key: DeferredContainerKey::Bytes(key), address }
+    }
+
+    pub(super) fn inline(key: [u8; 8], address: &'a mut ElementEntry) -> Self {
+        Self { key: DeferredContainerKey::Inline(key), address }
+    }
+
+    pub(super) fn prefixed(prefix: [u8; 8], key: &'a [u8], address: &'a mut ElementEntry) -> Self {
+        Self { key: DeferredContainerKey::Prefixed(prefix, key), address }
+    }
+}
+
+#[cfg(test)]
+mod deferred_container_key_tests {
+    use super::DeferredContainerKey;
+
+    #[test]
+    fn deferred_compaction_keys_preserve_encoded_bytes() {
+        assert_eq!(DeferredContainerKey::Bytes(b"field").encode(), b"field");
+        assert_eq!(DeferredContainerKey::Bytes(&[0, 255]).encode(), [0, 255]);
+        let prefix = 17u64.to_be_bytes();
+        assert_eq!(DeferredContainerKey::Inline(prefix).encode(), prefix);
+        let mut expected = prefix.to_vec();
+        expected.extend_from_slice(&[0, 255]);
+        assert_eq!(DeferredContainerKey::Prefixed(prefix, &[0, 255]).encode(), expected);
+    }
 }
 
 /// Rewrite a container's blocks as FEWER, LARGER blocks that each hold several elements.
@@ -872,16 +959,17 @@ pub(super) fn compact_container_blocks_batched<'a>(
         if !rewrite_stats.should_relocate(element.address) {
             continue;
         }
+        let key = element.key.encode();
         let element_name = match super::container_blocks::element_name_from_element_key(
             spelling,
-            &element.key,
+            &key,
         ) {
             Some(element_name) => element_name,
             // A key this spelling cannot render names no element name, so no page can be found for it.
             // Counted by being skipped; the address is left alone.
             None => continue,
         };
-        let value = read_block_bytes_for_container_element(
+        let Some(value) = read_block_bytes_for_container_element(
             cache,
             block_store,
             shard_id,
@@ -892,13 +980,10 @@ pub(super) fn compact_container_blocks_batched<'a>(
             // way to name a block, precisely so a relocation cannot read a block it cannot name.
             BlockIdentity::of(shard_id, model_id, object_key, Some(element_name.as_str())),
             routing_bucket,
-        )
-        .ok_or_else(|| {
-            Status::error(
-                "block_compaction_failed",
-                "missing container element block bytes during compaction",
-            )
-        })?;
+        ) else {
+            rewrite_stats.skip_unreadable(element.address);
+            continue;
+        };
         let cold = !block_memory_resident(cache, shard_id, element.address, Some(routing_bucket));
         if object_id.is_none() {
             object_id = Some(stable_block_object_id(shard_id, model_id, object_key));
@@ -907,7 +992,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
         // Would this element take the batch past either bound? Flush first, so a batch is sealed
         // BEFORE it exceeds the target rather than after -- the same order the timestamped chunker
         // splits in.
-        let item_bytes = element.key.len() + value.len() + 8;
+        let item_bytes = key.len() + value.len() + 8;
         if !items.is_empty()
             && (items.len() >= CONTAINER_BATCH_ELEMENT_CAP
                 || batch_bytes + item_bytes > target_bytes)
@@ -932,7 +1017,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
 
         batch_bytes += item_bytes;
         cold_in_batch |= cold;
-        items.push((element.key, value));
+        items.push((key, value));
         destinations.push(element.address);
     }
 
@@ -983,6 +1068,13 @@ fn read_block_bytes_for_container_element(
                 return None;
             }
             FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
+        }
+        let only = FAIL_ONLY_BLOCK_READ_AT.with(|cell| cell.get());
+        if let Some(remaining) = only {
+            FAIL_ONLY_BLOCK_READ_AT.with(|cell| cell.set(remaining.checked_sub(1)));
+            if remaining == 0 {
+                return None;
+            }
         }
     }
     read_block_bytes(
@@ -1038,7 +1130,15 @@ fn flush_container_batch(
         bytes,
     );
     let folded = destinations.len();
-    for destination in destinations.drain(..) {
+    for (destination, (key, _)) in destinations.drain(..).zip(items.iter()) {
+        if crate::wal_record::is_wal_resident(destination.block_slab_id()) {
+            if let (Some(object_id), Some(element_name)) = (
+                object_id,
+                super::container_blocks::element_name_from_element_key(spelling, key),
+            ) {
+                rewrite_stats.retired_container_wal_blocks.push((object_id, element_name));
+            }
+        }
         *destination = new_address.clone();
         rewrite_stats.record(model_id, *cold_in_batch);
     }
@@ -1109,20 +1209,17 @@ pub(super) fn compact_block_addresses<'a>(
             continue;
         }
         let cold_block = !block_memory_resident(cache, shard_id, address, Some(routing_bucket));
-        let bytes = read_block_bytes_for_compaction(
+        let Some(bytes) = read_block_bytes_for_compaction(
             cache,
             block_store,
             shard_id,
             address,
             BlockIdentity::of(shard_id, model_id, object_key.as_ref(), None),
             Some(routing_bucket),
-        )
-            .ok_or_else(|| {
-                Status::error(
-                    "block_compaction_failed",
-                    "missing block bytes during compaction",
-                )
-            })?;
+        ) else {
+            rewrite_stats.skip_unreadable(address);
+            continue;
+        };
         // Compaction REWRITES a block that already exists, so it keeps the id that block
         // already has. A block id is an index inside its object: taking a fresh one here would
         // give every block of a multi-block object the same index, and the index entries would
@@ -1175,20 +1272,17 @@ pub(super) fn compact_feature_block_addresses(
             continue;
         }
         let cold_block = !block_memory_resident(cache, shard_id, &old_address, Some(routing_bucket));
-        let bytes = read_block_bytes_for_compaction(
+        let Some(bytes) = read_block_bytes_for_compaction(
             cache,
             block_store,
             shard_id,
             &old_address,
             BlockIdentity::of(shard_id, model_id, object_key, None),
             Some(routing_bucket),
-        )
-            .ok_or_else(|| {
-                Status::error(
-                    "block_compaction_failed",
-                    "missing feature block bytes during compaction",
-                )
-            })?;
+        ) else {
+            rewrite_stats.skip_unreadable(&old_address);
+            continue;
+        };
         let new_address = block_store
             .append_block_of_object(
                 &bytes,

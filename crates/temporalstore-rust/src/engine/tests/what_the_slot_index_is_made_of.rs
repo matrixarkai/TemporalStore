@@ -1306,9 +1306,9 @@ fn report(reading: &Reading, walked: &Walked) {
 /// The container `TSIDX\x01` codec 1 writes: the magic, the codec id, and a zstd-3 frame over the
 /// struct's JSON.
 ///
-/// THIS IS A PRODUCTION CONTAINER ARM OF THIS STORE AND NOT A SURFACE INVENTED HERE.
-/// `engine::wrap_index_json` writes exactly this whenever the codec is not the binary one, and
-/// `decode_index_bytes` sniffs and reads it. It is used for every counterfactual below for one
+/// THIS WAS A PRODUCTION CONTAINER ARM OF THIS STORE AND NOT A SURFACE INVENTED HERE.
+/// The retired `engine::wrap_index_json` wrote exactly this whenever the codec was not the binary
+/// one; no reader takes it any more. It is used for every counterfactual below for one
 /// reason: a doctored stream has to be RE-ENCODED, and the only re-encoding this module can take
 /// that is byte-for-byte what production writes is the JSON one. A msgpack payload rebuilt from a
 /// `serde_json::Value` is NOT that -- measured: it differs from the production payload at byte 4,
@@ -2355,7 +2355,11 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     // subject: one arm below needs the `Err` and the others need the bytes.
     let try_the_decoder = |value: &serde_json::Value| -> Result<Vec<u8>, String> {
         let bytes = serde_json::to_vec(value).expect("the index serializes");
-        let decoded = crate::engine::decode_index_bytes(&bytes)?;
+        // THE STRUCT'S OWN DESERIALIZER: `decode_index_bytes` reads the msgpack container and
+        // nothing else, and what this closure asks -- does the decoder read the key's characters
+        // back -- is the struct's to answer, which is what the retired plain-JSON arm called.
+        let decoded = serde_json::from_slice::<crate::engine::state::ShardState>(&bytes)
+            .map_err(|error| error.to_string())?;
         let again = serde_json::to_value(&decoded).expect("the decoded index re-serializes");
         Ok(serde_json::to_vec(
             again
@@ -2368,7 +2372,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     };
     let through_the_decoder = |value: &serde_json::Value| -> Vec<u8> {
         try_the_decoder(value)
-            .expect("a served index in plain JSON is a shape the decoder sniffs and accepts")
+            .expect("a served index in plain JSON is a shape the struct's deserializer accepts")
     };
 
     let baseline = through_the_decoder(&reading.value);

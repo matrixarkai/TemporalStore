@@ -4,6 +4,20 @@
 //! Bucket-dump manifest lifecycle methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    static CHECKPOINT_DECODES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn note_checkpoint_decode() {
+    CHECKPOINT_DECODES.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+#[path = "dump_checkpoint_capture_tests.rs"]
+mod capture_tests;
+
 /// Fault seam: stop `apply_bucket_dump_manifest_prune_with_retention_refs` dead between its two
 /// phases, as a crash there would.
 ///
@@ -32,31 +46,6 @@ impl TemporalEngine {
         shard_id: ShardId,
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
-        // Make the blocks + WAL the manifest is about to reference durable before we
-        // capture their slab ids / wal_sequence. In live mode each append already
-        // fsyncs, but under MATRIXARK_BULK_INGEST appends defer fsync, so a dump firing
-        // mid-bulk would otherwise name slabs whose bytes are not yet on disk
-        // (the dump path always commits blocks durably before updating the index).
-        // The durability barrier MUST succeed before we capture slab ids / wal_sequence and
-        // advance the dumped-log frontier -- the commit step refuses to touch
-        // the index if the block/wal commit failed. Swallowing these errors let a dump whose
-        // blocks never reached disk (e.g. a sync_data EIO/ENOSPC under bulk mode) still clear
-        // the bucket dirty and let WAL reclaim truncate the records backing those blocks ->
-        // silent data loss on crash. Propagate: an Err here skips clear_dumped_bucket_dirty_state
-        // (apply_storage_lifecycle consumes the manifest via .ok()), so the bucket stays dirty
-        // and the reclaim frontier does not advance.
-        self.block_store.sync_durable().map_err(|err| {
-            Status::error(
-                "slot_dump_failed",
-                format!("block durability barrier failed before dump capture: {err}"),
-            )
-        })?;
-        self.wal_store.flush(shard_id).map_err(|err| {
-            Status::error(
-                "slot_dump_failed",
-                format!("wal flush failed before dump capture: {err}"),
-            )
-        })?;
         let selected_buckets = selected_buckets.into_iter().collect::<BTreeSet<_>>();
         let summaries = self.bucket_storage_summaries(shard_id);
         if summaries.is_empty()
@@ -76,12 +65,106 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         bucket_summaries.sort_by_key(|summary| summary.routing_bucket);
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
-        let index_bytes = self
-            .export_index_bytes(shard_id)
-            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        let (mut dump_index_state, mut captured_bytes, publication) = if bulk_ingest_mode() {
+            let publication = {
+                let shards = self.shards.read().expect("engine lock poisoned");
+                if !shards.contains_key(&shard_id) {
+                    return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+                }
+                self.checkpoint_publications.capture(shard_id)
+            };
+            let bytes = self.export_index_bytes(shard_id)
+                .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+            let snapshot = crate::engine::decode_index_bytes(&bytes)
+                .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+            (snapshot, Some(bytes), publication)
+        } else {
+            let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)
+                .ok_or_else(|| Status::error("checkpoint_unavailable",
+                    "shard is unloaded or its WAL application is incomplete"))?;
+            (snapshot, None, publication)
+        };
+        let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
+        let mut retained_objects = dump_live_block_entries.iter()
+            .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
+            .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key))
+            .collect::<std::collections::HashSet<_>>();
+        let mut retirements = if bulk_ingest_mode() {
+            Vec::new()
+        } else {
+            block_in_wal::unreferenced_registrations(
+                &self.block_store, shard_id, &self.wal_store, &retained_objects,
+            )
+        };
+        retirements.retain(|retirement| {
+            dump_index_state.wal_resident_blocks.get(&retirement.folded_key)
+                .is_some_and(|placement| placement.log_id == retirement.log_id
+                    && placement.sequence == retirement.sequence)
+        });
+        if !retirements.is_empty() {
+            // Released bucket markers are memory-only. Their serialized model maps
+            // still own frames even when the decoded bucket has no block entries.
+            retained_objects.extend(storage_bucket_internals::collect_model_live_block_entries(&dump_index_state)
+                .into_iter()
+                .filter(|entry| crate::wal_record::is_wal_resident(entry.address.block_slab_id()))
+                .map(|entry| stable_block_object_id(shard_id, entry.kind.as_str(), &entry.object_key)));
+            retirements = block_in_wal::unreferenced_registrations(
+                &self.block_store, shard_id, &self.wal_store, &retained_objects,
+            );
+            retirements.retain(|retirement| {
+                dump_index_state.wal_resident_blocks.get(&retirement.folded_key)
+                    .is_some_and(|placement| placement.log_id == retirement.log_id
+                        && placement.sequence == retirement.sequence)
+            });
+        }
+        retirements.extend(block_in_wal::unreferenced_physical_registrations(
+            &self.block_store, shard_id, &self.wal_store, &dump_index_state, false,
+        ));
+        retirements.retain(|retirement| {
+            dump_index_state.wal_resident_blocks.get(&retirement.folded_key)
+                .is_some_and(|placement| placement.log_id == retirement.log_id
+                    && placement.sequence == retirement.sequence)
+        });
+        if !retirements.is_empty() {
+            // A legacy or unnameable index is not proof that a frame is unused.
+            let mut visited = 0;
+            let indexed_wal_blocks = dump_index_state.bucket_index.bucket_map.values()
+                .flat_map(|bucket| bucket.block_index.values())
+                .filter(|block| {
+                    visited += 1;
+                    crate::wal_record::is_wal_resident(block.address.block_slab_id())
+                }).count();
+            storage_bucket_internals::note_bucket_block_visits(visited);
+            let described_wal_blocks = dump_live_block_entries.iter().filter(|entry| {
+                crate::wal_record::is_wal_resident(entry.address.block_slab_id())
+                    && !dump_index_state.bucket_index.released_buckets.contains(&entry.filed_routing_bucket)
+            }).count();
+            if dump_index_state.bucket_index.bucket_map.is_empty()
+                || indexed_wal_blocks != described_wal_blocks
+            {
+                retirements.clear();
+            } else {
+                for retirement in &retirements {
+                    dump_index_state.wal_resident_blocks.remove(&retirement.folded_key);
+                }
+                // Retirement used to re-encode a decoded image, whose field stamp
+                // had been filled from the container header.
+                dump_index_state.index_format_version = SHARD_INDEX_FORMAT_VERSION;
+                captured_bytes = None;
+            }
+        }
+        // Keep the owned capture until its final form is ready. Encoding and then
+        // decoding it here used to duplicate every model map and repack its trees.
+        let index_bytes = captured_bytes.unwrap_or_else(|| serialize_index(&dump_index_state));
         let index_sha256 = sha256_hex_bytes(&index_bytes);
-        let dump_index_state = crate::engine::decode_index_bytes(&index_bytes)
-            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        // Capture first, then sync, then publish. A writer can advance the served index
+        // while the barrier runs; capturing afterwards could publish data it did not cover.
+        self.block_store.sync_durable().map_err(|err| {
+            Status::error("slot_dump_failed", format!("block durability barrier failed before dump publication: {err}"))
+        })?;
+        self.wal_store.flush(shard_id).map_err(|err| {
+            Status::error("slot_dump_failed", format!("wal flush failed before dump publication: {err}"))
+        })?;
         // The manifest's replay watermark MUST equal the WAL sequence the EMBEDDED index
         // actually reflects -- NOT the live WAL tail. Under MATRIXARK_BULK_INGEST the on-disk
         // index (what export_index_bytes returns) stays frozen at the last flush_shard_index
@@ -91,11 +174,9 @@ impl TemporalEngine {
         // truncated them -> silent data loss. couples the two by construction: Load replays
         // from the dumped-log id stored INSIDE the dumped index, so the
         // replay cursor always equals the state the index captured. Derive the watermark from the
-        // embedded index's own anchor so reload replays exactly the WAL suffix it lacks. (None
-        // only for a shard never written/flushed -> empty index -> fall back to the tail, 0.)
-        let wal_sequence = dump_index_state
-            .applied_wal_sequence
-            .unwrap_or_else(|| self.wal_store.stats(shard_id).last_sequence);
+        // embedded index's own anchor so reload replays exactly the WAL suffix it lacks.
+        // An unanchored frozen image claims no records, never the live tail after capture.
+        let wal_sequence = dump_index_state.applied_wal_sequence.unwrap_or(0);
         let created_unix_ms = now_ms();
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
         let parent_manifest_id = latest_bucket_dump_manifest_at(&self.index_dir, shard_id)
@@ -121,15 +202,17 @@ impl TemporalEngine {
         // Derived from the EMBEDDED index rather than from the bucket summaries, because the
         // embedded index is what install decodes and what `validate_bucket_dump_manifest` checks
         // this against -- under bulk ingest the exported index and the volatile summaries are not
-        // the same state. ONE live-block walk, handed on to the object-lifecycle report that was
-        // already taking one of its own, so the walk count per dump is unchanged.
-        let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
+        // the same state. The index walk above is shared with the object-lifecycle report.
+        // Retirement additionally checks the model maps when unused registrations need proof.
         let block_slab_ids = dump_live_block_entries
             .iter()
             .map(|entry| entry.address.block_slab_id())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
+        // Dirty-object bookkeeping is process-local and was absent from the decoded
+        // checkpoint previously used for this durable report.
+        dump_index_state.dirty_objects.clear();
         let object_lifecycle = object_lifecycle_report_from_entries(
             shard_id,
             &dump_index_state,
@@ -176,15 +259,43 @@ impl TemporalEngine {
         manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
         let manifest_checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)?;
         manifest.checksum = manifest_checksum;
-        self.persist_bucket_dump_manifest(&manifest)
-            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        let published = self.checkpoint_publications.publish(&publication, || {
+            self.persist_bucket_dump_manifest(&manifest)?;
+            self.wal_store.mark_dumped(shard_id);
+            Ok(())
+        }).map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        if published.is_none() {
+            return Err(Status::error("checkpoint_superseded", "a newer checkpoint was published during capture"));
+        }
+        if !retirements.is_empty() {
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                // A changed shard may need a newer frame, or belong to a different load.
+                // Leave its bookkeeping alone; a later dump can retry the retirement.
+                if self.checkpoint_publications.is_current_after_publish(&publication)
+                    && self.wal_store.stats_without_rescan(shard_id).last_sequence
+                        == dump_index_state.applied_wal_sequence.unwrap_or(0)
+                {
+                    retirements.retain(|retirement| {
+                        shard.wal_resident_blocks.get(&retirement.folded_key)
+                            .is_some_and(|placement| placement.log_id == retirement.log_id
+                                && placement.sequence == retirement.sequence)
+                    });
+                    for retirement in &retirements {
+                        shard.wal_resident_blocks.remove(&retirement.folded_key);
+                    }
+                    block_in_wal::retire_unchanged_registrations(
+                        &self.block_store, shard_id, &retirements,
+                    );
+                }
+            }
+        }
         // The manifest is durable from here, so this shard's log is dumped up to its current
         // durable length. Marked AFTER the write and behind its `?`, never before: a watermark
         // that ran ahead of the manifest would let a restart mid-dump skip records the failed
         // dump never captured. Only this path marks it -- a MERGED manifest consolidates
         // existing dumps and its coverage is bounded by its sources, so it makes nothing newer
         // dumped and must not reset the growth counter.
-        self.wal_store.mark_dumped(shard_id);
         // The index-log is bounded by the storage-manager's consumer-aware index GC (see
         // `storage_wal_reclaim_plan` / `run_storage_manager_cycle`), which retains from the
         // durable dump frontier -- the min anchor across durable manifests, held back by any
@@ -668,32 +779,24 @@ impl TemporalEngine {
         }
         let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
-        // THE STAMP, ON THIS DOOR TOO. Every install calls this function first
-        // (`install_bucket_dump_manifest` line 1 of its body), so refusing here is what gates the
-        // install -- and refusing BEFORE `rebuild_unserialized_model_maps_from_bucket_index`
-        // below, because that call starts reinterpreting the image.
+        // THE STAMP, ON THIS DOOR TOO, AND IT IS THE DECODE'S. Every install calls this function
+        // first (`install_bucket_dump_manifest` line 1 of its body), and `decode_index_bytes` refuses
+        // an image whose header names another struct version before it reads the payload, so the
+        // refusal here is what gates the install -- BEFORE
+        // `rebuild_unserialized_model_maps_from_bucket_index` below, because that call starts
+        // reinterpreting the image.
         //
         // WHY A REFUSAL AND NOT A MIGRATION. The base-index door answers `Ok(None)` and the
         // caller replays the write-ahead log instead: slower, and correct. This door takes the
         // same trade. A migration here would be a SECOND place that has to know what every stamp
-        // bump means, and the two would drift -- which is the defect the single predicate in
-        // `persistence.rs` exists to stop, not one to reproduce.
+        // bump means, and the two would drift.
         //
         // THIS REFUSES RESTORES THAT PREVIOUSLY SUCCEEDED, deliberately. What they did instead
         // was trust an image whose fields may have changed meaning; the measured instance is a
         // pre-fold index's `sequences` map, whose rows an install destroyed silently with every
-        // load counter at zero. A loud, counted refusal that falls back to replay is the better
-        // failure.
-        if crate::engine::persistence::refuse_stale_index_stamp(&restored) {
-            return Err(Status::error(
-                "slot_dump_stale_index_stamp",
-                format!(
-                    "slot dump manifest index is stamped {} and this binary is {}; the dump                      cannot be trusted and the shard must recover from its log instead",
-                    restored.index_format_version,
-                    crate::engine::SHARD_INDEX_FORMAT_VERSION
-                ),
-            ));
-        }
+        // load counter at zero. A loud refusal that falls back to replay is the better failure.
+        // The status names both versions -- the image's and this binary's -- because an operator
+        // reading it has to know which dump they are holding.
         // `hashes` IS carried by a freshly deserialized index now, so this call no longer supplies
         // a map that was absent -- it MERGES the bucket-index derivation into the decoded one. That
         // is still needed, and for the original reason read the other way round: an index can hold a
@@ -928,13 +1031,10 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         let corrupt_block_slab_ids = self
             .block_store
-            .slab_reports()
+            .corrupt_slab_ids()
             .unwrap_or_default()
             .into_iter()
-            .filter(|report| {
-                report.has_corruption && manifest.block_slab_ids.contains(&report.block_slab_id)
-            })
-            .map(|report| report.block_slab_id)
+            .filter(|id| manifest.block_slab_ids.contains(id))
             .collect::<Vec<_>>();
         let stale_manifest = current_index_log_sequence > manifest.index_log_sequence;
         let mut blockers = Vec::new();
@@ -971,14 +1071,6 @@ impl TemporalEngine {
                                 unreadable_block_bytes.saturating_add(entry.address.length());
                         }
                     }
-                }
-                // REPORTED, NOT COUNTED. `validate_bucket_dump_manifest` is what refuses this
-                // manifest and what moves the refusal counter; this is the read-only report, and
-                // a report that installs nothing must not look like an install that was refused.
-                // Without the blocker the report would say `install_safe` of a manifest the
-                // install then rejects, which is the shape of a preflight nobody can act on.
-                if crate::engine::persistence::index_stamp_is_stale(&restored) {
-                    blockers.push("stale_index_stamp".to_string());
                 }
                 restored_index = Some(restored);
             } else {
@@ -1582,7 +1674,7 @@ impl TemporalEngine {
             // same suffix from it; replaying here as well would be the same work done twice.
             //
             // A log holding nothing past the anchor replays nothing and costs a scan.
-            self.rehydrate_wal_resident_blocks(manifest.shard_id);
+            self.rehydrate_wal_resident_blocks(manifest.shard_id)?;
             if let Err(status) =
                 self.replay_wal_into_shard(manifest.shard_id, manifest.wal_sequence)
             {

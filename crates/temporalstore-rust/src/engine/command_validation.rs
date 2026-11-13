@@ -26,8 +26,13 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::HashGetAll { key, .. }
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
+        | Command::SetScan { key, .. }
+        | Command::ZSetScan { key, .. }
         | Command::FeatureQuery { key, .. }
-        | Command::SequenceQuery { key, .. } => Some(key.as_str()),
+        | Command::FeatureAggQuery { key, .. }
+        | Command::FeatureProtoAggQuery { key, .. }
+        | Command::SequenceQuery { key, .. }
+        | Command::CellRankQuery { key, .. } => Some(key.as_str()),
         _ => None,
     }
 }
@@ -144,6 +149,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
         | Command::HashMultiSet { key, .. }
+        | Command::HashMultiSetWithTtl { key, .. }
         | Command::HashMultiSetIfTimestampOlder { key, .. }
         | Command::HashIncrBy { key, .. }
         | Command::HashDelete { key, .. }
@@ -160,6 +166,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::ZSetRange { key, .. }
         | Command::ZSetRangeByScore { key, .. }
         | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetCountAdjust { key, .. }
         | Command::ZSetPop { key, .. }
         | Command::ZSetRank { key, .. }
         | Command::BucketTake { key, .. }
@@ -167,6 +174,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::SeenCheck { key, .. }
         | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithTtl { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
@@ -338,10 +346,14 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::HashGetAll { .. }
         | Command::HashLen { .. }
         | Command::SetMembers { .. }
+        | Command::SetScan { .. }
+        | Command::ZSetScan { .. }
         | Command::FeatureQuery { .. }
         | Command::FeatureQueryFiltered { .. }
         | Command::FeatureAggQuery { .. }
+        | Command::FeatureProtoAggQuery { .. }
         | Command::SequenceQuery { .. }
+        | Command::CellRankQuery { .. }
         | Command::ControlStateCount { .. }
         | Command::ControlStateQuery { .. }
         | Command::ControlStateDetail { .. }
@@ -352,6 +364,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::ContextGetNode { .. }
         | Command::ContextGetNodes { .. }
         | Command::ContextQueryEvents { .. }
+        | Command::ContextQueryEventsByIds { .. }
         | Command::ContextQueryIndex { .. }
         | Command::ContextQueryIndexIntersection { .. }
         | Command::ContextQueryPackAudit { .. }
@@ -384,6 +397,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::StringSetConditional { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetWithTtl { .. }
             | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
@@ -394,6 +408,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::ZSetAdd { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
+            | Command::ZSetCountAdjust { .. }
             | Command::ZSetPop { .. }
             | Command::ControlStateIncrement { .. }
             | Command::ControlStateIncrementWithOptions { .. }
@@ -406,6 +421,7 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             // so a one-point feature append into a 1,024-key store cost 12,717 allocations, none of
             // it about the point being appended.
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
@@ -444,6 +460,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
+            | Command::HashMultiSetWithTtl { .. }
             | Command::HashMultiSetIfTimestampOlder { .. }
             | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
@@ -454,10 +471,12 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ZSetAdd { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
+            | Command::ZSetCountAdjust { .. }
             | Command::ZSetPop { .. }
             | Command::BucketTake { .. }
             | Command::SeenCheck { .. }
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
@@ -601,6 +620,18 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::SetScan { limit, .. } if *limit == 0 || *limit > 10_000 => {
+            return Err(Status::error(
+                "invalid_argument",
+                "set scan limit must be between 1 and 10000",
+            ));
+        }
+        Command::ZSetScan { limit, .. } if *limit == 0 || *limit > 10_000 => {
+            return Err(Status::error(
+                "invalid_argument",
+                "zset scan limit must be between 1 and 10000",
+            ));
+        }
         Command::HashMultiSetIfTimestampOlder {
             timestamp_nanos, ..
         } if !(0..1_000_000_000).contains(timestamp_nanos) => {
@@ -608,6 +639,14 @@ pub(super) fn validate_command_preconditions(
                 "invalid_argument",
                 "timestamp_nanos must be between 0 and 999999999",
             ));
+        }
+        // A ranked cell read is refused at admission for everything that needs no snapshot: the
+        // bounds, the window, the score parameters. Names are checked against the key's header when
+        // the read runs.
+        Command::CellRankQuery { spec, .. } => {
+            if let Err(why) = super::cell_rank::validate_spec(spec) {
+                return Err(Status::error("invalid_argument", why));
+            }
         }
         // Expiry checks here use the SAME replay-aware clock as the executor's
         // `remove_if_expired`. Validation runs only on the leader today, where the two
@@ -626,7 +665,8 @@ pub(super) fn validate_command_preconditions(
                 return Err(Status::error("not_found", "key not found"));
             }
         }
-        Command::FeatureAppend { key, points } => {
+        Command::FeatureAppend { key, points }
+        | Command::FeatureAppendWithTtl { key, points, .. } => {
             let current = shard
                 .features()
                 .get(&key[..])
@@ -657,6 +697,30 @@ pub(super) fn validate_command_preconditions(
                     "invalid_argument",
                     format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
                 ));
+            }
+            // Merge-reduce is refused HERE, like `Block`, so a bad request writes nothing and
+            // reaches no log. The plan is thrown away; execution plans again (see the module note).
+            if *policy == FeatureWritePolicy::MergeReduce {
+                let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                // A key past its deadline reads as absent, as it does everywhere else.
+                let expired = shard
+                    .expires_at_ms()
+                    .get(key.as_str())
+                    .map(|expires_at| *expires_at <= resolve_now_ms())
+                    .unwrap_or(false);
+                crate::engine::cell_merge_append::plan_cell_merge(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard.features().get(&key[..]).filter(|_| !expired),
+                    key,
+                    crate::engine::hashing::block_routing_bucket(
+                        key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    ),
+                    points,
+                )?;
             }
         }
         Command::FeatureReplace { key, points, .. } => {
@@ -772,6 +836,20 @@ pub(super) fn validate_command_preconditions(
             validate_context_limit(*max_scan)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
             validate_context_filters(kinds, statuses, *min_confidence, *min_importance)?;
+        }
+        Command::ContextQueryEventsByIds {
+            tenant_hash,
+            node_hash,
+            event_id_hashes,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_required(!event_id_hashes.is_empty(), "event ids are required")?;
+            validate_context_limit(*limit)?;
+            for event_id_hash in event_id_hashes {
+                validate_context_required(*event_id_hash != 0, "event id is required")?;
+            }
         }
         Command::ContextWriteIndexRef {
             tenant_hash,
@@ -1193,7 +1271,7 @@ pub(super) fn cached_response(
     source: impl FnOnce() -> CommandResponse,
 ) -> CommandResponse {
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
-        cache.get(&key)
+        cache.get_shared(&key)
     });
     if let Ok(Some(bytes)) = cached {
         if let Some(response) = decode_cached_response(&bytes) {
@@ -1208,8 +1286,81 @@ pub(super) fn cached_response(
     response
 }
 
-pub(super) fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
-    if cache.peek(&key) {
+#[derive(serde::Deserialize)]
+struct BorrowedCachedBytes<'a> {
+    #[serde(borrow)]
+    kind: &'a str,
+    #[serde(borrow)]
+    value: Option<&'a [u8]>,
+}
+
+pub(super) fn decode_borrowed_cached_bytes(bytes: &[u8]) -> Option<Option<&[u8]>> {
+    let response = rmp_serde::from_slice::<BorrowedCachedBytes<'_>>(bytes).ok()?;
+    (response.kind == "bytes").then_some(response.value)
+}
+
+/// Consume cached bytes in place; older payload encodings retain the owned decoder.
+pub(super) fn cached_bytes_with<R>(
+    cache: &MultiLayerCache,
+    key: CacheKey,
+    source: impl FnOnce() -> Option<Vec<u8>>,
+    consume: impl FnOnce(Option<&[u8]>) -> R,
+) -> R {
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&key)
+    });
+    if let Ok(Some(bytes)) = cached {
+        if let Some(value) = decode_borrowed_cached_bytes(&bytes) {
+            return consume(value);
+        }
+        if let Some(CommandResponse::Bytes { value }) = decode_cached_response(&bytes) {
+            return consume(value.as_deref());
+        }
         let _ = cache.invalidate(&key);
     }
+    let response = CommandResponse::Bytes { value: source() };
+    if let Some(bytes) = encode_cached_response(&response) {
+        cache.put_memory_only(key, bytes);
+    }
+    let CommandResponse::Bytes { value } = response else { unreachable!() };
+    consume(value.as_deref())
 }
+
+#[cfg(test)]
+#[path = "tests/borrowed_cache.rs"]
+mod borrowed_cache_tests;
+
+pub(super) fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
+    invalidate_if_cached_ref(cache, &key);
+}
+
+#[inline]
+fn invalidate_if_cached_ref(cache: &MultiLayerCache, key: &CacheKey) {
+    if cache.peek(key) {
+        let _ = cache.invalidate(key);
+    }
+}
+
+/// Reuse one detached key while invalidating fields of the same hash record.
+pub(super) struct HashFieldCacheInvalidator<'a> {
+    cache: &'a MultiLayerCache,
+    key: CacheKey,
+}
+
+impl<'a> HashFieldCacheInvalidator<'a> {
+    pub(super) fn new(cache: &'a MultiLayerCache, shard_id: ShardId, key: &str) -> Self {
+        Self { cache, key: CacheKey::hash(shard_id, key, "") }
+    }
+
+    #[inline]
+    pub(super) fn invalidate(&mut self, field: &str) {
+        let selector = self.key.selector.to_mut();
+        selector.clear();
+        selector.push_str(field);
+        invalidate_if_cached_ref(self.cache, &self.key);
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/hash_invalidation_keys.rs"]
+mod hash_invalidation_key_tests;

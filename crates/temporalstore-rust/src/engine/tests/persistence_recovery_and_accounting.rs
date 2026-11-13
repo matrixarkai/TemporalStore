@@ -1048,6 +1048,15 @@ fn delete_drop_eviction_emits_a_wal_delete_marker_and_does_not_resurrect() {
 
 #[test]
 fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
+    truncated_slab_compaction_recovers_on_restart(true);
+}
+
+#[test]
+fn compaction_repairs_a_truncated_slab_from_its_wal_frame() {
+    truncated_slab_compaction_recovers_on_restart(false);
+}
+
+fn truncated_slab_compaction_recovers_on_restart(inject_failure: bool) {
     // CP4 regression. A mid-compaction read failure used to return with the in-memory index
     // half-advanced (relocated blocks point at the fresh slab) but UNPERSISTED, so it diverged from
     // the on-disk index -- and the independent reclaim path could then physically purge a
@@ -1057,7 +1066,8 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     //
     // Setup: k1 (string, relocated FIRST by compact_shard_blocks) lives in an earlier slab; k2 (hash,
     // relocated after) lives in a later slab. We corrupt ONLY the latest slab (k2's), so compaction
-    // relocates k1 (vacating its old slab) and then FAILS reading k2. A tiny cache forces the reads
+    // relocates k1 (vacating its old slab). An injected read failure prevents WAL repair for k2
+    // in the partial-publication case; otherwise the WAL repairs its slab. A tiny cache forces reads
     // to hit disk. Assert the on-disk index CHANGED -- i.e. the relocated partial state was durably
     // persisted (it stays byte-identical without the fix).
     let dir = tempfile::tempdir().unwrap();
@@ -1115,10 +1125,14 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     let k2_slab = slabs.last().expect("at least two block slabs after the roll").clone();
     fs::write(&k2_slab, b"").unwrap();
 
+    if inject_failure {
+        crate::engine::fail_only_compaction_block_read_at_for_test(Some(1));
+    }
     let result = engine.compact_shard_blocks(1);
+    crate::engine::fail_only_compaction_block_read_at_for_test(None);
     assert!(
-        result.is_err(),
-        "compaction must fail when a live block's slab is unreadable, got {result:?}"
+        result.is_err() == inject_failure,
+        "compaction must report an injected failure, or repair from WAL, got {result:?}"
     );
     let index_after = fs::read(engine.index_path(1)).unwrap();
     assert_ne!(
@@ -1126,6 +1140,23 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
         "a partial-failure compaction must durably persist the relocated partial index (CP4), \
          so the volatile and on-disk indexes cannot diverge and let reclaim purge a needed slab"
     );
+    if inject_failure {
+        assert!(engine.wal_resident_block_count(1) > 0,
+            "the unmoved, unreadable hash slab must retain its WAL fallback");
+    }
+    drop(engine);
+    let restored = TemporalEngine::with_local_dirs(
+        16, dir.path().join("cache-restored"), &blocks, &indexes,
+    );
+    restored.load_shard(1);
+    for (command, expected) in [
+        (Command::StringGet { key: "k1".into() }, b"v1".to_vec()),
+        (Command::HashGet { key: "h".into(), field: "f".into() }, b"v2".to_vec()),
+    ] {
+        let response = restored.execute(ExecuteRequest { shard_id: 1, command });
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(expected) });
+    }
 }
 
 #[test]
@@ -6561,6 +6592,8 @@ fn the_index_wire_keys_are_what_they_were() {
     // identity, so they vary with the test's keys rather than with the format.
     keys.retain(|key| !key.contains(':') && !key.chars().all(|c| c.is_ascii_digit()));
 
+    // The durable model tables and compact object rows are already in the index image.
+    // This recursive census includes their field names and this fixture's key/field names.
     let listed: Vec<&str> = keys.iter().map(String::as_str).collect();
     assert_eq!(
         listed,
@@ -6581,6 +6614,13 @@ fn the_index_wire_keys_are_what_they_were() {
             // an EMPTY block map.
             "block_index",
             "bucket_map",
+            "context_audit",
+            "context_child",
+            "context_compression",
+            "context_entity",
+            "context_event",
+            "context_index",
+            "context_summary",
             // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
             // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
@@ -6607,11 +6647,14 @@ fn the_index_wire_keys_are_what_they_were() {
             "deleted_object_index",
             "dirty",
             "dirty_generation",
+            "f",
+            "feature",
             // "g" is the LAST optional slot on an address. It is written on every one of them,
             // because a row is read by position in the index log and a field that vanishes when
             // empty moves every field behind it -- and because its PRESENCE is the meaning:
             // `ADDRESS_HAS_GENERATION` comes from whether this key is there.
             "g",
+            "hashes",
             // "h", the digest, is GONE, and so is "rs" further down. Both were written as nil for
             // the positional reason above, and neither was ever read. A key that carries no
             // meaning does not need the slot held open for it: `shorter_struct_against_an_existing_row`
@@ -6623,7 +6666,9 @@ fn the_index_wire_keys_are_what_they_were() {
             "l",
             // "last_dump_sequence" is gone on purpose: see this test's own note above.
             "layout",
+            "lists",
             "loading",
+            "m",
             // "log_backed" is GONE, and it is the only key this change removes. The entry shed the
             // flag nothing maintained -- the log-resident fact is derived from the address by an
             // accessor -- so the stored form is one key lighter.
@@ -6634,6 +6679,7 @@ fn the_index_wire_keys_are_what_they_were() {
             // own bucket. So neither appears in this list, and this list is what would have caught
             // them if they did.
             "meta_loaded",
+            "n",
             // "model_id" and "object_key" are GONE, and this list has been red since they went.
             // A block entry used to restate both as named fields; it now reads them back out of
             // the composite key it is filed under, which is the key's own second and first slots.
@@ -6645,15 +6691,23 @@ fn the_index_wire_keys_are_what_they_were() {
             // list's own rule.
             // "o" and "ps" are gone -- merged into "a" at the top of this list.
             "object_index",
+            "objects",
             "oi",
             // "page_index" is GONE from this list because the writer moved, not because the key
             // was retired: it is still ACCEPTED, and an index on disk that spells it still loads.
             // It is listed at the top under its canonical spelling.
             "pi",
+            "r",
             // "routing_slot" here is the BUCKET NODE's own key, not the address's retired "rs" --
             // two different things that read alike. The node still records which bucket it is.
             "routing_slot",
+            "sets",
+            "string",
             "ttl_ms",
+            "u",
+            "wire",
+            "wire-hash",
+            "zsets",
         ],
         "the index writes different keys than it did; a rename or a serde attribute reached the format"
     );
@@ -6797,6 +6851,7 @@ fn writing_a_message_does_not_cost_its_nodes_history() {
                     source_ref: format!("src/{i}"),
                     related_node_hashes: vec![42],
                     compact_attrs: Vec::new(),
+                    embedding_model_hash: 0,
                     vector,
                 }),
             },
@@ -8675,12 +8730,6 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
         },
     });
 
-    // The spill path would otherwise mask what is being tested by copying the value to a real
-    // slab on eviction.
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
-
     let key = "block-in-wal-key";
     let value = b"block-in-wal-value".to_vec();
     let write = engine.execute(ExecuteRequest {
@@ -8734,10 +8783,6 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
             ..Config::default()
         },
     });
-
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
 
     let write = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -9065,10 +9110,6 @@ fn a_block_in_wal_block_still_reads_back_after_a_shard_reload() {
         },
     });
 
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
-
     let key = "reload-block-key";
     let value = b"reload-block-value".to_vec();
     let write = engine.execute(ExecuteRequest {
@@ -9126,10 +9167,6 @@ fn a_wal_resident_block_records_where_it_lives_in_the_index() {
             ..Config::default()
         },
     });
-    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
-    // work: the handler is installed during construction, which already happened above.
-    engine.disable_hot_block_spill_for_test();
-
     assert_eq!(
         engine.wal_resident_block_count(1),
         0,
@@ -9182,7 +9219,7 @@ fn a_wal_resident_block_records_where_it_lives_in_the_index() {
 ///
 /// This was once the control half of a test asserting the opposite for a store that put nothing
 /// in the log. That store no longer exists -- a write always carries its block -- so the control
-/// is the whole test: an async write with the spill handler off leaves its block in its record
+/// is the whole test: an async write leaves its block in its record
 /// and nowhere else, and the location it records is the only thing that can serve it back.
 /// A zero here means the write staged nothing, which is the acked-write-reads-back-as-MISSING
 /// case the carry was added to close.
@@ -9197,9 +9234,7 @@ fn an_async_write_records_where_its_block_lives() {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        // Asynchronous storage is what leaves a block somewhere other than the block store, and
-        // the spill handler is what would then catch it. Without both, nothing stages and the
-        // count is zero for reasons that have nothing to do with the setting.
+        // Asynchronous storage leaves the block in its carrying record rather than a slab.
         engine.set_config(SetConfigRequest {
             shard_id: 1,
             config: Config {
@@ -9208,7 +9243,6 @@ fn an_async_write_records_where_its_block_lives() {
                 ..Config::default()
             },
         });
-        engine.disable_hot_block_spill_for_test();
         assert!(
             engine
                 .execute(ExecuteRequest {
@@ -9444,10 +9478,6 @@ fn two_engines_in_one_process_do_not_read_each_others_blocks() {
                 ..Config::default()
             },
         });
-        // Said to EACH engine this closure builds. The variable worked here -- it is set before
-        // construction, unlike the four above -- but it said it to the process, and this test
-        // builds two engines to prove they do not share a spill map.
-        engine.disable_hot_block_spill_for_test();
         engine
     };
 
@@ -9843,6 +9873,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
                 related_node_hashes: vec![42],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             indexes: crate::types::ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -11505,6 +11536,7 @@ fn a_numeric_element_name_travels_as_a_number_and_returns_intact() {
                 related_node_hashes: vec![42],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             }),
             indexes: crate::types::ContextExtractedEventIndexes {
                 scope_hash: 3001,
@@ -13166,6 +13198,60 @@ fn registrations_plateau_instead_of_tracking_writes() {
             "object-{index:05} was lost when its block was moved out"
         );
     }
+}
+
+#[test]
+fn hash_writes_do_not_run_string_only_resident_sweeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        })
+        .ok);
+
+    let scans_before = super::block_in_wal::oldest_registered_scans_for_test();
+    for index in 0..5_000 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("hash-{index:05}"),
+                field: "f".to_string(),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "hash write {index}: {:?}", response.status);
+    }
+    assert_eq!(
+        super::block_in_wal::oldest_registered_scans_for_test(),
+        scans_before,
+        "hash writes cannot produce blocks that the string-only sweep can retire"
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashGet {
+                    key: "hash-04999".to_string(),
+                    field: "f".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(vec![b'v'; 64]),
+        }
+    );
 }
 
 /// a batch leaves nothing staged for the next write to adopt.
@@ -18179,6 +18265,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
                         related_node_hashes: vec![42],
                         compact_attrs: Vec::new(),
                         vector: (0..dims).map(|d| (d as f32) * 0.001 + i as f32).collect(),
+                        embedding_model_hash: 0,
                     }),
                 },
                 "SetAdd" => Command::SetAdd {
@@ -18526,6 +18613,7 @@ fn an_entity_upsert_does_not_report_its_block_uncovered() {
             confidence: 0.97,
             source_event_hashes: vec![5],
             vector: Vec::new(),
+            embedding_model_hash: 0,
         }
     };
     // The first write creates the node's collection; the second is the one under test.
@@ -20385,9 +20473,11 @@ fn the_index_gc_gate_costs_pieces_not_records() {
     // cheap byte test skips before it measures anything and every number below is zero. Asserted,
     // not assumed -- and the assertion earned itself: the first fixture here was 4,000 records,
     // which is 755,234 B, and every arm read zero bytes decoded because the round never got past
-    // that test. A record is about 189 B, so 6,000 is 1.13 MB and clears it with room.
-    let small = 6_000usize;
-    let large = 18_000usize;
+    // that test. A record was about 189 B when this log was filled with padded whole-index records,
+    // so 6,000 was 1.13 MB. It is filled with anchors now, which are a fixed 47 B, so the same
+    // 1.13 MB takes four times the records: 24,000 and 72,000.
+    let small = 24_000usize;
+    let large = 72_000usize;
     let threshold = crate::engine::reports::DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD;
 
     struct Arm {
@@ -20420,9 +20510,9 @@ fn the_index_gc_gate_costs_pieces_not_records() {
             let store = engine.index_log_store();
             for value in 0..records {
                 store
-                    .append_json(
+                    .append_index_bytes(
                         1,
-                        format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                        format!("TSIDX\x01\x02{value}").as_bytes(),
                     )
                     .expect("index-log append");
             }
@@ -22094,7 +22184,10 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
     }
 
     let threshold = crate::engine::reports::DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD;
-    for (records, expect_fires) in [(6_000usize, false), (18_000usize, true)] {
+    // 24,000 and 72,000 anchors are the byte sizes 6,000 and 18,000 padded whole-index records were
+    // (about 1.13 MB and 3.4 MB); an anchor is a fixed 47 B, so the same geometry takes four times
+    // the records.
+    for (records, expect_fires) in [(24_000usize, false), (72_000usize, true)] {
         let _rolling = RollingThreshold;
         crate::index_log::set_index_log_segment_bytes_for_test(Some(
             crate::index_log::DEFAULT_INDEX_LOG_SEGMENT_BYTES,
@@ -22104,9 +22197,9 @@ fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
         let store = engine.index_log_store();
         for value in 0..records {
             store
-                .append_json(
+                .append_index_bytes(
                     1,
-                    format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                    format!("TSIDX\x01\x02{value}").as_bytes(),
                 )
                 .expect("index-log append");
         }

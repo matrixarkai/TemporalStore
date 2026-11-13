@@ -69,7 +69,7 @@
 //!     moment of the load.
 //!
 //! CONTROL 3 IS A FILE CHECK AND NOT A COUNTER CHECK, DELIBERATELY. `index_load_path_counts` is
-//! process-global, so a second test loading a shard on another thread lands in the same four
+//! process-global, so a second test loading a shard on another thread lands in the same three
 //! numbers and nothing can attribute them back. The absence of the file IS the door, it is local
 //! to this test, and no other test can perturb it. The counters are printed as a diagnostic and
 //! asserted on only in the direction that cannot be faked by someone else's load.
@@ -239,15 +239,14 @@ fn no_context_node_entry_arrives_through_a_load_with_no_base_index() {
     // Diagnostic, and the one assertion that another thread's load cannot fake: a process-global
     // counter can only be pushed UP by someone else, so "absent was counted at least once" is
     // safe to assert while "accepted was counted zero times" is not.
-    let (accepted_n, stale_n, absent_n, decode_n) =
-        crate::engine::persistence::index_load_path_counts();
+    let (accepted_n, absent_n, decode_n) = crate::engine::persistence::index_load_path_counts();
     println!(
-        "  no base index -> absent {absent_n}, stale {stale_n}, decode {decode_n}, accepted {accepted_n}"
+        "  no base index -> absent {absent_n}, decode {decode_n}, accepted {accepted_n}"
     );
     assert!(
         absent_n > 0,
-        "a load with no base index file must count as ABSENT; got absent {absent_n} stale \
-         {stale_n} decode {decode_n} accepted {accepted_n}"
+        "a load with no base index file must count as ABSENT; got absent {absent_n} decode \
+         {decode_n} accepted {accepted_n}"
     );
 
     // WHICH HALF OF THE BLOB CAME BACK, printed before the verdict.

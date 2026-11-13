@@ -118,11 +118,8 @@ pub fn embed_drainer_config_from_env(
             d.max_nodes_per_pass,
         )
         .max(1),
-        max_events_per_node: env_usize(
-            "MATRIXARK_EMBED_DRAINER_MAX_EVENTS",
-            d.max_events_per_node,
-        )
-        .max(1),
+        max_events_per_node: env_usize("MATRIXARK_EMBED_DRAINER_MAX_EVENTS", d.max_events_per_node)
+            .max(1),
         interval: Duration::from_millis(env_u64(
             "MATRIXARK_EMBED_DRAINER_INTERVAL_MS",
             d.interval.as_millis() as u64,
@@ -136,10 +133,10 @@ fn node_embed_text(response: ExecuteResponse, max_input_bytes: usize) -> Option<
     match response.response {
         CommandResponse::ContextEvents { events, .. } => {
             let mut text = events
-            .into_iter()
-            .map(|event| event.text)
-            .max_by_key(|text| text.len())
-            .unwrap_or_default();
+                .into_iter()
+                .map(|event| event.text)
+                .max_by_key(|text| text.len())
+                .unwrap_or_default();
             if text.len() > max_input_bytes {
                 let mut end = max_input_bytes;
                 while !text.is_char_boundary(end) {
@@ -220,9 +217,17 @@ pub fn drain_embedding_dirty_once(
     }
 
     let max_input_bytes = context_embedding_batch_limits(&config.provider).max_input_bytes;
-    let mut pending: Vec<Pending> = Vec::with_capacity(nodes.len());
+    let batch_size = config.batch_size.max(1);
+    let mut pending: Vec<Pending> = Vec::with_capacity(batch_size);
     let mut clear_targets = Vec::<Target>::with_capacity(nodes.len());
-    for target_chunk in targets.chunks(config.batch_size.max(1)) {
+    let model_hash = context_embedding_model_hash(&config.provider.embedding_model);
+    let updated_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(1)
+        .max(1);
+    for target_chunk in targets.chunks(batch_size) {
+        pending.clear();
         let commands = target_chunk
             .iter()
             .map(|target| Command::ContextQueryEvents {
@@ -270,28 +275,22 @@ pub fn drain_embedding_dirty_once(
             }
         }
         report.failed += target_chunk.len().saturating_sub(returned);
-    }
 
-    // 3) Batch-embed and durably publish each vector chunk. Marker clearing is deferred until
-    //    every model chunk finishes, then coalesced into one durable batch containing only
-    //    successful writes and textless nodes.
-    let model_hash = context_embedding_model_hash(&config.provider.embedding_model);
-    let updated_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(1)
-        .max(1);
-    for chunk in pending.chunks(config.batch_size.max(1)) {
-        let texts: Vec<&str> = chunk.iter().map(|item| item.text.as_str()).collect();
+        // Embed and publish before fetching another event batch. This bounds retained source text
+        // and naturally applies model and durable-write backpressure to the dirty-node scan.
+        if pending.is_empty() {
+            continue;
+        }
+        let texts: Vec<&str> = pending.iter().map(|item| item.text.as_str()).collect();
         let vectors = match context_backfill_embeddings(&config.provider, &texts) {
-            Ok(vectors) if vectors.len() == chunk.len() => vectors,
+            Ok(vectors) if vectors.len() == pending.len() => vectors,
             _ => {
-                // Leave this chunk dirty for a later pass.
-                report.failed += chunk.len();
+                // Leave this batch dirty for a later pass.
+                report.failed += pending.len();
                 continue;
             }
         };
-        let commands: Vec<Command> = chunk
+        let commands: Vec<Command> = pending
             .iter()
             .zip(vectors.into_iter())
             .map(|(item, vector)| Command::ContextSetNodeEmbedding {
@@ -307,10 +306,10 @@ pub fn drain_embedding_dirty_once(
             commands,
         });
         if !response.status.ok {
-            report.failed += chunk.len();
+            report.failed += pending.len();
             continue;
         }
-        for (index, item) in chunk.iter().enumerate() {
+        for (index, item) in pending.iter().enumerate() {
             if response
                 .responses
                 .get(index)
@@ -448,6 +447,7 @@ mod tests {
                         related_node_hashes: Vec::new(),
                         compact_attrs: Vec::new(),
                         vector: Vec::new(),
+                        embedding_model_hash: 0,
                     }),
                     first_write_only: false,
                     cold_storage: false,
@@ -463,9 +463,9 @@ mod tests {
                 command: Command::ContextMarkEmbeddingDirty {
                     tenant_hash,
                     node_hash,
-                event_time_ms: 1_000,
-                reason: 2,
-                propagate_depth: 0,
+                    event_time_ms: 1_000,
+                    reason: 2,
+                    propagate_depth: 0,
                     clear: false,
                 },
             })
@@ -557,7 +557,10 @@ mod tests {
         });
         match summary.response {
             CommandResponse::ContextSummaryDirtyNodes { nodes, .. } => {
-                assert!(nodes.is_empty(), "embedding-dirty must not set summary-dirty");
+                assert!(
+                    nodes.is_empty(),
+                    "embedding-dirty must not set summary-dirty"
+                );
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -615,7 +618,7 @@ mod tests {
         assert_eq!(count_pending(&engine), 5);
 
         let config = EmbedDrainerConfig {
-            batch_size: 64,
+            batch_size: 2,
             ..EmbedDrainerConfig::default()
         };
         let report = drain_embedding_dirty_once(&engine, &config);
@@ -675,7 +678,10 @@ mod tests {
         assert_eq!(count_pending(&engine), 2);
 
         let report = drain_embedding_dirty_once(&engine, &EmbedDrainerConfig::default());
-        assert_eq!(report.pending_scanned, 2, "must scan only pending, not corpus");
+        assert_eq!(
+            report.pending_scanned, 2,
+            "must scan only pending, not corpus"
+        );
         assert_eq!(report.embedded, 2);
         assert_eq!(count_pending(&engine), 0);
     }

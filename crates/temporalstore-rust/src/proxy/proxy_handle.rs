@@ -404,6 +404,22 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/CellRankQuery") => {
+                match parse_json::<ProxyCellRankQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::CellRankQuery { key: req.key, spec: req.spec };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/ControlStateIncrement") => {
                 match parse_json::<ProxyControlStateIncrementCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -714,7 +730,9 @@ impl ProxyService {
                     }
                 }
             }
-            _ => json_response(404, &Status::error("not_found", "unknown proxy route")),
+            _ => self.handle_memory_route(&request).unwrap_or_else(|| {
+                json_response(404, &Status::error("not_found", "unknown proxy route"))
+            }),
         }
     }
 }

@@ -299,6 +299,7 @@ where
             .map(|(index, item)| EmbeddingVector {
                 key: EmbeddingKey {
                     tenant_id: item.tenant_id,
+                    owner_id: 0,
                     item_id: item.context_id,
                 },
                 values: embeddings.row(index),

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::collections::HashSet;
+
 use super::TemporalEngine;
 use crate::llm_context::{
     EmbeddingChannel, EmbeddingHit, EmbeddingIndexError, EmbeddingKey, EmbeddingVector,
@@ -11,7 +13,11 @@ use crate::types::{Command, CONTEXT_SUMMARY_LEVEL_L1};
 impl TemporalEngine {
     pub(super) fn command_updates_context_embedding(command: &Command) -> bool {
         match command {
-            Command::ContextSetNodeEmbedding { .. } | Command::ContextUpsertNode { .. } => true,
+            Command::ContextSetNodeEmbedding { .. }
+            | Command::ContextUpsertNode { .. }
+            | Command::ContextWriteEvent { .. }
+            | Command::ContextWriteExtractedEvent { .. }
+            | Command::ContextUpsertEntity { .. } => true,
             Command::ContextUpsertSummary { summary, .. } => {
                 summary.level == CONTEXT_SUMMARY_LEVEL_L1
             }
@@ -33,10 +39,15 @@ impl TemporalEngine {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut publish = |channel: EmbeddingChannel,
                            tenant_id,
+                           owner_id,
                            item_id,
                            model_hash,
                            values: &[f32]| {
-            let key = EmbeddingKey { tenant_id, item_id };
+            let key = EmbeddingKey {
+                tenant_id,
+                owner_id,
+                item_id,
+            };
             if values.is_empty() {
                 registry.remove(channel, key);
             } else {
@@ -55,6 +66,7 @@ impl TemporalEngine {
                 } => publish(
                     EmbeddingChannel::Node,
                     *tenant_hash,
+                    0,
                     *node_hash,
                     *model_hash,
                     vector,
@@ -63,6 +75,7 @@ impl TemporalEngine {
                     publish(
                         EmbeddingChannel::Node,
                         *tenant_hash,
+                        0,
                         node.node_hash,
                         node.embedding_model_hash,
                         &node.vector,
@@ -70,6 +83,7 @@ impl TemporalEngine {
                     publish(
                         EmbeddingChannel::Summary,
                         *tenant_hash,
+                        0,
                         node.node_hash,
                         node.summary_vector_model_hash,
                         &node.summary_vector,
@@ -81,9 +95,40 @@ impl TemporalEngine {
                 } if summary.level == CONTEXT_SUMMARY_LEVEL_L1 => publish(
                     EmbeddingChannel::Summary,
                     *tenant_hash,
+                    0,
                     summary.node_hash,
                     summary.embedding_model_hash,
                     &summary.vector,
+                ),
+                Command::ContextWriteEvent {
+                    tenant_hash,
+                    node_hash,
+                    event,
+                    ..
+                }
+                | Command::ContextWriteExtractedEvent {
+                    tenant_hash,
+                    node_hash,
+                    event,
+                    ..
+                } if event.event_id_hash != 0 => publish(
+                    EmbeddingChannel::Event,
+                    *tenant_hash,
+                    *node_hash,
+                    event.event_id_hash,
+                    event.embedding_model_hash,
+                    &event.vector,
+                ),
+                Command::ContextUpsertEntity {
+                    tenant_hash,
+                    entity,
+                } => publish(
+                    EmbeddingChannel::Entity,
+                    *tenant_hash,
+                    entity.node_hash,
+                    entity.entity_hash,
+                    entity.embedding_model_hash,
+                    &entity.vector,
                 ),
                 _ => {}
             }
@@ -136,6 +181,28 @@ impl TemporalEngine {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .search_prepared(channel, tenant_hash, model_hash, query, limit)
+    }
+
+    pub(crate) fn search_context_embeddings_for_owners(
+        &self,
+        channel: EmbeddingChannel,
+        tenant_hash: u64,
+        model_hash: u64,
+        query: PreparedEmbeddingQuery<'_>,
+        limit: usize,
+        owner_ids: &HashSet<u64>,
+    ) -> Result<Vec<EmbeddingHit>, EmbeddingIndexError> {
+        self.context_embedding_indexes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .search_prepared_owners(
+                channel,
+                tenant_hash,
+                model_hash,
+                query,
+                limit,
+                owner_ids,
+            )
     }
 
     #[cfg(test)]
